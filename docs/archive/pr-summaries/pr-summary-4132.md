@@ -77,3 +77,5 @@ Reconciled the milestone with current main for PR #4380. Kept the milestone's on
 ## PR #4380 review repairs
 
 Addressed all three independent review findings. Recovery reconciliation and non-sentinel commit failures now return an unsuccessful recovery, so completion cannot validate uncommitted contents and push the old commit. The real-Git regression installs a rejecting commit hook, leaves a corrected working-tree file, and verifies zero pushes and an unchanged origin. The label sweep now selects the latest record across all worker failure paths and clears exactly the four categories named by #4132. The regressions failed before these fixes; 66 focused tests pass after them.
+
+The final main merge preserves both the one-turn pre-push retry flag and the PR-body shortening state introduced by #4359. The recovery and category fixes passed 145 focused tests plus the 28 completion tests, and all 857 manifest checks before this merge.

@@ -90,6 +90,7 @@ function createDirectMergeMock(
                 nodes: [{
                   commit: {
                     ...(headSha === null ? {} : { oid: headSha }),
+                    checkSuites: { nodes: [] },
                     statusCheckRollup: {
                       state: "SUCCESS",
                       contexts: {
@@ -169,6 +170,9 @@ Deno.test("direct_merge - checkCiStatus reports the head SHA on the REST fallbac
           conclusion: "success",
         }],
       }));
+    }
+    if (joined.includes("/check-suites")) {
+      return Promise.resolve(JSON.stringify({ check_suites: [] }));
     }
     if (joined.includes("/status")) {
       return Promise.resolve(

@@ -28,6 +28,7 @@ import type {
   GitCommandOutput,
 } from "../lib/git_timeout.ts";
 import type { Logger, Result } from "../types.ts";
+import { GITHUB_ISSUE_BODY_MAX_CHARS } from "../lib/idle_task_body_limit.ts";
 
 const noop = () => {};
 const logger: Logger = {
@@ -1790,6 +1791,150 @@ Deno.test("sync - workflow version changes retain durable body wording without a
     assert(second.result.ok);
     assertEquals(second.result.value.status, "skipped");
     assertEquals(second.ghCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - an over-long summary is published shortened and the edit still happens (Issue #4359)", async () => {
+  const filler = "SYNC-FILLER-4359\n".repeat(4000);
+  const repoPath = await makeRepo({
+    summary: `## Summary\n\n${filler}\n\nCloses #${ISSUE_NUMBER}.\n`,
+  });
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(ghCalls.length, 1);
+    const body = ghCalls[0]!.bodyFileContent ?? "";
+    assert(
+      body.length <= GITHUB_ISSUE_BODY_MAX_CHARS,
+      `edited body is ${body.length} characters`,
+    );
+    assertStringIncludes(body, `pr-summary-${ISSUE_NUMBER}.md`);
+    assertStringIncludes(body, marker(ISSUE_NUMBER));
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a non-length gh failure on a long summary is still an error (Issue #4359)", async () => {
+  const filler = "SYNC-FILLER-4359\n".repeat(4000);
+  const repoPath = await makeRepo({
+    summary: `## Summary\n\n${filler}\n\nCloses #${ISSUE_NUMBER}.\n`,
+  });
+  try {
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]),
+          );
+        }
+        if (args[0] === "pr" && args[1] === "edit") {
+          return Promise.reject(new Error("authentication failed"));
+        }
+        return Promise.resolve("");
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+    assert(!result.ok);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "authentication failed");
+      assert(
+        !result.error.message.includes("Body is too long"),
+        "a real gh failure must stay a gh failure",
+      );
+    }
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a length rejection is retried once with a shorter body (Issue #4359)", async () => {
+  const filler = "SYNC-FILLER-4359\n".repeat(4000);
+  const repoPath = await makeRepo({
+    summary: `## Summary\n\n${filler}\n\nCloses #${ISSUE_NUMBER}.\n`,
+  });
+  try {
+    const edits: string[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: async (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]);
+        }
+        if (args[0] === "pr" && args[1] === "edit") {
+          const idx = args.indexOf("--body-file");
+          const content = await Deno.readTextFile(args[idx + 1]!);
+          edits.push(content);
+          if (edits.length === 1) {
+            throw new Error(
+              "GraphQL: Body is too long (maximum is 65536 characters) (updatePullRequest)",
+            );
+          }
+          return "";
+        }
+        return "";
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(edits.length, 2);
+    assert(edits[1]!.length < edits[0]!.length);
+    assert(edits[1]!.length <= GITHUB_ISSUE_BODY_MAX_CHARS);
+    assertStringIncludes(edits[1]!, marker(ISSUE_NUMBER));
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

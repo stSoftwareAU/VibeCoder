@@ -27,6 +27,7 @@ import {
   PRE_PUSH_LOOKUP_FAILED_MARKER,
   SUMMARY_RULE_GATE_MARKER,
 } from "../failure_diagnosis.ts";
+import { hostDiskInfrastructureFailure } from "../host_fault.ts";
 import { HeadDivergedError } from "../git_branch.ts";
 import {
   type IssueContext,
@@ -216,6 +217,11 @@ import {
   recoverFromScreenshotGateBlock,
   SCREENSHOT_EVIDENCE_MISSING_REASON,
 } from "../screenshot_gate_retry.ts";
+import {
+  assessPrBodyLength,
+  PR_BODY_TOO_LONG_REASON,
+  recoverFromPrBodyLength,
+} from "../pr_body_length.ts";
 import type { DegradedShortfall } from "../degraded_delivery.ts";
 import { markReadyAndAwaitCi } from "../draft_continuation_pr.ts";
 import {
@@ -952,6 +958,54 @@ export async function recoverAndFinaliseExistingPr(
 }
 
 /**
+ * Apply the GitHub body limit (Issue #4359).
+ *
+ * Over the limit, and not yet asked: record the summarise prompt and hold
+ * the run so the agent can rewrite the summary. The body is not cut. After
+ * that turn, a body that is still over the limit is shortened and published.
+ */
+function applyPrBodyLengthPolicy(
+  body: string,
+  input: {
+    summaryLength: number;
+    issueNumber: number;
+    state: PhaseState;
+    logger: WorkerDeps["logger"];
+  },
+): { body: string; hold: PhaseResult | null } {
+  const decision = assessPrBodyLength({
+    body,
+    summaryLength: input.summaryLength,
+    issueNumber: input.issueNumber,
+    retryAttempted: input.state.prBodyLengthRetryAttempted === true,
+  });
+  if (decision.action === "ask") {
+    input.state.prBodyLengthBlock = { prompt: decision.prompt };
+    return {
+      body,
+      hold: {
+        category: "unknown",
+        status: "failure",
+        reason: PR_BODY_TOO_LONG_REASON,
+      },
+    };
+  }
+  if (decision.action === "degrade") {
+    input.logger.warn(
+      "Pull request body is over GitHub's limit after the summarise turn — " +
+        "publishing a mechanically shortened body (Issue #4359)",
+      {
+        issueNumber: input.issueNumber,
+        originalLength: body.length,
+        publishedLength: decision.body.length,
+      },
+    );
+    return { body: decision.body, hold: null };
+  }
+  return { body, hold: null };
+}
+
+/**
  * Push commits, create a PR, and finalise the issue.
  *
  * Handles push with recovery, PR body construction, duplicate PR
@@ -1057,6 +1111,18 @@ async function runCompletionAttempt(
       "completion",
     );
     if (landed) return landed;
+  }
+
+  // Issue #4359: an over-long pull request body gets one summarise turn and
+  // one re-run. The re-run applies the same checks, then publishes. A body
+  // that is still over the limit is shortened there, and the run continues.
+  if (state.prBodyLengthBlock) {
+    return await recoverFromPrBodyLength(
+      ctx,
+      state,
+      deps,
+      () => runCompletionAttempt(ctx, state, deps),
+    );
   }
 
   // Issue #2960: a screenshot block gets one extra agent turn and one re-run
@@ -2227,6 +2293,20 @@ async function completionBody(
     logger,
   );
 
+  // Issue #4359: ask once, before the gates, when the body would be rejected.
+  // The re-run reads the rewritten summary and applies these same checks.
+  // Cutting waits until that turn has been tried.
+  {
+    const limited = applyPrBodyLengthPolicy(prBody, {
+      summaryLength: rawSummaryContent.length,
+      issueNumber,
+      state,
+      logger,
+    });
+    if (limited.hold) return limited.hold;
+    prBody = limited.body;
+  }
+
   // Issue #1185: Screenshot validation before PR creation
   const skipScreenshot =
     getRepoConfig(config.repoConfig, repo, "skipScreenshotCheck") === "true";
@@ -2342,6 +2422,13 @@ async function completionBody(
         qualityCredentials: config.repoConfig?.[repo]?.qualityCredentials,
         deps,
       });
+      // A read-only or no-space failure is the host, not a missing
+      // discrimination. Returning here writes no gate verdict and charges
+      // no blocked run (Issue #4360).
+      if (discrimination.kind === "not_checked") {
+        const fault = hostDiskInfrastructureFailure(discrimination.reason);
+        if (fault) return fault;
+      }
     }
 
     const securityGate = evaluateSecurityFixGate({
@@ -2653,6 +2740,10 @@ async function completionBody(
         }
       },
     });
+    if (mutationResult.kind === "error") {
+      const fault = hostDiskInfrastructureFailure(mutationResult.reason);
+      if (fault) return fault;
+    }
     const gate = evaluateMutationGate(mutationResult, prBody);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });
@@ -3226,6 +3317,19 @@ async function completionBody(
   const reviewRecord = state.preprReviewFindings ?? [];
   if (reviewRecord.length > 0) {
     prBody = `${renderPreprReviewHeadNote(reviewRecord.length)}\n\n${prBody}`;
+  }
+
+  // The head note can push a body that fitted over the limit. Same policy:
+  // one summarise turn, otherwise a mechanical cut, then create or edit.
+  {
+    const limited = applyPrBodyLengthPolicy(prBody, {
+      summaryLength: rawSummaryContent.length,
+      issueNumber,
+      state,
+      logger,
+    });
+    if (limited.hold) return limited.hold;
+    prBody = limited.body;
   }
 
   const openPrForBranch = await deps.pr.findExistingPrForBranch(

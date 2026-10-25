@@ -81,6 +81,12 @@ import {
 } from "../language_detector.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
 import { scanCfnCostCandidates } from "../cfn_cost_checks.ts";
+import {
+  coverageIssuesFromGhJson,
+  type CoverageScan,
+  planCapabilityCoverageFiling,
+  scanCapabilityCoverageDir,
+} from "../capability_coverage_scan.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
 import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import {
@@ -301,6 +307,11 @@ export interface BestPracticesTemplateDeps {
    * #2579) — defaults to {@link scanCfnCostCandidates} over the checkout.
    */
   scanCfnCostFn?: (repoPath: string) => Promise<string[]>;
+  /**
+   * Behavioural security-test coverage (Issue #4367). Static. A missing
+   * checkout is unknown, not a pass. Defaults to a directory walk.
+   */
+  scanCapabilityCoverageFn?: (repoPath: string) => Promise<CoverageScan>;
 }
 
 /** Inputs to a best-practices Claude run. */
@@ -518,7 +529,7 @@ function buildSuggestedFix(
 }
 
 /** Severity a deterministic pre-filed finding carries. */
-type PreFiledSeverity = "high" | "medium";
+type PreFiledSeverity = "high" | "medium" | "low";
 
 /** A deterministic pre-filed finding's title and body, ready to file. */
 interface PreFiledFinding {
@@ -964,6 +975,8 @@ export function createBestPracticesTemplate(
   const runScanFn = deps.runScanFn ??
     ((opts) => defaultRunScan(opts, loadPromptFn, readBucketGuideFn));
   const scanCfnCostFn = deps.scanCfnCostFn ?? scanCfnCostCandidates;
+  const scanCapabilityCoverageFn = deps.scanCapabilityCoverageFn ??
+    scanCapabilityCoverageDir;
 
   async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // 1. Detect languages.
@@ -1180,9 +1193,9 @@ export function createBestPracticesTemplate(
       //    race — BP-LINTER-typescript private-repo-14#2990/#2991). A residual
       //    micro-race between the look-up and the create is acceptable; the
       //    guard closes the routine window, it is not a distributed lock.
-      const knownOpenFindingIds = Array.from(
-        new Set([...existingIds, ...preFiled]),
-      );
+      const knownOpenFindingIds = [
+        ...new Set([...existingIds, ...preFiled]),
+      ];
 
       // Repo-wide open-issue titles (Issue #537) — the semantic second
       // line of dedup, so a finding already open under another label is
@@ -1200,6 +1213,80 @@ export function createBestPracticesTemplate(
       const preScanCandidates = bucket === "aws-cloudformation"
         ? await scanCfnCostFn(repoCheckoutPath(opts.workDir, opts.repo))
         : [];
+
+      // Behavioural coverage (Issue #4367). Static. A test that was not
+      // run is not a pass. A read failure is logged and is not zero findings.
+      const coverageRoot = repoCheckoutPath(opts.workDir, opts.repo);
+      const coverage = await scanCapabilityCoverageFn(coverageRoot);
+      let coverageIssues = openIssueTitles.map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+      }));
+      if (coverage.findings.length > 0) {
+        try {
+          const raw = await ghCommandFn([
+            "issue",
+            "list",
+            "--repo",
+            opts.repo,
+            "--state",
+            "open",
+            "--json",
+            "number,title,labels",
+            "--limit",
+            "300",
+          ]);
+          const parsed = coverageIssuesFromGhJson(raw);
+          if (parsed !== null) coverageIssues = parsed;
+        } catch (error) {
+          logger.warn(
+            `best-practices: capability coverage dedup lookup failed for ${opts.repo} — ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      const coveragePlan = planCapabilityCoverageFiling(
+        coverage,
+        coverageIssues,
+      );
+      if (
+        coverage.status === "unknown" &&
+        !coverage.reason.includes("does not exist")
+      ) {
+        logger.warn(
+          `best-practices: capability coverage not checked for ${opts.repo} — ${coverage.reason}`,
+        );
+      }
+      if (coveragePlan.outcome === "one") {
+        for (const finding of coveragePlan.findings) {
+          const filed = await fileFindingOnce({
+            repo: opts.repo,
+            logLabel: BEST_PRACTICES_LABEL,
+            findingId: finding.id,
+            ghCommandFn,
+            dedupAuthors,
+            fileFn: () =>
+              filePreFiledFinding(
+                opts.repo,
+                bucket,
+                {
+                  findingId: finding.id,
+                  title: finding.title,
+                  body: finding.body,
+                },
+                "low",
+                ghCommandFn,
+              ),
+          });
+          if (filed !== null) knownOpenFindingIds.push(filed.findingId);
+          else {
+            logger.warn(
+              `best-practices: capability coverage finding ${finding.id} was not filed for ${opts.repo}`,
+            );
+          }
+        }
+      }
 
       const scanResult = await runScanFn({
         repo: opts.repo,

@@ -292,6 +292,7 @@ function notAheadRouteGh(
                 nodes: [{
                   commit: {
                     oid: HEAD_SHA,
+                    checkSuites: { nodes: [] },
                     statusCheckRollup: {
                       state: green ? "SUCCESS" : "PENDING",
                       contexts: {

@@ -1,0 +1,241 @@
+{
+  "revision": {
+    "guidance": "2026-10-26.1",
+    "fixtures": "2026-10-26.1",
+    "scanner": "2026-10-26.1"
+  },
+  "liveComparison": "partial",
+  "liveBlocker": "No live model invocation is configured for this command. Fixture arms were executed; model arms were not.",
+  "retryPath": "Re-run this command when a subscription-backed provider is available. Do not record a winner until a matched comparison finishes.",
+  "winner": null,
+  "cost": {
+    "status": "unknown",
+    "reason": "A dry run does not call a model. A missing cost is unknown, never zero."
+  },
+  "outcomes": [
+    {
+      "task": "ts-resource-update",
+      "arm": "empty",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "rust-resource-update",
+      "arm": "empty",
+      "functional": {
+        "pass": false,
+        "executed": false
+      },
+      "security": {
+        "pass": false,
+        "executed": false
+      },
+      "detail": "acceptance tests did not report a result",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "ts-resource-update",
+      "arm": "stub",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "rust-resource-update",
+      "arm": "stub",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "ts-resource-update",
+      "arm": "deny_all",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": true,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "rust-resource-update",
+      "arm": "deny_all",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": true,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "ts-resource-update",
+      "arm": "unwired",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "rust-resource-update",
+      "arm": "unwired",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "ts-resource-update",
+      "arm": "unconditional",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "rust-resource-update",
+      "arm": "unconditional",
+      "functional": {
+        "pass": false,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "ts-resource-update",
+      "arm": "insecure",
+      "functional": {
+        "pass": true,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "rust-resource-update",
+      "arm": "insecure",
+      "functional": {
+        "pass": true,
+        "executed": true
+      },
+      "security": {
+        "pass": false,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": false,
+      "retries": 0
+    },
+    {
+      "task": "ts-resource-update",
+      "arm": "secure",
+      "functional": {
+        "pass": true,
+        "executed": true
+      },
+      "security": {
+        "pass": true,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": true,
+      "retries": 0
+    },
+    {
+      "task": "rust-resource-update",
+      "arm": "secure",
+      "functional": {
+        "pass": true,
+        "executed": true
+      },
+      "security": {
+        "pass": true,
+        "executed": true
+      },
+      "detail": "acceptance tests executed",
+      "joint": true,
+      "retries": 0
+    }
+  ],
+  "skips": [
+    {
+      "arm": "current-guidance",
+      "reason": "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available."
+    },
+    {
+      "arm": "generic-secure-coding",
+      "reason": "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available."
+    },
+    {
+      "arm": "codeguard-derived",
+      "reason": "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available."
+    }
+  ]
+}

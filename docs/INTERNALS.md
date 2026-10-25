@@ -3076,6 +3076,11 @@ pass, lane or serial, keeps running because those passes land the PRs already
 open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
+An agent, quality, mutation or discrimination build already in flight is held
+to the same floor, and a trim-refused host that is below the floor ends the
+launch so the ephemeral layer is discarded (Issue #4360, see
+[In-flight builds stop at the same floor](CONTAINER.md#in-flight-builds-stop-at-the-same-floor-issue-4360)).
+
 A build refused by the ephemeral cargo root's budget is a different case: with
 the host above its floor, a conflict-free merge or a deterministically resolved
 one in a cargo-only tree lands without the cargo build. A Deno-only tree and a
@@ -3084,6 +3089,7 @@ red. A conflict that needs the agent on a cargo tree is charged on the second
 over-budget cycle, so the recovery ladder applies (Issue #4326,
 see
 [HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
+
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
 in CONTAINER.md.
 

@@ -1501,6 +1501,9 @@ async function executeClaudePhaseBody(
   } = promptResult.value;
   // Issue #849: the traceability record names the file, beside the commit.
   deps.log(`Issue prompt template: ${promptTemplate ?? "unknown"}`);
+  if (promptResult.value.capabilitySecurityRecord) {
+    deps.log(promptResult.value.capabilitySecurityRecord);
+  }
   // Issue #2159: the CodeGraph line is appended to the *built* prompt, never
   // written into `prompts/issue/prompt.md`, because it is run-conditional —
   // the same reason the codebase map is injected rather than templated. The

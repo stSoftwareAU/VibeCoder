@@ -23,6 +23,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
   deferralSkipsCargoForMerge,
+  enableInFlightHostDiskGate,
   enforceEphemeralCargoBudget,
   type EphemeralRootDeps,
   type EphemeralTargetDir,
@@ -30,6 +31,7 @@ import {
   heavyBuildAdmission,
   type HeavyBuildDiskReading,
   judgeHostDiskForBuild,
+  parkInFlightBuild,
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "../lib/heavy_build_gate.ts";
@@ -99,6 +101,31 @@ function fakeRoot(dirs: EphemeralTargetDir[]) {
     },
   };
 }
+
+Deno.test("in-flight gate parks both deferred and merge-only builds after admission changes (Issues #4326, #4360)", async () => {
+  enableInFlightHostDiskGate(true);
+  try {
+    for (
+      const current of [
+        reading({ level: "low", free: 6 * GB }),
+        reading({ free: 55.3 * GB }),
+      ]
+    ) {
+      registerHeavyBuildDiskProbe(() => Promise.resolve(current));
+      const parked = await parkInFlightBuild(CHECKOUT, fakeRoot([]).deps);
+      assert(parked !== null);
+      assertStringIncludes(parked, "Parked as infrastructure (Issue #4360).");
+      assertStringIncludes(parked, "46.0 GB");
+    }
+    for (const current of [reading(), reading({ level: "unknown" })]) {
+      registerHeavyBuildDiskProbe(() => Promise.resolve(current));
+      assertEquals(await parkInFlightBuild(CHECKOUT, fakeRoot([]).deps), null);
+    }
+  } finally {
+    enableInFlightHostDiskGate(false);
+    registerHeavyBuildDiskProbe(undefined);
+  }
+});
 
 /** The reason of an admission that is not a plain build. */
 function reasonOf(admission: HeavyBuildAdmission): string {

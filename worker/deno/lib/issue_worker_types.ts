@@ -39,6 +39,7 @@ import type { ImageReference } from "./untrusted_image_signal.ts";
 import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 import type { SummaryRuleRunVerdict } from "./summary_rule_gate_retry.ts";
 import type { ScreenshotGateBlock } from "./screenshot_gate_retry.ts";
+import type { PrBodyLengthBlock } from "./pr_body_length.ts";
 import type { PostMergeReapproval } from "./reapproval_superseded_close.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
@@ -396,6 +397,18 @@ export interface PhaseState {
    * completion phase — the first push and the retry push after push recovery.
    */
   prePushRetryAttempted?: boolean;
+  /**
+   * The pull request body was over GitHub's limit (Issue #4359). Set on the
+   * first observation; the summarise turn reads the prompt, then clears it
+   * before the agent runs, so the re-run cannot ask a second time.
+   */
+  prBodyLengthBlock?: PrBodyLengthBlock;
+  /**
+   * The one summarise turn for an over-long pull request body (Issue #4359)
+   * has already been tried. A body that is still over the limit is shortened
+   * mechanically and the pull request is still raised.
+   */
+  prBodyLengthRetryAttempted?: boolean;
   /**
    * The trusted discovery label the merged-PR pre-check found added *after*
    * the linked PR merged (Issue #1862), when there was one.

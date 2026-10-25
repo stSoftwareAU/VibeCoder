@@ -141,6 +141,7 @@ import {
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { rerunFailedJobsOfCheck } from "./ci_infrastructure_rerun.ts";
+import { parseCheckSuiteId } from "./github_actions_log_fetcher.ts";
 import {
   abandonAndRestart,
   type AbandonRestartDeps,
@@ -845,7 +846,11 @@ async function _processCiFailureLocked(
 
   // Check retry count before proceeding
   const currentRetries = await getCiCheckRetryCount(stateDir, repo, checkRunId);
-  if (currentRetries >= maxCiRetries) {
+  // Startup suites have no replacement job id after a rerun. Let them reach
+  // the fleet-wide marker cap below, even when their local job budget is spent.
+  if (
+    currentRetries >= maxCiRetries && parseCheckSuiteId(checkRunId) === null
+  ) {
     logger.warn("CI check has exceeded max retries", {
       repo,
       prNumber,

@@ -537,6 +537,7 @@ import {
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
   heavyBuildAdmission,
+  hostDiskLaunchStopReason,
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "./heavy_build_gate.ts";
@@ -2037,8 +2038,11 @@ export async function createProductionRunCoreDeps(
 
   // Issue #3178: maintenance that runs a repository build or test reads the
   // same monitor the claim gate does, so below the floor it waits too.
+  // `force` skips the 60 s cache so a build sees the launcher's latest
+  // file rather than a reading the worker adopted a minute ago (Issue #4360).
+  // The file itself is still as fresh as the launcher's refresh interval.
   registerHeavyBuildDiskProbe(async () => {
-    const status = await hostDisk.check();
+    const status = await hostDisk.check({ force: true });
     if (status.level === "low") hostDiskLowSeen = true;
     return {
       status,
@@ -2047,6 +2051,13 @@ export async function createProductionRunCoreDeps(
         : hostDisk.floorBytesFor(status.totalBytes),
       trimRefused: hostDisk.workVolumeTrimRefused,
     };
+  });
+  // Built once so a non-fault probe warning is reported once per directory,
+  // not once per cycle (Issue #3179).
+  const checkRootFs = createRootFilesystemCheck({
+    workDir,
+    ...(env("TMPDIR") ? { tmpDir: env("TMPDIR") } : {}),
+    warn: (message) => logger.warn(message),
   });
 
   const deps: RunCoreDeps = {
@@ -5677,11 +5688,25 @@ export async function createProductionRunCoreDeps(
     // The container's scratch and state volumes, probed at the top of every
     // cycle; a read-only or I/O-faulted one ends the run for a fresh
     // container rather than failing the health check until the launch cap.
-    checkRootFilesystem: createRootFilesystemCheck({
-      workDir,
-      ...(env("TMPDIR") ? { tmpDir: env("TMPDIR") } : {}),
-      warn: (message) => logger.warn(message),
-    }),
+    checkRootFilesystem: async () => {
+      const root = await checkRootFs();
+      if (root) return root;
+      // Below the floor with the trim refused, nothing inside this container
+      // returns the bytes a build wrote. Ending the launch discards the
+      // ephemeral layer; the next launch recreates the volume if the host is
+      // still short (Issue #4360). The same status as a read-only root, so
+      // the launcher relaunches promptly, and the log names the floor.
+      const status = await hostDisk.check({ force: true });
+      const stop = hostDiskLaunchStopReason({
+        status,
+        floorBytes: status.totalBytes === undefined
+          ? undefined
+          : hostDisk.floorBytesFor(status.totalBytes),
+        trimRefused: hostDisk.workVolumeTrimRefused,
+      });
+      if (!stop) return null;
+      return { path: "host disk", detail: stop };
+    },
 
     // -- Misc --
     touchPidFile: () => Promise.resolve(),

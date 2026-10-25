@@ -766,3 +766,38 @@ Deno.test("processCiFailure - a provider refusal spends no attempt and never esc
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("processCiFailure - exhausted startup suites still reach the fleet-wide abandon bound (Issue #4347)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const stateDir = `${tmpDir}/.ci_check_state`;
+  try {
+    await Deno.mkdir(stateDir);
+    await Deno.writeTextFile(`${stateDir}/org_repo_suite-77.retries`, "3");
+    const annotations: CheckAnnotation[] = [{
+      path: ".github/workflows/actionlint.yml",
+      start_line: 1,
+      message: "GitHub Actions rejected this workflow before any job started.",
+    }];
+    const signature = signatureFor(annotations, tmpDir);
+    const comments = [1, 2, 3].map((attempt) =>
+      markerComment({
+        id: attempt,
+        author: FLEET_LOGIN,
+        signature,
+        attempt,
+        outcome: "pushed",
+        diagnosis: "same compile failure",
+      })
+    );
+    const harness = makeHarness(stateDir, tmpDir, comments);
+    const result = await processCiFailure(
+      makeInput(annotations, "suite-77"),
+      harness.processorDeps,
+    );
+    assert(result.ok);
+    assertEquals(harness.claudeRuns, 0);
+    assertEquals(harness.abandons.length, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

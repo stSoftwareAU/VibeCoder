@@ -34,7 +34,10 @@ reviewing as a GitHub App, and persistent failure escalation.
    checks, merge conflicts and drafts belong to the fleet, so leave them
    alone and post nothing. A PR whose only red checks are cancelled runs is
    infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
-   once per head, and it is left alone exactly like `ci-failed`. **One
+   once per head, and it is left alone exactly like `ci-failed`. A completed
+   GitHub Actions check suite that failed counts as `ci-failed` too, even with
+   no check run: a workflow that fails at startup (`startup_failure`) creates
+   one, and the rollup does not show it (Issue #4347). **One
    exception:** a red dependency-audit check (`audit` in its name) that
    CI-fix has already replied to at the current head, with a fleet
    `vibe-ci-fix-attempt` marker for that check, is sent back once with a
@@ -198,7 +201,8 @@ ones behind it.
    `already-reviewed` at their head commit, so the gate does not report them
    again; one whose review failed, or that was `over-limit`, or whose
    checklist file could not be fetched (`checklist-unreadable`, a gh error
-   other than not-found, retried rather than reviewed), is reported after the
+   other than not-found, retried rather than reviewed), or whose capability
+   security guidance could not be read (`capability-unreadable`), is reported after the
    next interval rather than straight away.
 
 If the gate exits non-zero it could not reach GitHub for an hour; report its
@@ -250,7 +254,10 @@ fields as follows:
   PR's changed files, Issue #3594; the PR's own copy governs only when the PR
   edits the file and either copy is broken); the empty string when it is empty. The
   reviewer's reply then carries a `checklist` array with a verdict per item,
-  and any `missing` item sends the PR back. Pass the entry to `post.ts`
+  and any `missing` item sends the PR back. When the change uses a
+  capability from the trusted VibeCoder guidance, that value also lists
+  those checks. They are the same checks the pre-PR verifier renders.
+  A pull request cannot replace them with a weaker copy. Pass the entry to `post.ts`
   verbatim: its `checklistState` (the load problem and the items owed a
   verdict) lets `post.ts` add a blocking finding itself for a file that could
   not be applied or an item the reply left without a verdict, and `post.ts`

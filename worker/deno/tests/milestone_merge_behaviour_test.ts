@@ -118,6 +118,7 @@ function fakeGitHub(
                   nodes: [{
                     commit: {
                       oid: HEAD_SHA,
+                      checkSuites: { nodes: [] },
                       statusCheckRollup: {
                         state: ciState,
                         contexts: {

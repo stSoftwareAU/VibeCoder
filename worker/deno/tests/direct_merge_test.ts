@@ -12,8 +12,10 @@ import { assertEquals } from "@std/assert";
 import {
   checkCiStatus,
   type CheckRunsResponse,
+  type CheckSuite,
   type CiStatusResult,
   type CombinedStatusResponse,
+  determineCiStatus,
   directMergePr,
   enforcePreMergeRequirements,
   MIN_HEAD_AGE_SECONDS,
@@ -21,6 +23,11 @@ import {
   type PreMergeGateOutcome,
   prTargetsDefaultBranch,
 } from "../lib/direct_merge.ts";
+import {
+  type FakeCheckContext,
+  type FakeCheckSuite,
+  fakeGithubGraphQL,
+} from "./support/github_graphql_fake.ts";
 import type { Result } from "../types.ts";
 import type { PRBranchStateBatchResult } from "../lib/pr_branch_state.ts";
 import { mergeIfChecksPassedCommand } from "../commands/merge_if_checks_passed.ts";
@@ -36,10 +43,11 @@ const PR_VIEW_RESPONSE = JSON.stringify({ headRefOid: FAKE_SHA });
 
 /**
  * Create a mock gh command function that returns appropriate responses
- * for the three API calls made by checkCiStatus:
+ * for the four API calls made by checkCiStatus:
  * 1. pr view → headRefOid
  * 2. check-runs API → check runs response
  * 3. status API → combined status response
+ * 4. check-suites API → no suites (Issue #4347)
  */
 function createCiStatusMock(
   checkRuns: CheckRunsResponse,
@@ -55,6 +63,9 @@ function createCiStatusMock(
     }
     if (joined.includes("/status")) {
       return JSON.stringify(combinedStatus);
+    }
+    if (joined.includes("check-suites")) {
+      return JSON.stringify({ check_suites: [] });
     }
     throw new Error(`Unexpected gh command: ${joined}`);
   };
@@ -339,6 +350,7 @@ Deno.test("direct_merge - checkCiStatus uses single GraphQL call when statusChec
                 nodes: [
                   {
                     commit: {
+                      checkSuites: { nodes: [] },
                       statusCheckRollup: {
                         state: "SUCCESS",
                         contexts: {
@@ -400,6 +412,7 @@ function createRollupStateMock(
               commits: {
                 nodes: [{
                   commit: {
+                    checkSuites: { nodes: [] },
                     statusCheckRollup: {
                       state,
                       contexts: {
@@ -488,6 +501,10 @@ Deno.test("direct_merge - checkCiStatus falls back to REST pair when GraphQL fai
         JSON.stringify({ state: "success", statuses: [] }),
       );
     }
+    if (joined.includes("check-suites")) {
+      restCalls++;
+      return Promise.resolve(JSON.stringify({ check_suites: [] }));
+    }
     return Promise.reject(new Error(`Unexpected: ${joined}`));
   };
 
@@ -496,9 +513,343 @@ Deno.test("direct_merge - checkCiStatus falls back to REST pair when GraphQL fai
   if (result.ok) {
     assertEquals(result.value.status, "passed");
   }
-  // GraphQL attempted once, then fall back to three REST calls
+  // GraphQL attempted once, then fall back to four REST calls
   assertEquals(graphqlCalls, 1);
-  assertEquals(restCalls, 3);
+  assertEquals(restCalls, 4);
+});
+
+// =============================================================================
+// checkCiStatus — GitHub Actions check suites (Issue #4347)
+//
+// A workflow that fails at startup is recorded as a completed `github-actions`
+// check suite with conclusion `startup_failure`, and may create no check run at
+// all, so a green check-run rollup does not show it. The verdict must read the
+// suite. Suites from other apps, and suites not yet finished, change nothing.
+// =============================================================================
+
+const GREEN_CHECK_RUN: FakeCheckContext = {
+  kind: "checkRun",
+  databaseId: 11,
+  name: "build",
+  status: "COMPLETED",
+  conclusion: "SUCCESS",
+};
+
+/**
+ * The verdict for PR 42 read through the GraphQL rollup, whose head carries
+ * `checkSuites` and `contexts`, rolled up as `rollupState`.
+ */
+async function graphqlVerdict(
+  checkSuites: FakeCheckSuite[],
+  contexts: FakeCheckContext[] = [GREEN_CHECK_RUN],
+  rollupState = "SUCCESS",
+): Promise<string> {
+  const { gh } = fakeGithubGraphQL({
+    owner: "owner",
+    name: "repo",
+    pullRequests: {
+      42: { headOid: FAKE_SHA, rollupState, contexts, checkSuites },
+    },
+  });
+  const result = await checkCiStatus("owner/repo", 42, gh);
+  assertEquals(result.ok, true);
+  return result.ok ? result.value.status : "error";
+}
+
+Deno.test("direct_merge - checkCiStatus fails a github-actions startup_failure suite beside a green check run (Issue #4347)", async () => {
+  const status = await graphqlVerdict([
+    {
+      appSlug: "github-actions",
+      status: "COMPLETED",
+      conclusion: "STARTUP_FAILURE",
+    },
+  ]);
+  assertEquals(status, "failed");
+});
+
+Deno.test("direct_merge - checkCiStatus ignores a failed or cancelled suite that a later run of the same workflow replaced (Issue #4347)", async () => {
+  for (const conclusion of ["FAILURE", "CANCELLED"]) {
+    const status = await graphqlVerdict([
+      {
+        appSlug: "github-actions",
+        status: "COMPLETED",
+        conclusion,
+        checkRunCount: 2,
+      },
+      {
+        appSlug: "github-actions",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        checkRunCount: 1,
+      },
+    ]);
+    assertEquals(status, "passed", conclusion);
+  }
+});
+
+Deno.test("direct_merge - checkCiStatus ignores a queued suite from another app (Issue #4347)", async () => {
+  const status = await graphqlVerdict([
+    { appSlug: "review-bot", status: "QUEUED", conclusion: null },
+  ]);
+  assertEquals(status, "passed");
+});
+
+Deno.test("direct_merge - checkCiStatus ignores a failed suite from another app (Issue #4347)", async () => {
+  const status = await graphqlVerdict([
+    { appSlug: "review-bot", status: "COMPLETED", conclusion: "FAILURE" },
+  ]);
+  assertEquals(status, "passed");
+});
+
+for (const conclusion of ["SUCCESS", "SKIPPED", "NEUTRAL"]) {
+  Deno.test(`direct_merge - checkCiStatus passes a completed github-actions suite with conclusion "${conclusion}" (Issue #4347)`, async () => {
+    const status = await graphqlVerdict([
+      { appSlug: "github-actions", status: "COMPLETED", conclusion },
+    ]);
+    assertEquals(status, "passed");
+  });
+}
+
+for (const status of ["IN_PROGRESS", "QUEUED"]) {
+  Deno.test(`direct_merge - checkCiStatus leaves an unfinished github-actions suite (${status}) unchanged (Issue #4347)`, async () => {
+    const verdict = await graphqlVerdict([
+      { appSlug: "github-actions", status, conclusion: null },
+    ]);
+    assertEquals(verdict, "passed");
+  });
+}
+
+Deno.test("direct_merge - checkCiStatus fails a github-actions startup_failure suite with no check runs or statuses (Issue #4347)", async () => {
+  // Not "no_checks": the failed suite is the verdict even with nothing else.
+  const status = await graphqlVerdict(
+    [{
+      appSlug: "github-actions",
+      status: "COMPLETED",
+      conclusion: "STARTUP_FAILURE",
+    }],
+    [],
+  );
+  assertEquals(status, "failed");
+});
+
+Deno.test("direct_merge - checkCiStatus fails a github-actions ACTION_REQUIRED suite (Issue #4347)", async () => {
+  const status = await graphqlVerdict([
+    {
+      appSlug: "github-actions",
+      status: "COMPLETED",
+      conclusion: "ACTION_REQUIRED",
+    },
+  ]);
+  assertEquals(status, "failed");
+});
+
+/**
+ * A gh runner that refuses GraphQL, so checkCiStatus takes the REST fallback.
+ * Its check-runs and status reads are green; the check-suites read answers
+ * `checkSuitesReply`, or throws it when that is an Error.
+ */
+function restFallbackMock(
+  checkSuitesReply: string | Error,
+): (args: string[]) => Promise<string> {
+  return (args: string[]) => {
+    const joined = args.join(" ");
+    if (args[0] === "api" && args[1] === "graphql") {
+      return Promise.reject(new Error("GraphQL error"));
+    }
+    if (joined.includes("pr view")) {
+      return Promise.resolve(PR_VIEW_RESPONSE);
+    }
+    if (joined.includes("check-suites")) {
+      return checkSuitesReply instanceof Error
+        ? Promise.reject(checkSuitesReply)
+        : Promise.resolve(checkSuitesReply);
+    }
+    if (joined.includes("check-runs")) {
+      return Promise.resolve(JSON.stringify({
+        total_count: 1,
+        check_runs: [
+          { id: 1, name: "build", status: "completed", conclusion: "success" },
+        ],
+      }));
+    }
+    if (joined.includes("/status")) {
+      return Promise.resolve(
+        JSON.stringify({ state: "success", statuses: [] }),
+      );
+    }
+    return Promise.reject(new Error(`Unexpected: ${joined}`));
+  };
+}
+
+Deno.test("direct_merge - checkCiStatus REST fallback fails a github-actions startup_failure suite (Issue #4347)", async () => {
+  const seen: string[] = [];
+  const mock = restFallbackMock(JSON.stringify({
+    check_suites: [
+      {
+        app_slug: "github-actions",
+        status: "completed",
+        conclusion: "startup_failure",
+        check_run_count: 0,
+      },
+    ],
+  }));
+  const result = await checkCiStatus("owner/repo", 42, (args: string[]) => {
+    seen.push(args.join(" "));
+    return mock(args);
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.status, "failed");
+  }
+  assertEquals(
+    seen.some((call) =>
+      call.includes(
+        `repos/owner/repo/commits/${FAKE_SHA}/check-suites?per_page=100`,
+      )
+    ),
+    true,
+  );
+});
+
+Deno.test("direct_merge - checkCiStatus REST fallback errors when the check-suites read fails (Issue #4347)", async () => {
+  const result = await checkCiStatus(
+    "owner/repo",
+    42,
+    restFallbackMock(new Error("HTTP 500")),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      "Failed to fetch check suites for PR #42: HTTP 500",
+    );
+  }
+});
+
+Deno.test("direct_merge - checkCiStatus REST fallback reports a non-Error check-suites failure by its text (Issue #4347)", async () => {
+  const mock = restFallbackMock(new Error("unused"));
+  const result = await checkCiStatus(
+    "owner/repo",
+    42,
+    (args: string[]) =>
+      args.join(" ").includes("check-suites")
+        ? Promise.reject("rate limited")
+        : mock(args),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      "Failed to fetch check suites for PR #42: rate limited",
+    );
+  }
+});
+
+Deno.test("direct_merge - checkCiStatus REST fallback asks gh for exactly the app slug, status and conclusion of each suite (Issue #4347)", async () => {
+  const suiteCalls: string[][] = [];
+  const mock = restFallbackMock(JSON.stringify({ check_suites: [] }));
+  await checkCiStatus("owner/repo", 42, (args: string[]) => {
+    if (args.join(" ").includes("check-suites")) suiteCalls.push(args);
+    return mock(args);
+  });
+  assertEquals(suiteCalls, [[
+    "api",
+    `repos/owner/repo/commits/${FAKE_SHA}/check-suites?per_page=100`,
+    "--jq",
+    "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion, check_run_count: (.latest_check_runs_count // -1)}]}",
+  ]]);
+});
+
+Deno.test("direct_merge - checkCiStatus REST fallback errors on a check-suites reply with no array (Issue #4347)", async () => {
+  const result = await checkCiStatus(
+    "owner/repo",
+    42,
+    restFallbackMock(JSON.stringify({})),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      "Failed to parse check suites for PR #42",
+    );
+  }
+});
+
+// determineCiStatus — each operand of the suite rule, flipped in turn (Issue
+// #4347). The base fixture is a green check run plus a failed github-actions
+// suite; with any one operand flipped, the verdict must be "passed".
+
+const GREEN_RUN_RESPONSE: CheckRunsResponse = {
+  total_count: 1,
+  check_runs: [
+    { id: 1, name: "build", status: "completed", conclusion: "success" },
+  ],
+};
+const CLEAN_STATUS: CombinedStatusResponse = { state: "success", statuses: [] };
+const FAILED_ACTIONS_SUITE: CheckSuite = {
+  app_slug: "github-actions",
+  status: "completed",
+  conclusion: "startup_failure",
+  check_run_count: 0,
+};
+
+function withSuite(suite: CheckSuite): CheckRunsResponse {
+  return { ...GREEN_RUN_RESPONSE, check_suites: [suite] };
+}
+
+Deno.test("direct_merge - determineCiStatus fails a completed failed github-actions suite (Issue #4347)", () => {
+  assertEquals(
+    determineCiStatus(withSuite(FAILED_ACTIONS_SUITE), CLEAN_STATUS),
+    "failed",
+  );
+});
+
+Deno.test("direct_merge - determineCiStatus reads no suites when the list is absent (Issue #4347)", () => {
+  assertEquals(determineCiStatus(GREEN_RUN_RESPONSE, CLEAN_STATUS), "passed");
+});
+
+Deno.test("direct_merge - determineCiStatus: a suite from another app (app_slug flipped) stays passed (Issue #4347)", () => {
+  for (const app_slug of ["review-bot", null]) {
+    assertEquals(
+      determineCiStatus(
+        withSuite({ ...FAILED_ACTIONS_SUITE, app_slug }),
+        CLEAN_STATUS,
+      ),
+      "passed",
+    );
+  }
+});
+
+Deno.test("direct_merge - determineCiStatus: an unfinished suite status flipped stays passed (Issue #4347)", () => {
+  assertEquals(
+    determineCiStatus(
+      withSuite({ ...FAILED_ACTIONS_SUITE, status: "in_progress" }),
+      CLEAN_STATUS,
+    ),
+    "passed",
+  );
+});
+
+Deno.test("direct_merge - determineCiStatus: a suite with no conclusion flipped stays passed (Issue #4347)", () => {
+  assertEquals(
+    determineCiStatus(
+      withSuite({ ...FAILED_ACTIONS_SUITE, conclusion: null }),
+      CLEAN_STATUS,
+    ),
+    "passed",
+  );
+});
+
+Deno.test("direct_merge - determineCiStatus: an allowlisted suite conclusion stays passed (Issue #4347)", () => {
+  for (const conclusion of ["success", "skipped", "neutral"]) {
+    assertEquals(
+      determineCiStatus(
+        withSuite({ ...FAILED_ACTIONS_SUITE, conclusion }),
+        CLEAN_STATUS,
+      ),
+      "passed",
+    );
+  }
 });
 
 // =============================================================================
@@ -527,13 +878,14 @@ function fallbackPage(
 }
 
 /**
- * GraphQL fails, then the REST pair runs. The check-runs stub answers with
+ * GraphQL fails, then the REST fallback runs. The check-runs stub answers with
  * `paginated` only when the call asks for every page; otherwise it answers
  * with the first page alone, which is what unpaginated `gh api` returns.
  */
 function fallbackGh(
   firstPage: string,
   paginated: string,
+  checkSuites = '{"check_suites":[]}',
 ): (args: string[]) => Promise<string> {
   return (args: string[]) => {
     const joined = args.join(" ");
@@ -547,6 +899,9 @@ function fallbackGh(
       const readsEveryPage = args.includes("--paginate") &&
         args.some((arg) => arg.includes("per_page=100"));
       return Promise.resolve(readsEveryPage ? paginated : firstPage);
+    }
+    if (joined.includes("check-suites")) {
+      return Promise.resolve(checkSuites);
     }
     if (joined.includes("/status")) {
       return Promise.resolve(
@@ -608,6 +963,24 @@ Deno.test("direct_merge - REST fallback passes when every check run across pages
     checkRunArgs.some((arg) => arg.includes("per_page=100")),
     true,
   );
+});
+
+Deno.test("direct_merge - green paginated runs cannot hide a startup-failed suite (Issues #4347, #4370)", async () => {
+  const firstPage = fallbackPage(2, [fallbackRun(1, "success")]);
+  const bothPages = `${firstPage}\n${
+    fallbackPage(2, [fallbackRun(2, "success")])
+  }\n`;
+  const result = await checkCiStatus(
+    "owner/repo",
+    42,
+    fallbackGh(
+      firstPage,
+      bothPages,
+      JSON.stringify({ check_suites: [FAILED_ACTIONS_SUITE] }),
+    ),
+  );
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.status, "failed");
 });
 
 Deno.test("direct_merge - REST fallback fails closed when a check-run page is short of total_count (Issue #4370)", async () => {

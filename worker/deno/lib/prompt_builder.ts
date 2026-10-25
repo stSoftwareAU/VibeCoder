@@ -30,6 +30,14 @@ import {
 import { formatCodebaseMapSection } from "./codebase_map.ts";
 import { formatGraftContextSection } from "./graft_context.ts";
 import { formatRepoContextSection } from "./repo_context_reader.ts";
+import {
+  type CapabilityContext,
+  capabilityContextFromChange,
+  type CapabilityLoad,
+  formatCapabilityEvidence,
+  loadTrustedCapabilityBundle,
+  renderCapabilityGuidanceForIssue,
+} from "./capability_security_guidance.ts";
 import type { ConflictIssueContext } from "./conflict_issue_context.ts";
 import { formatConflictIssueContextSection } from "./conflict_intent_context.ts";
 import {
@@ -99,6 +107,11 @@ export interface PromptParts {
    * read the repository template the prompts commit already identifies.
    */
   templateSource?: string;
+  /**
+   * One-line record of the capability guidance revision and why it applied
+   * (Issue #4365). Signal ids only — the issue body is not copied.
+   */
+  capabilitySecurityRecord?: string;
 }
 
 // Conditional stripping lives in screenshot_strip.ts (Issue #3812); re-exported
@@ -741,6 +754,17 @@ export interface IssuePromptOptions {
    * sub-issue description where they conflict.
    */
   parentOwnerDirection?: string;
+  /**
+   * Entry points, imports, callers and sinks already inspected for this
+   * task (Issue #4365). Selection uses these plus the issue text. File
+   * extensions alone do not select guidance.
+   */
+  capabilityInspection?: Partial<CapabilityContext>;
+  /**
+   * Test seam for the guidance bundle. Production reads the trusted file.
+   * A load that is not `loaded` is reported as not applied.
+   */
+  loadCapabilityGuidance?: () => Promise<CapabilityLoad>;
 }
 
 /**
@@ -782,6 +806,8 @@ export async function buildIssuePrompt(
     issueExecutorSplit = false,
     fleetRunArchive,
     parentOwnerDirection,
+    capabilityInspection,
+    loadCapabilityGuidance,
   } = options;
 
   // Load the issue template. An operator's custom prompt replaces the built-in
@@ -815,6 +841,22 @@ export async function buildIssuePrompt(
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
+  const guidanceLoad = await (loadCapabilityGuidance ??
+    loadTrustedCapabilityBundle)();
+  const guidance = renderCapabilityGuidanceForIssue(
+    guidanceLoad,
+    capabilityContextFromChange({
+      title: issueTitle,
+      body: issueBody,
+      labels: issueLabels,
+      paths: capabilityInspection?.entryPoints,
+      imports: capabilityInspection?.imports,
+      callers: capabilityInspection?.callers,
+      sinks: capabilityInspection?.sinks,
+    }),
+  );
+  const capabilitySecurityRecord = formatCapabilityEvidence(guidance.evidence);
+
   // Issue template substitution. Coding guidelines ride in the system prompt
   // for caching, so v31+ carries no `{{CODING_GUIDELINES}}` placeholder
   // (Issue #3813). Verbosity instructions are injected via the
@@ -832,9 +874,28 @@ export async function buildIssuePrompt(
     EXECUTOR_SPLIT_INSTRUCTIONS: issueExecutorSplit
       ? `\n${ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS}\n`
       : "",
+    CAPABILITY_SECURITY_GUIDANCE: guidance.section === ""
+      ? ""
+      : `\n${guidance.section}\n`,
   });
   if (!issueSubstitution.ok) return issueSubstitution;
   let issueTemplate = issueSubstitution.value;
+
+  // An operator template that omits the placeholder would otherwise drop
+  // applicable guidance without saying so. Append it and warn.
+  if (
+    guidance.section !== "" &&
+    !templateResult.value.content.includes(
+      "{{CAPABILITY_SECURITY_GUIDANCE}}",
+    )
+  ) {
+    console.warn(
+      `[capability-security] the issue template ${templateResult.value.source} ` +
+        `has no {{CAPABILITY_SECURITY_GUIDANCE}} placeholder, so the ` +
+        `selected guidance was appended. Add the placeholder to that template.`,
+    );
+    issueTemplate = `${issueTemplate}\n${guidance.section}\n`;
+  }
 
   // A template with no `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` placeholder — an
   // operator's custom prompt, or a `work-on` override — drops the block, and
@@ -1059,6 +1120,7 @@ ${agentsMdInstruction}
       systemPrompt,
       prompt,
       templateSource: templateResult.value.source,
+      capabilitySecurityRecord,
     },
   };
 }
