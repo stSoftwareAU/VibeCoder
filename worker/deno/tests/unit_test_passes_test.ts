@@ -563,6 +563,27 @@ Deno.test("unit passes - CONTAINER_MARKER_VAR is the canonical stamp name (Issue
   assertEquals(CONTAINER_MARKER_VAR, CONTAINER_IMAGE_STAMP_ENV);
 });
 
+Deno.test("unit passes - the container image stamp is not forwarded to the test child (Issue #4328)", () => {
+  // The suite is written to run as a host run, as CI does. A stamp inherited
+  // from the worker's container made provider-availability checks throw for
+  // providers the test never asked about. The positive control: the builder
+  // did see the stamp, because the parallel pass still gets its DENO_JOBS bound
+  // (decided from the parent environment), so the absence below is the
+  // allowlist's doing and not a builder that never looked.
+  const built = passes({
+    ...HOST_ENV,
+    [CONTAINER_MARKER_VAR]: "claude",
+  });
+  for (const pass of built) {
+    assertEquals(
+      Object.hasOwn(pass.env, "VIBE_IMAGE_AGENT_PROVIDERS"),
+      false,
+      `${pass.label} pass was handed the container image stamp`,
+    );
+  }
+  assertEquals(built[0]!.env.DENO_JOBS, CONTAINER_DENO_JOBS);
+});
+
 Deno.test("unit passes - a JUnit directory gives each pass its own report (Issue #2642)", () => {
   const built = unitTestPasses({
     denoCmd: "/usr/bin/deno",

@@ -763,11 +763,13 @@ negative controls in `tests/untrusted_fence_helper_test.ts`.
 The suite runs both on a developer host and inside the worker container, and
 the container exports its own runtime configuration — `WORK_DIR`,
 `VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` — into
-every `deno test` invocation. A test that saves and restores only *some* of the
-variables its code path reads inherits the rest from the machine running it, so
-it passes on a host and fails in the container (or worse, hides a genuine
-regression). Never hand-roll a per-variable save/restore; use
-`tests/support/env.ts`:
+every `deno test` invocation run inside it. The quality gate's test stage is
+the exception: it builds an allowlisted environment and withholds all three
+(Issues #1281, #4328), so its suite sees a host run. A test that saves and
+restores only *some* of the variables its code path reads inherits the rest
+from the machine running it, so it passes on a host and fails in the container
+(or worse, hides a genuine regression). Never hand-roll a per-variable
+save/restore; use `tests/support/env.ts`:
 
 - `withEnv(values, body)` — snapshot, replace and restore the named variables
   (`undefined` deletes one for the duration).
