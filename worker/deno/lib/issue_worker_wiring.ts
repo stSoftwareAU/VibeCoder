@@ -368,10 +368,9 @@ export interface ClaudeDeps {
   runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
-   * The read-only question the completion phase asks about the PR summary's
-   * claims about named code (Issue #3257) — a seam separate from
-   * `runClaudeWithRetry` so a test can script the verdict without the
-   * question counting as an agent turn in tests that count recovery turns.
+   * Kept so a test can script a model reply without it counting as an agent
+   * turn. The completion phase does not ask this question: the summary claim
+   * check was removed (Issue #4234).
    */
   runSummaryClaimQuestion: typeof runClaudeWithRetry;
   /**
