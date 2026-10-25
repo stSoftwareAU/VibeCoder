@@ -12,7 +12,7 @@
  * audit the moment a scanner changes — this test renders every template
  * and runs `WORKFLOW_FILE_CHECKS` (`worker/deno/lib/workflow_file_checks.ts`)
  * over the rendered YAML. That table is the audit's own file-scoped checks:
- * nine native pre-filers —
+ * ten native pre-filers —
  *
  *   - `scanActionPins`                 — 40-char SHA pins on `uses:`
  *   - `scanWorkflowPermissions`        — least-privilege `permissions:`
@@ -23,6 +23,7 @@
  *   - `scanRunInjection`               — `${{ github.* }}` into the shell
  *   - `scanArtifactUploads`            — whole-workspace artefact uploads
  *   - `scanGitleaksDrift`              — the gitleaks copy has drifted
+ *   - `scanSemgrepTokenDrift`          — `semgrep ci --config` with a token
  *
  * — plus the two workflow-hygiene rules `quality.sh` applies to this
  * repository's own workflows: `scanWorkflowForStrictMode` (multi-line
@@ -145,6 +146,7 @@ const EXPECTED_CHECK_IDS: readonly string[] = [
   "run-injection",
   "artifact-uploads",
   "gitleaks-drift",
+  "semgrep-token-config",
   "strict-mode",
   "version-comment-drift",
 ];
@@ -159,7 +161,7 @@ function describe(
 }
 
 Deno.test(
-  "workflow file checks - the table is exactly the eleven expected checks",
+  "workflow file checks - the table is exactly the twelve expected checks",
   () => {
     const ids = WORKFLOW_FILE_CHECKS.map((check) => check.id);
     assertEquals(

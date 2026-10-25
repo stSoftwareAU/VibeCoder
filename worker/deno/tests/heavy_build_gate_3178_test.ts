@@ -17,6 +17,8 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CARGO_BUILD_SKIPPED_FOR_MERGE,
+  deferralSkipsCargoForMerge,
   enforceEphemeralCargoBudget,
   type EphemeralTargetDir,
   heavyBuildDeferral,
@@ -183,6 +185,36 @@ Deno.test("enforceEphemeralCargoBudget - still over budget after pruning refuses
   assertStringIncludes(verdict.detail, "Issue #3178");
 });
 
+Deno.test("enforceEphemeralCargoBudget - above the floor, with nothing pruned, skips cargo so a merge can land (Issue #4326)", async () => {
+  const root = fakeRoot([]);
+  // 55 GB free sits between the 46 GB floor and the 71 GB floor-plus-headroom.
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath: CHECKOUT,
+    hostFreeBytes: 55 * GB,
+    floorBytes: 46 * GB,
+    headroomBytes: 25 * GB,
+    root: ROOT,
+  }, root.deps);
+  assertEquals(verdict.skipCargoBuild, true);
+  assertEquals(verdict.proceed, false, "a real build is still not started");
+  assertEquals(root.removed, [], "nothing was free to prune");
+  assertEquals(deferralSkipsCargoForMerge(verdict.detail), true);
+  assertStringIncludes(verdict.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
+});
+
+Deno.test("enforceEphemeralCargoBudget - below the floor does not skip cargo (Issue #4326)", async () => {
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath: CHECKOUT,
+    hostFreeBytes: 40 * GB,
+    floorBytes: 46 * GB,
+    headroomBytes: 25 * GB,
+    root: ROOT,
+  }, fakeRoot([]).deps);
+  assertEquals(verdict.skipCargoBuild, false);
+  assertEquals(verdict.proceed, false);
+  assertEquals(deferralSkipsCargoForMerge(verdict.detail), false);
+});
+
 Deno.test("enforceEphemeralCargoBudget - an unreadable root refuses rather than builds blind", async () => {
   const verdict = await enforceEphemeralCargoBudget({
     checkoutPath: CHECKOUT,
@@ -281,6 +313,26 @@ Deno.test("releaseCheckoutTargetDirs - removes every account's dir for that chec
   assertEquals(released.errors, []);
 });
 
+Deno.test("releaseCheckoutTargetDirs - a root that cannot be listed is an error, not 'nothing built'", async () => {
+  const released = await releaseCheckoutTargetDirs(CHECKOUT, {
+    listTargetDirs: () =>
+      Promise.reject(new Error("du timed out after 120000ms")),
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  }, ROOT);
+  assertEquals(released.bytes, 0);
+  assertEquals(released.errors, [`${ROOT}: du timed out after 120000ms`]);
+});
+
+Deno.test("releaseCheckoutTargetDirs - a missing root means nothing was built", async () => {
+  const released = await releaseCheckoutTargetDirs(CHECKOUT, {
+    listTargetDirs: () => Promise.reject(new Deno.errors.NotFound("no root")),
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  }, ROOT);
+  assertEquals(released, { bytes: 0, errors: [] });
+});
+
 // ---------------------------------------------------------------------------
 // Regression: the milestone sync that ran on GRQ-23
 // ---------------------------------------------------------------------------
@@ -343,6 +395,33 @@ Deno.test("syncMilestoneBranches - below the host floor a sync needing verificat
   assert(line !== undefined, `no deferral line in ${logs.join("\n")}`);
   assertStringIncludes(line, "floor 46.0 GB");
   assertStringIncludes(line, "Issue #3178");
+});
+
+Deno.test("syncMilestoneBranches - between the floor and headroom, with nothing to prune, the merge lands this cycle (Issue #4326)", async () => {
+  const root = fakeRoot([]);
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath: CHECKOUT,
+    hostFreeBytes: 55 * GB,
+    floorBytes: 46 * GB,
+    headroomBytes: 25 * GB,
+    root: ROOT,
+  }, root.deps);
+  const synced: string[] = [];
+  const logs: string[] = [];
+  const result = await syncMilestoneBranches(sweepDeps(
+    { heavyBuildGateFn: () => Promise.resolve(verdict.detail) },
+    synced,
+    logs,
+  ));
+  assert(result.ok);
+  assertEquals(synced.length, 1, "the merge lands in this cycle");
+  assertEquals(result.value.failed, 0);
+  assertEquals(result.value.skipped, 0);
+  assertEquals(root.removed, []);
+  assert(
+    logs.some((line) => line.includes("without the ephemeral cargo build")),
+    `no merge-only line in ${logs.join("\n")}`,
+  );
 });
 
 Deno.test("syncMilestoneBranches - a host above its floor syncs as before, then releases the clone's build artefacts", async () => {

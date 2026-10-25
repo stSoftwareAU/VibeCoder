@@ -296,11 +296,12 @@ Deno.test("processCiFailure - a Depends on line with a green base takes the ordi
   const body = captured.comments.at(-1) ?? "";
   // The agent's message is still posted verbatim (Issue #1876) …
   assertStringIncludes(body, "the finding is in the base branch");
-  // … but the failure was not deferred: an attempt is charged and the
-  // `code-fix-required` classification escalates as it always did.
+  // … but the failure was not deferred: an attempt is charged. Issue #4304:
+  // the `code-fix-required` classification is retried, never handed to a
+  // human.
   assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
 
 Deno.test("processCiFailure - a base-branch lookup error takes the ordinary path and is logged loudly (Issue #1880)", async () => {

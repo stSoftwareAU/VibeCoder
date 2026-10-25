@@ -241,9 +241,9 @@ async function defaultCompactionRunner(
     timeoutSeconds: request.timeoutSeconds,
     agentProvider: request.providerId,
     // Named so the run is not one more `phase=unknown` telemetry line
-    // (Issue #2709's complaint). No table routes this phase, so the chain
-    // falls through to the configured base model — a summarising turn has no
-    // use for the issue phase's top tier.
+    // (Issue #2709's complaint). The phase table routes it to the fast tier
+    // (Issue #4174): a summarising turn has no use for the issue phase's
+    // top tier.
     phase: "compaction",
     // phaseCount 1 is what makes the CLI flags `--resume <id>` rather than
     // `--session-id <id>`: this run continues the stream's conversation.

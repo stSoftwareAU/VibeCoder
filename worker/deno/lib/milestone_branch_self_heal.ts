@@ -83,6 +83,7 @@ import type {
 import { fetchAuthoritativeOpenChildren } from "./milestone_open_children.ts";
 import { retargetPrToMilestone } from "./pr_retarget.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
+import { logAt } from "./log_sink.ts";
 
 /**
  * Marker written into the explanatory comment. Its presence on a PR means the
@@ -365,8 +366,10 @@ async function fetchOpenPrs(
     ]);
     return parseOpenPrs(raw);
   } catch (err) {
-    log(
-      `WARNING: could not list open PRs for ${repo} — child PRs cannot be ` +
+    logAt(
+      log,
+      "warn",
+      `could not list open PRs for ${repo} — child PRs cannot be ` +
         `retargeted this cycle: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #3912)`,
@@ -407,8 +410,10 @@ async function alreadyRetargeted(
       log,
     );
   } catch (err) {
-    log(
-      `WARNING: could not read comments on ${repo}#${prNumber} to check the ` +
+    logAt(
+      log,
+      "warn",
+      `could not read comments on ${repo}#${prNumber} to check the ` +
         `milestone retarget marker — leaving the PR alone: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #3912)`,
@@ -518,7 +523,7 @@ async function retargetChildPrs(
       ghCommandFn,
     );
     if (!result.ok) {
-      log(`WARNING: ${result.error.message} (Issue #3912)`);
+      logAt(log, "warn", `${result.error.message} (Issue #3912)`);
       failures++;
       continue;
     }
@@ -536,8 +541,10 @@ async function retargetChildPrs(
         renderRetargetComment(milestoneTitle, milestoneBranch, defaultBranch),
       ]);
     } catch (err) {
-      log(
-        `WARNING: retargeted ${repo}#${pr.number} at '${milestoneBranch}' but ` +
+      logAt(
+        log,
+        "warn",
+        `retargeted ${repo}#${pr.number} at '${milestoneBranch}' but ` +
           `could not post the explanatory comment: ${
             err instanceof Error ? err.message : String(err)
           } (Issue #3912)`,
@@ -606,8 +613,10 @@ export async function selfHealMilestoneBranches(
 
       const defaultBranchResult = await defaultBranchFn(repo);
       if (!defaultBranchResult.ok || !defaultBranchResult.value.trim()) {
-        log(
-          `WARNING: could not determine the default branch for ${repo} — ` +
+        logAt(
+          log,
+          "warn",
+          `could not determine the default branch for ${repo} — ` +
             `skipping milestone branch self-heal (Issue #3912)`,
         );
         failures++;
@@ -635,7 +644,7 @@ export async function selfHealMilestoneBranches(
           { log },
         );
         if (!childrenResult.ok) {
-          log(`WARNING: ${childrenResult.error.message} (Issue #3912)`);
+          logAt(log, "warn", `${childrenResult.error.message} (Issue #3912)`);
           failures++;
           continue;
         }
@@ -675,8 +684,10 @@ export async function selfHealMilestoneBranches(
                 message,
                 milestoneBranch,
               ) ?? "";
-              log(
-                `WARNING: could not recreate milestone branch ` +
+              logAt(
+                log,
+                "warn",
+                `could not recreate milestone branch ` +
                   `'${milestoneBranch}' in ${repo} for open milestone ` +
                   `'${milestone.title}' (${children.openCount} open ` +
                   `children): ${message} — ${remedy} Filing one diagnostic ` +
@@ -697,8 +708,10 @@ export async function selfHealMilestoneBranches(
               failures++;
               continue;
             }
-            log(
-              `WARNING: could not recreate milestone branch ` +
+            logAt(
+              log,
+              "warn",
+              `could not recreate milestone branch ` +
                 `'${milestoneBranch}' in ${repo} for open milestone ` +
                 `'${milestone.title}' (${children.openCount} open children): ` +
                 `${message} (Issue #3912)`,
@@ -736,8 +749,10 @@ export async function selfHealMilestoneBranches(
             );
           }
           for (const error of release.errors) {
-            log(
-              `WARNING: milestone-branch refusal label sweep in ${repo}: ` +
+            logAt(
+              log,
+              "warn",
+              `milestone-branch refusal label sweep in ${repo}: ` +
                 `${error} (Issue #2220)`,
             );
           }
@@ -805,8 +820,10 @@ export async function selfHealMilestoneBranches(
         failures += outcome.failures;
       }
     } catch (err) {
-      log(
-        `WARNING: milestone branch self-heal failed for ${repo}: ${
+      logAt(
+        log,
+        "warn",
+        `milestone branch self-heal failed for ${repo}: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #3912)`,
       );

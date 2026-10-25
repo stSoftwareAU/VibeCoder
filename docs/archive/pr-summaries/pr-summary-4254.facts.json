@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 185,
+        "outcome": "version check: an evidence file with another version is rejected, naming the version, and kept",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "parseHardKillEvidence rejects a wrong version, naming it",
+        "flipWentRed": "dropping the version check (`if (false as boolean && ...)`) turned it red: expected a throw mentioning \"version 2\""
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 213,
+        "outcome": "capturedAt check: an unparseable capturedAt is rejected, naming the field, and the file is kept",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "parseHardKillEvidence names a missing nested field and a bad timestamp",
+        "flipWentRed": "dropping the Date.parse NaN check (`if (false as boolean && ...)`) turned it red: expected a throw mentioning \"capturedAt\""
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 474,
+        "outcome": "no open issue for the signature: exactly one bug issue is filed",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC1: one evidence file files exactly one bug issue with the facts and no secret",
+        "flipWentRed": "never filing (the create branch disabled) turned it red"
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 490,
+        "outcome": "open issue for the signature: a follow-up comment is posted on it and no second issue is filed",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC2: a repeat signature comments on the open issue and never files a second",
+        "flipWentRed": "always running `issue create` turned it red (earlier run)"
+      },
+      {
+        "path": "worker/deno/lib/run_failure_issue.ts",
+        "line": 404,
+        "outcome": "fleet-author selection: a marker written by a non-fleet author does not match, so it cannot absorb the kill",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC2: a stranger's marker does not absorb the kill (fleet-author filter)",
+        "flipWentRed": "plain marker filter (no author check) turned this test and the run_failure_issue_test stranger test red (earlier run)"
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 588,
+        "outcome": "malformed evidence: the file is kept and logged as an error naming the failing field",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC4: a file missing a field is kept and the log names the field",
+        "flipWentRed": "removing the file in the parse catch (`await seams.removeFile(path)`) turned it red; the malformed-file sibling test also went red"
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 606,
+        "outcome": "failed filing: the file is kept, no callback fires, no failure is counted, and a warning names the gh cause",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC4: a failing create keeps the file, fires nothing, and warns with the gh cause",
+        "flipWentRed": "dropping the keep-on-failure branch turned three AC4 tests red (earlier run)"
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 568,
+        "outcome": "missing evidence directory: nothing is reported and nothing is logged",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC4: a missing evidence directory reports nothing and logs nothing",
+        "flipWentRed": "making the warning unconditional (`if (true || !isNotFound(err))`) turned it red: a warning was logged for the missing directory"
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 622,
+        "outcome": "throwing callback: logged as a warning, and the kill is still counted",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC4: a throwing callback is logged as a warning and the kill still counts",
+        "flipWentRed": "rethrowing in the callback catch (`throw err;`) turned it red"
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 642,
+        "outcome": "removal failure: logged as a warning, the file stays, and the kill is still counted",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC4: a removal failure is logged as a warning, the file stays, and the kill still counts",
+        "flipWentRed": "swallowing the removal failure silently (no kept++, no warning) turned it red: kept was 0, expected 1"
+      },
+      {
+        "path": "worker/deno/lib/hard_kill_report.ts",
+        "line": 619,
+        "outcome": "callback only after filing, once, with hard_kill",
+        "test": "worker/deno/tests/hard_kill_report_test.ts",
+        "testName": "AC3: the callback fires once per file, with failureClass hard_kill, and the kill is counted once",
+        "flipWentRed": "callback before filing turned seven tests red (earlier run)"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 6187,
+        "outcome": "once-per-process guard, placed after the cycle's fleet snapshot so the kill is counted in that cycle's summary",
+        "test": "worker/deno/tests/run_core_hard_kill_test.ts",
+        "testName": "run_core hard kills - the first cycle callback counts the kill in its failures (Issue #4254)",
+        "flipWentRed": "moved above the cycleFleetStart snapshot turned it red (failures 0 vs 1); once-flag removed turned it red (earlier run)"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 6189,
+        "outcome": "a throwing reporter hook is logged as a warning and the loop still fires its cycle callback",
+        "test": "worker/deno/tests/run_core_hard_kill_test.ts",
+        "testName": "run_core hard kills - a throwing hook is logged and the loop still fires its cycle callback (Issue #4254)",
+        "flipWentRed": "removing the try/catch around `await deps.reportHardKills()` turned it red: expected a cycle callback, got 0"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5496,
+        "outcome": "production reporter pass-through of runFailureCallback, countFailure and recordFiling",
+        "test": "worker/deno/tests/run_core_production_deps_hard_kill_test.ts",
+        "testName": "reportHardKills - files one issue, runs the failure hook with hard_kill, counts one failure and removes the evidence (Issue #4254)",
+        "flipWentRed": "empty callback turned it red; empty countFailure turned it red; dropped recordFiling turned it red (earlier runs)"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5486,
+        "outcome": "no HOME: no host log directory, so the reporter skips with an info line and does not throw",
+        "test": "worker/deno/tests/run_core_production_deps_hard_kill_test.ts",
+        "testName": "reportHardKills - no HOME skips with an info line and does not throw (Issue #4254)",
+        "flipWentRed": "removing the evidenceDir === null guard return (`if (evidenceDir === null && false)`, argument cast) turned it red: a warning named the null directory and the info line was absent"
+      }
+    ]
+  }
+}

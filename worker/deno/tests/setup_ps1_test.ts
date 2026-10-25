@@ -509,6 +509,51 @@ pwshTest(
   },
 );
 
+// Issue #4164: a native command's stdout joins the returned boolean, and an
+// array of two or more items is always $true, so a failed step that printed
+// anything used to look successful and its output never reached the console.
+pwshTest(
+  "setup.ps1 - a failed setup CLI call that prints output still stops setup (Issue #4164)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const line = "Configured coding-agent providers: claude";
+      const stub = `${tmp}/deno`;
+      await Deno.writeTextFile(
+        stub,
+        `#!/bin/bash\nprintf '%s\\n' '${line}'\nexit 3\n`,
+      );
+      await Deno.chmod(stub, 0o755);
+
+      const run = await runPwsh(
+        `    Invoke-VibeSetupCliOrExit -Arguments @("prerequisites")
+    Write-Output "CONTINUED"`,
+        {
+          HOME: tmp,
+          CONFIG_FILE: `${tmp}/.config.json`,
+          PATH: `${tmp}:/usr/bin:/bin`,
+        },
+      );
+      assert(
+        run.code !== 0,
+        `a printed failure must stop setup; output:\n${run.output}`,
+      );
+      assertStringIncludes(run.output, line);
+      assertStringIncludes(
+        run.output,
+        "setup step 'prerequisites' failed - stopping",
+      );
+      assertEquals(
+        run.output.includes("CONTINUED"),
+        false,
+        `setup continued after a failed step; output:\n${run.output}`,
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
 // ── Dot-sourcing must not run setup ─────────────────────────────────────
 
 pwshTest("setup.ps1 - dot-sourcing runs no setup step", async () => {

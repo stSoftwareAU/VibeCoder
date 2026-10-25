@@ -60,7 +60,7 @@ Deno.test("sweep workflow - CodeQL SARIF stays local and both scanner outputs fe
   // The same digest-pinned image semgrep.yml runs.
   assertStringIncludes(
     workflow,
-    "semgrep/semgrep:1.173.0@sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a",
+    "semgrep/semgrep:1.182.1@sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6",
   );
 });
 

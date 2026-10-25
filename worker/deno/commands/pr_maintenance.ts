@@ -13,6 +13,7 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   assertSafeGitRef,
@@ -616,6 +617,12 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
             headRefName,
             ghCommandFn: runGhCommand,
             log: (message: string) => logger.warn(message),
+            // Issue #1082: tells a genuine review from a sibling's approval.
+            fleetAuthors: resolveFleetMaintenanceAuthorSet({
+              githubUser,
+              fleetPrAuthors: config.fleetPrAuthors ?? [],
+              serviceAccounts: config.serviceAccounts ?? [],
+            }),
           });
           return {
             result: autoMergeResult.result,
@@ -626,7 +633,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
           // The pre-merge backstop gate inside directMergePr re-checks CI
           // status and branch freshness (Issue #2582), so the redundant
           // pre-check here is removed. The outcome is returned so the scan
-          // can update a stale branch or escalate a blocked merge rather
+          // can update a stale branch or retry a blocked merge rather
           // than swallowing the failure (Issue #3584).
           const merge = await directMergePr(repo, prNumber, runGhCommand);
           if (!merge.ok) {
@@ -643,7 +650,6 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
           return { kind: merge.value.blocked ?? "checks_pending" };
         },
         needsScreenshotLabel,
-        needsHumanLabel: config.needsHumanLabel || "needs-human",
       });
 
       if (!result.ok) {

@@ -380,13 +380,13 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // Issue #1475: a property of this host's token, not of the issue.
     "workflow-scope-missing": "run-local",
     // The scan already puts these in front of a human on the issue itself.
-    "dependency-cycle-escalated": "escalated-elsewhere",
-    "dead-label-tracker-escalated": "escalated-elsewhere",
+    // Issue #4298: the worker strips the dead label, so the tracker is no
+    // longer a work-on issue at all.
+    "dead-label-tracker-stripped": "upstream",
     "human-pr-blocked-escalated": "escalated-elsewhere",
     // Issue #2473: unclaimable blocking dependency escalated.
-    // Issue #505: a diagnostic nothing can schedule is put in front of a
-    // human on the issue itself.
-    "self-schedule-escalated": "escalated-elsewhere",
+    // Issue #4298: a diagnostic a merged PR names is closed as resolved.
+    "self-schedule-resolved": "upstream",
   };
 
 /** Which idle-task decision point the census was taken at. */

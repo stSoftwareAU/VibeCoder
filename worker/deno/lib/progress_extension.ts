@@ -443,6 +443,12 @@ export interface HandlerExtensionInput {
    * undefined when it has none — a handler wedged outside its agent.
    */
   activity?: { lastToolCallAtMs?: number; lastChunkAtMs?: number };
+  /**
+   * A post-agent landing step still running (Issue #4173): commit, the
+   * pre-commit safety gate or push of the result the agent just produced.
+   * Absent, and with no live agent, the handler is wedged.
+   */
+  landing?: { step: string };
   /** Absolute epoch-ms past which the handler is abandoned regardless. */
   ceilingMs: number;
 }
@@ -454,12 +460,15 @@ export interface HandlerExtensionInput {
  * The handler twin of {@link decideProgressExtension}, on the same policy and
  * the same liveness rule. It asks only about liveness: the handler's agent is
  * the thing it is waiting on, and that agent's own runner already applies the
- * full tree-and-descendant test to its own deadline. Bounded by an absolute
- * ceiling, so a live but endless handler is still abandoned.
+ * full tree-and-descendant test to its own deadline. Once that agent has
+ * exited, a landing step that is still committing, gating or pushing its
+ * result counts as liveness too (Issue #4173). A handler with neither is
+ * wedged. Bounded by an absolute ceiling, so a live but endless handler is
+ * still abandoned.
  *
  * Pure: same inputs, same decision, no side effects.
  *
- * @param input - Clock, the handler's agent activity and the ceiling.
+ * @param input - Clock, the handler's agent activity, landing step and ceiling.
  * @param policy - Enable flag, grant increment and stall window.
  * @returns Extend with the new deadline, or kill — each with a reason.
  */
@@ -470,18 +479,25 @@ export function decideHandlerExtension(
   if (!policy.enabled) {
     return { action: "kill", reason: "progress extension disabled" };
   }
+  let activity: string;
   if (input.activity === undefined) {
-    return { action: "kill", reason: "no live agent run of this handler" };
+    if (input.landing === undefined) {
+      return { action: "kill", reason: "no live agent run of this handler" };
+    }
+    activity = `landing step ${input.landing.step} still running`;
+  } else {
+    const liveness = assessAgentLiveness(
+      { nowMs: input.nowMs, ...input.activity },
+      policy,
+    );
+    if (!liveness.live) return { action: "kill", reason: liveness.reason };
+    activity = `${liveness.activity} (within the ` +
+      `${policy.activityStallSeconds}s window)`;
   }
-  const liveness = assessAgentLiveness(
-    { nowMs: input.nowMs, ...input.activity },
-    policy,
-  );
-  if (!liveness.live) return { action: "kill", reason: liveness.reason };
   if (input.ceilingMs - input.nowMs <= 0) {
     return {
       action: "kill",
-      reason: `absolute ceiling reached despite ${liveness.activity}`,
+      reason: `absolute ceiling reached despite ${activity}`,
     };
   }
   return {
@@ -490,8 +506,7 @@ export function decideHandlerExtension(
       input.nowMs + policy.grantSeconds * 1000,
       input.ceilingMs,
     ),
-    reason: `${liveness.activity} (within the ` +
-      `${policy.activityStallSeconds}s window)`,
+    reason: activity,
   };
 }
 

@@ -171,6 +171,7 @@ import {
 } from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import {
+  handlerLandingStep,
   newAgentRunOwner,
   runAsAgentRunOwner,
   runWithWatchdog,
@@ -197,6 +198,7 @@ import {
   formatRootFilesystemFault,
   type RootFilesystemFault,
 } from "./root_filesystem_fault.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -566,7 +568,7 @@ export function refreshesRepoLive(
 function warnOf(
   deps: { log: (m: string) => void; logWarn?: (m: string) => void },
 ): (message: string) => void {
-  return deps.logWarn ?? ((message) => deps.log(`WARNING: ${message}`));
+  return deps.logWarn ?? ((message) => logAt(deps.log, "warn", `${message}`));
 }
 
 export interface RunCoreDeps {
@@ -585,7 +587,7 @@ export interface RunCoreDeps {
    * A condition that is degraded but continuing, and that someone should
    * act on before it gets worse — the host disk below the floor while the
    * pool drains. Optional so every existing test harness still compiles;
-   * absent, it falls back to `log` with a `WARNING:` prefix. ERROR is kept
+   * absent, it falls back to `log` at warning level. ERROR is kept
    * for what cannot continue (CODING-STANDARDS.md, "Log Levels Are a
    * Promise About What the Reader Must Do").
    */
@@ -1319,6 +1321,17 @@ export interface RunCoreDeps {
    * Optional: absent — or configured without `callbacks.cycle` — is a no-op.
    */
   runCycleCallback?: (cycle: TerminalScanCycle) => Promise<void>;
+
+  /**
+   * Report the hard-kill evidence files the launcher watchdog left behind
+   * (Issue #4254). Runs once per process, inside the first scan cycle and
+   * after that cycle's fleet snapshot, so a kill it counts lands in that
+   * cycle's `fleetSummary.failures`. Must never throw; a throw is logged and
+   * the loop continues.
+   *
+   * Optional: absent is a no-op.
+   */
+  reportHardKills?: () => Promise<void>;
 
   // Status
   setStatusIdle: () => Promise<void>;
@@ -3345,6 +3358,7 @@ async function executePriorityHandler(
         const decision = decideHandlerExtension({
           nowMs,
           activity: deps.agentRunActivity(owner.id),
+          landing: handlerLandingStep(owner.id),
           ceilingMs,
         }, policy);
         if (decision.action === "kill") {
@@ -3377,9 +3391,14 @@ async function executePriorityHandler(
             // can be diagnosed without piecing the log together.
             const workItem = owner.workItem ? ` on ${owner.workItem}` : "";
             const why = abandonReason ? ` (${abandonReason})` : "";
+            // The deadline that expired is the base plus every extension
+            // already granted (Issue #4173), not the base alone.
+            const expiredSeconds = Math.round(
+              (deps.now() - dispatchNowMs) / 1000,
+            );
             deps.logError(
               `${logPrefix}[watchdog] Priority ${handler.priority} (${handler.name}) ` +
-                `exceeded hard timeout ${Math.round(hardTimeoutMs / 1000)}s` +
+                `exceeded hard timeout ${expiredSeconds}s` +
                 `${workItem}${why} ` +
                 `— abandoning handler and continuing to next priority`,
             );
@@ -5857,6 +5876,8 @@ export async function runCoreLoop(
   let fleetIdleReason: FleetIdleReason = "unknown";
   /** Set once the fleet summary has been emitted, so `finally` is a no-op. */
   let fleetSummaryEmitted = false;
+  /** Set once hard-kill evidence has been reported (Issue #4254). */
+  let hardKillsReported = false;
   /** Wall-clock the current scan cycle opened (Issue #1955). */
   let cycleStartedAtMs = startTime;
   let cycleFleetStart = getFleetTelemetry(startTime);
@@ -6245,6 +6266,26 @@ export async function runCoreLoop(
           tracker.resetScanProgress();
           cycleStartedAtMs = deps.now();
           cycleFleetStart = getFleetTelemetry(cycleStartedAtMs);
+
+          // --- Hard-kill evidence (Issue #4254) ---
+          // Once per process, after the cycle's fleet snapshot so a kill it
+          // counts is in this cycle's `fleetSummary.failures`. Placed above
+          // every early exit in the loop body (root filesystem, trust
+          // refresh, spend ceiling), so none of them can skip it.
+          if (!hardKillsReported && deps.reportHardKills) {
+            hardKillsReported = true;
+            try {
+              await deps.reportHardKills();
+            } catch (hardKillErr) {
+              warnOf(deps)(
+                `Hard-kill reporting faulted: ${
+                  hardKillErr instanceof Error
+                    ? hardKillErr.message
+                    : String(hardKillErr)
+                }. The scan cycle continues.`,
+              );
+            }
+          }
 
           // Touch PID file for proof of life
           await deps.touchPidFile();

@@ -15,7 +15,8 @@
  *   purge-not-applicable, and the two workflow-sync shapes.
  * - bare `vibe-` with a colon payload (5): blocked-deferral,
  *   analysis-only-handoff, references-refresh-id, work-escalation,
- *   worker-issue.
+ *   worker-issue. (analysis-only-handoff was retired with the hand-off it
+ *   guarded, Issue #4298 — nothing posts or reads it any more.)
  *
  * All sixteen are **frozen rather than fixed**, and that is the point of this
  * test. Every one is a guard read back out of comments already posted — a
@@ -64,7 +65,6 @@ const ACCEPTED_DEVIATIONS: ReadonlyMap<string, string> = new Map([
   // `key="value"`. Same reason: read back to tell a first action from a
   // repeat one.
   ["vibe-blocked-deferral:", "repeat-deferral guard"],
-  ["vibe-analysis-only-handoff:", "repeat-handoff guard"],
   ["vibe-references-refresh-id:", "per-refresh dedup"],
   ["vibe-worker-issue-", "per-issue marker prefix"],
 ]);

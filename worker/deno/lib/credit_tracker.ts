@@ -1079,7 +1079,7 @@ export function formatSummary(summary: DailySummary): string {
       : "";
     lines.push("");
     lines.push(
-      `WARNING: ${unknownUsage} invocation(s) reported no parseable token ` +
+      `${unknownUsage} invocation(s) reported no parseable token ` +
         `usage${providerNote} — their tokens and cost are UNKNOWN, not zero, ` +
         `and are NOT counted in the totals above.`,
     );
@@ -1088,7 +1088,7 @@ export function formatSummary(summary: DailySummary): string {
   if (summary.malformedLogLines > 0) {
     lines.push("");
     lines.push(
-      `WARNING: ${summary.malformedLogLines} malformed log line(s) skipped — ` +
+      `${summary.malformedLogLines} malformed log line(s) skipped — ` +
         `their spend is NOT counted in the totals above.`,
     );
   }

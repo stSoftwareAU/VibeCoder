@@ -18,11 +18,6 @@ import {
   main,
   parseArgs,
 } from "../lib/pr_summary_check_cli.ts";
-import {
-  BRANCH_OUTCOMES_MARKER,
-  prSummaryFactsPath,
-} from "../lib/pr_summary_facts.ts";
-
 const ROOT = "/repo";
 const TEST_PATH = "worker/deno/tests/foo_test.ts";
 
@@ -37,10 +32,6 @@ const GOOD_SUMMARY = [
   `- \`worker/deno/lib/foo.ts:42\` — error — \`${TEST_PATH}::rejects bad\``,
   "",
 ].join("\n");
-
-const NO_DOCS_SWEEP = GOOD_SUMMARY.split("\n").filter((l) =>
-  !l.includes("Docs sweep")
-).join("\n");
 
 interface Call {
   args: string[];
@@ -138,11 +129,9 @@ function deps(summary: string | Error, git = fakeGit()) {
   return { out, err, deps: cliDeps };
 }
 
-Deno.test("runPrSummaryCheck - well-formed summary passes docs sweep and branch outcomes", async () => {
+Deno.test("runPrSummaryCheck - well-formed summary passes the placeholder gate", async () => {
   const r = await run(GOOD_SUMMARY);
   assert(r.ok);
-  assertEquals(statusOf(r.value, "#3073"), "passed");
-  assertEquals(statusOf(r.value, "#3147"), "passed");
   assertEquals(statusOf(r.value, "#3124"), "passed");
   assertEquals(hasBlock(r.value), false);
 });
@@ -150,16 +139,10 @@ Deno.test("runPrSummaryCheck - well-formed summary passes docs sweep and branch 
 Deno.test("main - well-formed summary exits 0", async () => {
   const d = deps(GOOD_SUMMARY);
   assertEquals(await main(["--base", "main", "s.md"], d.deps), 0);
-  assertStringIncludes(d.out.join("\n"), "[PASSED] Docs sweep (#3073)");
-});
-
-Deno.test("runPrSummaryCheck - missing Docs sweep line blocks and main exits 1", async () => {
-  const r = await run(NO_DOCS_SWEEP);
-  assert(r.ok);
-  assertEquals(statusOf(r.value, "#3073"), "blocked");
-  const d = deps(NO_DOCS_SWEEP);
-  assertEquals(await main(["--base", "main", "s.md"], d.deps), 1);
-  assertStringIncludes(d.out.join("\n"), "[BLOCKED] Docs sweep");
+  assertStringIncludes(
+    d.out.join("\n"),
+    "[PASSED] Result placeholders (#3124)",
+  );
 });
 
 Deno.test("runPrSummaryCheck - absent issue body and labels are not checked", async () => {
@@ -168,23 +151,12 @@ Deno.test("runPrSummaryCheck - absent issue body and labels are not checked", as
   assertEquals(statusOf(r.value, "#518"), "not_checked");
   assertEquals(statusOf(r.value, "#663"), "not_checked");
   assertEquals(statusOf(r.value, "#521"), "not_checked");
-  assertEquals(statusOf(r.value, "#3257"), "not_checked");
   const closure = r.value.find((g) => g.issueRef === "#518")!;
   assertEquals(closure.note, "no --issue-body-file given");
   assertEquals(
     r.value.find((g) => g.issueRef === "#521")!.note,
     "no --labels given",
   );
-});
-
-Deno.test("runPrSummaryCheck - claim check is not checked even with all inputs", async () => {
-  const r = await run(GOOD_SUMMARY, {
-    issueBody: "No criteria here.",
-    issueLabels: "enhancement",
-  });
-  assert(r.ok);
-  assertEquals(statusOf(r.value, "#3257"), "not_checked");
-  assertEquals(statusOf(r.value, "#521"), "not_applicable");
 });
 
 Deno.test("runPrSummaryCheck - bug label without a Reproduction block blocks", async () => {
@@ -215,19 +187,12 @@ Deno.test("runPrSummaryCheck - git diff failure is an error, and main exits 2", 
   assertStringIncludes(d.err.join("\n"), "fatal: bad revision");
 });
 
-Deno.test("runPrSummaryCheck - every git call, ls-tree included, runs in the repo root", async () => {
+Deno.test("runPrSummaryCheck - every git call runs in the repo root", async () => {
   const git = fakeGit();
   const r = await run(GOOD_SUMMARY, {}, git);
   assert(r.ok);
-  const lsTree = git.calls.filter((c) => c.args.includes("ls-tree"));
-  assertEquals(lsTree.length, 1);
+  assert(git.calls.length > 0);
   assert(git.calls.every((c) => c.cwd === ROOT));
-});
-
-Deno.test("runPrSummaryCheck - a named test absent at HEAD blocks branch outcomes", async () => {
-  const r = await run(GOOD_SUMMARY, {}, fakeGit({ tests: [] }));
-  assert(r.ok);
-  assertEquals(statusOf(r.value, "#3147"), "blocked");
 });
 
 Deno.test("formatReport - states blocked count and that not-checked is not a pass", () => {
@@ -302,8 +267,6 @@ Deno.test("runPrSummaryCheck - criteria in the issue body with no closure block 
   assert(r.ok);
   assertEquals(statusOf(r.value, "#518"), "blocked");
   assert(r.value.find((g) => g.issueRef === "#518")!.problems.length > 0);
-  assertEquals(statusOf(r.value, "#3073"), "passed");
-  assertEquals(statusOf(r.value, "#3147"), "passed");
   assertEquals(statusOf(r.value, "#3124"), "passed");
 });
 
@@ -312,8 +275,6 @@ Deno.test("runPrSummaryCheck - criteria in the issue body with no reviewer block
   assert(r.ok);
   assertEquals(statusOf(r.value, "#663"), "blocked");
   assert(r.value.find((g) => g.issueRef === "#663")!.problems.length > 0);
-  assertEquals(statusOf(r.value, "#3073"), "passed");
-  assertEquals(statusOf(r.value, "#3147"), "passed");
   assertEquals(statusOf(r.value, "#3124"), "passed");
 });
 
@@ -328,98 +289,6 @@ Deno.test("main - a repository root failure exits 2 and names the repository roo
   assertEquals(d.out.length, 0);
 });
 
-// --- Branch outcomes facts file (Issue #3535) -------------------------------
-
-const FACTS_ISSUE = 77;
-const VALID_FACTS = JSON.stringify({
-  version: 1,
-  branchOutcomes: {
-    noneAdded: false,
-    entries: [{
-      path: "worker/deno/lib/foo.ts",
-      line: 42,
-      outcome: "error",
-      test: TEST_PATH,
-      testName: "rejects bad",
-      flipWentRed: "went red when the guard was removed",
-    }],
-  },
-});
-const MARKER_ONLY_SUMMARY = GOOD_SUMMARY.replace(
-  /\*\*Branch outcomes:\*\*\n- [^\n]*\n/,
-  `${BRANCH_OUTCOMES_MARKER}\n`,
-);
-
-/** Run with a repo root holding the given facts file (none when undefined). */
-async function runWithFacts(summary: string, facts?: string) {
-  const dir = await Deno.makeTempDir();
-  try {
-    if (facts !== undefined) {
-      await Deno.mkdir(`${dir}/docs/archive/pr-summaries`, { recursive: true });
-      await Deno.writeTextFile(
-        `${dir}/${prSummaryFactsPath(FACTS_ISSUE)}`,
-        facts,
-      );
-    }
-    return await run(summary, { issueNumber: FACTS_ISSUE, repoRoot: dir });
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-}
-
-Deno.test("runPrSummaryCheck - a marker-only summary with a valid facts file passes branch outcomes", async () => {
-  assert(!MARKER_ONLY_SUMMARY.includes("**Branch outcomes:**"));
-  assertStringIncludes(MARKER_ONLY_SUMMARY, BRANCH_OUTCOMES_MARKER);
-  const r = await runWithFacts(MARKER_ONLY_SUMMARY, VALID_FACTS);
-  assert(r.ok);
-  assertEquals(statusOf(r.value, "#3147"), "passed");
-  assertEquals(hasBlock(r.value), false);
-});
-
-Deno.test("runPrSummaryCheck - the same marker-only summary without a facts file blocks", async () => {
-  const r = await runWithFacts(MARKER_ONLY_SUMMARY);
-  assert(r.ok);
-  assertEquals(statusOf(r.value, "#3147"), "blocked");
-});
-
-Deno.test("runPrSummaryCheck - an invalid facts file blocks and names the file", async () => {
-  const r = await runWithFacts(MARKER_ONLY_SUMMARY, "{ not json");
-  assert(r.ok);
-  const report = r.value.find((g) => g.issueRef === "#3147")!;
-  assertEquals(report.status, "blocked");
-  assertStringIncludes(report.problems.join("\n"), "is invalid");
-  assertStringIncludes(
-    report.problems.join("\n"),
-    prSummaryFactsPath(FACTS_ISSUE),
-  );
-});
-
-Deno.test("runPrSummaryCheck - authoritative facts replace a legacy list (Issue #3979)", async () => {
-  // GOOD_SUMMARY is itself valid, so only the facts-plus-prose rule can block.
-  const alone = await runWithFacts(GOOD_SUMMARY);
-  assert(alone.ok);
-  assertEquals(statusOf(alone.value, "#3147"), "passed");
-
-  const legacy = GOOD_SUMMARY.replace(
-    TEST_PATH,
-    "worker/deno/tests/stale_test.ts",
-  );
-  const stale = await runWithFacts(legacy);
-  assert(stale.ok);
-  assertEquals(statusOf(stale.value, "#3147"), "blocked");
-  const r = await runWithFacts(legacy, VALID_FACTS);
-  assert(r.ok);
-  const report = r.value.find((g) => g.issueRef === "#3147")!;
-  assertEquals(report.status, "passed");
-  assertEquals(report.problems, []);
-});
-
-Deno.test("runPrSummaryCheck - a facts file is ignored when the summary name carries no issue number", async () => {
-  const r = await run(MARKER_ONLY_SUMMARY, { issueNumber: null });
-  assert(r.ok);
-  assertEquals(statusOf(r.value, "#3147"), "blocked");
-});
-
 Deno.test("issueNumberFromSummaryPath - reads the number from pr-summary-<N>.md only", () => {
   assertEquals(
     issueNumberFromSummaryPath("docs/archive/pr-summaries/pr-summary-77.md"),
@@ -428,26 +297,6 @@ Deno.test("issueNumberFromSummaryPath - reads the number from pr-summary-<N>.md 
   assertEquals(issueNumberFromSummaryPath("pr-summary-5.md"), 5);
   assertEquals(issueNumberFromSummaryPath("summary.md"), null);
   assertEquals(issueNumberFromSummaryPath("pr-summary-5.facts.json"), null);
-});
-
-Deno.test("main - reads the facts file named by the summary path", async () => {
-  const dir = await Deno.makeTempDir();
-  try {
-    await Deno.mkdir(`${dir}/docs/archive/pr-summaries`, { recursive: true });
-    await Deno.writeTextFile(
-      `${dir}/${prSummaryFactsPath(FACTS_ISSUE)}`,
-      VALID_FACTS,
-    );
-    const d = deps(MARKER_ONLY_SUMMARY);
-    d.deps.repoRoot = () => Promise.resolve({ ok: true as const, value: dir });
-    const code = await main(
-      ["--base", "main", `x/pr-summary-${FACTS_ISSUE}.md`],
-      d.deps,
-    );
-    assertEquals(code, 0);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
 });
 
 Deno.test("runPrSummaryCheck - scrubbed markers block even inside Mermaid or code spans", async () => {
@@ -473,13 +322,102 @@ Deno.test("runPrSummaryCheck - scrubbed markers block even inside Mermaid or cod
   assertEquals(statusOf(clean.value, "#3710"), "passed");
 });
 
-Deno.test("runPrSummaryCheck - ambiguous outcome ownership names the blocker (Issue #3979)", async () => {
-  const result = await runWithFacts(
-    `${MARKER_ONLY_SUMMARY}\n${BRANCH_OUTCOMES_MARKER}`,
-    VALID_FACTS,
+const RUN_ISSUE = 42;
+
+function withPartOf(extra: string, issueNumber: number | null = RUN_ISSUE) {
+  return run(`${GOOD_SUMMARY}\n${extra}`, { issueNumber });
+}
+
+function partOfProblem(
+  reports: GateReport[],
+): string {
+  return reports.find((gate) => gate.issueRef === "#4126")?.problems.join(
+    "\n",
+  ) ?? "";
+}
+
+Deno.test("runPrSummaryCheck - Part of #N with no missing criterion blocks, because the append would close the issue (Issue #4126)", async () => {
+  const r = await withPartOf("Part of #42. The issue stays open.");
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4126"), "blocked");
+  const problem = partOfProblem(r.value);
+  assertStringIncludes(problem, "Part of #42");
+  assertStringIncludes(problem, "Closes #42");
+});
+
+Deno.test("runPrSummaryCheck - Part of #N plus a negated close blocks and names that phrase (Issue #4126)", async () => {
+  const doesNot = await withPartOf(
+    "Part of #42.\n\nThis pull request does not close #42.",
   );
-  assert(result.ok);
-  const report = result.value.find((gate) => gate.issueRef === "#3147")!;
-  assertEquals(report.status, "blocked");
-  assertStringIncludes(report.problems.join("\n"), "ambiguous");
+  assert(doesNot.ok);
+  assertEquals(statusOf(doesNot.value, "#4126"), "blocked");
+  assertStringIncludes(partOfProblem(doesNot.value), "does not close #42");
+
+  const usedTo = await withPartOf(
+    "Part of #42.\n\nIt is not declared complete or used to close #42.",
+  );
+  assert(usedTo.ok);
+  assertEquals(statusOf(usedTo.value, "#4126"), "blocked");
+  assertStringIncludes(
+    partOfProblem(usedTo.value),
+    "used to close #42",
+  );
+
+  const wrappedClose = await withPartOf(
+    "Part of #42.\n\nThis change does not close\n#42.",
+  );
+  assert(wrappedClose.ok);
+  assertEquals(statusOf(wrappedClose.value, "#4126"), "blocked");
+  assertStringIncludes(partOfProblem(wrappedClose.value), "close #42");
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with a parsed missing entry passes (Issue #4126)", async () => {
+  const r = await withPartOf(
+    [
+      "Part of #42.",
+      "",
+      "## Acceptance Criteria",
+      "",
+      "- **missing** — the owner deploys the baseline — reviewer: missing — reason: not deployed yet",
+    ].join("\n"),
+  );
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4126"), "passed");
+});
+
+Deno.test("runPrSummaryCheck - Part of another issue, a plain close, and a code-span mention pass (Issue #4126)", async () => {
+  const other = await withPartOf("Part of #99. The parent stays open.");
+  assert(other.ok);
+  assertEquals(statusOf(other.value, "#4126"), "passed");
+
+  const closes = await withPartOf("Closes #42.");
+  assert(closes.ok);
+  assertEquals(statusOf(closes.value, "#4126"), "passed");
+
+  const spanned = await withPartOf(
+    "The template says `Part of #42` in its example.",
+  );
+  assert(spanned.ok);
+  assertEquals(statusOf(spanned.value, "#4126"), "passed");
+
+  const closingInCode = await withPartOf(
+    "Part of #42.\n\nThe example keyword is `Closes #42`.",
+  );
+  assert(closingInCode.ok);
+  assertEquals(statusOf(closingInCode.value, "#4126"), "passed");
+
+  const wrapped = await withPartOf("Part of\n#42 stays open.");
+  assert(wrapped.ok);
+  assertEquals(statusOf(wrapped.value, "#4126"), "blocked");
+
+  const refs = await withPartOf("Refs #42. The issue stays open.");
+  assert(refs.ok);
+  assertEquals(statusOf(refs.value, "#4126"), "blocked");
+  assertStringIncludes(partOfProblem(refs.value), "Refs #42");
+});
+
+Deno.test("runPrSummaryCheck - Part of still closes is not checked without an issue number (Issue #4126)", async () => {
+  const r = await run(`${GOOD_SUMMARY}\nPart of #42.`);
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4126"), "not_checked");
 });

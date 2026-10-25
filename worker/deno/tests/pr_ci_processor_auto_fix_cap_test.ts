@@ -33,6 +33,10 @@ import {
   type CiFixAttemptOutcome,
 } from "../lib/ci_fix_attempt_markers.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
+import type {
+  AbandonRestartOutcome,
+  AbandonRestartRequest,
+} from "../lib/conflict_abandon_restart.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -155,6 +159,8 @@ function markerComment(opts: {
 interface Harness {
   captured: CapturedGh;
   claudeRuns: number;
+  /** Every abandon-and-restart the cap requested (Issue #4304). */
+  abandons: AbandonRestartRequest[];
   processorDeps: CiProcessorDeps;
 }
 
@@ -182,7 +188,11 @@ function makeHarness(
   } = {},
 ): Harness {
   const captured: CapturedGh = { comments: [], labelsAdded: [], edits: [] };
-  const harness = { captured, claudeRuns: 0 } as Harness;
+  const harness = {
+    captured,
+    claudeRuns: 0,
+    abandons: [],
+  } as unknown as Harness;
 
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: ((() => {
@@ -307,6 +317,14 @@ function makeHarness(
     workRoot: workDir,
     fleetLogins: [FLEET_LOGIN, SIBLING_LOGIN],
     maxAutoFixAttempts: 3,
+    abandonPr: (request: AbandonRestartRequest) => {
+      harness.abandons.push(request);
+      return Promise.resolve<AbandonRestartOutcome>({
+        outcome: "abandoned",
+        issueNumber: 7,
+        label: { kept: "work-on" },
+      });
+    },
     // Deterministic: no live GitHub Actions log fetch in tests.
     actionsLogFn: () =>
       Promise.resolve({ kind: "not-applicable", reason: "test" } as const),
@@ -339,7 +357,7 @@ async function assertNoAutoFixState(stateDir: string): Promise<void> {
 // Tests
 // ---------------------------------------------------------------------------
 
-Deno.test("processCiFailure - three fleet-authored markers on the PR exhaust the budget with an empty state dir", async () => {
+Deno.test("processCiFailure - three fleet-authored markers exhaust the budget and abandon the PR, never needs-human (Issue #4304)", async () => {
   const tmpDir = await Deno.makeTempDir();
   const stateDir = `${tmpDir}/.ci_check_state`;
   try {
@@ -374,7 +392,7 @@ Deno.test("processCiFailure - three fleet-authored markers on the PR exhaust the
     const harness = makeHarness(stateDir, tmpDir, comments);
 
     const result = await processCiFailure(
-      makeInput(COMPILE_ANNOTATIONS, "1004"),
+      { ...makeInput(COMPILE_ANNOTATIONS, "1004"), baseRef: "main" },
       harness.processorDeps,
     );
 
@@ -382,35 +400,31 @@ Deno.test("processCiFailure - three fleet-authored markers on the PR exhaust the
     if (result.ok) {
       assertEquals(result.value.processed, false);
       assertStringIncludes(result.value.summary, "Auto-fix cap reached");
+      assertStringIncludes(result.value.summary, "abandoned");
     }
     assertEquals(harness.claudeRuns, 0, "no fourth auto-fix attempt started");
     await assertNoAutoFixState(stateDir);
 
-    assertEquals(
-      harness.captured.labelsAdded.filter((l) => l === "needs-human").length,
-      1,
-      `needs-human applied exactly once; got ${
-        harness.captured.labelsAdded.join(",")
-      }`,
-    );
-
-    const capComments = harness.captured.comments.filter((c) =>
-      c.includes("Automatic fix attempts exhausted")
-    );
-    assertEquals(capComments.length, 1, "exactly one consolidated summary");
-    const summary = capComments[0] ?? "";
-    assertStringIncludes(summary, "3 automatic fix attempts");
-    assertStringIncludes(summary, "build");
-    // Every attempt the PR records is described in that single comment.
-    for (
-      const diagnosis of [
-        "missing import of Bar",
-        "wrong package for Bar",
-        "Bar was removed upstream",
-      ]
-    ) {
-      assertStringIncludes(summary, diagnosis);
+    // Issue #4304: never handed to a human — the PR is abandoned and its
+    // issue redone through the stall-repair rung.
+    assertEquals(harness.captured.labelsAdded.includes("needs-human"), false);
+    assertEquals(harness.abandons.length, 1, "exactly one abandon requested");
+    const request = harness.abandons[0]!;
+    assertEquals(request.repo, "org/repo");
+    assertEquals(request.prNumber, 77);
+    assertEquals(request.branchName, "issue-77-fix");
+    assertEquals(request.baseBranch, "main");
+    assertEquals(request.reason?.kind, "stalled");
+    if (request.reason?.kind === "stalled") {
+      assertEquals(request.reason.tried, "ci-fix-cap");
+      assertStringIncludes(request.reason.detail, "build");
+      assertStringIncludes(request.reason.detail, "3 automatic fix attempts");
     }
+    assertEquals(
+      harness.captured.comments.filter((c) => c.includes("needs-human")),
+      [],
+      "no hand-back comment",
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -444,13 +458,14 @@ Deno.test("processCiFailure - markers authored outside the fleet do not spend th
       "a comment anyone can write must not exhaust the cap",
     );
     assertEquals(harness.captured.labelsAdded.includes("needs-human"), false);
+    assertEquals(harness.abandons, [], "an unspent budget abandons nothing");
     await assertNoAutoFixState(stateDir);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-Deno.test("processCiFailure - a no-change marker on this very head runs no agent and posts nothing", async () => {
+Deno.test("processCiFailure - a no-change marker on this very head is retried, not left red (Issue #4304)", async () => {
   const tmpDir = await Deno.makeTempDir();
   const stateDir = `${tmpDir}/.ci_check_state`;
   try {
@@ -474,17 +489,16 @@ Deno.test("processCiFailure - a no-change marker on this very head runs no agent
     );
 
     assertEquals(result.ok, true);
-    if (result.ok) assertEquals(result.value.processed, false);
-    assertEquals(harness.claudeRuns, 0, "nothing has changed — no agent run");
-    assertEquals(harness.captured.comments, [], "and no second comment");
-    assertEquals(harness.captured.edits, [], "nothing to append either");
+    // The worker re-ran the check after that diagnosis and it failed again,
+    // so the next attempt runs — the cap, not a reviewer, bounds the loop.
+    assertEquals(harness.claudeRuns, 1, "the failure is retried");
     await assertNoAutoFixState(stateDir);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-Deno.test("processCiFailure - a head answered by a later marker in the same comment still short-circuits", async () => {
+Deno.test("processCiFailure - a head answered by a later marker in the same comment is still retried (Issue #4304)", async () => {
   const tmpDir = await Deno.makeTempDir();
   const stateDir = `${tmpDir}/.ci_check_state`;
   try {
@@ -517,9 +531,11 @@ Deno.test("processCiFailure - a head answered by a later marker in the same comm
     );
 
     assertEquals(result.ok, true);
-    assertEquals(harness.claudeRuns, 0, "this head is already answered");
-    assertEquals(harness.captured.comments, []);
-    assertEquals(harness.captured.edits, []);
+    assertEquals(
+      harness.claudeRuns,
+      1,
+      "a re-run that failed again is retried",
+    );
     await assertNoAutoFixState(stateDir);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

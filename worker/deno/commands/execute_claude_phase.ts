@@ -187,7 +187,6 @@ export const executeClaudePhaseCommand: Command = {
       contextBudgetWarningPercent: config.contextBudgetWarningPercent,
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,
       contextBudgetBlockPercent: config.contextBudgetBlockPercent,
-      needsHumanLabel: config.needsHumanLabel,
       ...(progressExtension ? { progressExtension } : {}),
     });
 

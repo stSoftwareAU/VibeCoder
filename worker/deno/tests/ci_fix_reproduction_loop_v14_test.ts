@@ -44,8 +44,8 @@ Deno.test("ci_fix - keeps the placeholders and the reply contract", async () => 
       "{{QUALITY_INSTRUCTIONS}}",
       ".pr_response_message",
       "code-fix-required",
-      "out of scope",
-      "follow-up issue",
+      // Issue #4304: the escape hatch is gone; nothing is handed back.
+      "## No Hand-off",
     ]
   ) {
     assertStringIncludes(text, required);

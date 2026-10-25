@@ -196,11 +196,11 @@ Deno.test(
       SUMMARY_WITHOUT_BLOCK,
     );
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "Reproduction status");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.comments.length, 1);
     assertStringIncludes(outcome.comments[0]!, "## Reproduction");
+    assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
   },
 );
 

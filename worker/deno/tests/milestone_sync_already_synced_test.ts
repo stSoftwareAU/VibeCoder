@@ -6,6 +6,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import type { MilestoneConflictAgentFn } from "../lib/milestone_conflict_ladder.ts";
@@ -31,38 +33,38 @@ const PATH = "lib/rival.ts";
 Deno.test("syncMilestoneBranchWithDefault - a sync a sibling landed mid-rung is adopted and nothing is pushed (Issue #2030)", async () => {
   const root = await Deno.makeTempDir({ prefix: "issue-2030-adopt-" });
   try {
-    const origin = `${root}/origin.git`;
-    const seed = `${root}/seed`;
-    await git(["init", "-q", "--bare", origin], root);
-    // A bare origin whose HEAD names `main`, whatever the runner's
-    // `init.defaultBranch` is, so a clone of it checks `main` out.
-    await git(["symbolic-ref", "HEAD", "refs/heads/main"], origin);
-    await git(["init", "-q", "--initial-branch=main", seed], root);
-    await git(["config", "user.email", "t@example.com"], seed);
-    await git(["config", "user.name", "Test"], seed);
-    await Deno.mkdir(`${seed}/lib`, { recursive: true });
-    await Deno.writeTextFile(`${seed}/${PATH}`, "const impl = 'seed';\n");
-    await git(["add", "-A"], seed);
-    await git(["commit", "-q", "-m", "Seed"], seed);
-    await git(["checkout", "-q", "-b", BRANCH], seed);
-    await Deno.writeTextFile(`${seed}/${PATH}`, "const impl = 'branch';\n");
-    await git(["commit", "-qam", "The branch's design"], seed);
-    await git(["checkout", "-q", "main"], seed);
-    await Deno.writeTextFile(`${seed}/${PATH}`, "const impl = 'main';\n");
-    await git(["commit", "-qam", "Main's rival design"], seed);
-    await git(["remote", "add", "origin", origin], seed);
-    await git(["push", "-q", "origin", "main", BRANCH], seed);
-
+    const origin = await seedGitRemote(root, "main", [
+      {
+        branch: "main",
+        subject: "Seed",
+        files: { [PATH]: "const impl = 'seed';\n" },
+      },
+      {
+        branch: BRANCH,
+        parent: 1,
+        subject: "The branch's design",
+        files: { [PATH]: "const impl = 'branch';\n" },
+      },
+      {
+        branch: "main",
+        parent: 1,
+        subject: "Main's rival design",
+        files: { [PATH]: "const impl = 'main';\n" },
+      },
+    ]);
     const clone = async (name: string): Promise<string> => {
       const dir = `${root}/${name}`;
-      await git(["clone", "-q", origin, dir], root);
-      await git(["config", "user.email", `${name}@example.com`], dir);
-      await git(["config", "user.name", name], dir);
-      await git(["checkout", "-q", BRANCH], dir);
+      await cloneGitFixture(origin, dir, {
+        checkout: BRANCH,
+        name,
+        email: `${name}@example.com`,
+      });
       return dir;
     };
-    const hostA = await clone("host-a");
-    const hostB = await clone("host-b");
+    const [hostA, hostB] = await Promise.all([
+      clone("host-a"),
+      clone("host-b"),
+    ]);
 
     // Host B's agent rung: while it "resolves", host A lands the sync.
     let agentRuns = 0;
@@ -73,9 +75,8 @@ Deno.test("syncMilestoneBranchWithDefault - a sync a sibling landed mid-rung is 
         `${hostA}/${PATH}`,
         "const impl = 'both (host A)';\n",
       );
-      await git(["add", "-A"], hostA);
       await git(
-        ["commit", "-q", "-m", "Merge main into milestone (host A)"],
+        ["commit", "-q", "-am", "Merge main into milestone (host A)"],
         hostA,
       );
       await git(["push", "-q", "origin", BRANCH], hostA);

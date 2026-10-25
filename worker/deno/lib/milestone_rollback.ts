@@ -43,6 +43,7 @@ import {
   isStaleInfoPush,
   raiseMilestoneSyncPr,
 } from "./milestone_sync_pr.ts";
+import { logAt } from "./log_sink.ts";
 
 /** A merged child PR the roll-back may undo. */
 export interface RollbackCandidate {
@@ -436,8 +437,10 @@ async function collectCandidates(
   const withFiles: RollbackCandidate[] = [];
   for (const candidate of parsed.value) {
     if (!candidate.sha) {
-      deps.log?.(
-        `WARNING: milestone roll-back skipped child PR #${candidate.prNumber} ` +
+      logAt(
+        deps.log,
+        "warn",
+        `milestone roll-back skipped child PR #${candidate.prNumber} ` +
           `of '${deps.milestoneBranch}': GitHub reports no merge commit for ` +
           `it, so there is nothing to revert (Issue #1771)`,
       );
@@ -698,8 +701,10 @@ export async function executeRollback(
   if (probed.value.clean) {
     const reset = await resetTo(deps, preRollbackSha);
     if (!reset.ok) return reset;
-    deps.log?.(
-      `WARNING: milestone roll-back of '${deps.milestoneBranch}' was asked ` +
+    logAt(
+      deps.log,
+      "warn",
+      `milestone roll-back of '${deps.milestoneBranch}' was asked ` +
         `for a branch that merges '${deps.defaultBranch}' cleanly, so ` +
         `nothing was reverted (Issue #1771)`,
     );
@@ -744,8 +749,10 @@ export async function executeRollback(
       await runGit(deps, ["revert", "--abort"]);
       const reset = await resetTo(deps, preRollbackSha);
       if (!reset.ok) return reset;
-      deps.log?.(
-        `WARNING: milestone roll-back of '${deps.milestoneBranch}' stopped — ` +
+      logAt(
+        deps.log,
+        "warn",
+        `milestone roll-back of '${deps.milestoneBranch}' stopped — ` +
           `the revert of child PR #${candidate.prNumber} conflicted, so the ` +
           `branch was reset to ${preRollbackSha} and nothing was pushed ` +
           `(Issue #1771): ${gitDetail(revert)}`,
@@ -805,8 +812,10 @@ export async function executeRollback(
       if (!verdict.ok) {
         const reset = await resetTo(deps, preRollbackSha);
         if (!reset.ok) return reset;
-        deps.log?.(
-          `WARNING: milestone roll-back of '${deps.milestoneBranch}' merged ` +
+        logAt(
+          deps.log,
+          "warn",
+          `milestone roll-back of '${deps.milestoneBranch}' merged ` +
             `'${deps.defaultBranch}' after reverting ${reverted.length} ` +
             `child PR(s), and the verification refused the result, so the ` +
             `branch was reset to ${preRollbackSha} and nothing was pushed ` +
@@ -847,8 +856,10 @@ export async function executeRollback(
 
   const reset = await resetTo(deps, preRollbackSha);
   if (!reset.ok) return reset;
-  deps.log?.(
-    `WARNING: milestone roll-back of '${deps.milestoneBranch}' reverted ` +
+  logAt(
+    deps.log,
+    "warn",
+    `milestone roll-back of '${deps.milestoneBranch}' reverted ` +
       `${plan.length} child PR(s) and '${deps.defaultBranch}' still does not ` +
       `merge, so the branch was reset to ${preRollbackSha} and nothing was ` +
       `pushed (Issue #1771)`,

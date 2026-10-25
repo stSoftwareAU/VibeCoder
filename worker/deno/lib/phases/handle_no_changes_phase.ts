@@ -2,14 +2,14 @@
  * Phase 3b — Handle No Changes.
  *
  * Invoked when Claude produced no code changes. Closes the issue when the run
- * verified it was already resolved and cited the evidence (Issue #241), posts
- * a partial answer if useful text was produced (question disguised as issue),
- * or reports a detailed failure otherwise. Output that names files to change is
- * a failed implementation, not analysis, so it is retried (Issue #2687) —
- * except when the run is blocked on a dependency this fleet filed during the
- * same run, which hands off unconditionally rather than retrying or deferring
- * on a later run (Issue #3146). Single responsibility: classify the
- * "no changes" outcome and communicate it back to GitHub.
+ * verified it was already resolved and cited the evidence (Issue #241), closes
+ * an issue its author declared analysis-only with the analysis as its
+ * deliverable (Issue #4298), and otherwise retries the approved issue with the
+ * run's output carried forward (Issue #4227). Output that names files to
+ * change is a failed implementation, not analysis, so it is retried (Issue
+ * #2687). Nothing here hands an approved issue to a human. Single
+ * responsibility: classify the "no changes" outcome and communicate it back
+ * to GitHub.
  *
  * Extracted from worker/deno/lib/issue_worker.ts (Issue #1527).
  *
@@ -29,7 +29,6 @@ import {
 } from "../failure_message.ts";
 import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
-import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
 import { retryUnfinishedIssue } from "../unfinished_issue_retry.ts";
 import { hasAnalysisOnlyMarker } from "../analysis_only.ts";
 import { detectDescribedCodeChange } from "../described_code_change.ts";
@@ -37,7 +36,12 @@ import {
   detectAlreadyResolved,
   formatAlreadyResolvedEvidence,
 } from "../already_resolved_outcome.ts";
-import { gateAlreadyResolvedClose } from "../image_conclusion_gate.ts";
+import {
+  gateAlreadyResolvedClose,
+  gatePlanningHandoff,
+} from "../image_conclusion_gate.ts";
+import { hasPlanningRequestMarker } from "../planning_handoff.ts";
+import { closeNegativeResultIssue } from "../negative_result_close.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
 import {
@@ -130,81 +134,131 @@ async function retryDescribedCodeChange(
 }
 
 /**
- * Post the "Partial Answer" comment and hand the issue off to a human
- * (Issue #2849): applies `needs-human` + a paired explanation comment and
- * releases the worker's claim. Shared by the normal textual-output path and
- * the self-filed-dependency short-circuit (Issue #3146) — the latter must
- * hand off on detection regardless of whether the output also happens to
- * describe a code change or is short, rather than falling through to the
- * described-code-change retry or the "no useful output" failure.
+ * Close an issue the worker has finished without a PR (Issues #1364, #4298).
+ *
+ * Shared by the two no-PR deliverables: an issue verified as already resolved,
+ * and an issue its author declared analysis-only, whose posted analysis is the
+ * deliverable. Closes with `comment`, posts the run's single stats comment,
+ * records the run's figures and unassigns. Best-effort: a GitHub error is
+ * logged, never allowed to turn a finished issue into a failure.
  */
-async function postPartialAnswerAndHandOff(
+async function closeAsCompleted(
   ctx: IssueContext,
+  state: PhaseState,
   deps: WorkerDeps,
-  claudeOutput: string,
-): Promise<PhaseResult> {
-  const { repo, issueNumber, githubUser, config } = ctx;
+  comment: string,
+): Promise<void> {
+  const { repo, issueNumber, githubUser } = ctx;
   const logger = deps.logger;
-  logger.info(
-    "Claude produced text output but no code changes, posting partial answer",
-  );
-
-  const ghClient = deps.github.createClient(logger);
   try {
-    const outputSnippet = publishableSnippet(claudeOutput);
-    const questionLabel = config.questionLabel;
-    const labelHint = questionLabel
-      ? `\n\nIf you would like a full answer rather than code changes, a trusted reviewer can add the \`${questionLabel}\` label to this issue. The worker does not add this label itself — operational labels added by the worker are stripped by the security layer (Issue #1475).`
-      : "";
-    const comment =
-      `## Partial Answer\n\nI was unable to make code changes for this issue, but here is what I found:\n\n<details>\n<summary>Claude's output</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>\n\nThis issue looks analysis-only (no PR to raise), so I am handing it back to a human rather than re-running it.${labelHint}`;
-    await ghClient.postComment(repo, issueNumber, comment);
-    // Note: do NOT add the question label here. Operational labels added by
-    // the worker's service account are rejected by the trusted-label
-    // security layer and produce confusing [UNTRUSTED_LABEL_CHANGE] log
-    // lines (Issue #1475). A trusted human can add the label themselves.
+    const ghClient = deps.github.createClient(logger);
+    await ghClient.closeIssue(repo, issueNumber, comment);
+    // Issue #3405: label a haiku-tier run served a stale Haiku, and name
+    // both models in the comment below.
+    const subAgentDegradation = await reportIssueSubAgentDegradation({
+      repo,
+      issueNumber,
+      tier: resolveIssueSubAgentTier(
+        { issueSubAgentTier: ctx.config.issueSubAgentTier },
+        ctx.config.repoConfig?.[repo],
+        (m) => logger.warn(m),
+      ),
+      claudeResults: state.claudeRunStats ?? [],
+      ghCommandFn: deps.github.runGhCommand,
+      logger,
+    });
+    // Issue #3756 — the worker closed the issue itself, so this is its
+    // wrap-up point: post the run's single cost/model stats comment.
+    const posted = await postIssueRunStatsComment({
+      repo,
+      issueNumber,
+      phase: WORK_ON_STATS_PHASE,
+      claudeResults: state.claudeRunStats ?? [],
+      getIssueComments: (r, i) => ghClient.getIssueComments(r, i),
+      postComment: (r, i, b) => ghClient.postComment(r, i, b),
+      logger,
+      // What Graft did for this run (Issue #2105) — absent when the run
+      // never reached the collection.
+      ...(state.graftContext ? { graft: state.graftContext } : {}),
+      // Fleet-authored comments only (Issue #1249, finding 12).
+      authorOptions: {
+        fleetAuthors: resolveFleetMaintenanceAuthorSet({
+          githubUser,
+          fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
+          serviceAccounts: ctx.config.serviceAccounts ?? [],
+        }),
+      },
+      // This run's CodeGraph figures (Issue #2161) — reported here too, so
+      // a no-PR wrap-up is not a hole in the trial's data.
+      ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
+      // …and its RTK status, `off` included (Issue #2385).
+      ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+      ...(subAgentDegradation ? { subAgentDegradation } : {}),
+      // A safety refusal this run recorded and recovered from (Issue #3406).
+      ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),
+    });
+    // Issue #2347: this path wraps up an `issue`-phase run too, so it records
+    // the same figures its comment renders. The run passed no quality gate —
+    // it raised no PR — so it counts towards the runs and not the passes.
+    if (posted.reason !== "already_posted") {
+      // Issue #3403: the tier this run resolved rides the same figures the
+      // comment above renders.
+      const subAgentTier = resolveIssueSubAgentTier(
+        ctx.config,
+        ctx.config.repoConfig?.[repo],
+        (message) => logger.warn(message),
+      );
+      const figures = measureIssuePhaseRun({
+        phase: WORK_ON_STATS_PHASE,
+        claudeResults: state.claudeRunStats ?? [],
+        subAgentTier,
+      });
+      if (figures) recordIssuePhaseRun(figures);
+    }
+    await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
   } catch (err) {
-    logger.warn("Failed to post partial answer", {
+    logger.warn("Failed to close the finished issue", {
+      repo,
+      issueNumber,
       error: err instanceof Error ? err.message : String(err),
     });
   }
-
-  // Clean hand-off: apply `needs-human` + paired comment and release the
-  // claim. Best-effort and non-fatal (Issue #2849).
-  await handOffAnalysisOnly({
-    ghClient,
-    repo,
-    issueNumber,
-    needsHumanLabel: config.needsHumanLabel,
-    githubUser,
-    trigger: "no_changes",
-    logger,
-    deps: { ensureLabelExists: deps.github.ensureLabelExists },
-  });
-
-  return {
-    category: "unknown",
-    status: "early_exit",
-    reason: "analysis_only_handed_off",
-  };
 }
 
 /**
- * The end of a no-change run that is not a deferral (Issue #4227).
+ * The end of a no-change run that is not a deferral (Issues #4227, #4298).
  *
- * An issue its author declared analysis-only (`<!-- analysis-only -->`) gets
- * its analysis posted and handed to a human: that analysis is the
- * deliverable. Any other approved issue is not finished, so it is retried
- * with the run's output carried to the next attempt — never `needs-human`.
+ * An issue its author declared analysis-only (`<!-- analysis-only -->`) is
+ * finished: its analysis is posted and the issue closed as completed — never
+ * handed to a human (Issue #4298). Any other approved issue is not finished,
+ * so it is retried with the run's output carried to the next attempt.
+ *
+ * `closeWithheld` is the image gate's verdict (Issue #1385): when an untrusted
+ * image sat in front of an agent that then reported the issue already fixed,
+ * nothing the agent said may close the issue, so the run is retried.
  */
-async function finishOrHandOff(
+async function finishOrRetry(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
   why: string,
+  closeWithheld: boolean,
 ): Promise<PhaseResult> {
-  if (hasAnalysisOnlyMarker(ctx.issueBody)) {
-    return await postPartialAnswerAndHandOff(ctx, deps, state.claudeOutput);
+  if (hasAnalysisOnlyMarker(ctx.issueBody) && !closeWithheld) {
+    deps.logger.info(
+      "Analysis-only issue produced its analysis — closing it as completed (Issue #4298)",
+      { repo: ctx.repo, issueNumber: ctx.issueNumber },
+    );
+    const comment =
+      `## Analysis\n\nThis issue is analysis-only, so the analysis below is its deliverable and the issue is closed as completed (Issue #4298).\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${
+        publishableSnippet(state.claudeOutput)
+      }\n\`\`\`\n\n</details>`;
+    await closeAsCompleted(ctx, state, deps, comment);
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "analysis_only_completed",
+    };
   }
   return await retryUnfinishedIssue({
     ghClient: deps.github.createClient(deps.logger),
@@ -250,12 +304,33 @@ export async function workOnIssueHandleNoChanges(
   if (declaredOutcome.result) return declaredOutcome.result;
   const { blocked, selfFiledDependency } = declaredOutcome;
 
+  // Issue #4298: a benchmark run with no gain records the results and the
+  // `negative-result` label; the worker closes the issue on that record. The
+  // label is the agent's own word, so the image gate withholds this close as
+  // it does the already-resolved one (Issue #1385).
+  if (
+    !blocked && !gateAlreadyResolvedClose(ctx.untrustedImages).withheld &&
+    await closeNegativeResultIssue({
+      ghClient: deps.github.createClient(logger),
+      repo,
+      issueNumber,
+      githubUser,
+      logger,
+    })
+  ) {
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "negative_result_closed",
+    };
+  }
+
   // Check whether the run verified the issue was already resolved (Issue #519,
   // tightened by Issue #241). Detection is the explicit
   // `vibe-already-resolved` marker first, then a broadened keyword claim — and
   // either way the close needs cited evidence (a commit and/or PR, plus how the
   // fix was verified on the marker path). An unevidenced claim falls through to
-  // the analysis-only hand-off below, so an issue is never closed by inference.
+  // the retry below, so an issue is never closed by inference.
   //
   // Issue #222: blocked-shaped output never reads as "already resolved", even
   // on the repeat-deferral path above — "no changes needed until #560 lands"
@@ -268,30 +343,34 @@ export async function workOnIssueHandleNoChanges(
   // *and* to stay quiet about where that came from, which the agent's own
   // suspicious-image self-check cannot be relied on to catch. The image
   // reference cannot be suppressed the same way: the worker parsed it before
-  // the agent saw anything. So the run falls through to the analysis-only
-  // hand-off — the issue stays open, a human decides, and the analysis is
-  // still posted.
+  // the agent saw anything. So the run falls through to the retry — the issue
+  // stays open, even when it is marked analysis-only (Issue #4298).
   const imageGate = gateAlreadyResolvedClose(ctx.untrustedImages);
   const alreadyResolvedRaw = blocked
     ? ({ status: "none" } as const)
     : detectAlreadyResolved(claudeOutput, { repo, issueNumber });
-  const closeWithheld = imageGate.withheld &&
+  const alreadyResolvedWithheld = imageGate.withheld &&
     alreadyResolvedRaw.status === "resolved";
-  if (closeWithheld) {
+  // Issue #4298: a withheld planning hand-off withholds the analysis-only
+  // close too — both retire the issue on the agent's word alone.
+  const closeWithheld = alreadyResolvedWithheld ||
+    (gatePlanningHandoff(ctx.untrustedImages).withheld &&
+      hasPlanningRequestMarker(claudeOutput));
+  if (alreadyResolvedWithheld) {
     logger.warn(imageGate.auditMessage ?? "", {
       repo,
       issueNumber,
       untrustedImages: imageGate.imageCount,
     });
   }
-  const alreadyResolved = closeWithheld
+  const alreadyResolved = alreadyResolvedWithheld
     ? ({ status: "none" } as const)
     : alreadyResolvedRaw;
 
   if (alreadyResolved.status === "unverified") {
     logger.info(
       "Run reported the issue already fixed but cited no evidence — " +
-        "handing off instead of closing (Issue #241)",
+        "retrying instead of closing (Issue #241)",
       { repo, issueNumber, reason: alreadyResolved.reason },
     );
   }
@@ -310,88 +389,13 @@ export async function workOnIssueHandleNoChanges(
     );
 
     // Post a comment, close the issue, and unassign (Issue #1364)
-    try {
-      const ghClient = deps.github.createClient(logger);
-      const outputSnippet = publishableSnippet(claudeOutput);
-      const closeComment =
-        `## Already Complete\n\nThis issue was verified as already resolved on the default branch, so it is closed with the evidence below rather than handed to a human (Issue #241).\n\n${
-          formatAlreadyResolvedEvidence(evidence)
-        }\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>`;
-      await ghClient.closeIssue(repo, issueNumber, closeComment);
-      // Issue #3405: label a haiku-tier run served a stale Haiku, and name
-      // both models in the comment below.
-      const subAgentDegradation = await reportIssueSubAgentDegradation({
-        repo,
-        issueNumber,
-        tier: resolveIssueSubAgentTier(
-          { issueSubAgentTier: ctx.config.issueSubAgentTier },
-          ctx.config.repoConfig?.[repo],
-          (m) => logger.warn(m),
-        ),
-        claudeResults: state.claudeRunStats ?? [],
-        ghCommandFn: deps.github.runGhCommand,
-        logger,
-      });
-      // Issue #3756 — the worker closed the issue itself, so this is its
-      // wrap-up point: post the run's single cost/model stats comment.
-      const posted = await postIssueRunStatsComment({
-        repo,
-        issueNumber,
-        phase: WORK_ON_STATS_PHASE,
-        claudeResults: state.claudeRunStats ?? [],
-        getIssueComments: (r, i) => ghClient.getIssueComments(r, i),
-        postComment: (r, i, b) => ghClient.postComment(r, i, b),
-        logger,
-        // What Graft did for this run (Issue #2105) — absent when the run
-        // never reached the collection.
-        ...(state.graftContext ? { graft: state.graftContext } : {}),
-        // Fleet-authored comments only (Issue #1249, finding 12).
-        authorOptions: {
-          fleetAuthors: resolveFleetMaintenanceAuthorSet({
-            githubUser,
-            fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
-            serviceAccounts: ctx.config.serviceAccounts ?? [],
-          }),
-        },
-        // This run's CodeGraph figures (Issue #2161) — reported here too, so
-        // an already-resolved wrap-up is not a hole in the trial's data.
-        ...(state.codegraphContext
-          ? { codegraph: state.codegraphContext }
-          : {}),
-        // …and its RTK status, `off` included (Issue #2385).
-        ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
-        ...(subAgentDegradation ? { subAgentDegradation } : {}),
-        // A safety refusal this run recorded and recovered from (Issue #3406).
-        ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),
-      });
-      // Issue #2347: this is the second path that wraps up an `issue`-phase
-      // run, so it records the same figures its comment renders. Leaving it
-      // out would make an already-resolved run a hole in the per-host spend
-      // and duration the pilot is compared on, exactly as it would have been a
-      // hole in the CodeGraph data above. The run passed no quality gate — it
-      // raised no PR — so it counts towards the runs and not the passes.
-      if (posted.reason !== "already_posted") {
-        // Issue #3403: the tier this run resolved rides the same figures the
-        // comment above renders.
-        const subAgentTier = resolveIssueSubAgentTier(
-          ctx.config,
-          ctx.config.repoConfig?.[repo],
-          (message) => logger.warn(message),
-        );
-        const figures = measureIssuePhaseRun({
-          phase: WORK_ON_STATS_PHASE,
-          claudeResults: state.claudeRunStats ?? [],
-          subAgentTier,
-        });
-        if (figures) recordIssuePhaseRun(figures);
-      }
-      // Unassign
-      await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
-    } catch (err) {
-      logger.warn("Failed to close already-complete issue", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    const closeComment =
+      `## Already Complete\n\nThis issue was verified as already resolved on the default branch, so it is closed with the evidence below rather than handed to a human (Issue #241).\n\n${
+        formatAlreadyResolvedEvidence(evidence)
+      }\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${
+        publishableSnippet(claudeOutput)
+      }\n\`\`\`\n\n</details>`;
+    await closeAsCompleted(ctx, state, deps, closeComment);
 
     return {
       category: "unknown",
@@ -427,11 +431,12 @@ export async function workOnIssueHandleNoChanges(
         "onto it (Issue #3146); retrying the approved issue (Issue #4227)",
       { repo, issueNumber },
     );
-    return await finishOrHandOff(
+    return await finishOrRetry(
       ctx,
       state,
       deps,
       "it named a dependency it filed itself instead of doing the work",
+      closeWithheld,
     );
   }
   if (detectUsageLimit(claudeOutput)) {
@@ -519,13 +524,14 @@ export async function workOnIssueHandleNoChanges(
 
     // Issue #4227: an approved issue is completed, never handed back. A
     // no-change run is a failure to retry on the `failed-once` ladder, whose
-    // escalating cooldown is the loop guard (#2834, #4158). Only an issue
-    // its author declared analysis-only is handed off with its analysis.
-    return await finishOrHandOff(
+    // escalating cooldown is the loop guard (#2834, #4158). An issue its
+    // author declared analysis-only is closed with its analysis (#4298).
+    return await finishOrRetry(
       ctx,
       state,
       deps,
       "it made no code change",
+      closeWithheld,
     );
   }
 

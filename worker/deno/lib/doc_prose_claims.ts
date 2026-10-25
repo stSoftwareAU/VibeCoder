@@ -5,10 +5,9 @@
  * Fleet PRs kept adding operator-manual or prompt sentences about the PR's own
  * new behaviour that the head code contradicts (GRQ-AutoTrader#2609, #2685,
  * #2699, VibeCoder#3308), after #3120 and #3232 asked for this in prose only.
- * The two model passes that read prose against head code, the first-run claim
- * check (`summary_claim_check.ts`, Issue #3257) and the review-fix drift check
- * (`pr_feedback_drift_check.ts`, Issue #3143), share this module's scope and
- * question so both ask the same thing about prose affected by the change.
+ * The review-fix drift check (`pr_feedback_drift_check.ts`, Issue #3143)
+ * uses this module's scope and question. The first-run claim check that used
+ * to ask the same question was removed (Issue #4234).
  *
  * Uses Australian English throughout.
  */
@@ -16,8 +15,8 @@
 import { isTestFilePath } from "./security_fix_gate.ts";
 
 /**
- * Cap on manual/prompt files one first-run claim question is asked about.
- * Files past it are reported as not checked, never passed.
+ * Cap on distinct files the review-fix prose scope asks about.
+ * A file past it is reported as not checked, never passed.
  */
 export const MAX_DOC_PROSE_FILES = 20;
 
@@ -89,20 +88,44 @@ export function selectManualProseFiles(
   return { files: kept.slice(0, cap), overCap: kept.slice(cap) };
 }
 
-/** The shared question both prose-against-code passes ask. */
+/**
+ * The parity rule the review-fix prose question includes (Issue #4223).
+ * A ref names the base side the model may open. With no ref, a "before"
+ * claim that cannot be checked is not reported.
+ */
+export function docProseParityRule(baseRef: string | undefined): string {
+  const shape =
+    "A sentence that compares the change with the code before it, or with another path (as before, exactly as X did, the same as, unchanged, no behaviour change), is a claim about both sides. ";
+  const report =
+    "Report the sentence when the two sides behave differently for any case it covers, and name both `file:line`s in `reason`.";
+  if (baseRef === undefined || baseRef === "") {
+    return shape +
+      "Open the other path at the head. A before claim that cannot be checked is not reported. " +
+      report;
+  }
+  return shape +
+    `Open the base side with \`git show ${baseRef}:<path>\`, or the other path at the head. ` +
+    report;
+}
+
+/** The prose-against-code question the review-fix drift check asks. */
 export function docProseClaimInstruction(
   change: "this branch's diff" | "this push's change",
+  baseRef?: string,
 ): string {
   return "For each listed Markdown manual or prompt (a `.md` file that is " +
     "not a PR summary), check the lines " + change +
     " adds or edits and the explicitly listed affected manual sections, including unchanged sentences. " +
-    "For source files check only the listed comments, including unchanged module headers and doc comments attached to changed declarations; never treat executable code as prose. " +
+    "For source files check only the listed comments, including unchanged module headers and doc comments attached to changed declarations, and each listed user-visible string; never treat executable code as prose. " +
+    "For each listed user-visible string, ask whether this change sends a case to this text for which the text is now false. " +
+    "Report the literal verbatim as `sentence`, with `file` the literal's file, and name the `file:line` of the changed hunk that sends the new case in `reason`. " +
     "In unchanged prose ask whether this change makes the sentence false, not whether it was always right: this is not a whole-manual audit. " +
     "Check only sentences that say when the change's new " +
     "behaviour happens, what it refuses, rejects, allows or skips, or that " +
     'use an absolute word ("only", "never", "always", "any", "every", ' +
-    '"all", "each", "automatically") or a counted or closed list ' +
-    '("X, Y and Z are the …"). For each such sentence, open the head code ' +
+    '"all", "each", "automatically"), a counted or closed list ' +
+    '("X, Y and Z are the …"), or a comparison with earlier code or another path ' +
+    '("as before", "exactly as X did", "the same as", "unchanged", "no behaviour change"). For each such sentence, open the head code ' +
     "that decides it — the branch condition, its callers, the list or set " +
     "it names — with Read or Grep, and report the sentence when that code " +
     "contradicts it: a condition the code never tests, a refusal the code " +
@@ -110,5 +133,6 @@ export function docProseClaimInstruction(
     "the absolute word misses. Quote it verbatim, one per entry, with " +
     "`file` = that manual, prompt or source file's path, and name the contradicting " +
     "`file:line` in `reason`. Do not report a sentence the head code agrees " +
-    "with, or one you could not check. When a sentence names a set without a single list in code (signal senders, callers or result readers, or files a command reads), Grep the whole head tree for other members, including files outside the diff.";
+    "with, or one you could not check. When a sentence names a set without a single list in code (signal senders, callers or result readers, or files a command reads), Grep the whole head tree for other members, including files outside the diff. " +
+    docProseParityRule(baseRef);
 }

@@ -111,7 +111,7 @@ Deno.test("test stage env - a scrubbed variable really is absent from the child 
     }));
   `;
   const intermediate = new Deno.Command(Deno.execPath(), {
-    args: ["eval", "--allow-run", "--allow-env", "--allow-read", script],
+    args: ["eval", script],
     env: { ...Deno.env.toObject(), [scrubbed]: planted },
     stdout: "piped",
     stderr: "piped",
@@ -165,7 +165,7 @@ Deno.test("test stage env - a token in the worker's environment cannot be read b
     console.log(JSON.stringify({ own, seen }));
   `;
   const intermediate = new Deno.Command(Deno.execPath(), {
-    args: ["eval", "--allow-run", "--allow-env", "--allow-read", script],
+    args: ["eval", script],
     env: { ...Deno.env.toObject(), GH_TOKEN: planted },
     stdout: "piped",
     stderr: "piped",
@@ -211,8 +211,9 @@ Deno.test("test stage env - what the suite genuinely needs is kept (Issue #1281)
   // Behaviour change from #891: this used to assert that everything except
   // the two scrubbed names was passed through. The stage now builds its
   // environment from an allowlist, so the assertion is about what a build and
-  // this suite genuinely need — running tools at all, the toolchain cache,
-  // the container stamp and the worker-count override.
+  // this suite genuinely need — running tools at all, the toolchain cache and
+  // the worker-count override. The container stamp is not among them (Issue
+  // #4328): the suite runs as a host run, as CI does.
   const env = testStageEnv({
     CONFIG_PATH: "/home/vibe/.vibe-coder/run-config/.config.json",
     PATH: "/usr/bin:/bin",
@@ -226,7 +227,11 @@ Deno.test("test stage env - what the suite genuinely needs is kept (Issue #1281)
   assertEquals(env.HOME, "/home/vibe");
   assertEquals(env.DENO_DIR, "/cache/deno");
   assertEquals(env.DENO_JOBS, "2");
-  assertEquals(env.VIBE_IMAGE_AGENT_PROVIDERS, "claude");
+  assertEquals(
+    Object.hasOwn(env, "VIBE_IMAGE_AGENT_PROVIDERS"),
+    false,
+    "the image stamp must not reach the test child (Issue #4328)",
+  );
 });
 
 Deno.test("test stage env - no worker credential reaches the suite (Issue #1281)", () => {

@@ -395,9 +395,9 @@ remote, so the worker repairs rather than fails: it runs `git fsck` for evidence
 removes the shared clone **and every lane worktree hanging off it** — a surviving
 worktree directory would make `git worktree add` refuse the path — re-clones, and
 retries the branch. The repair is claimed **once per repository per run**, not
-once per issue. Only a repair that does not clear the corruption escalates, with
-the repository named, because at that point the work volume is the fault rather
-than the objects.
+once per issue. A repair that does not clear the corruption fails the run as
+`clone_corrupt` with the repository named, and the next run repairs again —
+nothing is handed to a human (Issue #4298).
 
 **A broken ref is repaired cheaper, first (Issue #2884).** A loose ref under
 `refs/heads/` or `refs/remotes/` that names an object the store no longer has
@@ -413,11 +413,11 @@ origin` to recreate the remote-tracking refs clean, then retry branch creation
 once. Only a sweep that fails, or a retry that still fails, falls through to
 the object-store re-clone above — the same `claimObjectStoreRepair` claim
 covers both rungs, so the whole ladder still runs **at most once per
-repository per run**. A failure that survives both rungs escalates
-`needs-human` ("Broken refs in shared clone", named per repository) and is
-categorised `clone_corrupt`: no `failed-once`/`failed` label is applied and the
-issue's retry budget is never charged, because the fault is the host's shared
-clone, not the issue.
+repository per run**. A failure that survives both rungs is categorised
+`clone_corrupt`, named per repository: no `failed-once`/`failed` label is
+applied and the issue's retry budget is never charged, because the fault is the
+host's shared clone, not the issue. It is never handed to a human — the next
+run takes the repair claim afresh and runs the ladder again (Issue #4298).
 
 ```mermaid
 flowchart TD
@@ -428,7 +428,7 @@ flowchart TD
     B -- no --> D{"Object-store corruption?"}
     D -- yes --> E["repairObjectStore + setupRepo, retry once"]
     E -- ok --> Z
-    E -- still fails --> F["needs-human, category clone_corrupt<br/>(no failed-once / failed, budget not charged)"]
+    E -- still fails --> F["category clone_corrupt, retried next run<br/>(no failed-once / failed, budget not charged)"]
     D -- no --> G[Ordinary setup failure]
     style Z fill:#2d6a4f,stroke:#1b4332,color:#fff
     style F fill:#9d4e15,stroke:#6b3410,color:#fff

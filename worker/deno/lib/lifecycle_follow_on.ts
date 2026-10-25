@@ -18,7 +18,7 @@ export interface PrFollowOnInput {
   host: string;
   repo: string;
   prNumber: number;
-  followOn: "ci_fix" | "pr_feedback";
+  followOn: "ci_fix" | "pr_feedback" | "merge_conflict" | "repair_pr";
   cycle: string;
   attempt: number;
   body: string;
@@ -66,7 +66,7 @@ export async function recordPrFollowOnFromGithub(input: {
   workDir: string;
   repo: string;
   prNumber: number;
-  followOn: "ci_fix" | "pr_feedback";
+  followOn: "ci_fix" | "pr_feedback" | "merge_conflict" | "repair_pr";
   cycle: string;
   attempt: number;
   runStats: readonly (RunStats | undefined)[];

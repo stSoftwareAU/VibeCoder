@@ -2,8 +2,6 @@
 import { renderChecklistSection } from "../lib/review_checklists.ts";
 import { buildPrePrVerifierPrompt } from "../lib/pre_pr_verifier.ts";
 import { buildClosureVerdictPrompt } from "../lib/closure_verdict_recovery.ts";
-import { buildSummaryClaimCorrectionPrompt } from "../lib/summary_claim_correction.ts";
-import { buildSummaryClaimQuestionPrompt } from "../lib/summary_claim_check.ts";
 import { buildSummaryRuleRetryPrompt } from "../lib/summary_rule_gate_retry.ts";
 import { buildSecurityFixGateRetryPrompt } from "../lib/security_fix_gate_retry.ts";
 import {
@@ -44,12 +42,6 @@ const closure = {
   criterionTwo: makeCanary("closureCriterionTwo"),
   problem: makeCanary("closureProblem"),
   shortfall: makeCanary("closureShortfall"),
-};
-const correction = makeCanary("claimCorrectionComment");
-const claimQuestion = {
-  doc: makeCanary("claimQuestionDoc"),
-  baseRef: makeCanary("claimQuestionBaseRef"),
-  range: makeCanary("claimQuestionRange"),
 };
 const summaryRetry = {
   reason: makeCanary("summaryRetryReason"),
@@ -142,42 +134,6 @@ runFenceCoverageRows([
         boundaryId: BOUNDARY_ID,
       }),
   },
-  {
-    name: "buildSummaryClaimCorrectionPrompt",
-    canaries: [correction],
-    render: () =>
-      buildSummaryClaimCorrectionPrompt({
-        repo: REPO,
-        issueNumber: 4204,
-        summaryPath: SUMMARY_PATH,
-        comment: correction,
-        boundaryId: BOUNDARY_ID,
-      }),
-  },
-  knownLeakRow({
-    // Pending dedicated follow-up: summary_question (draft scaffold; replace before marking ready).
-    knownLeak: "#3896",
-    name: "buildSummaryClaimQuestionPrompt",
-    canaries: Object.values(claimQuestion),
-    render: () => {
-      const prompt = buildSummaryClaimQuestionPrompt({
-        repo: REPO,
-        issueNumber: 4204,
-        baseRef: claimQuestion.baseRef,
-        summaryPath: SUMMARY_PATH,
-        docFiles: [`docs/${claimQuestion.doc}.md`],
-        proseRanges: [{
-          file: `src/${claimQuestion.range}.ts`,
-          start: 1,
-          end: 2,
-          kind: "source comment",
-        }],
-        boundaryId: BOUNDARY_ID,
-      });
-      assertOnlyInsideUntrustedFence(prompt, claimQuestion.range);
-      return prompt;
-    },
-  }),
   {
     name: "buildSummaryRuleRetryPrompt",
     canaries: Object.values(summaryRetry),

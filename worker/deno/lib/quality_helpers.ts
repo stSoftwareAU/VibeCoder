@@ -17,6 +17,13 @@
 
 import type { Result } from "../types.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** `which` and the other tool probes. A hang here must not look like success. */
+const TOOL_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Characters kept from each end of a logged quality-gate excerpt (Issue
@@ -213,6 +220,7 @@ export function runningDenoPath(): string | null {
 export async function detectTool(
   toolName: string,
   homeDir?: string,
+  timeoutMs: number = TOOL_PROBE_TIMEOUT_MS,
 ): Promise<Result<string>> {
   if (toolName === "deno") {
     const running = runningDenoPath();
@@ -221,19 +229,27 @@ export async function detectTool(
 
   // Check PATH via which
   try {
-    const cmd = new Deno.Command("which", {
+    const output = await commandOutputWithTimeout("which", {
       args: [toolName],
       stdout: "piped",
       stderr: "null",
+      timeoutMs,
     });
-    const output = await cmd.output();
     if (output.success) {
       const path = new TextDecoder().decode(output.stdout).trim();
       if (path) {
         return { ok: true, value: path };
       }
     }
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) {
+      return {
+        ok: false,
+        error: error instanceof Error
+          ? error
+          : new Error(`which timed out after ${timeoutMs}ms`),
+      };
+    }
     // which not available, fall through to manual search
   }
 

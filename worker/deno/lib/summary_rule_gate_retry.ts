@@ -3,11 +3,10 @@
  *
  * The summary gates at the completion phase's PR-creation chokepoint —
  * acceptance-criteria closure (#518), independent two-axis review (#663), bug
- * reproduction status (#521), the docs-sweep line (#3073), the
- * result-placeholder gate (#3124), the branch-outcomes list (#3147), the
- * first-run summary claim check (#3257) and the pre-PR verifier (#3395) —
- * check the summary document; the pre-PR verifier also checks the code the
- * summary describes.
+ * reproduction status (#521), the result-placeholder gate (#3124) and the
+ * pre-PR verifier (#3395) — check the summary document; the pre-PR verifier
+ * also checks the code the summary describes. Their findings are advice
+ * (Issue #4234): the pull request is still raised.
  * A run that had already raised its own PR
  * from inside the execute phase used to skip this module's recovery
  * entirely: `reportSummaryRuleBlock` (#1140) finalised that PR straight off
@@ -21,10 +20,9 @@
  * This module closes that cost model the way the security-fix gate closed its
  * own (Issue #1575): the first block in a run — PR or no PR alike (Issue
  * #3163) — replays the gate's remediation comment into one short agent
- * invocation, re-runs the quality gate, and re-runs completion once. A second
- * block in the same run ends the run exactly as before (a `failure` with no
- * PR, or `summary_incomplete` over an existing PR), with the comment already
- * on the thread.
+ * invocation, re-runs the quality gate, and re-runs completion once. Findings
+ * that remain are one comment on the pull request. They do not fail the run
+ * or disarm auto-merge (Issue #4234).
  *
  * Each gate's comment builder prints its own template plus problem lines
  * quoting the branch's own PR summary — and that PR summary carries entries
@@ -212,8 +210,8 @@ export function buildSummaryRuleRetryPrompt(
   const id = isBoundaryId(boundaryId) ? boundaryId : generateBoundaryId();
   const summaryPath = `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`;
   const openingLine = verdict.existingPrUrl
-    ? `A PR-summary gate blocked ${repo}#${issueNumber}, in THIS run. Nothing else about the run has changed: your branch and its commits are intact, a PR is already open for this branch, and the worker will not finalise it (or arm auto-merge on it) until the summary satisfies the gate — then it will re-run the quality gate and update that PR.`
-    : `A PR-summary gate blocked PR creation for ${repo}#${issueNumber}, in THIS run. Nothing else about the run has changed: your branch and its commits are intact, and the worker will re-run the quality gate and raise the PR as soon as the summary satisfies the gate.`;
+    ? `Completion checks reported findings for ${repo}#${issueNumber}, in THIS run. They are advice, not a block. Your branch and its commits are intact, and a pull request is already open. You may act on the findings in this turn. The worker will then re-run the quality gate, update that pull request and arm auto-merge, and post whatever is left as one comment for the reviewer.`
+    : `Completion checks reported findings for ${repo}#${issueNumber}, in THIS run. They are advice, not a block. Your branch and its commits are intact. You may act on the findings in this turn. The worker will then re-run the quality gate, raise the pull request and arm auto-merge, and post whatever is left as one comment for the reviewer.`;
 
   const sections = (verdict.sections ?? []).filter((s) => s.trim() !== "");
   const items = sections.length > 0 ? sections : [verdict.comment];
@@ -236,8 +234,8 @@ export function buildSummaryRuleRetryPrompt(
   }
   const multipleItems = items.length > 1;
   const itemsIntro = multipleItems
-    ? `The gates found ${items.length} separate problems with the PR summary, each listed below as its own REQUIRED ITEM. Every REQUIRED ITEM must be fixed before you finish — completion re-runs every gate, so fixing one and leaving another blocks the run again, and a PR that ships anyway carries the remaining shortfall recorded against it.`
-    : `The gate found one problem with the PR summary, listed below as REQUIRED ITEM 1 of 1.`;
+    ? `The checks found ${items.length} separate findings, each listed below as its own item. You may fix any of them. Completion re-runs the checks afterwards, and anything still outstanding is posted on the pull request for the reviewer. It does not fail this run.`
+    : `The checks found one finding, listed below as item 1 of 1. You may fix it. Anything still outstanding is posted on the pull request for the reviewer and does not fail this run.`;
 
   const standing = (verdict.standingViolations ?? []).filter((v) =>
     v.text.trim() !== ""
@@ -297,7 +295,7 @@ ${blocks.join("\n\n")}
     });
     unmetSection = `The PR summary does not show ${
       n === 1 ? "this acceptance criterion" : `these ${n} acceptance criteria`
-    } as met, listed below as UNMET CRITERION items. No PR is raised until every criterion is met (Issue #4146): "partially completed" is not an outcome, and no follow-up issue will carry the rest. The REQUIRED ITEM headed "Acceptance criteria not met" is answered by finishing these items, not by editing the summary. For these items this turn MUST change code:
+    } as met, listed below as UNMET CRITERION items. You may finish them in this turn. The pull request is still raised afterwards, with anything left as one comment for the reviewer, and no follow-up issue will carry the rest. For these items this turn may change code:
 
 - Implement what each UNMET CRITERION asks for, with the tests that prove it, dispatching the executor sub-agent for the edits as usual.
 - Run the tests covering what you changed with stdin from \`/dev/null\`.
@@ -352,7 +350,7 @@ ${standingSection}${unmetSection}Do exactly this, and nothing else:
 ${step2} One exception (Issue #3395): a REQUIRED ITEM headed \`${PRE_PR_VERIFIER_HEADING_WORDS}\` can name a defect in the code itself. For that item only, fix the code and its tests where a finding asks for it, run the tests covering what you changed, then make the summary describe the head; the worker re-runs the quality gate and the verifier afterwards. For that verifier item, a finding is closed only by fixing it or disputing it with evidence in the final message, naming the finding and the evidence. Marking a criterion \`partial\`, listing a known gap or open limitation in the PR summary, or noting a test as "not red-checked" does not close a finding.
 3. Where a REQUIRED ITEM asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
 4. Before you commit, re-read the summary against ${itemRef} in turn, checking that item is actually fixed. In your final message, name ${itemRef} by number and say what you changed for it.
-5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost — but a summary that still misses a REQUIRED ITEM will be asked for as a structured verdict instead, which costs the run another turn.
+5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost. Findings you leave are posted on the pull request; they do not cost another turn and they do not stop the pull request.
 
 If a REQUIRED ITEM is wrong — the summary already carries what it asks for — say so plainly in your final message for that item and commit nothing for it.
 
@@ -440,29 +438,15 @@ export async function recoverFromSummaryRuleBlock(
   );
 
   if (!retryResult.ok) {
-    // The agent could not be re-invoked, so nothing on the branch changed and
-    // there is nothing new to gate.
-    if (latest.existingPrUrl) {
-      // A bare failure here would regress Issue #1140: it released a PR the
-      // agent had already raised back into the claimable pool. Re-running
-      // completion instead reaches `reportSummaryRuleBlock` a second time,
-      // whose existing-PR path finalises the PR as `summary_incomplete`
-      // rather than abandoning it.
-      logger.warn(
-        `Summary-rule gate recovery invocation failed on a run with an ` +
-          `existing PR — finalising that PR instead of failing the run ` +
-          `(Issue #1140): ${retryResult.error.message}`,
-        { repo, issueNumber, prUrl: latest.existingPrUrl },
-      );
-      return await rerunCompletion();
-    }
-    // No PR exists yet, so the block stands exactly as it did before this
-    // recovery existed, with the gate's comment already on the thread.
+    // The note could not be delivered. The findings stay on the re-run and
+    // go out as the reviewer's comment; the pull request is still raised
+    // (Issue #4234). A quality-gate failure on that re-run still stands.
     logger.warn(
-      `Summary-rule gate recovery invocation failed — the block stands: ${retryResult.error.message}`,
+      `The in-session completion note could not be delivered — the pull ` +
+        `request is still raised with the findings for the reviewer: ${retryResult.error.message}`,
       { repo, issueNumber },
     );
-    return blocked;
+    return await rerunCompletion();
   }
   recordClaudeRunStats(state, retryResult.value);
 
@@ -501,10 +485,10 @@ export async function recoverFromSummaryRuleBlock(
  * **error** with the consequence named, because a silent warning is how this
  * exact loss went unnoticed in the first place.
  *
- * Also called by the summary-only claim correction turn
- * (`summary_claim_correction.ts`, Issue #3324) after it writes the corrected
- * summary, for the same reason: a correction left untracked on a detached
- * checkout would vanish before the next completion attempt could see it.
+ * The removed claim-correction turn used to call this after it wrote a
+ * corrected summary (Issue #3324). That turn is gone (Issue #4234). A
+ * summary left untracked on a detached checkout would still vanish before
+ * the next completion attempt could see it, which is why this commit remains.
  */
 export async function commitRecoveredSummary(
   ctx: IssueContext,

@@ -1,0 +1,12 @@
+{
+  "issue": 4236,
+  "chunk": "top-up-4236",
+  "title": "top-up: pre-PR review records",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4236",
+  "definition": "worker/deno/lib/prepr_review_record.ts: renders and reads pre-PR review holds and collects verifier findings",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/prepr_review_record.ts"
+  ],
+  "sweptAt": "8c953f6c083bfed7b30eb610073a849448294f5e"
+}

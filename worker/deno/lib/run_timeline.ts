@@ -4,10 +4,11 @@
  *
  * The target is the run's one-hour mark and the finish its two-hour mark;
  * both are instants measured from the run's start. The target is read as the
- * start gate: nothing new starts after it (Issue #4243). The finish and the
- * hard kill are still not read by any claim or agent deadline: no agent is
- * asked to wrap up at the finish, and the run's claim deadline
- * (`runDurationSeconds`) is separate. The hard kill is the
+ * start gate: nothing new starts after it (Issue #4243). Subprocess
+ * chokepoints clamp their budgets against the finish and, past the finish,
+ * against the hard kill (Issue #4247). No agent session is asked to wrap up
+ * at the finish, and the run's claim deadline (`runDurationSeconds`) is
+ * separate. The hard kill is the
  * epoch-ms at which the launcher's watchdog ends the run whatever the worker
  * is doing. The finish is held back so the WIP checkpoint (commit and push)
  * lands before that kill: if the configured finish would leave less than the

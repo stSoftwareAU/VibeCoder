@@ -16,10 +16,10 @@
 #   https://github.com/denoland/deno/releases/download/v<version>/deno-<arch>-unknown-linux-gnu.zip.sha256sum
 set -euo pipefail
 
-DENO_VERSION="2.9.6"
+DENO_VERSION="2.9.8"
 # SHA-256 of deno-<arch>-unknown-linux-gnu.zip, from the release's .sha256sum files.
-DENO_SHA256_X86_64="394f07f4da2bebe6ce6f1e7ce0fa16429b29b08c35e3fac3fe25972676dff4b2"
-DENO_SHA256_AARCH64="9a46afc6c392c7cd2ff71a31558935545b46408d0e87f7a86908c712721c046e"
+DENO_SHA256_X86_64="e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609"
+DENO_SHA256_AARCH64="d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905"
 
 # Overridable for a mirror; the checksum check is what authenticates the bytes.
 DENO_RELEASE_BASE_URL="${DENO_RELEASE_BASE_URL:-https://github.com/denoland/deno/releases/download}"

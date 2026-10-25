@@ -285,35 +285,35 @@ const REAL_IMAGE_OUTPUT: Record<
   // "cargo-mutants <version>" for `cargo mutants --version`.
   "cargo-mutants": { command: "cargo-mutants 27.1.0\n" },
   gitleaks: { command: "gitleaks version 8.30.1\n" },
-  pwsh: { command: "PowerShell 7.6.5\n" },
+  pwsh: { command: "PowerShell 7.6.8\n" },
   "bats-core": { command: "Bats 1.14.0\n" },
   codespell: { command: "2.4.3\n" },
-  node: { command: "v24.19.0\n" },
-  npm: { command: "12.0.2\n" },
+  node: { command: "v24.22.1\n" },
+  npm: { command: "12.2.1\n" },
   "markdownlint-cli2": {
-    command: "markdownlint-cli2 v0.23.2 (markdownlint v0.41.1)\n" +
+    command: "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)\n" +
       "Finding: --version\nLinting: 0 files\nSummary: 0 issues in 0 files\n",
   },
   // `cspell --version` prints the bare version (Issue #3689).
-  cspell: { command: "10.3.6\n" },
+  cspell: { command: "10.4.0\n" },
   // Captured from the image's own binary (Issue #2097): `graft --version`
   // prints the bare version, so the manifest entry needs no versionArgs.
-  graft: { command: "0.18.0\n" },
-  rust: { command: "cargo 1.99.0 (5f94df478 2026-08-27)\n" },
-  semgrep: { command: "1.173.0\n" },
+  graft: { command: "0.25.0\n" },
+  rust: { command: "cargo 1.99.1 (5f94df478 2026-08-27)\n" },
+  semgrep: { command: "1.182.1\n" },
   pyyaml: { module: "6.0.3\n" },
   // Captured by running the very tarball this manifest checksums, on the
   // architecture the image builds for: the toolchain is new (Issue #2153) and
   // the image above predates it, so there is no in-image capture to quote yet.
-  codegraph: { command: "1.6.0\n" },
+  codegraph: { command: "1.6.2\n" },
   // Captured by running the very tarball this manifest checksums, on the
   // architecture the image builds for (Issue #2381): the toolchain is new and
   // the image above predates it, so there is no in-image capture to quote yet.
-  rtk: { command: "rtk 0.49.0\n" },
+  rtk: { command: "rtk 1.0.1\n" },
   // The native binary has no --version flag, so container/toolchains/
   // floci.sh installs a /usr/local/bin/floci wrapper whose --version prints
   // "floci <pinned version>" (Issue #3367).
-  floci: { command: "floci 2.2.0\n" },
+  floci: { command: "floci 2.3.0\n" },
 };
 
 Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {
