@@ -18,6 +18,7 @@ import {
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { hasExistingMilestoneSummaryPr } from "../lib/milestone_completion.ts";
+import { closeIssuesForMergedPrs } from "../lib/pr_issue_linking.ts";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
@@ -503,6 +504,228 @@ Deno.test("a not-ahead child on a protected base is armed with a squash when mer
       "the child is not retargeted onto the default branch",
     );
   }
+});
+
+Deno.test("a protected not-ahead child opens a rollup on the scan after auto-merge lands (Issue #4175)", async () => {
+  _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  let landed = false;
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const key = args.join(" ");
+    if (
+      args[0] === "pr" && args[1] === "list" &&
+      args[args.indexOf("--state") + 1] === "merged"
+    ) {
+      return Promise.resolve(
+        landed
+          ? JSON.stringify([{
+            number: 4109,
+            title: "Ship the widget (Issue #3905)",
+            headRefName: "issue-3905-widget",
+            mergedAt: "2026-10-20T00:00:00Z",
+            body: "",
+          }])
+          : "[]",
+      );
+    }
+    if (key.includes("pr list") && key.includes("--head")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 4077,
+          state: "MERGED",
+          baseRefName: DEFAULT,
+          mergedAt: "2026-10-13T13:58:25Z",
+        },
+      ]));
+    }
+    if (key.includes("pr list") && key.includes("--base")) {
+      return Promise.resolve(
+        landed
+          ? "[]"
+          : JSON.stringify([{ number: 4109, title: "Ship the widget" }]),
+      );
+    }
+    if (key.includes("/milestones?state=all")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 7, title: "Clean up", state: "open" },
+      ]));
+    }
+    if (key.includes("/issues?milestone=")) {
+      return Promise.resolve(
+        landed
+          ? "[]"
+          : JSON.stringify([{ number: 3905, title: "Ship the widget" }]),
+      );
+    }
+    if (key.includes("/compare/") && key.includes("ahead_by")) {
+      return Promise.resolve(JSON.stringify(
+        landed
+          ? { ahead_by: 1, files: [{ filename: "widget.txt" }] }
+          : { ahead_by: 0, files: [] },
+      ));
+    }
+    if (key.includes("default_branch")) {
+      return Promise.resolve(DEFAULT);
+    }
+    if (args[0] === "pr" && args[1] === "view" && key.includes("--jq")) {
+      return Promise.resolve(landed ? "MERGED" : "OPEN");
+    }
+    if (args[0] === "pr" && args[1] === "view" && key.includes("baseRefName")) {
+      return Promise.resolve(JSON.stringify({
+        state: landed ? "MERGED" : "OPEN",
+        baseRefName: BRANCH,
+      }));
+    }
+    if (args[0] === "issue" && args[1] === "view") {
+      return Promise.resolve(JSON.stringify({
+        state: "CLOSED",
+        labels: [],
+        createdAt: "2026-10-01T00:00:00Z",
+      }));
+    }
+    if (args[0] === "pr" && args[1] === "merge") {
+      if (args.includes("--merge")) {
+        return Promise.reject(
+          new Error("Merge commits are not allowed for this repository"),
+        );
+      }
+      return Promise.resolve("Enabled auto-merge\n");
+    }
+    if (args[0] === "pr" && args[1] === "create") {
+      return Promise.resolve("https://github.com/owner/repo/pull/4200\n");
+    }
+    return Promise.resolve("");
+  };
+
+  const armed = await enableAutoMerge({
+    repo: REPO,
+    prNumber: 4109,
+    headRefName: "issue-3905-widget",
+    baseRefName: BRANCH,
+    getDefaultBranchFn: () => Promise.resolve({ ok: true, value: DEFAULT }),
+    isBaseProtectedFn: () => Promise.resolve(true),
+    ghCommandFn: gh,
+  });
+  assertEquals(armed.result, AutoMergeResult.Enabled, armed.message);
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "create"),
+    "arming does not open a rollup before the merge lands",
+  );
+  const armedMerge = calls.find((args) =>
+    args[0] === "pr" && args[1] === "merge"
+  );
+  assert(armedMerge?.includes("--auto"));
+  assert(armedMerge?.includes("--squash"));
+
+  landed = true;
+  const beforeScan = calls.length;
+  await closeIssuesForMergedPrs([REPO], "bot", gh);
+  const scanCalls = calls.slice(beforeScan);
+  const created = scanCalls.find((args) =>
+    args[0] === "pr" && args[1] === "create"
+  );
+  assert(created, "the next scan opens a rollup after the child has merged");
+  assertEquals(created[created.indexOf("--head") + 1], BRANCH);
+  assertEquals(created[created.indexOf("--base") + 1], DEFAULT);
+  assert(
+    !scanCalls.some((args) => args[0] === "pr" && args[1] === "merge"),
+    "the rollup does not need another open child pull request",
+  );
+  assert(
+    !scanCalls.some((args) => args[0] === "issue" && args[1] === "reopen"),
+    "a rollup that opens leaves the closed issue closed",
+  );
+});
+
+Deno.test("a landed protected child whose rollup cannot be opened is not left closed (Issue #4175)", async () => {
+  _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  const notes: string[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const key = args.join(" ");
+    if (
+      args[0] === "pr" && args[1] === "list" &&
+      args[args.indexOf("--state") + 1] === "merged"
+    ) {
+      return Promise.resolve(JSON.stringify([{
+        number: 4109,
+        title: "Ship the widget (Issue #3905)",
+        headRefName: "issue-3905-widget",
+        mergedAt: "2026-10-20T00:00:00Z",
+        body: "",
+      }]));
+    }
+    if (key.includes("pr list") && key.includes("--head")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 4077,
+          state: "MERGED",
+          baseRefName: DEFAULT,
+          mergedAt: "2026-10-13T13:58:25Z",
+        },
+      ]));
+    }
+    if (key.includes("pr list") && key.includes("--base")) {
+      return Promise.resolve("[]");
+    }
+    if (key.includes("/milestones?state=all")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 7, title: "Clean up", state: "open" },
+      ]));
+    }
+    if (key.includes("/issues?milestone=")) {
+      return Promise.resolve("[]");
+    }
+    if (key.includes("/compare/") && key.includes("ahead_by")) {
+      return Promise.resolve(JSON.stringify({
+        ahead_by: 1,
+        files: [{ filename: "widget.txt" }],
+      }));
+    }
+    if (key.includes("default_branch")) {
+      return Promise.resolve(DEFAULT);
+    }
+    if (args[0] === "pr" && args[1] === "view" && key.includes("baseRefName")) {
+      return Promise.resolve(JSON.stringify({
+        state: "MERGED",
+        baseRefName: BRANCH,
+      }));
+    }
+    if (args[0] === "issue" && args[1] === "view") {
+      return Promise.resolve(JSON.stringify({
+        state: "CLOSED",
+        labels: [],
+        createdAt: "2026-10-01T00:00:00Z",
+      }));
+    }
+    if (args[0] === "pr" && args[1] === "create") {
+      return Promise.reject(new Error("rollup refused"));
+    }
+    if (args[0] === "issue" && args[1] === "reopen") {
+      return Promise.resolve("reopened\n");
+    }
+    return Promise.resolve("");
+  };
+
+  await closeIssuesForMergedPrs([REPO], "bot", gh, "planning", undefined, {
+    logFn: (message) => notes.push(message),
+  });
+  const reopened = calls.find((args) =>
+    args[0] === "issue" && args[1] === "reopen"
+  );
+  assert(reopened, "the closed issue is reopened");
+  assert(reopened.includes("3905"));
+  assert(
+    !calls.some((args) => args[0] === "issue" && args[1] === "close"),
+    "the issue is not closed again while the rollup is missing",
+  );
+  assert(notes.some((message) => message.includes("rollup refused")));
+  assert(notes.every((message) => !message.includes("WARNING:")));
+  assert(notes.every((message) => !message.includes("ERROR:")));
 });
 
 Deno.test("a not-ahead child whose rollup cannot be opened does not leave its issue closed (Issue #4175)", async () => {

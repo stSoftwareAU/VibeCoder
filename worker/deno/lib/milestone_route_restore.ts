@@ -447,6 +447,67 @@ export async function openRollupForLandedChild(
 }
 
 /**
+ * After a child has merged into a milestone branch, open a rollup when that
+ * branch is ahead and no rollup is open (Issue #4175).
+ *
+ * The merged pull request is no longer open, so the arming path will not see
+ * it again. A create failure reopens the child's issues so the work is not
+ * left closed on a branch with no route. A base that is not a milestone
+ * branch, or a pull request that cannot be read, is left to the caller.
+ */
+export async function restoreRouteAfterMergedChild(
+  options: {
+    repo: string;
+    prNumber: number;
+    issueNumbers: readonly number[];
+    ghCommandFn: GhCommandFn;
+    log?: LogSink;
+  },
+): Promise<RouteRestoreOutcome | { action: "not-milestone" }> {
+  const { repo, prNumber, issueNumbers, ghCommandFn, log } = options;
+  let baseRefName = "";
+  try {
+    const parsed = JSON.parse(
+      await ghCommandFn([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "state,baseRefName",
+      ]),
+    ) as { state?: unknown; baseRefName?: unknown };
+    if (parsed.state !== "MERGED") return { action: "not-milestone" };
+    baseRefName = typeof parsed.baseRefName === "string"
+      ? parsed.baseRefName.trim()
+      : "";
+  } catch {
+    return { action: "not-milestone" };
+  }
+  if (!isMilestoneBranch(baseRefName)) return { action: "not-milestone" };
+
+  const restored = await restoreClosedMilestoneRoute({
+    repo,
+    milestoneBranch: baseRefName,
+    ghCommandFn,
+    log,
+  });
+  if (restored.action !== "failed") return restored;
+  const stranded = restored.reason.includes("could not create the rollup");
+  const reopen = stranded
+    ? await reopenClosedIssues(repo, issueNumbers, ghCommandFn)
+    : "";
+  const detail = reopen ? `${restored.reason}. ${reopen}` : restored.reason;
+  logAt(
+    log,
+    "warn",
+    `child PR #${prNumber} merged onto ${baseRefName} in ${repo} but no rollup is open (${detail}) (Issue #4175)`,
+  );
+  return { action: "failed", reason: detail };
+}
+
+/**
  * Open a fresh rollup when an open milestone's previous rollup has merged.
  *
  * Fails loud: a lookup or create that errors returns `failed` with the
