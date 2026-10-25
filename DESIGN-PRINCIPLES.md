@@ -2495,20 +2495,27 @@ never overlap:
   policy on the honour system — the managed repo decided whether the worker's
   own embargo applied. `worker/deno/lib/bump_age_audit.ts` now reads the
   versions the script actually wrote (from the bump diff), resolves each
-  publish time from npm/JSR, and reverts the bump as `rejected_by_quarantine`
-  when one landed inside the window. Internal `@stsoftware/*` packages are
-  exempt (0h) and an age that cannot be resolved is logged as unverified
-  rather than blocking, so an offline host still bumps.
+  publish time from npm, JSR, or crates.io, and reverts the bump as
+  `rejected_by_quarantine` when one landed inside the window. Internal
+  `@stsoftware/*` packages are exempt (0h). An npm or JSR age that cannot be
+  resolved is logged as unverified rather than blocking, so an offline host
+  still bumps. A crates.io age that cannot be resolved defers the bump to the
+  next cycle (Issue #4325): the pin is not adopted unchecked, and it is not
+  refused for good.
 
   Two failure modes, two directions. A release whose publish
-  time a registry would not serve **fails open** — an offline or rate-limited
-  host must not turn every bump into a rejection. A dependency change the
-  scanner cannot recognise at all **fails closed**: an open-ended range or tag
-  (`>=1.0.0`, `*`, `latest`) names no single release, a foreign ecosystem's
-  manifest (`Gemfile`, `go.mod`, `Cargo.toml`, `requirements.txt`) has no
-  publish time this worker can resolve, and an unreadable diff shows nothing at
-  all. The first means the embargo looked and could not see; the second means it
-  never got to look, and silence must not read as compliance.
+  time npm or JSR would not serve **fails open** — an offline or rate-limited
+  host must not turn every bump into a rejection. crates.io is the exception:
+  an unreachable crates.io API defers that bump until the next cycle. A
+  dependency change the scanner cannot recognise at all **fails closed**: an
+  open-ended range or tag (`>=1.0.0`, `*`, `latest`) names no single release,
+  a foreign ecosystem's manifest (`Gemfile`, `go.mod`, `requirements.txt`) has
+  no publish time this worker can resolve, and an unreadable diff shows nothing
+  at all. `Cargo.lock` and `Cargo.toml` pins are crates.io releases: the
+  worker reads each version's `created_at` and holds a young one back the same
+  way it holds back a young npm release. The first means the embargo looked
+  and could not see; the second means it never got to look, and silence must
+  not read as compliance.
   `worker/deno/lib/bump_diff_scan.ts` draws that line, and covers the shapes the
   first parser missed — range specifiers, `deno.lock` and the npm lockfiles.
 
