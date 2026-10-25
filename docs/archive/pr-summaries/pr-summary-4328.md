@@ -246,6 +246,15 @@ there unchanged.
 - `./quality.sh < /dev/null` on the head: passed (with skipped checks: config
   integration, checkov); `deno tests` stage passed with
   `VIBE_IMAGE_AGENT_PROVIDERS=claude` set.
+- Push `2f237b82` (type fix, test only): `conflict_abandon_restart_test.ts`
+  read `leftOut[0].message` under `noUncheckedIndexedAccess` (TS2532); it now
+  reads `leftOut[0]?.message ?? ""`. The assertion is unchanged and
+  `assertEquals(leftOut.length, exclude.length)` still pins the count, so the
+  test still goes red when the left-out log is negated. Re-run at the head after
+  the merge of `main`: `deno task test:unit
+  tests/milestone_sync_refusal_ladder_4328_test.ts
+  tests/conflict_abandon_restart_test.ts` → 117 passed, 0 failed. No production
+  code changed in that push.
 - PR #4344 mutation survivors: `conflict_milestone_rebuild.ts:515` (negated
   left-out log condition) is now killed by
   `abandonAndRebuildMilestone - logs
