@@ -97,7 +97,9 @@ export async function sweepEscalatedLeftovers(
     ((r: string) => acquireMaintenanceRepoLease(r));
   const lease = acquire(repo);
   if (lease === null) {
-    deps.logger.warn(
+    // Another lane holds the maintenance lease. The sweep runs next cycle,
+    // so this is the ordinary outcome, not a degradation (Issue #4361).
+    deps.logger.info(
       "Escalated cleanup deferred: the repository is leased elsewhere",
       { repo },
     );
