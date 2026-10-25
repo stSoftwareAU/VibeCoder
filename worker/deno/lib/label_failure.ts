@@ -336,8 +336,9 @@ export async function handleIssueFailure(
     detectFailureCategory(options.failureMessage);
 
   // A scheduled release never enters the ladder (Issue #424, parent #397).
-  // The cycle ended, or the supervisor's hard cap was reached, with the WIP
-  // committed and pushed — the attempt did not fail, it handed over. Marking
+  // The cycle ended, the finish deadline was reached (Issue #4245), or the
+  // supervisor's hard cap was reached, with the WIP committed and pushed —
+  // the attempt did not fail, it handed over. Marking
   // it `failed-once` pollutes the failure record for a scheduled handover,
   // and a second one would permanently `failed` an issue nothing is wrong
   // with. The claim-release comment carries the scheduled-release wording,

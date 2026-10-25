@@ -120,6 +120,8 @@ function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
 async function runNoChangesScenario(
   input: PrFeedbackInput,
   responseMessage?: string,
+  claudeValue?: Record<string, unknown>,
+  logs?: string[],
 ): Promise<CapturedGh> {
   const captured: CapturedGh = { comments: [], labelsAdded: [] };
   const workDir = await Deno.makeTempDir();
@@ -134,7 +136,12 @@ async function runNoChangesScenario(
     runClaudeWithRetry: (() =>
       Promise.resolve({
         ok: true,
-        value: { output: "", exitCode: 0, timedOut: false },
+        value: {
+          output: "",
+          exitCode: 0,
+          timedOut: false,
+          ...claudeValue,
+        },
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
 
@@ -155,9 +162,13 @@ async function runNoChangesScenario(
     },
   });
 
+  const logger = makeSilentLogger();
+  if (logs) {
+    logger.info = (message: string) => logs.push(message);
+  }
   const processorDeps: PrFeedbackProcessorDeps = {
     promptsDir: PROMPTS_DIR,
-    logger: makeSilentLogger(),
+    logger,
     deps,
     workDir,
     workRoot: workDir,
@@ -240,4 +251,20 @@ Deno.test("processPrFeedback no-changes - unknown check does not assert transien
   assertStringIncludes(body, "could not determine");
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processPrFeedback - a finish deadline is released on schedule and adds no label (Issue #4245)", async () => {
+  const logs: string[] = [];
+  const captured = await runNoChangesScenario(makeInput(), undefined, {
+    finishDeadline: true,
+    timedOut: true,
+    timeoutReason: "hard-timeout",
+    exitCode: 124,
+  }, logs);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(
+    logs.some((line) => line.includes("released on schedule")),
+    true,
+    logs.join("\n"),
+  );
 });

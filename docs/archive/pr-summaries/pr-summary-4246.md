@@ -1,0 +1,45 @@
+## Summary
+
+`drainSlots` and the maintenance-lane drain wait no later than the finish plus the kill grace and the 120 s WIP reserve. At the finish they terminate in-flight agents so the execute path can checkpoint; at the end of that grace they release any claim still held, log one line per abandoned item, and the run exits through `Run duration complete. Exiting for refresh.` The success and always run hooks and the cycle heartbeat fire. No `failed-once` is added. Closes #4246.
+
+Version bump: not applicable — no `deno.json` version change.
+
+## Spec
+
+### Intent and Rationale
+- A slot still running at the two-hour finish used to hold the drain until the work settled or a shutdown grace elapsed. The finish needs its own bound so a healthy run ends through the normal path and does not sit until the three-hour kill.
+- The checkpoint window is the same reserve the session clamp and the extension ceiling already leave clear of the finish (`finishSessionReserveSeconds`).
+
+### Essential Design Decisions
+- `finishDrainBound` is finish plus that reserve. `drainSlots` and `raceShutdownGrace` poll a real 50 ms timer and read `deps.now()`. The first time `now` is at or past the finish they call `terminateActiveAgentRuns("finish deadline reached", { keepTerminating: true })`. The first time `now` is at or past the grace they return.
+- A finish release uses `deriveRunOutcome` with reason `Released on schedule: the finish deadline was reached`, phase `"execute"`, and callback `result: "success"`, so the success and always hooks fire and `handleIssueFailure` is not called. The shutdown path is unchanged: `result: "failure"`, phase `"shutdown"`, and the existing error log.
+- One info line per abandoned slot hold: `Abandoned at the finish deadline: <repo>#<n> — claim released, work resumes next run`. The maintenance lane logs `<handler> released on schedule: the finish deadline was reached`. The outer loop then logs `Run duration complete. Exiting for refresh.` and returns `exitReason` `"Run duration expired"`.
+
+### Undiscoverable Facts
+- `runCoreLoop` publishes a timeline at start, so every loop has this bound. The outer `endTime` is still the one-hour target. After the drain returns past that target, the existing end path runs, including `runCycleCallback`.
+- The slot-pool test drives the checkpoint by calling `startWipCheckpoints(...).runNow()` inside the mock `processIssue` once `terminateActiveAgentRuns` has fired. The next `runCoreLoop` claims the same issue and `resumeIssueBranch` checks out the pushed branch. `processIssue` is the worker in these tests, so the test performs the checkpoint the execute path's `wip_checkpoint.ts` performs in production.
+
+## Evidence
+- `worker/deno/lib/run_core.ts`: `finishDrainBound`, the finish branch of `drainSlots`, and the finish branch of `raceShutdownGrace`.
+- Tests: `worker/deno/tests/run_core_slot_pool_test.ts` — `slot pool - a slot that never settles does not hold the drain past the finish grace (Issue #4246)` and `slot pool - the finish deadline checkpoints, releases, and the next scan resumes the WIP branch (Issue #4246)`, both passed. The existing shutdown-grace tests in the same file still pass.
+- `docs/CONFIGURATION.md` stage 5 describes this drain. `deadline_model_docs_check` passed.
+
+## Reproduction
+- **symptom** — in-flight work at the two-hour finish held the drain, so the run did not exit through `Run duration complete` and the next launch had no checkpoint to resume.
+- **status** — `partial`
+- **reason** — the two drain tests were written with the implementation and were not watched failing on the unfixed code. They pass on this head with an injected clock. No production run was reproduced here.
+- **regression test** — `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - the finish deadline checkpoints, releases, and the next scan resumes the WIP branch (Issue #4246)`
+
+## Acceptance Criteria
+- **met** — With an injected clock, a run whose in-flight work reaches the finish deadline exits through "Run duration complete" no later than finish + grace. — evidence: `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot that never settles does not hold the drain past the finish grace (Issue #4246)` — reviewer: met
+- **met** — The WIP checkpoint commits and pushes, the claim is released, and a fresh run's scan claims the same issue and resumes from the WIP branch. — evidence: `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - the finish deadline checkpoints, releases, and the next scan resumes the WIP branch (Issue #4246)` — reviewer: met
+- **met** — The success/always run hooks and the cycle heartbeat fire, and `failed-once` is not added. — evidence: `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - the finish deadline checkpoints, releases, and the next scan resumes the WIP branch (Issue #4246)` — reviewer: met
+- **met** — A slot whose work never settles does not hold the drain past finish + grace. — evidence: `worker/deno/tests/run_core_slot_pool_test.ts::slot pool - a slot that never settles does not hold the drain past the finish grace (Issue #4246)` — reviewer: met
+- **partial** — Tests and `./quality.sh` pass. — evidence: the two Issue #4246 slot-pool tests passed, and the two existing shutdown-grace tests in the same file passed; `deno fmt` and `deno lint` on the touched files passed — reason: `./quality.sh` was not run in this session — reviewer: partial
+
+## Standards Review
+- **clean** — `drainSlots` and `raceShutdownGrace` share `finishDrainBound` and the same terminate-then-grace order. The shutdown release path is unchanged. Australian English. No `deno.json` version bump. `deno fmt` and `deno lint` on the touched files passed.
+
+## Test Plan
+- `worker/deno/tests/run_core_slot_pool_test.ts` filtered to `finish grace`, `resumes the WIP`, and `shutdown grace` — 4 passed, 0 failed.
+- Twins: `drainSlots` and `raceShutdownGrace` in `worker/deno/lib/run_core.ts`, both calling `finishDrainBound`. The abandon callback uses `result: "success"`; the shutdown callback still uses `result: "failure"`. The checkpoint the drain waits for is `startWipCheckpoints` in `worker/deno/lib/wip_checkpoint.ts`, which the resume test calls directly because `processIssue` is mocked.

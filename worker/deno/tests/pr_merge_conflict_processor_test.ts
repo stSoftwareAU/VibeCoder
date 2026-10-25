@@ -1928,6 +1928,32 @@ Deno.test("processMergeConflict - warns when the checkout directory is missing (
 // A run the worker itself ended (Issue #1693)
 // ---------------------------------------------------------------------------
 
+Deno.test("processMergeConflict - a finish deadline withdraws the attempt and adds no failure label (Issue #4245)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    {
+      claudeResult: {
+        finishDeadline: true,
+        timedOut: true,
+        timeoutReason: "hard-timeout",
+        exitCode: 124,
+      },
+      postedCommentId: 9001,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(
+    captured.labelsAdded ?? [],
+    [],
+    "a finish deadline must not add a failure label",
+  );
+});
+
 Deno.test("processMergeConflict - a watchdog SIGTERM withdraws the attempt instead of failing it", async () => {
   // GRQ-25, NEAT-AI-core#637: the maintenance-lane watchdog abandoned the
   // handler at the cycle end and SIGTERMed the agent mid-edit. The half-merged

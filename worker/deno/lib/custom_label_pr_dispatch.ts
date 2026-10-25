@@ -157,6 +157,12 @@ export async function dispatchCustomLabelPrPrompts(
   try {
     await deps.runAgent(candidate, prompt.value);
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("released on schedule")
+    ) {
+      return { processed: false };
+    }
     await comment(
       candidate,
       deps,

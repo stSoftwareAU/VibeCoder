@@ -1742,8 +1742,12 @@ async function resolveConflict(
           headBeforeMerge,
         );
       }
-      const { terminated, providerUnavailable } = agentOutcome.value;
-      if (terminated || providerUnavailable !== undefined) {
+      const { terminated, providerUnavailable, finishDeadline } =
+        agentOutcome.value;
+      if (
+        terminated || providerUnavailable !== undefined ||
+        finishDeadline === true
+      ) {
         await abortMerge(run, workDir);
         return await withdrawCutShortAttempt(
           input,

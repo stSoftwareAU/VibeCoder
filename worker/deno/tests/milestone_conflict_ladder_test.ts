@@ -12,6 +12,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   AGENT_PROVIDER_UNAVAILABLE,
+  AGENT_RUN_ENDED_BY_WORKER,
   climbConflictLadder,
   hasConflictMarkers,
   listUnmergedPaths,
@@ -417,6 +418,46 @@ Deno.test(
       assert(
         !staged.includes(".heartbeat_owner_repo_1"),
         "the worker's own state file is unstaged before the safety gate (Issue #1654)",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "climbConflictLadder - a finish deadline applies no failure verdict (Issue #4245)",
+  async () => {
+    const fx = await conflictedClone();
+    const lines: string[] = [];
+    try {
+      const outcome = await climbConflictLadder({
+        escalations: undecided,
+        options: { cwd: fx.dir },
+        milestoneBranch: "milestone/1777",
+        defaultBranch: "main",
+        applyRulesFn: rulesDeferEverything,
+        logger: {
+          info: (message: string) => lines.push(message),
+          warn: () => {},
+          error: () => {},
+          debug: () => {},
+        } as never,
+        agentFn: () =>
+          Promise.resolve({
+            ok: true,
+            value: { terminated: false, finishDeadline: true },
+          }),
+      });
+
+      assertEquals(outcome.resolved, []);
+      assertStringIncludes(
+        outcome.escalations[0]!.reason,
+        AGENT_RUN_ENDED_BY_WORKER,
+      );
+      assert(
+        lines.some((line) => line.includes("released on schedule")),
+        lines.join("\n"),
       );
     } finally {
       await fx.cleanup();

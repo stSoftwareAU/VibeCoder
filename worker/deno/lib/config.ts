@@ -664,10 +664,11 @@ export async function loadConfig(
   const minClaimRunwaySeconds = file.min_claim_runway_seconds ??
     readNonNegativeNumberEnv("MIN_CLAIM_RUNWAY_SECONDS", env) ??
     OPERATIONAL_DEFAULTS.minClaimRunwaySeconds;
-  // Run finish deadline (Issue #4242): seconds from run start. Accepted,
-  // validated and logged at run start; not yet applied to any deadline. A
-  // finish at or before the one-hour run target leaves no time to finish, so
-  // it is refused loudly rather than logged as a live deadline.
+  // Run finish deadline (Issue #4242): seconds from run start. Validated
+  // here and published by the run timeline. Agent sessions, extension
+  // grants, the claim floor and the drain read it (Issues #4244, #4245,
+  // #4246). A finish at or before the one-hour run target leaves no time
+  // to finish, so it is refused loudly rather than logged as a live deadline.
   const runFinishSeconds = file.run_finish_seconds ??
     OPERATIONAL_DEFAULTS.runFinishSeconds;
   if (!Number.isFinite(runFinishSeconds)) {

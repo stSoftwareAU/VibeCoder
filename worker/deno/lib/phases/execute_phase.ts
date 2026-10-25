@@ -120,6 +120,7 @@ import {
 } from "../claim_freshness.ts";
 import { buildProgressExtension } from "../progress_extension_runtime.ts";
 import { describeRunHardCap, resolveRunHardCap } from "../run_hard_cap.ts";
+import { extensionCeiling } from "../run_timeline.ts";
 import {
   hasRunwayForInfraRetry,
   MIN_INFRA_RETRY_RUNWAY_SECONDS,
@@ -1135,18 +1136,26 @@ async function executeClaudeBody(
   // checkout (Issue #508) — the hard deadline moves instead of killing. With
   // truncation gone the operator's flag is the only gate (Issue #420);
   // `undefined` leaves the timeout exactly as it was, which is what every
-  // other phase gets.
+  // other phase gets. The ceiling is the finish deadline less the reserve
+  // when a timeline is set, otherwise the supervisor cap (Issue #4245).
+  const extensionBound = extensionCeiling(
+    config.claudeKillAfter,
+    hardCap.capped ? hardCap.cap.ceilingMs : undefined,
+  );
   const progressExtension = await buildProgressExtension(
     config,
     state.repoPath,
     (deadline) => {
       reportRunDeadline(deadline);
     },
-    hardCap.capped ? hardCap.cap.ceilingMs : undefined,
+    extensionBound?.ceilingMs,
     // What the baseline gate cost here this cycle (Issue #1138) — the budget
     // notice warns earlier on a repo whose gate is slow than on one whose
     // gate is quick.
     state.baselineQualityDurationSeconds,
+    extensionBound?.label === "the finish deadline"
+      ? extensionBound.label
+      : undefined,
   );
 
   // The run-start line an operator reads to know which budget applies. It
@@ -1480,8 +1489,17 @@ async function executeClaudeBody(
     // A hard-cap release fires the same watchdog and exits with the same
     // status as a genuine timeout (Issue #424, parent #397). Only the runner
     // knows which happened, so read its flag rather than the exit status.
-    const scheduled = claudeResult.value.scheduledRelease;
-    if (scheduled) {
+    const scheduled = claudeResult.value.finishDeadline
+      ? "finish-deadline" as const
+      : claudeResult.value.scheduledRelease;
+    if (claudeResult.value.finishDeadline) {
+      logger.warn(
+        "Claude released on schedule — the finish deadline was reached " +
+          "while the run was still progressing; preserving its work for the " +
+          "next claim (Issue #4245)",
+        { exitCode: claudeResult.value.exitCode },
+      );
+    } else if (scheduled) {
       logger.warn(
         "Claude released on schedule — the supervisor's run hard cap was " +
           "reached while the run was still progressing; preserving its work " +

@@ -303,7 +303,7 @@ import {
   recordAdaptiveFloorDeferral,
 } from "./adaptive_floor_starvation.ts";
 import { issueClaimKey } from "./claim_runway_evidence.ts";
-import type { ClaimHardCap } from "./claim_runway.ts";
+import { anchorClaimCapToFinish, type ClaimHardCap } from "./claim_runway.ts";
 import { resolveRunHardCap } from "./run_hard_cap.ts";
 import {
   type CircuitBreakerConfig,
@@ -792,12 +792,21 @@ function resolveClaimHardCap(
   killAfterSeconds: number,
 ): ClaimHardCap | undefined {
   const resolution = resolveRunHardCap({ killAfterSeconds });
-  if (!resolution.capped) return undefined;
-  const { ceilingMs, startedMs } = resolution.cap;
-  return {
-    ceilingMs,
-    windowSeconds: Math.max(0, Math.round((ceilingMs - startedMs) / 1000)),
-  };
+  const base = resolution.capped
+    ? {
+      ceilingMs: resolution.cap.ceilingMs,
+      windowSeconds: Math.max(
+        0,
+        Math.round(
+          (resolution.cap.ceilingMs - resolution.cap.startedMs) / 1000,
+        ),
+      ),
+    }
+    : undefined;
+  // The timeline is published inside runCoreLoop, after this snapshot. The
+  // scan calls anchorClaimCapToFinish again at claim time, which is when the
+  // finish deadline is known. Calling it here too keeps a late reader honest.
+  return anchorClaimCapToFinish(base, killAfterSeconds);
 }
 
 /**
@@ -4225,6 +4234,14 @@ export async function createProductionRunCoreDeps(
                 { maxRetries: config.maxRateLimitRetries },
               );
               if (!run.ok) throw run.error;
+              if (run.value.finishDeadline) {
+                logger.info(
+                  `Custom PR prompt for ${candidate.repo}#${candidate.prNumber} released on schedule: the finish deadline was reached`,
+                );
+                throw new Error(
+                  "released on schedule: the finish deadline was reached",
+                );
+              }
               if (run.value.timedOut) {
                 throw new Error(
                   run.value.timeoutReason === "no-output"

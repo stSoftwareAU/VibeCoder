@@ -183,8 +183,14 @@ export interface DiagnosticContext {
  * - `"cycle-ended"` — the worker's own shutdown ended the agent run.
  * - `"hard-cap"` — the supervisor's wall-clock cap left no runway, so the
  *   worker stopped itself first to preserve the work (Issue #421).
+ * - `"finish-deadline"` — the two-hour finish deadline was reached (Issue
+ *   #4245). The attempt is not a failure: no `failed-once`, no timeout
+ *   cooldown, no worker-fault filing.
  */
-export type ScheduledReleaseReason = "cycle-ended" | "hard-cap";
+export type ScheduledReleaseReason =
+  | "cycle-ended"
+  | "hard-cap"
+  | "finish-deadline";
 
 /**
  * Phrase that opens a scheduled-release failure reason (Issue #424).
@@ -421,6 +427,8 @@ export function buildScheduledReleaseReason(
 ): string {
   const cause = reason === "hard-cap"
     ? "the supervisor's run hard cap was reached"
+    : reason === "finish-deadline"
+    ? "the finish deadline was reached"
     : "the cycle ended";
   return `${SCHEDULED_RELEASE_MARKER} ${cause} — ` +
     (preservedNote ?? "WIP preserved, resumes next cycle");
@@ -1074,7 +1082,7 @@ export function getFailureDiagnosis(
     }
 
     case "scheduled_release":
-      return `- The run was released on schedule — the cycle ended, or the supervisor's run hard cap was reached — while the agent was still progressing
+      return `- The run was released on schedule — the cycle ended, the finish deadline was reached, or the supervisor's run hard cap was reached — while the agent was still progressing
 - WIP preserved: the work in progress was committed and pushed to the issue branch — the claim-release comment's **Work in progress** line names that branch — and the next claim resumes from there
 - Nothing here reflects on the issue: it does not need re-scoping, simplifying or splitting`;
 

@@ -115,6 +115,8 @@ import {
   DEFAULT_RUN_FINISH_SECONDS,
   DEFAULT_RUN_TARGET_SECONDS,
   describeRunTimeline,
+  finishDeadlineBounds,
+  finishSessionReserveSeconds,
   pastRunTarget,
   resolveRunTimeline,
   setRunTimeline,
@@ -145,8 +147,10 @@ import {
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
 import {
+  anchorClaimCapToFinish,
   belowClaimRunwayFloor,
   type ClaimHardCap,
+  claimRunwayBoundPhrase,
   type ClaimRunwayFloor,
   hardCapRunwaySeconds,
   resolveClaimRunwayFloor,
@@ -214,8 +218,9 @@ export interface RunCoreConfig {
   runDurationSeconds: number;
   /**
    * The run's *finish* deadline (seconds from start, default: 7200 —
-   * `DEFAULT_RUN_FINISH_SECONDS`). Logged and published by the run timeline
-   * (Issue #4242); not yet applied to any claim or agent deadline.
+   * `DEFAULT_RUN_FINISH_SECONDS`). Published by the run timeline
+   * (Issue #4242). Agent sessions, extension grants, the claim floor and
+   * the drain read it (Issues #4244, #4245, #4246).
    */
   runFinishSeconds: number;
   /**
@@ -2837,11 +2842,15 @@ async function runIssueScanLoop(
   let iteration = 0;
 
   // Claim-runway floor for this cycle (Issues #4304/#425), measured against
-  // the supervisor hard cap rather than the cycle deadline. Resolved once;
+  // the finish deadline when a timeline is set (Issue #4245) and otherwise
+  // the supervisor hard cap — never the cycle deadline. Resolved once;
   // applied before every claim below.
   const runwayFloor = resolveClaimRunwayFloor({
     minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
-    hardCap: deps.claimHardCap,
+    hardCap: anchorClaimCapToFinish(
+      deps.claimHardCap,
+      config.claudeKillAfterSeconds,
+    ),
   });
   if (runwayFloor.inertReason) {
     deps.log(`Claim-runway floor: ${runwayFloor.inertReason}`);
@@ -2867,18 +2876,21 @@ async function runIssueScanLoop(
     // longer in time by construction. It stops *new claims* only — a claim
     // already taken keeps its full budget (Issue #420).
     const pastDeadline = deps.now() >= endTime;
-    // Minimum-runway floor (Issues #4304/#425): a claim the supervisor hard
-    // cap will kill before it can finish setup is doomed on arrival, so it is
-    // not taken. Measured against the hard cap, not the cycle deadline —
-    // cycle runway stopped bounding an execute at #420. Applies on EVERY
-    // pass, including the outer loop's re-entry after a success.
+    // Minimum-runway floor (Issues #4304/#425/#4245): a claim the finish
+    // deadline (or, with no timeline, the supervisor hard cap) will end
+    // before setup finishes is not taken. Measured against that instant,
+    // not the one-hour cycle — cycle runway stopped bounding an execute
+    // at #420. Applies on EVERY pass, including the outer loop's re-entry
+    // after a success.
     const belowFloor = belowClaimRunwayFloor(runwayFloor, deps.now());
     if (pastDeadline || belowFloor) {
       deps.log(
         !pastDeadline
           ? `Issue scan loop stopping before the next claim: ${
             hardCapRunwaySeconds(runwayFloor, deps.now())
-          }s of runway left to the supervisor hard cap, below the ` +
+          }s of runway left to ${
+            claimRunwayBoundPhrase(runwayFloor)
+          }, below the ` +
             `${runwayFloor.floorSeconds}s claim floor (Issues #4304/#425).`
           : "Issue scan loop reached the cycle deadline — stopping before the next claim.",
       );
@@ -3348,8 +3360,17 @@ async function executePriorityHandler(
       // Issue #2720: while the handler's own agent is still working, the
       // hard timeout is re-armed on the issue path's progress-extension
       // policy, up to an absolute ceiling.
-      const ceilingMs = dispatchNowMs +
+      const handlerCeilingMs = dispatchNowMs +
         Math.max(hardTimeoutMs, HANDLER_PROGRESS_CEILING_MS);
+      // A maintenance grant stops at the finish deadline less the reserve
+      // when that instant is nearer than the handler's own ceiling (Issue
+      // #4245). With no timeline the handler ceiling is unchanged.
+      const finishCeiling = finishDeadlineBounds(
+        config.claudeKillAfterSeconds,
+      )?.ceilingMs;
+      const ceilingMs = finishCeiling === undefined
+        ? handlerCeilingMs
+        : Math.min(handlerCeilingMs, finishCeiling);
       let abandonReason: string | undefined;
       const extend = (): number => {
         const policy = config.handlerProgressExtension;
@@ -3544,14 +3565,26 @@ async function runMaintenanceLane(
         endTime,
         prefix,
       );
-      const bounded = await raceShutdownGrace(dispatch, deps, shouldShutdown);
+      const bounded = await raceShutdownGrace(
+        dispatch,
+        deps,
+        shouldShutdown,
+        finishDrainBound(config.claudeKillAfterSeconds),
+      );
       if (bounded.outcome === "abandoned") {
         // Loud, not silent: the pass is unfinished and its agent is killed.
-        deps.logError(
-          `${prefix}stop reason=shutdown — drain grace elapsed while ` +
-            `${handler.name} was still running; abandoning the pass and ` +
-            `terminating its agent. The PR is picked up again next run.`,
-        );
+        if (bounded.why === "finish-deadline") {
+          deps.log(
+            `${prefix}${handler.name} released on schedule: the finish ` +
+              `deadline was reached`,
+          );
+        } else {
+          deps.logError(
+            `${prefix}stop reason=shutdown — drain grace elapsed while ` +
+              `${handler.name} was still running; abandoning the pass and ` +
+              `terminating its agent. The PR is picked up again next run.`,
+          );
+        }
         if (deps.terminateActiveAgentRuns) {
           await deps.terminateActiveAgentRuns(
             `maintenance lane pass ${handler.name} abandoned at shutdown`,
@@ -3629,23 +3662,43 @@ async function releaseClosedReservations(
   return undefined;
 }
 
+/** Finish instant plus the kill grace and the WIP reserve (Issue #4246). */
+function finishDrainBound(killAfterSeconds: number): {
+  finishMs: number;
+  drainAtMs: number;
+} | undefined {
+  const bounds = finishDeadlineBounds(killAfterSeconds);
+  if (!bounds) return undefined;
+  return {
+    finishMs: bounds.finishMs,
+    drainAtMs: bounds.finishMs +
+      finishSessionReserveSeconds(killAfterSeconds) * 1000,
+  };
+}
+
 /**
  * Await `pass`, abandoning it once a shutdown request has outlived
- * `slotDrainGraceSeconds` (Issue #213).
+ * `slotDrainGraceSeconds` (Issue #213), or once the finish deadline plus
+ * the kill grace and the WIP reserve has passed (Issue #4246).
  *
- * Mirrors `drainSlots`: the shutdown flag is polled on a short **real** timer
- * (the injected `sleep` is a fake clock in tests) while the grace itself is
- * measured on the injected clock, so a signal arriving mid-pass starts the
- * bounded grace from that moment.
+ * The shutdown flag and the finish instant are polled on a short **real**
+ * timer (the injected `sleep` is a fake clock in tests) while both bounds
+ * are measured on the injected clock. At the finish the in-flight agents
+ * are terminated so the execute path can checkpoint during the grace.
  */
 async function raceShutdownGrace<T>(
   pass: Promise<T>,
   deps: RunCoreDeps,
   shouldShutdown: () => boolean,
-): Promise<{ outcome: "completed"; value: T } | { outcome: "abandoned" }> {
+  finish?: { finishMs: number; drainAtMs: number },
+): Promise<
+  | { outcome: "completed"; value: T }
+  | { outcome: "abandoned"; why: "shutdown" | "finish-deadline" }
+> {
   const graceMs = Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000;
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let terminatedForFinish = false;
   const completed = pass.then((value) => ({
     outcome: "completed" as const,
     value,
@@ -3653,18 +3706,37 @@ async function raceShutdownGrace<T>(
   const watch = (async () => {
     let shutdownAt: number | undefined;
     while (!settled) {
+      const now = deps.now();
+      if (
+        finish && now >= finish.finishMs && !terminatedForFinish
+      ) {
+        terminatedForFinish = true;
+        deps.log(
+          "Finish deadline reached — terminating in-flight agents so they can checkpoint (Issue #4246)",
+        );
+        if (deps.terminateActiveAgentRuns) {
+          await deps.terminateActiveAgentRuns("finish deadline reached", {
+            keepTerminating: true,
+          }).catch(() => {});
+        }
+      }
+      if (finish && now >= finish.drainAtMs) {
+        return {
+          outcome: "abandoned" as const,
+          why: "finish-deadline" as const,
+        };
+      }
       if (shouldShutdown()) {
-        const now = deps.now();
         if (shutdownAt === undefined) shutdownAt = now;
         if (now - shutdownAt >= graceMs) {
-          return { outcome: "abandoned" as const };
+          return { outcome: "abandoned" as const, why: "shutdown" as const };
         }
       }
       await new Promise<void>((resolve) => {
         timer = setTimeout(resolve, 50);
       });
     }
-    return { outcome: "abandoned" as const };
+    return { outcome: "abandoned" as const, why: "shutdown" as const };
   })();
   const result = await Promise.race([completed, watch]);
   settled = true;
@@ -3815,10 +3887,14 @@ async function runIssueScanPool(
   await deps.resetRepoFailures();
   // Claim-runway floor for this cycle (Issues #4304/#425) — resolved once,
   // applied by slotShouldStop before every claim in every slot, and measured
-  // against the supervisor hard cap rather than the cycle deadline.
+  // against the finish deadline when a timeline is set (Issue #4245),
+  // otherwise the supervisor hard cap, never the cycle deadline.
   const poolRunwayFloor = resolveClaimRunwayFloor({
     minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
-    hardCap: deps.claimHardCap,
+    hardCap: anchorClaimCapToFinish(
+      deps.claimHardCap,
+      config.claudeKillAfterSeconds,
+    ),
   });
   if (poolRunwayFloor.inertReason) {
     deps.log(`Claim-runway floor: ${poolRunwayFloor.inertReason}`);
@@ -3863,7 +3939,12 @@ async function runIssueScanPool(
       trackSlotRun(runSlot(i, config, deps, tracker, endTime, pool)),
     );
   }
-  await drainSlots(slots, deps, pool);
+  await drainSlots(
+    slots,
+    deps,
+    pool,
+    finishDrainBound(config.claudeKillAfterSeconds),
+  );
   // Every slot is drained; now surface the primary rate limit one of them
   // hit so the cycle pauses until reset (Issue #4180) — the same path the
   // serial loop's throw takes.
@@ -3879,19 +3960,19 @@ async function runIssueScanPool(
 }
 
 /**
- * Wait for every slot to finish (Issue #4182). A deadline or ordinary drain
- * waits as long as it takes — a slot that started before the deadline
- * completes (or is cancelled by its own run-time bound), never truncated
- * mid-write. A SHUTDOWN request bounds the wait: after
- * `slotDrainGraceSeconds` the still-running slots are abandoned, every
- * outstanding claim they hold is released so no issue stays assigned to a
- * dead worker, and the pool returns so the exit cleanup can terminate the
- * abandoned agent subprocesses.
+ * Wait for every slot to finish (Issue #4182). A slot that started before
+ * the one-hour target completes, unless the two-hour finish plus the kill
+ * grace and the WIP reserve arrives first (Issue #4246). At the finish the
+ * in-flight agents are terminated so the execute path can commit and push;
+ * at the end of that grace a slot that has still not settled has its claim
+ * released and one line names it. A SHUTDOWN request bounds the wait the
+ * same way after `slotDrainGraceSeconds`.
  */
 async function drainSlots(
   slots: Promise<void>[],
   deps: RunCoreDeps,
   pool: SlotPoolState,
+  finish?: { finishMs: number; drainAtMs: number },
 ): Promise<void> {
   // Issue #1815: settle EVERY slot before surfacing a rejection. With
   // `Promise.all` a slot that threw rejected the drain at once and the
@@ -3915,10 +3996,24 @@ async function drainSlots(
     new Promise<void>((resolve) => {
       timer = setTimeout(resolve, 50);
     });
+  let terminatedForFinish = false;
   const watch = (async () => {
     let shutdownAt: number | undefined;
     while (!settled) {
       const now = deps.now();
+      if (finish && now >= finish.finishMs && !terminatedForFinish) {
+        terminatedForFinish = true;
+        pool.draining = true;
+        deps.log(
+          "Finish deadline reached — terminating in-flight agents so they can checkpoint (Issue #4246)",
+        );
+        if (deps.terminateActiveAgentRuns) {
+          await deps.terminateActiveAgentRuns("finish deadline reached", {
+            keepTerminating: true,
+          }).catch(() => {});
+        }
+      }
+      if (finish && now >= finish.drainAtMs) return "finish-elapsed" as const;
       if (pool.shouldShutdown()) {
         if (shutdownAt === undefined) {
           shutdownAt = now;
@@ -3949,24 +4044,42 @@ async function drainSlots(
   const outcome = await Promise.race([all, watch]);
   settled = true;
   if (timer !== undefined) clearTimeout(timer);
-  if (outcome === "grace-elapsed") {
+  if (outcome === "finish-elapsed" || outcome === "grace-elapsed") {
     // Slot holds only (Issue #213): the maintenance lane's hold is a PR, not
     // a claim to release, and the lane frees its own lease in a `finally`.
     const abandoned = pool.registry.slotHolds();
-    deps.logError(
-      `Shutdown grace elapsed with ${abandoned.length} slot(s) still running — ` +
-        `releasing their claims and abandoning the runs: ${
-          abandoned.map((h) => formatInFlightHold(h, Date.now())).join(", ")
-        }`,
-    );
+    const finishRelease = outcome === "finish-elapsed";
+    if (finishRelease) {
+      if (abandoned.length === 0) {
+        deps.log(
+          "Finish deadline grace elapsed — no slot still holds a claim (Issue #4246)",
+        );
+      }
+      for (const hold of abandoned) {
+        deps.log(
+          `Abandoned at the finish deadline: ${hold.repo}#${hold.issueNumber} — claim released, work resumes next run`,
+        );
+      }
+    } else {
+      deps.logError(
+        `Shutdown grace elapsed with ${abandoned.length} slot(s) still running — ` +
+          `releasing their claims and abandoning the runs: ${
+            abandoned.map((h) => formatInFlightHold(h, Date.now())).join(", ")
+          }`,
+      );
+    }
     for (const hold of abandoned) {
-      // The abandoned run's release states why (Issue #4330).
+      // The abandoned run's release states why (Issue #4330). A finish
+      // deadline is a scheduled handover: the success and always hooks fire,
+      // and nothing here adds `failed-once` (Issue #4246).
       const abandonedOutcome = deriveRunOutcome({
         success: false,
-        phase: "shutdown",
-        reason: `Run abandoned: shutdown grace (${
-          graceMs / 1000
-        }s) elapsed while the slot was still running`,
+        phase: finishRelease ? "execute" : "shutdown",
+        reason: finishRelease
+          ? "Released on schedule: the finish deadline was reached"
+          : `Run abandoned: shutdown grace (${
+            graceMs / 1000
+          }s) elapsed while the slot was still running`,
         elapsedSeconds: (Date.now() - hold.sinceMs) / 1000,
       });
       await releaseIssueClaim(
@@ -3975,15 +4088,17 @@ async function drainSlots(
         hold.issueNumber,
         abandonedOutcome,
         // A shutdown after a claim is a terminal failure for that run, so it
-        // takes the failure/always path exactly once (Issue #806). The
-        // abandoned slot keeps running and may still reach its own release,
-        // so the shared guard — not the ordering — is what makes it once.
+        // takes the failure/always path exactly once (Issue #806). The finish
+        // deadline takes the success/always path: the run ended on schedule.
+        // The abandoned slot keeps running and may still reach its own
+        // release, so the shared guard — not the ordering — is what makes it
+        // once.
         {
-          result: "failure",
+          result: finishRelease ? "success" : "failure",
           startedAtEpochMs: hold.sinceMs,
           guard: pool.callbackGuard,
           outcome: abandonedOutcome,
-          phase: "shutdown",
+          phase: finishRelease ? "execute" : "shutdown",
           telemetryAbsentReason: "agent_not_invoked",
         },
       );
@@ -4147,7 +4262,9 @@ async function runSlot(
           log(
             `stop reason=hard-cap — ${
               hardCapRunwaySeconds(pool.claimFloor, deps.now())
-            }s of runway left to the supervisor hard cap, below the ` +
+            }s of runway left to ${
+              claimRunwayBoundPhrase(pool.claimFloor)
+            }, below the ` +
               `${pool.claimFloor.floorSeconds}s claim floor; stopping before ` +
               `the next claim (Issues #4304/#425).`,
           );
