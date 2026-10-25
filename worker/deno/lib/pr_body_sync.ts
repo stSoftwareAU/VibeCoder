@@ -31,9 +31,8 @@
  * overwrites the body when the summary file was deleted — a missing file is
  * treated as "nothing to refresh", not as "blank the body".
  *
- * Issue #3535: the structured Branch outcomes facts file beside the summary is
- * rendered into the rebuilt body and its content is part of the digest input,
- * so a push changing only the facts still refreshes the body.
+ * The digest is of the summary alone (Issue #4234). A facts file beside the
+ * summary is not part of the digest and is not rendered into the body.
  *
  * Issue #3760: the digest-reconcile pass in `pr_body_reconcile.ts` is a further
  * caller, whoever pushed the PR head. It compares the digest the live body
@@ -531,8 +530,8 @@ export async function buildSyncedPrBodyCandidate(
  *   refreshed;
  * - the summary file was not deleted (a deleted summary means "nothing to
  *   refresh", not "blank the body");
- * - the summary actually changed (Issue #3535: the facts file beside it counts
- *   as part of the summary, in both the digest and the legacy diff):
+ * - the summary actually changed (the digest is of the summary alone,
+ *   Issue #4234):
  *   - when the live body carries a summary-digest marker (Issue #3315), that
  *     recorded digest differs from the digest of the summary at HEAD; or
  *   - for a legacy body with no digest marker, a before-push SHA is

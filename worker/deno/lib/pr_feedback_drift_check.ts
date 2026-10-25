@@ -32,28 +32,14 @@
  * present in that summary at the head — a hit gets the same one recovery
  * turn as the model pass's findings, then is reported.
  *
- * Issue #3341 found a third gap: a review-fix push can edit a file a
- * `Branch outcomes:` entry cites as `path:line` without renumbering the
- * list, leaving a citation pointing at the previous head's line numbers
- * (PR #3160, #3312 review evidence: a cited check had moved from line 398
- * to 434 and the entry still named 398). This is also deterministic and
- * no-model-needed (a removed summary gate): for the PR's own summary
- * readable at both the previous head and now (Issue #4155), it maps that summary's
- * previous citations of a file this push changed through `git diff -U0
- * <beforeSha>`, and flags a citation still at the old line number for a
- * line that moved, or an entry left unchanged apart from whitespace
- * although its cited lines were changed or removed by this push — carrying
- * a stale verdict forward rather than re-reading the code at the head.
- * Issue #3536: a ref with a `pr-summary-<N>.facts.json` file contributes its
- * structured `path`/`line`/`endLine` entries instead of its prose list; a
- * malformed or unreadable facts file at either ref is reported as not
- * checked, never read as "no citations".
+ * The branch-outcomes citation check and the docs-sweep check were removed
+ * (Issue #4234). They no longer produce findings.
  *
  * Issue #3347 found that a fix push which only rewrites a manual or prompt
  * sentence was never questioned. The model pass now also runs when the push
  * edits manual or prompt Markdown (`isManualProsePath`), and the question
- * then asks the shared doc-prose question from `doc_prose_claims.ts` — the
- * same one the first-run claim check asks. Issues #3715 and #3731 add changed
+ * then asks the shared doc-prose question from `doc_prose_claims.ts`.
+ * Issues #3715 and #3731 add changed
  * source comments, attached headers and affected manual sections through the
  * shared scope builder. A push changing only the PR summary or non-source,
  * non-Markdown docs still gets no model pass.
@@ -81,7 +67,7 @@
  *     A["Agent's review-fix turn"] --> B{"beforeSha known<br/>and this push<br/>changed something?"}
  *     B -- no --> S["skipped"]
  *     B -- yes --> C["Collect this push's files,<br/>the PR's full file list,<br/>PR summaries, head test counts"]
- *     C --> D["Deterministic checks:<br/>Test Plan recount (mismatches<br/>and unchecked figures),<br/>Docs sweep gate,<br/>stale change-request quotes,<br/>line-citation check"]
+ *     C --> D["Deterministic checks:<br/>Test Plan recount (mismatches<br/>and unchecked figures),<br/>stale change-request quotes"]
  *     C --> MC["Mutation check over this run's own lines"]
  *     C --> E{"Code, test or manual/prompt<br/>Markdown changed?"}
  *     E -- yes --> F["One constrained,<br/>read-only model question:<br/>quote the drifted sentences"]

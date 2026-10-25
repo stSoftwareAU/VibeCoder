@@ -1,5 +1,5 @@
-// Cap overflow in the review-fix drift check is one warning, the same shape
-// as the summary claim check (Issue #4177). The logger level is warn; the
+// Cap overflow in the review-fix drift check is one warning (Issue #4177).
+// The logger level is warn; the
 // message text does not also start with WARNING:.
 // Uses Australian English throughout.
 

@@ -1,7 +1,9 @@
 # Diff-scoped mutation check
 
-The mutation check runs at two call points. At PR raise it is a gate
-(Issue #3393) that blocks the PR. In every review-fix (PR feedback) run it is
+The mutation check runs at two call points. At PR raise it is an advisory
+completion gate (Issue #3393, Issue #4234): the first report is one in-session
+note, and a survivor that remains is one comment on the pull request, which
+is still raised with auto-merge armed. In every review-fix (PR feedback) run it is
 part of the post-agent drift check (Issue #3750) and reports survivors in the
 PR reply without blocking the push; see
 [Review-fix runs](#review-fix-runs-issue-3750). At both it mutates only the
@@ -11,25 +13,25 @@ behaviour was changed on purpose.
 
 ## Why line coverage is not enough
 
-A test can execute a line without asserting on it. Line coverage and the
-`Branch outcomes:` list in the Test Plan both rest on the agent's own
-account of which test reaches which line. A mutation check measures the
+A test can execute a line without asserting on it. Line coverage rests on
+the agent's own account of which test reaches which line. A mutation check measures the
 outcome instead: flip the line, run the tests, and see whether anything goes
 red. A survivor is concrete evidence that no test pins that behaviour.
 
 ## Flow
 
 At PR raise, the gate runs in the issue-run completion phase, after the PR
-summary is final and before the PR is raised. It joins the other late summary gates (docs
-sweep, removed assertions, placeholders, branch outcomes, [coverage carry-over](coverage-carryover-check.md), claim check, pre-PR verifier) and
-feeds the same single recovery turn.
+summary is final and before the PR is raised. It joins the other advisory
+completion gates (placeholders, [coverage carry-over](coverage-carryover-check.md),
+the pre-PR verifier, and the acceptance, review and reproduction gates) and
+feeds the same single in-session note.
 
 ```mermaid
 flowchart TD
     A["PR summary final"] --> B{"skip_mutation_check?"}
     B -- yes --> Z["Raise PR"]
     B -- no --> D["Compute diff origin/base...HEAD"]
-    D -- "diff unavailable" --> X["Block (fail closed)"]
+    D -- "diff unavailable" --> X["Finding (fail closed)"]
     D --> C["Detect language: Deno config above a changed file, else Cargo.toml"]
     C -- "neither Deno nor Cargo" --> N["Not applicable: log the reason"]
     N --> Z
@@ -157,7 +159,7 @@ a file that escapes is skipped, and an escaping `target/` is an error.
 
 At PR raise the diff is `origin/<base>...HEAD`, falling back to
 `<base>...HEAD`. Only added or changed lines are mutated. When no diff can be
-computed the gate fails closed and blocks, rather than passing an unmeasured
+computed the gate fails closed and the finding is noted, rather than passing an unmeasured
 change. A review-fix run uses its own diff instead; see
 [Review-fix runs](#review-fix-runs-issue-3750).
 
@@ -182,7 +184,7 @@ wiring has no test that notices it is gone. They apply only to lines that a scan
 of the whole file places directly inside an object or array literal, never to a
 type, an interface, an annotation or a generic argument: mutants run with
 `--no-check`, so a mutant of a type-only line could never be caught and would
-block the PR. A file whose brackets the scan cannot balance gets none of these
+be reported rather than passed. A file whose brackets the scan cannot balance gets none of these
 three, only the kinds above. They count towards the same mutant cap, after the
 other kinds on each line.
 
@@ -215,7 +217,7 @@ mutation cap reached: T of N candidate mutants tried — U untested (past the mu
 ```
 
 Both are warnings and are never reported as a pass. Survivors found before the
-budget ran out or the cap was hit still block.
+budget ran out or the cap was hit are still reported.
 
 ## Child environment
 
@@ -245,9 +247,8 @@ line naming the location and giving a non-empty reason:
 - `worker/deno/lib/example.ts:42` — exempt (untestable): <reason>
 ```
 
-This is the same `exempt (untestable): <reason>` convention the Branch
-outcomes gate uses; an empty reason does not exempt. Every other survivor
-blocks.
+An empty reason does not exempt. Every other survivor is reported on the
+pull request, which is still raised (Issue #4234).
 
 ## Configuration
 

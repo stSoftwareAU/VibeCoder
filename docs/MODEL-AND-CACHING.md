@@ -831,12 +831,11 @@ summary marks `met` (Issue #3766); see
   file loaded and a resolvable comparable base ref (a missing summary skips it;
   an unresolvable base logs it as not checked), whether or not the issue carries
   acceptance criteria. That is normally one per run; each re-run of completion
-  (the in-run recoveries — summary-rule, security-fix, screenshot and the
-  summary-only claim correction turn — and the infrastructure retry) runs it
-  again. It runs even when an earlier summary gate blocks, because its verdict
-  is folded into that block.
-- **Cost.** Its tokens are recorded in the run's stats, like the summary claim
-  check's.
+  (the in-run recoveries — summary-rule, security-fix and screenshot — and
+  the infrastructure retry) runs it again. It runs even when an earlier
+  summary gate reports a finding, because its verdict is folded into that
+  note.
+- **Cost.** Its tokens are recorded in the run's stats.
 - **Tamper check.** A change the issue checkout's `git status` (untracked files
   included, ignored files not) or HEAD shows after the pass becomes a blocking
   finding. The summary is written into the disposable clone only at a path

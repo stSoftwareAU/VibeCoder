@@ -717,8 +717,6 @@ export async function runPrePushGate(opts: {
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
-  /** Default branch ref for the sweptAt check; resolved from origin/HEAD when absent. */
-  defaultRef?: string;
   /**
    * Check every non-merge commit ahead of this ref instead of only commits on
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).

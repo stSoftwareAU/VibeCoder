@@ -8,7 +8,7 @@
  * #3315). So a push made outside the worker
  * (by a human, or another tool) never reaches it, and the body keeps describing
  * the old summary. This pass covers that case. For every worker-authored PR
- * whose body records a summary digest, it reads the summary and facts file at
+ * whose body records a summary digest, it reads the summary at
  * the PR head through the contents API (no checkout) and compares the digest.
  * Only a mismatch rebuilds the body: a disposable shallow clone is checked out
  * at the head and the existing {@link syncPrBodyFromSummary} runs against it, so

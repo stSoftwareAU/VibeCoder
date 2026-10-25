@@ -720,10 +720,9 @@ const TEMPLATE: OpenString = { close: "`", escapes: true, multiline: true };
  * substitutions are lexed as code: a stack of brace depths resumes the
  * template at the `}` that closes each one, so a nested template or quote
  * inside a substitution cannot close the outer template early.
- * Lexing is a heuristic — an exotic string form can still mislead it — so
- * {@link findRemovedAssertions} fails closed on any removed assertion line
- * the lexer entered inside a carried-over string or block comment, and on a
- * side whose lexer ends still inside one ({@link LexedSide.unterminatedFrom}).
+ * Lexing is a heuristic — an exotic string form can still mislead it.
+ * {@link LexedSide.unterminatedFrom} marks a side that ends still inside a
+ * string or block comment, which callers treat as not checked.
  */
 function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
   const out: LexedLine[] = [];

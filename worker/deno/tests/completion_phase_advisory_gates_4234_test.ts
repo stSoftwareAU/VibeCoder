@@ -240,3 +240,159 @@ Deno.test(
     assertEquals(claimQuestions, 0);
   },
 );
+
+function occurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let from = 0;
+  while (from < haystack.length) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return count;
+    count++;
+    from = at + needle.length;
+  }
+  return count;
+}
+
+function verifierClean(): PrePrVerifierResult {
+  return {
+    status: "checked",
+    review: {
+      summary: "clean",
+      findings: [],
+      testChanges: "none",
+      testChangeNotes: [],
+      unrelatedIssues: [],
+      checklist: [],
+      closure: [],
+    },
+  };
+}
+
+Deno.test(
+  "completion - a missing screenshot and an unresolved placeholder are each noted once (Issue #4234)",
+  async () => {
+    const repoPath = await Deno.makeTempDir();
+    const workDir = await Deno.makeTempDir();
+    const summaryPath = `${repoPath}/${SUMMARY_REL}`;
+    await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(summaryPath, SUMMARY);
+
+    const posted: { number: number; body: string }[] = [];
+    let prCreateCalls = 0;
+    let armed = 0;
+
+    const config = buildDefaultWorkerConfig();
+    config.workDir = workDir;
+    const ctx: IssueContext = {
+      repo: REPO,
+      issueNumber: ISSUE,
+      issueTitle: "Make completion gates advisory",
+      issueBody: ISSUE_BODY,
+      issueLabels: ["work-on"],
+      issueComments: "",
+      githubUser: "testbot",
+      config,
+    };
+    const state: PhaseState = {
+      branchName: `issue-${ISSUE}-advisory-gates`,
+      baseBranch: "main",
+      defaultBranch: "main",
+      repoPath,
+      clarityStatus: "not_assessed",
+      claudeOutput: "",
+      executeStartTime: 0,
+      baselineQualityPassed: true,
+      baselineQualityOutput: "",
+    };
+
+    const deps = createMockDeps({
+      github: {
+        createClient: () => stubClient(posted),
+        runGhCommand: (args: string[]) => {
+          if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
+          if (args[0] === "pr" && args[1] === "view") {
+            return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+          }
+          return Promise.resolve(PR_URL);
+        },
+      },
+      git: {
+        runGitCommand: (
+          cmdArgs: string[],
+        ): Promise<
+          Result<{ code: number; stdout: string; stderr: string }>
+        > => {
+          const ok = (stdout: string) =>
+            Promise.resolve({
+              ok: true as const,
+              value: { code: 0, stdout, stderr: "" },
+            });
+          if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
+          if (cmdArgs[0] === "rev-list" && cmdArgs[1] === "--count") {
+            return ok("1\n");
+          }
+          if (cmdArgs[0] === "diff" && cmdArgs.includes("--name-only")) {
+            return ok("web/index.html\n");
+          }
+          return ok("");
+        },
+      },
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true as const,
+            value: { exitCode: 0, output: "noted", timedOut: false },
+          }),
+        runPrePrVerifier: () => Promise.resolve(verifierClean()),
+      },
+      quality: {
+        runQualityGate: () =>
+          Promise.resolve({
+            ok: true as const,
+            value: {
+              checks: [],
+              summary: { text: "All checks passed", passed: true },
+              passed: true,
+              output: "",
+            },
+          }),
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("none") }),
+        findExistingPrForBranch: () =>
+          Promise.resolve({ ok: false as const, error: new Error("none") }),
+        updatePrLabels: () => Promise.resolve({ ok: true, value: undefined }),
+        finalisePr: () => {
+          armed++;
+          return Promise.resolve({
+            ok: true,
+            value: { result: AutoMergeResult.Enabled, message: "armed" },
+          });
+        },
+      },
+    });
+
+    let result;
+    try {
+      result = await workOnIssueCompletion(ctx, state, deps);
+    } finally {
+      await Deno.remove(repoPath, { recursive: true });
+      await Deno.remove(workDir, { recursive: true });
+    }
+
+    assertEquals(result.status, "continue");
+    assertEquals(prCreateCalls, 1);
+    assertEquals(armed, 1);
+    const onPr = posted.filter((comment) => comment.number === 4412);
+    assertEquals(onPr.length, 1);
+    const body = onPr[0]!.body;
+    assertEquals(occurrences(body, "## Notes for the reviewer"), 1);
+    assertEquals(occurrences(body, "## Screenshot Evidence Required"), 1);
+    assertEquals(occurrences(body, "QUALITY_RESULT_PLACEHOLDER"), 1);
+    assertEquals(occurrences(body, "**Unfilled result placeholder.**"), 1);
+    assertStringIncludes(body, "auto-merge stays armed");
+  },
+);
