@@ -445,6 +445,59 @@ Deno.test("scanBumpDiff - a Cargo.toml dependency pin is a crates.io specifier",
   assertEquals(scanBumpDiff(diff).unverifiable, []);
 });
 
+Deno.test("scanBumpDiff - a lookalike crates.io source is not recorded, and the real pin is age-checked", async () => {
+  // The lookalike version differs from the real pin. A substring check for
+  // "crates.io" would record 9.9.9 as well, and the young lookup below
+  // would hold the bump back.
+  const diff = `--- a/Cargo.lock
++++ b/Cargo.lock
+ [[package]]
+ name = "serde"
+-version = "1.0.200"
++version = "1.0.210"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ [[package]]
+ name = "libc"
+-version = "0.2.160"
++version = "0.2.169"
+ source = "sparse+https://index.crates.io/"
+ [[package]]
+ name = "host-lookalike"
+-version = "9.9.8"
++version = "9.9.9"
+ source = "registry+https://crates.io.evil.example/rust-lang/crates.io-index"
+ [[package]]
+ name = "path-lookalike"
+-version = "8.8.7"
++version = "8.8.8"
+ source = "registry+https://github.com/evil/crates.io-index"
+`;
+  const scan = scanBumpDiff(diff);
+  assertEquals(scan.specifiers, [
+    { registry: "crates", name: "serde", version: "1.0.210" },
+    { registry: "crates", name: "libc", version: "0.2.169" },
+  ]);
+  assertEquals(scan.unverifiable, []);
+
+  const result = await auditBumpDiff(
+    diff,
+    24,
+    makeDeps({
+      "crates:serde@1.0.210": hoursAgo(72),
+      "crates:libc@0.2.169": hoursAgo(72),
+      "crates:host-lookalike@9.9.9": hoursAgo(0.1),
+      "crates:path-lookalike@8.8.8": hoursAgo(0.1),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(result.blocked, []);
+  assertEquals(result.unverifiable, []);
+  assertEquals(
+    result.verdicts.map((v) => `${v.specifier.name}@${v.specifier.version}`),
+    ["serde@1.0.210", "libc@0.2.169"],
+  );
+});
+
 Deno.test("scanBumpDiff - a git Cargo package is not a crates.io bump", () => {
   const diff = `--- a/Cargo.lock
 +++ b/Cargo.lock

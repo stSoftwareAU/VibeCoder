@@ -354,9 +354,48 @@ function emptyCargoDraft(): CargoPackageDraft {
 }
 
 /**
+ * The `https` URL inside a Cargo.lock registry source (`registry+` or
+ * `sparse+`). Git and path sources are not registry indexes.
+ */
+function cargoRegistryUrl(source: string): URL | undefined {
+  let rest: string | undefined;
+  if (source.startsWith("registry+")) {
+    rest = source.slice("registry+".length);
+  } else if (source.startsWith("sparse+")) {
+    rest = source.slice("sparse+".length);
+  }
+  if (rest === undefined) return undefined;
+  try {
+    return new URL(rest);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when `source` names the official crates.io index.
+ *
+ * The host must be `index.crates.io` or `crates.io`, or `github.com` with
+ * the path `/rust-lang/crates.io-index` (the git index Cargo still records).
+ * Equality on the parsed host rejects a lookalike such as
+ * `crates.io.evil.example`.
+ */
+function isCratesIoIndexSource(source: string): boolean {
+  const url = cargoRegistryUrl(source);
+  if (!url || url.protocol !== "https:") return false;
+  const host = url.hostname;
+  if (host === "index.crates.io" || host === "crates.io") return true;
+  if (host !== "github.com") return false;
+  const path = url.pathname.length > 1 && url.pathname.endsWith("/")
+    ? url.pathname.slice(0, -1)
+    : url.pathname;
+  return path === "/rust-lang/crates.io-index";
+}
+
+/**
  * Emit a crates.io specifier when this package block's version was added
- * and the source is crates.io. Path and git packages have no crates.io
- * publish time, so they are left alone.
+ * and the source is the crates.io index. Path and git packages have no
+ * crates.io publish time, so they are left alone.
  */
 function flushCargoDraft(
   draft: CargoPackageDraft,
@@ -365,7 +404,7 @@ function flushCargoDraft(
 ): CargoPackageDraft {
   if (
     draft.versionAdded && draft.name && draft.version &&
-    draft.source?.includes("crates.io")
+    draft.source !== undefined && isCratesIoIndexSource(draft.source)
   ) {
     const version = pinnedVersion(draft.version);
     if (version) {
