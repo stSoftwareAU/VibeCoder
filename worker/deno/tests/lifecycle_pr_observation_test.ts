@@ -138,6 +138,7 @@ Deno.test("PR observations fail quality when a startup-failed check suite sits u
     appSlug: "github-actions",
     status: "completed",
     conclusion: "startup_failure",
+    checkRunCount: 0,
   };
   const cases: Array<[PrRollup["checkSuites"], string]> = [
     [[startupFailure], "fail"],

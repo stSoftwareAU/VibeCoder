@@ -121,8 +121,21 @@ Deno.test("check_runs_batch - fetchCheckRunsBatch reads the head commit's check 
       appSlug: "github-actions",
       status: "completed",
       conclusion: "startup_failure",
+      checkRunCount: 0,
+      workflowName: null,
+      workflowPath: null,
+      runUrl: null,
     },
-    { id: 9001, appSlug: "review-bot", status: "queued", conclusion: null },
+    {
+      id: 9001,
+      appSlug: "review-bot",
+      status: "queued",
+      conclusion: null,
+      checkRunCount: 0,
+      workflowName: null,
+      workflowPath: null,
+      runUrl: null,
+    },
   ]);
   // A PR whose head carries no suites reads as none, not as malformed.
   assertEquals(result.rollups.get(20)?.checkSuites, []);
@@ -476,6 +489,7 @@ Deno.test("check_runs_batch - rollupToCheckRunsResponse carries the check suites
         appSlug: "github-actions",
         status: "completed",
         conclusion: "startup_failure",
+        checkRunCount: 0,
       },
     ],
   };
@@ -486,6 +500,7 @@ Deno.test("check_runs_batch - rollupToCheckRunsResponse carries the check suites
       app_slug: "github-actions",
       status: "completed",
       conclusion: "startup_failure",
+      check_run_count: 0,
     },
   ]);
 });
@@ -741,11 +756,34 @@ Deno.test("check_runs_batch - rollupToStartupFailedSuites turns a zero-run start
       appSlug: "github-actions",
       status: "completed",
       conclusion: "startup_failure",
+      checkRunCount: 0,
     },
   ]));
   assertEquals(entries, [{
     id: 31,
     name: "GitHub Actions workflow (suite 31)",
+    status: "completed",
+    conclusion: "startup_failure",
+  }]);
+});
+
+Deno.test("check_runs_batch - rollupToStartupFailedSuites names the workflow file and run URL (Issue #4347)", () => {
+  const entries = rollupToStartupFailedSuites(rollupWithSuites([
+    {
+      id: 31,
+      appSlug: "github-actions",
+      status: "completed",
+      conclusion: "startup_failure",
+      checkRunCount: 0,
+      workflowName: "actionlint",
+      workflowPath: ".github/workflows/actionlint.yml",
+      runUrl: "https://github.com/acme/tools/actions/runs/99",
+    },
+  ]));
+  assertEquals(entries, [{
+    id: 31,
+    name:
+      "actionlint (.github/workflows/actionlint.yml) https://github.com/acme/tools/actions/runs/99",
     status: "completed",
     conclusion: "startup_failure",
   }]);
@@ -757,6 +795,7 @@ Deno.test("check_runs_batch - rollupToStartupFailedSuites ignores every suite th
     appSlug: "github-actions",
     status: "completed",
     conclusion: "startup_failure" as string | null,
+    checkRunCount: 0,
   };
   const flips = [
     { ...base, id: null },
@@ -766,6 +805,7 @@ Deno.test("check_runs_batch - rollupToStartupFailedSuites ignores every suite th
     { ...base, conclusion: null },
     { ...base, conclusion: "success" },
     { ...base, conclusion: "failure" },
+    { ...base, checkRunCount: 2 },
   ];
   for (const flip of flips) {
     assertEquals(rollupToStartupFailedSuites(rollupWithSuites([flip])), []);

@@ -312,21 +312,25 @@ policy rejects a `uses:` action, GitHub records a check **suite** with conclusio
 `startup_failure` and creates **no check run** at all, so a check-run rollup
 never shows it (Issue #4347). `determineCiStatus()` therefore also reads the
 head commit's check suites: a completed suite from the `github-actions` app
-whose conclusion is not on the passing allowlist makes the verdict `failed`,
-even when the commit has no check runs and no commit statuses. The suites come
-from GraphQL `checkSuites` on the batched read, and from
-`repos/{repo}/commits/{sha}/check-suites` on the REST fallback. Suites from
-other apps, and suites that have not finished, change nothing. The CI-fix scan
-reads the same suites: a completed `github-actions` suite with conclusion
-`startup_failure` becomes a CI-fix candidate keyed by the suite id, so the fleet
-fixes it without a review round trip.
+whose conclusion is not on the passing allowlist makes the verdict `failed`
+only when that suite created no check run of its own. A suite that has runs is
+already judged through the latest check run, so an earlier failed or cancelled
+run of the same workflow does not fail the commit again. The suites come from
+GraphQL `checkSuites` (including `checkRuns.totalCount`) on the batched read,
+and from `repos/{repo}/commits/{sha}/check-suites`
+(`latest_check_runs_count`) on the REST fallback. Suites from other apps, and
+suites that have not finished, change nothing. The CI-fix scan reads the same
+zero-run suites: a completed `github-actions` suite with conclusion
+`startup_failure` becomes a CI-fix candidate keyed by the suite id and named
+after the workflow file and run URL, so the fleet fixes it without a review
+round trip.
 
 ```mermaid
 flowchart TD
     A[Check-run conclusion] --> B{On the passing allowlist?<br/>success / skipped / neutral}
     B -- yes --> C[passed]
     B -- no --> D[failed — including unknown<br/>and future conclusions]
-    S[Completed github-actions check suite] -- conclusion not on allowlist --> D
+    S[Completed github-actions suite<br/>with no check run] -- conclusion not on allowlist --> D
     C --> E{Rollup state supplied?}
     E -- no --> F[Verdict stands]
     E -- yes --> G[Worse of the two verdicts wins]
@@ -391,8 +395,9 @@ flowchart TD
 A head commit with **no check runs and no commit statuses** has been verified by
 nothing. `checkCiStatus()` reports it as `no_checks` — a status distinct from
 `passed` — and the gate blocks the merge with the `no_checks` reason. A failed
-`github-actions` check suite on such a head makes it `failed` instead, because a
-suite can exist with no check run ([the allowlist](#the-ci-verdict-is-an-allowlist)). The
+`github-actions` check suite with no check run of its own on such a head makes
+it `failed` instead, because a suite can exist with no check run
+([the allowlist](#the-ci-verdict-is-an-allowlist)). The
 direct-merge path is the one that bypasses branch protection, so it must fail
 closed here exactly as its neighbouring guards do.
 

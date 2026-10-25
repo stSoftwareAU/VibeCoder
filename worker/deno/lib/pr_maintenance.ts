@@ -819,6 +819,45 @@ export async function fetchFailedCheckRuns(
  * carries no check run, so {@link fetchFailedCheckRuns} cannot see it; it is
  * returned as a synthetic entry keyed by the suite id.
  */
+/**
+ * The workflow run GitHub recorded for a check suite, via
+ * `actions/runs?check_suite_id=` (Issue #4347). A missing or unreadable run
+ * leaves the CI-fix candidate named by the suite id.
+ */
+async function workflowRunForSuite(
+  repo: string,
+  suiteId: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<
+  { name: string | null; path: string | null; htmlUrl: string | null }
+> {
+  const empty = { name: null, path: null, htmlUrl: null };
+  try {
+    const output = await ghCommandFn([
+      "api",
+      `repos/${repo}/actions/runs?check_suite_id=${suiteId}`,
+      "--jq",
+      ".workflow_runs[0] // {} | {name, path, html_url}",
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return empty;
+    }
+    const run = parsed as {
+      name?: unknown;
+      path?: unknown;
+      html_url?: unknown;
+    };
+    return {
+      name: typeof run.name === "string" ? run.name : null,
+      path: typeof run.path === "string" ? run.path : null,
+      htmlUrl: typeof run.html_url === "string" ? run.html_url : null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
 export async function fetchStartupFailedSuites(
   repo: string,
   branchName: string,
@@ -829,12 +868,17 @@ export async function fetchStartupFailedSuites(
       "api",
       `repos/${repo}/commits/${branchName}/check-suites?per_page=100`,
       "--jq",
-      `[.check_suites[] | select(.app.slug == "github-actions" and .status == "completed" and .conclusion == "${STARTUP_FAILURE_CONCLUSION}") | .id]`,
+      `[.check_suites[] | select(.app.slug == "github-actions" and .status == "completed" and .conclusion == "${STARTUP_FAILURE_CONCLUSION}" and .latest_check_runs_count == 0) | .id]`,
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((id): id is number => typeof id === "number")
-      .map((id) => startupFailedSuiteEntry(id));
+    const ids = parsed.filter((id): id is number => typeof id === "number");
+    const entries: CheckRunEntry[] = [];
+    for (const id of ids) {
+      const workflow = await workflowRunForSuite(repo, id, ghCommandFn);
+      entries.push(startupFailedSuiteEntry(id, workflow));
+    }
+    return entries;
   } catch {
     return [];
   }

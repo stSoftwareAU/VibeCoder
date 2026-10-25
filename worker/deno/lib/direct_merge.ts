@@ -260,6 +260,13 @@ export interface CheckSuite {
   app_slug: string | null;
   status: string;
   conclusion: string | null;
+  /**
+   * Check runs this suite created (`latest_check_runs_count` on REST,
+   * `checkRuns.totalCount` on GraphQL). A suite with runs is already judged
+   * through the latest-run filter, so only a count of zero is a suite signal
+   * (Issue #4347).
+   */
+  check_run_count: number;
 }
 
 /** GitHub check-runs API response shape. */
@@ -411,7 +418,7 @@ export async function checkCiStatus(
       "api",
       `repos/${repo}/commits/${headSha}/check-suites?per_page=100`,
       "--jq",
-      "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion}]}",
+      "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion, check_run_count: (.latest_check_runs_count // -1)}]}",
     ]);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -466,20 +473,26 @@ export async function checkCiStatus(
  * `startup_failure`, `stale`, and any value GitHub adds in future) fails
  * closed.
  */
-const PASSING_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
+export const PASSING_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
 
 /**
  * Whether a check suite is a completed GitHub Actions suite whose conclusion
- * is not on the passing allowlist (Issue #4347). Such a suite fails the commit
- * even when it created no check run: a workflow that fails at startup, such as
- * one whose `uses:` action the Actions policy rejects, is recorded that way.
- * Suites from other apps, and suites that have not finished, do not count.
+ * is not on the passing allowlist and which created no check run (Issue
+ * #4347). A workflow that fails at startup, such as one whose `uses:` action
+ * the Actions policy rejects, is recorded that way. A suite that did create
+ * runs is already judged through the check-run rollup, which keeps only the
+ * latest run of each name, so an earlier failed or cancelled run of the same
+ * workflow must not fail the commit again. Suites from other apps, and suites
+ * that have not finished, do not count. Status and conclusion are compared
+ * case-folded so this agrees with the review gate's copy.
  */
-function isFailedActionsSuite(suite: CheckSuite): boolean {
+export function isFailedActionsSuite(suite: CheckSuite): boolean {
+  const conclusion = suite.conclusion?.toLowerCase() ?? null;
   return suite.app_slug === ACTIONS_APP_SLUG &&
-    suite.status === "completed" &&
-    suite.conclusion !== null &&
-    !PASSING_CONCLUSIONS.has(suite.conclusion);
+    suite.status.toLowerCase() === "completed" &&
+    conclusion !== null &&
+    !PASSING_CONCLUSIONS.has(conclusion) &&
+    suite.check_run_count === 0;
 }
 
 /** Commit-status states that count as passing (Issue #3945). */
@@ -515,8 +528,8 @@ function rollupStateToCiStatus(
  * Determine the aggregate CI status from check runs and combined status.
  *
  * Logic:
- * - If a completed GitHub Actions check suite has a conclusion off the passing
- *   allowlist → failed, even with no check runs (Issue #4347).
+ * - If a completed GitHub Actions check suite created no check run and has a
+ *   conclusion off the passing allowlist → failed (Issue #4347).
  * - If no checks exist at all → no_checks (unverified, not green — #3705).
  * - If any check run's conclusion is not on the passing allowlist → failed.
  * - If the combined status state is not `success`/`pending` → failed.
@@ -539,8 +552,8 @@ export function determineCiStatus(
   const hasCheckRuns = checkRuns.total_count > 0;
   const hasCommitStatuses = combinedStatus.statuses.length > 0;
 
-  // A failed GitHub Actions suite fails the commit whatever else is present,
-  // including when it created no check run at all (Issue #4347).
+  // A zero-run GitHub Actions suite fails the commit whatever else is present
+  // (Issue #4347). A suite that has runs is left to the check-run rule.
   if ((checkRuns.check_suites ?? []).some(isFailedActionsSuite)) {
     return "failed";
   }

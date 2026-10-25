@@ -567,6 +567,26 @@ Deno.test("direct_merge - checkCiStatus fails a github-actions startup_failure s
   assertEquals(status, "failed");
 });
 
+Deno.test("direct_merge - checkCiStatus ignores a failed or cancelled suite that a later run of the same workflow replaced (Issue #4347)", async () => {
+  for (const conclusion of ["FAILURE", "CANCELLED"]) {
+    const status = await graphqlVerdict([
+      {
+        appSlug: "github-actions",
+        status: "COMPLETED",
+        conclusion,
+        checkRunCount: 2,
+      },
+      {
+        appSlug: "github-actions",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        checkRunCount: 1,
+      },
+    ]);
+    assertEquals(status, "passed", conclusion);
+  }
+});
+
 Deno.test("direct_merge - checkCiStatus ignores a queued suite from another app (Issue #4347)", async () => {
   const status = await graphqlVerdict([
     { appSlug: "review-bot", status: "QUEUED", conclusion: null },
@@ -669,6 +689,7 @@ Deno.test("direct_merge - checkCiStatus REST fallback fails a github-actions sta
         app_slug: "github-actions",
         status: "completed",
         conclusion: "startup_failure",
+        check_run_count: 0,
       },
     ],
   }));
@@ -735,7 +756,7 @@ Deno.test("direct_merge - checkCiStatus REST fallback asks gh for exactly the ap
     "api",
     `repos/owner/repo/commits/${FAKE_SHA}/check-suites?per_page=100`,
     "--jq",
-    "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion}]}",
+    "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion, check_run_count: (.latest_check_runs_count // -1)}]}",
   ]]);
 });
 
@@ -769,6 +790,7 @@ const FAILED_ACTIONS_SUITE: CheckSuite = {
   app_slug: "github-actions",
   status: "completed",
   conclusion: "startup_failure",
+  check_run_count: 0,
 };
 
 function withSuite(suite: CheckSuite): CheckRunsResponse {

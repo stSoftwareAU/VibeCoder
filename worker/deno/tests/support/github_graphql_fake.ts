@@ -63,6 +63,17 @@ export interface FakeCheckSuite {
   status: string;
   /** Null while the suite has not finished. */
   conclusion: string | null;
+  /**
+   * Check runs this suite created. Defaults to zero, the startup-failure
+   * shape (Issue #4347).
+   */
+  checkRunCount?: number;
+  /** Workflow display name, when the suite has a workflow run. */
+  workflowName?: string | null;
+  /** Workflow file path, for example `.github/workflows/actionlint.yml`. */
+  workflowPath?: string | null;
+  /** HTML URL of the workflow run. */
+  runUrl?: string | null;
 }
 
 /** Server-side state for one pull request. */
@@ -241,6 +252,14 @@ function pullRequestNode(
             app: s.appSlug === null ? null : { slug: s.appSlug },
             status: s.status,
             conclusion: s.conclusion,
+            checkRuns: { totalCount: s.checkRunCount ?? 0 },
+            workflowRun: {
+              url: s.runUrl ?? null,
+              workflow: {
+                name: s.workflowName ?? null,
+                path: s.workflowPath ?? null,
+              },
+            },
           }),
         ),
       },

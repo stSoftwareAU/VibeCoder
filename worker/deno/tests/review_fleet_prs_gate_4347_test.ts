@@ -18,10 +18,12 @@ const suite = (
   app: string | null,
   status: string | null,
   conclusion: string | null,
+  checkRunCount = 0,
 ): CheckSuiteNode => ({
   app: app === null ? null : { slug: app },
   status,
   conclusion,
+  checkRuns: { totalCount: checkRunCount },
 });
 
 const GA = "github-actions";
@@ -175,6 +177,25 @@ Deno.test("skipReason (#4347): a red rollup is ci-cancelled only when every red 
     await skipReason(searchPr("FAILURE", [], [cancelledRun]), "nleck"),
     "ci-cancelled",
   );
+});
+
+Deno.test("skipReason (#4347): a failed or cancelled Actions suite that has check runs does not block a green rollup", async () => {
+  // The draft-era Quality suite stays completed/failure (or cancelled) beside
+  // the later green run of the same workflow. It has check runs, so the
+  // rollup already judged the latest run.
+  for (const conclusion of ["FAILURE", "CANCELLED"]) {
+    assertEquals(
+      await skipReason(
+        searchPr("SUCCESS", [
+          suite(GA, "COMPLETED", conclusion, 2),
+          suite(GA, "COMPLETED", "SUCCESS", 1),
+        ]),
+        "nleck",
+      ),
+      null,
+      conclusion,
+    );
+  }
 });
 
 Deno.test("skipReason (#4347): a commit without a checkSuites list fails loud", async () => {

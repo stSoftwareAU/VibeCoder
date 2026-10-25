@@ -70,6 +70,17 @@ export interface RollupCheckSuite {
   status: string;
   /** Lowercased (e.g. "success", "startup_failure"); null when not finished. */
   conclusion: string | null;
+  /**
+   * Check runs this suite created (`checkRuns.totalCount`). Zero means the
+   * suite is invisible to the rollup (Issue #4347).
+   */
+  checkRunCount: number;
+  /** Workflow name from `workflowRun.workflow`, when the suite has a run. */
+  workflowName?: string | null;
+  /** Workflow file path, for example `.github/workflows/actionlint.yml`. */
+  workflowPath?: string | null;
+  /** HTML URL of the workflow run, when GitHub returned one. */
+  runUrl?: string | null;
 }
 
 /** Aggregate rollup for a single PR (check-runs + commit statuses + check suites). */
@@ -136,7 +147,7 @@ export function buildCheckRunsBatchQuery(
         `n${i}: pullRequest(number: ${num}) {
           commits(last: 1) { nodes { commit {
             oid
-            checkSuites(first: 100) { nodes { databaseId app { slug } status conclusion } }
+            checkSuites(first: 100) { nodes { databaseId app { slug } status conclusion checkRuns(first: 1) { totalCount } workflowRun { url workflow { name path } } } }
             statusCheckRollup {
               state
               contexts(first: 100) { nodes {
@@ -200,6 +211,11 @@ interface BatchCheckSuiteNode {
   app?: { slug?: string | null } | null;
   status?: string | null;
   conclusion?: string | null;
+  checkRuns?: { totalCount?: number | null } | null;
+  workflowRun?: {
+    url?: string | null;
+    workflow?: { name?: string | null; path?: string | null } | null;
+  } | null;
 }
 
 /**
@@ -229,6 +245,14 @@ function decodeCheckSuites(
       );
     }
     const slug = node.app?.slug;
+    const count = node.checkRuns?.totalCount;
+    if (typeof count !== "number") {
+      throw new Error(
+        `GraphQL response for PR #${prNumber} lacks checkSuites.checkRuns.totalCount`,
+      );
+    }
+    const workflow = node.workflowRun?.workflow;
+    const runUrl = node.workflowRun?.url;
     return {
       id: typeof node.databaseId === "number" ? node.databaseId : null,
       appSlug: typeof slug === "string" ? slug : null,
@@ -236,6 +260,10 @@ function decodeCheckSuites(
       conclusion: typeof node.conclusion === "string"
         ? node.conclusion.toLowerCase()
         : null,
+      checkRunCount: count,
+      workflowName: typeof workflow?.name === "string" ? workflow.name : null,
+      workflowPath: typeof workflow?.path === "string" ? workflow.path : null,
+      runUrl: typeof runUrl === "string" ? runUrl : null,
     };
   });
 }
@@ -429,6 +457,7 @@ export function rollupToCheckRunsResponse(rollup: PrRollup): CheckRunsResponse {
     app_slug: s.appSlug,
     status: s.status,
     conclusion: s.conclusion,
+    check_run_count: s.checkRunCount,
   }));
   return { total_count: check_runs.length, check_runs, check_suites };
 }
@@ -506,10 +535,40 @@ export const STARTUP_FAILURE_CONCLUSION = "startup_failure";
  * synthetic entry keyed by the suite id — a suite has no check-run id — so the
  * scan raises a CI-fix task for it instead of leaving it to a review round trip.
  */
-export function startupFailedSuiteEntry(suiteId: number): CheckRunEntry {
+/**
+ * Name and location of the workflow run behind a startup-failed suite.
+ * Absent fields keep the entry named by its suite id.
+ */
+export interface StartupFailedWorkflow {
+  name?: string | null;
+  path?: string | null;
+  htmlUrl?: string | null;
+}
+
+/**
+ * The CI-fix candidate for one startup-failed suite (Issue #4347).
+ *
+ * The name carries the workflow and its file path when the run could be
+ * looked up, plus the run URL, so the agent is not handed an anonymous suite
+ * id. Without that lookup the name stays the suite id.
+ */
+export function startupFailedSuiteEntry(
+  suiteId: number,
+  workflow?: StartupFailedWorkflow,
+): CheckRunEntry {
+  const path = workflow?.path ?? null;
+  const name = workflow?.name ?? null;
+  const url = workflow?.htmlUrl ?? null;
+  let label = `GitHub Actions workflow (suite ${suiteId})`;
+  if (path) {
+    const title = name && name.length > 0 ? name : "GitHub Actions";
+    label = url ? `${title} (${path}) ${url}` : `${title} (${path})`;
+  } else if (name && name.length > 0) {
+    label = url ? `${name} ${url}` : name;
+  }
   return {
     id: suiteId,
-    name: `GitHub Actions workflow (suite ${suiteId})`,
+    name: label,
     status: "completed",
     conclusion: STARTUP_FAILURE_CONCLUSION,
   };
@@ -524,9 +583,14 @@ export function rollupToStartupFailedSuites(
     if (
       suite.id === null || suite.appSlug !== ACTIONS_APP_SLUG ||
       suite.status !== "completed" ||
-      suite.conclusion !== STARTUP_FAILURE_CONCLUSION
+      suite.conclusion !== STARTUP_FAILURE_CONCLUSION ||
+      suite.checkRunCount !== 0
     ) continue;
-    entries.push(startupFailedSuiteEntry(suite.id));
+    entries.push(startupFailedSuiteEntry(suite.id, {
+      name: suite.workflowName,
+      path: suite.workflowPath,
+      htmlUrl: suite.runUrl,
+    }));
   }
   return entries;
 }

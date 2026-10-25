@@ -179,6 +179,11 @@ export interface CheckSuiteNode {
   status?: string | null;
   /** The suite's conclusion, set once it is COMPLETED. */
   conclusion?: string | null;
+  /**
+   * Check runs this suite created. Only `totalCount === 0` is a suite signal:
+   * a suite with runs is already judged through the rollup (Issue #4347).
+   */
+  checkRuns?: { totalCount?: number | null } | null;
 }
 
 export interface SearchPr {
@@ -614,14 +619,17 @@ function everyRedCheckCancelled(nodes: RollupContextNode[]): boolean {
 
 // Suite conclusions that do not fail the suite. Mirrors PASSING_CONCLUSIONS
 // in worker/deno/lib/direct_merge.ts (lower-case there); this gate is a
-// standalone script, so it keeps its own copy.
+// standalone script, so it keeps its own copy. actions_suite_predicate_4347_test
+// fails when the two copies disagree.
 const PASSING_SUITE_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 
 /**
- * The conclusions of the failed GitHub Actions check suites (Issue #4347).
- * A workflow that fails at startup records a COMPLETED suite with no check
- * run, so the rollup never shows it. Suites from other apps, and suites not
- * yet COMPLETED, are ignored.
+ * The conclusions of the failed GitHub Actions check suites that created no
+ * check run (Issue #4347). A workflow that fails at startup records a
+ * COMPLETED suite with no check run, so the rollup never shows it. A suite
+ * that has runs is already judged through the rollup's latest run, including
+ * a failed or cancelled run that a later run of the same workflow replaced.
+ * Suites from other apps, and suites not yet COMPLETED, are ignored.
  */
 export function failedActionsSuiteConclusions(
   nodes: CheckSuiteNode[],
@@ -631,6 +639,7 @@ export function failedActionsSuiteConclusions(
     if (node.app?.slug !== "github-actions") continue;
     if (node.status?.toUpperCase() !== "COMPLETED") continue;
     if (node.conclusion === undefined || node.conclusion === null) continue;
+    if (node.checkRuns?.totalCount !== 0) continue;
     const conclusion = node.conclusion.toUpperCase();
     if (!PASSING_SUITE_CONCLUSIONS.has(conclusion)) failed.push(conclusion);
   }
@@ -703,7 +712,7 @@ query($q: String!, $after: String) {
       author { login }
       commits(last: 1) { nodes { commit { statusCheckRollup { state
         contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
-      } checkSuites(first: 100) { nodes { app { slug } status conclusion } } } } }
+      } checkSuites(first: 100) { nodes { app { slug } status conclusion checkRuns(first: 1) { totalCount } } } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
     } }
   }

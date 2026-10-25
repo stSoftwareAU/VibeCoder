@@ -888,6 +888,46 @@ Deno.test("findFailedCiChecks - a green run plus a zero-run startup_failure suit
   }
 });
 
+Deno.test("findFailedCiChecks - a startup_failure suite is named after its workflow file (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-named-" });
+  try {
+    const { gh: graphqlGh } = fakeGithubGraphQL({
+      owner: "org",
+      name: "repo",
+      pullRequests: {
+        [PR_NUMBER]: {
+          headOid: HEAD_SHA,
+          rollupState: "SUCCESS",
+          contexts: [],
+          checkSuites: [{
+            databaseId: SUITE_ID,
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "STARTUP_FAILURE",
+            workflowName: "actionlint",
+            workflowPath: ".github/workflows/actionlint.yml",
+            runUrl: "https://github.com/org/repo/actions/runs/99",
+          }],
+        },
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) return graphqlGh(args);
+      return Promise.resolve("[]");
+    };
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(
+      found.checkName,
+      "actionlint (.github/workflows/actionlint.yml) https://github.com/org/repo/actions/runs/99",
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
 Deno.test("findFailedCiChecks - the REST fallback also hands a zero-run startup_failure suite to CI-fix (Issue #4347)", async () => {
   const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-rest-" });
   try {
@@ -917,7 +957,40 @@ Deno.test("findFailedCiChecks - the REST fallback also hands a zero-run startup_
       suiteCall,
       `api repos/${REPO}/commits/issue-1-fix/check-suites?per_page=100 --jq ` +
         `[.check_suites[] | select(.app.slug == "github-actions" and ` +
-        `.status == "completed" and .conclusion == "startup_failure") | .id]`,
+        `.status == "completed" and .conclusion == "startup_failure" and ` +
+        `.latest_check_runs_count == 0) | .id]`,
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - the REST fallback names the suite after the workflow run (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-rest-name-" });
+  try {
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) {
+        return Promise.reject(new Error("GraphQL error"));
+      }
+      if (key.includes("/check-suites")) {
+        return Promise.resolve(`[${SUITE_ID}]`);
+      }
+      if (key.includes("actions/runs")) {
+        return Promise.resolve(JSON.stringify({
+          name: "actionlint",
+          path: ".github/workflows/actionlint.yml",
+          html_url: "https://github.com/org/repo/actions/runs/99",
+        }));
+      }
+      return Promise.resolve("[]");
+    };
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(
+      found.checkName,
+      "actionlint (.github/workflows/actionlint.yml) https://github.com/org/repo/actions/runs/99",
     );
   } finally {
     await Deno.remove(stateDir, { recursive: true });

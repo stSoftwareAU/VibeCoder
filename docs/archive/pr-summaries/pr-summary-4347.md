@@ -5,8 +5,11 @@ GitHub records such a workflow as a GitHub Actions **check suite** with
 conclusion `startup_failure` and zero check runs, which is not a
 `statusCheckRollup` context, so neither the worker nor the review gate saw it.
 Both now read the head commit's check suites and treat a completed
-`github-actions` suite with a non-allowlisted conclusion as failed, and the
-CI-fix scan now hands a `startup_failure` suite to the fleet. Closes #4347.
+`github-actions` suite with a non-allowlisted conclusion as failed only when
+that suite created no check run. A suite that has runs is left to the latest
+check run, so a replaced draft run does not stick. The CI-fix scan hands a
+`startup_failure` suite to the fleet, named after the workflow file. Closes
+#4347.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -16,7 +19,7 @@ flowchart TD
     A[Head commit] --> B[statusCheckRollup: check runs + statuses]
     A --> C[checkSuites: app slug, status, conclusion]
     B --> D{determineCiStatus / skipReason}
-    C --> E{Completed github-actions suite<br/>not success / skipped / neutral?}
+    C --> E{Completed github-actions suite<br/>with no check run, and not<br/>success / skipped / neutral?}
     E -- yes --> F[failed / ci-failed]
     E -- no --> D
 ```
@@ -40,10 +43,12 @@ flowchart TD
   fallback) and the gate throws. A missing key is never read as "no suites". The
   REST fallback likewise errors when the `check-suites` call fails or returns no
   array.
-- Only `github-actions` suites count, and only when completed with a conclusion
-  off `success`/`skipped`/`neutral`, so a queued zero-run suite from a review or
-  notification app keeps today's verdict. The gate keeps its own copy of the
-  allowlist because it is a standalone script (a comment names the worker twin).
+- Only `github-actions` suites count, and only when completed, with no check run
+  of their own, and a conclusion off `success`/`skipped`/`neutral`. A suite that
+  created runs is already judged by the latest check run. A queued zero-run
+  suite from a review or notification app keeps today's verdict. The gate keeps
+  its own copy of the allowlist because it is a standalone script;
+  `actions_suite_predicate_4347_test.ts` fails when the two copies disagree.
 - In the gate, a failed suite makes `ci-cancelled` impossible unless every
   failed suite is also `CANCELLED`; a failed suite on a green or absent rollup
   is `ci-failed` and is checked before `waiting-ci`.
@@ -53,8 +58,11 @@ flowchart TD
 - The CI-fix scan (`findFailedCiChecks`) sees the failure too. A suite with no
   check run has no check-run id, so `rollupToStartupFailedSuites` (GraphQL) and
   `fetchStartupFailedSuites` (REST fallback) return a synthetic `CheckRunEntry`
-  keyed by the **suite id**, named `GitHub Actions workflow (suite <id>)`, with
-  conclusion `startup_failure`. Only the CI-fix scan asks for it
+  keyed by the **suite id**. When the workflow run can be read (`workflowRun` on
+  GraphQL, `actions/runs?check_suite_id=` on the REST fallback) the entry is
+  named after the workflow and its file path and includes the run URL; otherwise
+  the name stays `GitHub Actions workflow (suite <id>)`. Conclusion is
+  `startup_failure`. Only the CI-fix scan asks for it
   (`includeStartupFailedSuites`); the spelling scan, `findFailedPrChecks`, does
   not. Only `startup_failure` is surfaced: `action_required` needs a person to
   approve the run, and `failure`/`cancelled` suites already carry check runs.
