@@ -281,9 +281,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // regexes; only a growth measurement pins them (#3257).
   "tests/summary_claim_check_test.ts",
   // The shared Markdown code-span splitter pairs backtick runs in untrusted
-  // issue bodies and PR summaries; only a growth measurement separates its
-  // linear pairing from the quadratic forward scan it replaced (Issue
-  // #3313).
+  // issue bodies and PR summaries. Its inline-run and regex shapes now assert
+  // on what the code produces at hang size, where a super-linear pattern never
+  // returns (Issue #4312). Only the distinct-length pairing case keeps a growth
+  // measurement, separating its linear pairing from the quadratic forward scan
+  // it replaced (Issue #3313), which is why this file stays listed.
   "tests/markdown_code_spans_test.ts",
   // The release path's line-anchored clone-corrupt-repeat regex scans setup
   // failure messages that quote git output; only a growth measurement

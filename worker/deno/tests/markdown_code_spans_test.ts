@@ -24,6 +24,24 @@ function roundTrips(text: string) {
   assertEquals(segments.map((s) => s.value).join(""), text);
 }
 
+/**
+ * Input size for the hang-sized tests (Issue #4312). A super-linear pattern at
+ * this size needs on the order of 10^12 steps and never returns, so the
+ * runner's own timeout is the detector. None of these tests reads a clock.
+ */
+const HANG_SIZE_CHARS = 1_200_000;
+
+/**
+ * Assert that `text` comes back as one prose segment holding all of it: the
+ * shape the splitter yields for an input with no backtick, fence or code span.
+ */
+function assertHangSizedProse(text: string) {
+  const segments = splitMarkdownCode(text);
+  assertEquals(segments.map((s) => s.value).join(""), text);
+  assertEquals(segments.filter((s) => s.inCode).length, 0);
+  assertEquals(segments.length, 1);
+}
+
 Deno.test("splitMarkdownCode round-trips plain prose", () => {
   roundTrips("just some prose with no code at all");
 });
@@ -284,20 +302,20 @@ Deno.test("parseFenceLine reads the rest of the line through a lone CR", () => {
   assertEquals(parsed, { char: "`", length: 3, rest: "\rjs" });
 });
 
-Deno.test("parseFenceLine scales linearly on a long run followed by a character `.` rejects", () => {
+Deno.test("parseFenceLine finishes on a long run followed by a character `.` rejects (hang-sized input, Issue #4312)", () => {
   // A long backtick run followed by a lone CR and then more text: `.` cannot
   // cross the CR, so the old `(.*)$` tail backtracked the run length over and
   // over, re-scanning to the end of the line each time — quadratic in the run
-  // length. The CR must not be the line's last character — `trim()` would
-  // strip it from the edge and hide the defect — so a trailing "x" keeps it
-  // in the middle.
-  const build = (chars: number): string => "`".repeat(chars - 2) + "\rx";
-  assertLinearGrowth(
-    "parseFenceLine on a long run followed by a lone CR",
-    build,
-    (input) => parseFenceLine(input) !== null,
-    { baseChars: 4_000, sizeFactor: 4 },
-  );
+  // length. At hang size that never returns, so the runner's timeout is the
+  // detector; no clock is read. The CR must not be the line's last character
+  // — `trim()` would strip it from the edge and hide the defect — so a
+  // trailing "x" keeps it in the middle.
+  const input = "`".repeat(HANG_SIZE_CHARS - 2) + "\rx";
+  assertEquals(parseFenceLine(input), {
+    char: "`",
+    length: HANG_SIZE_CHARS - 2,
+    rest: "\rx",
+  });
 });
 
 Deno.test("isClosingFence requires the same character, same-or-greater length, no info string", () => {
@@ -404,7 +422,7 @@ Deno.test("splitMarkdownCode: an unmatched run is literal prose", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Growth: linear on hostile input
+// Hostile input: hang-sized where the output is pinned, growth where timed
 // ---------------------------------------------------------------------------
 
 Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched runs", () => {
@@ -413,9 +431,19 @@ Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched r
   // single-backtick runs that pair harmlessly with each other. This is the
   // pathological shape for a forward per-opener scan: each unmatched run
   // scans past every later single-backtick run looking in vain for its own
-  // length, which is quadratic-ish (confirmed below against the old
-  // implementation) but linear for the backward next-same-length map this
-  // module uses.
+  // length, which costs about n^1.5 (sqrt(n) openers, each scanning about n
+  // runs) but is linear for the backward next-same-length map this module
+  // uses.
+  //
+  // This is the one stopwatch left in this file, and the reason the file stays
+  // in WALL_CLOCK_TEST_FILES (Issue #4312). It cannot be made hang-sized: the
+  // openers are distinct-length, so there are at most about sqrt(2n) of them,
+  // and an n^1.5 scan finishes at 1.2M chars well inside a runner timeout.
+  // Only growth can see it. The allowance is 2 x sizeFactor x the base time,
+  // so a linear rule at 64x (ratio 64) is held to 128, while the n^1.5 scan
+  // (ratio 64^1.5 = 512) is four times over; at the old 16x it was 64 against
+  // an allowance of 32, twice over. The larger factor widens the gap the test
+  // can see, not the 2x slack on the linear side.
   const build = (chars: number): string => {
     const parts: string[] = [];
     let used = 0;
@@ -438,7 +466,7 @@ Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched r
     "splitMarkdownCode on many distinct-length unmatched runs",
     build,
     (input) => splitMarkdownCode(input).length,
-    { baseChars: 150_000, sizeFactor: 16 },
+    { baseChars: 150_000, sizeFactor: 64, repeats: 3 },
   );
 });
 
@@ -459,54 +487,40 @@ Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched r
 // setext-or-thematic-break patterns — one per pattern, as
 // "Vet every regex on untrusted text" (CODING-STANDARDS.md) requires.
 
-Deno.test("splitMarkdownCode scales linearly on a long non-matching indent before an ATX/list/table probe", () => {
+Deno.test("splitMarkdownCode finishes on a long non-matching indent before an ATX/list/table probe (hang-sized input, Issue #4312)", () => {
   // Many leading spaces then a character none of ATX_HEADING_RE,
   // LIST_ITEM_RE or TABLE_ROW_RE accept: each pattern's widened `[ \t]*`
   // prefix must fully unwind without ever finding a match, on every line.
-  const build = (chars: number): string => `${" ".repeat(chars - 1)}x`;
-  assertLinearGrowth(
-    "splitMarkdownCode on a long non-matching leading-whitespace run",
-    build,
-    (input) => splitMarkdownCode(input).length,
-    { baseChars: 150_000, sizeFactor: 8 },
-  );
+  // A super-linear prefix never returns at this size, so the runner's timeout
+  // is the detector and no clock is read. The assertion pins what the code
+  // yields: one prose segment holding the whole input.
+  assertHangSizedProse(`${" ".repeat(HANG_SIZE_CHARS - 1)}x`);
 });
 
-Deno.test("splitMarkdownCode scales linearly on a long block-quote-marker run", () => {
-  // Many leading spaces before `>`: BLOCK_QUOTE_RE's widened `[ \t]*` prefix
-  // must match without backtracking on every line.
-  const build = (chars: number): string => `${" ".repeat(chars - 1)}>`;
-  assertLinearGrowth(
-    "splitMarkdownCode on a long leading-whitespace run before a block quote marker",
-    build,
-    (input) => splitMarkdownCode(input).length,
-    { baseChars: 150_000, sizeFactor: 8 },
-  );
+Deno.test("splitMarkdownCode finishes on a long block-quote-marker run (hang-sized input, Issue #4312)", () => {
+  // Many leading spaces before `>`: QUOTE_PREFIX_RE's widened `[ \t]*` prefix
+  // must match without backtracking on every line. A super-linear match never
+  // returns at this size, so the runner's timeout is the detector and no clock
+  // is read. The assertion pins one prose segment for the whole input.
+  assertHangSizedProse(`${" ".repeat(HANG_SIZE_CHARS - 1)}>`);
 });
 
-Deno.test("splitMarkdownCode scales linearly on a long dash run rejected by a trailing character", () => {
+Deno.test("splitMarkdownCode finishes on a long dash run rejected by a trailing character (hang-sized input, Issue #4312)", () => {
   // SETEXT_OR_THEMATIC_BREAK_RE's `\1*` backtracks down a long matching run
   // once, and the disjoint trailing `[ \t]*$` never re-matches the same
   // characters as `\1*` — so a long run of `-` followed by a rejecting
-  // character stays linear rather than quadratic.
-  const build = (chars: number): string => `${"-".repeat(chars - 1)}x`;
-  assertLinearGrowth(
-    "splitMarkdownCode on a long dash run rejected by a trailing non-dash character",
-    build,
-    (input) => splitMarkdownCode(input).length,
-    { baseChars: 150_000, sizeFactor: 8 },
-  );
+  // character stays linear rather than quadratic. A quadratic backtrack never
+  // returns at this size, so the runner's timeout is the detector and no clock
+  // is read. The assertion pins one prose segment for the whole input.
+  assertHangSizedProse(`${"-".repeat(HANG_SIZE_CHARS - 1)}x`);
 });
 
 // PR #3351 review (round 3): QUOTE_PREFIX_RE's outer `+` repeats a group
 // that must itself consume a `>` each time — a long run of `>` markers with
 // no separating spaces must still unwind in one linear pass per line.
-Deno.test("splitMarkdownCode scales linearly on a long block-quote-prefix run", () => {
-  const build = (chars: number): string => `${">".repeat(chars - 1)}x`;
-  assertLinearGrowth(
-    "splitMarkdownCode on a long repeated block-quote-marker prefix",
-    build,
-    (input) => splitMarkdownCode(input).length,
-    { baseChars: 150_000, sizeFactor: 8 },
-  );
+Deno.test("splitMarkdownCode finishes on a long block-quote-prefix run (hang-sized input, Issue #4312)", () => {
+  // A quadratic match never returns at this size, so the runner's timeout is
+  // the detector and no clock is read. The assertion pins one prose segment
+  // for the whole input.
+  assertHangSizedProse(`${">".repeat(HANG_SIZE_CHARS - 1)}x`);
 });
