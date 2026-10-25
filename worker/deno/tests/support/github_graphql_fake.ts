@@ -161,7 +161,7 @@ function findFieldOpening(
   block: string,
   field: string,
 ): { 0: string; 1: string; index: number } | undefined {
-  const opening = /([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{/g;
+  const opening = /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*\{/g;
   for (const match of block.matchAll(opening)) {
     if (match[1] !== field) continue;
     return { 0: match[0], 1: match[2] ?? "", index: match.index ?? 0 };
@@ -243,6 +243,11 @@ function pullRequestNode(
     : [];
   // The suites are emitted only when the query selects them, as GitHub does.
   const suites = selection(commits.body, "checkSuites");
+  const workflowRun = suites && selection(suites.body, "workflowRun");
+  const workflow = workflowRun && selection(workflowRun.body, "workflow");
+  if (workflow && /\bpath\b/.test(workflow.body)) {
+    throw new Error("Field 'path' doesn't exist on type 'Workflow'");
+  }
   const checkSuites = suites
     ? {
       checkSuites: {
@@ -255,9 +260,9 @@ function pullRequestNode(
             checkRuns: { totalCount: s.checkRunCount ?? 0 },
             workflowRun: {
               url: s.runUrl ?? null,
+              file: { path: s.workflowPath ?? null },
               workflow: {
                 name: s.workflowName ?? null,
-                path: s.workflowPath ?? null,
               },
             },
           }),

@@ -978,7 +978,8 @@ late: the deploy/publish workflows have already fired. Enforcement is
   and that command is itself gated on the monitored-repo allowlist and PR
   authorship.
 - **A failed Actions suite is red even with no check run.** A completed
-  `github-actions` check suite whose conclusion is off the passing allowlist
+  `github-actions` check suite with no check run of its own whose conclusion
+  is off the passing allowlist
   (typically `startup_failure`, which creates no check run) makes
   `determineCiStatus` return `failed`. This is checked before the `no_checks`
   return, so the `--allow-no-checks` override never relaxes it. Suites from

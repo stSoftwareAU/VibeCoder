@@ -322,8 +322,11 @@ and from `repos/{repo}/commits/{sha}/check-suites`
 suites that have not finished, change nothing. The CI-fix scan reads the same
 zero-run suites: a completed `github-actions` suite with conclusion
 `startup_failure` becomes a CI-fix candidate keyed by the suite id and named
-after the workflow file and run URL, so the fleet fixes it without a review
-round trip.
+after the workflow and file path. The run URL is carried in its annotations,
+so the agent can locate the startup refusal while the check name and failure
+signature stay stable across pushes. Without workflow metadata the name is
+`GitHub Actions workflow startup failure`. GraphQL reads the path from
+`workflowRun.file.path`; the REST fallback reads the workflow run by suite id.
 
 ```mermaid
 flowchart TD

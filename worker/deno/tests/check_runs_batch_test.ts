@@ -18,7 +18,10 @@ import {
   rollupToCombinedStatusResponse,
   rollupToFailedCheckRuns,
   rollupToStartupFailedSuites,
+  startupFailedSuiteEntry,
 } from "../lib/check_runs_batch.ts";
+import { formatCiAnnotations } from "../lib/pr_ci_processor.ts";
+import { computeFailureSignature } from "../lib/auto_fix_attempt_tracker.ts";
 
 import { fakeGithubGraphQL } from "./support/github_graphql_fake.ts";
 import { RED_CHECK_CONCLUSIONS } from "../lib/ci_infrastructure_rerun.ts";
@@ -26,6 +29,63 @@ import { RED_CHECK_CONCLUSIONS } from "../lib/ci_infrastructure_rerun.ts";
 // ---------------------------------------------------------------------------
 // Behaviour against a fake that models GitHub's own resolution rules
 // ---------------------------------------------------------------------------
+
+Deno.test("check_runs_batch - GitHub workflow-run file metadata survives the batch query (#4347)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      42: {
+        headOid: "head-one",
+        rollupState: "SUCCESS",
+        contexts: [],
+        checkSuites: [{
+          appSlug: "github-actions",
+          status: "COMPLETED",
+          conclusion: "STARTUP_FAILURE",
+          workflowName: "actionlint",
+          workflowPath: ".github/workflows/actionlint.yml",
+          runUrl: "https://github.com/acme/tools/actions/runs/99",
+        }],
+      },
+    },
+  });
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(result.ok);
+  const suite = result.rollups.get(42)?.checkSuites[0];
+  assertEquals(suite?.workflowPath, ".github/workflows/actionlint.yml");
+  assertEquals(suite?.workflowName, "actionlint");
+});
+
+Deno.test("startup failure names and signatures survive new suite ids and run URLs (#4347)", () => {
+  const entries = [31, 32].map((id) =>
+    startupFailedSuiteEntry(id, {
+      name: "actionlint",
+      path: ".github/workflows/actionlint.yml",
+      htmlUrl: `https://github.com/acme/tools/actions/runs/${id}`,
+    })
+  );
+  assert(entries[0] && entries[1]);
+  assertEquals(entries[0].name, entries[1].name);
+  assertEquals(
+    computeFailureSignature({
+      repo: "acme/tools",
+      locus: { kind: "pr", number: 42 },
+      checkName: entries[0].name,
+      logExcerpt: formatCiAnnotations(entries[0].annotations ?? []),
+    }),
+    computeFailureSignature({
+      repo: "acme/tools",
+      locus: { kind: "pr", number: 42 },
+      checkName: entries[1].name,
+      logExcerpt: formatCiAnnotations(entries[1].annotations ?? []),
+    }),
+  );
+  assertEquals(
+    startupFailedSuiteEntry(31).name,
+    startupFailedSuiteEntry(32).name,
+  );
+});
 
 Deno.test("check_runs_batch - each PR receives its own rollup (Issue #471)", async () => {
   const { gh } = fakeGithubGraphQL({
@@ -761,7 +821,7 @@ Deno.test("check_runs_batch - rollupToStartupFailedSuites turns a zero-run start
   ]));
   assertEquals(entries, [{
     id: 31,
-    name: "GitHub Actions workflow (suite 31)",
+    name: "GitHub Actions workflow startup failure",
     status: "completed",
     conclusion: "startup_failure",
   }]);
@@ -782,8 +842,13 @@ Deno.test("check_runs_batch - rollupToStartupFailedSuites names the workflow fil
   ]));
   assertEquals(entries, [{
     id: 31,
-    name:
-      "actionlint (.github/workflows/actionlint.yml) https://github.com/acme/tools/actions/runs/99",
+    name: "actionlint (.github/workflows/actionlint.yml)",
+    annotations: [{
+      path: ".github/workflows/actionlint.yml",
+      start_line: 1,
+      message:
+        "GitHub Actions rejected this workflow before any job started. Workflow run: https://github.com/acme/tools/actions/runs/99",
+    }],
     status: "completed",
     conclusion: "startup_failure",
   }]);
@@ -850,7 +915,7 @@ Deno.test("check_runs_batch - fetchFailedCheckRunsBatch adds startup-failed suit
   );
   assertEquals(withSuites?.get(10), [{
     id: 55,
-    name: "GitHub Actions workflow (suite 55)",
+    name: "GitHub Actions workflow startup failure",
     status: "completed",
     conclusion: "startup_failure",
   }]);

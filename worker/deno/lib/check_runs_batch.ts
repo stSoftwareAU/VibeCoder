@@ -147,7 +147,7 @@ export function buildCheckRunsBatchQuery(
         `n${i}: pullRequest(number: ${num}) {
           commits(last: 1) { nodes { commit {
             oid
-            checkSuites(first: 100) { nodes { databaseId app { slug } status conclusion checkRuns(first: 1) { totalCount } workflowRun { url workflow { name path } } } }
+            checkSuites(first: 100) { nodes { databaseId app { slug } status conclusion checkRuns(first: 1) { totalCount } workflowRun { url file { path } workflow { name } } } }
             statusCheckRollup {
               state
               contexts(first: 100) { nodes {
@@ -214,7 +214,8 @@ interface BatchCheckSuiteNode {
   checkRuns?: { totalCount?: number | null } | null;
   workflowRun?: {
     url?: string | null;
-    workflow?: { name?: string | null; path?: string | null } | null;
+    file?: { path?: string | null } | null;
+    workflow?: { name?: string | null } | null;
   } | null;
 }
 
@@ -252,6 +253,7 @@ function decodeCheckSuites(
       );
     }
     const workflow = node.workflowRun?.workflow;
+    const workflowPath = node.workflowRun?.file?.path;
     const runUrl = node.workflowRun?.url;
     return {
       id: typeof node.databaseId === "number" ? node.databaseId : null,
@@ -262,7 +264,7 @@ function decodeCheckSuites(
         : null,
       checkRunCount: count,
       workflowName: typeof workflow?.name === "string" ? workflow.name : null,
-      workflowPath: typeof workflow?.path === "string" ? workflow.path : null,
+      workflowPath: typeof workflowPath === "string" ? workflowPath : null,
       runUrl: typeof runUrl === "string" ? runUrl : null,
     };
   });
@@ -537,7 +539,7 @@ export const STARTUP_FAILURE_CONCLUSION = "startup_failure";
  */
 /**
  * Name and location of the workflow run behind a startup-failed suite.
- * Absent fields keep the entry named by its suite id.
+ * Absent fields keep a stable generic entry name.
  */
 export interface StartupFailedWorkflow {
   name?: string | null;
@@ -549,8 +551,8 @@ export interface StartupFailedWorkflow {
  * The CI-fix candidate for one startup-failed suite (Issue #4347).
  *
  * The name carries the workflow and its file path when the run could be
- * looked up, plus the run URL, so the agent is not handed an anonymous suite
- * id. Without that lookup the name stays the suite id.
+ * looked up. Run-specific details go into annotations so the check name and
+ * retry signature remain stable across pushes.
  */
 export function startupFailedSuiteEntry(
   suiteId: number,
@@ -559,18 +561,29 @@ export function startupFailedSuiteEntry(
   const path = workflow?.path ?? null;
   const name = workflow?.name ?? null;
   const url = workflow?.htmlUrl ?? null;
-  let label = `GitHub Actions workflow (suite ${suiteId})`;
+  let label = "GitHub Actions workflow startup failure";
   if (path) {
     const title = name && name.length > 0 ? name : "GitHub Actions";
-    label = url ? `${title} (${path}) ${url}` : `${title} (${path})`;
+    label = `${title} (${path})`;
   } else if (name && name.length > 0) {
-    label = url ? `${name} ${url}` : name;
+    label = name;
   }
   return {
     id: suiteId,
     name: label,
     status: "completed",
     conclusion: STARTUP_FAILURE_CONCLUSION,
+    ...(path || url
+      ? {
+        annotations: [{
+          path: path ?? "(workflow path unavailable)",
+          start_line: 1,
+          message:
+            "GitHub Actions rejected this workflow before any job started." +
+            (url ? ` Workflow run: ${url}` : ""),
+        }],
+      }
+      : {}),
   };
 }
 

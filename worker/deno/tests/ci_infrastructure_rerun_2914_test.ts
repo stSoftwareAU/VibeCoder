@@ -11,7 +11,7 @@
  * Uses Australian English throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiCheckScanOptions,
   findFailedCiChecks,
@@ -880,7 +880,7 @@ Deno.test("findFailedCiChecks - a green run plus a zero-run startup_failure suit
     assertEquals(found.checkId, String(SUITE_ID));
     assertEquals(
       found.checkName,
-      `GitHub Actions workflow (suite ${SUITE_ID})`,
+      "GitHub Actions workflow startup failure",
     );
     assertEquals(found.prNumber, PR_NUMBER);
   } finally {
@@ -921,7 +921,15 @@ Deno.test("findFailedCiChecks - a startup_failure suite is named after its workf
     assert(found !== null);
     assertEquals(
       found.checkName,
-      "actionlint (.github/workflows/actionlint.yml) https://github.com/org/repo/actions/runs/99",
+      "actionlint (.github/workflows/actionlint.yml)",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      "https://github.com/org/repo/actions/runs/99",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      ".github/workflows/actionlint.yml",
     );
   } finally {
     await Deno.remove(stateDir, { recursive: true });
@@ -950,7 +958,7 @@ Deno.test("findFailedCiChecks - the REST fallback also hands a zero-run startup_
     assertEquals(found.checkId, String(SUITE_ID));
     assertEquals(
       found.checkName,
-      `GitHub Actions workflow (suite ${SUITE_ID})`,
+      "GitHub Actions workflow startup failure",
     );
     const suiteCall = singleCall(calls, "/check-suites");
     assertEquals(
@@ -990,7 +998,15 @@ Deno.test("findFailedCiChecks - the REST fallback names the suite after the work
     assert(found !== null);
     assertEquals(
       found.checkName,
-      "actionlint (.github/workflows/actionlint.yml) https://github.com/org/repo/actions/runs/99",
+      "actionlint (.github/workflows/actionlint.yml)",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      "https://github.com/org/repo/actions/runs/99",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      ".github/workflows/actionlint.yml",
     );
   } finally {
     await Deno.remove(stateDir, { recursive: true });

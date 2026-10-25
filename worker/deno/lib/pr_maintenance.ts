@@ -18,6 +18,7 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import type { CheckAnnotation } from "./pr_spelling_processor.ts";
 import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
@@ -186,6 +187,8 @@ export interface CheckRunEntry {
   name: string;
   status: string;
   conclusion: string;
+  /** Startup failures have no check-run endpoint; carry their run details here. */
+  annotations?: CheckAnnotation[];
 }
 
 /** Options for PR scanning functions. */
@@ -822,7 +825,7 @@ export async function fetchFailedCheckRuns(
 /**
  * The workflow run GitHub recorded for a check suite, via
  * `actions/runs?check_suite_id=` (Issue #4347). A missing or unreadable run
- * leaves the CI-fix candidate named by the suite id.
+ * leaves the CI-fix candidate with a stable generic name.
  */
 async function workflowRunForSuite(
   repo: string,
@@ -1899,11 +1902,9 @@ export async function findFailedCiChecks(
           checkId: check.id,
         });
 
-        const annotationsJson = await fetchCheckAnnotations(
-          repo,
-          check.id,
-          ghCommandFn,
-        );
+        const annotationsJson = check.annotations
+          ? JSON.stringify(check.annotations)
+          : await fetchCheckAnnotations(repo, check.id, ghCommandFn);
         const encodedAnnotations = encodeBase64(annotationsJson);
 
         const failedCheck: FailedCiCheck = {
