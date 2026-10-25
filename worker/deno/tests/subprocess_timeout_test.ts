@@ -6,8 +6,14 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import {
+  commandOutputWithTimeout,
   DEFAULT_SUBPROCESS_TIMEOUT_MS,
   EXTENDED_SUBPROCESS_TIMEOUT_MS,
   fetchWithTimeout,
@@ -23,7 +29,9 @@ import {
 // =============================================================================
 
 Deno.test("subprocess_timeout - runWithTimeout returns stdout from successful command", async () => {
-  const result = await runWithTimeout("echo", ["hello world"]);
+  const result = await runWithTimeout("echo", ["hello world"], {
+    timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+  });
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.success, true);
@@ -34,7 +42,9 @@ Deno.test("subprocess_timeout - runWithTimeout returns stdout from successful co
 });
 
 Deno.test("subprocess_timeout - runWithTimeout captures non-zero exit code", async () => {
-  const result = await runWithTimeout("sh", ["-c", "exit 42"]);
+  const result = await runWithTimeout("sh", ["-c", "exit 42"], {
+    timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+  });
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.success, false);
@@ -59,7 +69,9 @@ Deno.test("subprocess_timeout - runWithTimeout times out on slow command", async
 });
 
 Deno.test("subprocess_timeout - runWithTimeout returns error for non-existent executable", async () => {
-  const result = await runWithTimeout("nonexistent_command_xyz_12345", []);
+  const result = await runWithTimeout("nonexistent_command_xyz_12345", [], {
+    timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+  });
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(result.error instanceof Error, true);
@@ -67,7 +79,9 @@ Deno.test("subprocess_timeout - runWithTimeout returns error for non-existent ex
 });
 
 Deno.test("subprocess_timeout - runWithTimeout captures stderr", async () => {
-  const result = await runWithTimeout("sh", ["-c", "echo error >&2; exit 1"]);
+  const result = await runWithTimeout("sh", ["-c", "echo error >&2; exit 1"], {
+    timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+  });
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.stderr, "error");
@@ -79,7 +93,7 @@ Deno.test("subprocess_timeout - runWithTimeout with quiet:true mutes stdout but 
   const result = await runWithTimeout(
     "bash",
     ["-c", "echo out; echo err >&2; exit 1"],
-    { quiet: true },
+    { quiet: true, timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS },
   );
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -99,7 +113,7 @@ Deno.test("subprocess_timeout - runWithTimeout with quiet:true captures multi-li
       "-c",
       "echo 'repos.sh status=failed reason=network name=\"foo\"' >&2; exit 2",
     ],
-    { quiet: true },
+    { quiet: true, timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS },
   );
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -111,7 +125,10 @@ Deno.test("subprocess_timeout - runWithTimeout with quiet:true captures multi-li
 });
 
 Deno.test("subprocess_timeout - runWithTimeout supports cwd option", async () => {
-  const result = await runWithTimeout("pwd", [], { cwd: "/tmp" });
+  const result = await runWithTimeout("pwd", [], {
+    cwd: "/tmp",
+    timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+  });
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.success, true);
@@ -170,7 +187,10 @@ Deno.test({
     const result = await runWithTimeout("/bin/sh", [
       "-c",
       'printf "%s" "$VIBE_TEST_VALUE"',
-    ], { env: { VIBE_TEST_VALUE: "carried" } });
+    ], {
+      env: { VIBE_TEST_VALUE: "carried" },
+      timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+    });
     assertEquals(result.ok, true);
     assertEquals(result.ok && result.value.stdout, "carried");
   },
@@ -194,6 +214,7 @@ Deno.test({
     ], {
       clearEnv: true,
       env: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
+      timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
     });
     assertEquals(result.ok, true);
     assertEquals(result.ok && result.value.stdout, "absent");
@@ -213,7 +234,7 @@ Deno.test({
     const result = await runWithTimeout("/bin/sh", [
       "-c",
       'printf "%s" "${HOME:-absent}"',
-    ]);
+    ], { timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS });
     assertEquals(result.ok && result.value.stdout, parentHome);
   },
 });
@@ -248,4 +269,76 @@ Deno.test({
     assert(result.ok && result.value.stderr.includes("Timed out after 300ms"));
     assert(result.ok && result.value.stderr.includes("diagnostic"));
   },
+});
+
+Deno.test("runWithTimeout - a non-positive timeout is a timeout, not success", async () => {
+  const result = await runWithTimeout("echo", ["hi"], { timeoutMs: 0 });
+  assert(result.ok);
+  if (result.ok) {
+    assertEquals(result.value.success, false);
+    assertEquals(result.value.timedOut, true);
+    assertEquals(result.value.code, 124);
+  }
+});
+
+Deno.test("commandOutputWithTimeout - a non-positive timeout names the command and does not spawn", async () => {
+  await assertRejects(
+    () => commandOutputWithTimeout("sleep", { args: ["30"], timeoutMs: 0 }),
+    Error,
+    "sleep timed out after 0ms",
+  );
+});
+
+Deno.test("commandOutputWithTimeout - a child that outlives the timeout is a timeout, not success", async () => {
+  const started = Date.now();
+  await assertRejects(
+    () =>
+      commandOutputWithTimeout("sleep", {
+        args: ["3"],
+        stdout: "null",
+        stderr: "null",
+        stdin: "null",
+        timeoutMs: 200,
+      }),
+    Error,
+    "sleep timed out after 200ms",
+  );
+  const elapsed = Date.now() - started;
+  assert(
+    elapsed < 1_500,
+    `sleep 3 was still running after ${elapsed}ms, so the timeout did not fire`,
+  );
+});
+
+Deno.test("commandOutputWithTimeout - a grandchild holding the pipes does not outlast the timeout", async () => {
+  const started = Date.now();
+  await assertRejects(
+    () =>
+      commandOutputWithTimeout("bash", {
+        args: ["-c", "sleep 3 & wait"],
+        stdout: "piped",
+        stderr: "piped",
+        stdin: "null",
+        timeoutMs: 200,
+      }),
+    Error,
+    "bash timed out after 200ms",
+  );
+  const elapsed = Date.now() - started;
+  assert(
+    elapsed < 1_500,
+    `the orphaned sleep held the pipes for ${elapsed}ms past a 200ms timeout`,
+  );
+});
+
+Deno.test("commandOutputWithTimeout - a finished child returns its piped output and exit code", async () => {
+  const output = await commandOutputWithTimeout("bash", {
+    args: ["-c", "printf out; printf err >&2; exit 3"],
+    stdin: "null",
+    timeoutMs: 10_000,
+  });
+  assertEquals(output.code, 3);
+  assertEquals(output.success, false);
+  assertEquals(new TextDecoder().decode(output.stdout), "out");
+  assertEquals(new TextDecoder().decode(output.stderr), "err");
 });

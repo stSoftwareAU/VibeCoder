@@ -30,6 +30,7 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import { commitAndPushPending } from "../lib/git_push.ts";
+import { captureBranchHead } from "../lib/branch_head_tracker.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import {
   createMockDeps,
@@ -197,6 +198,7 @@ function makeDeps(
     },
     github: { runGhCommand: ghStub },
     git: {
+      captureBranchHead,
       commitAndPushPending: ((...a: Parameters<typeof commitAndPushPending>) =>
         commitAndPushPending(
           a[0],

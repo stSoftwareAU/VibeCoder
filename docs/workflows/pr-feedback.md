@@ -140,8 +140,8 @@ fleet set. It logs `worker-verifier-hold` as the trust reason. This is the
 exception to skipping the host's own comments; an ordinary own-login comment,
 an inline marker or a marker merely quoted in the body does not qualify.
 A fleet eyes reaction marks the hold processed, as for other comments.
-The repair pass does not release `standing-violation` or arm auto-merge;
-independent verification and release remain the follow-up in Issue #3784.
+The PR stays armed for auto-merge throughout (Issue #4291): PRs do not
+merge until they have a review approval and CI is green.
 
 1. **Discover** — Find an open PR by this user that has unprocessed feedback
    (comment with thumbs-up or from authorised commenter, or CHANGES_REQUESTED
@@ -450,8 +450,9 @@ Candidate construction neither edits GitHub nor resolves evidence images.
 When verification still blocks, a measured zero unpushed commits lets the worker
 refresh the already-pushed description before recording the hold. Unpushed or
 unmeasurable work is never described early. The publisher also retains its
-remote-head guard; refreshing a description does not dismiss a review, remove
-`standing-violation`, or enable auto-merge.
+remote-head guard; refreshing a description does not dismiss a review. The
+review stays outstanding and GitHub holds the merge on it; the worker neither
+labels the PR nor disarms auto-merge (Issue #4291).
 
 #### Recount the Test Plan after a review fix (Issue #3117)
 
@@ -521,8 +522,12 @@ Six checks run, each only when it applies:
    This prose scope has its own 20-file and 40-section caps before the overall
    40-file model-pass cap; overflow and unreadable input are logged as not
    checked, never passed. It reports contradictions about triggers, refusals,
-   allowances, skips, absolute words or counted lists, quoting the sentence
-   and naming the contradicting `file:line`. Unchanged sentences are checked
+   allowances, skips, absolute words, counted lists or a parity sentence
+   ("as before", "exactly as X", "the same as", "unchanged", "no behaviour
+   change"), quoting the sentence and naming the contradicting `file:line`.
+   A parity sentence is checked against the base side as well as the head;
+   the base may be opened only for that check, with `git show origin/<base>:<path>`.
+   Unchanged sentences are checked
    only for what this push makes false. Sets without one code list require a
    grep of the whole head tree. Unconfirmed source/prose findings are logged
    and do not trigger the write-enabled recovery turn.
@@ -574,10 +579,11 @@ Six checks run, each only when it applies:
    file, several counts that do not each follow the test file they count, or
    different counts for one test file. Each unchecked figure is drift, not a
    log line: it goes to the recovery turn below.
-3. **Docs sweep re-check** — when the push changes a code file and a summary
-   exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
-   files. That gate also requires the Docs sweep line's `siblings:` part
-   (Issue #3371), so a feedback push's summary needs it too.
+3. **Docs sweep re-check** — when the push changes a code file and the PR's
+   own summary exists, the Issue #3073 docs-sweep gate is re-run against the
+   PR's changed files. Another issue's archived summary is not part of that
+   check (Issue #4155). That gate also requires the Docs sweep line's
+   `siblings:` part (Issue #3371), so a feedback push's summary needs it too.
 4. **Deterministic quoted-sentence check (Issue #3244)** — on every
    non-skipped push, the change request this push answers is parsed for its
    findings in the review-fleet-prs shape (`**\`<file>[:<line>]\`**:
@@ -591,12 +597,15 @@ Six checks run, each only when it applies:
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
 5. **Deterministic line-citation check (Issue #3341)** — on every
-   non-skipped push, for each `docs/archive/pr-summaries/pr-summary-*.md`
-   the PR diff carries that also existed at the before-run head, the
+   non-skipped push, for the PR's own
+   `docs/archive/pr-summaries/pr-summary-<issue>.md` when it also existed
+   at the before-run head (Issue #4155), the
    summary as it stood at the before-run head is read with `git show`, and
    its `Branch outcomes:` list entries — plus the header's own inline body,
    not a table under the header — are parsed for `path:N` / `path:N-M`
-   citations. Where the facts file
+   citations. Another issue's archived summary is left out. When the head
+   branch names no issue, a summary a base merge left identical to the base
+   is left out, and one this branch changed is still checked. Where the facts file
    `docs/archive/pr-summaries/pr-summary-<N>.facts.json` exists at a ref
    (the before-run head, read with `git ls-tree` / `git show`, or the head
    working tree), its structured entries' `path`, `line` and `endLine` are
@@ -841,13 +850,9 @@ intervene.
   and the repo supports it and the PR **is mergeable**: enable auto-merge. This
   catches PRs where auto-merge was not set due to transient failures during
   creation or where merge issues have since been fixed.
-- **Standing-violation hold** (Issue #3517) — a PR carrying the
-  `standing-violation` label (Issue #3382) is skipped: the sweep never arms
-  or branch-updates it, and one already armed is disarmed (`gh pr merge
-  --disable-auto`) on every sweep until that succeeds. It runs after the live
-  read confirms the PR is open and before the base-integrity check and any
-  attempt. The label comes from that same per-PR live read, and the hold is
-  logged once per process.
+- **No review hold** (Issue #4291) — the sweep never withholds arming, or
+  disarms, for a review, a pre-PR finding or a label. PRs do not merge until
+  they have a review approval and CI is green, and GitHub enforces both.
 - **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
   its base gets one `update-branch` request per pass, since GitHub never
   updates it under the strict up-to-date rule. Not when a reviewer has

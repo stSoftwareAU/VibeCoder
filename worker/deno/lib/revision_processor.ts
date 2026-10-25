@@ -118,9 +118,72 @@ export function getUnprocessedRevisionComments(
 }
 
 /**
+ * Extract a brace-balanced JSON object substring starting at `startIdx`.
+ *
+ * String-literal aware, so fences and braces inside `new_body` do not end
+ * the object early. Mirrors the unexported helper in `refinement_processor.ts`
+ * (Issue #1852). That module is left unchanged; this copy is the revision
+ * parser's own candidate scan (Issue #4201).
+ *
+ * @param text - The full text to scan
+ * @param startIdx - Index of an opening `{` in `text`
+ * @returns The balanced object substring, or `null` if no match
+ */
+function extractBalancedObject(text: string, startIdx: number): string | null {
+  if (text[startIdx] !== "{") return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = startIdx; i < text.length; i++) {
+    const c = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (c === "\\") {
+        escape = true;
+        continue;
+      }
+      if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+    if (c === "{") {
+      depth++;
+    } else if (c === "}") {
+      depth--;
+      if (depth === 0) return text.slice(startIdx, i + 1);
+    }
+  }
+  return null;
+}
+
+/** True when `value` carries at least one revision field. */
+function isRevisionRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  return (
+    "update_title" in value ||
+    "update_body" in value ||
+    "summary" in value ||
+    "new_title" in value ||
+    "new_body" in value
+  );
+}
+
+/**
  * Parse Claude's revision JSON response.
  *
- * Handles malformed JSON gracefully by returning an error Result.
+ * A revised body often contains a code fence. Taking the first fence in the
+ * output truncates the JSON, so the title and body are never updated (Issue
+ * #4201). Try the whole trimmed reply, then one strict outer fence
+ * (`unwrapJsonFence` default mode), then brace-balanced `{...}` candidates.
+ * Only an object that has a revision field is accepted.
  *
  * @param output - Raw Claude output
  * @returns Parsed revision response or error
@@ -128,44 +191,47 @@ export function getUnprocessedRevisionComments(
 export function parseRevisionResponse(
   output: string,
 ): Result<RevisionResponse> {
-  // Extract JSON from Claude's output (may be wrapped in markdown code blocks)
-  let jsonStr = unwrapJsonFence(output, { allowSurroundingProse: true });
-
-  // Try to find JSON object in the output
-  const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
-  if (objectMatch) {
-    jsonStr = objectMatch[0];
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(jsonStr);
-
-    if (typeof parsed !== "object" || parsed === null) {
-      return { ok: false, error: new Error("Response is not a JSON object") };
+  const trimmed = output.trim();
+  const candidates: string[] = [trimmed];
+  const unwrapped = unwrapJsonFence(trimmed).trim();
+  if (unwrapped !== trimmed) candidates.push(unwrapped);
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] !== "{") continue;
+    const candidate = extractBalancedObject(trimmed, i);
+    if (candidate && !candidates.includes(candidate)) {
+      candidates.push(candidate);
     }
-
-    const obj = parsed as Record<string, unknown>;
-
-    return {
-      ok: true,
-      value: {
-        update_title: Boolean(obj["update_title"]),
-        new_title: String(obj["new_title"] ?? ""),
-        update_body: Boolean(obj["update_body"]),
-        new_body: String(obj["new_body"] ?? ""),
-        summary: String(obj["summary"] ?? ""),
-      },
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to parse revision JSON: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      ),
-    };
   }
+
+  let lastErr: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (!isRevisionRecord(parsed)) continue;
+      return {
+        ok: true,
+        value: {
+          update_title: Boolean(parsed["update_title"]),
+          new_title: String(parsed["new_title"] ?? ""),
+          update_body: Boolean(parsed["update_body"]),
+          new_body: String(parsed["new_body"] ?? ""),
+          summary: String(parsed["summary"] ?? ""),
+        },
+      };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  const detail = lastErr instanceof Error
+    ? lastErr.message
+    : lastErr === null
+    ? "no JSON object found"
+    : String(lastErr);
+  return {
+    ok: false,
+    error: new Error(`Failed to parse revision JSON: ${detail}`),
+  };
 }
 
 /**

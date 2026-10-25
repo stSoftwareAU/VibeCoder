@@ -35,6 +35,10 @@
  */
 
 import { redactSecrets } from "./secret_redaction.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+
+/** `ps` and `dmesg` at a kill. Seconds. A timeout is not an empty snapshot. */
+const KILL_DIAGNOSTIC_TIMEOUT_MS = 10_000;
 
 /** One `ps` row. */
 export interface ProcessRow {
@@ -234,21 +238,31 @@ export function formatMemoryPressureWarning(
 
 const OOM_LINE_RE = /out of memory|oom-kill|killed process|oom_reaper/i;
 
-async function defaultRunPs(): Promise<string> {
-  const out = await new Deno.Command("ps", {
+export async function readKillProcessTable(
+  timeoutMs: number = KILL_DIAGNOSTIC_TIMEOUT_MS,
+): Promise<string> {
+  const out = await commandOutputWithTimeout("ps", {
     args: ["-eo", "pid,ppid,rss,etime,args"],
     stdout: "piped",
     stderr: "null",
-  }).output();
+    timeoutMs,
+  });
   if (!out.success) throw new Error("ps failed");
   return new TextDecoder().decode(out.stdout);
 }
 
-async function defaultReadKernelLog(): Promise<string> {
-  const out = await new Deno.Command("dmesg", {
+async function defaultRunPs(): Promise<string> {
+  return await readKillProcessTable();
+}
+
+export async function readKillKernelLog(
+  timeoutMs: number = KILL_DIAGNOSTIC_TIMEOUT_MS,
+): Promise<string> {
+  const out = await commandOutputWithTimeout("dmesg", {
     stdout: "piped",
     stderr: "null",
-  }).output();
+    timeoutMs,
+  });
   if (!out.success) throw new Error("dmesg failed");
   // Masked at the source as well as at the chokepoint (Issue #1217). This cut
   // is line-granular so it cannot split a token by itself, but the kernel ring
@@ -258,6 +272,10 @@ async function defaultReadKernelLog(): Promise<string> {
   const text = redactSecrets(new TextDecoder().decode(out.stdout));
   // Keep the tail only — the OOM lines are the most recent.
   return text.split("\n").slice(-400).join("\n");
+}
+
+async function defaultReadKernelLog(): Promise<string> {
+  return await readKillKernelLog();
 }
 
 /**

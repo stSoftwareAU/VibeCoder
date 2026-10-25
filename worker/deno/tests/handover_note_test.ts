@@ -206,7 +206,12 @@ Deno.test("buildHandoverNote #769 - an unreadable git state is reported as unkno
   assertEquals(note.includes("No commit was recorded"), false, note);
   assertStringIncludes(note, "could not be inspected");
   assertStringIncludes(note, "commit log could not be read");
-  assertStringIncludes(note, "an unknown number of uncommitted file(s)");
+  // The attempt is wrapped to the formatter's line width. The joined attempt
+  // is what a later claim reads back.
+  assertStringIncludes(
+    extractAttemptLines(note)[0] ?? "",
+    "an unknown number of uncommitted file(s)",
+  );
 });
 
 Deno.test("buildHandoverNote #769 - the attempt line counts only the files the note lists", () => {
@@ -214,7 +219,10 @@ Deno.test("buildHandoverNote #769 - the attempt line counts only the files the n
     ...FACTS,
     dirtyFiles: ["src/kept.ts", "/tmp/dropped.ts", "~/also-dropped.ts"],
   });
-  assertStringIncludes(note, "1 uncommitted file(s) preserved");
+  assertStringIncludes(
+    extractAttemptLines(note)[0] ?? "",
+    "1 uncommitted file(s) preserved",
+  );
   assertEquals(note.includes("3 uncommitted file(s)"), false, note);
 });
 
@@ -398,6 +406,48 @@ Deno.test("writeHandoverNote #1138 - a gate-refusal notice is not a wind-down wa
     assertStringIncludes(written, "Wind-down notice: not delivered");
   } finally {
     await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("buildHandoverNote #4129 - a representative note is already deno fmt clean", async () => {
+  const prior =
+    "2026-09-01T01:02:03Z — execute timed out after 10s; 1 uncommitted file(s) preserved; 0 commit(s) added to the branch";
+  const variants = [
+    FACTS,
+    { ...FACTS, dirtyFiles: null, wipCommitSubjects: null, priorAttempts: [] },
+    {
+      ...FACTS,
+      dirtyFiles: [] as string[],
+      wipCommitSubjects: [] as string[],
+      windDownNoticeDelivered: false,
+      priorAttempts: [],
+    },
+    { ...FACTS, priorAttempts: [prior] },
+  ];
+  const dir = await Deno.makeTempDir({ prefix: "handover-fmt-" });
+  try {
+    for (const [index, facts] of variants.entries()) {
+      const note = buildHandoverNote(facts);
+      assertEquals(note.endsWith("\n"), true, "trailing newline");
+      assertEquals(note.endsWith("\n\n"), false, "one trailing newline");
+      const path = `${dir}/note-${index}.md`;
+      await Deno.writeTextFile(path, note);
+      const check = await new Deno.Command("deno", {
+        args: ["fmt", "--check", path],
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assertEquals(
+        check.code,
+        0,
+        new TextDecoder().decode(check.stderr) +
+          new TextDecoder().decode(check.stdout),
+      );
+    }
+    const wrapped = buildHandoverNote({ ...FACTS, priorAttempts: [prior] });
+    assertEquals(extractAttemptLines(wrapped)[1], prior);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
 

@@ -12,6 +12,8 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { CLAUDE_OUTPUT_ADAPTER } from "../lib/claude_output_adapter.ts";
+import { buildRunStats } from "../lib/run_stats.ts";
 import {
   attemptPrSelfHealing,
   buildDiagnosticContext,
@@ -797,6 +799,35 @@ Deno.test("runExecuteClaudePhase - dash-leading branch is refused before git fet
   }
 });
 
+Deno.test("createDefaultDeps log writes warn and error at those levels (Issue #4176)", () => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (message?: unknown) => {
+    lines.push(String(message));
+  };
+  try {
+    const { log } = createDefaultDeps();
+    log("the budget is high", "warn");
+    log("the budget is blocked", "error");
+    log("the phase started");
+  } finally {
+    console.error = original;
+  }
+  const warn = lines.find((line) => line.includes("the budget is high"));
+  const error = lines.find((line) => line.includes("the budget is blocked"));
+  const info = lines.find((line) => line.includes("the phase started"));
+  assert(warn, `warn did not reach the log: ${JSON.stringify(lines)}`);
+  assert(error, `error did not reach the log: ${JSON.stringify(lines)}`);
+  assert(info, `info did not reach the log: ${JSON.stringify(lines)}`);
+  assert(warn.includes(" WARNING: "), warn);
+  assert(error.includes(" ERROR: "), error);
+  assert(info.includes(" INFO: "), info);
+  assert(warn.includes("[execute-claude-phase] the budget is high"), warn);
+  assert(error.includes("[execute-claude-phase] the budget is blocked"), error);
+  assertEquals(warn.includes("WARNING: the budget"), false);
+  assertEquals(error.includes("ERROR: the budget"), false);
+});
+
 Deno.test("createDefaultDeps - git runner reports checked-runner failures (Issue #268)", async () => {
   const deps = createDefaultDeps();
   const result = await deps.runGitCommand([
@@ -877,6 +908,47 @@ Deno.test("runExecuteClaudePhase - a clean exit with no changes is still no_chan
   );
   assertEquals(result.action, "no_changes");
 });
+
+for (
+  const [output, expected] of [
+    [
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1}',
+      "failure",
+    ],
+    ['{"type":"result","is_error":false,"num_turns":0}', "failure"],
+    [
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Starting work"}]}}',
+      "failure",
+    ],
+    [
+      '{"type":"result","is_error":false,"num_turns":1,"result":"Already correct"}',
+      "no_changes",
+    ],
+  ] as const
+) {
+  Deno.test(`runExecuteClaudePhase - structured empty run ${output} returns ${expected} (Issue #4147)`, async () => {
+    const result = await runExecuteClaudePhase(
+      createTestOptions(),
+      createMockDeps({
+        runClaudeWithRetry: async () => ({
+          ok: true,
+          value: {
+            exitCode: 0,
+            output,
+            timedOut: false,
+            agentOutput: CLAUDE_OUTPUT_ADAPTER.decode(output),
+            runStats: buildRunStats(output, {
+              requestedModel: "test",
+              wallClockMs: 0,
+            }),
+          },
+        }),
+        runGitCommand: async () => ({ ok: true, value: "" }),
+      }),
+    );
+    assertEquals(result.action, expected);
+  });
+}
 
 Deno.test("runExecuteClaudePhase - screenshot label triggers screenshot instructions", async () => {
   let promptOptions: Record<string, unknown> | undefined;

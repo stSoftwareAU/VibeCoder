@@ -124,8 +124,10 @@ Before each gate attempt in an issue run, the quality-gate phase runs the
 repository's own formatters over the branch's changed code files and commits
 the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
 formatting-only failure does not spend the agent's one remediation round. It
-never touches Markdown, and a formatter that fails is only logged: the gate
-still runs and reports. The completion phase does the same before its pre-push
+leaves agent-authored Markdown unformatted. The worker's own Markdown and JSON
+under `docs/archive/pr-summaries/` and `docs/archive/handover/` are formatted
+afterwards, and a formatter that fails is only logged: the gate still runs and
+reports. The completion phase does the same before its pre-push
 gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -390,9 +392,9 @@ bash `worker/run_core.sh` conductor. It sequences:
    #3177, [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)).
    A PR into a milestone branch merges unreviewed on green CI, so a PR whose
    `## Acceptance Criteria` block marks any criterion `missing` used to close
-   its issue as completed. Now the issue stays open: the closer labels it
-   `needs-human` and comments naming each missing criterion, and an issue that
-   already carries `needs-human` is left alone so the comment is not repeated.
+   its issue as completed. The issue stays open with its existing labels so the worker can finish
+   it. Both closers record the missing criteria in their diagnostic output;
+   they neither apply `needs-human` nor post repeated hand-off comments.
    The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.
@@ -421,7 +423,7 @@ flowchart TD
     R -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
     F -->|No| Z
     F -->|Yes| M{"PR's closure block marks<br/>a criterion missing? (#3177)"}
-    M -->|Yes| H["Left open, labelled needs-human,<br/>comment names the missing criteria"]
+    M -->|Yes| H["Left open and queued<br/>to finish the missing criteria"]
     M -->|No| G["Closed, naming the PR<br/>and the merge commit"]
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
     style H fill:#e9c46a,stroke:#b08900,color:#000
@@ -2055,10 +2057,8 @@ VibeCoder#1732 was closed as superseded and, eight minutes later, the CI-fix
 pass claimed it from the cached listing and started writing to it. All four PR
 passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
 — therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
-before the first write: one `gh pr view --json` call, no cache, for the six
-fields `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`
-(the last is what the auto-merge sweep and the CI-fix pass read for the
-`standing-violation` hold, Issues #3517, #3685; still one round trip). The
+before the first write: one `gh pr view --json` call, no cache, for the five
+fields `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision`. The
 two processors call it directly through `guardPrStillOpen`; the drain and the
 sweep take it as a **required** injected seam, wired to the same function in
 `run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
@@ -2244,8 +2244,10 @@ runs the disposable verifier after committing and formatting, before pushing
 one evidenced `fixed` verdict per numbered finding. Missing, duplicate,
 `partly` or `not fixed` verdicts become blocking findings. An unavailable
 verifier also blocks this path. One correction turn is allowed; a remaining
-block keeps the review outstanding, charges a failed attempt, labels the PR
-`standing-violation` and disables auto-merge. A push-recovery merge gets a
+block keeps the review outstanding and charges a failed attempt. The PR stays
+armed for auto-merge: GitHub holds the merge on the outstanding review, and PRs
+do not merge until they have a review approval and CI is green (Issue #4291).
+A push-recovery merge gets a
 fresh verdict before its retry push. Ordinary inline and issue comments retain
 their existing flow. The fleet reviewer applies the same verdict check before
 posting its review.
@@ -2257,8 +2259,8 @@ An ineligible body stays live and its reason is logged; a build error blocks
 verification. If a hold remains and the branch has exactly zero unpushed
 commits, the worker still refreshes the description before recording the hold.
 A failed measurement or outstanding local commit skips that refresh. The sync's
-remote-head guard remains in force, as do the failed attempt, outstanding
-review, `standing-violation` label and disabled auto-merge.
+remote-head guard remains in force, as do the failed attempt and the
+outstanding review.
 
 ### 📏 How "did we push?" is answered (Issue #211)
 
@@ -2983,9 +2985,9 @@ milestone branch pushable on unattended hosts:
   still the necessary fallback. The whole ladder — sweep, then re-clone —
   shares the #1093 `claimObjectStoreRepair` claim and so runs **at most once
   per repository per run**, whichever rung is reached first. A failure that
-  survives both rungs escalates `needs-human` with heading "Broken refs in
-  shared clone", naming the repository (dedup key `broken-refs-<repo>`), and
-  is categorised `clone_corrupt` rather than counted against the issue — see
+  survives both rungs names the repository and is categorised `clone_corrupt`
+  rather than counted against the issue, and is never handed to a human: the
+  next run repairs again (Issue #4298) — see
   "`clone_corrupt` is its own failure category" below. This is still distinct
   from plain object-store corruption, which skips straight to the re-clone
   rung (Issue #1093).
@@ -3326,12 +3328,12 @@ hasCycle(node):
 Issues detected as circular are reported separately and excluded from the
 ready/blocked classification.
 
-#### 🚨 Escalating unworkable `work-on` issues
+#### 🔧 Unworkable `work-on` issues are resolved by the worker
 
-A `work-on` issue that can never be progressed is escalated rather than left to
-dangle. `collectWorkOnCandidates`
+A `work-on` issue that could never be progressed is not left to dangle, and is
+never handed to a human (Issue #4298). `collectWorkOnCandidates`
 ([collect_work_on_candidates.ts](../worker/deno/lib/collect_work_on_candidates.ts))
-detects two classes and routes both through one shared action:
+detects two classes and resolves both itself:
 
 - **Dependency cycle** — an issue that (transitively) blocks itself (A→B→A).
   Every cycle member is, by definition, dependency-blocked, so the cycle is
@@ -3340,29 +3342,22 @@ detects two classes and routes both through one shared action:
   `memoiseIssueFetcher`), adding no extra `gh` calls. `detectDependencyCycles` /
   `findCyclePath`
   ([issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)) flag the
-  members and render the loop.
+  members. The cycle is broken in **issue-number order**: the lowest-numbered
+  member becomes a candidate, and the rest wait on it as ordinary dependencies,
+  clearing as it closes. A member that also waits on an open issue outside its
+  cycle is a real wait and stays blocked.
 - **Self-suppressing dead label** — a milestone-tracking issue carrying the
   `work-on` label, which the worker never actions (`filterAndSort` drops it).
-
-The shared action (`escalateUnworkableWorkOn` in
-[escalate_unworkable_work_on.ts](../worker/deno/lib/escalate_unworkable_work_on.ts))
-applies `needs-human` and posts exactly one explanatory comment naming the
-blocker, routed through the `escalateToHuman` chokepoint, then drops the issue
-and continues — escalate, don't stall. Idempotence comes from two independent
-mechanisms: the applied `needs-human` label drops the issue from `filterAndSort`
-on the next scan, and a stable per-issue dedup key suppresses a duplicate
-comment within 24 hours.
+  The worker strips the dead label.
 
 ```mermaid
 flowchart TD
     A[work-on issue] --> B{progressable?}
     B -->|yes| C[normal candidate]
-    B -->|dependency cycle A→B→A| E[escalate]
-    B -->|dead-label milestone-tracker| E
-    E --> F[apply needs-human]
-    F --> G[post ONE comment naming blocker]
-    G --> H[drop from candidates + continue]
-    H -. idempotent re-scan: no-op .-> H
+    B -->|dependency cycle A→B→A| E{lowest-numbered member,<br/>no wait outside the cycle?}
+    E -->|yes| C
+    E -->|no| W[ordinary dependency wait]
+    B -->|dead-label milestone-tracker| S[strip work-on]
 ```
 
 #### 💬 Naming the gate on a held issue
@@ -5114,16 +5109,11 @@ reason `prompt_too_long` does: the setup phase already ran the sweep/re-clone
 ladder once before giving up, so a further in-process retry can only burn a
 claim on a fault no in-process attempt can clear. The run-outcome class is
 `clone-corrupt`. No `failed-once` or `failed` label is ever applied for it, so
-the fault never charges the issue's own retry budget. It is not left
-claimable, though: the setup-phase ladder's `needs-human` escalation (heading
-"Broken refs in shared clone" / "Corrupt git object store", dedup keys
-`broken-refs-<repo>` / `object-store-corrupt-<repo>`) puts `needs-human` on
-this specific issue whenever the repair — the sweep/prune-fetch retry or the
-re-clone fallback from #1093 — did not clear the fault, including when this
-run's one repair attempt was already spent by an earlier issue and this issue
-therefore attempted no repair at all. `findIssuesByLabel` excludes any issue
-carrying `needsHumanLabel`, so an operator must remove that label after
-repairing the host's clone for the issue to become claimable again. See
+the fault never charges the issue's own retry budget. Nor is it handed to a
+human (Issue #4298): the setup phase no longer applies `needs-human` when the
+repair — the sweep/prune-fetch retry or the re-clone fallback from #1093 — did
+not clear the fault. The issue stays claimable, and the next run takes the
+once-per-run repair claim afresh and runs the ladder again. See
 "`create_feature_branch_from_base()`" above and
 [docs/workflows/README.md](workflows/README.md#per-lane-worktrees-issue-394)
 for the sweep-then-re-clone repair ladder that produces this category.
@@ -5772,7 +5762,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                                                           |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                                                              |
 |                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                   | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                                                                   |
-|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers leave its issue open for a human (Issue #3177)                                                                        |
+|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers keep its issue queued for completion (Issue #3177)                                                                        |
 |                             | [milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)                                 | After a successful roll-back, reopen and re-queue each reverted child and close its PRs; after a failed one, escalate once on an issue that already exists (Issue #1781)                                                        |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                                                                        |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                                                                  |
@@ -5827,7 +5817,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [execute_claude_phase.ts](../worker/deno/lib/execute_claude_phase.ts)                                             | Claude execution phase                                                                                                                                                                                                          |
 |                             | [quality_gate_phase.ts](../worker/deno/lib/quality_gate_phase.ts)                                                 | Quality gate phase                                                                                                                                                                                                              |
 |                             | [phases/completion_phase.ts](../worker/deno/lib/phases/completion_phase.ts)                                       | PR completion phase — push, PR creation, screenshot and security-fix gates                                                                                                                                                      |
-|                             | [standing_violation_routing.ts](../worker/deno/lib/standing_violation_routing.ts)                                 | Finds standing Standards violations on the branch's own diff lines; routes them to a code-capable recovery turn and holds auto-merge on a PR finalised with one (Issue #3382)                                                   |
+|                             | [standing_violation_routing.ts](../worker/deno/lib/standing_violation_routing.ts)                                 | Finds standing Standards violations on the branch's own diff lines; routes them to a code-capable recovery turn and posts any that survive on the PR (Issues #3382, #4291)                                                      |
 |                             | [pr_summary_loader.ts](../worker/deno/lib/pr_summary_loader.ts)                                                   | PR summary file loading                                                                                                                                                                                                         |
 |                             | [screenshot_validation.ts](../worker/deno/lib/screenshot_validation.ts)                                           | Screenshot evidence validation                                                                                                                                                                                                  |
 |                             | [imgbb_upload.ts](../worker/deno/lib/imgbb_upload.ts)                                                             | ImgBB screenshot upload client                                                                                                                                                                                                  |

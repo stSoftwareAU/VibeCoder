@@ -384,7 +384,7 @@ export async function recoverCorruptClone(
 
     const firstLine = gitMessage.split("\n")[0]!.trim();
     console.error(
-      `ERROR: corrupt clone of ${repo} moved aside to ${aside}; re-cloning: ${firstLine}`,
+      `corrupt clone of ${repo} moved aside to ${aside}; re-cloning: ${firstLine}`,
     );
     return { ok: true, value: aside };
   });

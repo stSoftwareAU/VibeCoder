@@ -73,6 +73,23 @@ import {
 import { emitSelfHealEvent, type SelfHealEvent } from "./self_heal_events.ts";
 
 /**
+ * True when `pid` still holds a process.
+ *
+ * `Deno.kill(pid, 0)` asks the kernel and returns immediately. A `kill -0`
+ * subprocess cannot be timed out while `outputSync` blocks the event loop,
+ * so a hung `kill` would stall the reap (Issue #4251).
+ */
+export function probePidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    Deno.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Seconds added to the worker's own maximum run duration to form the
  * launcher's deadline.
  *
@@ -1065,17 +1082,7 @@ export function createReapDeps(options: ReapDepsOptions): ReapDeps {
         // SIGKILL, which is harmless against a process that already exited.
         return true;
       }
-      try {
-        const output = new Deno.Command("kill", {
-          args: ["-0", String(pid)],
-          stdin: "null",
-          stdout: "null",
-          stderr: "null",
-        }).outputSync();
-        return output.code === 0;
-      } catch {
-        return false;
-      }
+      return probePidAlive(pid);
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),

@@ -12,6 +12,27 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+
+/** `ps` of reparented Claude tails. Seconds. */
+const TAIL_PS_TIMEOUT_MS = 10_000;
+
+/** Process table for the tail sweep. A timeout throws; it is not an empty sweep. */
+export async function readTailProcessTable(
+  timeoutMs: number = TAIL_PS_TIMEOUT_MS,
+): Promise<string> {
+  const output = await commandOutputWithTimeout("ps", {
+    args: ["-eo", "pid=,ppid=,command="],
+    stdout: "piped",
+    stderr: "null",
+    timeoutMs,
+  });
+  if (!output.success) {
+    throw new Error(`ps exited with code ${output.code}`);
+  }
+  return new TextDecoder().decode(output.stdout);
+}
+
 /**
  * Match a Claude task-output path:
  *   /(private/)?tmp/claude-<uid>/.../tasks/<id>.output
@@ -120,18 +141,7 @@ export async function cleanupOrphanedClaudeTails(
  */
 export async function cleanupOrphanedClaudeTailsProd(): Promise<CleanupResult> {
   return await cleanupOrphanedClaudeTails({
-    runPs: async () => {
-      const cmd = new Deno.Command("ps", {
-        args: ["-eo", "pid=,ppid=,command="],
-        stdout: "piped",
-        stderr: "null",
-      });
-      const output = await cmd.output();
-      if (!output.success) {
-        throw new Error(`ps exited with code ${output.code}`);
-      }
-      return new TextDecoder().decode(output.stdout);
-    },
+    runPs: () => readTailProcessTable(),
     kill: async (pid) => {
       try {
         Deno.kill(pid, "SIGKILL");

@@ -47,6 +47,7 @@ import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 // Config & logging
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
+import { bindLogger } from "./log_sink.ts";
 import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import {
   buildDefaultWorkerConfig,
@@ -62,6 +63,7 @@ import {
   setPhaseModelConfigOverrides,
 } from "./claude_executor.ts";
 import {
+  clearRefusedCodexModels,
   setCodexPhaseEffortConfigOverrides,
   setCodexPhaseModelConfigOverrides,
 } from "./codex_executor.ts";
@@ -123,7 +125,6 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
-import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
@@ -835,6 +836,8 @@ export async function createProductionRunCoreDeps(
   setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
   // Apply the Codex phase model/effort config overrides (Issue #363)
   setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+  // a fresh run starts with no refused Codex models (Issue #4221)
+  clearRefusedCodexModels();
   setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
   // Apply the Gemini phase model config overrides (Issue #364)
   setGeminiPhaseModelConfigOverrides(config.geminiPhaseModelOverrides);
@@ -890,7 +893,7 @@ export async function createProductionRunCoreDeps(
   let claudePool = options.claudeCredentialPool;
   function claudeCredentialPool(): NonNullable<typeof claudePool> {
     claudePool ??= createClaudeCredentialPool({
-      log: (message) => logger.info(message),
+      log: bindLogger(logger),
       provider: resolveAgentProvider(CLAUDE_PROVIDER_ID),
       env,
     });
@@ -948,7 +951,7 @@ export async function createProductionRunCoreDeps(
       claudePool,
       config.workDir || workDir,
       {
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
       },
     );
     const held = heldProviderCredentialLabel(CLAUDE_PROVIDER_ID);
@@ -1027,13 +1030,13 @@ export async function createProductionRunCoreDeps(
   // cadence; transitions are logged with the reading.
   const slotCeiling = new SlotGovernor({
     probe: () => probeHostMemoryPressure(),
-    log: (message: string) => logger.info(message),
+    log: bindLogger(logger),
   });
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
   const hostDisk = new HostDiskMonitor({
     workDir,
-    log: (message: string) => logger.info(message),
+    log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
     // log directory — mounted read-write at `${HOME}/logs` in the container.
     refreshFile: `${env("HOME") ?? "~"}/logs/${HOST_DISK_REFRESH_FILE}`,
@@ -1081,6 +1084,53 @@ export async function createProductionRunCoreDeps(
   // GraphQL calls across the four candidate collectors. Reset by
   // `resetIterationCaches` at every iteration boundary.
   const timelineBatchRegistry = new TimelineBatchRegistry();
+
+  // Issue #4213: one copy of the claim scan's `label-author-not-allowed`
+  // rule. The idle-detect audit passes this as `untrustedLabelIssuesFn` and
+  // the census calls it for the same set. The priority filter is
+  // `isUnblockedFor` over `top-priority`, `work-on` and `low-priority`
+  // (Issue #3571); timelines go through this iteration's batch registry
+  // (PR #3963).
+  const untrustedLabelIssuesFor = async (
+    repo: string,
+    issues: readonly {
+      number: number;
+      labels: readonly string[];
+      assignees?: readonly string[];
+    }[],
+  ): Promise<Set<number>> => {
+    const priorityIssues = issues.filter((issue) =>
+      [
+        LABEL_DEFAULTS.topPriorityLabel,
+        LABEL_DEFAULTS.workOnLabel,
+        LABEL_DEFAULTS.lowPriorityLabel,
+      ].some((label) =>
+        isUnblockedFor(
+          {
+            number: issue.number,
+            labels: [...issue.labels],
+            assignees: [...(issue.assignees ?? [])],
+            milestone: "",
+          },
+          label,
+        )
+      )
+    );
+    const batchedGh = await timelineBatchRegistry.getBatchedGh(
+      repo,
+      priorityIssues.map((issue) => issue.number),
+      options.idleDetectGhCommandFn ?? runGhCommand,
+    );
+    return await censusUntrustedLabelIssues(
+      repo,
+      priorityIssues,
+      trustedAuthorsFor(config, repo),
+      batchedGh,
+      timelineCache,
+      resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+      (msg) => logger.warn(msg),
+    );
+  };
 
   // Replace heartbeat functions with machineId-bound wrappers so every
   // production heartbeat publishes a GitHub marker (Issue #1454).
@@ -1189,7 +1239,7 @@ export async function createProductionRunCoreDeps(
       machineId,
       policy: fastFailurePolicy,
       ghFn: runGhCommandRaw,
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
       warn: (message: string) => logger.warn(message),
     });
     if (decision.action === "suppressed") {
@@ -1904,7 +1954,7 @@ export async function createProductionRunCoreDeps(
       invitationAuthors,
       cache: issueCache,
       ghCommandFn: options.fleetPrefetchGhCommandFn ?? runGhCommand,
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
     });
     logger.info(
       `[fleet-pr-prefetch] owners=${outcome.ownersServed.length} ` +
@@ -1961,7 +2011,7 @@ export async function createProductionRunCoreDeps(
 
   const deps: RunCoreDeps = {
     // -- Logging --
-    log: (msg) => logger.info(msg),
+    log: bindLogger(logger),
     logError: (msg) => logger.error(msg),
     logWarn: (msg) => logger.warn(msg),
     logTiming: (op, dur) => logger.timing(op, dur),
@@ -2203,19 +2253,20 @@ export async function createProductionRunCoreDeps(
     // explicit-model health check; the first healthy one adapts this run's
     // routing. Operator pins always win (the resolver substitutes only the
     // designed defaults), and providers without the seam return
-    // { adapted: false }.
+    // { adapted: false }. (Issue #4221) Codex's alternative is the CLI default
+    // (no --model) when a ChatGPT login refuses a built-in default.
     // (Issue #2637) Rotate to a Claude credential with budget before any
     // fallback provider, and find the way back once one reopens.
     selectPreferredCredential: ({ excludeHeld }) =>
       selectPreferredClaudeCredential(excludeHeld),
     async tryModelAdaptation() {
-      const provider = activeAgentProvider();
-      const failedModel = provider.resolveModel("health");
+      const provider = activeAgentProvider({ env });
+      const failedModel = provider.resolveModel("health", env);
       const alternatives = failedModel
-        ? (provider.alternativeModels?.(failedModel) ?? [])
+        ? (provider.alternativeModels?.(failedModel, "health", env) ?? [])
         : [];
       for (const alternative of alternatives) {
-        const probe = await claudeHealthCheck(
+        const probe = await agentHealthCheck(
           30,
           logger,
           provider,
@@ -2223,7 +2274,7 @@ export async function createProductionRunCoreDeps(
           alternative,
         );
         if (probe.healthy) {
-          provider.applyModelAdaptation?.(failedModel!, alternative);
+          provider.applyModelAdaptation?.(failedModel!, alternative, "health");
           return {
             adapted: true,
             detail: `${failedModel} → ${alternative}`,
@@ -2239,10 +2290,15 @@ export async function createProductionRunCoreDeps(
     async recheckAgentAuth() {
       // Issue #4167: always a fresh probe — the cached "healthy" from the
       // cycle-start gate is exactly what a mid-cycle outage invalidates.
+      // Issue #4267: resolve the provider once and probe that same one.
+      // checkClaudeHealth keys its cache by this id, so a hard-coded
+      // "claude" clear leaves a dead Codex credential looking healthy
+      // until the TTL expires.
+      const provider = activeAgentProvider();
       try {
-        const result = await claudeHealthCheck(30, logger);
+        const result = await agentHealthCheck(30, logger, provider);
         if (!result.healthy) {
-          invalidateHealthCache(healthCacheDir, "claude");
+          invalidateHealthCache(healthCacheDir, provider.id);
         }
         return {
           authFailed: !result.healthy && result.exitCode === 2,
@@ -3557,14 +3613,6 @@ export async function createProductionRunCoreDeps(
             gh,
             log: (m: string) => logger.warn(m),
           }),
-        // Issue #3517: a standing-violation PR is disarmed, never armed.
-        disarmAutoMerge: (repo, prNumber) =>
-          disarmAutoMerge(
-            repo,
-            prNumber,
-            gh,
-            (m: string) => logger.warn(m),
-          ),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,
@@ -3709,7 +3757,9 @@ export async function createProductionRunCoreDeps(
             // reopened. Only the fleet's own roll-back marker suppresses the
             // close, so the maintenance author set is what is trusted here.
             fleetAuthors: maintenanceAuthors,
-            logFn: (message: string) => logger.info(message),
+            // Issue #4175: a level-aware sink, so a rollup that cannot be
+            // created reaches logger.warn.
+            logFn: bindLogger(logger),
             // Issue #2831: a failed fetch or state save is logged, not lost.
             logger,
           },
@@ -3810,7 +3860,7 @@ export async function createProductionRunCoreDeps(
           })`,
         );
         const outcomes = await sweepSharedClones(repos, sweepWorkDir, {
-          log: (message: string) => logger.info(message),
+          log: bindLogger(logger),
           logError: (message: string) => logger.error(message),
           logsDir,
         });
@@ -3864,7 +3914,7 @@ export async function createProductionRunCoreDeps(
         try {
           const outcome = await libSweepClosedMilestones(
             { repo, workDir },
-            { gh: runGhCommand, log: (message) => logger.info(message) },
+            { gh: runGhCommand, log: bindLogger(logger) },
           );
           for (const problem of [...outcome.errors, ...outcome.failures]) {
             logger.warn(
@@ -4247,7 +4297,7 @@ export async function createProductionRunCoreDeps(
       await refreshRepoFastFailureBackOffs({
         ...fastFailureOptions,
         isIssueClosed: isDiagnosticIssueClosed,
-        log: (message: string) => logger.info(message),
+        log: bindLogger(logger),
       });
       // Issue #2955: `backedOffRepos` returns this host's sidecar plus
       // any open, fleet-authored diagnostic for the repository, so a
@@ -4445,7 +4495,7 @@ export async function createProductionRunCoreDeps(
         monitoredRepos: config.repos,
         mode: "disk-low",
         bytesNeeded: stillNeeded,
-        log: (message: string) => logger.info(message),
+        log: bindLogger(logger),
       });
       const after = await hostDisk.check({ force: true });
       // Issue #384: on a containerised host the sweep above deleted files
@@ -5280,7 +5330,7 @@ export async function createProductionRunCoreDeps(
             },
             ghFn: runGhCommandRaw,
             workDir,
-            log: (message) => logger.info(message),
+            log: bindLogger(logger),
           });
           if (
             decision.action === "suppressed" && decision.reason === "gh_failed"
@@ -5308,7 +5358,7 @@ export async function createProductionRunCoreDeps(
             repeat: repeatCorruption,
             policy: fastFailurePolicy,
             ghFn: runGhCommandRaw,
-            log: (message) => logger.info(message),
+            log: bindLogger(logger),
             warn: (message) => logger.warn(message),
             error: (message) => logger.error(message),
           });
@@ -5425,7 +5475,7 @@ export async function createProductionRunCoreDeps(
           // Same fallback order the transcript writer itself uses.
           ...(homeDirectory(env) ? { home: homeDirectory(env)! } : {}),
         }),
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
         logError: (message) => logger.error(message),
       });
       // Issue #2297: the fleet summary says how many hook invocations failed
@@ -5449,7 +5499,7 @@ export async function createProductionRunCoreDeps(
         { repository: run.repo, issueNumber: run.issueNumber },
         {
           ...(hostLogDir === null ? {} : { hostLogDir }),
-          log: (message) => logger.info(message),
+          log: bindLogger(logger),
           logError: (message) => logger.error(message),
           // A streak copy that could not be read or written degrades the
           // record without stopping the run — a warning, not a fault.
@@ -5470,7 +5520,7 @@ export async function createProductionRunCoreDeps(
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
         }),
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
         logError: (message) => logger.error(message),
       });
     },
@@ -5685,7 +5735,7 @@ export async function createProductionRunCoreDeps(
         },
         {
           cycleId: `${trustRefreshScope}:${trustRefreshCycle}`,
-          log: (message: string) => logger.info(message),
+          log: bindLogger(logger),
           warn: (message: string) => logger.warn(message),
           // Issue #1453: reuse a successful resolve for the configured
           // window instead of re-listing every monitored repo each cycle.
@@ -5969,6 +6019,10 @@ export async function createProductionRunCoreDeps(
           // idle-task-only issue is refused by a rule the fleet applied
           // deliberately — not a misclassification.
           quotaIdleDeferred: lastScanIdleDeferred,
+          // Issue #4213: the census's untrusted-label set. An issue whose
+          // priority label an untrusted author added is reported as
+          // `label_author_not_allowed`. The census calls this same closure.
+          untrustedLabelIssuesFn: untrustedLabelIssuesFor,
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -6092,34 +6146,12 @@ export async function createProductionRunCoreDeps(
             } catch {
               openMilestones = new Set<string>();
             }
-            // Issue #3571: the claim scan's `label-author-not-allowed` gate
-            // refuses an issue whose priority label an untrusted author added.
-            // The census reads that same gate (through
-            // `wasLabelAddedByAllowedAuthor`) so such an issue counts as
-            // `claim_refused`, not claimable. Best-effort per issue: a failed
+            // Issue #3571 / #4213: the claim scan's label-author gate, from
+            // the one closure the idle-detect audit also passes. A failed
             // timeline read counts the issue trusted and is logged loudly.
-            // PR #3963: skip issues the census already excludes for labels
-            // or assignment, and share the scan's iteration timeline batch.
-            const priorityIssues = issues.filter((issue) =>
-              [
-                LABEL_DEFAULTS.topPriorityLabel,
-                LABEL_DEFAULTS.workOnLabel,
-                LABEL_DEFAULTS.lowPriorityLabel,
-              ].some((label) => isUnblockedFor(issue, label))
-            );
-            const censusGh = await timelineBatchRegistry.getBatchedGh(
+            const untrustedLabelIssues = await untrustedLabelIssuesFor(
               repo,
-              priorityIssues.map((issue) => issue.number),
-              options.idleDetectGhCommandFn ?? runGhCommand,
-            );
-            const untrustedLabelIssues = await censusUntrustedLabelIssues(
-              repo,
-              priorityIssues,
-              trustedAuthorsFor(config, repo),
-              censusGh,
-              timelineCache,
-              resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
-              (msg) => logger.warn(msg),
+              issues,
             );
             return {
               repo,
@@ -6647,7 +6679,7 @@ async function syncMilestoneBranchesFn(
         return null;
       }
     },
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
   });
 
   await syncMilestoneBranches({
@@ -6809,7 +6841,7 @@ async function syncMilestoneBranchesFn(
         );
       }
     },
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
     // Issue #1776: the cadence signal — one `git rev-parse` per repo, so a
     // cycle in which the default tip did not move syncs nothing.
     defaultTipShaFn: (repo, defaultBranch) =>
@@ -6877,7 +6909,7 @@ async function checkAndHandleMilestoneCompletionsFn(
     // passes, so the summary PR's gated direct merge on an unprotected
     // default branch can read a genuine outside approval.
     fleetAuthors,
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
   });
   // Fail loud — never let an identity mismatch (ok: false) be silently
   // dropped by ignoring the returned Result (Issue #3528).
@@ -6958,7 +6990,7 @@ async function scanStaleWorkflowIssuesFn(
           repo,
         ]);
       },
-      log: (msg: string) => logger.info(msg),
+      log: bindLogger(logger),
       now: () => Date.now(),
       nowSeconds: () => Math.floor(Date.now() / 1000),
       shouldShutdown,

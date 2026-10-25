@@ -24,6 +24,17 @@ import {
 import { checkAndHandleMilestoneCompletions } from "../lib/milestone_completion.ts";
 import { syncMilestoneBranches } from "../lib/milestone_branch_sync.ts";
 
+/** A log line and the level the call site passed (Issue #4176). */
+type LoggedLine = { message: string; level: string };
+
+function captureLog(
+  lines: LoggedLine[],
+): (message: string, level?: string) => void {
+  return (message, level = "info") => {
+    lines.push({ message, level });
+  };
+}
+
 const REPO = "owner/repo";
 const MILESTONE_BRANCH = "milestone/scan-issues-20260906";
 const SYNC_BRANCH = "sync/milestone-scan-issues-20260906";
@@ -158,18 +169,22 @@ Deno.test("retireMilestoneSyncPrs - no open sync PR means no calls beyond the li
 
 Deno.test("retireMilestoneSyncPrs - a refused close is reported loudly, never counted (Issue #1967)", async () => {
   const { gh } = ghStub([openSyncPr], { closeFails: true });
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
   const closed = await retireMilestoneSyncPrs({
     repo: REPO,
     milestoneBranch: MILESTONE_BRANCH,
     ghCommandFn: gh,
-    log: (m) => logs.push(m),
+    log: captureLog(logs),
     reason: "the final milestone PR is being raised",
   });
   assertEquals(closed, []);
   assert(
-    logs.some((l) => l.startsWith("WARNING") && l.includes("1957")),
-    `expected a loud failure, got ${JSON.stringify(logs)}`,
+    logs.some((l) =>
+      l.level === "warn" &&
+      l.message.includes("Could not close sync PR") &&
+      l.message.includes("1957")
+    ),
+    `expected a warn, got ${JSON.stringify(logs)}`,
   );
 });
 
@@ -217,7 +232,7 @@ Deno.test("closeLandedMilestoneSyncPrs - a sync PR that still carries commits is
 });
 
 Deno.test("closeLandedMilestoneSyncPrs - an unreadable comparison closes nothing and says so (Issue #1967)", async () => {
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
   const gh = (args: string[]): Promise<string> => {
     if (args.join(" ").startsWith("pr list")) {
       return Promise.resolve(JSON.stringify([openSyncPr]));
@@ -231,12 +246,16 @@ Deno.test("closeLandedMilestoneSyncPrs - an unreadable comparison closes nothing
     repo: REPO,
     milestoneBranch: MILESTONE_BRANCH,
     ghCommandFn: gh,
-    log: (m) => logs.push(m),
+    log: captureLog(logs),
   });
   assertEquals(closed, []);
   assert(
-    logs.some((l) => l.startsWith("WARNING") && l.includes("502")),
-    `expected the unreadable diff to be loud, got ${JSON.stringify(logs)}`,
+    logs.some((l) =>
+      l.level === "warn" &&
+      l.message.includes("Could not compare") &&
+      l.message.includes("502")
+    ),
+    `expected the unreadable diff to be a warn, got ${JSON.stringify(logs)}`,
   );
 });
 
@@ -267,17 +286,21 @@ Deno.test("closeRetargetedSyncPr - a refused close is loud and reports failure (
   const { gh } = ghStub([{ ...openSyncPr, baseRefName: "main" }], {
     closeFails: true,
   });
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
   const closed = await closeRetargetedSyncPr({
     repo: REPO,
     prNumber: 1957,
     headRefName: SYNC_BRANCH,
     defaultBranch: "main",
     ghCommandFn: gh,
-    log: (m) => logs.push(m),
+    log: captureLog(logs),
   });
   assertEquals(closed, false);
-  assert(logs.some((l) => l.startsWith("WARNING")));
+  assert(
+    logs.some((l) =>
+      l.level === "warn" && l.message.includes("Could not close sync PR")
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -22,10 +22,14 @@ import {
   generateBoundaryId,
 } from "./prompt_delimiter.ts";
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
-import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { classifyHeadExtension } from "./git_push_recovery.ts";
+import {
+  commentCarriesOpenPreprReview,
+  renderPreprReviewResolved,
+} from "./prepr_review_record.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   type CommentType,
@@ -72,6 +76,22 @@ import {
   runPrFeedbackDriftCheck,
 } from "./pr_feedback_drift_check.ts";
 import { runReviewFixMutationCheck } from "./pr_feedback_mutation_check.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
+import { getRepoConfig } from "./repo_config.ts";
+import {
+  type BranchOutcomesFactsOutcome,
+  resolveBranchOutcomesFacts,
+} from "./pr_summary_facts.ts";
+import type { SummaryFacts } from "./summary_facts.ts";
+import {
+  type FactsFlipSeams,
+  type FactsFlipVerdict,
+  fillMissingFlipVerdicts,
+  FLIP_VERIFIER_NO_VERDICT_REASON,
+  FLIP_VERIFIER_UNWIRED_REASON,
+  flipVerifierFailedReason,
+} from "./facts_flip_verifier.ts";
+import { defaultMutationRunnerSeams } from "./mutation_runner.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   milestoneFixBranchFor,
@@ -827,6 +847,116 @@ interface FeedbackRunCarrier {
   reviewSettlement?: "retired" | "charged" | "released";
 }
 
+/** Input for the review-fix facts flip check (Issue #4189). */
+export interface ReviewFixFactsFlipInput {
+  repoPath: string;
+  /** Null when the branch names no issue. The check is skipped. */
+  issueNumber: number | null;
+  logger: Pick<Logger, "info" | "warn" | "error">;
+  /** Defaults to {@link resolveBranchOutcomesFacts}. Tests stub it. */
+  resolveFacts?: (
+    repoPath: string,
+    issueNumber: number,
+  ) => Promise<BranchOutcomesFactsOutcome>;
+  /** The wired verifier. Absent is a loud not_checked, never a pass. */
+  verifyFactsFlips?: (
+    facts: SummaryFacts,
+    seams: FactsFlipSeams,
+  ) => Promise<FactsFlipVerdict[]>;
+  /** Defaults to the real mutation-runner seams. */
+  seams?: FactsFlipSeams;
+  /** Raw `mutation_check_budget_seconds`. Empty selects the default. */
+  budgetRaw?: string;
+}
+
+function factsFlipReply(lines: readonly string[]): string {
+  return ["Facts flip verifier:", ...lines.map((line) => `- ${line}`)].join(
+    "\n",
+  );
+}
+
+function replyForFlipVerdicts(
+  verdicts: readonly FactsFlipVerdict[],
+): string | null {
+  const lines: string[] = [];
+  for (const verdict of verdicts) {
+    if (verdict.verdict.kind === "refused") lines.push(verdict.verdict.message);
+    else if (verdict.verdict.kind === "not_checked") {
+      lines.push(`not checked: ${verdict.verdict.reason}`);
+    }
+  }
+  if (lines.length === 0) return null;
+  return factsFlipReply(lines);
+}
+
+/**
+ * Check the PR's facts file on a review-fix push (Issue #4189).
+ *
+ * An absent file is skipped, with a logged reason, and contributes nothing
+ * to the reply. A file that cannot be parsed, a refused entry, a
+ * not_checked verdict, and a thrown verifier are all reported in the reply.
+ * The refusal text is the verifier's own message.
+ *
+ * @returns The reply section, or null when there is nothing to report.
+ */
+export async function runReviewFixFactsFlip(
+  input: ReviewFixFactsFlipInput,
+): Promise<string | null> {
+  const { logger, repoPath } = input;
+  if (input.issueNumber === null) {
+    logger.info("Facts flip check skipped", {
+      reason: "the branch names no issue, so there is no facts file to check",
+    });
+    return null;
+  }
+  const resolveFacts = input.resolveFacts ?? resolveBranchOutcomesFacts;
+  let outcome: BranchOutcomesFactsOutcome;
+  try {
+    outcome = await resolveFacts(repoPath, input.issueNumber);
+  } catch (error) {
+    const reason = flipVerifierFailedReason(error);
+    logger.error("Facts flip verifier failed", { reason });
+    return factsFlipReply([`not checked: ${reason}`]);
+  }
+  if (outcome.kind === "absent") {
+    logger.info("Facts flip check skipped", { reason: "facts file is absent" });
+    return null;
+  }
+  if (outcome.kind === "error") {
+    logger.warn("Facts flip verifier did not check the facts file", {
+      reason: outcome.reason,
+    });
+    return factsFlipReply([`not checked: ${outcome.reason}`]);
+  }
+  const seams = input.seams ?? {
+    ...defaultMutationRunnerSeams(),
+    repoPath,
+    budgetRaw: input.budgetRaw ?? "",
+    warn: (message: string, context?: Record<string, unknown>) =>
+      logger.warn(message, context),
+  };
+  const verify = input.verifyFactsFlips;
+  if (!verify) {
+    logger.warn("Facts flip verifier is not wired", { repoPath });
+    return replyForFlipVerdicts(fillMissingFlipVerdicts(
+      outcome.facts,
+      [],
+      FLIP_VERIFIER_UNWIRED_REASON,
+    ));
+  }
+  try {
+    return replyForFlipVerdicts(fillMissingFlipVerdicts(
+      outcome.facts,
+      await verify(outcome.facts, seams),
+      FLIP_VERIFIER_NO_VERDICT_REASON,
+    ));
+  } catch (error) {
+    const reason = flipVerifierFailedReason(error);
+    logger.error("Facts flip verifier failed", { reason });
+    return factsFlipReply([`not checked: ${reason}`]);
+  }
+}
+
 /**
  * Inner feedback processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
@@ -1538,6 +1668,31 @@ async function _processFeedbackWithHeartbeat(
     );
   }
 
+  // Issue #4189: same push path as runReviewFixMutationCheck, outside that
+  // check's catch so a thrown verifier is reported rather than dropped.
+  // The section stays in this variable. `.pr_response_message` is the agent's
+  // own reply, and a not-checked or refused verdict written there is read as
+  // a rebuttal, which dismisses an unanswered request-changes review instead
+  // of escalating it.
+  let factsFlipNote: string | null = null;
+  try {
+    factsFlipNote = await runReviewFixFactsFlip({
+      repoPath: processorDeps.workDir,
+      issueNumber: issueNumberFromBranch(input.branchName),
+      logger,
+      verifyFactsFlips: deps.quality.verifyFactsFlips,
+      budgetRaw: getRepoConfig(
+        processorDeps.repoConfigs,
+        repo,
+        "mutationCheckBudgetSeconds",
+      ),
+    });
+  } catch (error) {
+    logger.error("Facts flip verifier failed", {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
 
   // Mark comment as processed — for every type except `pr_review`. A
@@ -1568,7 +1723,8 @@ async function _processFeedbackWithHeartbeat(
   // The repo's own formatters run between the commit and the gate (follow-up
   // to #3806): a formatting-only miss in this round is fixed and committed
   // rather than failing the push or reaching CI. Same files the gate checks
-  // (the unpushed commits), never Markdown; never fatal.
+  // (the unpushed commits). Agent-authored Markdown stays unformatted; the
+  // worker's archive notes are formatted afterwards. Never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir, undefined);
   let verifierFailure: Error | undefined;
@@ -1606,7 +1762,7 @@ async function _processFeedbackWithHeartbeat(
     deps.git.commitAndPushPending(
       pushBranch,
       `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
-      { cwd: processorDeps.workDir },
+      { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
       false,
       preFlight,
       undefined,
@@ -1678,7 +1834,7 @@ async function _processFeedbackWithHeartbeat(
           });
         }
       } catch (error) {
-        // A failed measurement or sync must not suppress the merge hold.
+        // A failed measurement or sync must not suppress the review failure.
         logger.warn("Held review body sync failed", {
           prNumber,
           error: String(error),
@@ -1688,36 +1844,9 @@ async function _processFeedbackWithHeartbeat(
     const message =
       `Review-fix verification did not clear. The review remains outstanding.\n\n${failure.message}`;
     await chargeReviewFailure(message);
-    // Attempt both holds even if one GitHub operation is unavailable.
-    const holds = await Promise.allSettled([
-      (async () => {
-        await deps.github.ensureLabelExists(repo, STANDING_VIOLATION_LABEL);
-        await deps.github.runGhCommand([
-          "pr",
-          "edit",
-          String(prNumber),
-          "--repo",
-          repo,
-          "--add-label",
-          STANDING_VIOLATION_LABEL,
-        ]);
-      })(),
-      deps.github.runGhCommand([
-        "pr",
-        "merge",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--disable-auto",
-      ]),
-    ]);
-    for (const hold of holds) {
-      if (hold.status === "rejected") {
-        logger.error("Could not apply review-fix merge hold", {
-          error: String(hold.reason),
-        });
-      }
-    }
+    // Issue #4291: the review stays outstanding, and GitHub holds the merge
+    // on it. Auto-merge stays armed and no label is added: PRs do not merge
+    // until they have a review approval and CI is green.
     return {
       ok: true as const,
       value: { processed: false, changesPushed: false, summary: message },
@@ -1751,7 +1880,7 @@ async function _processFeedbackWithHeartbeat(
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
         pushBranch,
-        { cwd: processorDeps.workDir },
+        { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
         undefined,
         verifyBeforePush,
       );
@@ -1768,7 +1897,7 @@ async function _processFeedbackWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
           `Address PR #${prNumber} feedback\n\nRetry after push recovery (Issue #1643).`,
-          { cwd: processorDeps.workDir },
+          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
           false,
           preFlight,
           undefined,
@@ -1814,11 +1943,21 @@ async function _processFeedbackWithHeartbeat(
       { cwd: processorDeps.workDir },
     );
     if (movedResult.ok && movedResult.value) {
-      logger.info("Branch HEAD moved during Claude run", {
-        branch: pushBranch,
-        beforeSha,
+      const extended = await classifyHeadExtension(beforeSha, {
+        cwd: processorDeps.workDir,
       });
-      hasChanges = true;
+      if (extended.status === "unrelated") {
+        logger.info(
+          "Branch HEAD moved off the starting head during the run; not treating it as this pass's work",
+          { branch: pushBranch, beforeSha, detail: extended.message },
+        );
+      } else {
+        logger.info("Branch HEAD moved during Claude run", {
+          branch: pushBranch,
+          beforeSha,
+        });
+        hasChanges = true;
+      }
     }
   }
 
@@ -2080,16 +2219,20 @@ async function _processFeedbackWithHeartbeat(
       }
     }
   } else if (hasChanges && pushSucceeded) {
+    const notes = [
+      fixPr
+        ? `The fix was delivered through PR #${fixPr.number} (${fixPr.url}) ` +
+          `into the gated branch '${input.branchName}'.`
+        : undefined,
+      factsFlipNote ?? undefined,
+    ].filter((note): note is string => note !== undefined);
     const posted = await replyWithResult(
       repo,
       prNumber,
       deps,
       customMessage,
       pushVerification,
-      fixPr
-        ? `The fix was delivered through PR #${fixPr.number} (${fixPr.url}) ` +
-          `into the gated branch '${input.branchName}'.`
-        : undefined,
+      notes.length > 0 ? notes.join("\n\n") : undefined,
     );
     // Issue #3383/#3408: the fix is verified on the remote — dismiss the
     // review once the reply announcing it actually landed on the PR.
@@ -2208,6 +2351,35 @@ async function _processFeedbackWithHeartbeat(
   // must not be reported as pushed even though the fix branch itself is fine.
   const actuallyPushed = hasChanges && pushSucceeded &&
     !(fixBranch && fixPrError);
+
+  // Issue #4236: answering the worker's own change-request record posts a
+  // resolved marker, so the next pass does not answer it again. A failed
+  // post leaves the record open. It never affects arming (Issue #4291).
+  if (
+    commentCarriesOpenPreprReview(input.commentBody) &&
+    (actuallyPushed || rebuttalPosted)
+  ) {
+    try {
+      await deps.github.runGhCommand([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        renderPreprReviewResolved(),
+      ]);
+    } catch (err) {
+      logger.error(
+        "Pre-PR review resolution comment failed to post — the record stays open",
+        {
+          repo,
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
 
   logger.info("PR feedback processing complete", {
     repo,

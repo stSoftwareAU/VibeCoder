@@ -40,6 +40,7 @@
  */
 
 import { isMilestoneSyncBranch, syncBranchFor } from "./milestone_sync_pr.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Injectable `gh` command runner. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -139,8 +140,10 @@ async function listOpenSyncPrs(
       )
       : [];
   } catch (error) {
-    log(
-      `WARNING: Could not list the open sync PRs on '${syncBranch}' in ` +
+    logAt(
+      log,
+      "warn",
+      `Could not list the open sync PRs on '${syncBranch}' in ` +
         `${repo}: ${describe(error)} — any open sync PR stays open this ` +
         `cycle (Issue #1967)`,
     );
@@ -194,8 +197,10 @@ async function closeSyncPr(
   } catch (error) {
     // The comment is the explanation, not the safety property — a PR closed
     // without one is still safe, so this does not abort the close.
-    log(
-      `WARNING: Could not comment on sync PR ${repo}#${prNumber} before ` +
+    logAt(
+      log,
+      "warn",
+      `Could not comment on sync PR ${repo}#${prNumber} before ` +
         `closing it: ${describe(error)} (Issue #1967)`,
     );
   }
@@ -213,8 +218,10 @@ async function closeSyncPr(
     ]);
     return true;
   } catch (error) {
-    log(
-      `WARNING: Could not close sync PR ${repo}#${prNumber}: ` +
+    logAt(
+      log,
+      "warn",
+      `Could not close sync PR ${repo}#${prNumber}: ` +
         `${describe(error)} — it is still open and still armed, and will be ` +
         `retried next cycle (Issue #1967)`,
     );
@@ -305,16 +312,20 @@ export async function closeLandedMilestoneSyncPrs(
       ]);
       aheadBy = Number(out.trim());
     } catch (error) {
-      log(
-        `WARNING: Could not compare sync PR ${repo}#${pr.number} with ` +
+      logAt(
+        log,
+        "warn",
+        `Could not compare sync PR ${repo}#${pr.number} with ` +
           `'${base}': ${describe(error)} — leaving it open, since an ` +
           `unreadable comparison is not an empty one (Issue #1967)`,
       );
       continue;
     }
     if (!Number.isFinite(aheadBy)) {
-      log(
-        `WARNING: Sync PR ${repo}#${pr.number} compared with '${base}' to an ` +
+      logAt(
+        log,
+        "warn",
+        `Sync PR ${repo}#${pr.number} compared with '${base}' to an ` +
           `unreadable commit count — leaving it open (Issue #1967)`,
       );
       continue;

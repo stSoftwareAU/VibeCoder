@@ -17,6 +17,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { logAt } from "./log_sink.ts";
+
 /** Page size requested per call — the GitHub REST maximum. */
 export const MILESTONES_PER_PAGE = 100;
 
@@ -82,8 +84,10 @@ export async function fetchOpenMilestonePages(
     milestones.push(...pageMilestones);
     if (pageMilestones.length < MILESTONES_PER_PAGE) return milestones;
     if (page === MAX_MILESTONE_PAGES) {
-      log(
-        `WARNING: ${repo} has at least ${
+      logAt(
+        log,
+        "warn",
+        `${repo} has at least ${
           MAX_MILESTONE_PAGES * MILESTONES_PER_PAGE
         } open milestones — the milestone completion scan read only the first ${MAX_MILESTONE_PAGES} pages; any later milestones are not handled this cycle (Issue #3609)`,
       );

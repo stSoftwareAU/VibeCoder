@@ -22,6 +22,7 @@ import {
   type AlertDedupAuthorOptions,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -418,8 +419,10 @@ export async function processStalePlanning(
       continue;
     }
 
-    deps.log(
-      `[stale-workflow] WARNING: ${repo}#${issue.number} has been in ${label} ` +
+    logAt(
+      deps.log,
+      "warn",
+      `[stale-workflow] ${repo}#${issue.number} has been in ${label} ` +
         `for ${staleDays} days — planning may have silently failed`,
     );
     results.push({

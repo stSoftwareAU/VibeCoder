@@ -80,10 +80,11 @@ export const SKIP_REASONS = [
   "filtered-out",
   /** Issue #1470: worker-to-human escalation — skip issues with needs-human */
   "needs-human",
-  /** Issue #2752: dependency cycle detected — escalated and dropped */
-  "dependency-cycle-escalated",
-  /** Issue #2752: milestone-tracking issue labelled work-on — escalated */
-  "dead-label-tracker-escalated",
+  /**
+   * Issue #2752: milestone-tracking issue labelled work-on — the dead label
+   * is stripped by the worker (Issue #4298)
+   */
+  "dead-label-tracker-stripped",
   /** Issue #4078: blocked by a human-authored PR — nudged and escalated */
   "human-pr-blocked-escalated",
   /**
@@ -93,8 +94,11 @@ export const SKIP_REASONS = [
    * "no diagnostic was there".
    */
   "self-schedule-refused",
-  /** Issue #505: an unschedulable diagnostic escalated to a human */
-  "self-schedule-escalated",
+  /**
+   * Issue #505: a diagnostic a merged PR names — closed as resolved by the
+   * worker (Issue #4298)
+   */
+  "self-schedule-resolved",
   /**
    * Issue #1475: the issue is workflow work and this host's token lacks the
    * `workflow` scope, so the push would be rejected — skipped, not claimed.

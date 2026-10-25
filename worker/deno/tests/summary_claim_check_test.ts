@@ -759,6 +759,30 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on a non-integer issue numbe
   );
 });
 
+Deno.test("buildSummaryClaimQuestionPrompt names the base side for a parity sentence with and without prose files (Issue #4223)", () => {
+  const shared = {
+    repo: "acme/widgets",
+    issueNumber: 7,
+    baseRef: "origin/main",
+    summaryPath: ".pr_summary",
+  };
+  const summaryOnly = buildSummaryClaimQuestionPrompt({
+    ...shared,
+    docFiles: [],
+  });
+  const withProse = buildSummaryClaimQuestionPrompt({
+    ...shared,
+    docFiles: ["docs/manual.md"],
+  });
+  for (const prompt of [summaryOnly, withProse]) {
+    assertStringIncludes(prompt, "git show origin/main:");
+    assertStringIncludes(prompt, "as before");
+    assertStringIncludes(prompt, "file:line");
+    assertFalse(prompt.includes("git show undefined:"));
+    assertFalse(prompt.includes("git show :"));
+  }
+});
+
 Deno.test("buildSummaryClaimQuestionPrompt - the same args with a valid issue number do not throw", () => {
   const prompt = buildSummaryClaimQuestionPrompt({
     repo: "acme/widgets",
@@ -1904,5 +1928,114 @@ Deno.test("runSummaryClaimCheck - no overflow logs no cap warning at all (#4118)
     });
     assertEquals(logger.warns.filter((w) => w.includes("range(s)")), []);
     assertEquals(logger.errors, []);
+  });
+});
+
+const REASON_LITERAL = "negative numbers are refused";
+const CLASSIFY_SOURCE = `/** Classifies a number. */
+export function classify(n: number): string {
+  if (n <= 0) {
+    return "${REASON_LITERAL}";
+  }
+  return "every other value is accepted";
+}
+`;
+const CLASSIFY_DIFF = `+++ b/src/classify.ts
+@@ -3 +3 @@
+-  if (n < 0) {
++  if (n <= 0) {
+`;
+
+Deno.test("runSummaryClaimCheck - a yes on an unchanged reason string is a docFinding; a no is not (Issue #4196)", async () => {
+  await withDocRepo({ "src/classify.ts": CLASSIFY_SOURCE }, async (dir) => {
+    const runGit = async (args: string[]) => {
+      if (args[0] === "diff") {
+        return { code: 0, stdout: CLASSIFY_DIFF, stderr: "" };
+      }
+      if (args[0] === "ls-files") {
+        return { code: 0, stdout: "src/classify.ts\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const yes = await runSummaryClaimCheck(docInput(dir, ["src/classify.ts"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(docVerdict("src/classify.ts", REASON_LITERAL)),
+      logger: makeLogger(),
+    });
+    assertEquals(yes.docFindings.map((f) => f.sentence), [REASON_LITERAL]);
+    assertEquals(yes.findings, []);
+    assertEquals(yes.unconfirmedFindings, []);
+
+    const no = await runSummaryClaimCheck(docInput(dir, ["src/classify.ts"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${
+            JSON.stringify({ findings: [] })
+          }\n<!-- /vibe-drift-verdict -->`,
+        ),
+      logger: makeLogger(),
+    });
+    assertEquals(no.docFindings, []);
+    assertEquals(no.findings, []);
+  });
+});
+
+const BADGE_LABEL = "Archived items stay hidden";
+const BADGE_SOURCE = `export function StatusBadge(_props: { state: string }) {
+  const label = "${BADGE_LABEL}";
+  return label;
+}
+`;
+const PAGE_SOURCE = `import { StatusBadge } from "./StatusBadge.tsx";
+
+export function Page() {
+  return <StatusBadge state="archived" />;
+}
+`;
+const PAGE_DIFF = `+++ b/src/page.tsx
+@@ -3 +3 @@
+-  return null;
++  return <StatusBadge state="archived" />;
+`;
+
+Deno.test("runSummaryClaimCheck - a yes on a newly called component's label is a docFinding; a no is not (Issue #4197)", async () => {
+  await withDocRepo({
+    "src/page.tsx": PAGE_SOURCE,
+    "src/StatusBadge.tsx": BADGE_SOURCE,
+  }, async (dir) => {
+    const runGit = async (args: string[]) => {
+      if (args[0] === "diff") return { code: 0, stdout: PAGE_DIFF, stderr: "" };
+      if (args[0] === "ls-files") {
+        return {
+          code: 0,
+          stdout: "src/page.tsx\nsrc/StatusBadge.tsx\n",
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const yes = await runSummaryClaimCheck(docInput(dir, ["src/page.tsx"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(docVerdict("src/StatusBadge.tsx", BADGE_LABEL)),
+      logger: makeLogger(),
+    });
+    assertEquals(yes.docFindings.map((f) => f.sentence), [BADGE_LABEL]);
+    assertEquals(yes.unconfirmedFindings, []);
+
+    const no = await runSummaryClaimCheck(docInput(dir, ["src/page.tsx"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${
+            JSON.stringify({ findings: [] })
+          }\n<!-- /vibe-drift-verdict -->`,
+        ),
+      logger: makeLogger(),
+    });
+    assertEquals(no.docFindings, []);
+    assertEquals(no.findings, []);
   });
 });

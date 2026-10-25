@@ -473,6 +473,106 @@ Deno.test("runPrSummaryCheck - scrubbed markers block even inside Mermaid or cod
   assertEquals(statusOf(clean.value, "#3710"), "passed");
 });
 
+const RUN_ISSUE = 42;
+
+function withPartOf(extra: string, issueNumber: number | null = RUN_ISSUE) {
+  return run(`${GOOD_SUMMARY}\n${extra}`, { issueNumber });
+}
+
+function partOfProblem(
+  reports: GateReport[],
+): string {
+  return reports.find((gate) => gate.issueRef === "#4126")?.problems.join(
+    "\n",
+  ) ?? "";
+}
+
+Deno.test("runPrSummaryCheck - Part of #N with no missing criterion blocks, because the append would close the issue (Issue #4126)", async () => {
+  const r = await withPartOf("Part of #42. The issue stays open.");
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4126"), "blocked");
+  const problem = partOfProblem(r.value);
+  assertStringIncludes(problem, "Part of #42");
+  assertStringIncludes(problem, "Closes #42");
+});
+
+Deno.test("runPrSummaryCheck - Part of #N plus a negated close blocks and names that phrase (Issue #4126)", async () => {
+  const doesNot = await withPartOf(
+    "Part of #42.\n\nThis pull request does not close #42.",
+  );
+  assert(doesNot.ok);
+  assertEquals(statusOf(doesNot.value, "#4126"), "blocked");
+  assertStringIncludes(partOfProblem(doesNot.value), "does not close #42");
+
+  const usedTo = await withPartOf(
+    "Part of #42.\n\nIt is not declared complete or used to close #42.",
+  );
+  assert(usedTo.ok);
+  assertEquals(statusOf(usedTo.value, "#4126"), "blocked");
+  assertStringIncludes(
+    partOfProblem(usedTo.value),
+    "used to close #42",
+  );
+
+  const wrappedClose = await withPartOf(
+    "Part of #42.\n\nThis change does not close\n#42.",
+  );
+  assert(wrappedClose.ok);
+  assertEquals(statusOf(wrappedClose.value, "#4126"), "blocked");
+  assertStringIncludes(partOfProblem(wrappedClose.value), "close #42");
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with a parsed missing entry passes (Issue #4126)", async () => {
+  const r = await withPartOf(
+    [
+      "Part of #42.",
+      "",
+      "## Acceptance Criteria",
+      "",
+      "- **missing** — the owner deploys the baseline — reviewer: missing — reason: not deployed yet",
+    ].join("\n"),
+  );
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4126"), "passed");
+});
+
+Deno.test("runPrSummaryCheck - Part of another issue, a plain close, and a code-span mention pass (Issue #4126)", async () => {
+  const other = await withPartOf("Part of #99. The parent stays open.");
+  assert(other.ok);
+  assertEquals(statusOf(other.value, "#4126"), "passed");
+
+  const closes = await withPartOf("Closes #42.");
+  assert(closes.ok);
+  assertEquals(statusOf(closes.value, "#4126"), "passed");
+
+  const spanned = await withPartOf(
+    "The template says `Part of #42` in its example.",
+  );
+  assert(spanned.ok);
+  assertEquals(statusOf(spanned.value, "#4126"), "passed");
+
+  const closingInCode = await withPartOf(
+    "Part of #42.\n\nThe example keyword is `Closes #42`.",
+  );
+  assert(closingInCode.ok);
+  assertEquals(statusOf(closingInCode.value, "#4126"), "passed");
+
+  const wrapped = await withPartOf("Part of\n#42 stays open.");
+  assert(wrapped.ok);
+  assertEquals(statusOf(wrapped.value, "#4126"), "blocked");
+
+  const refs = await withPartOf("Refs #42. The issue stays open.");
+  assert(refs.ok);
+  assertEquals(statusOf(refs.value, "#4126"), "blocked");
+  assertStringIncludes(partOfProblem(refs.value), "Refs #42");
+});
+
+Deno.test("runPrSummaryCheck - Part of still closes is not checked without an issue number (Issue #4126)", async () => {
+  const r = await run(`${GOOD_SUMMARY}\nPart of #42.`);
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4126"), "not_checked");
+});
+
 Deno.test("runPrSummaryCheck - ambiguous outcome ownership names the blocker (Issue #3979)", async () => {
   const result = await runWithFacts(
     `${MARKER_ONLY_SUMMARY}\n${BRANCH_OUTCOMES_MARKER}`,

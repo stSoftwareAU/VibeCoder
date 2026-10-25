@@ -306,6 +306,13 @@ An assigned issue is completed, never parked (Issue #4158). A failure is
 recorded on the issue and the worker tries again after a cooldown; it never
 applies `failed` and never hands the issue to a human.
 
+A repeat failure blocked by a worker gate (`summary-incomplete`,
+`quality-failure`, `pre-push-gate`, `security-fix-gate`, or another category
+in the worker gate registry) takes the same path: the evidence is written on
+the issue, `failed-once` stays, and the same issue is retried after the
+cooldown until it is done. Nothing is split, closed or deleted (Issue #4130
+removed).
+
 ```mermaid
 flowchart TD
     A["🔨 Issue attempt"] -->|success| D["✅ Issue resolved"]
@@ -476,6 +483,14 @@ subsequent scan until a human removes the label.
   action) is required.
 - The issue raises a product or architectural question that only a human
   stakeholder can resolve.
+
+**What is never escalated (Issue #4298):** an approved issue the worker can
+resolve itself. An analysis-only issue is closed with its analysis; a
+repository-admin finding is applied with the worker's token (or retried on the
+`failed-once` ladder when the token cannot); a dependency cycle is worked in
+issue-number order; a dead `work-on` label on a milestone tracker is stripped;
+a re-approved issue a merged PR already satisfies, and a worker diagnostic a
+merged PR fixed, are closed as completed.
 
 **To resume work:**
 

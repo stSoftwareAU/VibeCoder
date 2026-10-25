@@ -951,6 +951,9 @@ export async function directMergePr(
   // Pre-merge backstop gate (Issue #2582): CI must be green and branch current.
   const gate = await gateFn(repo, prNumber, ghCommandFn, {
     allowNoChecks: options.allowNoChecks === true,
+    ...(options.decideMilestoneBaseFn
+      ? { decideMilestoneBaseFn: options.decideMilestoneBaseFn }
+      : {}),
   });
   if (!gate.ok) {
     return {

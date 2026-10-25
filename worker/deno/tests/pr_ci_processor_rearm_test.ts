@@ -1,16 +1,15 @@
 /**
- * Tests for the standing-violation hold on the CI-fix re-arm (Issue #3685).
+ * Tests for the CI-fix re-arm (Issues #3685, #4291).
  *
  * After a CI-fix push lands on the PR's own head, `processCiFailure` re-arms
- * auto-merge. A PR labelled `standing-violation` must not be re-armed, on
- * either the unguarded path or the locked path, while an unlabelled PR still
- * is. The label is read from the claim-point live-state read, so no extra
- * `gh` call is made.
+ * auto-merge. The CI quality gate is the only merge gate (Issue #4291), so
+ * the re-arm happens on the unguarded and the locked path alike — whatever
+ * labels the PR still carries and whatever its pre-PR review record says.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -18,7 +17,6 @@ import {
 } from "../lib/pr_ci_processor.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import { STANDING_VIOLATION_LABEL } from "../lib/standing_violation_routing.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import type { Logger } from "../types.ts";
 import type {
@@ -28,6 +26,7 @@ import type {
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
+import { renderPreprReviewRequest } from "../lib/prepr_review_record.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -45,8 +44,8 @@ interface WarnCall {
 }
 
 /**
- * A logger that records every info message so the hold can be asserted, and
- * every warning (with its context) so a failed re-arm can be asserted.
+ * A logger that records every info message, and every warning (with its
+ * context) so a failed re-arm can be asserted.
  */
 function makeRecordingLogger(
   infoLines: string[],
@@ -117,6 +116,8 @@ function makeDeps(
   labels: string[],
   arms: ArmCall[],
   armThrows = false,
+  comments = "[]",
+  commentsThrows = false,
 ): ReturnType<typeof createMockDeps> {
   const payload = JSON.stringify({
     autoMergeRequest: null,
@@ -133,8 +134,16 @@ function makeDeps(
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: (args: string[]) =>
-      Promise.resolve(isPrLiveStateRead(args) ? payload : ""),
+    runGhCommand: (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve(payload);
+      if (args.some((arg) => arg.includes("/comments"))) {
+        if (commentsThrows) {
+          return Promise.reject(new Error("comments unreadable"));
+        }
+        return Promise.resolve(comments);
+      }
+      return Promise.resolve("");
+    },
   };
   return createMockDeps({
     claude: mockClaude,
@@ -170,22 +179,60 @@ function makeDeps(
 }
 
 // ============================================================================
-// Issue #3685: standing-violation PRs are not re-armed after a CI-fix push
+// Issue #4291: every CI-fix push re-arms auto-merge
 // ============================================================================
 
-Deno.test("processCiFailure - a PR labelled standing-violation is not re-armed after a CI-fix push (Issue #3685)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-standing-violation-" });
+/** The one re-arm a CI-fix push on the PR's own head makes. */
+const REARM: ArmCall[] = [
+  // Issue #3909: the head branch is passed so the milestone open-children
+  // gate needs no extra lookup.
+  { repo: "org/repo", prNumber: 42, headRefName: "issue-42-fix-bug" },
+];
+
+/** Lock seams for the cross-host PR lock production runs the CI fix under. */
+const LOCKED: Partial<CiProcessorDeps> = {
+  workerId: "worker-1",
+  acquireLockFn: (() =>
+    Promise.resolve({
+      ok: true,
+      value: { acquired: true, lockCommentId: 1 },
+    })) as unknown as CiProcessorDeps["acquireLockFn"],
+  releaseLockFn: (() =>
+    Promise.resolve({
+      ok: true,
+      value: undefined,
+    })) as unknown as CiProcessorDeps["releaseLockFn"],
+  startLockRenewalFn: (() => ({
+    stop: () => {},
+  })) as unknown as CiProcessorDeps["startLockRenewalFn"],
+};
+
+const OPEN_RECORD = JSON.stringify([{
+  author: "testbot",
+  body: renderPreprReviewRequest([{
+    file: "src/balance.ts",
+    line: 42,
+    problem: "rounding drops the final cent",
+  }]),
+}]);
+
+/** Run one CI fix whose push lands, and return the re-arms it made. */
+async function rearmsAfterPush(
+  deps: (arms: ArmCall[]) => ReturnType<typeof createMockDeps>,
+  extra: Partial<CiProcessorDeps> = {},
+): Promise<ArmCall[]> {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-ci-rearm-" });
   try {
     const arms: ArmCall[] = [];
-    const infoLines: string[] = [];
     const processorDeps: CiProcessorDeps = {
       promptsDir: PROMPTS_DIR,
-      logger: makeRecordingLogger(infoLines),
-      deps: makeDeps([STANDING_VIOLATION_LABEL, "bug"], arms),
+      logger: makeRecordingLogger([]),
+      deps: deps(arms),
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
       workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      ...extra,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -195,111 +242,63 @@ Deno.test("processCiFailure - a PR labelled standing-violation is not re-armed a
     if (result.ok) {
       assertEquals(result.value.changesPushed, true);
     }
-    assertEquals(
-      arms.length,
-      0,
-      "a standing-violation PR must not have auto-merge re-armed",
-    );
-    const holdLine = infoLines.find((line) =>
-      line.includes(STANDING_VIOLATION_LABEL)
-    );
-    if (holdLine === undefined) {
-      throw new Error("the standing-violation hold was not logged");
-    }
-    assertStringIncludes(holdLine, "not re-arming");
+    return arms;
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+}
+
+Deno.test("processCiFailure - an unlabelled PR is re-armed after a CI-fix push (Issue #3685)", async () => {
+  assertEquals(
+    await rearmsAfterPush((arms) => makeDeps(["bug"], arms)),
+    REARM,
+    "auto-merge must be re-armed exactly once",
+  );
 });
 
-Deno.test("processCiFailure - an unlabelled PR is still re-armed after a CI-fix push (Issue #3685)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-standing-violation-" });
-  try {
-    const arms: ArmCall[] = [];
-    const processorDeps: CiProcessorDeps = {
-      promptsDir: PROMPTS_DIR,
-      logger: makeRecordingLogger([]),
-      deps: makeDeps(["bug"], arms),
-      stateDir: `${tmpDir}/.ci_check_state`,
-      workDir: tmpDir,
-      workRoot: tmpDir,
-      verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    };
-
-    const result = await processCiFailure(makeInput(), processorDeps);
-
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      assertEquals(result.value.changesPushed, true);
-    }
-    assertEquals(
-      arms,
-      // Issue #3909: the head branch is passed so the milestone
-      // open-children gate needs no extra lookup.
-      [{ repo: "org/repo", prNumber: 42, headRefName: "issue-42-fix-bug" }],
-      "an unlabelled PR must still have auto-merge re-armed exactly once",
-    );
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+Deno.test("processCiFailure - a PR still carrying the retired standing-violation label is re-armed (Issue #4291)", async () => {
+  assertEquals(
+    await rearmsAfterPush((arms) => makeDeps(["standing-violation"], arms)),
+    REARM,
+    "a stale label must not withhold the re-arm",
+  );
 });
 
-Deno.test("processCiFailure - a labelled PR is not re-armed on the locked path (Issue #3685)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-standing-violation-" });
-  try {
-    const arms: ArmCall[] = [];
-    const infoLines: string[] = [];
-    // Production runs the CI fix under the cross-host PR lock, so this test
-    // does too: the hold has to hold on the path the worker actually takes.
-    const processorDeps: CiProcessorDeps = {
-      promptsDir: PROMPTS_DIR,
-      logger: makeRecordingLogger(infoLines),
-      deps: makeDeps([STANDING_VIOLATION_LABEL], arms),
-      stateDir: `${tmpDir}/.ci_check_state`,
-      workDir: tmpDir,
-      workRoot: tmpDir,
-      verifyPushFn: REMOTE_CONFIRMS_PUSH,
-      workerId: "worker-1",
-      acquireLockFn: (() =>
-        Promise.resolve({
-          ok: true,
-          value: { acquired: true, lockCommentId: 1 },
-        })) as unknown as CiProcessorDeps["acquireLockFn"],
-      releaseLockFn: (() =>
-        Promise.resolve({
-          ok: true,
-          value: undefined,
-        })) as unknown as CiProcessorDeps["releaseLockFn"],
-      startLockRenewalFn: (() => ({
-        stop: () => {},
-      })) as unknown as CiProcessorDeps["startLockRenewalFn"],
-    };
-
-    const result = await processCiFailure(makeInput(), processorDeps);
-
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      assertEquals(result.value.changesPushed, true);
-    }
-    assertEquals(
-      arms.length,
-      0,
-      "a standing-violation PR must not have auto-merge re-armed on the locked path",
-    );
-    const holdLine = infoLines.find((line) =>
-      line.includes(STANDING_VIOLATION_LABEL)
-    );
-    if (holdLine === undefined) {
-      throw new Error("the standing-violation hold was not logged");
-    }
-    assertStringIncludes(holdLine, "not re-arming");
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+Deno.test("processCiFailure - a stale-labelled PR is re-armed on the locked path too (Issue #4291)", async () => {
+  assertEquals(
+    await rearmsAfterPush(
+      (arms) => makeDeps(["standing-violation"], arms),
+      LOCKED,
+    ),
+    REARM,
+    "the locked path must re-arm as the unguarded path does",
+  );
 });
 
-Deno.test("processCiFailure - a failed re-arm on an unlabelled PR is warned, not thrown (Issue #3685)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-standing-violation-" });
+Deno.test("processCiFailure - a CI-fix push re-arms while a pre-PR review record is open (Issue #4291)", async () => {
+  assertEquals(
+    await rearmsAfterPush(
+      (arms) => makeDeps(["bug"], arms, false, OPEN_RECORD),
+      { githubUser: "testbot", fleetLogins: ["testbot"] },
+    ),
+    REARM,
+    "an open pre-PR review record must not withhold the re-arm",
+  );
+});
+
+Deno.test("processCiFailure - a CI-fix push re-arms when the comment list cannot be read (Issue #4291)", async () => {
+  assertEquals(
+    await rearmsAfterPush(
+      (arms) => makeDeps(["bug"], arms, false, "[]", true),
+      { githubUser: "testbot" },
+    ),
+    REARM,
+    "an unreadable comment list must not withhold the re-arm",
+  );
+});
+
+Deno.test("processCiFailure - a failed re-arm is warned, not thrown (Issue #3685)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-ci-rearm-" });
   try {
     const arms: ArmCall[] = [];
     const warnings: WarnCall[] = [];

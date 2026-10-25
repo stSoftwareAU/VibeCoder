@@ -457,3 +457,37 @@ export async function runGitArgv(
   const { code, stdout, stderr } = result.value;
   return { success: code === 0, stdout: stdout.trim(), stderr: stderr.trim() };
 }
+
+/**
+ * Synchronous local git read (Issue #4120).
+ *
+ * The post-run callback context is built synchronously, so that read cannot
+ * await {@link runGitCommand}. The spawn stays in this module, which is the
+ * only file allowed to start `git` (Issue #1214). `outputSync` cannot take
+ * the AbortController timeout the async path uses, so this is for local
+ * metadata (`describe`, `rev-parse`), not for a git call that talks to a
+ * remote.
+ *
+ * A finished process is returned even when git exits non-zero. A spawn that
+ * cannot start throws, including `NotCapable` and `NotFound`. An unreadable
+ * commit message throws {@link UnredactableMessageError}.
+ */
+export function runGitReadSync(
+  args: string[],
+  options: Pick<GitCommandOptions, "cwd" | "env"> = {},
+): GitCommandOutput {
+  const effectiveArgs = redactGitMessageArgs(args, readMessageFileSync);
+  const process = new Deno.Command("git", {
+    args: effectiveArgs,
+    cwd: options.cwd,
+    env: options.env,
+    stdout: "piped",
+    stderr: "piped",
+  }).outputSync();
+  const stdout = new TextDecoder().decode(process.stdout);
+  const stderr = new TextDecoder().decode(process.stderr);
+  if (process.code !== 0) {
+    noteGitOutputForVolumeFault(effectiveArgs, stderr, stdout);
+  }
+  return { code: process.code, stdout, stderr };
+}

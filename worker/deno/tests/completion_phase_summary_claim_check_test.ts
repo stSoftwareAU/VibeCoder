@@ -17,6 +17,7 @@
 
 import { scrubUntrustedText } from "../lib/prompt_delimiter.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { preprReviewMarker } from "../lib/prepr_review_record.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -515,16 +516,21 @@ Deno.test(
       ],
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
-    // Issue #3324: the second attempt's block is claim-only (every other
-    // gate passed), so it now gets the one summary-only correction turn
-    // before the run fails — one recovery turn plus one correction turn.
+    // Issue #4236: after the recovery turn and the one correction turn, a
+    // claim that is still the only block raises the PR and posts the record.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(
       outcome.claudeCalls,
       2,
       "one recovery turn plus one correction turn",
     );
+    const record = outcome.comments.find((body) =>
+      body.includes(preprReviewMarker("changes_requested"))
+    );
+    assert(record, "the change-request record was posted");
+    assertStringIncludes(record, "the head's phraseAnywhere builds no regex");
+    assertStringIncludes(record, "pre-PR review requested changes: 1 findings");
   },
 );
 
@@ -804,9 +810,19 @@ Deno.test(
       ],
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
+    // Issue #4236: the carried-forward finding still blocks the clean raise.
+    // It is posted on the change-request record rather than failing the run.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.claudeCalls, 2);
+    const record = outcome.comments.find((body) =>
+      body.includes(preprReviewMarker("changes_requested"))
+    );
+    assert(record, "the carried-forward finding was posted");
+    assertStringIncludes(
+      record,
+      "the head's anotherHelper does not compare",
+    );
   },
 );
 
@@ -886,13 +902,18 @@ ${SENTENCE_C}
       ],
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(
       outcome.claudeCalls,
       2,
       "no third (correction) turn — the correction runs at most once per run",
     );
+    const record = outcome.comments.find((body) =>
+      body.includes(preprReviewMarker("changes_requested"))
+    );
+    assert(record, "sentence C was posted, not given another correction turn");
+    assertStringIncludes(record, "the head's thirdHelper does not round");
   },
 );
 
@@ -1043,8 +1064,11 @@ Deno.test(
     assertEquals(outcome.status, "early_exit");
     assertEquals(outcome.outcomeKind, "summary_incomplete");
     assertEquals(outcome.claudeCalls, 2, "recovery then one narrow correction");
-    assertEquals(outcome.finalisePrCalls, 0, "must not arm auto-merge");
-    assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+    assertEquals(
+      outcome.finalisePrCalls,
+      1,
+      "the findings comment never withholds arming (Issue #4291)",
+    );
     assertEquals(
       outcome.comments.some((c) =>
         c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
@@ -1196,8 +1220,10 @@ Deno.test("completion - scrubbed summary echo never overwrites Mermaid, comments
   });
   assertEquals(outcome.claudeCalls, 2);
   assertEquals(outcome.finalSummary, afterRecovery);
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0);
+  // Issue #4236: the claim that remains raises the PR. The summary bytes,
+  // including the Mermaid block and the comment, stay as the recovery left them.
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
 });
 
 Deno.test("completion - pre-existing scrubbed Mermaid blocks PR creation", async () => {
@@ -1230,10 +1256,9 @@ Deno.test("completion - a manual finding beside another gate is held without an 
   );
   assertEquals(
     outcome.finalisePrCalls,
-    0,
-    "manual findings must hold even in a mixed block",
+    1,
+    "manual findings are posted, never a merge hold (Issue #4291)",
   );
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
   assertEquals(
     outcome.comments.some((c) =>
       c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
@@ -1262,8 +1287,7 @@ Deno.test("completion - an unchanged manual finding cannot disappear in a flaky 
   });
   assertEquals(outcome.status, "early_exit");
   assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_WITH_CLAIM);
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
   assertEquals(
     outcome.comments.some((c) =>
       c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
@@ -1291,8 +1315,7 @@ Deno.test("completion - a timed-out correction reply cannot write manual text", 
     ],
   });
   assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_WITH_CLAIM);
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
 });
 
 Deno.test("completion - scrubbed manual replacement leaves the original intact and held", async () => {
@@ -1317,8 +1340,7 @@ Deno.test("completion - scrubbed manual replacement leaves the original intact a
   assertEquals(outcome.claudeCalls, 2);
   assertEquals(outcome.finalRepoFiles[MANUAL_PATH], original);
   assertEquals(outcome.status, "early_exit");
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
   assertStringIncludes(
     outcome.claudeCallDetails[1]!.prompt,
     "Read the original files by path",
@@ -1345,7 +1367,6 @@ Deno.test("completion - surviving source comment findings are held without a Mar
   assertEquals(outcome.questionCalls.length, 2);
   assertEquals(outcome.claudeCalls, 1);
   assertEquals(outcome.finalRepoFiles[file], original);
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
   assert(outcome.comments.some((c) => c.includes(sentence)));
 });
