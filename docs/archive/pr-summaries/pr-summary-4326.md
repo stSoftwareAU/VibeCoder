@@ -10,8 +10,8 @@ merge, and a merge whose conflicts the deterministic rules settle, are pushed
 with the existing `UNGATED:` note and the milestone PR's CI builds them. A tree
 with no cargo project keeps its own check and the normal agent. A conflict that
 needs the resolution agent is not landed that cycle (the agent could run the
-very cargo build the host cannot afford); it is charged nothing and lands in
-the first cycle whose budget admits a build. Closes #4326.
+very cargo build the host cannot afford); it is charged nothing and lands in the
+first cycle whose budget admits a build. Closes #4326.
 
 Version bump: no `VERSION` change was made by hand in this change.
 
@@ -105,16 +105,17 @@ flowchart TD
   and
   `worker/deno/tests/milestone_merge_only_4326_test.ts::merge-only e2e - a conflict the worker resolves lands unverified: UNGATED, the milestone carries main's lines (Issue #4326)`
   — reviewer: met
-- **partial** — Whatever is chosen, a milestone may not stay behind for more than
-  one cycle on disk budget alone — evidence: the two end-to-end tests above, and
+- **partial** — Whatever is chosen, a milestone may not stay behind for more
+  than one cycle on disk budget alone — evidence: the two end-to-end tests
+  above, and
   `worker/deno/tests/milestone_merge_only_4326_test.ts::merge-only e2e - a conflict the agent would have to resolve is not pushed and not charged (Issue #4326)`
   — reviewer: partial — reason: a conflict that only the resolution agent can
   settle still waits for a cycle with budget, because the agent is free to run
-  the cargo build the host cannot afford; the reviewer would close it by
-  capping the uncharged merge-only cycles and escalating, by running the agent
-  with cargo disabled, or by sizing the headroom from a measured target. Each is
-  a larger change than the issue's chosen option and is left for the issue
-  owner's agreement
+  the cargo build the host cannot afford; the reviewer would close it by capping
+  the uncharged merge-only cycles and escalating, by running the agent with
+  cargo disabled, or by sizing the headroom from a measured target. Each is a
+  larger change than the issue's chosen option and is left for the issue owner's
+  agreement
 - **partial** — With free space between the floor and floor + headroom, and
   nothing prunable, a milestone sync still lands within one cycle (stubbed disk
   figures) — evidence: `worker/deno/tests/heavy_build_gate_3178_test.ts`
@@ -125,10 +126,11 @@ flowchart TD
   figures to a landed push is pinned in four tests rather than one, and a
   conflict that needs the agent does not land in that cycle
 - **met** — The host's real free space never drops below the floor because of it
-  — evidence: no build runs in `merge-only`
-  (`milestone_merge_only_4326_test.ts` asserts no check or verification is
-  called); `heavyBuildAdmission - below the floor defers without touching the
-  root` still defers and the nothing-prunable tests assert no dir is removed —
+  — evidence: no build runs in `merge-only` (`milestone_merge_only_4326_test.ts`
+  asserts no check or verification is called);
+  `heavyBuildAdmission - below the floor defers without touching the
+  root`
+  still defers and the nothing-prunable tests assert no dir is removed —
   reviewer: met
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4326.json` claims the
   new module in the sweep ledger — reviewer: unrequested — reason: required by
@@ -148,9 +150,9 @@ flowchart TD
 - **violation** — the escalation comment and the merge commit message told the
   reader an unverified resolution had passed the repository's checks — evidence:
   `worker/deno/lib/milestone_sync_conflict.ts:365` and
-  `worker/deno/lib/milestone_conflict_triage.ts:757` — reason: fixed in this diff
-  (`MilestoneSyncConflict.unverified` selects a comment that says the tree was
-  not checked; the commit message names the `UNGATED` exception)
+  `worker/deno/lib/milestone_conflict_triage.ts:757` — reason: fixed in this
+  diff (`MilestoneSyncConflict.unverified` selects a comment that says the tree
+  was not checked; the commit message names the `UNGATED` exception)
 - **violation** — docs and comments still said every automatic resolution is
   verified before the push — evidence: `docs/INTERNALS.md:4218`,
   `docs/workflows/milestones.md:469`, `worker/deno/lib/git_pull.ts:491` —
@@ -159,7 +161,8 @@ flowchart TD
   `repairGatedResolution`, where a later `landUnverified` verdict could let a
   repaired tree whose real check failed land unchecked — evidence:
   `worker/deno/lib/milestone_gate_repair.ts:459` — reason: fixed in this diff
-  (only the first verdict may land unverified; `repairGatedResolution - a later
+  (only the first verdict may land unverified;
+  `repairGatedResolution - a later
   verification marked landUnverified is still a refusal, not a pass`)
 - **violation** — a Deno-only tree whose agent rung was withheld was handed a
   stub that blamed the host's build budget — evidence:
@@ -226,13 +229,13 @@ flowchart TD
   `undefined, undefined, agentFn` restored →
   `presync - a merge-only admission hands the sync the merge-only gates and agent on a cargo tree (Issue #4326)`
   red; merge gate returning `passed` → `UNGATED` e2e red; early return in
-  `landUnverified` ignored in `judgeResolutionVerdict` → the resolved-conflict e2e
-  red; the sweep's `mergeOnly` dropped in `syncMilestoneBranchForSweep` → the
-  sweep merge-only test red; `free === undefined` operand dropped from
+  `landUnverified` ignored in `judgeResolutionVerdict` → the resolved-conflict
+  e2e red; the sweep's `mergeOnly` dropped in `syncMilestoneBranchForSweep` →
+  the sweep merge-only test red; `free === undefined` operand dropped from
   `heavyBuildAdmission` → the no-free-figure test red; `level !== "ok"` operand
-  dropped → the `unknown` level test red; cargo detection always true →
-  5 Deno-tree tests red; always false → cargo tests red. The
-  `output: ""` property of both cargo-tree gate outcomes is now asserted whole.
+  dropped → the `unknown` level test red; cargo detection always true → 5
+  Deno-tree tests red; always false → cargo tests red. The `output: ""` property
+  of both cargo-tree gate outcomes is now asserted whole.
 - Callers of the changed helper checked: `heavyBuildAdmission` — sweep
   (`run_core_production_deps.ts` via `heavyBuildGateFn`), pre-cut sync
   (`milestone_presync.ts`), and `commands/milestone_branch_sync.ts` (wires no
@@ -242,12 +245,13 @@ flowchart TD
   the sweep (via `syncMilestoneBranchForSweep`) and the pre-cut sync. The
   `MERGE_ONLY_NO_BUILD` marker and the `concludeGateRefusal` guard were removed:
   no merge-only gate refuses any more. Twin copies of the rule: none found.
-- Results: `deno test -A` on the files above plus `milestone_branch_sync_test.ts`,
-  `milestone_presync_test.ts`, `milestone_presync_git_test.ts`,
-  `milestone_gate_repair_test.ts`, `milestone_sync_conflict*_test.ts`,
-  `milestone_conflict_triage*_test.ts` and `git_pull*_test.ts` passed (233
-  passed, 0 failed); `lib_sweep_coverage_test.ts` passed (39);
-  `deno task check:manifests` passed (853); `deno lint` clean.
+- Results: `deno test -A` on the files above plus
+  `milestone_branch_sync_test.ts`, `milestone_presync_test.ts`,
+  `milestone_presync_git_test.ts`, `milestone_gate_repair_test.ts`,
+  `milestone_sync_conflict*_test.ts`, `milestone_conflict_triage*_test.ts` and
+  `git_pull*_test.ts` passed (233 passed, 0 failed);
+  `lib_sweep_coverage_test.ts` passed (39); `deno task check:manifests` passed
+  (853); `deno lint` clean.
 - `./quality.sh`: every stage passed except `deno tests`, which fails the same
   15 `codex`-provider tests it fails on the untouched tree
   (`The running container image did not install the "codex" coding-agent provider`);
