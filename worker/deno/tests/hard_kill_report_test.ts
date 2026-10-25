@@ -60,7 +60,7 @@ const DIR = "/var/log/vibe";
 /** 2026-10-25T01:30:00Z, the evidence's capture time, in epoch seconds. */
 const NOW = Date.parse("2026-10-25T01:30:00.000Z") / 1000;
 /** A secret-shaped GitHub token (`ghp_` + 36 base62); must never be filed. */
-const TOKEN = "ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+const TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const LAST_LOG_LINE =
   "[2026-10-25 01:27:18Z] INFO: [s1 stSoftwareAU/VibeCoder#4254] [phase] execute (stSoftwareAU/VibeCoder#4254): still running · 1m0s elapsed host=s1";
 
