@@ -4,7 +4,7 @@
  * `claim_pr_comment.ts` no longer dismisses a `pr_review` (CHANGES_REQUESTED
  * review) at claim time — the claim is a lease, renewed from the run's
  * heartbeat. `processPrFeedback` must dismiss the review only once the run
- * RETIRES it (a verified push, a rebuttal, an escalation, or a hand-off),
+ * RETIRES it (a verified push, a rebuttal, or a hand-off),
  * and must CHARGE every other outcome as a failed attempt so the review is
  * retried at most twice rather than looping or wedging forever.
  *
@@ -134,39 +134,6 @@ function makeFailingPrCommentGithub(captured: CapturedGh): Partial<GitHubDeps> {
       if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
       if (args[0] === "pr" && args[1] === "comment") {
         return Promise.reject(new Error("gh API error: connection reset"));
-      }
-      if (args[0] === "label" && args[1] === "list") {
-        return Promise.resolve("[]");
-      }
-      return Promise.resolve("");
-    },
-  };
-}
-
-/**
- * A `gh` stub where the needs-human label add and the escalation comment —
- * both the REST call and its `gh` CLI fallback — all fail. Models a brief
- * GitHub API outage during the no-fix/no-rebuttal escalation (Issue #3408
- * review).
- */
-function makeEscalationBothFailGithub(
-  captured: CapturedGh,
-): Partial<GitHubDeps> {
-  return {
-    runGhCommand: (args: string[]) => {
-      captured.calls.push(args);
-      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-      const isLabelPost = args[0] === "api" && args[2] === "POST" &&
-        String(args[3] ?? "").includes("/labels");
-      const isLabelCli = args[0] === "issue" && args[1] === "edit" &&
-        args.includes("--add-label");
-      const isCommentPost = args[0] === "api" && args[2] === "POST" &&
-        String(args[3] ?? "").includes("/comments");
-      const isCommentCli = args[0] === "issue" && args[1] === "comment";
-      if (isLabelPost || isLabelCli || isCommentPost || isCommentCli) {
-        return Promise.reject(
-          new Error("gh API error: 503 Service Unavailable"),
-        );
       }
       if (args[0] === "label" && args[1] === "list") {
         return Promise.resolve("[]");
@@ -592,7 +559,7 @@ Deno.test("pr_review dismissal: a rebuttal that fails to post charges a failed a
   }
 });
 
-Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — escalates and dismisses once", async () => {
+Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — charged for the next cycle, never dismissed or escalated (Issue #4304)", async () => {
   const events: string[] = [];
   const { captured, result } = await runScenario({
     input: makeInput(),
@@ -603,42 +570,13 @@ Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — escal
   assertEquals(result.ok, true);
   assertEquals(
     events.filter((e) => e.startsWith("markCommentProcessed")).length,
-    1,
+    0,
   );
   assertEquals(
     events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
-    0,
+    1,
   );
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
-  assertEquals(dismissalOutcomes(events), ["escalated"]);
-});
-
-Deno.test("pr_review dismissal: no fix, no rebuttal, and the escalation itself fails (label + comment) — charges, never dismisses (Issue #3408 review)", async () => {
-  const events: string[] = [];
-  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
-  const { result } = await runScenario({
-    input: makeInput(),
-    events,
-    runBehaviours: ["nothing", "nothing"],
-    githubOverride: makeEscalationBothFailGithub(captured),
-  });
-
-  assertEquals(result.ok, true);
-  assertEquals(
-    events.filter((e) => e.startsWith("markCommentProcessed")).length,
-    0,
-  );
-  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
-  assertEquals(failures.length, 1);
-  assertStringIncludes(failures[0] ?? "", "escalation");
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
-  if (result.ok) {
-    // The escalation never landed, so the summary must not claim it did.
-    assertEquals(
-      result.value.summary.includes("escalated to needs-human"),
-      false,
-    );
-  }
 });
 
 Deno.test("pr_review dismissal: unsettled outcome (prompt build failure) is charged, never dismissed", async () => {

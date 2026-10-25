@@ -386,9 +386,11 @@ Deno.test("review-fix facts flip - a not-checked verdict does not rebut an unans
     pushed: false,
   });
 
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  // Issue #4304: still unanswered, so it is charged for the next cycle —
+  // never rebutted by the verdict, and never handed to a human.
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
   assertEquals(dismissals.includes("pr_review:rv-flip:rebuttal"), false);
-  assertEquals(dismissals.includes("pr_review:rv-flip:escalated"), true);
+  assertEquals(dismissals.length, 0);
   assertEquals(
     captured.comments.some((comment) =>
       comment.includes("Facts flip verifier:")
@@ -397,7 +399,9 @@ Deno.test("review-fix facts flip - a not-checked verdict does not rebut an unans
   );
   assertEquals(responseFile, undefined);
   assertEquals(result.ok, true);
-  if (result.ok) assertStringIncludes(result.value.summary, "needs-human");
+  if (result.ok) {
+    assertEquals(result.value.summary.includes("rebuttal posted"), false);
+  }
 });
 
 Deno.test("review-fix facts flip - a successful push still reports the verdict", async () => {

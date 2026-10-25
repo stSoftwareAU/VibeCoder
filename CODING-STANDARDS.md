@@ -2092,10 +2092,9 @@ line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
 or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
 (`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
-branch is red. The Escape Hatch
-in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
-honoured on a committed PR branch when `.pr_response_message` names a
-follow-up issue. Any later commit on the branch — a
+branch is red. A PR-feedback or CI-fix hand-off in `.pr_response_message`
+that names a follow-up issue is still recognised on a committed PR branch,
+although `prompts/pr_feedback/prompt.md` no longer offers one (Issue #4304). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 

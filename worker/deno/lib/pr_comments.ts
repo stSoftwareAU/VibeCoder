@@ -95,9 +95,7 @@ export type ReviewDismissalOutcome =
   | "addressed"
   | "permanently_failed"
   | "rebuttal"
-  | "escalated"
-  | "handed_off"
-  | "fix_pr_pending";
+  | "handed_off";
 
 /** The dismissal message for each {@link ReviewDismissalOutcome}. */
 export const REVIEW_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> =
@@ -107,11 +105,8 @@ export const REVIEW_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> =
       "Not addressed after two automated attempts — see the PR thread.",
     rebuttal:
       "Answered with a rebuttal — no code change was made. See the PR thread.",
-    escalated: "Not addressed — escalated to needs-human. See the PR thread.",
     handed_off:
       "Not addressed — handed off to a follow-up issue. See the PR thread.",
-    fix_pr_pending:
-      "A fix was pushed to a branch, but the fix PR still needs to be opened — see the PR thread.",
   };
 
 /**
@@ -120,7 +115,7 @@ export const REVIEW_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> =
  *
  * A dismissed `pr_review` carries the {@link REVIEW_DISMISSAL_MESSAGES} entry
  * for `outcome`; only `"addressed"` claims the change was made, so a review
- * that was rebutted, escalated, handed off or permanently failed is never
+ * that was rebutted, handed off or permanently failed is never
  * reported as addressed (Issue #3409).
  *
  * @param repo - Repository in "owner/repo" format

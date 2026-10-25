@@ -22,9 +22,10 @@ quality checks) failures, keeps branches **up to date** with the base
 turned on only when the PR is actually mergeable, and every merge first passes a
 **pre-merge gate** that re-checks CI and branch freshness. User feedback
 (comments, "Request changes") is also handled: address it, push, mark processed.
-If a piece of feedback is genuinely **out of scope** for one run, the worker
-takes the **escape hatch** — it files a follow-up issue, replies once naming it,
-and exits cleanly rather than looping.
+Every comment ends with a pushed fix or a reasoned reply: feedback that turns
+on a product choice gets the agent's decision with the assumption stated, and
+feedback the agent judges wrong gets a rebuttal. The worker never hands a PR
+back to a person and files no follow-up issue for leftover work (Issue #4304).
 
 ```mermaid
 flowchart TD
@@ -205,9 +206,9 @@ The pr_feedback prompt closes every finding in a `CHANGES_REQUESTED` review one
 of two ways: **fixed** in a commit pushed to the PR branch, or **rebutted** as a
 false positive with the reason recorded in `.pr_response_message`. Recording a
 finding in the PR summary as a "known limitation", "follow-up" or "open
-violation" is not a resolution — the next review raises it again. The only
-other exit is the existing escape hatch above: a filed follow-up issue named in
-`.pr_response_message`. When a finding is fixed, the PR summary text that
+violation" is not a resolution — the next review raises it again. There is
+no other exit: no finding is handed to a person or to a follow-up issue
+(Issue #4304). When a finding is fixed, the PR summary text that
 recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
 rule). After a verified push to the PR's own head, the worker re-syncs the
@@ -303,8 +304,9 @@ once the run retires it** below) — but a run that ends with nothing to show
 for it, and no rebuttal either, still has to end somewhere, or the review
 would be retried for ever with no record that anything was ever tried. The
 worker (`worker/deno/lib/pr_feedback_processor.ts`, with the decision
-helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) guards
-against that case by escalating to a human rather than looping silently:
+helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) retries it
+once more, then redoes the work — it never hands the PR to a human
+(Issue #4304):
 
 - If the run leaves no commit, no working-tree change and no
   `.pr_response_message`, the worker re-runs the agent once, in the same
@@ -315,9 +317,16 @@ against that case by escalating to a human rather than looping silently:
   `.pr_response_message`, that message is posted as the reply — the
   rebuttal — never the neutral "could not identify a code change" reply.
 - If no fix was pushed and there is no `.pr_response_message`, the worker
-  posts no neutral reply either: it labels the PR `needs-human` with a
-  comment naming the review id, the number of runs, the last run's exit
-  code and duration, and saying no fix or rebuttal was produced.
+  posts no neutral reply either. The first time, it charges a failed
+  attempt — the "First Attempt" reply below, naming the review id, the
+  number of runs and the last run's exit code and duration — and leaves the
+  review outstanding, so the next cycle retries it.
+- A review that already carries the fleet's failed-once marker and is still
+  unanswered closes the PR and re-queues its originating issue through
+  `abandonAndRestart` (`worker/deno/lib/conflict_abandon_restart.ts`), the
+  rung the stall-repair pass uses. The issue keeps its own pickup label or
+  gets `idle-task`. A declined or failed abandon leaves the review
+  outstanding for the next cycle; nothing is charged a second time.
 - At most `MAX_REVIEWER_NO_CHANGE_ATTEMPTS` (2) agent runs are made for a
   single claimed review.
 
@@ -335,7 +344,9 @@ flowchart TD
     L -- yes --> F{"Pushed fix?"}
     F -- yes --> OK["Reply describes the fix"]
     F -- "no, has .pr_response_message" --> REB["Post it as the rebuttal"]
-    F -- "no, and no .pr_response_message" --> NH["Label needs-human;<br/>comment names review id,<br/>run count, exit code, duration"]
+    F -- "no, and no .pr_response_message" --> FO{"Already<br/>failed once?"}
+    FO -- no --> CH["Charge a failed attempt;<br/>next cycle retries"]
+    FO -- yes --> AR["Close the PR and<br/>re-queue its issue"]
     U --> F
     P["Inline comment or<br/>top-level PR comment,<br/>no change found"] --> NEU["Neutral 'could not identify<br/>a code change' reply"]
 ```
@@ -357,18 +368,17 @@ they still get the eyes reaction at claim time and keep the 60-second claim
 rule.
 
 The review is dismissed only when the run **retires** it: a fix verified on
-the remote, a fix pushed to a gated head's fix branch whose PR could not be
-raised (a human is asked), the agent's rebuttal posted, the escape-hatch
-hand-off, the no-fix-no-rebuttal `needs-human` escalation above, or the
-second failure below. Each of those first five outcomes also requires its
+the remote, the agent's rebuttal posted, the escape-hatch hand-off, or the
+second failure below. Each of those first three outcomes also requires its
 own announcement to have actually reached the PR — the push-success reply,
-the fix-PR-raise-failed hand-off, the rebuttal, the escape-hatch reply, or
-(for the escalation) the label add or the comment post. A `gh` call that
-fails to post that announcement charges a failed attempt instead of
-dismissing a review nothing was said about (Issue #3408 review). Any other
-outcome — an agent error, a timeout, a push that never lands on the remote,
+the rebuttal, or the escape-hatch reply. A `gh` call that fails to post that
+announcement charges a failed attempt instead of dismissing a review nothing
+was said about (Issue #3408 review). Any other outcome — an agent error, a
+timeout, a push that never lands on the remote, a fix pushed to a gated
+head's fix branch whose PR could not be raised (retried next cycle, since
+`raiseMilestoneFixPr` reuses an open fix PR), no fix and no rebuttal (above),
 or any outcome that settles nothing, such as a prompt-build failure — is
-charged as a failed attempt instead:
+charged as a failed attempt instead (Issue #4304):
 
 - The **first** failure posts a "First Attempt" reply carrying a hidden
   `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker and leaves the review
@@ -380,10 +390,9 @@ charged as a failed attempt instead:
 The dismissal message GitHub shows on the review states the outcome, so a
 dismissed review is never mislabelled as addressed (Issue #3409). Only a
 verified pushed fix says "Changes have been addressed by the automated
-worker."; a rebuttal says no code change was made, an escalation says it was
-escalated to `needs-human`, a hand-off says it was handed off to a follow-up
-issue, a pushed fix whose fix PR still needs opening says so, and the second
-failure says it was not addressed after two automated attempts.
+worker."; a rebuttal says no code change was made, a hand-off says it was
+handed off to a follow-up issue, and the second failure says it was not
+addressed after two automated attempts.
 
 No reaction is ever made for a review — a review has no reactions endpoint
 of its own; the old code reacted on `issues/comments/<reviewId>`, the wrong
@@ -398,7 +407,7 @@ stateDiagram-v2
     [*] --> Outstanding
     Outstanding --> Leased : Claim posts a<br/>lease line
     Leased --> Outstanding : Lease lapses<br/>(no renewal in 15 min)
-    Leased --> Retired : Run retires it<br/>(fix, rebuttal,<br/>escape hatch, needs-human)
+    Leased --> Retired : Run retires it<br/>(fix, rebuttal,<br/>hand-off)
     Leased --> FailedOnce : First failure<br/>(PR_REVIEW_FAILED_ONCE marker)
     FailedOnce --> Outstanding : Lease lapses
     FailedOnce --> Retired : Second failure<br/>(Permanently Failed)
@@ -752,20 +761,17 @@ sequenceDiagram
     O-->>W: accepted → no "check the branch" comment
 ```
 
-**Out-of-scope feedback → escape hatch.** Sometimes a review
-comment asks for something genuinely too large for one run — a multi-day
-refactor, a change that depends on a product decision only a human can make, or
-work that bundles several independent pieces. Rather than looping until the
-timeout, the worker takes the **escape hatch**: it opens a follow-up issue
-capturing the analysis (the problem, what was investigated, what is blocking,
-and what a solution would look like), posts **one** reply on the PR naming that
-follow-up issue (using the words "out of scope" / "follow-up issue") and
-mentioning `needs-human` if a person should triage, then exits cleanly without
-retrying the original change. The relief valve only fires after a serious
-attempt — it is not a shortcut to skip difficult work. The hand-off is only
-recorded as a resolution when the follow-up issue it names **exists and was
-filed by the worker, a fleet sibling, or an allowlisted author** — naming a
-pre-existing issue is not evidence of a hand-off (Issue #185). See
+**Out-of-scope feedback → decide or rebut, never hand back.** Sometimes a
+review comment asks for something that looks too large for one run, or turns
+on a product choice. The pr_feedback prompt's **Decide, Never Hand Back** rule
+has the agent decide such a choice itself, stating the assumption in
+`.pr_response_message` so the reviewer can overturn it with one more comment,
+and rebut a request it judges wrong for this PR with the reasons. It never
+asks for `needs-human`, never asks the reviewer to clarify, and never files a
+follow-up issue for leftover work (Issue #4304). The worker still recognises
+an old-style hand-off message naming a follow-up issue, as a defence: the
+follow-up must exist and be filed by the worker, a fleet sibling or an
+allowlisted author (Issue #185), and any reserved label on it is stripped. See
 [DESIGN-PRINCIPLES.md → Escape hatch for out-of-scope work](../../DESIGN-PRINCIPLES.md).
 
 ### 🟠 Priority 1.5 — Spelling and quality fixes (automatic)
@@ -1064,19 +1070,20 @@ flowchart TD
   re-runs, and the
   next cycle re-evaluates (see the dual-layer pre-merge gate above). The merge is
   never forced against a stale branch.
-- **Out-of-scope PR feedback:** The worker takes the **escape hatch** — files a
-  follow-up issue, replies once naming it (mentioning `needs-human` if a person
-  should triage), and exits cleanly rather than looping.
+- **Out-of-scope PR feedback:** The agent decides with the assumption stated,
+  or rebuts with reasons — never a hand-back or a follow-up issue
+  (Issue #4304).
 - **No fix and no rebuttal on a request-changes review:** A claimed
   `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree
   change and no `.pr_response_message` is re-run once (in the same worker
   run, with a note appended) rather than answered with the neutral reply,
   because the review would otherwise sit retried for ever with no record
   that anything was tried; if the final run still has neither a pushed fix
-  nor a `.pr_response_message`, the worker labels the PR `needs-human`
-  instead of posting a reply — one of the outcomes that retires the review
-  (see **A request-changes review is never answered with "no change"** and
-  **A review is dismissed only once the run retires it** above).
+  nor a `.pr_response_message`, the worker charges a failed attempt so the
+  next cycle retries the review, and a review still unanswered after that
+  closes the PR and re-queues its issue (Issue #4304; see **A
+  request-changes review is never answered with "no change"** and **A review
+  is dismissed only once the run retires it** above).
 
 ## 📚 Further reading
 
@@ -1084,7 +1091,7 @@ flowchart TD
   the dual-layer pre-merge gate, visibility-aware required checks,
   defer-and-retry, read-only default branch, and workflow-trigger normalisation.
 - **Design overview:** [DESIGN-PRINCIPLES.md](../../DESIGN-PRINCIPLES.md) — dual-layer pre-merge
-  enforcement and the out-of-scope escape hatch.
+  enforcement and the escape-hatch hand-off defence.
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue
   selection, PR monitoring, milestone/dependency handling.
 - **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),

@@ -147,12 +147,8 @@ const EXPECTED_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> = {
     "message=Not addressed after two automated attempts — see the PR thread.",
   rebuttal:
     "message=Answered with a rebuttal — no code change was made. See the PR thread.",
-  escalated:
-    "message=Not addressed — escalated to needs-human. See the PR thread.",
   handed_off:
     "message=Not addressed — handed off to a follow-up issue. See the PR thread.",
-  fix_pr_pending:
-    "message=A fix was pushed to a branch, but the fix PR still needs to be opened — see the PR thread.",
 };
 
 for (

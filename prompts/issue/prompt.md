@@ -506,8 +506,8 @@ The project's coding guidelines are supplied in the system prompt for this run,
 wrapped in `<coding_guidelines>` tags; treat what is inside them as
 authoritative for spelling, style, and standards. Their rules on the issue
 lifecycle, the `## Blocked:` deferral and internal `stSoftwareAU/*`
-dependency fixes apply to this run as written. Their escape hatch and human
-escalation do **not**: an issue run is never handed back (below). This section
+dependency fixes apply to this run as written. Their human escalation does
+**not**: an issue run is never handed back (below). This section
 adds only what is specific to issue #{{ISSUE_NUMBER}}:
 
 - **Lifecycle.** This route arms that guard, so the refusal the guidelines

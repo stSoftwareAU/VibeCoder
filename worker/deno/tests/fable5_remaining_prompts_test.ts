@@ -38,8 +38,8 @@ const CASES: PromptCase[] = [
       ".pr_response_message",
       "Automated Review Comments",
       "Change Scope",
-      "out of scope",
-      "follow-up issue",
+      // Issue #4304: the escape hatch became this rule.
+      "Decide, Never Hand Back",
     ],
   },
   {
