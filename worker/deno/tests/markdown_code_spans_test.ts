@@ -13,7 +13,6 @@ import {
   splitMarkdownCode,
   stripMarkdownCode,
 } from "../lib/markdown_code_spans.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
 
 // ---------------------------------------------------------------------------
 // splitMarkdownCode — round-trips
@@ -425,26 +424,37 @@ Deno.test("splitMarkdownCode: an unmatched run is literal prose", () => {
 // Hostile input: hang-sized where the output is pinned, growth where timed
 // ---------------------------------------------------------------------------
 
-Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched runs", () => {
-  // Many distinct-length unmatched backtick runs (lengths 2, 3, 4, ...,
-  // never repeating, so none ever finds a closer), followed by many
-  // single-backtick runs that pair harmlessly with each other. This is the
-  // pathological shape for a forward per-opener scan: each unmatched run
-  // scans past every later single-backtick run looking in vain for its own
-  // length, which costs about n^1.5 (sqrt(n) openers, each scanning about n
-  // runs) but is linear for the backward next-same-length map this module
-  // uses.
+Deno.test("splitMarkdownCode pairs many distinct-length unmatched runs no slower than a linear control (Issue #4312)", () => {
+  // Hostile shape: many distinct-length unmatched backtick runs (lengths 2, 3,
+  // 4, ..., never repeating, so none ever finds a closer) filling half the
+  // input, then single-backtick "`y" runs that pair harmlessly with each other.
+  // A forward per-opener scan makes each unmatched run walk past every later
+  // single-backtick run looking in vain for its own length: about n^1.5 steps
+  // (sqrt(n) openers, each scanning about n runs). The backward
+  // next-same-length map this module uses is linear, so the hostile input
+  // should cost about what the control does.
   //
-  // This is the one stopwatch left in this file, and the reason the file stays
-  // in WALL_CLOCK_TEST_FILES (Issue #4312). It cannot be made hang-sized: the
-  // openers are distinct-length, so there are at most about sqrt(2n) of them,
-  // and an n^1.5 scan finishes at 1.2M chars well inside a runner timeout.
-  // Only growth can see it. The allowance is 2 x sizeFactor x the base time,
-  // so a linear rule at 64x (ratio 64) is held to 128, while the n^1.5 scan
-  // (ratio 64^1.5 = 512) is four times over; at the old 16x it was 64 against
-  // an allowance of 32, twice over. The larger factor widens the gap the test
-  // can see, not the 2x slack on the linear side.
-  const build = (chars: number): string => {
+  // Why a stopwatch at all (Issue #4312): a hang-sized input cannot show the
+  // difference, since an n^1.5 scan finishes at 1.2M chars well inside a runner
+  // timeout. This is the file's last stopwatch, and it is why the file stays in
+  // WALL_CLOCK_TEST_FILES, so the serial pass runs it.
+  //
+  // Why the same size and not a ratio across sizes: a ratio across sizes reads
+  // the splitter's memory and GC growth as super-linearity. A linear control
+  // grew 6.5x over a 4x step in one run and about 186x over 64x in another, so
+  // a cross-size ratio cannot tell the scan from the allocator. Both inputs
+  // here are about 2.4M chars, so the memory and GC effects are common to both
+  // readings. Load stretches both alike, and the rounds interleave control and
+  // hostile so they see the same contention. The fastest of each is kept.
+  //
+  // The 3x threshold: a linear pairing makes the hostile input no slower than
+  // the control. Measured hostile/control was 0.3 to 0.7 under load at 1.2M
+  // chars. The old forward scan adds about k * t steps: about 2.2e8 at 1.2M,
+  // and about 6e8 at 2.4M (n^1.5 scaling). That is an estimate from the model,
+  // since the old code is deleted, not a measurement against it. It sits well
+  // above 3x the control, so 3 is a clear line rather than a tight one.
+  const SAME_SIZE_CHARS = 2_400_000;
+  const buildHostile = (chars: number): string => {
     const parts: string[] = [];
     let used = 0;
     let runLength = 2;
@@ -461,13 +471,32 @@ Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched r
     }
     return parts.join(" ");
   };
+  const buildControl = (chars: number): string => {
+    const parts: string[] = [];
+    for (let used = 0; used < chars; used += 3) parts.push("`y");
+    return parts.join(" ");
+  };
 
-  assertLinearGrowth(
-    "splitMarkdownCode on many distinct-length unmatched runs",
-    build,
-    (input) => splitMarkdownCode(input).length,
-    { baseChars: 150_000, sizeFactor: 64, repeats: 3 },
-  );
+  const hostile = buildHostile(SAME_SIZE_CHARS);
+  const control = buildControl(SAME_SIZE_CHARS);
+  let elapsedHostile = Infinity;
+  let elapsedControl = Infinity;
+  let hostileSegments: ReturnType<typeof splitMarkdownCode> = [];
+  for (let round = 0; round < 5; round++) {
+    const controlStart = performance.now();
+    splitMarkdownCode(control);
+    elapsedControl = Math.min(elapsedControl, performance.now() - controlStart);
+
+    const hostileStart = performance.now();
+    hostileSegments = splitMarkdownCode(hostile);
+    elapsedHostile = Math.min(elapsedHostile, performance.now() - hostileStart);
+  }
+
+  assertEquals(hostileSegments.map((s) => s.value).join(""), hostile);
+  const readings = `hostile ${elapsedHostile.toFixed(1)} ms, control ${
+    elapsedControl.toFixed(1)
+  } ms`;
+  assert(elapsedHostile < 3 * elapsedControl, `not under 3x: ${readings}`);
 });
 
 /**

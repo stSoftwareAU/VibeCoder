@@ -275,17 +275,19 @@ Deno.test("prompt leak - the token matcher grows linearly with one block (Issue 
   // The window matcher runs over attacker-influenced text on the main thread,
   // and a single unbroken block is its worst case: one window pass per phrase
   // over every token. This is the file's one stopwatch, so it is made robust to
-  // load rather than dropped: at 16x a linear scan may take 2x16 = 32x the base
-  // time, while a quadratic token scan costs 256x, so the margins widen on both
-  // sides. The fastest of 3 runs per size discards runs a busy host stretched.
-  // The file stays in WALL_CLOCK_TEST_FILES so the gate runs it in the serial
-  // pass.
+  // load rather than dropped. The size factor stays at 4: a larger input falls
+  // out of cache and adds its own growth (16x measured at about 25x of base,
+  // against a 32x allowance), which eats the headroom. A linear scan gets 2x4 =
+  // 8x the base time, while a quadratic token scan costs 16x, so the rule still
+  // separates the two. The fastest of 5 runs per size discards runs a busy host
+  // stretched. The file stays in WALL_CLOCK_TEST_FILES so the gate runs it in
+  // the serial pass.
   const sentence = "the agent reads issue text and answers questions in prose ";
   const out = assertLinearGrowth(
     "redactPromptLeakage over one unbroken block",
     (chars) => sentence.repeat(Math.ceil(chars / sentence.length)),
     (input) => redactPromptLeakage(input),
-    { baseChars: 100_000, sizeFactor: 16, repeats: 3 },
+    { baseChars: 200_000, sizeFactor: 4, repeats: 5 },
   );
   assertStringIncludes(out, "the agent reads issue text");
 });
