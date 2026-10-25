@@ -19,9 +19,10 @@ import {
   milestoneFixMergeMethod,
 } from "./milestone_fix_pr.ts";
 import {
+  abandonOrphanBoundPr,
+  type AbandonOrphanBoundPrOptions,
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,
-  holdOrphanBoundPr,
   invalidateMilestoneBehindMemoForBranch,
   isMilestoneBranch,
   postOpenChildrenBlockComment,
@@ -98,17 +99,20 @@ export enum AutoMergeResult {
   MergedDirectly = "merged_directly",
   /**
    * Refused to merge into a milestone branch whose route closed (rollup PR
-   * merged and the milestone is closed or has no open work). The PR is left
-   * on its base, auto-merge is disarmed, and a comment is posted. It is not
-   * retargeted (Issue #4396 gate, Issue #3433 hold). An open milestone with
-   * open work is given a fresh rollup instead (Issue #4175).
+   * merged and the milestone is closed or has no open work). Auto-merge is
+   * disarmed and the PR is never retargeted (Issue #4396 gate, Issue #3433);
+   * it is closed and its originating issue redone, never left on hold for a
+   * human (Issue #4304). An open milestone with open work is given a fresh
+   * rollup instead (Issue #4175).
    */
   HeldRouteClosed = "held_route_closed",
   /**
    * The PR's base no longer matches where the fleet opened it — a
    * `milestone-fix/**` head on a non-milestone base, or a PR moved onto the
    * default branch after it was opened — so it is never armed or merged
-   * there and its auto-merge is disarmed; a human decides (Issue #3433).
+   * there and its auto-merge is disarmed (Issue #3433). It is moved back onto
+   * the base it was opened against, or closed and its issue redone
+   * (Issue #4304).
    */
   HeldBaseRetargeted = "held_base_retargeted",
   /**
@@ -184,6 +188,11 @@ export interface EnableAutoMergeOptions {
    * what every production caller does.
    */
   authorOptions?: AlertDedupAuthorOptions;
+  /**
+   * Abandon override for a PR whose milestone route has closed (tests);
+   * defaults to `abandonAndRestart` (Issue #4304).
+   */
+  abandonFn?: AbandonOrphanBoundPrOptions["abandon"];
   /** Repository in "owner/repo" format */
   repo: string;
   /** PR number */
@@ -1119,20 +1128,22 @@ export async function enableAutoMerge(
     };
   }
   if (routeGate.decision === "block") {
-    await holdOrphanBoundPr({
+    await abandonOrphanBoundPr({
       repo,
       prNumber,
+      ...(options.headRefName ? { headRefName: options.headRefName } : {}),
       gate: routeGate,
       ghCommandFn,
       log,
       ...(options.authorOptions
         ? { authorOptions: options.authorOptions }
         : {}),
+      ...(options.abandonFn ? { abandon: options.abandonFn } : {}),
     });
     return {
       result: AutoMergeResult.HeldRouteClosed,
       message:
-        `PR #${prNumber} held on ${routeGate.milestoneBranch}: ${routeGate.detail} — not merged, not retargeted, auto-merge disarmed (Issue #3433)`,
+        `PR #${prNumber} not merged into ${routeGate.milestoneBranch}: ${routeGate.detail} — not retargeted, auto-merge disarmed, closed and its issue redone (Issue #4304)`,
     };
   }
 

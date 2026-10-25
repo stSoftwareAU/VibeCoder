@@ -796,7 +796,20 @@ export function exhaustedEscalationDedupKey(
  * its own: the blocking-PR route synced the branch and reran its owning lane;
  * the conflict-queue route only cleared the ladder's wait so it ran again.
  */
-export type StallRepairTried = "sync-and-lane-rerun" | "ladder-rerun";
+export type StallRepairTried =
+  | "sync-and-lane-rerun"
+  | "ladder-rerun"
+  /**
+   * A PR whose base was moved after it was opened: the worker tried to move
+   * it back onto the base it was opened against and could not (Issue #4304).
+   */
+  | "retarget-back"
+  /**
+   * A PR held on a milestone branch whose route to the default branch has
+   * closed: it can never land there, and the fleet never moves it off a
+   * milestone branch (Issue #4304).
+   */
+  | "route-closed-hold";
 
 /**
  * Why a PR is being abandoned (Issue #2802). Omitted means a merge conflict,
@@ -817,11 +830,24 @@ export type AbandonReason =
     tried: StallRepairTried;
   };
 
-/** The repair a first trip made, as a clause after "The stall-repair pass". */
+/**
+ * What was tried before the abandon, as a whole clause with its own subject
+ * (Issue #4304): not every route here is the stall-repair pass's.
+ */
 function describeStallRepair(tried: StallRepairTried, base: string): string {
-  return tried === "ladder-rerun"
-    ? "reran the merge-conflict ladder once"
-    : `synced it with \`${base}\` and reran its owning lane once`;
+  switch (tried) {
+    case "ladder-rerun":
+      return "The stall-repair pass already reran the merge-conflict ladder once";
+    case "sync-and-lane-rerun":
+      return `The stall-repair pass already synced it with \`${base}\` and ` +
+        "reran its owning lane once";
+    case "retarget-back":
+      return "The worker already tried to move it back onto the base it was " +
+        "opened against, and could not";
+    case "route-closed-hold":
+      return `The worker already disarmed its auto-merge on \`${base}\`, ` +
+        "and it never moves a PR off a milestone branch";
+  }
 }
 
 /** The exhausted PR to abandon. */
@@ -1298,14 +1324,18 @@ export function buildStalledAbandonPrComment(args: {
   return [
     "♻️ **Abandoning this stalled PR and restarting the work**",
     "",
-    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
-    `already ${describeStallRepair(args.tried, base)}, and it is still ` +
+    `This PR ${sanitiseIssueText(args.detail)}. ` +
+    `${describeStallRepair(args.tried, base)}, and it is still ` +
     "stalled, so the work is redone rather than nursed further.",
     "",
     `This PR is being **closed** — not merged — and issue ` +
     `#${args.issueNumber} is being re-queued ` +
     `(${describeRequeueLabel(args.label)}) so the fleet raises a fresh PR ` +
-    `off \`${base}\`.`,
+    // A closed route's branch is the one place the redo must not go back to
+    // (Issue #4304): the next run picks its base afresh.
+    (args.tried === "route-closed-hold"
+      ? "against whatever base its milestone now routes to."
+      : `off \`${base}\`.`),
     "",
     `The branch \`${branch}\` is **not** deleted and has **not** been ` +
     "force-pushed, so the abandoned work remains readable and linked from here.",
@@ -1330,7 +1360,7 @@ export function buildStalledRestartIssueComment(args: {
     "♻️ **Re-queued: the PR for this issue stalled**",
     "",
     `${request.repo}#${request.prNumber} ${sanitiseIssueText(args.detail)}. ` +
-    `The stall-repair pass ${
+    `${
       describeStallRepair(args.tried, sanitiseIssueText(request.baseBranch))
     }, and it is still stalled.`,
     "",
@@ -1357,8 +1387,7 @@ export function buildStalledNoIssueClosePrComment(args: {
   return [
     "♻️ **Closing this stalled PR**",
     "",
-    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
-    `already ${
+    `This PR ${sanitiseIssueText(args.detail)}. ${
       describeStallRepair(
         args.tried,
         sanitiseIssueText(args.request.baseBranch),

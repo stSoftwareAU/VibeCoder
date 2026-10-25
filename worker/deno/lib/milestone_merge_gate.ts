@@ -578,36 +578,3 @@ export function mergeGateFailureError(
 export function isMergeGateFailure(err: unknown): boolean {
   return err instanceof Error && err.name === MILESTONE_MERGE_GATE_ERROR;
 }
-
-/** Everything the escalation comment names. */
-export interface MergeGateEscalation {
-  repo: string;
-  milestoneBranch: string;
-  defaultBranch: string;
-  /** The refusal message, including the check output. */
-  reason: string;
-}
-
-/**
- * Body of the needs-human comment posted on the milestone's tracking issue.
- *
- * The merge is named, the check output travels with it, and the comment says
- * plainly that nothing was pushed — so the reader knows the branch is intact
- * and what has to be resolved before it moves.
- */
-export function buildMergeGateEscalationComment(
-  e: MergeGateEscalation,
-): string {
-  return `## Milestone sync merge fails the repo's own check — needs a human\n\n` +
-    `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
-    `\`${e.repo}\` produced a tree that fails the repository's own check ` +
-    `(a type error, or whatever else that check enforces — a stale lockfile ` +
-    `under \`--frozen\`, say), so it was **not pushed** and the local merge ` +
-    `was discarded (Issue #974).\n\n` +
-    `Git reported no conflict: both sides were internally consistent and ` +
-    `only their combination is not, which is how the same wiring was lost ` +
-    `three times before this gate existed (#928, #796).\n\n` +
-    `Check output:\n\n\`\`\`\n${e.reason}\n\`\`\`\n\n` +
-    `Resolve the merge by hand on \`${e.milestoneBranch}\`. The sync will ` +
-    `keep refusing to push until the merged tree compiles.`;
-}

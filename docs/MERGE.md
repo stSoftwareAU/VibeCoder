@@ -1064,9 +1064,9 @@ What does and does not spend an attempt:
 
 | Attempt outcome                              | Charged? | Why                                                                                       |
 | -------------------------------------------- | -------- | ----------------------------------------------------------------------------------------- |
-| **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker                                     |
+| **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker — or a clean merge produced a tree the repository's own check refuses, a conflict git could not see (Issue #4304) |
 | **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat, or the worker killing the agent at the cycle deadline; the conflict was never judged (Issues #395, #1693). An agent that runs out **its own** timeout is judged and charged (Issue #2305) |
-| **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch. Not charged is not *no consequence*: a resolution-gate refusal that repeats unchanged is counted separately as a wedge, which holds the milestone's issues back and files one worker diagnostic in VibeCoder (Issue #2388) |
+| **Not-charged** — a conclusion the branch is not answerable for | No | The resolution gate refused an agent's resolution, a ruleset refused the push, or the pass stood down before touching the branch. Not charged is not *no consequence*: a resolution-gate refusal that repeats unchanged is counted separately as a wedge, which holds the milestone's issues back and files one worker diagnostic in VibeCoder (Issue #2388) |
 
 **A provider outage is not a conflict** (Issue #2613). When the agent's provider
 refuses the request — a spent balance (HTTP 402), a refused credential
