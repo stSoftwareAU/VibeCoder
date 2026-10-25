@@ -869,7 +869,26 @@ Deno.test("PHASE_PATTERNS [agent-progress] form returns unknown promptly on a lo
   assertEquals(hardKillSignature(ev).phase, "unknown");
 });
 
-Deno.test("signature permits only known phase names and collapses forged names to unknown", () => {
+Deno.test("signature keeps every real phase name the worker logs (Issue #4315 review)", () => {
+  for (
+    const [line, phase] of [
+      ["[phase] cross_repo_pr_handoff (x)", "cross-repo-pr-handoff"],
+      ["[phase] suspicious_image_handoff (x)", "suspicious-image-handoff"],
+      ["[phase] follow_up_label_strip (x)", "follow-up-label-strip"],
+      ["[agent-progress] security_scan: 3m elapsed", "security-scan"],
+      ["[agent-progress] dead_code: 1m elapsed", "dead-code"],
+      ["[agent-progress] agent: 2m elapsed", "agent"],
+    ]
+  ) {
+    assertEquals(
+      hardKillSignature(makeEvidence({ lastLogLine: line })).phase,
+      phase,
+      line,
+    );
+  }
+});
+
+Deno.test("signature keeps only identifier-shaped phase names and collapses the rest to unknown", () => {
   const sig = hardKillSignature(
     makeEvidence({
       trigger: "pre_launch",
