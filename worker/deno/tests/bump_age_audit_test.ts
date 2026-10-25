@@ -22,7 +22,9 @@ import {
   auditBumpedSpecifiers,
   type BumpAgeDeps,
   type BumpedSpecifier,
+  defaultBumpAgeDeps,
   evaluateSpecifierAge,
+  fetchCratesPublishTime,
   parseBumpedSpecifiers,
   scanBumpDiff,
   unreadableBumpAgeAudit,
@@ -394,7 +396,6 @@ Deno.test("scanBumpDiff - non-JS ecosystem manifests are refused, not ignored", 
   const cases: ReadonlyArray<readonly [string, string, string]> = [
     ["Gemfile", `gem "nokogiri", "1.99.0"`, "RubyGems"],
     ["go.mod", `\tgithub.com/evil/pkg v1.99.0`, "Go module"],
-    ["Cargo.toml", `serde = "1.99.0"`, "crates.io"],
     ["requirements.txt", `evil==1.99.0`, "PyPI"],
   ];
   for (const [file, line, ecosystem] of cases) {
@@ -404,6 +405,58 @@ Deno.test("scanBumpDiff - non-JS ecosystem manifests are refused, not ignored", 
     assertEquals(scan.unverifiable[0]!.file, file);
     assertStringIncludes(scan.unverifiable[0]!.reason, ecosystem);
   }
+});
+
+/** A Cargo.lock hunk whose `serde` version moved, name and source as context. */
+function cargoLockBump(version: string): string {
+  return `--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -8,7 +8,7 @@
+ [[package]]
+ name = "serde"
+-version = "1.0.200"
++version = "${version}"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "abc"
++checksum = "def"
+`;
+}
+
+Deno.test("scanBumpDiff - a Cargo.lock version bump is a crates.io specifier", () => {
+  const scan = scanBumpDiff(cargoLockBump("1.0.210"));
+  assertEquals(scan.specifiers, [
+    { registry: "crates", name: "serde", version: "1.0.210" },
+  ]);
+  assertEquals(scan.unverifiable, []);
+});
+
+Deno.test("scanBumpDiff - a Cargo.toml dependency pin is a crates.io specifier", () => {
+  const diff = `--- a/Cargo.toml
++++ b/Cargo.toml
++serde = "1.99.0"
++tokio = { version = "1.40.0", features = ["full"] }
++version = "0.2.0"
++name = "my-crate"
+`;
+  assertEquals(scanBumpDiff(diff).specifiers, [
+    { registry: "crates", name: "serde", version: "1.99.0" },
+    { registry: "crates", name: "tokio", version: "1.40.0" },
+  ]);
+  assertEquals(scanBumpDiff(diff).unverifiable, []);
+});
+
+Deno.test("scanBumpDiff - a git Cargo package is not a crates.io bump", () => {
+  const diff = `--- a/Cargo.lock
++++ b/Cargo.lock
+ [[package]]
+ name = "local-fork"
+-version = "0.1.0"
++version = "0.2.0"
+ source = "git+https://github.com/example/local-fork?rev=abc"
+`;
+  const scan = scanBumpDiff(diff);
+  assertEquals(scan.specifiers, []);
+  assertEquals(scan.unverifiable, []);
 });
 
 Deno.test("scanBumpDiff - a foreign manifest line with no version is not a dependency change", () => {
@@ -525,6 +578,126 @@ Deno.test("auditBumpDiff - a diff with no dependency changes passes", async () =
   assertEquals(result.ok, true);
   assertEquals(result.verdicts, []);
   assertEquals(result.unverifiable, []);
+});
+
+Deno.test("auditBumpDiff - a Cargo.lock bump older than the window passes", async () => {
+  const result = await auditBumpDiff(
+    cargoLockBump("1.0.210"),
+    24,
+    makeDeps({ "crates:serde@1.0.210": hoursAgo(72) }),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(result.blocked, []);
+  assertEquals(result.indeterminate, []);
+  assertEquals(result.unverifiable, []);
+  assertEquals(result.verdicts.length, 1);
+});
+
+Deno.test("auditBumpDiff - a young Cargo.lock bump is held back like an npm bump", async () => {
+  const cargo = await auditBumpDiff(
+    cargoLockBump("1.0.210"),
+    24,
+    makeDeps({ "crates:serde@1.0.210": hoursAgo(0.1) }),
+  );
+  const npm = await auditBumpDiff(
+    `--- a/package.json
++++ b/package.json
++    "serde": "1.0.210"
+`,
+    24,
+    makeDeps({ "npm:serde@1.0.210": hoursAgo(0.1) }),
+  );
+  assertEquals(cargo.ok, false);
+  assertEquals(cargo.unverifiable, []);
+  assertEquals(cargo.blocked.length, 1);
+  assertEquals(cargo.blocked[0]!.reason, npm.blocked[0]!.reason);
+  assertStringIncludes(cargo.reason, "published inside the 24h quarantine");
+  assertStringIncludes(cargo.reason, "serde@1.0.210 is only");
+});
+
+Deno.test("auditBumpDiff - an unreachable crates.io API defers the bump", async () => {
+  const result = await auditBumpDiff(
+    cargoLockBump("1.0.210"),
+    24,
+    makeDeps({}),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.blocked, []);
+  assertEquals(result.unverifiable, []);
+  assertEquals(result.indeterminate.length, 1);
+  assertStringIncludes(result.reason, "deferred to the next cycle");
+  assertStringIncludes(result.reason, "serde@1.0.210");
+});
+
+Deno.test("fetchCratesPublishTime - reads created_at and stays quiet when crates.io is unreachable", async () => {
+  const created = await fetchCratesPublishTime(
+    "serde",
+    "1.0.210",
+    () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            version: { created_at: "2020-01-01T00:00:00Z" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+  );
+  assertEquals(created, "2020-01-01T00:00:00Z");
+
+  const down = await fetchCratesPublishTime(
+    "serde",
+    "1.0.210",
+    () => Promise.reject(new Error("offline")),
+  );
+  assertEquals(down, undefined);
+
+  const http = await fetchCratesPublishTime(
+    "serde",
+    "1.0.210",
+    () => Promise.resolve(new Response("nope", { status: 503 })),
+  );
+  assertEquals(http, undefined);
+});
+
+Deno.test("defaultBumpAgeDeps - a crates.io lookup uses created_at and does not throw when the API is down", async () => {
+  const original = globalThis.fetch;
+  const spec: BumpedSpecifier = {
+    registry: "crates",
+    name: "serde",
+    version: "1.0.210",
+  };
+  try {
+    globalThis.fetch = ((input: string | URL | Request) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
+      assertStringIncludes(
+        url,
+        "https://crates.io/api/v1/crates/serde/1.0.210",
+      );
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            version: { created_at: "2020-01-01T00:00:00Z" },
+          }),
+          { status: 200 },
+        ),
+      );
+    }) as typeof fetch;
+    assertEquals(
+      await defaultBumpAgeDeps().fetchPublishTime(spec),
+      "2020-01-01T00:00:00Z",
+    );
+
+    globalThis.fetch = (() =>
+      Promise.reject(new Error("offline"))) as typeof fetch;
+    assertEquals(await defaultBumpAgeDeps().fetchPublishTime(spec), undefined);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 // =============================================================================
