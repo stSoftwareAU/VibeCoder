@@ -30,8 +30,7 @@ import {
 } from "../lib/issue_finder_common.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
-import type { GitHubClient, GitHubComment, WorkerConfig } from "../types.ts";
-import type { EscalateUnworkableDeps } from "../lib/escalate_unworkable_work_on.ts";
+import type { WorkerConfig } from "../types.ts";
 
 const HOST = "bot";
 const SIBLING = "stsvcbot";
@@ -51,34 +50,6 @@ interface Recorder {
 
 function newRecorder(): Recorder {
   return { labels: [], comments: [], ghCalls: [] };
-}
-
-function recordingClient(recorder: Recorder): GitHubClient {
-  const notImpl = (m: string) => () => Promise.reject(new Error(`${m} unused`));
-  return {
-    getIssue: notImpl("getIssue"),
-    getIssueComments: (): Promise<GitHubComment[]> => Promise.resolve([]),
-    addLabel: (_repo: string, issue: number, label: string) => {
-      recorder.labels.push({ issue, label });
-      return Promise.resolve();
-    },
-    removeLabel: notImpl("removeLabel"),
-    postComment: (_repo: string, issue: number, body: string) => {
-      recorder.comments.push({ issue, body });
-      return Promise.resolve(undefined);
-    },
-    editIssue: notImpl("editIssue"),
-    assignIssue: notImpl("assignIssue"),
-    unassignIssue: notImpl("unassignIssue"),
-    closeIssue: notImpl("closeIssue"),
-  };
-}
-
-function escalateDeps(recorder: Recorder): EscalateUnworkableDeps {
-  return {
-    ghClient: recordingClient(recorder),
-    ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }),
-  };
 }
 
 /**
@@ -140,6 +111,28 @@ function createMockGh(
   return (args: string[]): Promise<string> => {
     recorder.ghCalls.push(args);
     const command = args.join(" ");
+    // Label adds and comments, wherever the scan sends them.
+    const issue = parseInt(args[2] ?? "", 10);
+    if (
+      args[0] === "issue" && args[1] === "edit" && args.includes("--add-label")
+    ) {
+      recorder.labels.push({
+        issue,
+        label: args[args.indexOf("--add-label") + 1] ?? "",
+      });
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      recorder.comments.push({
+        issue,
+        body: args[args.indexOf("--body") + 1] ?? "",
+      });
+    }
+    if (
+      args[0] === "api" &&
+      args.some((a) => /\/issues\/\d+\/(labels|comments)$/.test(a))
+    ) {
+      recorder.labels.push({ issue: -1, label: command });
+    }
 
     if (command.includes("issue list")) {
       return Promise.resolve(JSON.stringify(entries));
@@ -201,7 +194,6 @@ async function collect(
     githubUser: HOST,
     ghCommandFn: mockGh,
     cache,
-    escalateDeps: escalateDeps(recorder),
   };
   return await collectWorkOnCandidates(
     "owner/repo",

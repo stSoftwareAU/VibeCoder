@@ -60,6 +60,8 @@ import "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 import "../lib/idle_task_templates/private_repo_reference_template.ts";
 import "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import "../lib/idle_task_templates/retro_template.ts";
+import "../lib/idle_task_templates/gate_skip_drift_template.ts";
+import "../lib/idle_task_templates/ponytail_debt_template.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
 
 /** A 40-character commit SHA, as GitHub permalinks carry. */

@@ -8,22 +8,15 @@
  * read as "not done" and the issue was re-picked-up and re-run
  * indefinitely (the loop seen in VibeCoder#2834).
  *
- * This module provides the two detection signals the fix relies on:
- *   1. `hasAnalysisOnlyMarker` — an up-front body marker declaring the
- *      issue analysis-only / no-PR.
- *   2. `hasPriorAnalysisHandoff` — a loop guard that detects a prior
- *      hand-off comment on the issue, so a repeat no-progress run is
- *      escalated via the `failed-once` → `failed` ladder rather than
- *      handed off again forever.
- *
- * The clean hand-off itself (apply `needs-human` + post an explanation)
- * lives in `phases/handle_no_changes_phase.ts`; this module only holds
- * the pure, GitHub-free detection logic so it is trivially unit-tested.
+ * This module holds the detection signal: `hasAnalysisOnlyMarker`, an
+ * up-front body marker declaring the issue analysis-only / no-PR. A marked
+ * issue whose run produced its analysis is closed as completed with that
+ * analysis (Issue #4298) in `phases/handle_no_changes_phase.ts`; it is
+ * never handed to a human. The hand-off comment marker and its loop guard
+ * went with the hand-off.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
-
-import type { GitHubComment } from "../types.ts";
 
 /**
  * Up-front body markers a human can drop into an issue to declare it
@@ -40,38 +33,4 @@ const ANALYSIS_ONLY_BODY_PATTERN = /<!--\s*(?:analysis-only|no-pr)\s*-->/i;
 export function hasAnalysisOnlyMarker(issueBody: string): boolean {
   if (!issueBody) return false;
   return ANALYSIS_ONLY_BODY_PATTERN.test(issueBody);
-}
-
-/** Marker prefix embedded in the hand-off comment posted by the worker. */
-/**
- * Issue #842: colon-delimited payload rather than `key="value"`, and frozen
- * for the same reason as `BLOCKED_DEFERRAL_MARKER_PREFIX` — a later run reads
- * it back to tell a first handoff from a repeat one, so renaming it would
- * re-handoff every issue already marked.
- */
-export const ANALYSIS_ONLY_HANDOFF_MARKER_PREFIX =
-  "<!-- vibe-analysis-only-handoff:";
-
-/**
- * Build the hidden hand-off marker for a given issue. Embedded in the
- * analysis hand-off comment so a later run can detect that this issue
- * has already been handed off once (the loop guard).
- */
-export function buildAnalysisHandoffMarker(issueNumber: number): string {
-  return `${ANALYSIS_ONLY_HANDOFF_MARKER_PREFIX}${issueNumber} -->`;
-}
-
-/**
- * Loop guard — return true when a prior analysis-only hand-off comment
- * for `issueNumber` is present in `comments`. Used as the fallback
- * beneath the clean hand-off: if the issue is back here with no progress
- * after a previous hand-off, the worker escalates via the failure ladder
- * instead of handing off again.
- */
-export function hasPriorAnalysisHandoff(
-  comments: readonly GitHubComment[],
-  issueNumber: number,
-): boolean {
-  const marker = buildAnalysisHandoffMarker(issueNumber);
-  return comments.some((c) => c.body.includes(marker));
 }

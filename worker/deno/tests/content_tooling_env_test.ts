@@ -92,7 +92,7 @@ async function runInChild<T extends object>(
     "console.log(JSON.stringify({ ...report, handed }));",
   ].join("\n");
   const output = await new Deno.Command(Deno.execPath(), {
-    args: ["eval", "--no-check", "-A", source],
+    args: ["eval", "--no-check", source],
     env: { [CANARY]: "1" },
     stdout: "piped",
     stderr: "piped",

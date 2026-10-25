@@ -16,15 +16,22 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildFinalFailureMessage,
   buildRetryPrompt,
   carryEnvThroughSudo,
+  createDefaultDeps,
   isDockerInfraFailure,
   isMissingCommandFailure,
   type QualityGateDeps,
   type QualityGateParams,
+  runCommandAsWorker,
   runDockerQualityCheck,
   runNativeQualityCheck,
   runQualityGateCheck,
@@ -584,6 +591,35 @@ Deno.test("runNativeQualityCheck - runs directly without timeout command", async
   assertEquals(cmdUsed[2], "./quality.sh");
 });
 
+Deno.test("runNativeQualityCheck - a configured timeout past 30 minutes is not cut short", async () => {
+  let timeoutMs: number | undefined;
+  const deps = createMockDeps({
+    findTimeoutCmd: async () => "timeout",
+    runCommand: async (_cmd, opts) => {
+      timeoutMs = opts?.timeoutMs;
+      return { exitCode: 0, output: "passed" };
+    },
+  });
+
+  await runNativeQualityCheck("./quality.sh", 3600, deps);
+  // The `timeout` wrapper's own TERM and --kill-after=10 come first.
+  assertEquals(timeoutMs !== undefined && timeoutMs > 3610 * 1000, true);
+});
+
+Deno.test("runNativeQualityCheck - without a timeout command the configured timeout still bounds the run", async () => {
+  let timeoutMs: number | undefined;
+  const deps = createMockDeps({
+    findTimeoutCmd: async () => null,
+    runCommand: async (_cmd, opts) => {
+      timeoutMs = opts?.timeoutMs;
+      return { exitCode: 0, output: "passed" };
+    },
+  });
+
+  await runNativeQualityCheck("./quality.sh", 600, deps);
+  assertEquals(timeoutMs, 600 * 1000);
+});
+
 // =============================================================================
 // buildFinalFailureMessage tests
 // =============================================================================
@@ -896,4 +932,15 @@ Deno.test("carryEnvThroughSudo - a value it cannot vouch for is refused, not quo
     assertStringIncludes(String(err), "refusing to carry");
   }
   assertEquals(threw, true);
+});
+
+Deno.test("quality gate phase - a command timeout is not a pass (Issue #4249)", async () => {
+  const result = await runCommandAsWorker(["sleep", "30"], { timeoutMs: 0 });
+  assertNotEquals(result.exitCode, 0);
+  assertStringIncludes(result.output, "timed out");
+});
+
+Deno.test("quality gate phase - a probe timeout is not a fallback user id (Issue #4249)", async () => {
+  const deps = createDefaultDeps({}, 0);
+  await assertRejects(() => deps.getUserId(), Error, "timed out");
 });

@@ -341,7 +341,7 @@ export async function getDiskFreeBytes(path: string): Promise<number | null> {
 export type DfRunner = (
   executable: string,
   args: string[],
-  options?: { cwd?: string; timeoutMs?: number; quiet?: boolean },
+  options: { cwd?: string; timeoutMs: number; quiet?: boolean },
 ) => Promise<Result<SubprocessResult>>;
 
 /**
@@ -600,7 +600,7 @@ export async function checkAndCleanupDiskSpace(
       tier: "none",
       cleanedUp: false,
       denoCacheCleaned: false,
-      message: "ERROR: No directory specified for disk space check",
+      message: "No directory specified for disk space check",
     };
   }
 
@@ -617,7 +617,7 @@ export async function checkAndCleanupDiskSpace(
       tier: "none",
       cleanedUp: false,
       denoCacheCleaned: false,
-      message: "WARNING: Could not determine disk usage, skipping cleanup",
+      message: "Could not determine disk usage, skipping cleanup",
     };
   }
 
@@ -691,8 +691,7 @@ export async function checkAndCleanupDiskSpace(
       tier: "aggressive",
       cleanedUp: true,
       denoCacheCleaned: false,
-      message:
-        `WARNING: Disk usage ${usagePercent}% >= threshold ${threshold}%. ` +
+      message: `Disk usage ${usagePercent}% >= threshold ${threshold}%. ` +
         `Deleted and recreated ${workDir}.`,
     };
   }
@@ -780,8 +779,7 @@ export async function checkAndCleanupDiskSpace(
     cleanedUp: true,
     denoCacheCleaned,
     incrementalReclaim: reclaim,
-    message:
-      `WARNING: Disk usage ${usagePercent}% >= threshold ${threshold}%. ` +
+    message: `Disk usage ${usagePercent}% >= threshold ${threshold}%. ` +
       `Incremental reclaim insufficient (freed ${reclaim.totalBytesReclaimed} bytes). ` +
       `Deleted and recreated ${workDir}.`,
   };
@@ -825,7 +823,7 @@ export async function checkDiskSpaceAvailable(
       availableMB: 0,
       requiredMB,
       sufficient: false,
-      message: "WARNING: Could not determine available disk space",
+      message: "Could not determine available disk space",
     };
   }
 
@@ -835,7 +833,7 @@ export async function checkDiskSpaceAvailable(
       availableMB: 0,
       requiredMB,
       sufficient: false,
-      message: "WARNING: Unexpected df output format",
+      message: "Unexpected df output format",
     };
   }
 
@@ -847,7 +845,7 @@ export async function checkDiskSpaceAvailable(
       availableMB: 0,
       requiredMB,
       sufficient: false,
-      message: "WARNING: Unexpected df output format",
+      message: "Unexpected df output format",
     };
   }
 
@@ -857,7 +855,7 @@ export async function checkDiskSpaceAvailable(
       availableMB: 0,
       requiredMB,
       sufficient: false,
-      message: "WARNING: Could not parse available disk space",
+      message: "Could not parse available disk space",
     };
   }
 
@@ -877,7 +875,7 @@ export async function checkDiskSpaceAvailable(
     sufficient,
     message: sufficient
       ? `Disk space OK: ${availableMB} MB available (${requiredMB} MB required)`
-      : `WARNING: Insufficient disk space: ${availableMB} MB available, ${requiredMB} MB required`,
+      : `Insufficient disk space: ${availableMB} MB available, ${requiredMB} MB required`,
   };
 }
 

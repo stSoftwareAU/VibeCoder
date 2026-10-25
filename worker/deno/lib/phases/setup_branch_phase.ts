@@ -37,7 +37,6 @@ import {
 } from "../milestone_presync.ts";
 import { expectedNoPrOutcome } from "../run_outcome.ts";
 import { repoDirName } from "../work_volume_tiers.ts";
-import { escalateToHuman } from "../needs_human_escalation.ts";
 import { loadResumeState } from "../resume_state_store.ts";
 import { readHandoverNote } from "../handover_prompt_note.ts";
 import { handoverFilePath } from "../preserved_wip_branch.ts";
@@ -57,11 +56,7 @@ import {
 } from "../stream_session.ts";
 import { createSessionResumeState } from "../session_resume.ts";
 import { isStreamSharingTier } from "../issue_filter.ts";
-import {
-  claimRepoLevelRejectionReport,
-  describeRepoLevelRejection,
-  isRepoLevelBranchRejection,
-} from "../milestone_branch_rejection.ts";
+import { isRepoLevelBranchRejection } from "../milestone_branch_rejection.ts";
 import {
   claimObjectStoreRepair,
   isObjectStoreCorruption,
@@ -71,38 +66,6 @@ import { releaseMilestoneBranchRefusalLabels } from "../milestone_branch_refusal
 import { isBrokenRefFailure } from "../broken_ref_repair.ts";
 import { CLONE_CORRUPT_MARKER } from "../failure_diagnosis.ts";
 import { releaseHostFaultFailureLabels } from "../host_fault_release.ts";
-
-/**
- * What a human must do when a milestone branch cannot be ensured
- * (Issue #3910). Exported so tests assert the handoff wording.
- */
-export const MILESTONE_BRANCH_NEXT_STEP =
-  "Restore or unblock the milestone branch (check branch protection, push " +
-  "permissions, and whether the branch was deleted), or move this issue off " +
-  "the milestone. The worker will not base a milestone issue on the default " +
-  "branch, so it stopped rather than opening a wrongly-based PR.";
-
-/**
- * What a human must do when a re-clone did not clear the corruption
- * (Issue #1093). Exported so tests assert the handoff wording.
- */
-export const OBJECT_STORE_NEXT_STEP =
-  "Delete the repository's clone and its lane worktrees under the work " +
-  "volume by hand and check the host's free disk — a truncated object write " +
-  "is the usual cause. The worker already re-cloned once this run and the " +
-  "corruption survived it, so the fault is in the volume rather than in the " +
-  "objects.";
-
-/**
- * What a human must do when broken refs in the shared clone survive a sweep
- * and a re-clone (Issue #2884). Exported so tests assert the handoff wording.
- */
-export const BROKEN_REFS_NEXT_STEP =
-  "Delete the repository's clone and its lane worktrees under the work " +
-  "volume by hand and check the host's free disk. The worker already swept " +
-  "the broken refs, pruned and fetched from origin, and — when that did not " +
-  "hold — re-cloned the repository once this run, so the fault is in the " +
-  "volume rather than a ref the worker could clear itself.";
 
 /**
  * Set up the repository and create/checkout the feature branch.
@@ -350,7 +313,7 @@ export async function workOnIssueSetupBranch(
         );
         ensureResult = { ok: true, value: recovery.value };
       } else if (recovery.kind === "failed") {
-        // Never swallowed: the handoff below carries what was tried.
+        // Never swallowed: the failure reason below carries what was tried.
         repairNote = recovery.note;
         logger.warn(
           "In-run milestone ruleset repair did not clear the refusal",
@@ -368,8 +331,8 @@ export async function workOnIssueSetupBranch(
       // Issue #3910: never retarget a milestone-assigned issue at the
       // default branch. The milestone branch exists so a milestone lands
       // behind ONE human-reviewed merge; basing the PR on the default
-      // branch does not degrade that gate, it removes it. Fail loud and
-      // hand off with the underlying git error instead.
+      // branch does not degrade that gate, it removes it. Fail loud with the
+      // underlying git error instead.
       const detail = ensureResult.error.message;
       logger.error(
         "Failed to ensure milestone branch — failing the run (no default-branch fallback)",
@@ -381,67 +344,19 @@ export async function workOnIssueSetupBranch(
           error: detail,
         },
       );
-      // Issue #853: a ruleset or protection that refuses this branch refuses
-      // it identically for every issue in the milestone. Escalating each one
-      // turned a single configuration fault into nine `needs-human` parks,
-      // none of which clear themselves (Issue #854). Report it once per run
-      // and leave the rest claimable, so they resume on their own once the
-      // repository is fixed.
+      // Issue #4298: never handed to a human. The create-from-default and
+      // the in-run ruleset repair above are the remedy, and the normal retry
+      // repeats them next run. A repository-level refusal is `repo_config`,
+      // which records without charging the ladder (Issue #2220), so the
+      // milestone's other issues resume on their own once it clears.
       const repoLevel = isRepoLevelBranchRejection(detail);
-      const shouldEscalate = !repoLevel ||
-        claimRepoLevelRejectionReport(repo, state.milestoneBranch);
-      if (repoLevel && !shouldEscalate) {
-        logger.error(
-          "Milestone branch refused by the repository — already reported this run, leaving the issue claimable (Issue #853)",
-          {
-            repo,
-            issueNumber,
-            milestoneBranch: state.milestoneBranch,
-          },
-        );
-        return {
-          category: repoLevel ? "repo_config" : "internal_error",
-          status: "failure",
-          reason:
-            `Failed to ensure milestone branch '${state.milestoneBranch}' for milestone ` +
-            `'${milestoneTitle}': ${detail}`,
-        };
-      }
-      const repoLevelNote = describeRepoLevelRejection(
-        detail,
-        state.milestoneBranch,
-      );
-      const ghClient = deps.github.createClient(logger);
-      const escalation = await escalateToHuman({
-        ghClient,
-        repo,
-        target: { kind: "issue", number: issueNumber },
-        needsHumanLabel: config.needsHumanLabel,
-        heading: "Milestone branch unavailable",
-        reason:
-          `This issue belongs to milestone '${milestoneTitle}', but its milestone branch ` +
-          `\`${state.milestoneBranch}\` could not be created or fetched: ${detail}` +
-          (repoLevelNote === null ? "" : `\n\n${repoLevelNote}`) +
-          (repairNote === null ? "" : `\n\n${repairNote}`),
-        nextStep: MILESTONE_BRANCH_NEXT_STEP,
-        dedupKey: `milestone-branch-${state.milestoneBranch}`,
-        githubUser,
-        deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-        logger,
-      });
-      if (!escalation.ok) {
-        logger.error("Milestone branch escalation failed", {
-          repo,
-          issueNumber,
-          error: escalation.error.message,
-        });
-      }
       return {
         category: repoLevel ? "repo_config" : "internal_error",
         status: "failure",
         reason:
           `Failed to ensure milestone branch '${state.milestoneBranch}' for milestone ` +
-          `'${milestoneTitle}': ${detail}`,
+          `'${milestoneTitle}': ${detail}` +
+          (repairNote === null ? "" : `\n\n${repairNote}`),
       };
     }
 
@@ -892,38 +807,15 @@ export async function workOnIssueSetupBranch(
         repairDetail = await reCloneAndRetry();
       }
 
+      // Issue #4298: a repair that did not hold is not handed to a human.
+      // The run fails `clone_corrupt` naming the repository, and the next
+      // run takes the once-per-run claim afresh and re-clones again.
       if (!branchResult.ok) {
-        // A repair that did not resolve the corruption is the one case a
-        // human is needed for, and it is named per repository — every issue
-        // in it fails identically, so one report is the whole story.
-        const ghClient = deps.github.createClient(logger);
-        const escalation = await escalateToHuman({
-          ghClient,
+        logger.error("Object-store repair did not hold (Issue #4298)", {
           repo,
-          target: { kind: "issue", number: issueNumber },
-          needsHumanLabel: config.needsHumanLabel,
-          heading: "Corrupt git object store",
-          reason:
-            `The shared git object store of \`${repo}\` on this host is corrupt, ` +
-            `and the worker could not repair it: ${repairDetail}.\n\n` +
-            "The lane worktrees share one object store per repository, so this " +
-            "fault applies to every slot and every milestone branch in it.\n\n" +
-            "```\n" + corruption + "\n```",
-          nextStep: OBJECT_STORE_NEXT_STEP,
-          dedupKey: `object-store-corrupt-${repo}`,
-          githubUser,
-          deps: {
-            github: { ensureLabelExists: deps.github.ensureLabelExists },
-          },
-          logger,
+          issueNumber,
+          detail: repairDetail,
         });
-        if (!escalation.ok) {
-          logger.error("Object-store corruption escalation failed", {
-            repo,
-            issueNumber,
-            error: escalation.error.message,
-          });
-        }
       }
     } else if (
       !branchResult.ok && isBrokenRefFailure(branchResult.error.message)
@@ -986,37 +878,14 @@ export async function workOnIssueSetupBranch(
         }
       }
 
+      // Issue #4298: as with object-store corruption, never handed to a
+      // human — the next run sweeps and re-clones again.
       if (!branchResult.ok) {
-        // As with object-store corruption, one report per repository names
-        // the fault rather than failing every issue in it silently.
-        const ghClient = deps.github.createClient(logger);
-        const escalation = await escalateToHuman({
-          ghClient,
+        logger.error("Broken-ref repair did not hold (Issue #4298)", {
           repo,
-          target: { kind: "issue", number: issueNumber },
-          needsHumanLabel: config.needsHumanLabel,
-          heading: "Broken refs in shared clone",
-          reason:
-            `The shared git clone of \`${repo}\` on this host has broken refs, ` +
-            `and the worker could not repair it: ${repairDetail}.\n\n` +
-            "The lane worktrees share one clone per repository, so this " +
-            "fault applies to every slot and every milestone branch in it.\n\n" +
-            "```\n" + brokenRefOutput + "\n```",
-          nextStep: BROKEN_REFS_NEXT_STEP,
-          dedupKey: `broken-refs-${repo}`,
-          githubUser,
-          deps: {
-            github: { ensureLabelExists: deps.github.ensureLabelExists },
-          },
-          logger,
+          issueNumber,
+          detail: repairDetail,
         });
-        if (!escalation.ok) {
-          logger.error("Broken-refs escalation failed", {
-            repo,
-            issueNumber,
-            error: escalation.error.message,
-          });
-        }
       }
     }
 

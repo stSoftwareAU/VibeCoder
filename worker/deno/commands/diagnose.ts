@@ -29,14 +29,23 @@ import { isRunning } from "../lib/pid_guard.ts";
 import { runPidFilePath } from "../lib/run_entrypoint.ts";
 import { runGhCommandRaw } from "../lib/github.ts";
 import { isRateLimitActive } from "../lib/rate_limit_signal.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "../lib/subprocess_timeout.ts";
 
-async function realPsSupervisors(): Promise<string> {
-  const cmd = new Deno.Command("ps", {
+/** Process-table and hostname probes. Seconds. */
+const DIAGNOSE_PROBE_TIMEOUT_MS = 10_000;
+
+export async function realPsSupervisors(
+  timeoutMs: number = DIAGNOSE_PROBE_TIMEOUT_MS,
+): Promise<string> {
+  const { stdout, success } = await commandOutputWithTimeout("ps", {
     args: ["-axo", "pid=,etime=,ppid=,command="],
     stdout: "piped",
     stderr: "null",
+    timeoutMs,
   });
-  const { stdout, success } = await cmd.output();
   if (!success) return "";
   return new TextDecoder().decode(stdout);
 }
@@ -162,16 +171,19 @@ async function realRecentMergedTimestamps(
   }
 }
 
-async function realHostname(): Promise<string> {
+export async function realHostname(
+  timeoutMs: number = DIAGNOSE_PROBE_TIMEOUT_MS,
+): Promise<string> {
   try {
-    const cmd = new Deno.Command("hostname", {
+    const { stdout, success } = await commandOutputWithTimeout("hostname", {
       stdout: "piped",
       stderr: "null",
+      timeoutMs,
     });
-    const { stdout, success } = await cmd.output();
     if (!success) return "unknown-host";
     return new TextDecoder().decode(stdout).trim() || "unknown-host";
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return "unknown-host";
   }
 }

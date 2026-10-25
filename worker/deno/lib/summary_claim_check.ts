@@ -65,6 +65,7 @@
 
 import {
   collectDocProseScope,
+  formatCapOverflowSummary,
   type ProseRange,
   renderProseRanges,
 } from "./doc_prose_scope.ts";
@@ -80,6 +81,7 @@ import { isTestFilePath } from "./security_fix_gate.ts";
 import { generateBoundaryId, isBoundaryId } from "./prompt_delimiter.ts";
 import {
   docProseClaimInstruction,
+  docProseParityRule,
   isManualProsePath,
   isProseSourcePath,
   MAX_DOC_PROSE_FILES,
@@ -180,7 +182,9 @@ export function buildSummaryClaimQuestionPrompt(opts: {
     "exist, or does not do, contain, match or cover what the sentence " +
     "says. Quote each verbatim, one per entry, `file` = the summary " +
     "path. Do not report a sentence you could not check, and do not " +
-    "judge wording, style, or completeness.";
+    "judge wording, style, or completeness. Also check a parity sentence " +
+    "(as before, exactly as X did, the same as, unchanged, no behaviour change). " +
+    docProseParityRule(opts.baseRef);
   const summaryExample = {
     file: opts.summaryPath,
     sentence:
@@ -212,7 +216,7 @@ export function buildSummaryClaimQuestionPrompt(opts: {
       : [],
     instruction: hasDocs
       ? "For the summary file: " + summaryInstruction.replace(/^C/, "c") +
-        "\n\n" + docProseClaimInstruction("this branch's diff")
+        "\n\n" + docProseClaimInstruction("this branch's diff", opts.baseRef)
       : summaryInstruction,
     example: {
       findings: hasDocs
@@ -858,16 +862,16 @@ export async function runSummaryClaimCheck(
           issueNumber,
         });
       }
-      if (scope.capOverflow.length > 0) {
-        const n = scope.capOverflow.length;
-        const shown = scope.capOverflow.slice(0, 3);
-        const more = n > shown.length ? `; and ${n - shown.length} more` : "";
-        deps.logger.warn(
-          `Summary claim check: ${n} doc-prose range(s) over a cap, not checked (first ${shown.length}): ${
-            shown.join("; ")
-          }${more}`,
-          { repo, issueNumber, notCheckedCount: n },
-        );
+      const capSummary = formatCapOverflowSummary(
+        "Summary claim check",
+        scope.capOverflow,
+      );
+      if (capSummary !== undefined) {
+        deps.logger.warn(capSummary, {
+          repo,
+          issueNumber,
+          notCheckedCount: scope.capOverflow.length,
+        });
       }
     }
 

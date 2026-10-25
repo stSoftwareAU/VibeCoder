@@ -17,11 +17,11 @@ follow-up); **planning** → draft-then-self-critique a breakdown into sub-issue
 (carrying **no** reserved labels — you triage priority), post a model-usage
 stats block, comment, close parent; **refine-issue** → update title/body from
 your feedback; **clarification** (no label) → before implementing, worker may
-ask questions and add `needs-human` if the issue is unclear. **Target
-behaviour:** if the clarification phase detects an issue is too complex for a
-single PR, it automatically adds the `planning` label and routes the issue
-through planning (complexity-to-planning escalation). All of this happens on the
-issue only — no branches or PRs until you go to implementation.
+ask questions and add `needs-human` if the issue is unclear. The fleet does
+not ask a human to choose a breakdown merely because the scope heuristic counts
+many requirements. It proceeds to implementation, where the agent can request
+planning with `vibe-needs-planning` when needed. The explicit non-coding
+workflows happen on the issue only — no branches or PRs until implementation.
 
 ```mermaid
 flowchart TD
@@ -38,9 +38,8 @@ flowchart TD
   Work["✅ Implementation workflow"]
   Ref["✅ Update issue from comments"]
   Impl["Implementation path"]
-  Clar["Clarify or implement"]
-  Complex{"Too complex?"}
-  Escalate["🔄 Auto-escalate to planning"]
+  Clar{"Information missing?"}
+  Ask["❌ Post questions, needs-human, unassign"]
   Label --> Q
   Q -->|Yes| Quest
   Q -->|No| G
@@ -55,10 +54,8 @@ flowchart TD
   R -->|Yes| Ref
   R -->|No| Impl
   Impl --> Clar
-  Clar --> Complex
-  Complex -->|Yes| Escalate
-  Escalate -.->|"Next run"| Plan
-  Complex -->|No| Impl
+  Clar -->|Yes| Ask
+  Clar -->|No or scope only| Work
   style Label fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -73,8 +70,7 @@ flowchart TD
   style Ref fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Impl fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Clar fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Complex fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style Escalate fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Ask fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
 > **See also:** [grill-me.md](grill-me.md) for the full mobile-friendly grill
@@ -1065,38 +1061,26 @@ If the refinement fails (e.g. Claude times out, API errors), the worker:
 
 ### 💡 Clarification
 
-The clarification phase runs **before** implementation and is important for
-getting good results. It does three things:
+The fleet clarification phase runs **before** implementation. If information is
+missing, it posts questions, adds `needs-human`, unassigns and exits. You respond
+on the issue and remove the label; the next run re-assesses.
 
-1. **Is the issue clear?** If **unclear**, the worker posts questions as a
-   comment, adds `needs-human`, unassigns, and exits (no implementation this
-   run). You respond on the issue and remove the label; next run re-assesses.
-2. **Is it small enough for a single PR / one run?** If the issue is too large,
-   the worker posts an escalation comment asking a trusted human to add the
-   `planning` label so the issue can be broken into smaller sub-issues. The
-   worker does not add `planning` itself — see
-   [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels).
-3. **Is it too large for a single PR?** If **clear but too complex** for one
-   implementation, the worker posts an escalation comment and unassigns — a
-   trusted human then adds the `planning` label and the issue is broken into
-   sub-issues via the planning workflow (see
-   [Automatic complexity-to-planning escalation](#-automatic-complexity-to-planning-escalation-target-behaviour)).
-   No code is written until the issue is appropriately scoped.
+A scope-only `too_complex` result does not identify missing information.
+Numbered requirements without code paths used to trigger a question asking
+whether to split the issue manually, parking a fully specified assignment.
+The fleet now proceeds without a comment or label change. The implementing
+agent decides whether decomposition is needed and can use the existing
+`vibe-needs-planning` path; the clarity heuristic does not force it.
 
-**Flow:**
-
-1. **Assess** — Run clarity assessment (e.g. Claude) on issue and comments.
-2. **If CLEAR** — Proceed to complexity check (see below).
-3. **If UNCLEAR** — Post clarifying questions as comment; add `needs-human`;
-   unassign; exit (no implementation this run). User responds and removes label;
-   next run re-assesses.
+Explicit vague or missing-information results still request clarification.
+The maximum-round limit and special-label routing are unchanged.
 
 ### 🔄 Automatic complexity-to-planning escalation (target behaviour)
 
-> **📌 Note:** This section describes the **target workflow** — the intended
-> behaviour for how the clarification phase should handle complex issues. The
-> implementation may not yet fully match this documented behaviour; subsequent
-> issues will bring the implementation in line.
+> **📌 Scope:** The standalone clarity command retains its complexity-to-planning
+> pre-check. The fleet clarification phase described above does not use this
+> pre-check or turn `too_complex` into a human question. The proposal below is
+> not the fleet's current routing contract.
 
 When the clarification phase determines an issue is **clear but too complex**
 for a single implementation attempt, it should automatically escalate the issue
@@ -1177,8 +1161,6 @@ flowchart TD
   PlanWork["✅ Create sub-issues, comment, close parent"]
   RefWork["✅ Update issue from feedback"]
   Ask["❌ Post questions, needs-human, unassign"]
-  Complex{"Too complex\nfor single PR?"}
-  Escalate["🔄 Comment asking human to add planning label, unassign"]
   Code["✅ Implement issue"]
   Issue --> Question
   Question -->|Yes| QWork
@@ -1189,10 +1171,7 @@ flowchart TD
   Refine -->|No| Impl
   Impl --> Clar
   Clar -->|Yes| Ask
-  Clar -->|No| Complex
-  Complex -->|Yes| Escalate
-  Escalate -.->|"Next run"| PlanWork
-  Complex -->|No| Code
+  Clar -->|No or scope only| Code
   style Issue fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style Question fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style Planning fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -1203,8 +1182,6 @@ flowchart TD
   style PlanWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style RefWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Ask fill:#c45858,stroke:#6b2020,color:#fff
-  style Complex fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style Escalate fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Code fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 

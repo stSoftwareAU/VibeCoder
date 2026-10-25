@@ -53,7 +53,7 @@ for (const type of ["pr_feedback", "ci_fix"]) {
     for (
       const required of [
         "keep the pr summary true to the head",
-        "docs/archive/pr-summaries/pr-summary-*.md",
+        "docs/archive/pr-summaries/pr-summary-<issue>.md",
         "same push",
         "known defect",
       ]

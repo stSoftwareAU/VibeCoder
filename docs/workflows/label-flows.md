@@ -87,9 +87,11 @@ you have answered or unblocked the worker.
 | `needs-human` after Ready (no `grill-me`) | You | Apply `planning` or a work-tier label; clear `needs-human` when the worker should pick up — or re-add `grill-me` (clearing `needs-human`) to reopen grilling |
 | `needs-human` on a work issue | You | Read the escalation comment; fix the blocker; remove `needs-human` |
 
-The worker may also add `needs-human` for clarity failures, merge
-blocks, analysis-only handoffs, and other stop conditions — always with
-a comment explaining the next step.
+An approved work issue is never handed back with `needs-human`
+(Issue #4298): an issue the worker cannot finish is a Vibe Coder bug, retried and
+fixed rather than returned. `needs-human` remains for the security hard
+stops and the planning/grill-me rounds above — always with a comment
+explaining the next step.
 
 ---
 

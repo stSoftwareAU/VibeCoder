@@ -9,7 +9,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildDriftQuestionPrompt,
   buildDriftRecoveryPrompt,
@@ -20,6 +25,27 @@ import {
   runPrFeedbackDriftCheck,
 } from "../lib/pr_feedback_drift_check.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
+
+Deno.test("buildDriftQuestionPrompt opens the base only for a parity sentence (Issue #4223)", () => {
+  const shared = {
+    repo: "org/repo",
+    prNumber: 7,
+    beforeSha: "a".repeat(40),
+    files: ["docs/manual.md"],
+  };
+  const withBase = buildDriftQuestionPrompt({ ...shared, baseRef: "main" });
+  assertStringIncludes(withBase, "git show origin/main:");
+  assertStringIncludes(withBase, "as before");
+  assertStringIncludes(withBase, "file:line");
+  assertFalse(withBase.includes("not against the base"));
+  assertFalse(withBase.includes("git show undefined:"));
+
+  const noBase = buildDriftQuestionPrompt({ ...shared, baseRef: undefined });
+  assertFalse(noBase.includes("git show"));
+  assertStringIncludes(noBase, "as before");
+  assertStringIncludes(noBase, "file:line");
+  assertFalse(noBase.includes("not against the base"));
+});
 
 // ---------------------------------------------------------------------------
 // Test-repo scaffolding — a real git checkout per test.

@@ -666,7 +666,7 @@ Deno.test("executeRollback - a branch that already merges cleanly reverts nothin
     const preRollbackSha = (await runGit(["rev-parse", "HEAD"], fixture.clone))
       .stdout.trim();
 
-    const warnings: string[] = [];
+    const warnings: Array<{ message: string; level: string }> = [];
     const result = await executeRollback(depsFor(
       fixture,
       ghStub([
@@ -678,7 +678,7 @@ Deno.test("executeRollback - a branch that already merges cleanly reverts nothin
           sha: shaA,
         },
       ], []),
-      { log: (message) => warnings.push(message) },
+      { log: (message, level = "info") => warnings.push({ message, level }) },
     ));
 
     assert(result.ok, `roll-back failed: ${result.ok ? "" : result.error}`);
@@ -690,7 +690,9 @@ Deno.test("executeRollback - a branch that already merges cleanly reverts nothin
       "the trial merge was undone",
     );
     assert(
-      warnings.some((line) => line.startsWith("WARNING:")),
+      warnings.some((line) =>
+        line.level === "warn" && line.message.includes("milestone roll-back")
+      ),
       "the anomaly is reported, not swallowed",
     );
   } finally {

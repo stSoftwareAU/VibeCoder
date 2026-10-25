@@ -12,6 +12,7 @@ import {
   buildArmingReasonComment,
   classifyAutoMergeFailure,
   enableAutoMerge,
+  type EnableAutoMergeResult,
   finalisePr,
   isBasePolicyRefusal,
   isBaseProtected,
@@ -1863,6 +1864,64 @@ Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle
   assertEquals(comments.length, 2, "a sibling PR still gets the reason");
 });
 
+/**
+ * Arm one PR through the real `enableAutoMerge`, answering the comment list
+ * with `comments` (or rejecting it when `comments` is an Error). Returns the
+ * outcome and every argv issued (Issue #4291).
+ */
+async function armWithComments(
+  comments: string | Error,
+  fleetAuthors?: readonly string[],
+): Promise<{ outcome: EnableAutoMergeResult; issued: string[][] }> {
+  const issued: string[][] = [];
+  const outcome = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 7,
+    baseRefName: "main",
+    headRefName: "issue-7-change",
+    ...(fleetAuthors ? { fleetAuthors } : {}),
+    // A protected base, so GitHub's own auto-merge is armed.
+    isBaseProtectedFn: () => Promise.resolve(true),
+    ghCommandFn: async (args) => {
+      issued.push(args);
+      if (args.some((arg) => arg.endsWith("/comments"))) {
+        if (comments instanceof Error) throw comments;
+        return comments;
+      }
+      return "Enabled auto-merge";
+    },
+  });
+  return { outcome, issued };
+}
+
+const OPEN_PREPR_RECORD = JSON.stringify([{
+  author: "vibe-bot",
+  body:
+    '<!-- vibe-prepr-review state="changes_requested" -->\n\npre-PR review requested changes: 1 findings',
+}]);
+
+for (
+  const [name, comments, fleet] of [
+    ["the fleet set is missing", "[]", undefined],
+    ["the comment list cannot be read", new Error("HTTP 502"), ["vibe-bot"]],
+    ["a pre-PR review record is unresolved", OPEN_PREPR_RECORD, ["vibe-bot"]],
+  ] as const
+) {
+  Deno.test(`pr_auto_merge - enableAutoMerge arms when ${name} (Issue #4291)`, async () => {
+    const { outcome, issued } = await armWithComments(comments, fleet);
+    assertEquals(outcome.result, AutoMergeResult.Enabled, outcome.message);
+    assert(
+      issued.some((args) => args.includes("--auto")),
+      "the CI quality gate is the only merge gate, so the PR must be armed",
+    );
+    assertEquals(
+      issued.some((args) => args.includes("--disable-auto")),
+      false,
+      "nothing may disarm the PR",
+    );
+  });
+}
+
 // ---------------------------------------------------------------------------
 // finalisePr returns the real arming outcome, and latch refusals never retry
 // (Issue #2457)
@@ -1874,7 +1933,9 @@ Deno.test("pr_auto_merge - finalisePr returns the real outcome, not a constant o
     prNumber: 1,
     maxRetries: 1,
     retryDelay: 0,
-    ghCommandFn: async () => {
+    fleetAuthors: ["vibe-bot"],
+    ghCommandFn: async (args) => {
+      if (args.some((arg) => arg.endsWith("/comments"))) return "[]";
       throw new Error("HTTP 500 Internal Server Error");
     },
   });
@@ -1899,7 +1960,11 @@ Deno.test("pr_auto_merge - finalisePr reports Enabled on success (Issue #2457)",
     repo: "owner/repo",
     prNumber: 1,
     isBaseProtectedFn: async () => true,
-    ghCommandFn: async () => "Enabled",
+    fleetAuthors: ["vibe-bot"],
+    ghCommandFn: async (args) => {
+      if (args.some((arg) => arg.endsWith("/comments"))) return "[]";
+      return "Enabled";
+    },
   });
   assert(result.ok);
   assertEquals(result.value.result, AutoMergeResult.Enabled);
@@ -2003,4 +2068,185 @@ Deno.test("pr_auto_merge - buildArmingReasonComment names the reason and the swe
     message: "Could not enable auto-merge: gh command skipped: primary quota",
   });
   assertStringIncludes(latched, "no further auto-merge attempt was made");
+});
+
+/**
+ * The comment is posted on the target repo, which autolinks a bare `#N`
+ * (Issue #4183). The outcome message keeps the VibeCoder citation for logs;
+ * the comment may name only this PR.
+ */
+function assertArmingCommentCitesOnlyThisPr(
+  outcome: EnableAutoMergeResult,
+  prNumber: number,
+): void {
+  assert(
+    autoMergeOutcomeNeedsComment(outcome),
+    `${outcome.result} ${outcome.deferral ?? ""} should be commented`,
+  );
+  assert(
+    /\(Issue #\d+\)/.test(outcome.message),
+    `the logged message keeps its citation: ${outcome.message}`,
+  );
+  const body = buildArmingReasonComment(outcome);
+  assertEquals(/Issue #\d+/.test(body), false, body);
+  assertEquals(/stSoftwareAU\/VibeCoder#\d+/.test(body), false, body);
+  const cited = [...body.matchAll(/#(\d+)/g)].map((match) => match[1]);
+  assert(cited.length > 0, `the comment should still name PR #${prNumber}`);
+  for (const number of cited) {
+    assertEquals(number, String(prNumber), body);
+  }
+}
+
+Deno.test("pr_auto_merge - an arming-reason comment cites no VibeCoder issue (Issue #4183)", async () => {
+  const notAllowed = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 12,
+    ghCommandFn: () =>
+      Promise.reject(
+        new Error("Auto-merge is not allowed for this pull request"),
+      ),
+  });
+  assertEquals(notAllowed.result, AutoMergeResult.NotAllowed);
+  assertArmingCommentCitesOnlyThisPr(notAllowed, 12);
+
+  const deferred = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 13,
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({
+        decision: "defer" as const,
+        reason: "lookup-failed" as const,
+        milestoneBranch: "milestone/route",
+        detail: "the milestone route could not be read",
+      }),
+    ghCommandFn: () => Promise.resolve(""),
+  });
+  assertEquals(deferred.result, AutoMergeResult.Deferred);
+  assertEquals(deferred.deferral, undefined);
+  assertArmingCommentCitesOnlyThisPr(deferred, 13);
+
+  const fixBase = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 41,
+    headRefName: "milestone-fix/clean-up/pr-40-ci",
+    isBaseProtectedFn: () => Promise.resolve(true),
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({ decision: "allow" } as never),
+    ghCommandFn: (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.reject(new Error("HTTP 502"));
+      }
+      return Promise.resolve("");
+    },
+  });
+  assertEquals(fixBase.deferral, "fix-base-unreadable");
+  assertArmingCommentCitesOnlyThisPr(fixBase, 41);
+
+  const syncUnreadableBase = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 42,
+    headRefName: "sync/milestone-clean-up",
+    isBaseProtectedFn: () => Promise.resolve(true),
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({ decision: "allow" } as never),
+    ghCommandFn: (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.reject(new Error("HTTP 502"));
+      }
+      return Promise.resolve("");
+    },
+  });
+  assertEquals(syncUnreadableBase.deferral, "sync-base-unreadable");
+  assertStringIncludes(syncUnreadableBase.message, "Issue #3614");
+  assertArmingCommentCitesOnlyThisPr(syncUnreadableBase, 42);
+
+  const syncUnreadableDefault = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 43,
+    headRefName: "sync/milestone-clean-up",
+    baseRefName: "main",
+    isBaseProtectedFn: () => Promise.resolve(true),
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({ decision: "allow" } as never),
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: false, error: new Error("502 Bad Gateway") }),
+    ghCommandFn: () => Promise.resolve(""),
+  });
+  assertEquals(syncUnreadableDefault.deferral, "sync-base-unreadable");
+  assertStringIncludes(syncUnreadableDefault.message, "Issue #1967");
+  assertArmingCommentCitesOnlyThisPr(syncUnreadableDefault, 43);
+
+  const syncHeadUnread = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 44,
+    headRefName: "sync/milestone-clean-up",
+    baseRefName: "main",
+    isBaseProtectedFn: () => Promise.resolve(true),
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({ decision: "allow" } as never),
+    getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "main" }),
+    ghCommandFn: (args) => {
+      if (args.join(" ").includes("isCrossRepository")) {
+        return Promise.resolve("");
+      }
+      return Promise.resolve("");
+    },
+  });
+  assertEquals(syncHeadUnread.deferral, "sync-base-unreadable");
+  assertStringIncludes(syncHeadUnread.message, "Issue #1967");
+  assertArmingCommentCitesOnlyThisPr(syncHeadUnread, 44);
+
+  const fixHeadUnread = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 51,
+    headRefName: "milestone-fix/863/pr-40-takeover-abc",
+    baseRefName: "milestone/863",
+    isBaseProtectedFn: () => Promise.resolve(true),
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({
+        decision: "allow" as const,
+        reason: "not-milestone-base" as const,
+      }),
+    ghCommandFn: (args) => {
+      if (args.join(" ").includes("isCrossRepository")) {
+        return Promise.resolve("");
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.resolve("milestone/863");
+      }
+      return Promise.resolve("");
+    },
+  });
+  assertEquals(fixHeadUnread.result, AutoMergeResult.Failed);
+  assertStringIncludes(fixHeadUnread.message, "Issue #3596");
+  assertArmingCommentCitesOnlyThisPr(fixHeadUnread, 51);
+
+  const fixMethodUnread = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 52,
+    headRefName: "milestone-fix/863/pr-40-takeover-abc",
+    baseRefName: "milestone/863",
+    isBaseProtectedFn: () => Promise.resolve(true),
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({
+        decision: "allow" as const,
+        reason: "not-milestone-base" as const,
+      }),
+    ghCommandFn: (args) => {
+      if (args.join(" ").includes("isCrossRepository")) {
+        return Promise.resolve("false");
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.resolve("milestone/863");
+      }
+      if (args.includes(".default_branch")) return Promise.resolve("main");
+      if (args.includes(".merge_base_commit.sha")) {
+        return Promise.reject(new Error("HTTP 502"));
+      }
+      return Promise.resolve("");
+    },
+  });
+  assertEquals(fixMethodUnread.result, AutoMergeResult.Failed);
+  assertStringIncludes(fixMethodUnread.message, "Issue #3596");
+  assertArmingCommentCitesOnlyThisPr(fixMethodUnread, 52);
 });

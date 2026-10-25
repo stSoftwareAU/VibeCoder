@@ -21,6 +21,7 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
  */
 
 import { browserGranted } from "./browser_grant.ts";
+import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
@@ -151,6 +152,7 @@ import {
 } from "./security_fix_gate_feedback.ts";
 import { buildFetchArgs } from "./git_ref_args.ts";
 import { runGitCommandChecked } from "./git_timeout.ts";
+import { bindLogger, logAt, type LogLevelName } from "./log_sink.ts";
 
 // =============================================================================
 // Types
@@ -513,7 +515,13 @@ export interface ExecuteClaudePhaseDeps {
   ) => Promise<Result<string, Error>>;
   /** Finalise a PR (auto-merge, etc.). */
   finalisePr: (
-    options: { repo: string; prNumber: number; skipAutoMerge?: boolean },
+    options: {
+      repo: string;
+      prNumber: number;
+      skipAutoMerge?: boolean;
+      /** Fleet logins the gated direct merge needs (Issue #1082). */
+      fleetAuthors?: readonly string[];
+    },
   ) => Promise<Result<string, Error>>;
   /** Ensure an issue is closed when its PR is merged. */
   ensureIssueClosedIfPrMerged: (
@@ -548,8 +556,11 @@ export interface ExecuteClaudePhaseDeps {
    * omitted, and it spawns nothing while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
-  /** Log a message. */
-  log: (message: string) => void;
+  /**
+   * Log a message at the given level. A missing level is info. The level is
+   * the logger's own word, not text inside the message (Issue #4176).
+   */
+  log: (message: string, level?: LogLevelName) => void;
 }
 
 /** Arguments for the context-budget hand-off (Issue #3713). */
@@ -628,6 +639,25 @@ export function detectScreenshotRequired(
   }
 
   return true;
+}
+
+/**
+ * Why a run without recoverable work cannot be an analysis-only answer.
+ * Shared by the standalone and fleet execute phases (Issue #4147). Process
+ * success alone does not prove the agent completed: the decoded result may
+ * report an error, an unfinished stream, or zero model turns. Providers that
+ * do not expose structured completion metadata retain their exit-code rule.
+ */
+export function emptyRunFailureReason(
+  run: ClaudeRunResult,
+): string | undefined {
+  if (run.exitCode !== 0) return `exited ${run.exitCode}`;
+  if (run.agentOutput?.status === "failed") return "reported a failed result";
+  if (run.agentOutput?.status === "incomplete") {
+    return "stopped before its final result";
+  }
+  if (run.runStats?.numTurns === 0) return "completed zero model turns";
+  return undefined;
 }
 
 // =============================================================================
@@ -836,9 +866,21 @@ export async function attemptPrSelfHealing(
           "(skip_auto_merge, Issue #1650)",
       );
     }
-    await deps.finalisePr({ repo, prNumber, skipAutoMerge }).catch(() => {
-      deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
-    });
+    // Issue #1082: the gated direct merge needs the fleet set to tell a
+    // genuine review. This host's login is the identity the self-heal path
+    // already holds; a sibling set is read from the configured fleet when
+    // that read succeeds.
+    const configuredFleet = await resolveAlertDedupAuthors(
+      {},
+      (message) => deps.log(message),
+    );
+    const fleetAuthors = configuredFleet.length > 0
+      ? configuredFleet
+      : (githubUser.trim() !== "" ? [githubUser] : []);
+    await deps.finalisePr({ repo, prNumber, skipAutoMerge, fleetAuthors })
+      .catch(() => {
+        deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
+      });
 
     // Issue #174: this PR came from `findExistingPrForBranch`, so its head is
     // this run's branch by construction — naming it makes the provenance
@@ -922,6 +964,9 @@ function readCiProviders(
  * Default production dependencies.
  */
 export function createDefaultDeps(): ExecuteClaudePhaseDeps {
+  // One logger so a warn or error keeps the level the phase asked for
+  // (Issue #4176). The marker is the logger's own level word.
+  const phaseLog = bindLogger(createLogger({ host: "" }));
   return {
     escalateContextBudget: defaultEscalateContextBudget,
     runClaudeWithRetry,
@@ -986,7 +1031,9 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
       value: undefined,
     }),
     getPromptsCommit: async () => await getPromptsCommit(),
-    log: (message: string) => console.log(`[execute-claude-phase] ${message}`),
+    log: (message: string, level?: LogLevelName) => {
+      phaseLog(`[execute-claude-phase] ${message}`, level);
+    },
   };
 }
 
@@ -1220,8 +1267,10 @@ async function executeClaudePhaseBody(
         }... ${mapResult.value.cacheHit ? "(cached)" : "(generated)"}`,
       );
     } else {
-      deps.log(
-        `WARN: codebase map unavailable for ${repoDir} (non-fatal, Issue #4281): ${mapResult.error.message}`,
+      logAt(
+        deps.log,
+        "warn",
+        `codebase map unavailable for ${repoDir} (non-fatal, Issue #4281): ${mapResult.error.message}`,
       );
     }
   }
@@ -1476,10 +1525,10 @@ async function executeClaudePhaseBody(
     deps.log(formatBudgetBreakdown(budgetResult));
 
     if (budgetResult.warning) {
-      deps.log(`WARN: ${budgetResult.warning}`);
+      logAt(deps.log, "warn", `${budgetResult.warning}`);
     }
     if (budgetResult.error) {
-      deps.log(`ERROR: ${budgetResult.error}`);
+      logAt(deps.log, "error", `${budgetResult.error}`);
     }
 
     // Log budget entry for daily summary aggregation (fire-and-forget)
@@ -1529,8 +1578,10 @@ async function executeClaudePhaseBody(
   // rather than recorded as an unknown-but-fine revision.
   const promptsCommitResult = await deps.getPromptsCommit();
   if (!promptsCommitResult.ok) {
-    deps.log(
-      `WARNING: could not resolve the prompts commit — ${promptsCommitResult.error.message}`,
+    logAt(
+      deps.log,
+      "warn",
+      `could not resolve the prompts commit — ${promptsCommitResult.error.message}`,
     );
   } else {
     deps.log(`Using prompts from commit ${promptsCommitResult.value}`);
@@ -1583,13 +1634,15 @@ async function executeClaudePhaseBody(
     if (heartbeatStart.ok) {
       heartbeatHandle = heartbeatStart.value;
     } else {
-      deps.log(
-        `WARNING: Failed to start heartbeat (non-fatal): ${heartbeatStart.error.message}`,
+      logAt(
+        deps.log,
+        "warn",
+        `Failed to start heartbeat (non-fatal): ${heartbeatStart.error.message}`,
       );
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    deps.log(`WARNING: Failed to start heartbeat (non-fatal): ${msg}`);
+    logAt(deps.log, "warn", `Failed to start heartbeat (non-fatal): ${msg}`);
   }
 
   // --- Execute Claude ---
@@ -1694,7 +1747,7 @@ async function executeClaudePhaseBody(
     // Always stop heartbeat
     if (heartbeatHandle) {
       await stopHeartbeat(heartbeatHandle).catch(() => {
-        deps.log("WARNING: Failed to stop heartbeat (non-fatal)");
+        logAt(deps.log, "warn", "Failed to stop heartbeat (non-fatal)");
       });
     }
   }
@@ -2036,18 +2089,20 @@ async function executeClaudePhaseBody(
       }
     }
 
-    // An agent that failed (non-zero exit) and changed nothing crashed; it did
+    // An agent that failed or never completed and changed nothing crashed; it did
     // not conclude there was nothing to do. `no_changes` would hand a real
     // implementation issue to a human as analysis-only — 46 on 2026-10-22,
     // every one a run in which no model turn happened (Issue #4147). A
-    // failure keeps the issue on the retry ladder instead.
-    if (exitCode !== 0) {
+    // failure keeps the issue on the retry ladder instead. Keep the live
+    // phases/execute_phase.ts guard in sync; both entry points need this check.
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
       const failureOutput = buildFailureOutputTail(claudeOutput);
       return {
         action: "failure",
         failureType: "execution_error",
         failureMessage:
-          `Claude execution failed: the agent exited ${exitCode} without ` +
+          `Claude execution failed: the agent ${emptyFailure} without ` +
           `making any change. This is a run failure, not an analysis-only ` +
           `answer; the issue stays queued for a retry.` +
           (failureOutput
@@ -2099,8 +2154,8 @@ function elapsedSince(startTime: number): number {
 function buildLoggerFromFn(logFn: (message: string) => void): Logger {
   return {
     info: (msg: string) => logFn(msg),
-    warn: (msg: string) => logFn(`WARN: ${msg}`),
-    error: (msg: string) => logFn(`ERROR: ${msg}`),
+    warn: (msg: string) => logAt(logFn, "warn", `${msg}`),
+    error: (msg: string) => logAt(logFn, "error", `${msg}`),
     debug: () => {},
     security: () => {},
     skipReason: () => {},

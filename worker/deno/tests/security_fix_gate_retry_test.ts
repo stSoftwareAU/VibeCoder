@@ -10,12 +10,12 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
-  buildBlockedRunsEscalation,
+  buildBlockedRunsGateBug,
   buildSecurityFixGateBlockComment,
   buildSecurityFixGateRetryPrompt,
   MAX_CONSECUTIVE_BLOCKED_RUNS,
   recoverFromSecurityGateBlock,
-  shouldEscalateBlockedRuns,
+  shouldFileGateBug,
 } from "../lib/security_fix_gate_retry.ts";
 import {
   readSecurityFixGateBlock,
@@ -89,25 +89,26 @@ Deno.test("gate retry - a comment with no verdict fails loud", () => {
   );
 });
 
-Deno.test("gate retry - the hand-off fires only at the blocked-run cap", () => {
-  assertEquals(shouldEscalateBlockedRuns(0), false);
+Deno.test("gate retry - the gate bug is filed only at the blocked-run cap (Issue #4298)", () => {
+  assertEquals(shouldFileGateBug(0), false);
   assertEquals(
-    shouldEscalateBlockedRuns(MAX_CONSECUTIVE_BLOCKED_RUNS - 1),
+    shouldFileGateBug(MAX_CONSECUTIVE_BLOCKED_RUNS - 1),
     false,
   );
-  assertEquals(shouldEscalateBlockedRuns(MAX_CONSECUTIVE_BLOCKED_RUNS), true);
+  assertEquals(shouldFileGateBug(MAX_CONSECUTIVE_BLOCKED_RUNS), true);
   assertEquals(
-    shouldEscalateBlockedRuns(MAX_CONSECUTIVE_BLOCKED_RUNS + 1),
+    shouldFileGateBug(MAX_CONSECUTIVE_BLOCKED_RUNS + 1),
     true,
   );
 });
 
-Deno.test("gate retry - the escalation quotes the verdict and names the gate", () => {
-  const escalation = buildBlockedRunsEscalation({ ...BLOCK, blockCount: 2 });
+Deno.test("gate retry - the gate bug quotes the verdict and names the gate (Issue #4298)", () => {
+  const evidence = buildBlockedRunsGateBug({ ...BLOCK, blockCount: 2 });
 
-  assertStringIncludes(escalation.reason, "2 consecutive runs");
-  assertStringIncludes(escalation.reason, "test-identifier-in-diff");
-  assertStringIncludes(escalation.nextStep, "security_fix_gate.ts");
+  assertStringIncludes(evidence, "2 consecutive runs");
+  assertStringIncludes(evidence, "test-identifier-in-diff");
+  assertStringIncludes(evidence, "security_fix_gate.ts");
+  assertEquals(evidence.includes("needs-human"), false);
 });
 
 /**
@@ -304,14 +305,15 @@ Deno.test("gate retry - a block that is not a discrimination verdict keeps the w
   assertStringIncludes(prompt, "commit nothing");
 });
 
-Deno.test("gate retry - the escalation for a discrimination block points at the recorded runs", () => {
-  const escalation = buildBlockedRunsEscalation({
+Deno.test("gate retry - the gate bug for a discrimination block points at the recorded runs (Issue #4298)", () => {
+  const evidence = buildBlockedRunsGateBug({
     ...DISCRIMINATION_BLOCK,
     blockCount: 2,
   });
 
-  assertStringIncludes(escalation.nextStep, "Recorded discrimination runs");
-  assertEquals(escalation.nextStep.includes("security_fix_gate.ts"), false);
+  assertStringIncludes(evidence, "Recorded discrimination runs");
+  assertStringIncludes(evidence, "security_fix_discrimination.ts");
+  assertEquals(evidence.includes("needs-human"), false);
 });
 
 Deno.test("gate retry - the run's discrimination record is persisted and replayed into the retry prompt", async () => {

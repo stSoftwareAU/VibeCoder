@@ -164,13 +164,25 @@ export function closureGapFindings(
     if (list) list.push(v);
     else byKey.set(key, [v]);
   }
+  // One scrub per entry. A scrubbed key that belongs to two different raw
+  // entries is not an identifier: distinct secrets both become the redaction
+  // placeholder, and a copy of one must not be read as the other.
+  const scrubbedKeys = items.map((item) =>
+    keyOf(scrubUntrustedText(item.criterion))
+  );
+  const rawKeysByScrubbed = new Map<string, Set<string>>();
+  for (const [index, item] of items.entries()) {
+    const scrubbedKey = scrubbedKeys[index]!;
+    const raws = rawKeysByScrubbed.get(scrubbedKey) ?? new Set<string>();
+    raws.add(keyOf(item.criterion));
+    rawKeysByScrubbed.set(scrubbedKey, raws);
+  }
   const out: ClosureGapFinding[] = [];
   const unreported: MetClosureItem[] = [];
-  for (const item of items) {
-    const keys = new Set([
-      keyOf(item.criterion),
-      keyOf(scrubUntrustedText(item.criterion)),
-    ]);
+  for (const [index, item] of items.entries()) {
+    const scrubbedKey = scrubbedKeys[index]!;
+    const keys = new Set<string>([keyOf(item.criterion)]);
+    if (rawKeysByScrubbed.get(scrubbedKey)?.size === 1) keys.add(scrubbedKey);
     const matching = [...keys].flatMap((key) => byKey.get(key) ?? []);
     if (matching.length === 0) {
       unreported.push(item);

@@ -786,7 +786,13 @@ is a new environment requirement, the Test Plan names the existing tests
 that needed fixture changes, or says that none did and how that was checked.
 stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
 a plain temporary directory that no longer reached the guard it pins
-(Issue #3530).
+(Issue #3530). The same holds for a change to an emitted or read form — a
+label, a key, a prefix or a format. Search the tests for the old form and
+for fragments of it. Confirm that every absence check, negative case and
+containment check that names it can still fail, and record the search in
+the Test Plan. An absence check, negative case or containment check that
+names the old form and can no longer fail is a blocking self-review
+finding (Issue #4163).
 
 **Every changed call site needs a test that goes red without it.** This
 covers every new or changed wiring between an entry point and the code it
@@ -829,13 +835,14 @@ above cannot find this caller, because the diff never changed it and there
 is nothing to revert. List the callers and siblings checked in the PR summary
 (Issue #3253).
 
-**A new state on an existing screen re-reads that screen's existing text.**
-When a change adds a state or mode to a screen that already exists (an
-earlier date, a paged or partial load, a fallback, an empty or error case),
-list every message the screen already renders: notes, empty-state text,
-warnings, badges and labels. For each one, say whether it is still true in
-the new state. If it is not, reword it, hide it or mark it, so the new
-state never shows a message written for another state. Add a test that
+**A new case re-reads the text it now reaches.** When a change sends a new
+case to text that already exists — a widened condition, a new arm or allowed
+value, a newly called function or component, or a new state on a screen that
+already exists (an earlier date, a paged or partial load, a fallback, an empty
+or error case) — list every message the screen already renders: notes,
+empty-state text, warnings, badges and labels. For each one, say whether it
+is still true in the new state. If it is not, reword it, hide it or mark it,
+so the new state never shows a message written for another state. Add a test that
 renders the new state and asserts each message that differs in that state,
 or is absent from it. A test that renders only the new rows stays green
 while an old message is wrong, and **Every changed call site needs a test
@@ -2292,6 +2299,11 @@ gate if a model-generation name reappears in this document.
   risk that remains. Write "none" when nothing was; never leave the reader to
   infer that everything was checked. An unverified claim is reported as
   unverified, not as fact.
+- **Give every shell command its own timeout.** Every shell command carries
+  its own `timeout`, sized to that command: seconds for `git` and `gh`,
+  minutes for a build. Builds and test suites run one at a time, in the
+  foreground, and never with `run_in_background`. Save and push the work in
+  hand before the finish deadline the prompt states.
 - **Prefer positive instructions over negative ones.** "Use Australian English
   spelling" is more effective than "Do not use American English spelling".
 - **Structure prompts with clear sections** — headings and bullet points aid

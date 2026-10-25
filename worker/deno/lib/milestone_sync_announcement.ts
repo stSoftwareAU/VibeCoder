@@ -27,6 +27,7 @@ import {
   type MilestoneEscalationTarget,
   resolveMilestoneEscalationTarget,
 } from "./milestone_escalation_target.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Injectable `gh` command runner. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -123,8 +124,10 @@ export async function announceAgentAttempt(
     );
     return true;
   } catch (err) {
-    log(
-      `WARNING: Could not announce the running sync attempt for ` +
+    logAt(
+      log,
+      "warn",
+      `Could not announce the running sync attempt for ` +
         `'${milestoneBranch}' in ${repo}: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #2309).`,

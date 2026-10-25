@@ -9,7 +9,7 @@
  * that an approved issue that cannot be completed is a Vibe Coder bug. These
  * tests drive the real phases and assert both directions: an approved issue is
  * retried and never labelled, and an issue its author declared analysis-only
- * still gets the analysis hand-off.
+ * is closed with its analysis as the deliverable (Issue #4298).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -21,7 +21,6 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
-import { ANALYSIS_ONLY_MARKER } from "../lib/analysis_only_handoff.ts";
 import type {
   IssueContext,
   PhaseResult,
@@ -42,6 +41,7 @@ interface Calls {
   addLabel: string[];
   removeLabel: string[];
   postComment: string[];
+  closeIssue?: string[];
 }
 
 function makeClient(calls: Calls): GitHubClient {
@@ -63,7 +63,10 @@ function makeClient(calls: Calls): GitHubClient {
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
     unassignIssue: () => Promise.resolve(),
-    closeIssue: () => Promise.resolve(),
+    closeIssue: (_r, _n, comment) => {
+      (calls.closeIssue ??= []).push(comment ?? "");
+      return Promise.resolve();
+    },
   } as GitHubClient;
 }
 
@@ -160,12 +163,18 @@ Deno.test("#4227 - an unhonourable declared hand-off on committed work is retrie
   assert(!calls.addLabel.includes("planning"));
 });
 
-Deno.test("#4227 - an issue its author declared analysis-only still gets the analysis hand-off", async () => {
+Deno.test("#4298 - an issue its author declared analysis-only is closed with its analysis, never handed back", async () => {
   // The other direction: the owner asked for analysis, not a PR, so the
-  // analysis is the deliverable and a human reads it.
-  const calls: Calls = { addLabel: [], removeLabel: [], postComment: [] };
+  // analysis is the deliverable. The worker posts it and closes the issue as
+  // completed (Issue #4298) instead of asking a human to read it and decide.
+  const calls: Calls = {
+    addLabel: [],
+    removeLabel: [],
+    postComment: [],
+    closeIssue: [],
+  };
   const ctx = makeContext({
-    issueBody: `${ANALYSIS_ONLY_MARKER}\nWhy did fills drop last week?`,
+    issueBody: "<!-- analysis-only -->\nWhy did fills drop last week?",
   });
   const deps = createMockDeps({
     github: { createClient: () => makeClient(calls) },
@@ -181,6 +190,8 @@ Deno.test("#4227 - an issue its author declared analysis-only still gets the ana
 
   assertEquals(result.status, "early_exit");
   if (result.status !== "early_exit") return;
-  assertEquals(result.reason, "analysis_only_handed_off");
-  assert(calls.addLabel.includes(ctx.config.needsHumanLabel));
+  assertEquals(result.reason, "analysis_only_completed");
+  assert(!calls.addLabel.includes(ctx.config.needsHumanLabel));
+  assertEquals(calls.closeIssue?.length, 1);
+  assertStringIncludes(calls.closeIssue![0]!, "the feed was stale");
 });

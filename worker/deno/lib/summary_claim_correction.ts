@@ -288,6 +288,10 @@ function correctionScrubError(
       "＞",
       "author＝",
       REDACTION_PLACEHOLDER,
+      // `[TRUSTED` / `[UNTRUSTED` is rewritten to a fullwidth opening bracket.
+      "［",
+      // `---BEGIN … CONTENT` is rewritten with an em dash.
+      "—BEGIN",
     ]
   ) {
     if (corrected.split(marker).length > original.split(marker).length) {

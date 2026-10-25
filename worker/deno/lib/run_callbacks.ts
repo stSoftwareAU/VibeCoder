@@ -275,6 +275,16 @@ export interface IssueRunCallbackContext {
    * at start-up from the host checkout, never per run.
    */
   workerCommit?: string;
+  /**
+   * Whether this checkout tracks its branch or is held at a pin
+   * (Issue #4120). Omitted when the checkout could not be read.
+   */
+  updateMode?: "dynamic" | "frozen";
+  /**
+   * The ref a frozen checkout is held at (Issue #4120). Present only when
+   * {@link updateMode} is `"frozen"`.
+   */
+  pinnedRef?: string;
 }
 
 /**
@@ -599,6 +609,11 @@ export function buildCallbackContextDocument(
   if (context.workerCommit !== undefined) {
     document.workerCommit = context.workerCommit;
   }
+  // Issue #4120: additive, same omission rule. pinnedRef only when frozen.
+  if (context.updateMode !== undefined) {
+    document.updateMode = context.updateMode;
+  }
+  if (context.pinnedRef !== undefined) document.pinnedRef = context.pinnedRef;
   // Issue #2104: emitted on every run, never omitted — see
   // {@link callbackGraftFacts} for why absence is reported as `off`.
   document.graft = callbackGraftFacts(context.graft);
@@ -786,6 +801,9 @@ export function buildCallbackEnv(
   // Issue #2444: omitted rather than guessed when the build could not be read.
   put(env, "VIBECODER_WORKER_VERSION", context.workerVersion);
   put(env, "VIBECODER_WORKER_COMMIT", context.workerCommit);
+  // Issue #4120: omitted rather than blank. The pin is only set when frozen.
+  put(env, "VIBECODER_UPDATE_MODE", context.updateMode);
+  put(env, "VIBECODER_PINNED_REF", context.pinnedRef);
   return env;
 }
 
