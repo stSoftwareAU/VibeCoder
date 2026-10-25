@@ -88,10 +88,13 @@ import {
 import { issueRunRoleTreatments } from "../issue_assignment.ts";
 import {
   agentProviderById,
+  type AgentProviderDescriptor,
+  plannedActiveAgentProvider,
   resolveInvocationAgentProvider,
   selectAgentProvider,
 } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
+import { planIssueRunProvider } from "../issue_run_provider_agents.ts";
 import { ensureDraftContinuationPr } from "../draft_continuation_pr.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -542,6 +545,7 @@ async function recordRunAssignment(
   agents: ReturnType<typeof buildIssueRunAgents>,
   orchestration?: ExternalOrchestrationSettings,
   cohort?: string,
+  runProvider?: AgentProviderDescriptor,
 ): Promise<void> {
   const { repo, issueNumber, config } = ctx;
   try {
@@ -560,7 +564,8 @@ async function recordRunAssignment(
         ...(value.effort ? { effort: value.effort } : {}),
       }))
       : issueRunRoleTreatments({
-        provider: cohort ? agentProviderById("claude")! : selectAgentProvider(),
+        provider: runProvider ??
+          (cohort ? agentProviderById("claude")! : selectAgentProvider()),
         claudeModel: cohort ? "sonnet" : config.claudeModel || undefined,
         agents,
       });
@@ -800,6 +805,7 @@ async function executeClaudeBody(
     ),
     selectAgentProvider(
       resolveInvocationAgentProvider(undefined, config.repoConfig?.[repo]),
+      { env: deps.claude.env },
     ).id,
     isAutomaticProviderRoutingActive(),
   );
@@ -807,7 +813,7 @@ async function executeClaudeBody(
     routing.externalOrchestration;
   const effectiveOrchestrationSettings = allocation?.settings ??
     routing.effectiveOrchestrationSettings;
-  const issueExecutorSplit = !externalOrchestration &&
+  const requestedExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",
       config.repoConfig?.[repo],
@@ -823,15 +829,41 @@ async function executeClaudeBody(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
       `(Issue #3402)`,
   );
-  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
-  // #2812); `issue_reviewer_agents: false` opts out.
-  const issueRunAgents = externalOrchestration
+  // The run's provider and sub-agent switches, decided before spawn (Issue
+  // #4109): a non-Claude provider that cannot carry `--agents` is rerouted or
+  // stripped here, not refused later by the #4010 guard.
+  const issueRunPlan = externalOrchestration
     ? undefined
-    : buildIssueRunAgents({
-      executorSplit: issueExecutorSplit,
+    : planIssueRunProvider({
+      // Only reached when `allocation` (if any) is non-external.
+      provider: allocation
+        ? agentProviderById("claude")!
+        : plannedActiveAgentProvider(),
+      selection: { env: deps.claude.env },
+      executorSplit: requestedExecutorSplit,
+      // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+      // #2812); `issue_reviewer_agents: false` opts out.
       reviewerAgents: config.issueReviewerAgents === true,
       subAgentTier: issueSubAgentTier,
+      logger,
     });
+  const issueExecutorSplit = issueRunPlan
+    ? issueRunPlan.executorSplit
+    : requestedExecutorSplit;
+  const issueRunAgents = issueRunPlan
+    ? buildIssueRunAgents({
+      executorSplit: issueRunPlan.executorSplit,
+      reviewerAgents: issueRunPlan.reviewerAgents,
+      subAgentTier: issueRunPlan.subAgentTier,
+    })
+    : undefined;
+  // The provider the runner spawns when the planner rerouted the run (Issue
+  // #4109); undefined keeps the active provider. The RTK, CodeGraph and Graft
+  // sinks and the auth classifier are bound to this, not to the original
+  // provider, as `execute_claude_phase.ts` does.
+  const reroutedProviderId = issueRunPlan?.outcome === "rerouted-to-claude"
+    ? issueRunPlan.provider.id
+    : undefined;
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -925,6 +957,7 @@ async function executeClaudeBody(
   const codegraph = await prepareCodegraphRun({
     repoDir: state.repoPath,
     enabled: config.codegraphContext.enabled,
+    ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
     logger,
     prepare: deps.claude.prepareCodegraphContext,
   });
@@ -946,6 +979,7 @@ async function executeClaudeBody(
   const graft = bindGraftRun({
     result: graftContext,
     repoDir: state.repoPath,
+    ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
     logger,
   });
   const syncGraftFacts = (): void => {
@@ -959,7 +993,7 @@ async function executeClaudeBody(
   // run. The hook and its one prompt line travel together or not at all.
   const rtk = await deps.claude.prepareRtkRun({
     enabled: config.rtkOutput.enabled,
-    providerId: deps.claude.rtkProviderId(undefined, logger),
+    providerId: deps.claude.rtkProviderId(reroutedProviderId, logger),
     logger,
     cwd: state.repoPath,
   });
@@ -1249,6 +1283,8 @@ async function executeClaudeBody(
               enableModelFallback: false,
             }
             : {}),
+          // A run the planner rerouted to Claude (Issue #4109) names it here.
+          ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
           cwd: state.repoPath,
           // The browser on every run unless `skip_screenshot_check`
           // (Issue #2925). Issue #2159 layers the `codegraph` server beside
@@ -1308,6 +1344,7 @@ async function executeClaudeBody(
     issueRunAgents,
     externalOrchestration ? effectiveOrchestrationSettings : undefined,
     allocation?.cohort,
+    issueRunPlan?.provider,
   );
 
   let claudeResult = await invokeAgent(executeTimeoutSeconds);
@@ -1874,7 +1911,7 @@ async function executeClaudeBody(
   ].join("\n");
   if (
     claudeResult.value.exitCode !== 0 &&
-    deps.claude.isClaudeAuthError(authSurface)
+    deps.claude.isClaudeAuthError(authSurface, reroutedProviderId)
   ) {
     // Cross-check for evidence of success before blaming the credential: a run
     // that left commits ahead of base is a false positive on issue content,
