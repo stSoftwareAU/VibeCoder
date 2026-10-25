@@ -111,6 +111,12 @@ export interface MergeGateOutcome {
    * as a resolution nothing verified (Issue #1559).
    */
   landUnverified?: boolean;
+  /**
+   * Set when a cargo project was left to CI (Issue #4326). A `passed` outcome
+   * with this set has verified only the Deno half; the report must not claim
+   * the cargo half passed. A `skipped` outcome with this set verified nothing.
+   */
+  cargoSkipped?: boolean;
 }
 
 /**
@@ -575,6 +581,7 @@ export async function checkMergedTree(
       status: "skipped",
       detail: `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`,
       output: "",
+      cargoSkipped: true,
     };
   }
 
@@ -585,6 +592,7 @@ export async function checkMergedTree(
     status: "passed",
     detail: `${checked.join("; ")} passed${cargoNote}`,
     output: "",
+    ...(skippedCargo ? { cargoSkipped: true } : {}),
   };
 }
 

@@ -141,8 +141,12 @@ Deno.test("sweep sync - a merge-only grant hands the sync the merge-only gates a
       defaultBranch: "main",
       workDir: `${workDir}/repo`,
     });
-    assert(outcome.ok, "the merge-only agent reports an outcome");
-    assertStringIncludes(outcome.value.providerUnavailable ?? "", REASON);
+    assert(!outcome.ok, "a cargo tree withholds the granted agent");
+    assertStringIncludes(
+      outcome.error.message,
+      "cargo budget withheld the agent",
+    );
+    assertStringIncludes(outcome.error.message, REASON);
     assertEquals(agent.runs.count, 0, "the real agent was never run");
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => {});

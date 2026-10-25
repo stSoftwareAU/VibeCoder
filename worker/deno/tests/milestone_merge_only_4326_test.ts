@@ -7,22 +7,28 @@
  * its own checks. Part two runs `syncMilestoneBranchWithDefault` against real
  * git throughout — a bare remote, a clone, a milestone branch and a default
  * branch that has moved on. The assertions that matter at runtime: a
- * conflict-free merge in a cargo tree lands without the repository's build
+ * conflict-free merge in a cargo-only tree lands without the cargo build
  * (`UNGATED`), so does a conflict the deterministic rules settle, a Deno-only
- * tree still runs its own gate, and a conflict that needs the agent is neither
- * pushed nor charged.
+ * tree still runs its own gate, and a conflict that needs the agent is not
+ * pushed. The first over-budget cycle is not charged; the next one is.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
-import { judgeSyncFailure } from "../lib/milestone_branch_sync.ts";
+import {
+  CARGO_BUDGET_AGENT_WITHHELD,
+  escalateRepeatedRefusal,
+  judgeSyncFailure,
+} from "../lib/milestone_branch_sync.ts";
 import {
   type MergeOnlyBindings,
   mergeOnlyBindings,
   type MergeOnlyDeps,
+  syncWithMergeOnlyBindings,
 } from "../lib/milestone_merge_only.ts";
+import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import {
   checkMergedTree,
   findTypeCheckProjects,
@@ -36,9 +42,10 @@ import type {
 } from "../lib/milestone_conflict_ladder.ts";
 
 const REASON =
-  "ephemeral cargo root over budget (test reading) (Issue #3178); the merge " +
-  "lands without the repository's build and the repository's CI builds it " +
-  "(Issue #4326)";
+  "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom " +
+  "25.0 GB) — pruned 0.0 GB of idle target dirs and 15.7 GB is still short, " +
+  "so cargo builds wait for CI (Issue #3178 budget; Issue #4326 skip); cargo " +
+  "builds wait for CI; Deno projects keep their normal checks (Issue #4326)";
 const MILESTONE = "milestone/4326-merge-only";
 
 const CARGO_TOML = '[package]\nname = "fixture"\nversion = "0.0.0"\n' +
@@ -168,25 +175,52 @@ Deno.test("mergeOnlyBindings - a Deno-only tree: the agent delegates to the real
   await withTree({ "deno.json": DENO_JSON }, async (dir) => {
     const real = recordingAgent();
     const request = requestIn(dir);
-    const result = await bindingsFor(REASON, real.agent).agentFn(request);
+    const agentFn = bindingsFor(REASON, real.agent).agentFn;
+    assert(agentFn, "a Deno-only tree keeps the granted agent");
+    const result = await agentFn(request);
     assert(result.ok, "the real agent's result is returned");
     assertEquals(result.value.terminated, true);
     assertEquals(real.calls, [request]);
   });
 });
 
-Deno.test("mergeOnlyBindings - a Deno-only tree with no real agent: the agent reports the provider unavailable (Issue #4326)", async () => {
-  await withTree({ "deno.json": DENO_JSON }, async (dir) => {
-    const result = await bindingsFor(REASON).agentFn(requestIn(dir));
-    assert(result.ok, "the agent binding returns an ok result");
-    assertEquals(result.value.terminated, false);
-    // Not the host's budget: this tree runs no cargo build, and the grant
-    // withheld the agent.
-    assertEquals(
-      result.value.providerUnavailable,
-      "no agent run: the agent rung was not granted this cycle",
-    );
+Deno.test("mergeOnlyBindings - a withheld grant hands the sync no agent, and the ledger says the cycle budget deferred it (Issue #4326)", async () => {
+  const handed: Array<MilestoneConflictAgentFn | undefined> = [];
+  await syncWithMergeOnlyBindings({
+    syncFn: (_branch, _base, _options, _repo, _merge, _resolution, agent) => {
+      handed.push(agent);
+      return Promise.resolve({ ok: true, value: { message: "no conflict" } });
+    },
+    milestoneBranch: MILESTONE,
+    defaultBranch: "main",
+    options: { cwd: "." },
+    repo: "owner/repo",
+    mergeOnly: REASON,
+    agentFn: undefined,
+    logger: undefined,
   });
+  assertEquals(handed, [undefined]);
+  const conclusion = judgeSyncFailure(
+    new MilestoneConflictEscalation(
+      "no resolution agent was available to this sync",
+      [{
+        path: "src/lib.rs",
+        reason: "no resolution agent was available to this sync (Issue #1777)",
+        oursExports: [],
+        theirsExports: [],
+        oursTests: [],
+        theirsTests: [],
+        onlyOursTests: [],
+        onlyTheirsTests: [],
+      }],
+      [],
+      "b".repeat(40),
+    ),
+    false,
+  );
+  assertEquals(conclusion.outcome, "not-charged");
+  assertEquals(conclusion.reason, "agent deferred: cycle budget");
+  assertEquals(conclusion.refusal, true);
 });
 
 Deno.test("mergeOnlyBindings - a tree with a Cargo.toml is detected as cargo (Issue #4326)", async () => {
@@ -212,16 +246,39 @@ Deno.test("mergeOnlyBindings - a cargo-only tree delegates with cargo disabled (
   });
 });
 
-Deno.test("mergeOnlyBindings - a cargo tree: the agent reports the provider unavailable and never runs the real agent (Issue #4326)", async () => {
+Deno.test("mergeOnlyBindings - a cargo tree withholds the agent, and the next over-budget cycle is charged (Issue #4326)", async () => {
   await withTree({ "Cargo.toml": CARGO_TOML }, async (dir) => {
     const real = recordingAgent();
-    const result = await bindingsFor(REASON, real.agent).agentFn(
-      requestIn(dir),
-    );
-    assert(result.ok, "the agent binding returns an ok result");
-    assertEquals(result.value.terminated, false);
-    assertStringIncludes(result.value.providerUnavailable ?? "", REASON);
+    const agentFn = bindingsFor(REASON, real.agent).agentFn;
+    assert(agentFn, "a granted agent is wrapped, not dropped");
+    const result = await agentFn(requestIn(dir));
+    assert(!result.ok, "a cargo tree withholds the granted agent");
+    assertStringIncludes(result.error.message, CARGO_BUDGET_AGENT_WITHHELD);
+    assertStringIncludes(result.error.message, REASON);
     assertEquals(real.calls, []);
+    const first = judgeSyncFailure(
+      new MilestoneConflictEscalation(
+        result.error.message,
+        [{
+          path: "src/lib.rs",
+          reason: `agent: ${result.error.message}`,
+          oursExports: [],
+          theirsExports: [],
+          oursTests: [],
+          theirsTests: [],
+          onlyOursTests: [],
+          onlyTheirsTests: [],
+        }],
+        [],
+        "b".repeat(40),
+      ),
+      true,
+    );
+    assertEquals(first.outcome, "not-charged");
+    assertEquals(first.refusal, true);
+    const second = escalateRepeatedRefusal(first, 1);
+    assertEquals(second.outcome, "failed");
+    assertEquals(second.exhaust, true);
   });
 });
 
@@ -243,9 +300,11 @@ Deno.test("mergeOnlyBindings - a tree whose projects cannot be listed cannot byp
     const resolved = await bindings.resolutionGate(dir);
     assertEquals(resolved.status, "failed");
     assertEquals(resolved.landUnverified, undefined);
-    const agent = await bindings.agentFn(requestIn(dir));
-    assert(agent.ok, "the agent binding returns an ok result");
-    assertStringIncludes(agent.value.providerUnavailable ?? "", REASON);
+    const agentFn = bindings.agentFn;
+    assert(agentFn, "an unlistable tree still wraps a granted agent");
+    const agent = await agentFn(requestIn(dir));
+    assert(!agent.ok, "an unlistable tree withholds the agent");
+    assertStringIncludes(agent.error.message, CARGO_BUDGET_AGENT_WITHHELD);
 
     assertEquals(check.calls, [dir]);
     assertEquals(verify.calls, []);
@@ -513,16 +572,18 @@ Deno.test("merge-only e2e - control: the same clean merge is refused by a failin
   }
 });
 
-Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pushed and not charged (Issue #4326)", async () => {
+Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pushed, and the next cycle is charged (Issue #4326)", async () => {
   // Both sides change the same line, so no rule decides it: the ladder reaches
-  // the agent rung, which the merge-only binding reports as unavailable.
+  // the agent rung, which a cargo tree withholds. The first cycle is a
+  // refusal; the next over-budget cycle is charged.
   const f = await fixture({
     milestone: ["shared.txt", "a\nMILESTONE\nc\n"],
     main: ["shared.txt", "a\nMAIN\nc\n"],
   });
   try {
     const before = await remoteSha(f.remote, MILESTONE);
-    const bindings = bindingsFor(REASON);
+    const real = recordingAgent();
+    const bindings = bindingsFor(REASON, real.agent);
 
     const result = await syncMilestoneBranchWithDefault(
       MILESTONE,
@@ -536,7 +597,10 @@ Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pu
 
     assert(!result.ok, "a conflicted merge must not land");
     const conclusion = judgeSyncFailure(result.error, true);
-    assertEquals(conclusion.outcome, "disrupted");
+    assertEquals(conclusion.outcome, "not-charged");
+    assertEquals(conclusion.reason, CARGO_BUDGET_AGENT_WITHHELD);
+    assertEquals(escalateRepeatedRefusal(conclusion, 1).outcome, "failed");
+    assertEquals(real.calls, []);
     assertEquals(await remoteSha(f.remote, MILESTONE), before);
     assertEquals(await mergeInProgress(f.clone), false);
   } finally {

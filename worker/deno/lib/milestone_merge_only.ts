@@ -2,8 +2,11 @@
  * Budget-limited milestone sync bindings (Issue #4326).
  * Cargo builds wait for CI; the repository gates still check and test every
  * Deno project, including mixed Cargo/Deno trees. A cargo-only tree may land
- * unverified after deterministic conflict resolution. The agent remains
- * withheld on cargo trees because it may launch an unaffordable cargo build.
+ * unverified after deterministic conflict resolution. On a cargo tree the
+ * agent is withheld, because it may launch an unaffordable cargo build: the
+ * first such cycle is not charged, and the next one is, so the recovery
+ * ladder applies. When the grant itself withholds the agent, the sync is
+ * handed no agent and concludes `agent deferred: cycle budget`.
  * Australian English throughout.
  */
 
@@ -17,10 +20,8 @@ import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import type { syncMilestoneBranchWithDefault } from "./git_pull.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import type { Logger } from "../types.ts";
-import type {
-  MilestoneConflictAgentFn,
-  MilestoneConflictAgentRequest,
-} from "./milestone_conflict_ladder.ts";
+import type { MilestoneConflictAgentFn } from "./milestone_conflict_ladder.ts";
+import { CARGO_BUDGET_AGENT_WITHHELD } from "./milestone_branch_sync.ts";
 
 /** The three bindings a merge-only sync is run with. */
 export interface MergeOnlyBindings {
@@ -34,10 +35,12 @@ export interface MergeOnlyBindings {
    */
   resolutionGate: MergeGateFn;
   /**
-   * The resolution agent. A tree with a Cargo project reports the provider
-   * unavailable, so no run is made; any other tree runs the real agent.
+   * The resolution agent. Undefined when the grant withheld the rung, so the
+   * sync records `agent deferred: cycle budget` rather than a provider outage.
+   * A tree with a Cargo project refuses the run so the next over-budget cycle
+   * is charged; any other tree runs the real agent.
    */
-  agentFn: MilestoneConflictAgentFn;
+  agentFn?: MilestoneConflictAgentFn;
 }
 
 /** The delegates a merge-only binding calls, injectable so tests can state them. */
@@ -125,20 +128,12 @@ export function mergeOnlyBindings(
         }
         : outcome;
     },
-    agentFn: async (request: MilestoneConflictAgentRequest) => {
+    agentFn: realAgent === undefined ? undefined : async (request) => {
       const cargo = await holdsCargo(request.workDir);
-      if (!cargo && realAgent !== undefined) return realAgent(request);
+      if (!cargo) return realAgent(request);
       return {
-        ok: true,
-        value: {
-          terminated: false,
-          // A tree without a cargo project is not short of build budget: say
-          // so rather than blame the host for an agent the grant withheld.
-          providerUnavailable: cargo
-            ? "no agent run, the host cannot afford a build to verify it: " +
-              reason
-            : "no agent run: the agent rung was not granted this cycle",
-        },
+        ok: false,
+        error: new Error(`${CARGO_BUDGET_AGENT_WITHHELD}: ${reason}`),
       };
     },
   };
@@ -187,7 +182,9 @@ export function syncWithMergeOnlyBindings(
     // resolution gate derived from it) unless the sync is merge-only.
     bindings?.mergeGate,
     bindings?.resolutionGate,
-    bindings !== undefined ? bindings.agentFn : input.agentFn,
+    bindings !== undefined && input.agentFn !== undefined
+      ? bindings.agentFn
+      : input.agentFn,
     input.logger,
   );
 }

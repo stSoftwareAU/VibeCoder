@@ -437,6 +437,31 @@ Deno.test("checkMergedTree - cargo is not run when the disk budget skips it, and
     );
     assertEquals(ran, 0, "the ephemeral cargo build must not start");
     assertEquals(outcome.status, "skipped");
+    assertEquals(outcome.cargoSkipped, true);
+    assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
+  });
+});
+
+Deno.test("checkMergedTree - a mixed tree passes its Deno check and does not claim cargo passed (Issue #4326)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const kinds: string[] = [];
+    const outcome = await checkMergedTree(
+      dir,
+      (project) => {
+        kinds.push(project.kind);
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      () => Promise.resolve(true),
+    );
+    assertEquals(kinds, ["deno"]);
+    assertEquals(outcome.status, "passed");
+    assertEquals(outcome.cargoSkipped, true);
+    assertEquals(outcome.detail.includes("cargo check"), false);
     assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
   });
 });

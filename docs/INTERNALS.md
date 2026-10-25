@@ -3075,8 +3075,10 @@ build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
 A build refused by the ephemeral cargo root's budget is a different case: with
 the host above its floor, a conflict-free merge or a deterministically resolved
-one in a cargo tree lands without the build; a conflict that needs the agent
-waits for a cycle with budget (Issue #4326,
+one in a cargo-only tree lands without the cargo build. A Deno-only tree and a
+mixed tree keep their Deno checks and suites and are rolled back when those are
+red. A conflict that needs the agent on a cargo tree is charged on the second
+over-budget cycle, so the recovery ladder applies (Issue #4326,
 see
 [HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
@@ -4471,10 +4473,10 @@ So is a conflict the deterministic rules settle: the resolution gate reports a
 `skipped` verdict marked `landUnverified`, which `judgeResolutionVerdict` lets
 through where it would otherwise refuse an unverified resolution. A conflict
 that needs the agent is not landed in that cycle: the agent is free to run the
-very cargo build the host cannot afford, so it is not offered (concluded
-`disrupted`, with nothing charged, and the gate-wedge ledger is not written), and
-the branch is retried every cycle until one whose budget admits a build. Only
-that case can still wait on disk budget. See
+very cargo build the host cannot afford, so it is not offered. The first such
+cycle is a refusal and is not charged. The next over-budget cycle charges the
+attempt, so the recovery ladder applies and the branch does not stay behind on
+disk budget alone. See
 [HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
 
 #### 🪦 The sync never resurrects a deleted file

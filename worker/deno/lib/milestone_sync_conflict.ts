@@ -122,6 +122,11 @@ export interface MilestoneSyncConflict {
    */
   unverified?: boolean;
   /**
+   * True when Deno checks passed and cargo was left to CI (Issue #4326). The
+   * report names that half instead of claiming the whole tree was verified.
+   */
+  cargoSkipped?: boolean;
+  /**
    * What the triage decided, file by file (Issue #1559). Present only for an
    * `auto` resolution, and the reason each decision was safe to take.
    */
@@ -334,6 +339,11 @@ export function buildConflictEscalationComment(
         `merged tree was NOT checked before it landed (Issue #4326): the ` +
         `milestone PR's CI builds it, and a red build there is a resolution ` +
         `to revisit.`
+      : e.conflict.cargoSkipped
+      ? `Deno checks passed before the merge landed. Cargo was not run, so ` +
+        `this report does not claim the cargo half passed: the milestone ` +
+        `PR's CI builds it, and a red cargo build there is a resolution to ` +
+        `revisit (Issue #4326).`
       : `The merged tree passed the repository's own check, its manifest ` +
         `check and its unit suite before it landed — a red tree would have ` +
         `been rolled back instead.`;

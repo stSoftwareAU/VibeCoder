@@ -54,9 +54,13 @@ const NOW = Date.parse("2026-10-03T22:30:00Z");
 const LOW_DETAIL =
   "host (estimated from the launcher's reading 1 min ago) 38.8 GB free (8.4%) of 460.4 GB, floor 46.0 GB — below the floor";
 
-/** A merge-only reason as `heavyBuildAdmission` builds it (Issue #4326). */
+/**
+ * A merge-only reason as `heavyBuildAdmission` builds it for the GRQ-23
+ * figures: 55.3 GB free, a 46 GB floor, 25 GB headroom, nothing prunable
+ * (Issue #4326).
+ */
 const BUDGET_REASON =
-  "ephemeral cargo root over budget (test reading) (Issue #3178); the merge lands without the repository's build and the repository's CI builds it (Issue #4326)";
+  "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom 25.0 GB) — pruned 0.0 GB of idle target dirs and 15.7 GB is still short, so cargo builds wait for CI (Issue #3178 budget; Issue #4326 skip); cargo builds wait for CI; Deno projects keep their normal checks (Issue #4326)";
 
 function reading(
   overrides: Partial<HeavyBuildDiskReading> & {
@@ -867,11 +871,14 @@ Deno.test("merge-only admission keeps Deno checks and truthful logs in sweep and
       assertEquals((await bindings.mergeGate(tree)).status, "passed");
       return { ok: true as const, value: { message: "checked" } };
     };
-    const admission = { mode: "merge-only" as const, reason: "cargo budget" };
+    registerHeavyBuildDiskProbe(() =>
+      Promise.resolve(reading({ free: 55.3 * GB, floorBytes: 46 * GB }))
+    );
+    const admit = () => heavyBuildAdmission(tree, fakeRoot([]).deps);
     const logs: string[] = [];
     await syncMilestoneBranches(sweepDeps(
       {
-        heavyBuildGateFn: () => Promise.resolve(admission),
+        heavyBuildGateFn: () => admit(),
         syncBranchFn: (_repo, _branch, _base, grant) => sync(grant),
       },
       [],
@@ -887,7 +894,7 @@ Deno.test("merge-only admission keeps Deno checks and truthful logs in sweep and
       },
       presyncDeps(
         {
-          heavyBuildAdmission: () => Promise.resolve(admission),
+          heavyBuildAdmission: () => admit(),
           syncBranch: sync,
         },
         { count: 0 },
@@ -900,11 +907,13 @@ Deno.test("merge-only admission keeps Deno checks and truthful logs in sweep and
     );
     assertEquals(budgetLogs.length, 2);
     for (const line of budgetLogs) {
+      assertStringIncludes(line, BUDGET_REASON);
       assertStringIncludes(line, "Deno projects keep their normal checks");
       assert(!line.includes("build is skipped"));
       assert(!line.includes("lands without"));
     }
   } finally {
+    registerHeavyBuildDiskProbe(undefined);
     await Deno.remove(tree, { recursive: true });
   }
 });

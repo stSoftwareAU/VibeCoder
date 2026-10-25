@@ -69,4 +69,12 @@ Deno.test("buildConflictEscalationComment - an unverified auto resolution says t
   assertStringIncludes(unverified, "NOT checked before it landed");
   assertStringIncludes(unverified, "milestone PR's CI builds it");
   assertEquals(unverified.includes("passed the repository's own check"), false);
+
+  const partial = buildConflictEscalationComment({
+    ...base,
+    conflict: { ...conflict, cargoSkipped: true },
+  });
+  assertStringIncludes(partial, "does not claim the cargo half passed");
+  assertEquals(partial.includes("passed the repository's own check"), false);
+  assertEquals(partial.includes("NOT checked before it landed"), false);
 });

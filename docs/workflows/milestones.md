@@ -380,7 +380,7 @@ flowchart TD
     G -- yes --> X["Abort the merge — nothing pushed —<br/>escalate naming the failed rung, with both<br/>sides' exports, test names and the difference"]
     G -- no --> V["Commit each file's rung, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
     V -- green --> P["Push"]
-    V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate with both halves<br/>(merge-only cargo cycle, Issue #4326:<br/>pushed UNGATED, CI builds it)"]
+    V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate with both halves<br/>(cargo-only merge-only cycle, Issue #4326:<br/>pushed UNGATED, CI builds it;<br/>a mixed tree's red Deno check still rolls back)"]
 ```
 
 Three rules decide a file, and one rule outranks all of them:
@@ -476,9 +476,11 @@ pre-merge commit and escalated — with both halves: what the verification said
 *and* both sides prepared. A tree with no type check or no unit suite is
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
 it is refused the same way. The one exception is a merge-only cycle
-(Issue #4326): when the host cannot afford the cargo build, a resolution in a
-cargo tree is pushed with the `UNGATED` note and the milestone PR's CI builds
-it; the report says the tree was not checked.
+(Issue #4326) on a cargo-only tree: when the host cannot afford the cargo
+build, a resolution is pushed with the `UNGATED` note and the milestone PR's
+CI builds it. A Deno-only tree and a mixed tree keep their Deno checks and
+suites and are rolled back when red. A mixed tree whose Deno half passed notes
+that cargo was left to CI; the report does not claim the cargo half passed.
 
 ### A conflict is reported only once the landing is confirmed
 

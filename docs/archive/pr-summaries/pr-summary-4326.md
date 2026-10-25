@@ -4,14 +4,17 @@ When the host is above its disk floor but the ephemeral cargo root is over its
 budget (floor + 25 GB headroom) and nothing is prunable, a milestone sync no
 longer defers every cycle. `heavyBuildAdmission` (replacing
 `heavyBuildDeferral`) now returns `build`, `defer` (host below its floor,
-unchanged) or the new `merge-only`. In `merge-only`, a tree that holds a cargo
-project is merged **without** the repository's cargo type-check: a conflict-free
-merge, and a merge whose conflicts the deterministic rules settle, are pushed
-with the existing `UNGATED:` note and the milestone PR's CI builds them. A tree
-with no cargo project keeps its own check and the normal agent. A conflict that
-needs the resolution agent is not landed that cycle (the agent could run the
-very cargo build the host cannot afford); it is charged nothing and lands in the
-first cycle whose budget admits a build. Closes #4326.
+unchanged) or the new `merge-only`. In `merge-only`, a cargo-only tree is
+merged **without** its cargo type-check: a conflict-free merge, and a merge
+whose conflicts the deterministic rules settle, are pushed with the existing
+`UNGATED:` note and the milestone PR's CI builds them. A Deno-only tree and a
+mixed tree keep their Deno checks and suites and are rolled back when those
+are red. A mixed tree whose Deno half passed records that cargo was left to
+CI, and the report does not claim the cargo half passed. A conflict that needs
+the resolution agent is not landed that cycle (the agent could run the very
+cargo build the host cannot afford). The first such cycle is not charged; the
+next over-budget cycle is charged, so the recovery ladder applies. When the
+grant withholds the agent, the sync is handed no agent. Closes #4326.
 
 Version bump: no `VERSION` change was made by hand in this change.
 

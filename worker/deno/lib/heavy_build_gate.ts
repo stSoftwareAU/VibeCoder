@@ -31,16 +31,18 @@
  *   ({@link heavyBuildAdmission}, Issue #4326) applies to a tree that holds a
  *   cargo project, because only a cargo build writes to the ephemeral cargo
  *   root; a repository with no cargo project keeps its own type check and the
- *   normal agent. In a cargo tree a conflict-free merge is pushed unverified
- *   with the `UNGATED:` note, and the milestone PR's own CI builds it. So is a
- *   merge whose conflicts the deterministic rules settle: its resolution gate
- *   reports a `skipped` verdict marked `landUnverified`, which is pushed with
- *   the same note. Only a conflict that needs the resolution agent is not
- *   landed in that cycle, because the agent is free to run the very cargo build
- *   the host cannot afford: it is not offered to the agent (concluded
- *   disrupted, nothing charged), the gate-wedge ledger is not written, and the
- *   branch is retried every cycle until one whose budget admits a build. So
- *   the floor is never approached.
+ *   normal agent. In a cargo-only tree a conflict-free merge is pushed
+ *   unverified with the `UNGATED:` note, and the milestone PR's own CI builds
+ *   it. So is a merge whose conflicts the deterministic rules settle: its
+ *   resolution gate reports a `skipped` verdict marked `landUnverified`, which
+ *   is pushed with the same note. A Deno-only tree and a mixed tree keep their
+ *   Deno checks and suites and are rolled back when those are red; a mixed
+ *   tree whose Deno half passed records that cargo was left to CI. A conflict
+ *   that needs the resolution agent is not landed in that cycle, because the
+ *   agent is free to run the very cargo build the host cannot afford. The
+ *   first such cycle is a refusal and is not charged. The next over-budget
+ *   cycle charges the attempt, so the recovery ladder applies and the branch
+ *   does not stay behind on disk budget alone.
  *
  *   No further reclaim step exists. On a runtime that refuses the trim,
  *   deleting artefacts inside the guest returns nothing to the host
@@ -150,8 +152,7 @@ function belongsTo(path: string, key: string): boolean {
  * Phrase a deferral carries when the merge may land and cargo must not run
  * (Issue #4326). Callers match it with {@link deferralSkipsCargoForMerge}.
  */
-export const CARGO_BUILD_SKIPPED_FOR_MERGE =
-  "the ephemeral cargo build is skipped and CI builds the merged tree";
+export const CARGO_BUILD_SKIPPED_FOR_MERGE = "cargo builds wait for CI";
 
 /** The budget's verdict for one build. */
 export interface CargoBudgetVerdict {

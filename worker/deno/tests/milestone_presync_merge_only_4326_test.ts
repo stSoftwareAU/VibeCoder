@@ -28,9 +28,10 @@ const MILESTONE = "milestone/4326-merge-only-presync";
 const DEFAULT_BRANCH = "main";
 const CARGO_TOML = '[package]\nname = "fixture"\nversion = "0.0.0"\n';
 const REASON =
-  "ephemeral cargo root over budget (test reading) (Issue #3178); the merge " +
-  "lands without the repository's build and the repository's CI builds it " +
-  "(Issue #4326)";
+  "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom " +
+  "25.0 GB) — pruned 0.0 GB of idle target dirs and 15.7 GB is still short, " +
+  "so cargo builds wait for CI (Issue #3178 budget; Issue #4326 skip); cargo " +
+  "builds wait for CI; Deno projects keep their normal checks (Issue #4326)";
 
 const silentLogger: Logger = {
   info: () => {},
@@ -160,18 +161,17 @@ Deno.test("presync - a merge-only admission hands the sync the merge-only gates 
     assertEquals(resolved.status, "skipped");
     assertEquals(resolved.landUnverified, true);
 
-    // The agent is the merge-only stub: it reports the provider unavailable,
-    // and the real agent is never run.
+    // A cargo tree withholds the granted agent. The real agent is never run.
     const outcome = await agentFn({
       conflictedFiles: ["src/lib.rs"],
       milestoneBranch: MILESTONE,
       defaultBranch: DEFAULT_BRANCH,
       workDir: tree,
     });
-    assert(outcome.ok, "the merge-only agent reports an outcome");
+    assert(!outcome.ok, "a cargo tree withholds the granted agent");
     assertStringIncludes(
-      outcome.value.providerUnavailable ?? "",
-      "no agent run",
+      outcome.error.message,
+      "cargo budget withheld the agent",
     );
     assertEquals(agent.runs.count, 0, "the real agent was never run");
   } finally {

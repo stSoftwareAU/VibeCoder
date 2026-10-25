@@ -468,6 +468,8 @@ async function gateThenPushMilestoneBranch(
   // read exactly like a checked one.
   const gateNote = outcome.status === "skipped"
     ? `UNGATED: ${outcome.detail} (Issue #974) — `
+    : outcome.cargoSkipped
+    ? `CARGO SKIPPED: ${outcome.detail} (Issue #4326) — `
     : "";
   return { ok: true, value: `${gateNote}${pushNote.value}` };
 }
@@ -493,8 +495,12 @@ async function readRef(
  * conflict — the same fix landed twice, or one side keeps every line of the
  * other — the decision is applied, recorded on the merge commit, verified
  * against the repository's own check, manifest check and unit suite, and only
- * then pushed. A merge-only sync (Issue #4326) pushes it unverified with the
- * `UNGATED:` note instead, leaving the build to the milestone PR's CI.
+ * then pushed. A merge-only sync (Issue #4326) of a cargo-only tree pushes it
+ * unverified with the `UNGATED:` note instead, leaving the cargo build to the
+ * milestone PR's CI. A Deno-only tree and a mixed tree keep their Deno checks
+ * and suites and are rolled back when red. A mixed tree whose Deno half
+ * passed carries a `CARGO SKIPPED:` note, so the report does not claim the
+ * cargo half passed.
  *
  * What the triage cannot decide climbs the rest of the ladder the PR pass
  * climbs (Issue #1777): the deterministic dependency rules, then the
@@ -1354,7 +1360,11 @@ async function syncMilestoneBranchWithDefaultBody(
         milestoneSha: preMergeSha,
         defaultSha,
         resolution: "auto",
-        ...(finalGate.status === "skipped" ? { unverified: true } : {}),
+        ...(finalGate.status === "skipped"
+          ? { unverified: true }
+          : finalGate.cargoSkipped
+          ? { cargoSkipped: true }
+          : {}),
         decisions: resolved,
         ...(repaired ? { repair: repaired } : {}),
         // Issue #2306: the agent names each judgement call file by file in

@@ -756,9 +756,12 @@ export function buildResolutionCommitMessage(o: {
     `${lines.join("\n")}\n\n` +
     `Each resolution was verified before it was pushed: the merged tree ` +
     `passes the repository's own check, its manifest check and its unit ` +
-    `suite, unless the sync's note says UNGATED: a merge-only sync (Issue ` +
-    `#4326) leaves that build to the milestone PR's CI. No conflicted test ` +
-    `file was resolved by taking a side that drops cases (Issue #1559).`;
+    `suite, unless the sync's note says UNGATED or CARGO SKIPPED. UNGATED ` +
+    `means a cargo-only merge-only sync (Issue #4326) left the whole build ` +
+    `to the milestone PR's CI. CARGO SKIPPED means the Deno half passed and ` +
+    `cargo was left to that CI; it does not mean the cargo half passed. No ` +
+    `conflicted test file was resolved by taking a side that drops cases ` +
+    `(Issue #1559).`;
 }
 
 /**
