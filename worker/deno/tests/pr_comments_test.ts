@@ -10,13 +10,16 @@ import {
   formatPrCommentToFix,
   handlePrCommentFailure,
   markCommentProcessed,
-  markPrCommentAsFailed,
   markPrCommentAsFailedOnce,
   prReviewFailedOnceMarker,
   replyToComment,
   REVIEW_DISMISSAL_MESSAGES,
   type ReviewDismissalOutcome,
 } from "../lib/pr_comments.ts";
+import type {
+  AbandonRestartOutcome,
+  AbandonRestartRequest,
+} from "../lib/conflict_abandon_restart.ts";
 
 /** Helper to create a mock gh command function that records calls. */
 function createMockGh(): {
@@ -384,52 +387,6 @@ Deno.test("pr_comments - markPrCommentAsFailedOnce tells a pr_review reader the 
   );
 });
 
-// --- markPrCommentAsFailed ---
-
-Deno.test("pr_comments - markPrCommentAsFailed marks as processed and replies", async () => {
-  const { calls, fn } = createMockGh();
-  await markPrCommentAsFailed(
-    "owner/repo",
-    42,
-    "issue",
-    "123",
-    "Permanently failed",
-    fn,
-  );
-  // Observable behaviour: an `eyes` reaction is recorded against the issue
-  // comment (to prevent further retries) and a reply is posted on PR #42.
-  const eyes = findApiCall(
-    calls,
-    (c) =>
-      c.includes("POST") &&
-      c.includes("repos/owner/repo/issues/comments/123/reactions") &&
-      c.includes("content=eyes"),
-  );
-  assert(
-    eyes,
-    "should POST a `content=eyes` reaction to mark the comment processed",
-  );
-  const reply = findPrReplyCall(calls, 42);
-  assert(reply, "should post a reply on PR #42");
-});
-
-Deno.test("pr_comments - markPrCommentAsFailed dismisses a pr_review with the permanently-failed wording (Issue #3409)", async () => {
-  const { calls, fn } = createMockGh();
-  await markPrCommentAsFailed(
-    "owner/repo",
-    42,
-    "pr_review",
-    "789",
-    "Permanently failed",
-    fn,
-  );
-  const message = dismissalMessage(calls);
-  assertEquals(message, EXPECTED_DISMISSAL_MESSAGES.permanently_failed);
-  assertFalse(message?.includes("Changes have been addressed"));
-});
-
-// --- handlePrCommentFailure ---
-
 Deno.test("pr_comments - handlePrCommentFailure calls failedOnce for first failure", async () => {
   const calls: string[][] = [];
   const fn = async (args: string[]): Promise<string> => {
@@ -460,33 +417,6 @@ Deno.test("pr_comments - handlePrCommentFailure calls failedOnce for first failu
     c.some((a) => a.includes("reactions"))
   );
   assertEquals(reactionCalls.length > 0, true);
-});
-
-Deno.test("pr_comments - handlePrCommentFailure calls failed for second failure", async () => {
-  const calls: string[][] = [];
-  const fn = async (args: string[]): Promise<string> => {
-    calls.push(args);
-    if (
-      args.includes("--jq") &&
-      args.some((a) => a.includes('select(.content == "confused")'))
-    ) {
-      return JSON.stringify(["vibe-bot"]); // Already failed once, by the fleet
-    }
-    return "";
-  };
-  await handlePrCommentFailure(
-    "owner/repo",
-    42,
-    "review",
-    "123",
-    "Error again",
-    fn,
-    ["vibe-bot"],
-  );
-  // Second failure path: markPrCommentAsFailed -> markCommentProcessed (eyes reaction)
-  // then replyToComment. Check that eyes content was sent.
-  const eyesCalls = calls.filter((c) => c.some((a) => a === "content=eyes"));
-  assertEquals(eyesCalls.length > 0, true);
 });
 
 /** Build a `gh` stub that answers the paginated marker-comment read. */
@@ -528,42 +458,6 @@ Deno.test("pr_comments - handlePrCommentFailure pr_review first failure: reply c
   assertFalse(
     calls.some((c) => c.some((a) => a.includes("/reactions"))),
     "first failure must make no reaction call for a pr_review",
-  );
-});
-
-Deno.test("pr_comments - handlePrCommentFailure pr_review second failure: dismisses the review and replies Permanently Failed", async () => {
-  const markerRow = JSON.stringify([{
-    id: 1,
-    body: `${prReviewFailedOnceMarker("789")}\nsome text`,
-    created_at: "2026-01-01T00:00:00Z",
-    author: "vibe-bot",
-  }]);
-  const { calls, fn } = createMarkerMockGh(() => markerRow);
-  await handlePrCommentFailure(
-    "owner/repo",
-    42,
-    "pr_review",
-    "789",
-    "Error again",
-    fn,
-    ["vibe-bot"],
-  );
-  const dismissal = findApiCall(
-    calls,
-    (c) =>
-      c.includes("PUT") &&
-      c.includes("repos/owner/repo/pulls/42/reviews/789/dismissals"),
-  );
-  assert(dismissal, "second failure should dismiss the review");
-  const reply = findPrReplyCall(calls, 42);
-  assert(reply, "should post a reply on PR #42");
-  assert(
-    reply!.some((a) => a.includes("Permanently Failed")),
-    "reply should say Permanently Failed",
-  );
-  assertFalse(
-    calls.some((c) => c.some((a) => a.includes("/reactions"))),
-    "second failure for a pr_review must make no reaction call",
   );
 });
 
@@ -638,6 +532,138 @@ Deno.test("pr_comments - handlePrCommentFailure pr_review: a marker read that th
     calls.some((c) => c.some((a) => a.includes("/dismissals"))),
     "an unreadable marker thread must not be treated as a second failure",
   );
+});
+
+// --- second failure: abandon and redo (Issue #4304) ---
+
+/**
+ * A `gh` stub for a second failure: the failed-once marker is already there
+ * (a fleet `confused` reaction, or the pr_review marker comment), and the PR
+ * names its branches.
+ */
+function secondFailureGh(): {
+  calls: string[][];
+  fn: (args: string[]) => Promise<string>;
+} {
+  const calls: string[][] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (
+      args.includes("--jq") &&
+      args.some((a) => a.includes('select(.content == "confused")'))
+    ) {
+      return JSON.stringify(["vibe-bot"]);
+    }
+    if (args.some((a) => a.includes("/issues/42/comments"))) {
+      return JSON.stringify([{
+        id: 1,
+        body: `${prReviewFailedOnceMarker("789")}\nsome text`,
+        created_at: "2026-01-01T00:00:00Z",
+        author: "vibe-bot",
+      }]);
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({ headRefName: "issue-7-x", baseRefName: "main" });
+    }
+    return "";
+  };
+  return { calls, fn };
+}
+
+function recordingAbandon(
+  outcome: AbandonRestartOutcome,
+): {
+  requests: AbandonRestartRequest[];
+  fn: (request: AbandonRestartRequest) => Promise<AbandonRestartOutcome>;
+} {
+  const requests: AbandonRestartRequest[] = [];
+  return {
+    requests,
+    fn: (request) => {
+      requests.push(request);
+      return Promise.resolve(outcome);
+    },
+  };
+}
+
+for (const commentType of ["review", "pr_review"] as const) {
+  const id = commentType === "pr_review" ? "789" : "123";
+
+  Deno.test(`pr_comments - a ${commentType} that fails twice closes the PR and redoes its issue, never "will not retry" (Issue #4304)`, async () => {
+    const { calls, fn } = secondFailureGh();
+    const abandon = recordingAbandon({
+      outcome: "abandoned",
+      issueNumber: 7,
+      label: { kept: "work-on" },
+    });
+    await handlePrCommentFailure(
+      "owner/repo",
+      42,
+      commentType,
+      id,
+      "Error again",
+      fn,
+      ["vibe-bot"],
+      abandon.fn,
+    );
+    assertEquals(abandon.requests.length, 1);
+    const request = abandon.requests[0]!;
+    assertEquals(request.prNumber, 42);
+    assertEquals(request.branchName, "issue-7-x");
+    assertEquals(request.baseBranch, "main");
+    assertEquals(request.reason?.kind, "stalled");
+    // Marked processed so the closed PR's comment is not picked up again.
+    const marked = commentType === "pr_review"
+      ? calls.some((c) => c.some((a) => a.includes("/dismissals")))
+      : calls.some((c) => c.some((a) => a === "content=eyes"));
+    assert(marked, "the comment is marked processed once the PR is closed");
+    const replies = calls.filter((c) => c[0] === "pr" && c[1] === "comment")
+      .map((c) => c.join(" "));
+    assertFalse(
+      replies.some((r) =>
+        r.includes("will not retry") || r.includes("clarified requirements")
+      ),
+      `no hand-back reply; got ${JSON.stringify(replies)}`,
+    );
+  });
+
+  Deno.test(`pr_comments - a ${commentType} whose restart is declined stays unmarked for the next cycle (Issue #4304)`, async () => {
+    const { calls, fn } = secondFailureGh();
+    const abandon = recordingAbandon({
+      outcome: "declined",
+      reason: { kind: "other-open-pr", issueNumber: 7, prUrl: "u" },
+    });
+    await handlePrCommentFailure(
+      "owner/repo",
+      42,
+      commentType,
+      id,
+      "Error again",
+      fn,
+      ["vibe-bot"],
+      abandon.fn,
+    );
+    assertEquals(abandon.requests.length, 1);
+    assertFalse(calls.some((c) => c.some((a) => a.includes("/dismissals"))));
+    assertFalse(calls.some((c) => c.some((a) => a === "content=eyes")));
+  });
+}
+
+Deno.test("pr_comments - the first-failure reply says what happens next without asking anyone to intervene (Issue #4304)", async () => {
+  for (const commentType of ["review", "pr_review"] as const) {
+    const { calls, fn } = createMockGh();
+    await markPrCommentAsFailedOnce(
+      "owner/repo",
+      42,
+      commentType,
+      "123",
+      "Something broke",
+      fn,
+    );
+    const reply = findPrReplyCall(calls, 42)?.join(" ") ?? "";
+    assertFalse(reply.toLowerCase().includes("manual intervention"), reply);
+    assert(reply.includes("its issue redone"), reply);
+  }
 });
 
 // --- formatPrCommentToFix ---
