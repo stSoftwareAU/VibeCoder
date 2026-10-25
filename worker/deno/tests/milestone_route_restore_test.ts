@@ -10,7 +10,18 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
+import { createLogger } from "../lib/logger.ts";
+import { bindLogger } from "../lib/log_sink.ts";
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import {
+  createWriteRepoAllowlistContext,
+  seedWriteRepoAllowlist,
+  withWriteRepoAllowlistContext,
+} from "../lib/write_repo_allowlist.ts";
+import type { Logger } from "../types.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import {
   _resetMilestoneBehindMemo,
   decideMilestoneBaseMerge,
@@ -643,7 +654,12 @@ Deno.test("a landed protected child whose rollup cannot be opened is not left cl
   _resetMilestoneBehindMemo();
   _resetBaseProtectionMemo();
   const calls: string[][] = [];
-  const notes: string[] = [];
+  const seen: { level: string; message: string }[] = [];
+  const logger = {
+    info: (message: string) => seen.push({ level: "info", message }),
+    warn: (message: string) => seen.push({ level: "warn", message }),
+    error: (message: string) => seen.push({ level: "error", message }),
+  };
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
     const key = args.join(" ");
@@ -712,7 +728,7 @@ Deno.test("a landed protected child whose rollup cannot be opened is not left cl
   };
 
   await closeIssuesForMergedPrs([REPO], "bot", gh, "planning", undefined, {
-    logFn: (message) => notes.push(message),
+    logFn: bindLogger(logger),
   });
   const reopened = calls.find((args) =>
     args[0] === "issue" && args[1] === "reopen"
@@ -723,9 +739,166 @@ Deno.test("a landed protected child whose rollup cannot be opened is not left cl
     !calls.some((args) => args[0] === "issue" && args[1] === "close"),
     "the issue is not closed again while the rollup is missing",
   );
-  assert(notes.some((message) => message.includes("rollup refused")));
-  assert(notes.every((message) => !message.includes("WARNING:")));
-  assert(notes.every((message) => !message.includes("ERROR:")));
+  const failure = seen.filter((row) => row.message.includes("rollup refused"));
+  assertEquals(failure.map((row) => row.level), ["warn"]);
+  assertEquals(
+    seen.filter((row) =>
+      row.level === "info" && row.message.includes("rollup refused")
+    ),
+    [],
+  );
+  assert(seen.every((row) => !row.message.includes("WARNING:")));
+  assert(seen.every((row) => !row.message.includes("ERROR:")));
+});
+
+/** gh answers for a merged child whose fresh rollup GitHub refuses. */
+function refusedRollupStdout(args: readonly string[]): string {
+  const key = args.join(" ");
+  if (
+    args[0] === "pr" && args[1] === "list" &&
+    args[args.indexOf("--state") + 1] === "merged"
+  ) {
+    return JSON.stringify([{
+      number: 4109,
+      title: "Ship the widget (Issue #3905)",
+      headRefName: "issue-3905-widget",
+      mergedAt: "2026-10-20T00:00:00Z",
+      body: "",
+    }]);
+  }
+  if (key.includes("pr list") && key.includes("--head")) {
+    return JSON.stringify([
+      {
+        number: 4077,
+        state: "MERGED",
+        baseRefName: DEFAULT,
+        mergedAt: "2026-10-13T13:58:25Z",
+      },
+    ]);
+  }
+  if (key.includes("pr list") && key.includes("--base")) return "[]";
+  if (key.includes("/milestones?state=all")) {
+    return JSON.stringify([
+      { number: 7, title: "Clean up", state: "open" },
+    ]);
+  }
+  if (key.includes("/issues?milestone=")) return "[]";
+  if (key.includes("/compare/") && key.includes("ahead_by")) {
+    return JSON.stringify({
+      ahead_by: 1,
+      files: [{ filename: "widget.txt" }],
+    });
+  }
+  if (key.includes("default_branch")) return DEFAULT;
+  if (args[0] === "pr" && args[1] === "view" && key.includes("baseRefName")) {
+    return JSON.stringify({ state: "MERGED", baseRefName: BRANCH });
+  }
+  if (args[0] === "issue" && args[1] === "view") {
+    return JSON.stringify({
+      state: "CLOSED",
+      labels: [],
+      createdAt: "2026-10-01T00:00:00Z",
+    });
+  }
+  if (args[0] === "issue" && args[1] === "reopen") return "reopened\n";
+  return "";
+}
+
+Deno.test("production logs a failed rollup at warn after the child has merged (Issue #4175)", async () => {
+  const seen: { level: string; message: string }[] = [];
+  const base = createLogger({ write: () => {} });
+  const logger: Logger = {
+    ...base,
+    info: (message, context) => {
+      seen.push({ level: "info", message });
+      base.info(message, context);
+    },
+    warn: (message, context) => {
+      seen.push({ level: "warn", message });
+      base.warn(message, context);
+    },
+    error: (message, context) => {
+      seen.push({ level: "error", message });
+      base.error(message, context);
+    },
+  };
+  const root = await Deno.makeTempDir();
+  const calls: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    calls.push([...args]);
+    if (args[0] === "pr" && args[1] === "create") {
+      return Promise.resolve({
+        code: 1,
+        success: false,
+        stdout: "",
+        stderr: "rollup refused",
+      });
+    }
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: refusedRollupStdout(args),
+      stderr: "",
+    });
+  });
+  try {
+    await withWriteRepoAllowlistContext(
+      createWriteRepoAllowlistContext(),
+      async () => {
+        seedWriteRepoAllowlist(REPO);
+        const { deps, cleanup } = await createProductionRunCoreDeps({
+          repoDir: root,
+          workDir: root,
+          githubUser: "bot",
+          logger,
+          config: { ...buildDefaultWorkerConfig(), repos: [REPO] },
+          env: envFrom({ HOME: root }),
+          resolveTrustedAuthors: () =>
+            Promise.resolve({
+              ok: true as const,
+              byRepo: new Map([[
+                REPO,
+                {
+                  allowedAuthors: ["alice"],
+                  authorisedCommenters: ["alice"],
+                },
+              ]]),
+            }),
+        });
+        try {
+          const result = await deps.closeIssuesForMergedPrs();
+          assertEquals(
+            result.ok,
+            true,
+            result.ok ? "" : result.error.message,
+          );
+        } finally {
+          cleanup();
+        }
+      },
+    );
+  } finally {
+    _resetGhSpawnRunner();
+    await Deno.remove(root, { recursive: true });
+  }
+  assert(
+    calls.some((args) => args[0] === "issue" && args[1] === "reopen"),
+    calls.map((args) => args.join(" ")).join("\n"),
+  );
+  const failure = seen.filter((row) => row.message.includes("rollup refused"));
+  assertEquals(
+    failure.map((row) => row.level),
+    ["warn"],
+    seen.map((row) => `${row.level}: ${row.message}`).join("\n"),
+  );
+  assertEquals(
+    seen.filter((row) =>
+      row.level === "info" && row.message.includes("rollup refused")
+    ),
+    [],
+  );
+  assert(failure.every((row) => !row.message.includes("WARNING:")));
+  assert(failure.every((row) => !row.message.includes("ERROR:")));
 });
 
 Deno.test("a not-ahead child whose rollup cannot be opened does not leave its issue closed (Issue #4175)", async () => {

@@ -915,8 +915,13 @@ export async function closeIssuesForMergedPrs(
      * proceeds exactly as before.
      */
     fleetAuthors?: string[];
-    /** Sink for the roll-back skip line; production passes `logger.info`. */
-    logFn?: (message: string) => void;
+    /**
+     * Sink for the roll-back skip line and for a rollup that cannot be
+     * opened (Issue #4175). A callback may take the level as its second
+     * argument. Production passes a level-aware sink, so a warning reaches
+     * `logger.warn`.
+     */
+    logFn?: (message: string, level?: "info" | "warn" | "error") => void;
     /** Sink for state-file and fetch failures (Issue #2831). */
     logger?: Pick<Logger, "warn">;
   },
