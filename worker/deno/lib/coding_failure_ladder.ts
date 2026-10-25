@@ -120,6 +120,11 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "killed-unknown",
   "worker-crash",
   "missing-tools",
+  // The agent's tool runtime failed (Issue #4324): the code-mode host was
+  // unavailable, or every tool call failed to spawn. The source issue did
+  // nothing wrong, so it takes no failed-once mark and no escalating
+  // back-off. The run-failure filer records the worker defect instead.
+  "tool-runtime",
   "token-scope",
   // A damaged host shared clone (Issue #2884) is host state too: every issue
   // claimed on this host hits the same broken refs / corrupt object store,
@@ -163,14 +168,25 @@ export function classifyCodingFailure(
   reason: string | undefined | null,
   declaredCategory?: FailureCategory,
   classification?: RunFailureClassification,
+  transcript?: readonly unknown[],
 ): CodingFailureDecision {
   const message = reason ?? "";
   const category = declaredCategory ?? detectFailureCategory(message);
-  const { failureClass, rationale } = classification ?? classifyRunFailure(
+  // A caller may already hold a classification taken before the transcript
+  // was read. A tool-runtime transcript overrides an agent-outcome; every
+  // other supplied classification stands (Issue #4324).
+  const recomputed = classifyRunFailure(
     category,
     message,
     declaredCategory !== undefined,
+    transcript,
   );
+  const useRecomputed = classification === undefined ||
+    (classification.failureClass === "agent-outcome" &&
+      recomputed.failureClass === "tool-runtime");
+  const { failureClass, rationale } = useRecomputed
+    ? recomputed
+    : classification ?? recomputed;
 
   // A worker gate refusal (every WORKER_GATE_MARKERS category: summary,
   // security-fix or pre-push gate; Issues #3431, #3454, PR #3716) is the
@@ -239,6 +255,11 @@ export interface CodingFailureLadderOptions {
   failureReason: string;
   category?: FailureCategory;
   classification?: RunFailureClassification;
+  /**
+   * Codex session items (Issue #4324). A tool-runtime failure is transient:
+   * no `failed-once`, no escalating back-off.
+   */
+  transcript?: readonly unknown[];
   /** The phase the run died at (`execute`, `quality_gate`, …), if known. */
   failurePhase?: string;
   /** Configured label names; defaults apply when absent. */
@@ -279,6 +300,7 @@ export async function applyCodingFailureLadder(
     options.failureReason,
     options.category,
     options.classification,
+    options.transcript,
   );
   if (decision.disposition === "transient") return { decision };
 
@@ -329,6 +351,8 @@ export interface CodingRunOutcomeSummary {
   success: boolean;
   category?: FailureCategory;
   classification?: RunFailureClassification;
+  /** Codex session items (Issue #4324). See {@link classifyCodingFailure}. */
+  transcript?: readonly unknown[];
   /** A phase declared its own bounce (Issue #175) — not a failure. */
   expectedSkip: boolean;
   /** The terminal failure reason, when the run failed. */
@@ -373,6 +397,7 @@ export function planCodingFailure(
     run.reason,
     run.category,
     run.classification,
+    run.transcript,
   );
   if (run.ladderApplied) {
     return {

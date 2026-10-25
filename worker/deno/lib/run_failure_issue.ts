@@ -53,6 +53,7 @@ import {
   type SelfDiagnosticFiling,
 } from "./self_diagnostic_attestation.ts";
 import { redactedTail } from "./redacted_text.ts";
+import { getRepoVisibility } from "./repo_visibility.ts";
 
 /** Marker prefix; the body carries `<!-- VIBE_RUN_FAILURE:<class> -->`. */
 export const RUN_FAILURE_MARKER_PREFIX = "VIBE_RUN_FAILURE";
@@ -69,7 +70,11 @@ export const RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS = 24 * 60 * 60;
 /** State file beside the other worker state files. */
 export const RUN_FAILURE_STATE_FILE = ".run_failure_filing_state.json";
 /** Classes filed as `bug`; the rest as `enhancement`. */
-const CRASH_CLASSES: ReadonlySet<string> = new Set(["worker-crash", "oom"]);
+const CRASH_CLASSES: ReadonlySet<string> = new Set([
+  "worker-crash",
+  "oom",
+  "tool-runtime",
+]);
 
 export function formatRunFailureMarker(failureClass: string): string {
   return `<!-- ${RUN_FAILURE_MARKER_PREFIX}:${failureClass} -->`;
@@ -123,6 +128,12 @@ export interface RunFailureReport {
   machineId: string;
   /** Permalink to the release comment, when known. */
   releaseCommentUrl?: string;
+  /**
+   * Codex session items (Issue #4324). When they show the tool runtime
+   * failing, the run is filed as infrastructure even if the outcome was
+   * already classed as an agent outcome.
+   */
+  transcript?: readonly unknown[];
 }
 
 /** Filing decision, logged at every no-PR release. */
@@ -226,11 +237,43 @@ export function formatRunFailureTitle(failureClass: string): string {
   return `fix(worker): ${failureClass} — runs releasing with no PR`;
 }
 
+/**
+ * Whether the source repository may be named in the public VibeCoder issue
+ * (Issue #4318).
+ *
+ * `repo_visibility` maps anything other than `"public"` to private. A failed
+ * lookup is unknown, and unknown is private: the Source line, the release
+ * comment and the agent excerpt stay off the public issue.
+ */
+async function sourceIsPublic(
+  repo: string,
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  const result = await getRepoVisibility(repo, {
+    runCommand: async (cmd) => {
+      try {
+        const stdout = await ghFn(cmd.slice(1));
+        return { success: true, stdout, stderr: "" };
+      } catch (err) {
+        return {
+          success: false,
+          stdout: "",
+          stderr: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
+  if (!result.ok) return false;
+  return result.value === "public";
+}
+
 /** Issue body: marker first, then the diagnosis a human needs. */
-export function formatRunFailureBody(
+export async function formatRunFailureBody(
   report: RunFailureReport,
   classification: RunFailureClassification,
-): string {
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<string> {
+  const disclose = await sourceIsPublic(report.sourceRepo, ghFn);
   const o = report.outcome;
   const lines = [
     formatRunFailureMarker(classification.failureClass),
@@ -238,29 +281,43 @@ export function formatRunFailureBody(
     `Auto-filed by the Vibe Coder (Issue #4329): a run released its claim with **no PR** for a reason classified as fixable by code.`,
     "",
     `**Failure class:** \`${classification.failureClass}\` (${classification.fixability})`,
-    `**Rationale:** ${classification.rationale}`,
+    ...(disclose ? [`**Rationale:** ${classification.rationale}`] : []),
     `**Category:** \`${getFailureCategoryDisplay(o.category)}\``,
     `**Phase that died:** \`${o.phase}\` after ${o.elapsedSeconds}s`,
     `**Host:** \`${report.machineId}\``,
-    `**Source:** ${report.sourceRepo}#${report.sourceIssueNumber}`,
-    ...(report.releaseCommentUrl
+    ...(disclose
+      ? [`**Source:** ${report.sourceRepo}#${report.sourceIssueNumber}`]
+      : []),
+    ...(disclose && report.releaseCommentUrl
       ? [`**Release comment:** ${report.releaseCommentUrl}`]
       : []),
-    "",
-    "## Failure message (bounded excerpt)",
-    "",
-    "```",
-    formatRunFailureExcerpt(o.message),
-    "```",
+    ...(disclose
+      ? [
+        "",
+        "## Failure message (bounded excerpt)",
+        "",
+        "```",
+        formatRunFailureExcerpt(o.message),
+        "```",
+      ]
+      : []),
     "",
     "Later occurrences of this class add one follow-up comment per window on this issue rather than filing again.",
   ];
   return lines.join("\n");
 }
 
-function formatOccurrenceLine(report: RunFailureReport, epoch: number): string {
+async function formatOccurrenceLine(
+  report: RunFailureReport,
+  epoch: number,
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<string> {
+  const disclose = await sourceIsPublic(report.sourceRepo, ghFn);
   const when = new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-  return `- ${when} \`${report.machineId}\` — ${report.sourceRepo}#${report.sourceIssueNumber}, phase \`${report.outcome.phase}\` after ${report.outcome.elapsedSeconds}s`;
+  const where = disclose
+    ? `${report.sourceRepo}#${report.sourceIssueNumber}, `
+    : "";
+  return `- ${when} \`${report.machineId}\` — ${where}phase \`${report.outcome.phase}\` after ${report.outcome.elapsedSeconds}s`;
 }
 
 /** Inputs to {@link postRunFailureFollowUp}. */
@@ -481,12 +538,19 @@ export async function createRunFailureIssue(
 export async function fileRunFailureIssue(
   opts: FileRunFailureIssueOptions,
 ): Promise<RunFailureFilingDecision> {
-  const classification = opts.report.outcome.classification ??
-    classifyRunFailure(
-      opts.report.outcome.category,
-      opts.report.outcome.message,
-      false,
-    );
+  const outcome = opts.report.outcome;
+  // Re-read a supplied transcript even when the outcome already carries an
+  // agent-outcome classification (Issue #4324). Every other precomputed
+  // classification stands, so a declared OOM is not re-diagnosed.
+  const recomputed = classifyRunFailure(
+    outcome.category,
+    outcome.message,
+    outcome.classification !== undefined,
+    opts.report.transcript,
+  );
+  const classification = recomputed.failureClass === "tool-runtime"
+    ? recomputed
+    : outcome.classification ?? recomputed;
   const failureClass = classification.failureClass;
   const log = opts.log ?? (() => {});
   const decide = (d: RunFailureFilingDecision): RunFailureFilingDecision => {
@@ -563,7 +627,11 @@ export async function fileRunFailureIssue(
           [CRASH_CLASSES.has(failureClass) ? "bug" : "enhancement"],
           "worker/deno/lib/run_failure_issue.ts",
         );
-        const body = formatRunFailureBody(opts.report, classification);
+        const body = await formatRunFailureBody(
+          opts.report,
+          classification,
+          opts.ghFn,
+        );
         const title = formatRunFailureTitle(failureClass);
         try {
           const { issueNumber } = await createRunFailureIssue({
@@ -605,7 +673,7 @@ export async function fileRunFailureIssue(
           failureClass,
           nowSeconds: t,
           windowSeconds: window,
-          occurrenceLine: formatOccurrenceLine(opts.report, t),
+          occurrenceLine: await formatOccurrenceLine(opts.report, t, opts.ghFn),
           recurrenceText: classification.rationale,
           log,
           fleetAuthors: opts.fleetAuthors,

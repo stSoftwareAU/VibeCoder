@@ -176,6 +176,13 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     github: {
       createClient: () => stubClient(recorded),
       runGhCommand: (args: string[]) => {
+        // This scenario files from a verified public source (Issue #4318).
+        if (
+          args[0] === "api" && args[1] === `repos/${REPO}` &&
+          args.includes(".visibility")
+        ) {
+          return Promise.resolve("public");
+        }
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
         // The gate-bug filing (Issue #4298): no open issue to dedupe onto,
         // so one is created.
