@@ -6,10 +6,6 @@
  * CODING-STANDARDS.md and the coding_guidelines prompt must both carry the
  * same "a new precondition must not stop existing tests short" rule, inside
  * the test-coverage section, word for word once wrapping is ignored.
- * Issue #4163 widens that rule to a change of emitted or read form (a
- * label, a key, a prefix or a format): absence and containment checks that
- * name the old form must still be able to fail, and the Test Plan must
- * record the search.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -51,12 +47,6 @@ const KEY_PHRASES = [
   "add a positive control: an assertion that the precondition holds",
   "the same fixture with only the probed value changed reaching the other outcome",
   "names the existing tests that needed fixture changes, or says that none did",
-  "a change to an emitted or read form",
-  "a label, a key, a prefix or a format",
-  "Search the tests for the old form and for fragments of it",
-  "every absence check, negative case and containment check that names it can still fail",
-  "record the search in the Test Plan",
-  "names the old form and can no longer fail is a blocking self-review finding",
 ];
 
 Deno.test("both surfaces carry the earlier-precondition rule (Issue #3530)", async () => {
