@@ -780,8 +780,8 @@ export function failedConflictRung(
 /**
  * The conflict resolver declined the merge (Issue #4328).
  *
- * Both the escalation (`1 of 1 conflicted file`) and a stage that could not
- * be read use this wording. Either one is a refusal the ladder owns.
+ * The wording is shared with a worker kill and a provider outage, so it is
+ * not by itself a charge. {@link judgeSyncFailure} decides those first.
  */
 export function isConflictResolverRefusal(error: Error): boolean {
   const message = error.message;
@@ -791,6 +791,33 @@ export function isConflictResolverRefusal(error: Error): boolean {
 
 /** Ledger reason once a resolver refusal has been charged. */
 export const CONFLICT_RESOLVER_DECLINED = "the conflict resolver declined";
+
+/** Ledger reason once the merged tree fails the repository check. */
+export const MERGE_GATE_REFUSED_TREE =
+  "the merge gate refused the merged tree";
+
+/**
+ * A charged refusal the recovery ladder owns (Issue #4328).
+ *
+ * A resolver decline and a merged-tree check failure climb the same rungs.
+ * A worker kill, a provider outage, and a skipped agent do not.
+ */
+function climbsRecoveryLadder(reason: string): boolean {
+  return reason === CONFLICT_RESOLVER_DECLINED ||
+    reason === MERGE_GATE_REFUSED_TREE ||
+    (reason.includes("Refusing to resolve the merge") &&
+      reason.includes("conflicted file"));
+}
+
+/**
+ * The ladder left the conflict undecided, and nothing says the agent was
+ * killed or unavailable (Issue #4328).
+ */
+function isGenuineUndecidedConflict(error: Error): boolean {
+  const message = error.message;
+  return message.includes("every rung of the ladder left them undecided") ||
+    isConflictResolverRefusal(error);
+}
 
 /** One rung of the resolver-refusal ladder (Issue #4328). */
 export type ResolverRecoveryRung = "resolve" | "rollback" | "rebuild" | "close";
@@ -832,10 +859,7 @@ export function resolverRungDue(
   if (reason === RECOVERY_CLOSE) return null;
   if (reason === RECOVERY_REBUILD) return "close";
   if (reason === RECOVERY_ROLLBACK) return "rebuild";
-  const tracked = reason === CONFLICT_RESOLVER_DECLINED ||
-    (reason.includes("Refusing to resolve the merge") &&
-      reason.includes("conflicted file"));
-  if (!tracked) return null;
+  if (!climbsRecoveryLadder(reason)) return null;
   const rung = nextResolverRecoveryRung(entry.count);
   return rung === "resolve" ? null : rung;
 }
@@ -844,15 +868,6 @@ export function judgeSyncFailure(
   error: Error,
   agentAllowed: boolean,
 ): ConflictConclusion {
-  if (isConflictResolverRefusal(error)) {
-    return {
-      outcome: "failed",
-      reason: CONFLICT_RESOLVER_DECLINED,
-      ...(isConflictEscalation(error)
-        ? { rung: failedConflictRung(error.analyses.map((a) => a.reason)) }
-        : {}),
-    };
-  }
   if (isConflictEscalation(error)) {
     if (error.gateFailure) {
       return {
@@ -861,6 +876,9 @@ export function judgeSyncFailure(
       };
     }
     const reasons = error.analyses.map((a) => a.reason);
+    // A kill or an outage wears the same refusal text as an undecided
+    // conflict. Neither looked at the conflict, so neither is charged
+    // (Issue #4328).
     if (reasons.some((reason) => reason.includes(AGENT_RUN_ENDED_BY_WORKER))) {
       return {
         outcome: "disrupted",
@@ -877,17 +895,33 @@ export function judgeSyncFailure(
       };
     }
     const rung = failedConflictRung(reasons);
-    return agentAllowed
-      ? {
-        outcome: "failed",
-        reason: `conflict unresolved at rung ${rung}`,
-        rung,
-      }
-      : {
+    if (!agentAllowed) {
+      return {
         outcome: "not-charged",
         reason: "agent deferred: cycle budget",
         rung,
       };
+    }
+    if (isGenuineUndecidedConflict(error)) {
+      return {
+        outcome: "failed",
+        reason: CONFLICT_RESOLVER_DECLINED,
+        rung,
+      };
+    }
+    return {
+      outcome: "failed",
+      reason: `conflict unresolved at rung ${rung}`,
+      rung,
+    };
+  }
+  // An unreadable merge stage, or any other non-escalation that uses the
+  // resolver's refusal wording, is the ladder's to answer (Issue #4328).
+  if (isConflictResolverRefusal(error)) {
+    return {
+      outcome: "failed",
+      reason: CONFLICT_RESOLVER_DECLINED,
+    };
   }
   if (isMergeGateFailure(error)) {
     // Issue #4304: a clean merge whose tree the repository's own check
@@ -896,7 +930,7 @@ export function judgeSyncFailure(
     // answer a textual conflict — it is never handed to a human.
     return {
       outcome: "failed",
-      reason: "the merge gate refused the merged tree",
+      reason: MERGE_GATE_REFUSED_TREE,
     };
   }
   if (isRuleViolationPush(error.message)) {
@@ -1682,6 +1716,16 @@ export async function syncMilestoneBranches(
       milestoneNumber: milestone.milestoneNumber,
     };
     let landed = false;
+    let settled: Exclude<ResolverRecoveryRung, "resolve"> = rung;
+    const closeMilestone = async (): Promise<boolean> => {
+      log(
+        `Milestone branch '${milestone.milestoneTitle}' in ${repo}: ` +
+          `closing the milestone and requeuing its open issues (Issue #4328)`,
+      );
+      return deps.closeMilestoneFn
+        ? await deps.closeMilestoneFn(request)
+        : await retireMilestoneAndRequeue(repo, milestone, ghCommandFn, log);
+    };
     if (rung === "rollback") {
       log(
         `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
@@ -1713,35 +1757,34 @@ export async function syncMilestoneBranches(
           `rebuilding it from '${milestone.defaultBranch}' plus its merged ` +
           `children (Issue #4328)`,
       );
-      landed = deps.rebuildMilestoneFn
-        ? await deps.rebuildMilestoneFn(request)
-        : false;
-      if (!landed && !deps.rebuildMilestoneFn) {
+      if (deps.rebuildMilestoneFn) {
+        landed = await deps.rebuildMilestoneFn(request);
+      }
+      // No wired rebuild, or one that did not land, retires the milestone
+      // in this cycle. Leaving it for the next cycle is how a check failure
+      // stayed behind (Issue #4328).
+      if (!landed) {
         log(
           `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
-            `rebuild is not wired in this pass, so the next cycle closes ` +
-            `the milestone and requeues its open issues (Issue #4328)`,
+            `rebuild did not land, so this cycle closes the milestone and ` +
+            `requeues its open issues (Issue #4328)`,
         );
+        landed = await closeMilestone();
+        settled = "close";
       }
     } else {
-      log(
-        `Milestone branch '${milestone.milestoneTitle}' in ${repo}: ` +
-          `closing the milestone and requeuing its open issues (Issue #4328)`,
-      );
-      landed = deps.closeMilestoneFn
-        ? await deps.closeMilestoneFn(request)
-        : await retireMilestoneAndRequeue(repo, milestone, ghCommandFn, log);
+      landed = await closeMilestone();
     }
 
-    const marker = landed && rung === "close"
+    const marker = landed && settled === "close"
       ? RECOVERY_CLOSE
-      : landed && rung === "rollback"
+      : landed && settled === "rollback"
       ? "roll-back landed"
-      : landed && rung === "rebuild"
+      : landed && settled === "rebuild"
       ? RECOVERY_CLOSE
-      : rung === "close"
+      : settled === "close"
       ? RECOVERY_REBUILD
-      : rung === "rollback"
+      : settled === "rollback"
       ? RECOVERY_ROLLBACK
       : RECOVERY_REBUILD;
     const previous = entry.lastAttempt ?? {
@@ -2660,10 +2703,9 @@ export async function syncMilestoneBranches(
               streaksDirty = true;
               if (verdict.outcome === "failed") {
                 const priorRefusals = entry.count - 1;
-                const recoveryNow =
-                  verdict.reason === CONFLICT_RESOLVER_DECLINED
-                    ? nextResolverRecoveryRung(priorRefusals)
-                    : "resolve";
+                const recoveryNow = climbsRecoveryLadder(verdict.reason)
+                  ? nextResolverRecoveryRung(priorRefusals)
+                  : "resolve";
                 if (recoveryNow !== "resolve") {
                   // Already refused for more than one budget. This cycle
                   // takes the rung those refusals have earned, so a branch
@@ -2691,10 +2733,7 @@ export async function syncMilestoneBranches(
                   const exhausted = headPr
                     ? attempts >= CONFLICT_RESOLUTION_BUDGET
                     : isConflictBudgetExhausted(entry);
-                  if (
-                    exhausted &&
-                    verdict.reason === CONFLICT_RESOLVER_DECLINED
-                  ) {
+                  if (exhausted && climbsRecoveryLadder(verdict.reason)) {
                     log(
                       `Milestone branch '${milestone.milestoneBranch}' in ` +
                         `${repo}: conflict resolver refusal ${attempts} of ` +

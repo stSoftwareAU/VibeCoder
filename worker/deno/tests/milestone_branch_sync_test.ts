@@ -10,6 +10,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   CONFLICT_RESOLVER_DECLINED,
+  MERGE_GATE_REFUSED_TREE,
   conflictAttemptDue,
   failedConflictRung,
   findActiveMilestoneBranches,
@@ -2538,6 +2539,70 @@ Deno.test("judgeSyncFailure - only an unresolved conflict is charged (Issue #177
   assertEquals(declined.reason, CONFLICT_RESOLVER_DECLINED);
 });
 
+Deno.test("judgeSyncFailure - a kill, an outage, or a skipped agent is not a resolver refusal (Issue #4328)", () => {
+  const gitPullText =
+    "Refusing to resolve the merge of 'main' into 'milestone/v2': 1 of 1 " +
+    "conflicted file(s) need a human — every rung of the ladder left them " +
+    "undecided";
+  const escalation = (reason: string) =>
+    new MilestoneConflictEscalation(
+      gitPullText,
+      [{
+        path: "a.ts",
+        reason,
+        oursExports: [],
+        theirsExports: [],
+        oursTests: [],
+        theirsTests: [],
+        onlyOursTests: [],
+        onlyTheirsTests: [],
+      }],
+      [],
+      LEDGER_SHA,
+    );
+
+  const killed = judgeSyncFailure(
+    escalation(`agent: ${AGENT_RUN_ENDED_BY_WORKER} (Issue #1693)`),
+    true,
+  );
+  assertEquals(killed.outcome, "disrupted");
+  assertEquals(killed.reason === CONFLICT_RESOLVER_DECLINED, false);
+
+  const outage = judgeSyncFailure(
+    escalation(
+      `agent: ${AGENT_PROVIDER_UNAVAILABLE} — API Error: 402 Insufficient ` +
+        `Balance (Issue #2613)`,
+    ),
+    true,
+  );
+  assertEquals(outage.outcome, "disrupted");
+  assertEquals(outage.reason === CONFLICT_RESOLVER_DECLINED, false);
+
+  const deferred = judgeSyncFailure(
+    escalation("agent: it left 1 path(s) unmerged"),
+    false,
+  );
+  assertEquals(deferred.outcome, "not-charged");
+  assertEquals(deferred.reason, "agent deferred: cycle budget");
+
+  const unread = judgeSyncFailure(
+    new Error(
+      "Refusing to resolve the merge of 'main' into 'milestone/v2': the " +
+        "merge stages of conflicted file 'a.ts' could not be read",
+    ),
+    true,
+  );
+  assertEquals(unread.outcome, "failed");
+  assertEquals(unread.reason, CONFLICT_RESOLVER_DECLINED);
+
+  const undecided = judgeSyncFailure(
+    escalation("rival designs — every rung left the file undecided"),
+    true,
+  );
+  assertEquals(undecided.outcome, "failed");
+  assertEquals(undecided.reason, CONFLICT_RESOLVER_DECLINED);
+});
+
 Deno.test("judgeSyncFailure - an agent timeout is charged, a worker kill is disrupted (Issue #2305)", () => {
   const escalation = (reason: string) =>
     new MilestoneConflictEscalation(
@@ -2983,7 +3048,11 @@ Deno.test("syncMilestoneBranches - a resolver refusal reaches the next ladder ru
     await runCycle(budget + 2);
     assertEquals(rollbacks.length, 1);
     assertEquals(rebuilds, [LEDGER_BRANCH], "the following cycle rebuilds");
-    assertEquals(closes, []);
+    assertEquals(
+      closes,
+      [LEDGER_BRANCH],
+      "a rebuild that does not land closes in this cycle",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -3125,6 +3194,99 @@ Deno.test("syncMilestoneBranches - retiring a milestone clears every open issue 
       const at = calls.indexOf(args);
       assert(at > listAt && at < closeAt);
     }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a merge-gate failure that has spent three budgets closes this cycle (Issue #4328)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4328-gate-close-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: {
+        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
+        escalated: false,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: MERGE_GATE_REFUSED_TREE,
+        },
+      },
+    });
+    const calls: string[][] = [];
+    let syncs = 0;
+    const deps = ledgerDeps(calls, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "gate",
+      }],
+      streakPath,
+      nowMs: 10_000,
+    });
+    const inner = deps.syncBranchFn;
+    deps.syncBranchFn = (repo, branch, base, opts) => {
+      syncs++;
+      return inner(repo, branch, base, opts);
+    };
+    const result = await syncMilestoneBranches(deps);
+    assert(result.ok);
+    assertEquals(syncs, 0, "a long-refused check failure is not merged again");
+    const closed = calls.filter((args) =>
+      args.includes("--method") && args.includes("PATCH") &&
+      args.some((arg) => arg.includes("/milestones/")) &&
+      args.includes("state=closed")
+    );
+    assertEquals(closed.length, 1, JSON.stringify(calls));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a rebuild with no rebuild function closes in this cycle (Issue #4328)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4328-rebuild-close-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: {
+        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 2,
+        escalated: false,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: MERGE_GATE_REFUSED_TREE,
+        },
+      },
+    });
+    const logs: string[] = [];
+    const calls: string[][] = [];
+    const deps = ledgerDeps(calls, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "gate",
+      }],
+      streakPath,
+      nowMs: 10_000,
+      log: (message) => logs.push(message),
+    });
+    const result = await syncMilestoneBranches(deps);
+    assert(result.ok);
+    assertEquals(
+      logs.some((line) => line.includes("the next cycle closes")),
+      false,
+      `close was deferred: ${JSON.stringify(logs)}`,
+    );
+    assert(
+      logs.some((line) => line.includes("this cycle closes the milestone")),
+      `no same-cycle close in ${JSON.stringify(logs)}`,
+    );
+    const closed = calls.filter((args) =>
+      args.includes("state=closed") &&
+      args.some((arg) => arg.includes("/milestones/"))
+    );
+    assertEquals(closed.length, 1);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
