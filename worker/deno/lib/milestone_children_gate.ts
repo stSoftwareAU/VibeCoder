@@ -790,7 +790,9 @@ export function renderPendingDependenciesWarning(
  * as COMPLETED because a PR really had merged. Merging into a milestone
  * branch whose rollup has merged, or whose milestone is closed, is refused
  * here — loud, naming the rollup PR — so the caller holds the PR on its base
- * for a human (Issue #3433).
+ * and never retargets it (Issue #3433). An open milestone that still has
+ * open work is not that case: a fresh rollup is the route, and an open
+ * rollup supersedes the merged one (Issue #4175).
  *
  * Failure policy mirrors {@link decideSummaryPrMerge}: a base that is not
  * a milestone branch is allowed without a lookup; a milestone base that
@@ -839,6 +841,19 @@ export type MilestoneBaseMergeDecision =
     detail: string;
     /** Commits the milestone branch is behind the default branch. */
     behindBy: number;
+  }
+  | {
+    /**
+     * A rollup has merged and no open rollup has replaced it, but the
+     * milestone still has open work (Issue #4175). This gate does not merge
+     * the child. The arming path lands it through the ordinary merge checks
+     * and opens the rollup only once that merge has landed. Not a hold:
+     * nothing is disarmed or retargeted.
+     */
+    decision: "defer";
+    reason: "route-waiting";
+    milestoneBranch: string;
+    detail: string;
   }
   | {
     decision: "block";
@@ -1126,6 +1141,78 @@ async function routeOpenDecision(
     { decision: "allow", reason: "route-open" };
 }
 
+/**
+ * Whether a merged rollup still closes the route (Issue #4175).
+ *
+ * An open milestone with open work does not: the historical rollup is not
+ * the route any more, and the caller opens a fresh one when the branch is
+ * ahead. A closed milestone, or one with no open work, stays closed.
+ * An unreadable milestone or child list is not evidence either way.
+ */
+async function mergedRollupChildRoute(
+  options: MilestoneBaseMergeGateOptions,
+  milestoneBranch: string,
+): Promise<
+  | { kind: "open-work" }
+  | { kind: "closed" }
+  | { kind: "unreadable"; detail: string }
+> {
+  const { repo, ghCommandFn } = options;
+  let milestones: Array<
+    { number?: unknown; title?: unknown; state?: unknown }
+  >;
+  try {
+    const raw = await ghCommandFn([
+      "api",
+      "--paginate",
+      `repos/${repo}/milestones?state=all&per_page=100`,
+    ]);
+    milestones = [];
+    for (const item of parseJsonArrayPages(raw)) {
+      if (item && typeof item === "object") {
+        milestones.push(
+          item as { number?: unknown; title?: unknown; state?: unknown },
+        );
+      }
+    }
+  } catch (err) {
+    return {
+      kind: "unreadable",
+      detail: `could not read milestones: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+  const milestone = milestones.find((item) =>
+    typeof item.title === "string" &&
+    createMilestoneBranchName(item.title) === milestoneBranch
+  );
+  if (!milestone || milestone.state !== "open") return { kind: "closed" };
+  if (typeof milestone.number !== "number") {
+    return {
+      kind: "unreadable",
+      detail: `milestone "${milestone.title}" has no number`,
+    };
+  }
+  const children = await fetchOpenMilestoneChildren({
+    repo,
+    milestoneNumber: milestone.number,
+    milestoneBranch,
+    ghCommandFn,
+  });
+  if (!children.ok) {
+    return { kind: "unreadable", detail: children.error.message };
+  }
+  return children.value.length > 0 ? { kind: "open-work" } : { kind: "closed" };
+}
+
+/** An open pull request from the milestone branch to a non-milestone base. */
+function isOpenRouteRollup(pr: RawRollupPr): boolean {
+  return typeof pr.state === "string" && pr.state.toUpperCase() === "OPEN" &&
+    typeof pr.number === "number" &&
+    (typeof pr.baseRefName !== "string" || !isMilestoneBranch(pr.baseRefName));
+}
+
 /** Refuse a merge into a milestone branch whose route to the default branch has closed. */
 export async function decideMilestoneBaseMerge(
   options: MilestoneBaseMergeGateOptions,
@@ -1178,17 +1265,42 @@ export async function decideMilestoneBaseMerge(
   const merged = rollups.find((pr) =>
     typeof pr.state === "string" && pr.state.toUpperCase() === "MERGED"
   );
-  if (merged && typeof merged.number === "number") {
+  // An open rollup is the route, even after an older one merged (Issue
+  // #4175). A merged rollup with no open successor still closes the route.
+  // Open work does not make it safe to merge: the child stays unarmed until
+  // a rollup is open, so the issue cannot close on a branch with no route.
+  if (
+    !rollups.some(isOpenRouteRollup) && merged &&
+    typeof merged.number === "number"
+  ) {
+    const childRoute = await mergedRollupChildRoute(options, base);
+    if (childRoute.kind === "unreadable") {
+      return {
+        decision: "defer",
+        reason: "lookup-failed",
+        milestoneBranch: base,
+        detail: childRoute.detail,
+      };
+    }
+    if (childRoute.kind !== "open-work") {
+      return {
+        decision: "block",
+        reason: "rollup-merged",
+        milestoneBranch: base,
+        rollupPrNumber: merged.number,
+        detail: `rollup PR #${merged.number} (${base} → ${
+          typeof merged.baseRefName === "string" ? merged.baseRefName : "?"
+        }) merged${
+          typeof merged.mergedAt === "string" ? ` at ${merged.mergedAt}` : ""
+        }`,
+      };
+    }
     return {
-      decision: "block",
-      reason: "rollup-merged",
+      decision: "defer",
+      reason: "route-waiting",
       milestoneBranch: base,
-      rollupPrNumber: merged.number,
-      detail: `rollup PR #${merged.number} (${base} → ${
-        typeof merged.baseRefName === "string" ? merged.baseRefName : "?"
-      }) merged${
-        typeof merged.mergedAt === "string" ? ` at ${merged.mergedAt}` : ""
-      }`,
+      detail:
+        `rollup PR #${merged.number} has merged and ${base} has no open rollup, so the child stays unarmed until a rollup is open`,
     };
   }
 
@@ -1297,7 +1409,7 @@ export function renderRouteClosedHoldComment(
     "Merging there would orphan this work while the issue closed as completed.",
     "",
     "The fleet does not move this PR to the default branch: a PR off a milestone branch carries the milestone's work onto the default branch without the milestone's final review. " +
-    "Auto-merge has been disarmed. A human decides — retarget it by hand or close it.",
+    "Auto-merge has been disarmed. The fleet leaves this pull request on its branch. An open milestone that still has open work is given a fresh rollup instead of this hold.",
   ].join("\n");
 }
 

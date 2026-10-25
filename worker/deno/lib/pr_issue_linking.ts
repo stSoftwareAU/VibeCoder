@@ -23,6 +23,7 @@ import { extractIssueNumberFromPrTitle } from "./pr_body.ts";
 import { filterOutWorkflowLabels } from "./workflow_labels.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
+import { restoreRouteAfterMergedChild } from "./milestone_route_restore.ts";
 import {
   findRollbackAfterMerge,
   type RollbackRecord,
@@ -914,8 +915,13 @@ export async function closeIssuesForMergedPrs(
      * proceeds exactly as before.
      */
     fleetAuthors?: string[];
-    /** Sink for the roll-back skip line; production passes `logger.info`. */
-    logFn?: (message: string) => void;
+    /**
+     * Sink for the roll-back skip line and for a rollup that cannot be
+     * opened (Issue #4175). A callback may take the level as its second
+     * argument. Production passes a level-aware sink, so a warning reaches
+     * `logger.warn`.
+     */
+    logFn?: (message: string, level?: "info" | "warn" | "error") => void;
     /** Sink for state-file and fetch failures (Issue #2831). */
     logger?: Pick<Logger, "warn">;
   },
@@ -971,6 +977,21 @@ export async function closeIssuesForMergedPrs(
           ...(pr.closingRefs ?? []),
         ]),
       ];
+      // Issue #4175: an auto-merge into a protected milestone branch lands
+      // after the arming pass returned. This scan still sees the merged
+      // pull request, and opens the rollup when the branch is ahead, even
+      // when that pull request was the last open one. A create failure
+      // reopens the issue instead of leaving it closed.
+      const followed = await restoreRouteAfterMergedChild({
+        repo,
+        prNumber: pr.number,
+        issueNumbers,
+        ghCommandFn,
+        log: options?.logFn,
+      });
+      if (followed.action === "failed") {
+        heldBack = true;
+      }
       for (const issueNumber of issueNumbers) {
         try {
           const issueOutput = await ghCommandFn([
