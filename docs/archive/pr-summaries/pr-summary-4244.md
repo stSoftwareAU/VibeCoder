@@ -81,3 +81,5 @@ The milestone resurrection gate found `codex_resume_sandbox_4333_test.ts`, which
 ## Latest main integration for PR #4382
 
 Preserved both finish-deadline clamping and the newly merged in-flight host-disk admission check before agent launch. Retained both the timeline-release and exhausted startup-suite rerun regressions after combining their shared test fixture parameters.
+
+CI integration repair: the capability-security review fixture now supplies the explicit empty `checkSuites` collection required by the startup-failure gate merged in #4350. All existing review assertions are retained.
