@@ -9,6 +9,10 @@
  *
  * The live fill (60 GB to 0) is not reproduced here.
  *
+ * A quality-fix agent and a security-fix retry that stop for this disk return
+ * `internal_error` at once. The quality loop does not start another gate run,
+ * and the security-fix retry does not report a gate block.
+ *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
@@ -41,6 +45,13 @@ import {
   type MutationRunnerSeams,
 } from "../lib/mutation_runner.ts";
 import { runSecurityFixDiscrimination } from "../lib/security_fix_discrimination.ts";
+import { workOnIssueQualityGate } from "../lib/phases/quality_gate_remediation_phase.ts";
+import { recoverFromSecurityGateBlock } from "../lib/security_fix_gate_retry.ts";
+import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { CheckResult } from "../lib/quality_helpers.ts";
+import type { GitHubClient } from "../types.ts";
 
 /** The discrimination failure the guest wrote once `/` was read-only. */
 const READ_ONLY_DISCRIMINATION =
@@ -292,4 +303,135 @@ Deno.test("Issue #4360 - a running build is stopped when the disk reading crosse
     detectHostFault(error.message, "internal_error"),
     "disk-full",
   );
+});
+
+/** The park sentence a stopped agent returns when the host is below the floor. */
+function parkedForHostDisk(): string {
+  const parked = inFlightParkReason(
+    "host disk below its floor — floor 46.0 GB (Issue #3178)",
+  );
+  assert(parked !== null);
+  return parked;
+}
+
+function diskFloorContext(): IssueContext {
+  const config = buildDefaultWorkerConfig();
+  // A mistaken infrastructure retry must fail the assertion, not sleep.
+  config.infraRetryBackoffMs = 0;
+  return {
+    repo: "acme/widgets",
+    issueNumber: 4360,
+    issueTitle: "Host disk floor",
+    issueBody: "",
+    issueLabels: [],
+    issueComments: "",
+    githubUser: "testbot",
+    config,
+  };
+}
+
+function diskFloorState(repoPath: string): PhaseState {
+  return {
+    branchName: "issue-4360",
+    baseBranch: "main",
+    defaultBranch: "main",
+    repoPath,
+    clarityStatus: "not_assessed",
+    claudeOutput: "",
+    executeStartTime: 0,
+    baselineQualityPassed: true,
+    baselineQualityOutput: "",
+    baselineFailedChecks: [],
+  };
+}
+
+Deno.test("Issue #4360 - a quality-fix agent stopped for the host disk does not start another quality run", async () => {
+  const parked = parkedForHostDisk();
+  let qualityRuns = 0;
+  const result = await workOnIssueQualityGate(
+    diskFloorContext(),
+    diskFloorState("/tmp/test-repo"),
+    createMockDeps({
+      quality: {
+        runQualityGate: () => {
+          qualityRuns++;
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              checks: [{
+                name: "deno test",
+                status: "FAILED",
+              }] as CheckResult[],
+              summary: { text: "failed", passed: false },
+              passed: false,
+              output: "deno test failed",
+            },
+          });
+        },
+        collectDiffableGateFindings: () => Promise.resolve([]),
+      },
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: false as const,
+            error: new Error(parked),
+          }),
+      },
+    }),
+  );
+
+  assertEquals(qualityRuns, 1);
+  assertEquals(result, hostDiskInfrastructureFailure(parked));
+  assertEquals(detectHostFault(parked, "internal_error"), "disk-full");
+});
+
+Deno.test("Issue #4360 - a security-fix retry stopped for the host disk does not record a gate verdict", async () => {
+  const parked = parkedForHostDisk();
+  const root = await Deno.makeTempDir();
+  let gateComments = 0;
+  try {
+    const ctx = diskFloorContext();
+    ctx.config.workDir = `${root}/work`;
+    ctx.issueLabels = ["security"];
+    const state = diskFloorState(root);
+    state.securityGateBlocks = [{
+      missing: ["test-file-changed"],
+      declarations: [],
+      discrimination: null,
+    }];
+    const result = await recoverFromSecurityGateBlock(
+      ctx,
+      state,
+      createMockDeps({
+        github: {
+          createClient: () =>
+            ({
+              postComment: () => {
+                gateComments++;
+                return Promise.resolve(undefined);
+              },
+            }) as unknown as GitHubClient,
+        },
+        claude: {
+          runClaudeWithRetry: () =>
+            Promise.resolve({
+              ok: false as const,
+              error: new Error(parked),
+            }),
+        },
+      }),
+      () => {
+        throw new Error("completion must not re-run");
+      },
+    );
+
+    assertEquals(gateComments, 0);
+    assertEquals(result, hostDiskInfrastructureFailure(parked));
+    assertEquals(
+      result.status === "failure" ? result.category : "",
+      "internal_error",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });

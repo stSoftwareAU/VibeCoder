@@ -100,6 +100,10 @@ refused and the host is below the floor).
   when the trim is refused. `git` does not. A trimming runtime does not.
 - [x] A `sleep` child is stopped when an injected park fires during the wait,
   and the error is `disk-full`.
+- [x] A quality-fix agent stopped for the host disk returns `internal_error`
+  and does not start another quality run. A security-fix retry stopped for
+  the host disk returns `internal_error` and does not call `reportBlock` or
+  record a gate verdict. No live disk fill was reproduced.
 - [x] `deno test` on the new file plus `heavy_build_gate_3178_test.ts`,
   `host_fault_test.ts`, `root_filesystem_fault_test.ts`,
   `mutation_runner_test.ts`, `security_fix_discrimination_test.ts`,

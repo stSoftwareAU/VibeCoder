@@ -23,7 +23,10 @@
  */
 
 import { SECURITY_FIX_GATE_MARKER } from "./failure_diagnosis.ts";
-import { isHostDiskFaultText } from "./host_fault.ts";
+import {
+  hostDiskInfrastructureFailure,
+  isHostDiskFaultText,
+} from "./host_fault.ts";
 import type { SecurityFixDiscrimination } from "./security_fix_discrimination.ts";
 import {
   buildSecurityFixGateMessage,
@@ -411,11 +414,15 @@ export async function recoverFromSecurityGateBlock(
   );
 
   if (!retryResult.ok) {
-    // The agent could not be re-invoked. That is not a second gate verdict, so
-    // it is reported without charging the issue a blocked run.
     logger.warn(
       `Security-fix gate retry invocation failed: ${retryResult.error.message}`,
     );
+    // A host-disk stop is not a gate verdict. reportBlock would persist one
+    // and return category unknown, which charges the issue (Issue #4360).
+    const hostDisk = hostDiskInfrastructureFailure(retryResult.error.message);
+    if (hostDisk) return hostDisk;
+    // Any other launch failure is not a second gate verdict, so it is
+    // reported without charging the issue a blocked run.
     return await reportBlock(
       ctx,
       state,
