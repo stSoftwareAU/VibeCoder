@@ -767,7 +767,7 @@ Deno.test("reconcile - a gh pr view reply whose headRefOid is not a string is sk
   }
 });
 
-// --- Facts file and summary candidates --------------------------------------
+// --- Summary candidates -----------------------------------------------------
 
 Deno.test("reconcile - archive 404 but legacy summary present: legacy used, quiet", async () => {
   const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));

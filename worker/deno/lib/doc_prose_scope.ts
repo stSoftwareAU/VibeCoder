@@ -300,7 +300,7 @@ function isUserVisibleLiteral(text: string): boolean {
   return true;
 }
 
-/** Build the same scope for completion and review-fix checks. */
+/** Build the prose scope the review-fix drift check asks about. */
 export async function collectDocProseScope(input: {
   changedFiles: readonly string[];
   trackedFiles: readonly string[];
