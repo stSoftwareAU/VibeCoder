@@ -6,7 +6,7 @@
  *   - Treats the run as a successful resolution (`processed: true`).
  *   - Posts Claude's own message as the PR reply rather than the neutral
  *     "no changes" classifier message.
- *   - Surfaces `needs-human` in the run summary when requested.
+ *   - Never echoes a `needs-human` mention as a request (Issue #4304).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -285,20 +285,15 @@ Deno.test("processPrFeedback - escape hatch with same-repo follow-up posts Claud
   assertEquals(escapeLog?.context?.issueRef, "stSoftwareAU/foo#101");
 });
 
-Deno.test("processPrFeedback - escape hatch surfaces needs-human in summary log", async () => {
+Deno.test("processPrFeedback - a needs-human mention in a hand-off is never echoed as a request (Issue #4304)", async () => {
   const message = "This change is out of scope — opened follow-up issue " +
     "stSoftwareAU/foo#202. Adding `needs-human` so a person can triage.";
 
-  const { logs, result } = await runWithResponseMessage(message);
+  const { result } = await runWithResponseMessage(message);
 
   assertEquals(result.ok, true);
   if (!result.ok) return;
-  assertStringIncludes(result.value.summary, "needs-human");
-
-  const escapeLog = logs.find((l) =>
-    l.message === "PR feedback escape hatch invoked"
-  );
-  assertEquals(escapeLog?.context?.needsHuman, true);
+  assertEquals(result.value.summary.includes("needs-human"), false);
 });
 
 Deno.test("processPrFeedback - escape hatch strips a reserved label from the follow-up (Issue #2824)", async () => {

@@ -15,21 +15,16 @@
  * This re-applies the strong wording. The inline planning prompts state the
  * full rationale — the worker is not on the trusted-author allowlist, reserved
  * labels are silently stripped by `label_security`, the canonical pickup
- * order, and the `idle-task`-only exception. The escape-hatch sections state
- * the rule that applies to an issue the agent just filed (Issue #780): every
- * reserved label on it, `needs-human` included, is removed after creation.
+ * order, and the `idle-task`-only exception. No prompt has an escape hatch
+ * any more (Issues #4227, #4304), so none files a follow-up issue.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
 import {
   buildFallbackDraftPlanningPrompt,
   buildSingleInvocationPlanningPrompt,
   RESERVED_LABEL_PROHIBITION,
 } from "../lib/planning_processor.ts";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
-
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // --- Inline planning prompts carry the full rationale ------------------------
 
@@ -105,44 +100,3 @@ Deno.test("RESERVED_LABEL_PROHIBITION - bundles every reserved label", () => {
     assertStringIncludes(RESERVED_LABEL_PROHIBITION, lbl);
   }
 });
-
-// --- The escape-hatch prompts ------------------------------------------------
-
-/**
- * Every prompt whose escape-hatch section opens a follow-up issue. The issue
- * prompt has no escape hatch since Issue #4227: an approved issue is never
- * handed back and no follow-up is filed for it. The ci_fix prompt lost its
- * escape hatch in Issue #4304 for the same reason.
- */
-const PROMPTS = ["pr_feedback"] as const;
-
-for (const name of PROMPTS) {
-  Deno.test(`${name} - loads via loadPrompt`, async () => {
-    const result = await loadPrompt(name, PROMPTS_DIR);
-    assertEquals(result.ok, true);
-  });
-
-  Deno.test(
-    `${name} - forbids reserved labels on the follow-up issue`,
-    async () => {
-      // The escape-hatch follow-up clause must name the prohibition and its
-      // rationale. The clause wraps across lines in every template, so the
-      // comparison is on collapsed whitespace, scoped to the Escape Hatch
-      // section that carries it.
-      const doc = await readRepoDoc(`prompts/${name}/prompt.md`);
-      const collapsed = flat(section(doc, "Escape Hatch"));
-      assertStringIncludes(
-        collapsed,
-        "The follow-up issue you open must carry only descriptive labels",
-      );
-      assertStringIncludes(
-        collapsed,
-        "do **not** add any reserved workflow label",
-      );
-      // Issue #780 replaced the "silently stripped" rationale here: on an
-      // issue the agent just filed, every reserved label goes after
-      // creation, so applying one achieves nothing.
-      assertStringIncludes(collapsed, "is removed after creation");
-    },
-  );
-}

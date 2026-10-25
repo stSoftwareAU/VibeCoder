@@ -796,12 +796,15 @@ export function exhaustedEscalationDedupKey(
  * its own: the blocking-PR route synced the branch and reran its owning lane;
  * the conflict-queue route only cleared the ladder's wait so it ran again;
  * the CI-fix lane spent its whole attempt budget on one failure (Issue #4304)
- * and abandons here rather than handing the PR to a human.
+ * and abandons here rather than handing the PR to a human; the PR-feedback
+ * lane retried an unanswered request-changes review in a later cycle
+ * (Issue #4304).
  */
 export type StallRepairTried =
   | "sync-and-lane-rerun"
   | "ladder-rerun"
   | "ci-fix-cap"
+  | "review-retry"
   /**
    * A PR whose base was moved after it was opened: the worker tried to move
    * it back onto the base it was opened against and could not (Issue #4304).
@@ -847,6 +850,9 @@ function describeStallRepair(tried: StallRepairTried, base: string): string {
     case "ci-fix-cap":
       return "The CI-fix lane already spent every automatic fix attempt on " +
         "this same failure";
+    case "review-retry":
+      return "The PR-feedback lane already retried the review in a later " +
+        "cycle";
     case "retarget-back":
       return "The worker already tried to move it back onto the base it was " +
         "opened against, and could not";

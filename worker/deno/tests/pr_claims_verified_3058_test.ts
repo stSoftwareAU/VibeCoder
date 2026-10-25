@@ -78,7 +78,7 @@ Deno.test("Issue #3058 - issue prompt holds docs the diff touches to the same ru
   }
 });
 
-Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and keep the escape hatch uncommitted", async () => {
+Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading", async () => {
   const guidelinesPrompt = await readRepoDoc(
     "prompts/coding_guidelines/prompt.md",
   );
@@ -96,23 +96,8 @@ Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and
   ) {
     assertStringIncludes(blockedOnAnotherIssue, required);
   }
-
-  const escapeHatch = flat(
-    section(
-      guidelinesPrompt,
-      "Escape Hatch — Hand Off When Genuinely Out of Scope",
-    ),
-  );
-  // Issue #4227: the escape hatch is the PR-feedback / CI-fix route only.
-  for (
-    const required of [
-      "PR-feedback and CI-fix runs only",
-      "an issue run has no escape hatch",
-      "`.pr_response_message`",
-    ]
-  ) {
-    assertStringIncludes(escapeHatch, required);
-  }
+  // Issue #4304: the escape hatch is gone from the guidelines — no issue,
+  // PR-feedback or CI-fix run hands work back — so nothing is pinned for it.
 });
 
 Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification rules", async () => {

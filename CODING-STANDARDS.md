@@ -2075,7 +2075,8 @@ The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
 whose `## Acceptance Criteria` block marks any criterion `missing` is raised
 as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
-the issue open, labels it `needs-human` and names the missing criteria.
+the issue open and queued, with its existing labels, so a later run finishes
+the missing criteria (Issue #4304).
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits
@@ -2086,10 +2087,9 @@ line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
 or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
 (`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
-branch is red. The Escape Hatch
-in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
-honoured on a committed PR branch when `.pr_response_message` names a
-follow-up issue. Any later commit on the branch — a
+branch is red. A PR-feedback or CI-fix hand-off in `.pr_response_message`
+that names a follow-up issue is still recognised on a committed PR branch,
+although `prompts/pr_feedback/prompt.md` no longer offers one (Issue #4304). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
