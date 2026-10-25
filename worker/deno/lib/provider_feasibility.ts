@@ -347,7 +347,9 @@ export function evaluateFeasibility(
     caveats.push("api-equivalent-price-missing");
   }
 
-  // 6. Verdict. An unvalidated model is `unavailable` whatever else is true.
+  // 6. Verdict. For a registered provider and manager provider, an unvalidated
+  //    model is `unavailable` whatever its other blockers (step 1 returns
+  //    `no-go` first for an unregistered one).
   if (!context.validatedModels.has(modelKey(provider, model))) {
     blockers.push("model-not-validated-on-host");
     return finish("unavailable");
