@@ -1094,7 +1094,7 @@ Deno.test("sweep: semgrep falls back to the pinned container image when only a r
   const call = stub.runnerCalls.find((c) => c.bin === "container");
   assert(call, "container runtime was used");
   assert(
-    call.args.some((a) => a.startsWith("semgrep/semgrep:1.173.0@sha256:")),
+    call.args.some((a) => a.startsWith("semgrep/semgrep:1.182.1@sha256:")),
   );
   assert(call.args.includes("--json"));
 });

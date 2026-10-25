@@ -109,7 +109,7 @@ the full gate is the last step before the PR.
 **The gate needs PowerShell 7** (Issue #1598). Its unit suite runs the three
 `run.ps1` launcher suites, so a host without `pwsh` fails the gate with a
 message naming the remedy rather than skipping them quietly — a skipped test
-is not a passed one. The container image ships PowerShell 7.6.5 at
+is not a passed one. The container image ships PowerShell 7.6.8 at
 `/usr/local/bin/pwsh` (Issue #1596); on a host, install PowerShell 7 or set
 `VIBE_PWSH` to the interpreter's absolute path. The `setup.ps1` suites remain
 integration tests and are still CI's, not the gate's.
