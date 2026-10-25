@@ -260,7 +260,7 @@ Tests added on this branch, all passing at the head:
   - `execute_claude_phase - the runner receives the rerouted provider (Issue #4109)`
   - `execute_claude_phase - a health-gate fallback run reaches the runner stripped, not as claude (Issue #4109)`
   - `execute_claude_phase - claude not enabled strips agents and disables the split (Issue #4109)`
-- `worker/deno/tests/issue_run_provider_agents_test.ts` (14 tests):
+- `worker/deno/tests/issue_run_provider_agents_test.ts` (15 tests at head):
   - `issue run provider - Claude with sub-agents is left unchanged (Issue #4109)`
   - `issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)`
   - `issue run provider - a non-Claude provider with Claude not enabled has its sub-agents stripped (Issue #4109)`
@@ -275,6 +275,7 @@ Tests added on this branch, all passing at the head:
   - `issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)`
   - `issue run provider - a health-gate fallback run is stripped, never rerouted back to Claude (Issue #4109)`
   - `issue run provider - the same Claude-enabled run reroutes once the override is cleared (Issue #4109)`
+  - `issue run provider - an override that names Claude is not a fallback, so the run reroutes (Issue #4109)`
 - `worker/deno/tests/agent_provider_test.ts` (1 new test):
   - `agent provider - pre-spawn planning reads an uninstalled provider without the install assert (Issue #4109)`
 
@@ -292,6 +293,11 @@ beside them):
 - `worker/deno/lib/deepseek_executor.ts`: `warnDeepSeekAgentsUnsupported`
   changed its warning text and doc comment only; its one caller in
   `agent_provider.ts` is unchanged.
+- `worker/deno/lib/phases/execute_phase.ts`: `withPriorProgress`
+  (`execute_phase.ts:946`, called at `:1009` inside `applyRunLines`) is a local
+  closure over the prior-progress note; the diff does not touch its body or its
+  signature, so it is unchanged. `applyRunLines` still wraps it first, and the
+  RTK, CodeGraph and Graft `applyPrompt` calls around it keep their order.
 - `worker/deno/lib/provider_feasibility.ts`: `probeInvocationCapabilities` now
   delegates to the new `probeDescriptorInvocationCapabilities`; same return
   value, same caller behaviour (`tests/provider_feasibility_test.ts` is
