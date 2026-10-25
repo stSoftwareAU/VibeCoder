@@ -12,7 +12,9 @@
  *   {@link RUN_FAILURE_TARGET_REPO} per signature, or adds one follow-up
  *   comment per window on the open one, reusing the run-failure machinery;
  * - fires the `failure` run callback once per file with failureClass
- *   `hard_kill`, and counts the kill as a failure;
+ *   `hard_kill`, and counts the kill as a failure. The one exception is a file
+ *   that cannot be removed after the report: it stays, and the next start
+ *   reports the kill again;
  * - keeps the file whenever filing fails, so the next start retries it.
  *
  * Every free-text value from the evidence is redacted before it is bounded,
@@ -521,9 +523,15 @@ export interface ReportPendingHardKillsOptions {
   /** Injected clock (epoch seconds). */
   nowSeconds?: number;
   log?: (message: string) => void;
-  /** A malformed or wrong-version file, or an unexpected failure: kept, never recovered by retry. */
+  /**
+   * A malformed or wrong-version file, or an unexpected failure: kept, and
+   * never recovered by a retry.
+   */
   logError?: (message: string) => void;
-  /** A failed filing, failed callback, failed count or failed removal: retried or tolerated. Defaults to logError. */
+  /**
+   * A failed filing, failed callback, failed count or failed removal: retried
+   * or tolerated. Defaults to `logError`.
+   */
   logWarn?: (message: string) => void;
   fleetAuthors?: readonly string[];
   recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
@@ -540,7 +548,8 @@ function epochOf(name: string): number {
  *
  * A file is removed only after it has been filed and its callback has fired.
  * Anything that goes wrong keeps the file, so the next start reports it once.
- * Never throws.
+ * The one exception is a file that cannot be removed after the report: it
+ * stays, and the next start reports it again. Never throws.
  */
 export async function reportPendingHardKills(
   opts: ReportPendingHardKillsOptions,

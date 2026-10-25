@@ -40,7 +40,7 @@ interface Recorded {
 /** A fake gh: open issues and their comments live in memory. */
 function fakeGh(
   seed: {
-    issues?: { number: number; body: string }[];
+    issues?: { number: number; body: string; author?: string }[];
     comments?: { id: number; body: string; author?: string }[];
   } = {},
   behaviour: { failAll?: boolean } = {},
@@ -59,7 +59,10 @@ function fakeGh(
     if (args[0] === "issue" && args[1] === "list") {
       return Promise.resolve(
         JSON.stringify(
-          issues.map((i) => ({ ...i, author: { login: FLEET_LOGIN } })),
+          issues.map((i) => ({
+            ...i,
+            author: { login: i.author ?? FLEET_LOGIN },
+          })),
         ),
       );
     }
@@ -281,6 +284,73 @@ Deno.test("run failure issue - a follow-up marker planted by an outsider is not 
       1,
       "the genuine follow-up is posted instead of being absorbed",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("run failure issue - an open issue carrying the class marker but authored by a non-fleet login is no match: a new issue is filed and the stranger's is never commented on (Issue #4254)", async () => {
+  const dir = await tmp();
+  try {
+    // The marker is plain body text, so a stranger can type it into an issue
+    // they open. Only a fleet-authored issue may stand in for the alert.
+    const gh = fakeGh({
+      issues: [{
+        number: 4200,
+        body: formatRunFailureMarker("oom"),
+        author: "drive-by-attacker",
+      }],
+    });
+    const decision = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: OOM_REPORT,
+      ghFn: gh.ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1_700_000_000,
+    });
+    assertEquals(decision.action, "filed");
+    assertEquals(
+      gh.rec.creates.length,
+      1,
+      "a stranger's marker must not stand in for the alert",
+    );
+    assertEquals(
+      gh.rec.comments.length,
+      0,
+      "the stranger's issue must never be commented on",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("run failure issue - the same marker issue authored by a fleet login is the match: one comment, zero creates (control for Issue #4254)", async () => {
+  const dir = await tmp();
+  try {
+    const gh = fakeGh({
+      issues: [{
+        number: 4200,
+        body: formatRunFailureMarker("oom"),
+        author: FLEET_LOGIN,
+      }],
+    });
+    const decision = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: OOM_REPORT,
+      ghFn: gh.ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1_700_000_000,
+    });
+    assertEquals(decision, {
+      action: "commented",
+      issueNumber: 4200,
+      failureClass: "oom",
+      updated: false,
+    });
+    assertEquals(gh.rec.creates.length, 0);
+    assertEquals(gh.rec.comments.length, 1);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

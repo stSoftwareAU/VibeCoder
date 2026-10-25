@@ -401,7 +401,12 @@ export async function findOpenRunFailureIssue(
     "20",
   ]);
   const list = JSON.parse(raw || "[]") as AlertDedupRow[];
-  const verified = list.filter((i) => isRunFailureIssue(i.body ?? "", failureClass)); // RED-CHECK BREAK
+  const verified = await selectFleetAuthoredMatches(
+    list.filter((i) => isRunFailureIssue(i.body ?? "", failureClass)),
+    `run-failure ${failureClass}`,
+    { fleetAuthors: opts.fleetAuthors },
+    log,
+  );
   const match = verified.sort((a, b) => a.number - b.number)[0];
   return match ? { number: match.number } : null;
 }
