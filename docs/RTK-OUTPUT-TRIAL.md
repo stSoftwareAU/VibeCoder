@@ -223,9 +223,9 @@ trial is run with that stated rather than discovered:
 - Its telemetry is disabled image-wide (`RTK_TELEMETRY_DISABLED=1`; RTK does not
   honour `DO_NOT_TRACK`), so no run's command output leaves the container by
   this path. `RTK_SUPPRESS_HOOK_WARNING=1` is set beside it to keep the daily
-  missing-hook warning off stderr — v0.49.0 reads no such variable, so it is
-  declared and **inert** until a release honours it, and the warning is
-  cosmetic either way.
+  missing-hook warning off stderr — v0.49.0 read no such variable; the 1.0.1
+  binary the image now pins does reference it, and the warning is cosmetic
+  either way.
 - Nothing here can fail a run. Every failure logs exactly one
   `[RTK_UNAVAILABLE] <reason>` line and records `failed`; the run then proceeds
   with an unchanged prompt and no hook.

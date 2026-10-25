@@ -1,7 +1,7 @@
 # Codex Budget Sources — What Was Verified, and What the Worker Uses
 
 > Issues #1697 and #1926. The rollout parser was originally verified against
-> `openai/codex` at `rust-v0.147.0`. The image now pins **0.163.0** in
+> `openai/codex` at `rust-v0.147.0`. The image now pins **0.164.0** in
 > `container/tools.json`; automatic routing also uses the documented App Server
 > account quota protocol.
 

@@ -151,7 +151,7 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
  * test asserts the two references stay in lock-step.
  */
 export const SEMGREP_IMAGE_DIGEST =
-  "sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a";
+  "sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6";
 
 /**
  * Release tag the digest was captured from (Issue #4403): a bare digest is
@@ -159,7 +159,7 @@ export const SEMGREP_IMAGE_DIGEST =
  * carries the tag too — `semgrep/semgrep:<tag>@<digest>` stays byte-for-byte
  * pinned AND trackable by an updater.
  */
-export const SEMGREP_IMAGE_TAG = "1.173.0";
+export const SEMGREP_IMAGE_TAG = "1.182.1";
 
 /** Fully-qualified, tag+digest-pinned Semgrep container image reference. */
 export const SEMGREP_IMAGE =
