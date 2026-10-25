@@ -34,6 +34,7 @@ import {
   type SyncStreakEntry,
 } from "./milestone_sync_streak.ts";
 import { logAt } from "./log_sink.ts";
+import { MERGE_ONLY_NO_BUILD } from "./milestone_merge_only.ts";
 
 /** Callsite recorded in the label guard's audit line. */
 const CALLER = "worker/deno/lib/milestone_gate_wedge.ts";
@@ -246,12 +247,20 @@ export interface GateRefusalConclusion {
  * which path happened to hit the refusal — the sweep does not visit every
  * milestone every cycle, and a wedge nobody filed is a gate nobody fixes.
  *
+ * A refusal a merge-only sync made because the host could not afford the
+ * repository's build (Issue #4326) is not a verdict on the resolution, so it
+ * is not counted at all: the entry comes back unchanged, before anything is
+ * recorded, and nothing is reported. A real refusal already on the entry is
+ * kept as it was, and the merge-only refusal does not clear it.
+ *
  * @param entry - The branch's streak entry
  * @param branch - Repository, branches and milestone title
  * @param conflict - The escalation carrying the gate's verdict
  * @param defaultSha - The default tip the refused merge was made from
  * @param nowMs - Conclusion time in epoch milliseconds
  * @param deps - The `gh` runner, log sink and fleet identity
+ * @returns The entry, and `wedged: false` for a merge-only refusal, which is
+ *   never counted
  */
 export async function concludeGateRefusal(
   entry: SyncStreakEntry,
@@ -261,6 +270,9 @@ export async function concludeGateRefusal(
   nowMs: number,
   deps: GateWedgeDiagnosticDeps,
 ): Promise<GateRefusalConclusion> {
+  if (conflict.gateFailure.includes(MERGE_ONLY_NO_BUILD)) {
+    return { entry, wedged: false };
+  }
   const conflictKey = conflictEscalationKey({
     milestoneBranch: branch.milestoneBranch,
     ...(conflict.milestoneSha ? { milestoneSha: conflict.milestoneSha } : {}),

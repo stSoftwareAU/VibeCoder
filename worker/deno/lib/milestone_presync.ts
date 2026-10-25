@@ -858,9 +858,20 @@ export async function presyncMilestoneBranchForIssueRun(
         }
         : {}),
       syncBranch: (syncGrant) => {
+        // The ladder's last rung, bound exactly as the sweep binds it. It is
+        // both the real agent a merge-only attempt falls back to for a tree
+        // without a cargo build (Issue #4326) and the agent of an attempt that
+        // is not merge-only.
+        const agentFn = bindMilestoneConflictAgent({
+          repo,
+          grant: syncGrant,
+          config,
+          logger,
+          runAgent,
+        });
         // Issue #4326: a merge-only attempt swaps in the gates and agent that
-        // land the merge without the repository's build.
-        const mergeOnly = mergeOnlyBindings(syncGrant.mergeOnly);
+        // land the merge without the repository's build for a cargo tree.
+        const mergeOnly = mergeOnlyBindings(syncGrant.mergeOnly, agentFn);
         return syncFn(
           milestoneBranch,
           defaultBranch,
@@ -873,16 +884,7 @@ export async function presyncMilestoneBranchForIssueRun(
           // has its own gates (Issue #4326).
           mergeOnly?.mergeGate,
           mergeOnly?.resolutionGate,
-          // The ladder's last rung, bound exactly as the sweep binds it. A
-          // merge-only attempt binds its own agent (Issue #4326).
-          mergeOnly?.agentFn ??
-            bindMilestoneConflictAgent({
-              repo,
-              grant: syncGrant,
-              config,
-              logger,
-              runAgent,
-            }),
+          mergeOnly !== undefined ? mergeOnly.agentFn : agentFn,
           logger,
         );
       },

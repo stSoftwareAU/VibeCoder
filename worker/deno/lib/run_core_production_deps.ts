@@ -6766,7 +6766,7 @@ async function syncMilestoneBranchesFn(
       });
       // Issue #4326: a merge-only sync swaps in the gates and agent that land
       // the merge without the repository's build.
-      const mergeOnly = mergeOnlyBindings(syncOptions.mergeOnly);
+      const mergeOnly = mergeOnlyBindings(syncOptions.mergeOnly, agentFn);
       return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,
@@ -6781,8 +6781,8 @@ async function syncMilestoneBranchesFn(
         mergeOnly?.resolutionGate,
         // Issue #1777: the last rung before a human. It runs in the very
         // clone the merge conflicted in, against a branch target. A merge-only
-        // sync binds its own agent (Issue #4326).
-        mergeOnly?.agentFn ?? agentFn,
+        // sync binds its own agent for a cargo tree (Issue #4326).
+        mergeOnly !== undefined ? mergeOnly.agentFn : agentFn,
         logger,
       );
     },
