@@ -465,6 +465,12 @@ export interface TerminalIssueRun {
   repo: string;
   /** Issue number the run worked. */
   issueNumber: number;
+  /**
+   * The run id of the run being reported, when it is not the current
+   * process's (a hard-killed run reported on the next launch — Issue #4254).
+   * Absent: the current run's id.
+   */
+  runId?: string;
   /** The original VibeCoder result. A hook never changes it. */
   result: "success" | "failure";
   /** Epoch ms the claim was taken. */

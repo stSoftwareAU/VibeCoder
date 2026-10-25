@@ -1,0 +1,12 @@
+{
+  "issue": 4253,
+  "chunk": "top-up-4253",
+  "title": "top-up: hard-kill evidence captured before the watchdog reaps a wedged container",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4253",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/hard_kill_evidence.ts (bounded, redacted evidence written to hard-kill-<container>-<epoch>.json before the reap) (#4253)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/hard_kill_evidence.ts"
+  ],
+  "sweptAt": "bc0277cad86834f4fa9c43bc24b95f86b302bb4a"
+}

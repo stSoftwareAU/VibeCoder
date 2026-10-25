@@ -585,6 +585,30 @@ async function deadPid(): Promise<number> {
   return pid;
 }
 
+/** A token-shaped GitHub token, seeded into a worker log (Issue #4253). */
+const WEDGE_LOG_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+
+/**
+ * The hard-kill records the reaper wrote into a directory (Issue #4253).
+ *
+ * @param dir - Directory to search
+ * @param prefix - Leading part of the file name: `hard-kill-` for any record,
+ *   `hard-kill-<container>-` for one container's
+ * @returns Full paths of the matching `.json` records, sorted
+ */
+async function hardKillRecords(dir: string, prefix: string): Promise<string[]> {
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    if (
+      entry.isFile && entry.name.startsWith(prefix) &&
+      entry.name.endsWith(".json")
+    ) {
+      found.push(`${dir}/${entry.name}`);
+    }
+  }
+  return found.sort();
+}
+
 Deno.test("run.sh - reaps a container that outlives the watchdog deadline", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
@@ -598,6 +622,15 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
     VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
   });
   try {
+    // The worker's own log, in the host-visible log directory the next
+    // container mounts. The token in it must come out redacted from the
+    // hard-kill record (Issue #4253).
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    await Deno.writeTextFile(
+      `${harness.logDir}/worker-1.log`,
+      `cloning with ${WEDGE_LOG_TOKEN}\n`,
+    );
+
     const outcome = await runLauncher(harness);
 
     // A named non-zero reason, so the supervisor proceeds to the next cycle
@@ -623,6 +656,53 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
     );
     assertStringIncludes(events, "container_wedged");
     assertStringIncludes(events, name);
+
+    // Hard-kill evidence (Issue #4253): exactly one record, written by the
+    // reaper into the launcher's log directory (the `--evidence-dir` it was
+    // handed), naming the wedged container and carrying each field an operator
+    // reads it for.
+    const records = await hardKillRecords(
+      harness.logDir,
+      `hard-kill-${name}-`,
+    );
+    assertEquals(
+      records.length,
+      1,
+      `the reaper must write one hard-kill record into ${harness.logDir}: ${outcome.stderr}`,
+    );
+    const text = await Deno.readTextFile(records[0]!);
+    const evidence: Record<string, unknown> = JSON.parse(text);
+    assertEquals(evidence.container, name);
+    // The host is named (Issue #4253). A host the reaper cannot read is
+    // recorded as "unavailable: <cause>", so this goes red if run.sh drops
+    // --allow-sys=hostname from the reap.
+    assertEquals(typeof evidence.host, "string");
+    const host = evidence.host as string;
+    assert(host.length > 0, "the record must name the host");
+    assert(
+      !host.startsWith("unavailable:"),
+      `the reaper could not read the host: ${host}`,
+    );
+    assert(host !== "unknown", "the record must not fall back to 'unknown'");
+    for (
+      const field of [
+        "host",
+        "runId",
+        "lastLogLine",
+        "lastToolCall",
+        "evidence",
+      ]
+    ) {
+      assert(field in evidence, `the hard-kill record lacks "${field}"`);
+    }
+
+    // The worker log's secret is redacted, not copied verbatim.
+    assertStringIncludes(text, "***REDACTED***");
+    assertEquals(
+      text.includes(WEDGE_LOG_TOKEN),
+      false,
+      "the hard-kill record must not carry the worker's token",
+    );
   } finally {
     await harness.cleanup();
   }
@@ -646,6 +726,13 @@ Deno.test("run.sh - a healthy run is never reaped", async () => {
       await recorded(harness, "kill"),
       null,
       "a container that exits on its own must never be killed",
+    );
+
+    // No evidence is captured for a container nobody reaped (Issue #4253).
+    assertEquals(
+      await hardKillRecords(harness.logDir, "hard-kill-"),
+      [],
+      "a healthy run must leave no hard-kill record",
     );
   } finally {
     await harness.cleanup();

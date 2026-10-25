@@ -39,6 +39,16 @@
  * `self-heal-summary` surfaces a chronically wedging host rather than
  * losing it in a host log.
  *
+ * ## Evidence before the kill (Issue #4253)
+ *
+ * When the watchdog reap is given an evidence directory, the worker log, the
+ * agent transcript, the VM boot log and the guest's process and memory state
+ * are captured into `hard-kill-<container>-<epoch>.json` **before** the kill
+ * destroys them. Capture is bounded and redacted. It never fails the reap: a
+ * capture that fails is logged loudly and the kill goes ahead. It does delay
+ * the kill, by at most about 75 seconds (`hard_kill_evidence.ts`). The
+ * pre-launch reaper passes no directory and so captures nothing.
+ *
  * ## Why the seams
  *
  * Killing processes and driving a container runtime are exactly the operations
@@ -55,6 +65,11 @@ import {
   CONTAINER_RUNTIMES,
   type ContainerRuntimeDialect,
 } from "./container_runtime.ts";
+import {
+  captureHardKillEvidence,
+  createEvidenceSeams,
+  type EvidenceSeams,
+} from "./hard_kill_evidence.ts";
 import { emitSelfHealEvent, type SelfHealEvent } from "./self_heal_events.ts";
 
 /**
@@ -525,6 +540,8 @@ export interface ReapDeps {
   emit: (event: Omit<SelfHealEvent, "timestamp">) => Promise<unknown>;
   /** Operator-facing log sink (stderr in production). */
   log: (message: string) => void;
+  /** Seams for hard-kill evidence, captured before the kill (Issue #4253). */
+  evidence: EvidenceSeams;
 }
 
 /** One reap request. */
@@ -539,6 +556,11 @@ export interface ReapOptions {
   reason: string;
   /** Which layer triggered it. */
   trigger: "watchdog" | "pre_launch";
+  /**
+   * When set, evidence is captured into this directory before the kill
+   * (Issue #4253). Unset means no evidence is captured.
+   */
+  evidenceDir?: string;
 }
 
 /** What one reap achieved. */
@@ -554,6 +576,8 @@ export interface ReapResult {
   stillListed: boolean;
   /** True when the wedge is demonstrably gone. */
   reaped: boolean;
+  /** The hard-kill evidence file written before the kill, or null (Issue #4253). */
+  evidenceFile: string | null;
 }
 
 /** Reject a container name that is not a plain name the runtime accepts. */
@@ -588,6 +612,53 @@ async function stillListed(
 }
 
 /**
+ * Capture hard-kill evidence for a reap, if the reap asked for it (Issue #4253).
+ *
+ * Never fails the reap: a capture that fails, or throws, is logged loudly and
+ * reported as null, and the kill goes ahead regardless. The capture is bounded,
+ * so it delays the kill by at most about 75 seconds.
+ *
+ * @param deps - Injected operations
+ * @param options - The reap request
+ * @returns The evidence file written, or null when none was
+ */
+async function captureEvidence(
+  deps: ReapDeps,
+  options: ReapOptions,
+): Promise<string | null> {
+  const { containerName, evidenceDir } = options;
+  if (evidenceDir === undefined) return null;
+  try {
+    const outcome = await captureHardKillEvidence(deps.evidence, {
+      containerName,
+      runtimeExecutable: deps.runtimeExecutable,
+      evidenceDir,
+      reason: options.reason,
+      trigger: options.trigger,
+      nowMs: deps.now(),
+    });
+    if (outcome.ok) {
+      deps.log(
+        `[container-watchdog] hard-kill evidence for ${containerName} written ` +
+          `to ${outcome.file} (Issue #4253)`,
+      );
+      return outcome.file;
+    }
+    deps.log(
+      `[container-watchdog] hard-kill evidence for ${containerName} was NOT ` +
+        `captured: ${outcome.error} — reaping anyway (Issue #4253)`,
+    );
+    return null;
+  } catch (error) {
+    deps.log(
+      `[container-watchdog] hard-kill evidence for ${containerName} failed: ` +
+        `${(error as Error).message} — reaping anyway (Issue #4253)`,
+    );
+    return null;
+  }
+}
+
+/**
  * Reap one wedged container: runtime kill first, SIGKILL if that is refused.
  *
  * The client process is killed before the runtime helper, because the client
@@ -616,6 +687,9 @@ export async function reapWedgedContainer(
     `[container-watchdog] reaping ${containerName}: ${options.reason} ` +
       `(Issue #4173)`,
   );
+
+  // Evidence first: the kill below destroys what it would record (Issue #4253).
+  const evidenceFile = await captureEvidence(deps, options);
 
   const kill = await deps.runRuntime(["kill", containerName]);
   if (kill.code !== 0) {
@@ -689,6 +763,7 @@ export async function reapWedgedContainer(
       clientExited,
       stillListed: listing.listed,
       listingVerified: listing.verified,
+      evidenceFile,
     },
   });
 
@@ -706,6 +781,7 @@ export async function reapWedgedContainer(
     clientExited,
     stillListed: listing.listed,
     reaped,
+    evidenceFile,
   };
 }
 
@@ -1012,5 +1088,8 @@ export function createReapDeps(options: ReapDepsOptions): ReapDeps {
     now: () => Date.now(),
     emit: (event) => emitSelfHealEvent(event, { workDir: options.workDir }),
     log: (message) => console.error(message),
+    evidence: createEvidenceSeams((args, timeoutMs) =>
+      runBounded(options.runtime, args, timeoutMs)
+    ),
   };
 }

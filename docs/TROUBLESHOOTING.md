@@ -228,8 +228,18 @@ Error: container vibe-coder-66770 wedged past the 11400s watchdog deadline and w
 ```
 
 Nothing to do by hand: the next cycle launches a fresh container, and any
-leftover `vibe-coder-*` container is reaped before it. Check whether the host
-is wedging repeatedly — a chronic offender needs the runtime itself looked at:
+leftover `vibe-coder-*` container is reaped before it. On `run.sh`, the reap
+first leaves a `hard-kill-<container>-<epoch>.json` record in `${LOG_DIR}` with
+the last worker log lines and the runtime's boot logs, so the wedge can be read
+after the container is gone (see
+[Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog)).
+The next worker start files that record as a `bug` issue carrying only the
+run's facts, then moves the file to `${LOG_DIR}/hard-kill-archive/`, where it
+is kept for up to 30 days or 2,000 files. The archive, not the issue, holds the
+evidence (see
+[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
+Check whether the host is wedging repeatedly — a chronic offender needs the
+runtime itself looked at:
 
 ```bash
 deno run worker/deno/mod.ts self-heal-summary | grep container_wedged
