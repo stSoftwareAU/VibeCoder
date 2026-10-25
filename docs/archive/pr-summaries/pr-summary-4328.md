@@ -78,13 +78,13 @@ flowchart LR
   The DENO_JOBS container bound is still decided from the parent env, so it is
   unaffected.
 
-- Merged with `main` after #4338, which landed a second route to the same
-  ladder (`resolverRungDue`, `applyResolverRecovery`: roll-back, rebuild, then
-  close and requeue). Both stay. A branch whose roll-back is already spent
+- Merged with `main` after #4338, which landed a second route to the same ladder
+  (`resolverRungDue`, `applyResolverRecovery`: roll-back, rebuild, then close
+  and requeue). Both stay. A branch whose roll-back is already spent
   (`rollbacks + rollbackFailures > 0`) skips that route's roll-back rung and
   takes `handOffSpentBudget`, which rebuilds first and falls through to the
-  roll-back. The route's rebuild rung uses the sweep's gated `rebuildFn` when
-  no `rebuildMilestoneFn` is injected, and closes the milestone if it does not
+  roll-back. The route's rebuild rung uses the sweep's gated `rebuildFn` when no
+  `rebuildMilestoneFn` is injected, and closes the milestone if it does not
   land.
 
 ### Undiscoverable Facts
@@ -246,15 +246,16 @@ there unchanged.
 - `./quality.sh < /dev/null` on the head: passed (with skipped checks: config
   integration, checkov); `deno tests` stage passed with
   `VIBE_IMAGE_AGENT_PROVIDERS=claude` set.
-- Push `2f237b82` (type fix, test only): `conflict_abandon_restart_test.ts`
-  read `leftOut[0].message` under `noUncheckedIndexedAccess` (TS2532); it now
-  reads `leftOut[0]?.message ?? ""`. The assertion is unchanged and
+- Push `2f237b82` (type fix, test only): `conflict_abandon_restart_test.ts` read
+  `leftOut[0].message` under `noUncheckedIndexedAccess` (TS2532); it now reads
+  `leftOut[0]?.message ?? ""`. The assertion is unchanged and
   `assertEquals(leftOut.length, exclude.length)` still pins the count, so the
   test still goes red when the left-out log is negated. Re-run at the head after
-  the merge of `main`: `deno task test:unit
+  the merge of `main`:
+  `deno task test:unit
   tests/milestone_sync_refusal_ladder_4328_test.ts
-  tests/conflict_abandon_restart_test.ts` → 117 passed, 0 failed. No production
-  code changed in that push.
+  tests/conflict_abandon_restart_test.ts`
+  → 117 passed, 0 failed. No production code changed in that push.
 - PR #4344 mutation survivors: `conflict_milestone_rebuild.ts:515` (negated
   left-out log condition) is now killed by
   `abandonAndRebuildMilestone - logs
