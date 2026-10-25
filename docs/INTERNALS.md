@@ -3073,6 +3073,14 @@ pass, lane or serial, keeps running because those passes land the PRs already
 open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
+A build refused by the ephemeral cargo root's budget is a different case: with
+the host above its floor, a conflict-free merge or a deterministically resolved
+one in a cargo-only tree lands without the cargo build. A Deno-only tree and a
+mixed tree keep their Deno checks and suites and are rolled back when those are
+red. A conflict that needs the agent on a cargo tree is charged on the second
+over-budget cycle, so the recovery ladder applies (Issue #4326,
+see
+[HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
 in CONTAINER.md.
 
@@ -4279,7 +4287,11 @@ than the wall of `TS2304` that made #1542 nearly useless. A gate refusal is not
 a conflict the budget can retry its way out of, so it is charged nothing — and
 that is exactly why it needed its own conclusion (Issue #2388, below). A tree
 with no type check or no unit suite verified nothing and is refused the same
-way — a resolution that cannot be verified is not a resolution. What the triage
+way — a resolution that cannot be verified is not a resolution. The one
+exception is a merge-only cycle (Issue #4326): a host that cannot afford the
+cargo build marks its `skipped` verdict `landUnverified`, the resolution is
+pushed with the `UNGATED` note, and the report says the tree was not checked.
+What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
 ([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts));
 a resolution the worker made and verified is a report, never a `needs-human`
@@ -4430,6 +4442,8 @@ Three properties matter:
 - **Nothing unverified is published.** A check that cannot be run — a spawn
   failure, a timeout past `MERGE_GATE_TIMEOUT_MS`, a working tree that cannot be
   read — counts as a failure, not a pass: absence of a failure is not success.
+  The one deliberate exception is the merge-only cycle of Issue #4326 on a tree
+  that holds a cargo project, described after this list.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
@@ -4447,6 +4461,23 @@ Three properties matter:
 
 A repository with no Deno project is still synced, but the outcome says
 `UNGATED` so an unchecked push never reads like a checked one.
+
+When the ephemeral cargo root is over its budget (Issue #4326), the sync runs
+in merge-only mode for that cycle, but only on a tree that holds a cargo
+project, because only a cargo build writes to the ephemeral cargo root. A
+repository with no cargo project keeps its own check and the normal agent. In a
+mixed tree the Deno checks and unit suites remain required; only cargo checks
+and cargo unit suites wait for CI. In a cargo-only tree, a conflict-free merge
+is pushed with the same `UNGATED` note, and the milestone PR's own CI builds it.
+So is a conflict the deterministic rules settle: the resolution gate reports a
+`skipped` verdict marked `landUnverified`, which `judgeResolutionVerdict` lets
+through where it would otherwise refuse an unverified resolution. A conflict
+that needs the agent is not landed in that cycle: the agent is free to run the
+very cargo build the host cannot afford, so it is not offered. The first such
+cycle is a refusal and is not charged. The next over-budget cycle charges the
+attempt, so the recovery ladder applies and the branch does not stay behind on
+disk budget alone. See
+[HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
 
 #### 🪦 The sync never resurrects a deleted file
 

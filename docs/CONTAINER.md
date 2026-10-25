@@ -1317,6 +1317,44 @@ test (`worker/deno/lib/heavy_build_gate.ts`), reading the same
 An `unknown` reading never defers, the same rule as the claim gate: a blind
 probe must not stop every build in the fleet.
 
+### HOST_DISK_BUDGET merges without the build (Issue #4326)
+
+Above the floor, a build can still be refused by the ephemeral cargo root's
+budget (described under *The root has a budget* below), on a runtime that
+refuses the trim. Before Issue #4326 that refusal kept the milestone
+behind indefinitely: the over-budget build was refused every cycle (GRQ-23,
+2026-10-24: about 150 refusals, 27 issues held). Now the sync still lands that
+cycle, in **merge-only** mode, unless its conflict needs the agent. Merge-only applies
+to a tree that holds a cargo project, because only a cargo build writes to the
+ephemeral cargo root. A repository with no cargo project keeps its own check
+(the repository's own type check) and the normal agent. Only cargo checks and cargo unit suites are skipped. Mixed trees still run
+and must pass their Deno checks and unit suites. For a cargo-only tree:
+
+- **A conflict-free merge is pushed unverified.** The sync outcome carries the
+  existing `UNGATED:` note (Issue #974), and the milestone PR's own CI builds
+  the merged tree.
+- **A conflict the deterministic rules settle is pushed unverified too.** The
+  resolution gate reports a `skipped` verdict marked `landUnverified`, so the
+  resolution is pushed with the same `UNGATED:` note instead of being refused as
+  a resolution nothing verified (Issue #1559). The merge commit still records
+  which rung settled each file, and the milestone PR's CI builds it.
+- **A conflict that needs the agent is not landed in that cycle.** The agent can
+  run the very cargo build the host cannot afford, so it is not offered. The
+  first such cycle is a refusal and is not charged. The next over-budget cycle
+  charges the attempt and the recovery ladder (roll-back, then rebuild, then
+  close) applies, so the branch does not stay behind on disk budget alone.
+
+The log names the reason:
+
+```text
+[HOST_DISK_BUDGET] Milestone sync for '2285 …' in stSoftwareAU/GRQ-AutoTrader uses cargo-only build deferral; Deno projects keep their normal checks: ephemeral cargo root over budget (…) — pruned … of idle target dirs and … is still short …; cargo builds wait for CI; Deno projects keep their normal checks (Issue #4326)
+```
+
+The deferred cargo build cannot consume the host's remaining headroom. No further reclaim step is taken: on a runtime that refuses the
+trim, deleting artefacts inside the guest returns nothing to the host, so the
+ephemeral root's idle target directories, already pruned first, are the only
+space the worker can hand back.
+
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
 On the Apple `container` runtime the trim above has **never** worked. As
@@ -1486,15 +1524,21 @@ build artefacts.
 - **An unusable root is a reported fallback, not a broken build.** If
   `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
   the build stays on the volume.
-- **The root has a budget (Issue #3178).** The layer is released at every
-  relaunch, but **within** a launch every byte written there is real host disk.
-  Before a maintenance build, the host must have its floor **plus 25 GB of
-  headroom** free (one build the size of the one that took GRQ-23 down). Short
-  of that, other checkouts' target directories are pruned, largest first,
+- **The root has a budget (Issues #3178, #4326).** The layer is released at
+  every relaunch, but **within** a launch every byte written there is real host
+  disk. Before a maintenance build, the host must have its floor **plus 25 GB
+  of headroom** free (one build the size of the one that took GRQ-23 down).
+  Short of that, other checkouts' target directories are pruned, largest first,
   skipping any written to in the last 20 minutes (another slot's build in
   progress) and the building checkout's own (its incremental cache). If the
-  build is still not covered, it is refused with a line naming the floor and
-  the headroom. Pruning counts as room even where the trim is refused: the
+  build is still not covered, the sync does not wait on cargo. A cargo-only
+  tree lands that cycle without its cargo build: a conflict-free merge or a
+  deterministically resolved one is pushed unverified. A Deno-only tree and a
+  mixed tree keep their Deno checks and suites and are rolled back when those
+  are red. A conflict that needs the agent on a cargo tree is charged on the
+  next over-budget cycle, so the recovery ladder applies (see
+  [HOST_DISK_BUDGET](#host_disk_budget-merges-without-the-build-issue-4326)).
+  Pruning counts as room even where the trim is refused: the
   guest filesystem reuses the freed blocks, so a build writing into them does
   not grow the host image again.
 - **A pass releases what it built.** When the milestone sync's pass over a
