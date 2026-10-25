@@ -378,7 +378,18 @@ flowchart LR
 - **The per-cycle liveness line** carries the same counts:
   `[liveness] tick=… live_epoch=… last_productive=… hook_fail_success=0
   hook_fail_failure=0 hook_fail_always=0`. All three hooks are always named, so
-  a host-side parser reads a fixed set of fields.
+  a host-side parser reads a fixed set of hook fields. When that line is
+  written — the liveness guard returned ok — it also ends with
+  `mem_available_mib=<n|unavailable>`, `pressure_memory=<text>` and
+  `pressure_cpu=<text>`. `<n>` is `MemAvailable` from `/proc/meminfo`,
+  converted from kibibytes to mebibytes and rounded to an integer; `0` is a
+  real reading. `<text>` is `/proc/pressure/memory` or `/proc/pressure/cpu`
+  with each run of whitespace collapsed to a comma, or `empty` when that
+  file was readable but blank. A file that cannot be read, and a meminfo
+  with no `MemAvailable:` line, is the token `unavailable` — the field is
+  still present, and it is not `0`. A guard error logs a warning and does
+  not write the tick line, so these fields are absent then too. The
+  `[liveness] ALERT` line does not carry them.
 - **`fleet-summary:` carries `hook_failures=N`** — failing hook invocations
   this run — beside `claims=`, `successes=` and `failures=`, so a run whose
   every heartbeat was lost cannot read as clean.
