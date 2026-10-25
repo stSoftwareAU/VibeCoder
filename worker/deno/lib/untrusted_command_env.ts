@@ -69,6 +69,10 @@ export const ALLOWED_ENV_NAMES: readonly string[] = [
   "DENO_DIR",
   "DENO_INSTALL_ROOT",
   "CARGO_HOME",
+  // Cargo's job cap. The container entrypoint sets it (Issue #4225); this
+  // list only forwards a value the parent already has. It does not choose
+  // the number, and a host run that never set it stays uncapped.
+  "CARGO_BUILD_JOBS",
   // Where cargo writes its build output. On a runtime that refuses to trim
   // the work volume the worker points this at the container's own ephemeral
   // layer (Issue #2247); an operator who sets it keeps it.

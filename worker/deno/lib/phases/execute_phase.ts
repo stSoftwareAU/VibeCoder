@@ -90,6 +90,7 @@ import {
   agentProviderById,
   type AgentProviderDescriptor,
   plannedActiveAgentProvider,
+  resolveAgentProvider,
   resolveInvocationAgentProvider,
   selectAgentProvider,
 } from "../agent_provider.ts";
@@ -797,6 +798,16 @@ async function executeClaudeBody(
       `Subscription allocation ${allocation.cohort} selected for ${repo}#${issueNumber}`,
     );
   }
+  // The repo pin (Issue #2048). Resolved once. A non-external subscription
+  // allocation names Claude for this invocation and wins. The pin binds when
+  // this run names no provider of its own, and then it wins over the host's
+  // active provider. A #4109 reroute is a later substitution: it does not
+  // replace a pin. The same resolver the standalone command path calls
+  // (`execute_claude_phase.ts`).
+  const invocationAgentProvider = resolveInvocationAgentProvider(
+    undefined,
+    config.repoConfig?.[repo],
+  );
   const routing = resolveIssueOrchestration(
     (config.repoConfig?.[repo]?.externalOrchestration ??
       config.externalOrchestration) === true,
@@ -805,7 +816,7 @@ async function executeClaudeBody(
       config.repoConfig?.[repo]?.externalOrchestrationSettings,
     ),
     selectAgentProvider(
-      resolveInvocationAgentProvider(undefined, config.repoConfig?.[repo]),
+      invocationAgentProvider,
       { env: deps.claude.env },
     ).id,
     isAutomaticProviderRoutingActive(),
@@ -831,15 +842,21 @@ async function executeClaudeBody(
       `(Issue #3402)`,
   );
   // The run's provider and sub-agent switches, decided before spawn (Issue
-  // #4109): a non-Claude provider that cannot carry `--agents` is rerouted or
-  // stripped here, not refused later by the #4010 guard.
+  // #4109). An unpinned non-Claude provider that cannot carry `--agents` is
+  // rerouted or stripped here. A repo pin is stripped and kept (Issue #4346).
+  // Either way the spawn is not refused later by the #4010 guard.
   const issueRunPlan = externalOrchestration
     ? undefined
     : planIssueRunProvider({
       // Only reached when `allocation` (if any) is non-external.
       provider: allocation
         ? agentProviderById("claude")!
-        : plannedActiveAgentProvider(),
+        : typeof invocationAgentProvider === "string"
+        ? resolveAgentProvider(invocationAgentProvider)
+        : invocationAgentProvider ?? plannedActiveAgentProvider(),
+      // A pin is kept and stripped when it cannot carry `--agents` (Issue
+      // #4346). Allocation has already named Claude, so it is not a pin.
+      pinned: !allocation && invocationAgentProvider !== undefined,
       selection: { env: deps.claude.env },
       executorSplit: requestedExecutorSplit,
       // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
@@ -858,13 +875,26 @@ async function executeClaudeBody(
       subAgentTier: issueRunPlan.subAgentTier,
     })
     : undefined;
-  // The provider the runner spawns when the planner rerouted the run (Issue
-  // #4109); undefined keeps the active provider. The RTK, CodeGraph and Graft
-  // sinks and the auth classifier are bound to this, not to the original
-  // provider, as `execute_claude_phase.ts` does.
-  const reroutedProviderId = issueRunPlan?.outcome === "rerouted-to-claude"
+  // The provider this invocation spawns (Issues #2048 and #4109). A
+  // non-external allocation names Claude. A reroute to Claude names that
+  // provider only when this run has no repo pin; a pin that cannot carry
+  // sub-agents is stripped and kept. Otherwise the pin binds; undefined
+  // keeps the host's active provider. The runner, the RTK, CodeGraph and
+  // Graft sinks and the auth classifier receive it, as
+  // `execute_claude_phase.ts` binds them to `effectiveAgentProvider`. When
+  // the planner ran, the run assignment receives its provider: Claude for a
+  // non-external allocation, the rerouted provider when the plan rerouted,
+  // otherwise the provider it was given (the pin, including a stripped pin,
+  // or the host provider when the repo pins none). An externally orchestrated
+  // run has no plan, so the assignment records the orchestration roles
+  // instead.
+  const explicitInvocationProvider = allocation && !allocation.external
+    ? "claude"
+    : issueRunPlan?.outcome === "rerouted-to-claude"
     ? issueRunPlan.provider.id
     : undefined;
+  const effectiveAgentProvider = explicitInvocationProvider ??
+    invocationAgentProvider;
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -958,7 +988,9 @@ async function executeClaudeBody(
   const codegraph = await prepareCodegraphRun({
     repoDir: state.repoPath,
     enabled: config.codegraphContext.enabled,
-    ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
+    ...(effectiveAgentProvider
+      ? { agentProvider: effectiveAgentProvider }
+      : {}),
     logger,
     prepare: deps.claude.prepareCodegraphContext,
   });
@@ -980,7 +1012,9 @@ async function executeClaudeBody(
   const graft = bindGraftRun({
     result: graftContext,
     repoDir: state.repoPath,
-    ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
+    ...(effectiveAgentProvider
+      ? { agentProvider: effectiveAgentProvider }
+      : {}),
     logger,
   });
   const syncGraftFacts = (): void => {
@@ -988,13 +1022,15 @@ async function executeClaudeBody(
   };
   // --- RTK shell-output filtering (Issue #2383, part of #2328) ---
   // Installed per spawn, so nothing is written to `~/.claude/settings.json`.
-  // The provider is resolved the way the invocation below resolves it — it
-  // passes no selector, so both name the run's active provider — and a
-  // provider that takes no hooks skips the accelerator rather than failing the
-  // run. The hook and its one prompt line travel together or not at all.
+  // The provider is the one this invocation spawns. A pin is named as itself.
+  // A non-external allocation names Claude. A reroute names Claude only when
+  // the run has no pin. With none of those, the selector is omitted and both
+  // this sink and the runner keep the host's active provider. A provider that
+  // takes no hooks skips the accelerator rather than failing the run. The
+  // hook and its one prompt line travel together or not at all.
   const rtk = await deps.claude.prepareRtkRun({
     enabled: config.rtkOutput.enabled,
-    providerId: deps.claude.rtkProviderId(reroutedProviderId, logger),
+    providerId: deps.claude.rtkProviderId(effectiveAgentProvider, logger),
     logger,
     cwd: state.repoPath,
   });
@@ -1292,8 +1328,12 @@ async function executeClaudeBody(
               enableModelFallback: false,
             }
             : {}),
-          // A run the planner rerouted to Claude (Issue #4109) names it here.
-          ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
+          // The pin, kept when the plan strips sub-agents; Claude when a
+          // non-external allocation or an unpinned reroute named it (Issues
+          // #2048, #4109, #4346). Absent, the runner keeps the host provider.
+          ...(effectiveAgentProvider
+            ? { agentProvider: effectiveAgentProvider }
+            : {}),
           cwd: state.repoPath,
           // The browser on every run unless `skip_screenshot_check`
           // (Issue #2925). Issue #2159 layers the `codegraph` server beside
@@ -1345,7 +1385,9 @@ async function executeClaudeBody(
   // Lifecycle assignment (Issue #3718): recorded before the first agent
   // invocation by design, so the event exists before any billed work it
   // describes. It sits after every early exit, so only a run that actually
-  // invokes the agent records one.
+  // invokes the agent records one. The planned provider started from the
+  // repo pin, so the record names the pin unless an allocation or a reroute
+  // replaced it.
   await recordRunAssignment(
     ctx,
     state,
@@ -1929,7 +1971,12 @@ async function executeClaudeBody(
   ].join("\n");
   if (
     claudeResult.value.exitCode !== 0 &&
-    deps.claude.isClaudeAuthError(authSurface, reroutedProviderId)
+    deps.claude.isClaudeAuthError(
+      authSurface,
+      typeof effectiveAgentProvider === "string"
+        ? effectiveAgentProvider
+        : effectiveAgentProvider?.id,
+    )
   ) {
     // Cross-check for evidence of success before blaming the credential: a run
     // that left commits ahead of base is a false positive on issue content,

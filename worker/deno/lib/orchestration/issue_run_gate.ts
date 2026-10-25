@@ -21,6 +21,7 @@ import {
 import type { ExternalIssueRunInput } from "../execute_claude_phase.ts";
 import { idempotencyKey } from "./checkpoint.ts";
 import { preflightRole } from "./preflight.ts";
+import { restoreCheckout, snapshotCheckout } from "./read_only_guard.ts";
 import { resolveAgentStateDir } from "../agent_state_dir.ts";
 import { estimateCostWithUpperBound } from "../token_usage.ts";
 import { effectiveRoleSelections } from "./role_config.ts";
@@ -87,6 +88,8 @@ export interface IssueRunGateDeps {
   /** Child env used for credential and billing checks. */
   env?: Record<string, string | undefined>;
   log?: (msg: string) => void;
+  /** Sink for degraded-but-continuing events; defaults to `console.warn`. */
+  warn?: (msg: string) => void;
   /** Clock in epoch milliseconds. */
   now?: () => number;
 }
@@ -243,10 +246,43 @@ export async function runOrchestratedIssueRun(
 
   let lastManagerResult: ClaudeRunResult | undefined;
   const invoke: InvokeAgent = async (call) => {
+    // Codex cannot deny the editing tools, so a read-only Codex role is held
+    // to it here: whatever the call changes in the checkout is put back
+    // (Issue #4356). Unrecordable means unenforceable, so the call is refused.
+    const guarded = call.envelope.role !== "executor" &&
+      call.envelope.provider === "codex";
+    const snapshot = guarded
+      ? await snapshotCheckout(input.workspaceDir)
+      : undefined;
+    if (snapshot && !snapshot.ok) {
+      return {
+        ok: false,
+        kind: "error",
+        message: `cannot hold the read-only ${call.envelope.role} role to ` +
+          `read-only: ${snapshot.error.message}`,
+      };
+    }
     const run = await deps.runClaudeWithRetry(
       claudeOptionsFor(input, call),
       input.retryOptions,
     );
+    if (snapshot?.ok) {
+      const restored = await restoreCheckout(snapshot.value);
+      if (!restored.ok) {
+        return {
+          ok: false,
+          kind: "error",
+          message: `the read-only ${call.envelope.role} role changed the ` +
+            `checkout and it could not be put back: ${restored.error.message}`,
+        };
+      }
+      if (restored.value.changed) {
+        (deps.warn ?? console.warn)(
+          `the read-only ${call.envelope.role} role changed the ` +
+            `checkout; its changes were reverted (Issue #4356)`,
+        );
+      }
+    }
     if (!run.ok) {
       return { ok: false, kind: "error", message: run.error.message };
     }

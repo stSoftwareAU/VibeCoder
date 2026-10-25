@@ -302,6 +302,15 @@ GitHub's own aggregate verdict, `statusCheckRollup.state` (fetched by
 verdicts wins, so a red rollup can never be masked by check runs that
 individually look green.
 
+When that rollup cannot be read, `checkCiStatus()` falls back to
+`repos/{repo}/commits/{sha}/check-runs` with `per_page=100` and `--paginate`.
+`gh` applies `--jq` per page and prints one object per line; those pages are
+merged before `determineCiStatus()` runs. A page that cannot be parsed, pages
+that disagree on `total_count`, or a merged run count that does not equal
+`total_count` is a lookup failure, and the gate retries. A short page is not
+the full set, so a failed or still-running check past the first page cannot
+read as `passed`.
+
 This matters because a workflow that failed to start (`startup_failure`) or a PR
 waiting on a manual approval (`action_required`) both report
 `status: "completed"`. Under the old denylist neither hit the failure branch nor

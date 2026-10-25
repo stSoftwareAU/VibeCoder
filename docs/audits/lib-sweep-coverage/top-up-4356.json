@@ -1,0 +1,12 @@
+{
+  "issue": 4356,
+  "chunk": "top-up-4356",
+  "title": "top-up: read-only role guard",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4356",
+  "definition": "worker/deno/lib/orchestration/read_only_guard.ts: records a git checkout (HEAD, branch, index bytes and a scratch-index tree of tracked and untracked files) before a read-only Codex role call and puts back whatever the call changed; git runs through the runGitCommand chokepoint with fixed argv, the only env is a GIT_INDEX_FILE temp path the module creates and removes (#4356)",
+  "status": "claimed",
+  "sweptAt": "314e797556d9927ab7e8830d61f822f501d70204",
+  "paths": [
+    "worker/deno/lib/orchestration/read_only_guard.ts"
+  ]
+}

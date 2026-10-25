@@ -28,6 +28,7 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
+import type { HeavyBuildAdmission } from "./heavy_build_gate.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import {
   type AlertDedupAuthorOptions,
@@ -41,7 +42,6 @@ import {
   isMergeGateFailure,
   type MergeGateOutcome,
 } from "./milestone_merge_gate.ts";
-import { deferralSkipsCargoForMerge } from "./heavy_build_gate.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
 import {
   buildConflictEscalationComment,
@@ -213,6 +213,12 @@ export interface SyncBranchOptions {
    * shape this whole bound exists to stop repeating.
    */
   agentTimeoutSeconds?: number;
+  /**
+   * Set when the host disk budget cannot afford cargo builds this cycle
+   * (Issue #4326). The value is the reason. Deno checks remain required
+   * (see milestone_merge_only.ts).
+   */
+  mergeOnly?: string;
 }
 
 /** What a branch that has spent its conflict budget is handed to. */
@@ -458,12 +464,14 @@ export interface MilestoneBranchSyncDeps {
   hostFn?: () => string;
   /**
    * Ask whether a sync that would merge — and so run the repository's own
-   * build and test to verify it — must wait for host disk (Issue #3178).
-   * A reason defers the branch this cycle with that reason in the log; null
-   * proceeds. Omitted: nothing is gated. Production wires
-   * `heavyBuildDeferral` against the repository's shared clone.
+   * build and test to verify it — may run its build this cycle (Issue #3178,
+   * Issue #4326). `defer`: the branch waits this cycle, with the reason in the
+   * log. `merge-only`: cargo builds wait for CI, Deno checks remain, and the reason is
+   * passed on as {@link SyncBranchOptions.mergeOnly}. `build`: proceed.
+   * Omitted: nothing is gated. Production wires `heavyBuildAdmission` against
+   * the repository's shared clone.
    */
-  heavyBuildGateFn?: (repo: string) => Promise<string | null>;
+  heavyBuildGateFn?: (repo: string) => Promise<HeavyBuildAdmission>;
   /**
    * Release the build artefacts a repository's pass left in the ephemeral
    * cargo root once the pass is over, rather than leaving them to the
@@ -602,7 +610,10 @@ export function escalateRepeatedRefusal(
   refusedBefore: number,
   ceiling: number = MILESTONE_REFUSAL_CEILING,
 ): ConflictConclusion {
-  if (!verdict.refusal || refusedBefore < ceiling) return verdict;
+  // A cargo-budget withhold climbs on the next cycle. The generic ceiling
+  // would leave the branch behind for three more cycles on disk alone.
+  const bound = verdict.reason === CARGO_BUDGET_AGENT_WITHHELD ? 1 : ceiling;
+  if (!verdict.refusal || refusedBefore < bound) return verdict;
   return {
     outcome: "failed",
     reason:
@@ -894,6 +905,14 @@ export const CONFLICT_RESOLVER_DECLINED = "the conflict resolver declined";
 export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
 
 /**
+ * Ledger reason when a merge-only cycle withholds the agent because a cargo
+ * build would not fit the host (Issue #4326). The first cycle is a refusal.
+ * The next one is charged, so the branch cannot stay behind on disk budget
+ * alone.
+ */
+export const CARGO_BUDGET_AGENT_WITHHELD = "cargo budget withheld the agent";
+
+/**
  * A charged refusal the recovery ladder owns (Issue #4328).
  *
  * A resolver decline and a merged-tree check failure climb the same rungs.
@@ -994,6 +1013,17 @@ export function judgeSyncFailure(
         outcome: "disrupted",
         reason: "the run was ended by the worker before the agent finished",
         rung: "agent",
+      };
+    }
+    const cargoWithheld = reasons.find((r) =>
+      r.includes(CARGO_BUDGET_AGENT_WITHHELD)
+    );
+    if (cargoWithheld !== undefined) {
+      return {
+        outcome: "not-charged",
+        reason: CARGO_BUDGET_AGENT_WITHHELD,
+        rung: "agent",
+        refusal: true,
       };
     }
     const refused = reasons.find((r) => r.includes(AGENT_PROVIDER_UNAVAILABLE));
@@ -2474,25 +2504,27 @@ export async function syncMilestoneBranches(
         // Below the host floor that build is what tips the host over, so the
         // branch waits — a deferral, not a failure, and charged nothing. A
         // branch measured level has nothing to merge and nothing to build.
+        // Issue #4326: over the ephemeral cargo budget, cargo builds wait for
+        // CI while Deno checks remain; the reason travels as `mergeOnly`.
+        let mergeOnly: string | undefined;
         if (deps.heavyBuildGateFn && behindBy !== 0) {
-          const deferral = await deps.heavyBuildGateFn(repo);
-          if (deferral !== null && deferralSkipsCargoForMerge(deferral)) {
-            // Free space is between the floor and floor + headroom, and
-            // pruning freed nothing. The merge lands; cargo does not run,
-            // so the host stays at or above its floor (Issue #4326).
-            log(
-              `Milestone sync for '${milestone.milestoneTitle}' in ${repo} ` +
-                `lands this cycle without the ephemeral cargo build: ` +
-                `${deferral}`,
-            );
-          } else if (deferral !== null) {
+          const admission = await deps.heavyBuildGateFn(repo);
+          if (admission.mode === "defer") {
             log(
               `[HOST_DISK_LOW] Milestone sync for ` +
                 `'${milestone.milestoneTitle}' in ${repo} deferred to a ` +
-                `later cycle: ${deferral}`,
+                `later cycle: ${admission.reason}`,
             );
             skipped++;
             continue;
+          }
+          if (admission.mode === "merge-only") {
+            log(
+              `[HOST_DISK_BUDGET] Milestone sync for ` +
+                `'${milestone.milestoneTitle}' in ${repo}: cargo builds wait ` +
+                `for CI; Deno projects keep their normal checks: ${admission.reason}`,
+            );
+            mergeOnly = admission.reason;
           }
         }
 
@@ -2906,13 +2938,18 @@ export async function syncMilestoneBranches(
               milestone.defaultBranch,
               // Issue #2309: an offered rung carries the announcement, which
               // the rung's own binding fires if and when it is entered.
-              agentAllowed
-                ? {
-                  ...grant,
-                  onAgentRungEntered: () =>
-                    announceAgentRung(repo, milestone, streakKey),
-                }
-                : grant,
+              // Issue #4326: a merge-only sync carries the disk-budget reason,
+              // so cargo builds wait for CI while Deno checks remain.
+              {
+                ...grant,
+                ...(mergeOnly !== undefined ? { mergeOnly } : {}),
+                ...(agentAllowed
+                  ? {
+                    onAgentRungEntered: () =>
+                      announceAgentRung(repo, milestone, streakKey),
+                  }
+                  : {}),
+              },
             );
           } finally {
             // The claim guards the sync, not the outcome: it is released on

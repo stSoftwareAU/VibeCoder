@@ -371,7 +371,11 @@ import {
 let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 
 // Liveness guard (Issue #2479)
-import { checkLivenessWindow } from "./liveness_guard.ts";
+import {
+  checkLivenessWindow,
+  formatLivenessPressureFields,
+  readLivenessTickPressure,
+} from "./liveness_guard.ts";
 
 // Crash handling
 import { cleanupInProgressIssue as crashCleanupFn } from "./crash_cleanup.ts";
@@ -532,10 +536,11 @@ import {
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
-  heavyBuildDeferral,
+  heavyBuildAdmission,
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "./heavy_build_gate.ts";
+import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
 import {
   reclaimWorkVolumeTiers,
@@ -6597,12 +6602,20 @@ export async function createProductionRunCoreDeps(
           );
           // Per-tick decision line so operators can confirm from the log
           // alone that the guard ran this cadence tick and what it saw.
+          // Issue #4225: the same line, and only when the guard returned
+          // ok (this branch), also carries MemAvailable and the two PSI
+          // files. A file that cannot be read is `unavailable` on that
+          // field. The read does not throw, so a missing file does not
+          // drop the tick line.
+          const pressureFields = formatLivenessPressureFields(
+            await readLivenessTickPressure(),
+          );
           logger.info(
             `[liveness] tick=${tick} alerted=${v.alerted} ` +
               `live_epoch=${v.liveEpoch ?? "none"} ` +
               `last_idle_claimed=${v.lastIdleClaimedEpoch ?? "none"} ` +
               `last_productive=${v.lastProductiveEpoch ?? "none"} ` +
-              hookFields,
+              `${hookFields} ${pressureFields}`,
           );
         } else {
           logger.warn("Liveness guard write failed (continuing)", {
@@ -6647,6 +6660,67 @@ export async function createProductionRunCoreDeps(
   return { deps, config: coreConfig, cleanup };
 }
 
+/** What {@link syncMilestoneBranchForSweep} needs for one branch. */
+export interface SweepMilestoneSyncInput {
+  repo: string;
+  milestoneBranch: string;
+  defaultBranch: string;
+  /** The cycle's grant for this branch, including any merge-only reason. */
+  syncOptions: import("./milestone_branch_sync.ts").SyncBranchOptions;
+  workDir: string;
+  config: WorkerConfig;
+  logger: Logger;
+  /** Injected for tests; production runs the real sync. */
+  syncFn?: typeof import("./git_pull.ts").syncMilestoneBranchWithDefault;
+  /** Injected for tests; production runs the real agent. */
+  runAgent?: typeof import("./claude_runner.ts").runClaudeWithRetry;
+}
+
+/**
+ * One branch of the milestone sweep: bind the agent rung, then sync with the
+ * gates and agent the cycle's budget calls for (Issue #4326).
+ *
+ * Exported so a test can drive the sweep's own binding rather than only the
+ * helper it calls.
+ */
+export async function syncMilestoneBranchForSweep(
+  input: SweepMilestoneSyncInput,
+) {
+  const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
+  const { bindMilestoneConflictAgent } = await import(
+    "./milestone_conflict_agent_binding.ts"
+  );
+  const { runClaudeWithRetry } = await import("./claude_runner.ts");
+  const { repo, syncOptions } = input;
+  // Issue #2309: every behind branch is offered the agent rung, and only the
+  // handler's remaining budget refuses one. A branch that was not granted it
+  // is handed no agent at all, so the ladder stops after the deterministic
+  // rules rather than starting a run the watchdog would kill mid-edit
+  // (Issues #1778, #1693).
+  // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so this
+  // sweep and a child run's pre-cut sync hand the ladder exactly the same
+  // rung — including the grant's own timeout.
+  const agentFn = bindMilestoneConflictAgent({
+    repo,
+    grant: syncOptions,
+    config: input.config,
+    logger: input.logger,
+    runAgent: input.runAgent ?? runClaudeWithRetry,
+  });
+  // Issue #4326: a merge-only sync swaps in the gates and agent that land the
+  // merge without the repository's build for a cargo tree.
+  return syncWithMergeOnlyBindings({
+    syncFn: input.syncFn ?? syncMilestoneBranchWithDefault,
+    milestoneBranch: input.milestoneBranch,
+    defaultBranch: input.defaultBranch,
+    options: { cwd: `${input.workDir}/${repo.split("/")[1]}` },
+    repo,
+    mergeOnly: syncOptions.mergeOnly,
+    agentFn,
+    logger: input.logger,
+  });
+}
+
 /** Helper: sync milestone branches using lib function (Issue #1238). */
 async function syncMilestoneBranchesFn(
   repos: string[],
@@ -6669,16 +6743,8 @@ async function syncMilestoneBranchesFn(
   const { selfHealMilestoneBranches } = await import(
     "./milestone_branch_self_heal.ts"
   );
-  const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
-  // Issue #1777: the sync climbs the same ladder the PR pass does, so it
-  // needs the same agent — bound here because only this layer knows the
-  // repository's instructions and the run's timeouts.
-  const { bindMilestoneConflictAgent } = await import(
-    "./milestone_conflict_agent_binding.ts"
-  );
-  const { runClaudeWithRetry } = await import("./claude_runner.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
 
@@ -6758,11 +6824,11 @@ async function syncMilestoneBranchesFn(
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
     // Issue #3178: a sync that merges is verified by the repository's own
-    // build and test; below the host floor, or over the ephemeral cargo
-    // budget, it waits. The clone's ephemeral target dirs go when the pass
-    // ends rather than at the relaunch.
+    // build and test; below the host floor it waits. The clone's ephemeral
+    // target dirs go when the pass ends rather than at the relaunch. Issue
+    // #4326: over the ephemeral cargo budget the sync lands without the build.
     heavyBuildGateFn: (repo) =>
-      heavyBuildDeferral(`${workDir}/${repo.split("/")[1]}`),
+      heavyBuildAdmission(`${workDir}/${repo.split("/")[1]}`),
     releaseBuildArtefactsFn: async (repo) => {
       if (!workVolumeTrimRefusedForLaunch()) return;
       const released = await releaseCheckoutTargetDirs(
@@ -6775,39 +6841,16 @@ async function syncMilestoneBranchesFn(
         );
       }
     },
-    syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
-      // Issue #2309: every behind branch is offered the agent rung, and only
-      // the handler's remaining budget refuses one. A branch that was not
-      // granted it is handed no agent at all, so the ladder stops after the
-      // deterministic rules rather than starting a run the watchdog would
-      // kill mid-edit (Issues #1778, #1693).
-      // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
-      // this sweep and a child run's pre-cut sync hand the ladder exactly the
-      // same rung — including the grant's own timeout.
-      const agentFn = bindMilestoneConflictAgent({
+    syncBranchFn: (repo, milestoneBranch, defaultBranch, syncOptions) =>
+      syncMilestoneBranchForSweep({
         repo,
-        grant: syncOptions,
-        config,
-        logger,
-        runAgent: runClaudeWithRetry,
-      });
-      return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,
-        { cwd: `${workDir}/${repo.split("/")[1]}` },
-        // Issue #589: named so the sync can raise a PR when a repository
-        // rule refuses the direct push.
-        repo,
-        // The default gates: the repository's own type check, and the
-        // stricter resolution gate derived from it.
-        undefined,
-        undefined,
-        // Issue #1777: the last rung before a human. It runs in the very
-        // clone the merge conflicted in, against a branch target.
-        agentFn,
+        syncOptions,
+        workDir,
+        config,
         logger,
-      );
-    },
+      }),
     localCloneExistsFn,
     // Issue #2309: longest-behind first within each repository. The
     // measurement itself lives in `milestone_behind_count.ts`, where both its

@@ -71,3 +71,7 @@ absence assertion is preserved.
 All 127 related execution, GitHub-spawn and gate-retry tests passed. Formatting
 and lint passed for the three affected TypeScript files. This push refreshes
 the archived summary required by the PR summary freshness gate.
+
+## Milestone merge validation
+
+Reconciled PR #4382 with current main. Retained the one-hour start gate, two-hour session and extension bounds, and bounded drain, along with the milestone's security-sweep cleanups. Retained main's repository provider pins, container sandbox policy, typed disk admissions, nested Deno discovery and later-session infrastructure-fault handling. Validation: 301 focused tests and all 857 manifest checks passed (one ignored); all 22 conflicted TypeScript files pass formatting and lint.
