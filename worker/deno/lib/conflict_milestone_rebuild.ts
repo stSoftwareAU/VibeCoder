@@ -70,6 +70,7 @@ import {
   isRuleViolationPush,
   raiseMilestoneSyncPr,
 } from "./milestone_sync_pr.ts";
+import type { MergeGateOutcome } from "./milestone_merge_gate.ts";
 import { resolveIssueForRevertedPr } from "./milestone_rollback_requeue.ts";
 import { buildRollbackMarker } from "./milestone_rollback_marker.ts";
 import { addLabelToIssue } from "./label_operations.ts";
@@ -259,6 +260,21 @@ export interface MilestoneRebuildDeps {
    * as before.
    */
   announce?: (body: string) => Promise<void>;
+  /**
+   * Sub-PRs that must not be replayed (PR #4344 review): the ones an earlier
+   * roll-back reverted off this branch. Their issues were re-queued for a
+   * redo, so replaying them would put the work back beside its redo. They are
+   * left out silently — neither skipped nor re-queued, since the roll-back
+   * already re-queued them.
+   */
+  excludePrNumbers?: readonly number[];
+  /**
+   * The merge gate, run on the rebuilt tree (checked out in the clone) before
+   * it is delivered (PR #4344 review). A `failed` verdict refuses the rebuild:
+   * nothing is pushed and nothing is re-queued. Unset, the tree is delivered
+   * unchecked, as the single-milestone conflict route always did.
+   */
+  gate?: () => Promise<MergeGateOutcome>;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,7 +510,17 @@ export async function abandonAndRebuildMilestone(
   // --- Step 3: replay every sub-PR, in merge order. -------------------------
   const replayed: SubPrReplay[] = [];
   const skipped: SkippedSubPr[] = [];
-  for (const subPr of subPrs) {
+  const excluded = new Set(deps.excludePrNumbers ?? []);
+  const replayable = subPrs.filter((p) => !excluded.has(p.number));
+  if (replayable.length < subPrs.length) {
+    logger?.info?.(
+      `Milestone rebuild of ${branchName} leaves out ` +
+        `${subPrs.length - replayable.length} sub-PR(s) an earlier roll-back ` +
+        "reverted; their issues are already re-queued",
+      { repo, prNumber },
+    );
+  }
+  for (const subPr of replayable) {
     if (subPr.mergeCommitSha === null) {
       skipped.push({
         prNumber: subPr.number,
@@ -583,6 +609,44 @@ export async function abandonAndRebuildMilestone(
     );
   }
   const rebuildSha = revParseHead.stdout.trim();
+
+  // --- Step 4b: the merge gate judges the rebuilt tree (PR #4344 review). ---
+  // A rebuild is a merge the sync did not make, so it is held to the same
+  // check: a semantic conflict replays cleanly and would otherwise reach the
+  // branch exactly as the gate refused it. Before the push and the re-queues,
+  // so a refused rebuild changes nothing outside the clone.
+  if (deps.gate) {
+    let verdict: MergeGateOutcome;
+    try {
+      verdict = await deps.gate();
+    } catch (error) {
+      verdict = {
+        status: "failed",
+        detail: `the merge gate could not be run: ${errorMessage(error)}`,
+        output: "",
+      };
+    }
+    if (verdict.status === "failed") {
+      // Best effort: leave the clone clean for the next rung.
+      const cleaned = await git(["reset", "--hard", rebuildSha]);
+      const cleanNote = cleaned.code === 0
+        ? ""
+        : ` — and the clone could not be reset: ${cleaned.stderr}`;
+      return failed(
+        "milestone-gate",
+        `the rebuilt tree of '${branchName}' does not pass the repository's ` +
+          `own check, so it was not delivered: ${verdict.detail}${
+            verdict.output ? `\n${verdict.output}` : ""
+          }${cleanNote}`,
+      );
+    }
+    if (verdict.status === "skipped") {
+      logger?.warn?.(
+        `UNGATED rebuild of ${branchName}: ${verdict.detail}`,
+        { repo, prNumber },
+      );
+    }
+  }
 
   // --- Step 5: deliver. Never a force-push. ---------------------------------
   const push = await git(

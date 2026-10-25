@@ -2398,6 +2398,151 @@ Deno.test(
   },
 );
 
+/** Two sub-PRs, #11 (issue 1) and #12 (issue 2), merged in that order. */
+function twoSubPrListing() {
+  return [
+    subPrRow({
+      number: 11,
+      headRefName: "issue-1-a",
+      mergedAt: "2026-01-01T00:00:00Z",
+      sha: SHA_11,
+    }),
+    subPrRow({
+      number: 12,
+      headRefName: "issue-2-b",
+      mergedAt: "2026-01-02T00:00:00Z",
+      sha: SHA_12,
+    }),
+  ];
+}
+
+Deno.test(
+  "abandonAndRebuildMilestone - sub-PRs an earlier roll-back reverted are not replayed, skipped or re-queued (PR #4344 review)",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: twoSubPrListing(),
+      issueStates: {},
+    });
+    const gitFake = makeMilestoneGit();
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+      excludePrNumbers: [11],
+    });
+
+    assert(outcome.outcome === "milestone-rebuilt");
+    assertEquals(outcome.replayed.map((r) => r.prNumber), [12]);
+    assertEquals(outcome.skipped, []);
+    const picked = gitFake.calls.filter((c) => c[0] === "cherry-pick").map((
+      c,
+    ) => c[c.length - 1]);
+    assertEquals(
+      picked,
+      [SHA_12],
+      "the reverted sub-PR's merge is never picked",
+    );
+    assertEquals(
+      Object.keys(ghFake.issueComments).length,
+      0,
+      "its issue was re-queued by the roll-back, not again here",
+    );
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a gate that refuses the rebuilt tree stops it before the push and the re-queues (PR #4344 review)",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: twoSubPrListing(),
+      issueStates: { 1: { state: "CLOSED", labels: ["idle-task"] } },
+    });
+    const gitFake = makeMilestoneGit({
+      failingCherryPicks: new Set([SHA_11]),
+    });
+    let gateRuns = 0;
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+      gate: () => {
+        gateRuns++;
+        return Promise.resolve({
+          status: "failed",
+          detail: "deno check failed",
+          output: "TS2304: Cannot find name 'scan'",
+        });
+      },
+    });
+
+    assertEquals(gateRuns, 1);
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-gate");
+    assertStringIncludes(outcome.message, "deno check failed");
+    assertStringIncludes(outcome.message, "TS2304: Cannot find name 'scan'");
+    assertEquals(
+      gitFake.calls.some((c) => c[0] === "push"),
+      false,
+      "an unverified tree is never pushed",
+    );
+    assertEquals(
+      gitFake.calls.filter((c) => c[0] === "reset").length,
+      2,
+      "the failed cherry-pick's reset, then the clone is cleaned after the refusal",
+    );
+    assertEquals(
+      Object.keys(ghFake.issueComments).length,
+      0,
+      "a refused rebuild re-queues nothing",
+    );
+    assertEquals(ghFake.reopened, []);
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a gate that cannot be run refuses the rebuild too (PR #4344 review)",
+  async () => {
+    const gitFake = makeMilestoneGit();
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: makeMilestoneGh({ subPrListing: twoSubPrListing(), issueStates: {} })
+        .gh,
+      git: gitFake.git,
+      gate: () => Promise.reject(new Error("deno is not installed")),
+    });
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-gate");
+    assertStringIncludes(outcome.message, "deno is not installed");
+    assertEquals(gitFake.calls.some((c) => c[0] === "push"), false);
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a gate that passes, or finds nothing to check, delivers the rebuild (PR #4344 review)",
+  async () => {
+    for (const status of ["passed", "skipped"] as const) {
+      const gitFake = makeMilestoneGit();
+      const logger = recordingLogger();
+      const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+        gh: makeMilestoneGh({
+          subPrListing: twoSubPrListing(),
+          issueStates: {},
+        }).gh,
+        git: gitFake.git,
+        logger,
+        gate: () =>
+          Promise.resolve({ status, detail: `gate ${status}`, output: "" }),
+      });
+      assert(outcome.outcome === "milestone-rebuilt", status);
+      assertEquals(gitFake.calls.some((c) => c[0] === "push"), true, status);
+      assertEquals(
+        logger.warnings.some((w) => w.message.startsWith("UNGATED rebuild")),
+        status === "skipped",
+        status,
+      );
+    }
+  },
+);
+
 Deno.test(
   "abandonAndRebuildMilestone - an empty sub-PR listing fails loud, no git calls",
   async () => {

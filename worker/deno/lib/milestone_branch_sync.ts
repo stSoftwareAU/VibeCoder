@@ -37,7 +37,10 @@ import {
 import type { RepoLease } from "./maintenance_lane.ts";
 import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
-import { isMergeGateFailure } from "./milestone_merge_gate.ts";
+import {
+  isMergeGateFailure,
+  type MergeGateOutcome,
+} from "./milestone_merge_gate.ts";
 import {
   buildConflictEscalationComment,
   describeBranchTips,
@@ -269,6 +272,12 @@ export interface MilestoneRebuildRequest {
   milestoneNumber: number;
   /** The open milestone PR against the branch, when there is one. */
   headPrNumber?: number;
+  /**
+   * The sub-PRs an earlier roll-back reverted off the branch (PR #4344
+   * review). The rebuild leaves them out: their issues are re-queued for a
+   * redo, and replaying them would put the work back beside its redo.
+   */
+  revertedPrs?: readonly number[];
 }
 
 /**
@@ -512,6 +521,13 @@ export interface MilestoneBranchSyncDeps {
    * sweep falls through to the roll-back.
    */
   rebuildFn?: MilestoneRebuildFn;
+  /**
+   * The merge gate the default rebuild runs on the rebuilt tree in the repo's
+   * clone before delivering it (PR #4344 review). Unset, the default rebuild
+   * refuses to run — an unchecked rebuild could push the very tree the sync's
+   * gate refused — and the sweep falls through to the roll-back.
+   */
+  rebuildGateFn?: (repo: string) => Promise<MergeGateOutcome>;
   /**
    * File (or append to) the one `merge-fallback` flag issue every fallback
    * leaves behind (Issues #2304, #2311). Defaults to
@@ -1132,13 +1148,17 @@ async function prepareRollbackWorktree(
  * repo's clone. The notice goes to the milestone's escalation target, because
  * the branch may have no milestone PR to comment on.
  *
- * With no git runner it says so in the log and resolves with nothing, so the
- * sweep falls through to the roll-back exactly as it did before this rung.
+ * With no git runner, or no merge gate, it says so in the log and resolves
+ * with nothing, so the sweep falls through to the roll-back exactly as it did
+ * before this rung. The rebuilt tree goes through the gate before it is
+ * delivered, and the sub-PRs an earlier roll-back reverted are not replayed
+ * (PR #4344 review).
  */
 function defaultRebuildFn(
   log: (message: string) => void,
   gitFn: RollbackGitFn | undefined,
   ghCommandFn: GhCommandFn,
+  gateFn: ((repo: string) => Promise<MergeGateOutcome>) | undefined,
 ): MilestoneRebuildFn {
   return async (request) => {
     if (gitFn === undefined) {
@@ -1148,6 +1168,16 @@ function defaultRebuildFn(
         `Milestone branch '${request.milestoneBranch}' in ` +
           `${request.repo}: rebuild not available — no git runner is wired ` +
           `(Issue #4328)`,
+      );
+      return;
+    }
+    if (gateFn === undefined) {
+      logAt(
+        log,
+        "warn",
+        `Milestone branch '${request.milestoneBranch}' in ` +
+          `${request.repo}: rebuild not available — no merge gate is wired, ` +
+          `and a rebuild is never delivered unchecked (PR #4344 review)`,
       );
       return;
     }
@@ -1211,6 +1241,10 @@ function defaultRebuildFn(
         git: (args) => gitFn(request.repo, args),
         logger: createLogger({ write: log, host: "" }),
         announce,
+        gate: () => gateFn(request.repo),
+        ...(request.revertedPrs !== undefined
+          ? { excludePrNumbers: request.revertedPrs }
+          : {}),
       },
     );
   };
@@ -1668,7 +1702,12 @@ export async function syncMilestoneBranches(
     defaultRollbackFn(log, deps.rollbackGitFn, ghCommandFn);
   // The rung after the roll-back (Issue #4328).
   const rebuildFn = deps.rebuildFn ??
-    defaultRebuildFn(log, deps.rollbackGitFn, ghCommandFn);
+    defaultRebuildFn(
+      log,
+      deps.rollbackGitFn,
+      ghCommandFn,
+      deps.rebuildGateFn,
+    );
   // The running-attempt announcement (Issue #2309). The host is read once —
   // it cannot change mid-pass — and every attempt announced by this pass is
   // remembered here as well as in the ledger, so a host with no ledger file
@@ -1733,6 +1772,9 @@ export async function syncMilestoneBranches(
         milestoneTitle: milestone.milestoneTitle,
         milestoneNumber: milestone.milestoneNumber,
         ...(headPrNumber !== undefined ? { headPrNumber } : {}),
+        ...(entry.revertedPrs !== undefined
+          ? { revertedPrs: entry.revertedPrs }
+          : {}),
       });
       if (rebuilt && rebuilt.outcome === "milestone-rebuilt") {
         entry = resetConflictLedgerOnSuccess(entry);

@@ -972,9 +972,13 @@ removed the last `needs-human` from the milestone conflict path:
   offered a **rebuild** before the next roll-back (Issue #4328): the branch is
   rebuilt from its base tip with its merged sub-PRs replayed, delivered as a
   fast-forward (a plain push, or a sync PR when a ruleset refuses it), and never
-  force-pushed. A rebuild files no `merge-fallback` flag. It emits `rebuilt` on
-  success, or `rebuild_failed` when it fails and the roll-back then follows with
-  its own flag.
+  force-pushed. The sub-PRs that roll-back reverted (the ledger's
+  `revertedPrs`) are left out of the replay, since their issues are re-queued
+  for a redo, and the rebuilt tree must pass the sync's own merge gate
+  (`checkMergedTree`) before it is delivered; a refused tree is a failed rebuild
+  at step `milestone-gate`, pushing and re-queuing nothing. A rebuild files no
+  `merge-fallback` flag. It emits `rebuilt` on success, or `rebuild_failed` when
+  it fails and the roll-back then follows with its own flag.
 
 ### 💥 When the attempt itself is disrupted
 

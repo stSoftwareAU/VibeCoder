@@ -35,7 +35,10 @@ import {
   AGENT_PROVIDER_UNAVAILABLE,
   AGENT_RUN_ENDED_BY_WORKER,
 } from "../lib/milestone_conflict_ladder.ts";
-import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
+import {
+  mergeGateFailureError,
+  type MergeGateFn,
+} from "../lib/milestone_merge_gate.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import type { RollbackOutcome } from "../lib/milestone_rollback.ts";
 import {
@@ -956,6 +959,9 @@ const MERGED_SUB_PRS = JSON.stringify([{
   mergeCommit: { oid: SUB_PR_SHA },
 }]);
 
+const PASSING_GATE: MergeGateFn = () =>
+  Promise.resolve({ status: "passed", detail: "gate passed", output: "" });
+
 /** Git whose every call succeeds; `checkout -B` can be made to refuse. */
 function rebuildGit(refuseCheckout?: string) {
   const calls: string[][] = [];
@@ -990,6 +996,14 @@ interface DefaultRebuildRun {
 async function runDefaultRebuild(options: {
   title?: string;
   gitFn?: RollbackGitFn;
+  /** Ledger fields beyond the one spent roll-back. */
+  ledger?: Partial<SyncStreakEntry>;
+  /** The error every sync returns; a refusal by default. */
+  syncError?: () => Error;
+  /** The merged sub-PR listing gh answers. */
+  merged?: string;
+  /** The merge gate; passes by default, and `null` leaves it unwired. */
+  gate?: MergeGateFn | null;
   /** Answers a gh call before the stub's own answer; may throw. */
   answer?: (args: string[]) => string | undefined;
 }): Promise<DefaultRebuildRun> {
@@ -998,7 +1012,7 @@ async function runDefaultRebuild(options: {
   const { dir, streakPath } = await workDir();
   try {
     await saveSyncStreaks(streakPath, {
-      [key]: spentLedger({ rollbacks: 1 }),
+      [key]: spentLedger({ rollbacks: 1, ...options.ledger }),
     });
     const ghCalls: string[][] = [];
     const rollbacks: string[] = [];
@@ -1006,11 +1020,14 @@ async function runDefaultRebuild(options: {
     const deps = sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: options.syncError ?? (() => refusalError("agent")),
       syncCalls: [],
       rollbacks,
       ...(options.gitFn ? { rollbackGitFn: options.gitFn } : {}),
     });
+    if (options.gate !== null) {
+      deps.rebuildGateFn = options.gate ?? PASSING_GATE;
+    }
     const base = deps.ghCommandFn!;
     deps.ghCommandFn = (args) => {
       ghCalls.push([...args]);
@@ -1019,7 +1036,7 @@ async function runDefaultRebuild(options: {
         return Promise.resolve(JSON.stringify([{ title, number: 1 }]));
       }
       if (key.startsWith("pr list") && key.includes("--state merged")) {
-        return Promise.resolve(MERGED_SUB_PRS);
+        return Promise.resolve(options.merged ?? MERGED_SUB_PRS);
       }
       const answered = options.answer?.(args);
       return answered !== undefined ? Promise.resolve(answered) : base(args);
@@ -1145,6 +1162,120 @@ Deno.test("syncMilestoneBranches - with no git runner the default rebuild says s
     run.logs.some((l) =>
       l.includes("rebuild not available — no git runner is wired")
     ),
+    JSON.stringify(run.logs),
+  );
+});
+
+const SHA_8 = "8".repeat(40);
+const SUB_PRS_7_AND_8 = JSON.stringify([
+  {
+    number: 7,
+    headRefName: "issue-7-sub",
+    body: "",
+    mergedAt: "2026-10-01T00:00:00Z",
+    mergeCommit: { oid: SUB_PR_SHA },
+  },
+  {
+    number: 8,
+    headRefName: "issue-8-sub",
+    body: "",
+    mergedAt: "2026-10-02T00:00:00Z",
+    mergeCommit: { oid: SHA_8 },
+  },
+]);
+
+const pickedShas = (calls: string[][]): string[] =>
+  calls.filter((c) => c[0] === "cherry-pick").map((c) => c[c.length - 1]!);
+
+Deno.test("syncMilestoneBranches - the default rebuild never replays a sub-PR the earlier roll-back reverted (PR #4344 review)", async () => {
+  const git = rebuildGit();
+  const run = await runDefaultRebuild({
+    gitFn: git.gitFn,
+    merged: SUB_PRS_7_AND_8,
+    ledger: { rollbacks: 1, revertedPrs: [7] },
+  });
+  // Positive control: the rebuild ran and replayed the other sub-PR.
+  assertEquals(run.entry?.rebuilds, 1);
+  assertEquals(pickedShas(git.calls), [SHA_8]);
+  assertEquals(
+    run.entry?.revertedPrs,
+    [7],
+    "the ledger still records what the roll-back reverted",
+  );
+});
+
+Deno.test("syncMilestoneBranches - without a reverted sub-PR the default rebuild replays every merged sub-PR (PR #4344 review)", async () => {
+  const git = rebuildGit();
+  await runDefaultRebuild({ gitFn: git.gitFn, merged: SUB_PRS_7_AND_8 });
+  assertEquals(pickedShas(git.calls), [SUB_PR_SHA, SHA_8]);
+});
+
+/** A spent budget that a merge-gate refusal of the merged tree pushes over. */
+const gateRefusedMerge = () =>
+  mergeGateFailureError(BRANCH, DEFAULT_BRANCH, {
+    status: "failed",
+    detail: "deno check failed",
+    output: "TS2304: Cannot find name 'scan'",
+  });
+
+Deno.test("syncMilestoneBranches - a rebuild after a merge-gate refusal is not pushed when the gate refuses it too (PR #4344 review)", async () => {
+  const git = rebuildGit();
+  let gated = "";
+  const run = await runDefaultRebuild({
+    gitFn: git.gitFn,
+    syncError: gateRefusedMerge,
+    ledger: {
+      rollbacks: 0,
+      rollbackFailures: 1,
+      conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+    },
+    gate: (repo) => {
+      gated = repo;
+      return Promise.resolve({
+        status: "failed",
+        detail: "deno check failed",
+        output: "TS2304: Cannot find name 'scan'",
+      });
+    },
+  });
+  assertEquals(gated, REPO, "the gate judged the rebuilt tree");
+  assertEquals(git.calls.some((c) => c[0] === "push"), false);
+  assertEquals(run.entry?.rebuilds, undefined);
+  assertEquals(run.rollbacks.length, 1, "it falls through to the roll-back");
+  assert(
+    run.logs.some((l) =>
+      l.includes("failed at step milestone-gate") &&
+      l.includes("TS2304: Cannot find name 'scan'")
+    ),
+    JSON.stringify(run.logs),
+  );
+});
+
+Deno.test("syncMilestoneBranches - the same merge-gate-refusal budget rebuilds and pushes when the gate passes the rebuilt tree (PR #4344 review)", async () => {
+  const git = rebuildGit();
+  const run = await runDefaultRebuild({
+    gitFn: git.gitFn,
+    syncError: gateRefusedMerge,
+    ledger: {
+      rollbacks: 0,
+      rollbackFailures: 1,
+      conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+    },
+  });
+  assertEquals(git.calls.some((c) => c[0] === "push"), true);
+  assertEquals(run.entry?.rebuilds, 1);
+  assertEquals(run.rollbacks, []);
+});
+
+Deno.test("syncMilestoneBranches - with no merge gate wired the default rebuild does not run and the roll-back does (PR #4344 review)", async () => {
+  const git = rebuildGit();
+  const run = await runDefaultRebuild({ gitFn: git.gitFn, gate: null });
+  assertEquals(run.rollbacks.length, 1);
+  assertEquals(run.entry?.rebuilds, undefined);
+  assertEquals(git.calls.some((c) => c[0] === "cherry-pick"), false);
+  assertEquals(git.calls.some((c) => c[0] === "push"), false);
+  assert(
+    run.logs.some((l) => l.includes("no merge gate is wired")),
     JSON.stringify(run.logs),
   );
 });

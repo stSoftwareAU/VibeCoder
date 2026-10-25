@@ -6901,6 +6901,12 @@ async function syncMilestoneBranchesFn(
     // is never started on a promise the watchdog then breaks (#1693).
     ...(deadlineEpochMs !== undefined ? { deadlineEpochMs } : {}),
     agentTimeoutMs: config.claudeTimeout * 1000,
+    // PR #4344 review: the sync's own merge gate judges a rebuilt tree in the
+    // same clone before it is delivered.
+    rebuildGateFn: async (repo) => {
+      const { checkMergedTree } = await import("./milestone_merge_gate.ts");
+      return checkMergedTree(`${workDir}/${repo.split("/")[1]}`);
+    },
     // Issue #1781: the default roll-back runs executeRollback in the
     // same clone the sync just used.
     rollbackGitFn: async (repo, args) => {

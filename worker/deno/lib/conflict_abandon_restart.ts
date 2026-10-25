@@ -587,6 +587,8 @@ export type AbandonStep =
   | "milestone-sub-prs"
   /** The git work rebuilding the milestone branch from its base (Issue #3035). */
   | "milestone-rebuild"
+  /** The merge gate refusing the rebuilt tree before it is delivered (PR #4344 review). */
+  | "milestone-gate"
   /** Delivering the rebuild to the milestone branch (Issue #3035). */
   | "milestone-push"
   /** Re-queuing a skipped sub-PR's sub-issue after a milestone rebuild (Issue #3035). */
