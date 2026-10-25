@@ -500,6 +500,7 @@ import {
   HARD_KILL_FAILURE_CLASS,
   reportPendingHardKills,
 } from "./hard_kill_report.ts";
+import type { SelfDiagnosticFiling } from "./self_diagnostic_attestation.ts";
 import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
@@ -645,6 +646,24 @@ export interface ProductionDepsOptions {
    * takes its default runner.
    */
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * `gh` runner the hard-kill reporter files through (Issue #4254).
+   *
+   * Production leaves this unset and gets {@link runGhCommandRaw}. Tests inject
+   * a stub so the wiring from `reportHardKills` to its failure hook and fleet
+   * count can be driven end to end without a real `gh` call.
+   */
+  hardKillGhFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * Attestation recorder the hard-kill reporter files through (Issue #4254).
+   *
+   * Production leaves this unset and gets the module's own default, the
+   * production recorder. Tests inject a fake so a filing never appends to the
+   * host's audit journal.
+   */
+  hardKillRecordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
 
   /**
    * `gh` runner for the cross-repo open-PR prefetch (Issue #1486).
@@ -5459,8 +5478,8 @@ export async function createProductionRunCoreDeps(
      * Report the hard-kill evidence files the launcher watchdog left in the
      * host log directory (Issue #4254). Each signature is filed once, its
      * failure callback runs through the same `runIssueCallbacks` path as any
-     * other run, and the kill is counted for the next cycle's fleet summary.
-     * Never throws.
+     * other run, and the kill is counted in the first scan cycle's fleet
+     * summary (the cycle that runs this report). Never throws.
      */
     async reportHardKills() {
       const evidenceDir = hostLogDirectory(env);
@@ -5471,18 +5490,25 @@ export async function createProductionRunCoreDeps(
         return;
       }
       try {
-        await reportPendingHardKills({
+        const summary = await reportPendingHardKills({
           evidenceDir,
-          ghFn: runGhCommandRaw,
+          ghFn: options.hardKillGhFn ?? runGhCommandRaw,
           runFailureCallback: async (run) => {
             await deps.runIssueCallbacks?.(run);
           },
           countFailure: () => recordOutcome("failure", HARD_KILL_FAILURE_CLASS),
+          recordFiling: options.hardKillRecordFiling,
           log: (message) => logger.info(message),
           logError: (message) => logger.error(message),
+          logWarn: (message) => logger.warn(message),
         });
+        if (summary.found > 0) {
+          logger.info(
+            `Hard-kill reporting: found ${summary.found}, reported ${summary.reported}, kept ${summary.kept} for the next start (Issue #4254).`,
+          );
+        }
       } catch (error) {
-        logger.error(
+        logger.warn(
           `Hard-kill reporting faulted: ${
             error instanceof Error ? error.message : String(error)
           }. The scan cycle continues.`,

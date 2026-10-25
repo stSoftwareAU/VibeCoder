@@ -6189,7 +6189,7 @@ export async function runCoreLoop(
             try {
               await deps.reportHardKills();
             } catch (hardKillErr) {
-              deps.logError(
+              warnOf(deps)(
                 `Hard-kill reporting faulted: ${
                   hardKillErr instanceof Error
                     ? hardKillErr.message

@@ -74,8 +74,9 @@ flowchart LR
   drain share one guard, so a hook is never invoked twice for the same claim.
 - Concurrent issue slots each receive their own context; hooks never share state
   between slots, and each slot's `always` runs for that slot alone.
-- A hard-killed run is a run from an earlier process, reported once per evidence
-  file on the next worker start rather than when it terminated (see
+- A hard-killed run is a run from an earlier process, reported on the next
+  worker start, once per evidence file (unless the file cannot be removed; see
+  Lifecycle below), rather than when it terminated (see
   [A hard-killed run](#a-hard-killed-run--failureclass-hard_kill)).
 
 ## Host-level failures — `callbacks.host_failure`
@@ -441,7 +442,9 @@ flowchart TD
   repeat in a 24 h window posts one comment; later repeats in that window append
   to it in place. There is no per-host rate limit.
 - **The callback.** The `failure` run callback fires once for the kill, with
-  these fields set. The kill is also counted in the next cycle callback's
+  these fields set. The one exception is an evidence file that cannot be
+  removed after the report: the next start fires the callback again (see
+  Lifecycle below). The kill is also counted in the next cycle callback's
   `fleetSummary.failures`, and under `hard_kill` in the fleet summary's failure
   classes. The `always` callback then fires, exactly as it does for any failed
   run: `invokeRunCallbacks` in `worker/deno/lib/run_callbacks.ts` runs `failure`
@@ -460,10 +463,12 @@ flowchart TD
 | `startedAt`, `finishedAt`   | The evidence's capture time, for both, so `durationSeconds` is `0`; the real duration is unknown |
 
 - **Lifecycle.** The evidence file is removed once it is filed and reported. If
-  filing fails, the file is kept for the next launch and the cause is logged as
-  an error. No callback fires and nothing is counted until filing succeeds, so a
-  retry reports the kill once. A malformed or unknown-version file is kept and
-  logged, and is never deleted.
+  filing fails, the file is kept for the next launch and the failure is logged
+  as a warning. No callback fires and nothing is counted until filing succeeds,
+  so the retry reports the kill once. If the file cannot be removed after the
+  report, it stays, the failure is logged as a warning, and the next start
+  reports the kill again. A malformed or wrong-version file is logged as an
+  error and kept; it is never deleted.
 - **Additive contract.** `hard_kill` is a new value of the existing
   `outcome.failureClass` field, and a new key in the fleet summary's failure
   classes. Nothing is removed and no meaning changes, so `schemaVersion` stays at

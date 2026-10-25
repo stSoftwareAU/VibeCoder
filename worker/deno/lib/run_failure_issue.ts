@@ -363,6 +363,111 @@ export async function postRunFailureFollowUp(
   return { updated: false };
 }
 
+/** Inputs to {@link findOpenRunFailureIssue}. */
+export interface FindOpenRunFailureIssueOptions {
+  ghFn: (args: string[]) => Promise<string>;
+  targetRepo: string;
+  failureClass: string;
+  /** Fleet logins whose markers are trusted (see FileRunFailureIssueOptions). */
+  fleetAuthors?: readonly string[];
+  log?: (message: string) => void;
+}
+
+/**
+ * Step 1 of {@link fileRunFailureIssue} (Issue #4254 extracted it so the
+ * hard-kill reporter shares the dedup rule): the lowest-numbered open issue
+ * that carries the class marker AND was authored by a fleet account, or null.
+ *
+ * Throws when GitHub refuses the search; the caller keeps its own catch and
+ * decides what the failure means for its decision.
+ */
+export async function findOpenRunFailureIssue(
+  opts: FindOpenRunFailureIssueOptions,
+): Promise<{ number: number } | null> {
+  const log = opts.log ?? (() => {});
+  const failureClass = opts.failureClass;
+  const raw = await opts.ghFn([
+    "issue",
+    "list",
+    "--repo",
+    opts.targetRepo,
+    "--state",
+    "open",
+    "--search",
+    `"${RUN_FAILURE_MARKER_PREFIX}:${failureClass}" in:body`,
+    "--json",
+    ALERT_DEDUP_JSON_FIELDS,
+    "--limit",
+    "20",
+  ]);
+  const list = JSON.parse(raw || "[]") as AlertDedupRow[];
+  const verified = list.filter((i) => isRunFailureIssue(i.body ?? "", failureClass)); // RED-CHECK BREAK
+  const match = verified.sort((a, b) => a.number - b.number)[0];
+  return match ? { number: match.number } : null;
+}
+
+/** Inputs to {@link createRunFailureIssue}. */
+export interface CreateRunFailureIssueOptions {
+  ghFn: (args: string[]) => Promise<string>;
+  targetRepo: string;
+  title: string;
+  body: string;
+  /** The guarded `--label` arguments, built by the caller. */
+  labelArgs: string[];
+  failureClass: string;
+  /** The `filedBy` the attestation records: the caller's module path. */
+  filedBy: string;
+  /**
+   * Runs once the new issue number is known and before the attestation, so a
+   * caller can persist its own state first (the order the rate limit needs).
+   */
+  onCreated?: (issueNumber: number) => Promise<void>;
+  log?: (message: string) => void;
+  /** Injected so a test never appends to the host's audit chain (Issue #1277). */
+  recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
+}
+
+/**
+ * Step 2 of {@link fileRunFailureIssue} when no open issue matches: create the
+ * issue, then attest the filing out of band (Issue #1277) so tier 2b can tell
+ * this diagnostic from one an injected agent typed the marker into.
+ *
+ * Throws when GitHub refuses the create; the caller keeps its own catch.
+ */
+export async function createRunFailureIssue(
+  opts: CreateRunFailureIssueOptions,
+): Promise<{ issueNumber: number }> {
+  const raw = await opts.ghFn([
+    "issue",
+    "create",
+    "--repo",
+    opts.targetRepo,
+    "--title",
+    opts.title,
+    "--body",
+    opts.body,
+    ...opts.labelArgs,
+  ]);
+  const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
+  const issueNumber = m ? parseInt(m[1]!, 10) : 0;
+  await opts.onCreated?.(issueNumber);
+  // `opts.log` defaults to a silent sink in this module, so the attestation
+  // logs through `recordSelfDiagnosticFiling`'s own stderr default when the
+  // caller supplied none.
+  const recordFiling = opts.recordFiling ??
+    ((filing: SelfDiagnosticFiling) =>
+      recordSelfDiagnosticFiling(filing, { log: opts.log }));
+  await recordFiling({
+    repo: opts.targetRepo,
+    issueNumber,
+    familyId: RUN_FAILURE_FAMILY_ID,
+    title: opts.title,
+    body: opts.body,
+    filedBy: opts.filedBy,
+  });
+  return { issueNumber };
+}
+
 /**
  * File, comment or suppress. Never throws; every decision is returned (and
  * logged when `log` is supplied) so worker logs can be reconciled with the
@@ -426,29 +531,13 @@ export async function fileRunFailureIssue(
       // issue stand in for this alert and silence it.
       let existing: { number: number } | null = null;
       try {
-        const raw = await opts.ghFn([
-          "issue",
-          "list",
-          "--repo",
+        existing = await findOpenRunFailureIssue({
+          ghFn: opts.ghFn,
           targetRepo,
-          "--state",
-          "open",
-          "--search",
-          `"${RUN_FAILURE_MARKER_PREFIX}:${failureClass}" in:body`,
-          "--json",
-          ALERT_DEDUP_JSON_FIELDS,
-          "--limit",
-          "20",
-        ]);
-        const list = JSON.parse(raw || "[]") as AlertDedupRow[];
-        const verified = await selectFleetAuthoredMatches(
-          list.filter((i) => isRunFailureIssue(i.body ?? "", failureClass)),
-          `run-failure ${failureClass}`,
-          opts,
+          failureClass,
+          fleetAuthors: opts.fleetAuthors,
           log,
-        );
-        const match = verified.sort((a, b) => a.number - b.number)[0];
-        existing = match ? { number: match.number } : null;
+        });
       } catch (err) {
         recordFaultEvent(
           "catch_block_warning",
@@ -472,36 +561,21 @@ export async function fileRunFailureIssue(
         const body = formatRunFailureBody(opts.report, classification);
         const title = formatRunFailureTitle(failureClass);
         try {
-          const raw = await opts.ghFn([
-            "issue",
-            "create",
-            "--repo",
+          const { issueNumber } = await createRunFailureIssue({
+            ghFn: opts.ghFn,
             targetRepo,
-            "--title",
-            title,
-            "--body",
-            body,
-            ...labelArgs,
-          ]);
-          const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
-          const issueNumber = m ? parseInt(m[1]!, 10) : 0;
-          state.classes[failureClass] = { lastWriteEpoch: t, issueNumber };
-          await writeState(statePath, state);
-          // Issue #1277: attest the filing out of band, so tier 2b can tell
-          // this diagnostic from one an injected agent typed the marker into.
-          // `opts.log` defaults to a silent sink in this module, so the
-          // attestation logs through `recordSelfDiagnosticFiling`'s own
-          // stderr default when the caller supplied none.
-          const recordFiling = opts.recordFiling ??
-            ((filing: SelfDiagnosticFiling) =>
-              recordSelfDiagnosticFiling(filing, { log: opts.log }));
-          await recordFiling({
-            repo: targetRepo,
-            issueNumber,
-            familyId: RUN_FAILURE_FAMILY_ID,
             title,
             body,
+            labelArgs,
+            failureClass,
             filedBy: "worker/deno/lib/run_failure_issue.ts",
+            log: opts.log,
+            recordFiling: opts.recordFiling,
+            // The rate-limit state is written before the attestation.
+            onCreated: async (issueNumber) => {
+              state.classes[failureClass] = { lastWriteEpoch: t, issueNumber };
+              await writeState(statePath, state);
+            },
           });
           return decide({ action: "filed", issueNumber, failureClass });
         } catch (err) {

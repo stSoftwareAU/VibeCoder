@@ -31,6 +31,7 @@ import {
   formatRunFailureMarker,
   parseRunFailureMarker,
   RUN_FAILURE_FAMILY_ID,
+  RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS,
   RUN_FAILURE_TARGET_REPO,
 } from "../lib/run_failure_issue.ts";
 import {
@@ -252,6 +253,7 @@ async function report(
   const runs: TerminalIssueRun[] = [];
   const logs: string[] = [];
   const errors: string[] = [];
+  const warnings: string[] = [];
   const recordings: SelfDiagnosticFiling[] = [];
   const counter = { failures: 0 };
   const summary = await reportPendingHardKills({
@@ -268,6 +270,7 @@ async function report(
     nowSeconds: NOW,
     log: (m) => logs.push(m),
     logError: (m) => errors.push(m),
+    logWarn: (m) => warnings.push(m),
     fleetAuthors: FLEET,
     recordFiling: (f) => {
       recordings.push(f);
@@ -275,7 +278,7 @@ async function report(
     },
     ...extra,
   });
-  return { summary, runs, logs, errors, recordings, counter };
+  return { summary, runs, logs, errors, warnings, recordings, counter };
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +366,34 @@ Deno.test("AC2: a further repeat in the window updates the follow-up in place", 
   assertEquals(gh.patches.length, 1, "the third kill updates the follow-up");
 });
 
+Deno.test("AC2: the follow-up window is measured on the injected clock", async () => {
+  const gh = fakeGh();
+  const single = (container: string, epoch: number) =>
+    fakeFs({
+      [evidenceName(container, epoch)]: json(makeEvidence({ container })),
+    });
+
+  await report(single("vibe-s1-4254", 1761355800), gh);
+  assertEquals(gh.creates.length, 1, "the first kill files");
+
+  await report(single("vibe-s1-4255", 1761355900), gh, {
+    nowSeconds: NOW + 60,
+  });
+  assertEquals(gh.commentCalls.length, 1, "a repeat comments");
+
+  await report(single("vibe-s1-4256", 1761356000), gh, {
+    nowSeconds: NOW + 120,
+  });
+  assertEquals(gh.patches.length, 1, "inside the window it updates in place");
+
+  await report(single("vibe-s1-4257", 1761356100), gh, {
+    nowSeconds: NOW + 60 + RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS,
+  });
+  assertEquals(gh.patches.length, 1, "a full window later it does not update");
+  assertEquals(gh.commentCalls.length, 2, "and starts a new follow-up");
+  assertEquals(gh.creates.length, 1, "still no second issue");
+});
+
 Deno.test("AC2: a stranger's marker does not absorb the kill (fleet-author filter)", async () => {
   const gh = fakeGh({
     issues: [{
@@ -439,7 +470,7 @@ Deno.test("AC3: the real recordOutcome counts the hard kill as one failure", asy
   }
 });
 
-Deno.test("AC4: a failing search keeps the file, fires nothing, counts nothing, and logs the gh cause", async () => {
+Deno.test("AC4: a failing search keeps the file, fires nothing, counts nothing, and warns with the gh cause", async () => {
   const name = evidenceName("vibe-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: json(makeEvidence()) });
   const gh = fakeGh({
@@ -453,14 +484,15 @@ Deno.test("AC4: a failing search keeps the file, fires nothing, counts nothing, 
   assertEquals(r.runs.length, 0, "no callback");
   assertEquals(r.counter.failures, 0, "not counted");
   assert(
-    r.errors.some((e) =>
+    r.warnings.some((e) =>
       e.includes(name) && e.includes("HTTP 502 Bad Gateway")
     ),
-    `logError names the file and the gh cause: ${r.errors.join(" | ")}`,
+    `logWarn names the file and the gh cause: ${r.warnings.join(" | ")}`,
   );
+  assertEquals(r.errors, [], "a failed filing is a warning, not an error");
 });
 
-Deno.test("AC4: a failing create keeps the file, fires nothing, and logs the gh cause", async () => {
+Deno.test("AC4: a failing create keeps the file, fires nothing, and warns with the gh cause", async () => {
   const name = evidenceName("vibe-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: json(makeEvidence()) });
   const gh = fakeGh({
@@ -473,7 +505,8 @@ Deno.test("AC4: a failing create keeps the file, fires nothing, and logs the gh 
   assert(fs.store.has(name));
   assertEquals(r.runs.length, 0);
   assertEquals(r.counter.failures, 0);
-  assert(r.errors.some((e) => e.includes("HTTP 502 Bad Gateway")));
+  assert(r.warnings.some((e) => e.includes("HTTP 502 Bad Gateway")));
+  assertEquals(r.errors, []);
 });
 
 Deno.test("AC4: the failure cause is the gh first line, not a wrapper boilerplate", async () => {
@@ -509,7 +542,7 @@ Deno.test("AC4: a kept file is reported once a healthy gh follows (retry once)",
   assertEquals(fs.store.size, 0);
 });
 
-Deno.test("AC4: a malformed file is kept and logged with the failing field", async () => {
+Deno.test("AC4: a malformed file is kept and logged as an error with the failing field", async () => {
   const name = evidenceName("vibe-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: "{not json" });
   const gh = fakeGh();
@@ -519,6 +552,7 @@ Deno.test("AC4: a malformed file is kept and logged with the failing field", asy
   assert(fs.store.has(name));
   assertEquals(gh.calls.length, 0, "a malformed file never reaches gh");
   assert(r.errors.some((e) => e.includes(name) && e.includes("not JSON")));
+  assertEquals(r.warnings, [], "a malformed file is an error, not a warning");
 });
 
 Deno.test("AC4: a file missing a field is kept and the log names the field", async () => {
@@ -546,7 +580,7 @@ Deno.test("AC4: a file with a wrongly typed field is kept and the log names the 
   assert(r.errors.some((e) => e.includes('"lastToolCall"')));
 });
 
-Deno.test("AC4: a removal failure is logged loudly, the file stays, and the kill still counts", async () => {
+Deno.test("AC4: a removal failure is logged as a warning, the file stays, and the kill still counts", async () => {
   const name = evidenceName("vibe-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: json(makeEvidence()) }, { removeFails: [name] });
   const r = await report(fs, fakeGh());
@@ -555,20 +589,21 @@ Deno.test("AC4: a removal failure is logged loudly, the file stays, and the kill
   assert(fs.store.has(name));
   assertEquals(r.counter.failures, 1);
   assert(
-    r.errors.some((e) =>
+    r.warnings.some((e) =>
       e.includes("could not be removed") && e.includes("may be reported again")
     ),
   );
+  assertEquals(r.errors, []);
 });
 
-Deno.test("AC4: a throwing callback is logged and the kill still counts", async () => {
+Deno.test("AC4: a throwing callback is logged as a warning and the kill still counts", async () => {
   const fs = fakeFs({
     [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
   });
   const r = await report(fs, fakeGh(), {
     runFailureCallback: () => Promise.reject(new Error("callback boom")),
   });
-  assert(r.errors.some((e) => e.includes("callback boom")));
+  assert(r.warnings.some((e) => e.includes("callback boom")));
   assertEquals(r.counter.failures, 1);
   assertEquals(r.summary.reported, 1);
 });
@@ -578,13 +613,15 @@ Deno.test("AC4: a missing evidence directory reports nothing and logs nothing", 
   const r = await report(fs, fakeGh());
   assertEquals(r.summary, { found: 0, reported: 0, kept: 0 });
   assertEquals(r.errors, []);
+  assertEquals(r.warnings, []);
 });
 
-Deno.test("AC4: an unreadable evidence directory is logged, not thrown", async () => {
+Deno.test("AC4: an unreadable evidence directory is logged as a warning, not thrown", async () => {
   const fs = fakeFs({}, { listError: new Error("EACCES: permission denied") });
   const r = await report(fs, fakeGh());
   assertEquals(r.summary, { found: 0, reported: 0, kept: 0 });
-  assert(r.errors.some((e) => e.includes("EACCES")));
+  assert(r.warnings.some((e) => e.includes("EACCES")));
+  assertEquals(r.errors, []);
 });
 
 // ---------------------------------------------------------------------------
@@ -728,6 +765,32 @@ Deno.test("phase is unknown when no log line names one", () => {
   const sig = hardKillSignature(ev);
   assertEquals(sig.phase, "unknown");
   assertEquals(sig.failureClass, "hard-kill-watchdog-unknown");
+});
+
+// Each PHASE_PATTERNS regex gets a long run that the pattern starts on and then
+// fails to finish, so it must backtrack the whole run. The rejecting "!" is what
+// forces that; a run the pattern could complete would name a phase instead.
+
+Deno.test("PHASE_PATTERNS [phase] form returns unknown promptly on a long space run then a rejected character", () => {
+  const ev = makeEvidence({ lastLogLine: `[phase]${" ".repeat(100_000)}!` }, {
+    workerLogTail: "",
+  });
+  assertEquals(hardKillSignature(ev).phase, "unknown");
+});
+
+Deno.test("PHASE_PATTERNS phase= form returns unknown promptly on a long equals run then a rejected character", () => {
+  const ev = makeEvidence({ lastLogLine: `phase=${"=".repeat(100_000)}!` }, {
+    workerLogTail: "",
+  });
+  assertEquals(hardKillSignature(ev).phase, "unknown");
+});
+
+Deno.test("PHASE_PATTERNS [agent-progress] form returns unknown promptly on a long name run then a rejected character", () => {
+  const ev = makeEvidence(
+    { lastLogLine: `[agent-progress] ${"a".repeat(100_000)}!` },
+    { workerLogTail: "" },
+  );
+  assertEquals(hardKillSignature(ev).phase, "unknown");
 });
 
 Deno.test("signature parts normalise to a slug, capped at 40, and empty becomes unknown", () => {

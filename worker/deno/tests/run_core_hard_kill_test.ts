@@ -165,10 +165,12 @@ Deno.test("run_core hard kills - a throwing hook is logged and the loop still fi
   const config = createDefaultRunCoreConfig();
   const time = cycleClock(config.runDurationSeconds);
   const errors: string[] = [];
+  const warnings: string[] = [];
   const cycles: TerminalScanCycle[] = [];
   const deps = createMockDeps({
     ...time,
     logError: (message) => errors.push(message),
+    logWarn: (message) => warnings.push(message),
     reportHardKills: () => Promise.reject(new Error("boom")),
     runCycleCallback: (cycle) => {
       cycles.push(cycle);
@@ -182,9 +184,13 @@ Deno.test("run_core hard kills - a throwing hook is logged and the loop still fi
   assert(cycles.length >= 1, `expected a cycle callback, got ${cycles.length}`);
   assertEquals(cycles[0]!.fleetSummary.failures, 0);
   assert(
-    errors.some((line) =>
+    warnings.some((line) =>
       line === "Hard-kill reporting faulted: boom. The scan cycle continues."
     ),
+    warnings.join("\n"),
+  );
+  assert(
+    !errors.some((line) => line.includes("Hard-kill")),
     errors.join("\n"),
   );
 });

@@ -24,11 +24,6 @@
  */
 
 import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
-import {
-  ALERT_DEDUP_JSON_FIELDS,
-  type AlertDedupRow,
-  selectFleetAuthoredMatches,
-} from "./alert_dedup_authors.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import {
@@ -38,18 +33,14 @@ import {
 import { redactedTail } from "./redacted_text.ts";
 import type { TerminalIssueRun } from "./run_callbacks.ts";
 import {
+  createRunFailureIssue,
+  findOpenRunFailureIssue,
   formatRunFailureMarker,
-  isRunFailureIssue,
   postRunFailureFollowUp,
-  RUN_FAILURE_FAMILY_ID,
   RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS,
-  RUN_FAILURE_MARKER_PREFIX,
   RUN_FAILURE_TARGET_REPO,
 } from "./run_failure_issue.ts";
-import {
-  recordSelfDiagnosticFiling,
-  type SelfDiagnosticFiling,
-} from "./self_diagnostic_attestation.ts";
+import type { SelfDiagnosticFiling } from "./self_diagnostic_attestation.ts";
 
 /** The callback `failureClass` and the fleet failure class of a hard kill. */
 export const HARD_KILL_FAILURE_CLASS = "hard_kill";
@@ -73,7 +64,12 @@ const PHASE_PATTERNS: readonly RegExp[] = [
   /\bphase=([A-Za-z0-9_-]+)/,
   /\[agent-progress\]\s*([A-Za-z0-9_-]+):/,
 ];
-/** `owner/repo#N`; the two name classes are disjoint, so no backtracking blow-up. */
+/**
+ * `owner/repo#N`. Owner and repo draw from the same class, so a run of name
+ * characters can start a match at several positions. The cost is bounded by
+ * the scan cap in {@link lastSourceIn}: at most SOURCE_SCAN_CHARS characters
+ * are scanned, so one call takes O(SOURCE_SCAN_CHARS²) steps at worst.
+ */
 const SOURCE_PATTERN = /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)\b/g;
 
 /** The fields a hard-kill signature is built from. */
@@ -431,12 +427,8 @@ export interface FileHardKillIssueOptions {
   evidence: HardKillEvidence;
   /** gh runner: resolves stdout, rejects on failure. */
   ghFn: (args: string[]) => Promise<string>;
-  /** Target repo override (tests). Production: RUN_FAILURE_TARGET_REPO. */
-  targetRepo?: string;
   /** Injected clock (epoch seconds). */
   nowSeconds?: number;
-  /** Follow-up window override (tests). */
-  followUpWindowSeconds?: number;
   log?: (message: string) => void;
   /** Fleet logins whose markers are trusted; omitted reads the configured fleet. */
   fleetAuthors?: readonly string[];
@@ -448,18 +440,17 @@ export interface FileHardKillIssueOptions {
  * File one hard kill as a deduplicated issue, or comment on the open one.
  *
  * There is no per-host rate limit: each evidence file is one kill, and the
- * caller only removes the file once it has been reported. Never throws; a
- * failed GitHub call returns `failed` with the gh error's first line.
+ * caller only removes the file once it has been reported. Every GitHub
+ * failure returns `failed` with the gh error's first line. It throws only for
+ * a programming error, a refused label, which `reportPendingHardKills`
+ * catches per file.
  */
 export async function fileHardKillIssue(
   opts: FileHardKillIssueOptions,
 ): Promise<HardKillFilingResult> {
   const log = opts.log ?? (() => {});
   const sig = hardKillSignature(opts.evidence);
-  const targetRepo = opts.targetRepo ?? RUN_FAILURE_TARGET_REPO;
   const t = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const window = opts.followUpWindowSeconds ??
-    RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS;
   // Built before the try: a refused label is a programming error and must
   // fail loud, not be reported as a `failed` filing.
   const labelArgs = guardedLabelArgs(["bug"], FILED_BY);
@@ -468,57 +459,27 @@ export async function fileHardKillIssue(
 
   try {
     // 1. Existing open issue for the signature, matched on the marker AND the
-    // author (as run_failure_issue.ts step 1 does).
-    const raw = await opts.ghFn([
-      "issue",
-      "list",
-      "--repo",
-      targetRepo,
-      "--state",
-      "open",
-      "--search",
-      `"${RUN_FAILURE_MARKER_PREFIX}:${sig.failureClass}" in:body`,
-      "--json",
-      ALERT_DEDUP_JSON_FIELDS,
-      "--limit",
-      "20",
-    ]);
-    const list = JSON.parse(raw || "[]") as AlertDedupRow[];
-    const verified = await selectFleetAuthoredMatches(
-      list.filter((i) => isRunFailureIssue(i.body ?? "", sig.failureClass)),
-      `hard kill ${sig.failureClass}`,
-      { fleetAuthors: opts.fleetAuthors },
+    // author (run_failure_issue.ts step 1, shared).
+    const match = await findOpenRunFailureIssue({
+      ghFn: opts.ghFn,
+      targetRepo: RUN_FAILURE_TARGET_REPO,
+      failureClass: sig.failureClass,
+      fleetAuthors: opts.fleetAuthors,
       log,
-    );
-    const match = verified.sort((a, b) => a.number - b.number)[0];
+    });
 
-    // 2. None → file one.
+    // 2. None → file one (run_failure_issue.ts step 2, shared).
     if (!match) {
-      const createRaw = await opts.ghFn([
-        "issue",
-        "create",
-        "--repo",
-        targetRepo,
-        "--title",
-        title,
-        "--body",
-        body,
-        ...labelArgs,
-      ]);
-      const m = /\/issues\/(\d+)\s*$/.exec(createRaw.trim());
-      const issueNumber = m ? parseInt(m[1]!, 10) : 0;
-      // Issue #1277: attest the filing out of band, so tier 2b can tell this
-      // diagnostic from one an injected agent typed the marker into.
-      const recordFiling = opts.recordFiling ??
-        ((filing: SelfDiagnosticFiling) =>
-          recordSelfDiagnosticFiling(filing, { log: opts.log }));
-      await recordFiling({
-        repo: targetRepo,
-        issueNumber,
-        familyId: RUN_FAILURE_FAMILY_ID,
+      const { issueNumber } = await createRunFailureIssue({
+        ghFn: opts.ghFn,
+        targetRepo: RUN_FAILURE_TARGET_REPO,
         title,
         body,
+        labelArgs,
+        failureClass: sig.failureClass,
         filedBy: FILED_BY,
+        log: opts.log,
+        recordFiling: opts.recordFiling,
       });
       return { action: "filed", issueNumber };
     }
@@ -526,11 +487,11 @@ export async function fileHardKillIssue(
     // 3. Exists → at most one follow-up per window, shared with run-failure.
     const { updated } = await postRunFailureFollowUp({
       ghFn: opts.ghFn,
-      targetRepo,
+      targetRepo: RUN_FAILURE_TARGET_REPO,
       issueNumber: match.number,
       failureClass: sig.failureClass,
       nowSeconds: t,
-      windowSeconds: window,
+      windowSeconds: RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS,
       occurrenceLine: formatHardKillOccurrenceLine(opts.evidence),
       recurrenceText: "the launcher watchdog reaped another wedged container",
       log,
@@ -560,9 +521,10 @@ export interface ReportPendingHardKillsOptions {
   /** Injected clock (epoch seconds). */
   nowSeconds?: number;
   log?: (message: string) => void;
+  /** A malformed or wrong-version file, or an unexpected failure: kept, never recovered by retry. */
   logError?: (message: string) => void;
-  targetRepo?: string;
-  followUpWindowSeconds?: number;
+  /** A failed filing, failed callback, failed count or failed removal: retried or tolerated. Defaults to logError. */
+  logWarn?: (message: string) => void;
   fleetAuthors?: readonly string[];
   recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
 }
@@ -585,6 +547,7 @@ export async function reportPendingHardKills(
 ): Promise<HardKillReportSummary> {
   const log = opts.log ?? (() => {});
   const logError = opts.logError ?? (() => {});
+  const logWarn = opts.logWarn ?? logError;
   const seams = opts.seams ?? defaultHardKillSeams;
   const summary: HardKillReportSummary = { found: 0, reported: 0, kept: 0 };
 
@@ -594,7 +557,7 @@ export async function reportPendingHardKills(
   } catch (err) {
     // A host with no evidence directory has nothing pending: say nothing.
     if (!isNotFound(err)) {
-      logError(
+      logWarn(
         `hard-kill evidence directory ${opts.evidenceDir} could not be read: ${
           errorText(err)
         }`,
@@ -626,15 +589,13 @@ export async function reportPendingHardKills(
       const filing = await fileHardKillIssue({
         evidence,
         ghFn: opts.ghFn,
-        targetRepo: opts.targetRepo,
         nowSeconds: opts.nowSeconds,
-        followUpWindowSeconds: opts.followUpWindowSeconds,
         log,
         fleetAuthors: opts.fleetAuthors,
         recordFiling: opts.recordFiling,
       });
       if (filing.action === "failed") {
-        logError(
+        logWarn(
           `hard-kill evidence ${name}: filing failed, kept for the next start: ${filing.cause}`,
         );
         summary.kept++;
@@ -650,7 +611,7 @@ export async function reportPendingHardKills(
           hardKillTerminalRun(evidence, hardKillSignature(evidence)),
         );
       } catch (err) {
-        logError(
+        logWarn(
           `hard-kill evidence ${name}: failure callback threw: ${
             errorText(err)
           }`,
@@ -659,7 +620,7 @@ export async function reportPendingHardKills(
       try {
         opts.countFailure();
       } catch (err) {
-        logError(
+        logWarn(
           `hard-kill evidence ${name}: counting the failure threw: ${
             errorText(err)
           }`,
@@ -671,7 +632,7 @@ export async function reportPendingHardKills(
         await seams.removeFile(path);
       } catch (err) {
         summary.kept++;
-        logError(
+        logWarn(
           `hard-kill evidence ${name} was reported but could not be removed, so it stays and may be reported again: ${
             errorText(err)
           }`,

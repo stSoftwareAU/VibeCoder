@@ -545,7 +545,8 @@ export function recordHookFailure(count = 1): void {
 
 /**
  * Record the terminal outcome of a claimed issue. `failureClass` is the
- * failing phase (`setup`, `execute`, `quality_gate`, …) or `timeout`.
+ * failing phase (`setup`, `execute`, `quality_gate`, …), `timeout`, or
+ * `hard_kill` for a run the launcher watchdog killed (Issue #4254).
  */
 export function recordOutcome(
   outcome: FleetRunOutcome,
