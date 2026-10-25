@@ -3033,6 +3033,103 @@ Deno.test("syncMilestoneBranches - a resolver refusal already repeated for sever
   }
 });
 
+Deno.test("syncMilestoneBranches - retiring a milestone clears every open issue page with JSON null (Issue #4328)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4328-requeue-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: {
+        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
+        escalated: false,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: CONFLICT_RESOLVER_DECLINED,
+        },
+      },
+    });
+    const calls: string[][] = [];
+    const deps = ledgerDeps(calls, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "resolver-refusal",
+      }],
+      streakPath,
+      nowMs: 10_000,
+    });
+    const inner = deps.ghCommandFn;
+    deps.ghCommandFn = (args) => {
+      const joined = args.join(" ");
+      if (args.includes("--paginate") && joined.includes("/issues?")) {
+        calls.push([...args]);
+        // Two pages, concatenated the way `gh api --paginate` prints them.
+        // The second page is not empty.
+        return Promise.resolve(
+          JSON.stringify([{ number: 11 }, { number: 12 }]) +
+            JSON.stringify([{ number: 13 }]),
+        );
+      }
+      return inner(args);
+    };
+    const result = await syncMilestoneBranches(deps);
+    assert(result.ok);
+
+    const list = calls.filter((args) =>
+      args.includes("--paginate") && args.join(" ").includes("/issues?")
+    );
+    assertEquals(list.length, 1, "the open issues are listed once");
+    const listArgs = list[0]!;
+    assert(listArgs.includes("--paginate"));
+    assert(
+      listArgs.some((arg) => arg.includes("per_page=100")),
+      `listing did not ask for 100 per page: ${JSON.stringify(listArgs)}`,
+    );
+
+    const cleared = calls.filter((args) =>
+      args.includes("--method") && args.includes("PATCH") &&
+      args.some((arg) => arg.includes("/issues/"))
+    );
+    assertEquals(
+      cleared.map((args) => args.find((arg) => arg.includes("/issues/"))),
+      [
+        "repos/owner/repo/issues/11",
+        "repos/owner/repo/issues/12",
+        "repos/owner/repo/issues/13",
+      ],
+    );
+    for (const args of cleared) {
+      assert(args.includes("--field"), JSON.stringify(args));
+      assert(args.includes("milestone=null"), JSON.stringify(args));
+      assert(
+        !args.includes("--raw-field"),
+        `raw-field sends the string null: ${JSON.stringify(args)}`,
+      );
+    }
+
+    const closed = calls.filter((args) =>
+      args.includes("--method") && args.includes("PATCH") &&
+      args.some((arg) => arg.includes("/milestones/"))
+    );
+    assertEquals(closed.length, 1);
+    assert(
+      closed[0]!.some((arg) => arg.endsWith("/milestones/1")),
+      JSON.stringify(closed[0]),
+    );
+    assert(closed[0]!.includes("-f") || closed[0]!.includes("--raw-field"));
+    assert(closed[0]!.includes("state=closed"));
+    const listAt = calls.indexOf(listArgs);
+    const closeAt = calls.indexOf(closed[0]!);
+    assert(listAt < closeAt, "issues are cleared before the milestone closes");
+    for (const args of cleared) {
+      const at = calls.indexOf(args);
+      assert(at > listAt && at < closeAt);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("syncMilestoneBranches - a branch past its budget is not merged again (Issue #1778)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-1778-spent-" });
   try {

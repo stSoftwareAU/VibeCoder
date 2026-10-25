@@ -39,6 +39,7 @@ import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
 import { isMergeGateFailure } from "./milestone_merge_gate.ts";
 import { deferralSkipsCargoForMerge } from "./heavy_build_gate.ts";
+import { parseJsonArrayPages } from "./json_array_pages.ts";
 import {
   buildConflictEscalationComment,
   describeBranchTips,
@@ -1039,18 +1040,31 @@ async function applyRollbackOutcome(opts: {
   return entry;
 }
 
-/** Every character is a digit. A static check, not a constructed expression. */
-function isDecimalToken(token: string): boolean {
-  if (token.length === 0) return false;
-  for (const ch of token) {
-    if (ch < "0" || ch > "9") return false;
-  }
-  return true;
+/**
+ * Issue numbers from a `gh api --paginate` listing (Issue #4328).
+ *
+ * `--paginate` concatenates one top-level JSON array per page. The shared
+ * page scan reads every page; a `number` that is not a positive integer is
+ * not an issue to clear.
+ */
+function openIssueNumbersFromPages(raw: string): number[] {
+  return parseJsonArrayPages(raw).flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const number = (item as { number?: unknown }).number;
+    return typeof number === "number" && Number.isSafeInteger(number) &&
+        number > 0
+      ? [number]
+      : [];
+  });
 }
 
 /**
  * Close the milestone and take its open issues off it so a later cycle can
  * claim them (Issue #4328).
+ *
+ * `--field milestone=null` sends JSON null. `--raw-field` would send the
+ * string "null", which the issues API rejects with 422, and the milestone
+ * would stay open.
  *
  * @returns True when the milestone was closed.
  */
@@ -1063,20 +1077,18 @@ async function retireMilestoneAndRequeue(
   try {
     const listed = await ghCommandFn([
       "api",
-      `repos/${repo}/issues?milestone=${milestone.milestoneNumber}&state=open`,
-      "--jq",
-      ".[].number",
+      "--paginate",
+      `repos/${repo}/issues?milestone=${milestone.milestoneNumber}` +
+      `&state=open&per_page=100`,
     ]);
-    const numbers = listed.split("\n").map((line) => line.trim()).filter(
-      isDecimalToken,
-    );
+    const numbers = openIssueNumbersFromPages(listed);
     for (const number of numbers) {
       await ghCommandFn([
         "api",
         "--method",
         "PATCH",
         `repos/${repo}/issues/${number}`,
-        "--raw-field",
+        "--field",
         "milestone=null",
       ]);
     }
