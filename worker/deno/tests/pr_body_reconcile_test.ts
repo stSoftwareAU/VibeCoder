@@ -41,14 +41,10 @@ const FLEET_LOGIN = "fleet-bot";
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
 const ARCHIVE_PATH = `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`;
 const LEGACY_PATH = `docs/pr-summary-${ISSUE_NUMBER}.md`;
-const FACTS_PATH =
-  `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.facts.json`;
 const NOT_FOUND = "gh command failed (exit 1): gh: Not Found (HTTP 404)";
 
 const SUMMARY_V1 = "## Summary\n\nOriginal summary text. Closes #42.\n";
 const SUMMARY_V2 = "## Summary\n\nRewritten summary text. Closes #42.\n";
-const FACTS_V1 = '{"branchOutcomes":[]}\n';
-const FACTS_V2 = '{"branchOutcomes":["changed"]}\n';
 
 const OPTS: ReconcilePrBodiesOptions = {
   repos: [REPO],

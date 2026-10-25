@@ -1504,7 +1504,7 @@ test that goes red for each one. Reverting the whole change, or deleting the
 whole condition, does not show which operand a test reaches. An outcome with
 no test, or one whose flip leaves the suite green, is a blocking self-review
 finding: add a test for it. Every test the summary names must exist at the
-head (see **A named test must exist**). A compound condition's flip is that
+head (see **A named test must exist**). The test plan names the operand it covers. A compound condition's flip is that
 operand's flip (Issue #3376). An outcome no test reaches is work still to do:
 add the test that goes red, or remove the branch. An outcome no
 input can reach is dead code: remove it, never exempt it. `exempt (untestable)`

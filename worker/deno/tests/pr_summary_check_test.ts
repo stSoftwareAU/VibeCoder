@@ -33,10 +33,6 @@ const GOOD_SUMMARY = [
   "",
 ].join("\n");
 
-const NO_DOCS_SWEEP = GOOD_SUMMARY.split("\n").filter((l) =>
-  !l.includes("Docs sweep")
-).join("\n");
-
 interface Call {
   args: string[];
   cwd?: string;
@@ -143,7 +139,10 @@ Deno.test("runPrSummaryCheck - well-formed summary passes the placeholder gate",
 Deno.test("main - well-formed summary exits 0", async () => {
   const d = deps(GOOD_SUMMARY);
   assertEquals(await main(["--base", "main", "s.md"], d.deps), 0);
-  assertStringIncludes(d.out.join("\n"), "[PASSED] Result placeholders (#3124)");
+  assertStringIncludes(
+    d.out.join("\n"),
+    "[PASSED] Result placeholders (#3124)",
+  );
 });
 
 Deno.test("runPrSummaryCheck - absent issue body and labels are not checked", async () => {
@@ -422,4 +421,3 @@ Deno.test("runPrSummaryCheck - Part of still closes is not checked without an is
   assert(r.ok);
   assertEquals(statusOf(r.value, "#4126"), "not_checked");
 });
-

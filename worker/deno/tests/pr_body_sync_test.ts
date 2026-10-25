@@ -9,7 +9,6 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assemblePrBody,
   buildSummaryDigestMarker,
-  buildSyncedPrBodyCandidate,
   PR_SUMMARY_DIGEST_PREFIX,
   prSummaryDigest,
   runPrBodySync,
@@ -1721,9 +1720,6 @@ Deno.test("Issue #3720: summary refresh preserves the originating assignment", a
   }
 });
 
-const PLAIN_SUMMARY =
-  `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`;
-
 /** Runs one sync against a live body; returns the result and recorded calls. */
 async function syncFactsCase(opts: {
   repoPath: string;
@@ -1798,4 +1794,3 @@ Deno.test("sync - workflow version changes retain durable body wording without a
     await Deno.remove(repoPath, { recursive: true });
   }
 });
-

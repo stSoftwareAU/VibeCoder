@@ -15,9 +15,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { callbackOutcomeFromRun } from "../lib/run_callback_context.ts";
 import type { RunOutcome } from "../lib/run_outcome.ts";
-import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 import type { FailureCategory } from "../lib/failure_diagnosis.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";

@@ -98,7 +98,10 @@ Deno.test("a widened predicate selects the unchanged reason string in that decla
     files: ["src/classify.ts"],
     proseRanges: scope.ranges,
   });
-  assertStringIncludes(driftPrompt, "src/classify.ts:4-4 — user-visible string");
+  assertStringIncludes(
+    driftPrompt,
+    "src/classify.ts:4-4 — user-visible string",
+  );
   assertStringIncludes(driftPrompt, REASON);
 });
 

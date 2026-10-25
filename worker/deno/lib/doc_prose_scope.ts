@@ -541,7 +541,9 @@ export async function collectDocProseScope(input: {
     if (scope.ranges.length > before) keptStrings++;
   }
   for (const name of identifiers) mentions.add(name);
-  const named = "";
+  // Existing summaries may name manual sections. Treat those references only
+  // as bounded scope hints; no Docs sweep entry or format is required.
+  const named = input.summaryContent.slice(0, 64_000);
   let sections = 0;
   for (
     const file of selectManualProseFiles([

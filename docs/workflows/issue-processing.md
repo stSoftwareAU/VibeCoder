@@ -1093,6 +1093,87 @@ reads that signal at both ends
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
 only the pure scope assessment both this gate and `claim_freshness.ts` read.
 
+## 🔒 Changed workflow files are checked before the PR
+
+The changed-workflow gate remains blocking (Issue #4234). It checks the workflow
+files added or changed by the branch and rejects introduced findings or checker
+errors before creating the PR. Findings already present on the base belong to
+the workflow audit. See [Extending the worker](../EXTENDING.md).
+
+## Pre-PR verifier (Issue #3395)
+
+The pre-PR verifier checks implementation, closure claims and repository-owned
+review checklists. Its findings are advisory at completion (Issue #4234): the
+agent receives one in-session opportunity to address them, and any remaining
+findings are included in the PR's reviewer note. Repository quality checks,
+secret scanning, the security-fix gate and the changed-workflow gate remain
+blocking. See [review checklists](../review-checklists.md).
+
+## 🔍 Independent review on two axes
+
+Independent reviewers still assess correctness and standards. Their completion
+findings are advisory: one in-session correction opportunity, then remaining
+findings appear in the PR's reviewer note (Issue #4234).
+Rules marked **enforced by review** still belong in the Standards review. A
+workflow rule that is documented but not validated needs a validator and a
+negative test; its documentation alone does not prove enforcement.
+
+## 🐛 Reproduction status on a bug fix
+
+Reproduce the reported fault before changing production behaviour. Reproduction
+status is advisory at completion (Issue #4234); the testing standards still
+apply to the implementation and to review.
+
+**Each operand of a compound condition is its own outcome (Issue #3376).**
+Fleet PRs flipped a compound condition as one outcome — reverting the whole
+change or deleting the whole condition — so one operand went untested or was
+cited with a test that reached only the other: VibeCoder#3079 left the
+`fa.filename !== fb.filename` half of an `||` in the review-fleet-prs gate
+untested, and VibeCoder#3372 recorded a `Branch outcomes:` entry for the
+inline-form operand of a `PREFIX_RE || HEADING_RE` break with a test that
+reached only the heading form. `CODING-STANDARDS.md` and the guidelines now
+give a compound condition (`a || b`, `a && b`, a chained `?:`) one outcome per
+operand, each flipped on its own — deleted, or forced to the value that lets
+the other operands decide — with a test that goes red for each, and a `Branch
+outcomes:` line that names its operand. The issue prompt's Test Plan step and
+the pr_feedback re-enumeration rule carry the same requirement.
+
+**A fake mirrors the production implementation it stands in for (Issues #3224, #3900).**
+The stub-contract and observe-real-tool rules cover external callees —
+another repository's binary, git, `gh`, the GitHub API. Fleet
+PRs instead relied on a property of the repository's own port that only
+the in-repo fake had: GRQ-AutoTrader#2546 assumed `broker.open_orders()`
+lists hand-placed orders, as `FakeBroker` does, while `IbkrRest::reports`
+drops every order with no `order_ref`; #2460's newest-first early stop
+lived only in the DynamoDB client no test reached; and #2407's in-memory
+store never loses a conditional write. The guidelines now require reading
+the production implementation first and confirming it has the property
+the change relies on, fixing whichever side is wrong, pinning fake and
+production together with one contract test (or testing at the production
+adapter), and naming in the PR summary the production implementation
+each load-bearing fake stands in for and the property relied on. The
+issue prompt's Bugs/Enhancements requirement makes a change whose only
+proof is a fake more permissive than its production implementation a
+blocking self-review finding. The rule also covers a test that fakes a
+response from the repository's own server or service by hand — an HTTP
+body, status or header, a queue message, or a file the other side writes —
+across processes and languages, not only in-process traits or interfaces.
+Two private fleet PRs (Issue #3900) were sent back for a card test with
+server-measure values the server never produces, and for a "retry later"
+detection that read the error code from the wrong JSON key or from a header
+the deployed CORS config does not expose. For such a response the fixture
+must come from the producer's real output: a golden the server's tests
+produce or verify, or a contract test that runs the server's serialiser for
+that response kind; a PR adds a golden when the repository has none for that
+response kind. A header the client depends on is checked against what the
+deployed configuration lets the client read (for example, a CORS
+exposed-headers list), and the PR summary names where that deployed setting
+is set. A change whose only proof is a fixture the producer never emits
+is a blocking self-review finding.
+
+When two inputs could supply the result, give the candidates different values
+and point the code at the sibling value to confirm the test fails (Issue #3851).
+
 ## 🧾 A summary shortfall after the PR is not a failed run
 
 The summary gates that remain — acceptance-criteria closure, independent
@@ -1278,7 +1359,7 @@ recovered again, with one exception: when the claim check alone is still
 blocking on summary or manual/prompt sentences — every earlier summary gate having
 passed — the run instead gets
 one claim correction turn before it is treated as a second block
-(Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
+(historical behaviour from Issue #3324; the claim check was removed by Issue #4234).
 Any other second block fails exactly as a block did before, with the
 comment already on the thread; on an existing-PR branch that PR is finalised
 as `summary_incomplete` (Issue #1140). The same verdict is never posted

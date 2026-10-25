@@ -137,4 +137,3 @@ export function normaliseSummaryVersionBumps(content: string): string {
   }
   return chunks.join("");
 }
-

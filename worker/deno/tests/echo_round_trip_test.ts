@@ -9,11 +9,7 @@
  * Uses Australian English throughout (behaviour, artefact).
  */
 
-import {
-  assert,
-  assertEquals,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CallerCheckState,
   type CallerGapFinding,
@@ -46,7 +42,6 @@ export const ECHO_TABLE_MODULES: readonly string[] = [
 
 const BOUNDARY_ID = "0123456789ab";
 const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-4210.md";
-const SENTENCE_FILE = "manual.md";
 
 const PLAIN = SCRUB_TRIGGER_CORPUS.find((row) => row.name === "plain-text");
 if (!PLAIN) throw new Error("corpus is missing the plain-text control");
@@ -253,7 +248,6 @@ Deno.test("secret row: the redaction placeholder is not an identifier", () => {
     closureGapFindings(items, [met(left), met(right)], SUMMARY_PATH),
     [],
   );
-
 });
 
 Deno.test("caller echo secret row: the redaction placeholder is not an identifier", () => {

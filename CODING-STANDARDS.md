@@ -875,16 +875,23 @@ it or forcing it to the value that lets the other operands decide, and name a
 test that goes red for each one. Reverting the whole change, or deleting the
 whole condition, does not show which operand a test reaches. An outcome with
 no test, or one whose flip leaves the suite green, is a blocking self-review
-finding: add a test for it. When the run writes a PR summary, name the test that reaches each new
-outcome. Every test the summary names must exist at the head (see **A named
-test must exist**). The facts file, the `<!-- vibe-branch-outcomes -->`
-marker and the gate that blocked a pull request for them were removed
-(Issue #4234). An outcome with no test is work still to do: add the test,
-or remove the branch. The diff-scoped mutation check (Issue #3393,
-`docs/mutation-check.md`) reports any added line whose mutation the tests
-do not catch. It does not stop the pull request. A fix to an existing PR
-re-checks every branch its own commits add, not only those a review finding
-named.
+finding: add a test for it. Every test the summary names must exist at the
+head (see **A named test must exist**). The test plan names the operand it covers. A compound condition's flip is that
+operand's flip (Issue #3376). An outcome no test reaches is work still to do:
+add the test that goes red, or remove the branch. An outcome no
+input can reach is dead code: remove it, never exempt it. `exempt (untestable)`
+is for an outcome production can reach but a test cannot stage, such as a
+permission or I/O fault the suite cannot stage portably; its reason names what
+blocks staging and the harness search — the test files that already call the
+enclosing function or script (a grep of the test tree for its name), each with
+why it cannot reach the outcome. "No existing harness" with no search named is
+not a reason. An outcome the linked issue asks a test for, in its acceptance
+criteria or Definition of done, cannot be `exempt (untestable)`. Name the
+search so a reviewer can check it (Issue #3428). The diff-scoped mutation
+check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
+mutation the tests do not catch; it does not stop the pull request. A fix to
+an existing PR re-checks every branch its own commits add, not only those a
+review finding named.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
