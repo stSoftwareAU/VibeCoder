@@ -21,12 +21,12 @@ Changed:
 - `worker/deno/tests/semgrep_token_config_4341_test.ts`: new regression test.
 - `worker/deno/lib/semgrep_token_drift_scanner.ts` (new), wired into the
   `github-actions-audit` template in
-  `worker/deno/lib/idle_task_templates/github_actions_audit_template.ts`
-  (step 5h2b): flags existing fleet copies of the old template, which the
+  `worker/deno/lib/idle_task_templates/github_actions_audit_template.ts` (step
+  5h2b): flags existing fleet copies of the old template, which the
   presence-only `semgrep` spec leaves "covered". It files
-  `BP-SEMGREP-TOKEN-CONFIG-<basename>` (`severity:medium`) for any workflow
-  that runs `semgrep ci --config` with `SEMGREP_APP_TOKEN` in step, job or
-  top-level `env`. Documented in `docs/GITHUB-ACTIONS-AUDIT-SCAN.md`.
+  `BP-SEMGREP-TOKEN-CONFIG-<basename>` (`severity:medium`) for any workflow that
+  runs `semgrep ci --config` with `SEMGREP_APP_TOKEN` in step, job or top-level
+  `env`. Documented in `docs/GITHUB-ACTIONS-AUDIT-SCAN.md`.
 - `worker/deno/tests/semgrep_token_drift_scanner_test.ts`: tests for it.
 
 ## Spec
@@ -76,12 +76,12 @@ Backend/CI-config change, no UI. Evidence is the new test and the full gate.
   and still runs `semgrep ci --config p/default`; no workflow in
   `.github/workflows` has the combination; `semgrep.yml` has no `environment`
   and `quality.yml`'s `semgrep` job has no `secrets`.
-- Added `worker/deno/tests/semgrep_token_drift_scanner_test.ts` (6 tests):
-  token in step, job and top-level `env` is flagged; line cited; the current
-  `semgrep` template is clean; token without `--config` is not drift;
-  non-workflow and unparseable files yield nothing; suppressed and known-open
-  ids are skipped. Red check: dropping the top-level `env` branch failed the
-  step/job/top-level test (`FAILED | 5 passed | 1 failed`); restored.
+- Added `worker/deno/tests/semgrep_token_drift_scanner_test.ts` (6 tests): token
+  in step, job and top-level `env` is flagged; line cited; the current `semgrep`
+  template is clean; token without `--config` is not drift; non-workflow and
+  unparseable files yield nothing; suppressed and known-open ids are skipped.
+  Red check: dropping the top-level `env` branch failed the step/job/top-level
+  test (`FAILED | 5 passed | 1 failed`); restored.
   `github_actions_audit_template_test.ts` and `workflow_file_checks_test.ts`
   still pass (`ok | 99 passed | 0 failed` with the new file).
 - Red check: with the `SEMGREP_APP_TOKEN` env block restored in `semgrep.yml`
