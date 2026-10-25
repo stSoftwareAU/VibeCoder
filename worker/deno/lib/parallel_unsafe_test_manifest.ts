@@ -314,6 +314,9 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // timeout; only the elapsed time against the timeout shows the pipes were
   // cancelled rather than drained (Issue #4247).
   "tests/subprocess_timeout_test.ts",
+  // Real SIGTERM-ignoring children exercise bounded kill completion at the
+  // chokepoints; keep their elapsed assertions out of the parallel pass.
+  "tests/subprocess_deadline_4247_test.ts",
 ];
 
 /**
