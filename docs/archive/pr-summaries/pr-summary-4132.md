@@ -81,3 +81,5 @@ Addressed all three independent review findings. Recovery reconciliation and non
 The final main merge preserves both the one-turn pre-push retry flag and the PR-body shortening state introduced by #4359. The recovery and category fixes passed 145 focused tests plus the 28 completion tests, and all 857 manifest checks before this merge.
 
 CI integration repair: the capability-security review fixture now supplies the explicit empty `checkSuites` collection required by the startup-failure gate merged in #4350. All existing review assertions are retained.
+
+The completion-mutation regression now distinguishes a temp-directory permission error (still noted while raising the PR) from read-only filesystem fallout (stops as infrastructure under #4360). Both paths are covered; the read-only case explicitly asserts no PR, no extra agent turn and no issue-failure ladder charge.

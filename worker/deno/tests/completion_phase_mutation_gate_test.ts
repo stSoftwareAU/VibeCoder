@@ -20,6 +20,7 @@ import {
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
+import { planCodingFailure } from "../lib/coding_failure_ladder.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
@@ -373,7 +374,7 @@ Deno.test("completion - an unwritable mutation temp dir is noted as a worker fau
     mutation: {
       kind: "error",
       reason:
-        `${MUTATION_TEMP_DIR_UNWRITABLE}: Read-only file system (os error 30): tmpdir`,
+        `${MUTATION_TEMP_DIR_UNWRITABLE}: Permission denied (os error 13): tmpdir`,
     },
   });
 
@@ -394,6 +395,32 @@ Deno.test("completion - an unwritable mutation temp dir is noted as a worker fau
     false,
   );
   assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
+});
+
+Deno.test("completion - a read-only mutation filesystem stops as infrastructure without charging the issue", async () => {
+  // Issue #4360 stops on host-disk fallout before the informational mutation
+  // path from #4127/#4319. A generic temp-directory permission error still
+  // takes that informational path in the preceding test.
+  const reason =
+    `${MUTATION_TEMP_DIR_UNWRITABLE}: Read-only file system (os error 30): tmpdir`;
+  const outcome = await runCompletion({ mutation: { kind: "error", reason } });
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.category, "internal_error");
+  assertEquals(outcome.reason, reason);
+  assertEquals(outcome.prCreateCalls, 0);
+  assertEquals(outcome.claudeCalls, 0);
+  assertEquals(outcome.comments, []);
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    category: "internal_error",
+    reason,
+  });
+  assertEquals(
+    plan.applyLadder,
+    false,
+    "host-disk fallout must not charge the issue",
+  );
 });
 
 Deno.test("completion - an uncollectable PR diff is noted and the runner is not called", async () => {
