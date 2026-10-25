@@ -48,6 +48,13 @@ Version bump: not applicable — no `deno.json` version change.
 - **clean** — Australian English in the new comments, the existing clock seam, no `deno.json` version bump, and the system prompt left byte-identical. `deno fmt` and `deno lint` were clean on the runner files, and the five session tests passed. — evidence: `worker/deno/lib/claude_runner.ts`, `worker/deno/lib/run_timeline.ts`, `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts`
 
 ## Test Plan
+
+- CI repair: format the finish-deadline tests and align the existing watchdog,
+  retry and concurrent-slot fixtures with the run timeline. The agent and
+  dispatch clocks now use the same epoch; concurrent jobs advance one shared
+  elapsed interval rather than adding an hour per job. The no-supervisor-cap
+  case now verifies the finish bound required by #4245. All 84 focused tests
+  pass, and `deno task check:manifests` passes (857 passed, 1 ignored).
 - `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts` — 5 passed, 0 failed, including the five acceptance cases above.
 - Twins of the prompt rule: the user-prompt append in `runClaudeWithTimeoutBody` and the system-prompt argument, which the byte-identical test reads back from the stub. `runClaudeWithRetry` copies `finishDeadline` so the execute phase sees the same flag the body sets.
 - `worker/deno/lib/vibe_env_registry.ts` keeps a single `VIBE_HARD_KILL_AT_EPOCH` entry, the Issue #4247 note. The second entry from the milestone merge is removed. It does not change the session clamp.

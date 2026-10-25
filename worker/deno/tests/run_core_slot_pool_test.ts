@@ -927,7 +927,9 @@ Deno.test("slot pool - deadline with 3 slots of staggered durations: all three c
       // Slot ages differ: 5 ms, 25 ms, 60 ms. The deadline passes while
       // the slowest is still running.
       await new Promise((r) => setTimeout(r, 5 + i.issueNumber * 25));
-      now += config.runDurationSeconds * 1000; // past the deadline
+      // Each slot finishes after the target but before the two-hour finish.
+      // The same elapsed interval is not charged once per concurrent slot.
+      now = Math.max(now, config.runDurationSeconds * 1000 + 1);
       completed++;
       return { ok: true, value: { success: false } };
     },

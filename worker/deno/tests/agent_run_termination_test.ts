@@ -29,6 +29,7 @@ import {
 import { currentPriorityContext } from "../lib/gh_call_metrics.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+import { resetRunTimelineForTests } from "../lib/run_timeline.ts";
 
 /**
  * The run target the injected clock must stay before (Issue #4243). These
@@ -328,12 +329,11 @@ Deno.test("run_core watchdog - an agent-backed handler (CI Fix) running past 600
     addSignalListener: (signal, handler) => {
       if (signal === "SIGTERM") shutdown = handler;
     },
-    // The injected watchdog timer advances the clock by the wait, but not to
-    // the run target (Issue #4243), so the handlers after CI Fix still run. A
-    // handler that "runs" 1500 s is modelled by resolving once the clock reads
-    // 1500 s or more, which it does by the time CI Fix starts.
+    // Advance only the two subjects' timers. Unrelated handlers must not
+    // spend this test's runway before the non-agent watchdog is exercised.
     watchdogDelay: (ms) => {
-      now = watchdogClockAfter(now, ms, false);
+      if (currentPriorityContext() === "ci-fix") now = 1500 * 1000;
+      if (currentPriorityContext() === "update-pr-branches") now += ms;
       return Promise.resolve();
     },
     terminateActiveAgentRuns: (reason) => {
@@ -345,7 +345,7 @@ Deno.test("run_core watchdog - an agent-backed handler (CI Fix) running past 600
     findAndProcessCiFailure: () =>
       new Promise((resolve) => {
         const check = () => {
-          if (now >= 1500) {
+          if (now >= 1500 * 1000) {
             ciFixCompleted = true;
             resolve({ ok: true, value: { processed: true } });
           } else setTimeout(check, 1);
@@ -497,6 +497,7 @@ Deno.test({
   async fn() {
     resetAgentRunsTerminating();
     // The watchdog abandons a handler: terminate its agents but clear the flag.
+    resetRunTimelineForTests();
     await terminateActiveAgentRuns(
       "handler Planning Mode abandoned by the watchdog",
       undefined,

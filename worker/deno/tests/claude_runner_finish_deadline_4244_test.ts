@@ -105,11 +105,14 @@ Deno.test({
         `(clamped to finish deadline ${new Date(finishMs).toISOString()})`,
       );
       const stdin = await Deno.readTextFile(`${stub.dir}/clamp.stdin`);
-      assert(stdin.endsWith(
-        `Finish deadline: ${new Date(finishMs).toISOString()} (${
-          Math.floor((finishMs - now) / 1000)
-        } seconds remaining). Commit and push your work before then.`,
-      ), stdin);
+      assert(
+        stdin.endsWith(
+          `Finish deadline: ${new Date(finishMs).toISOString()} (${
+            Math.floor((finishMs - now) / 1000)
+          } seconds remaining). Commit and push your work before then.`,
+        ),
+        stdin,
+      );
       assert(stdin.startsWith(USER_PROMPT), stdin);
       const argv = await Deno.readTextFile(`${stub.dir}/clamp.argv`);
       const systemAt = argv.split("\n").indexOf("--system-prompt");
@@ -129,7 +132,9 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   async fn() {
     resetRunTimelineForTests();
-    const clock = fakeClock(STARTED_MS + DEFAULT_RUN_FINISH_SECONDS * 1000 - 30_000);
+    const clock = fakeClock(
+      STARTED_MS + DEFAULT_RUN_FINISH_SECONDS * 1000 - 30_000,
+    );
     publishTimeline(STARTED_MS + DEFAULT_RUN_FINISH_SECONDS * 1000);
     const stub = await createAgentStub(
       `printf 'ran\\n' > "$(dirname "$0")/ran"; exit 0`,
@@ -144,7 +149,10 @@ Deno.test({
         clock,
         agentBinaryPath: stub.path,
       });
-      assert(result.ok, `expected a typed result, got ${!result.ok && result.error}`);
+      assert(
+        result.ok,
+        `expected a typed result, got ${!result.ok && result.error}`,
+      );
       if (!result.ok) return;
       assertEquals(result.value.finishDeadline, true);
       assertEquals(result.value.timedOut, true);
@@ -190,8 +198,9 @@ Deno.test({
       const signals = (() => {
         let seen = 0;
         const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
-        const at = (index: number) =>
-          (chunks[index] ??= Promise.withResolvers());
+        const at = (
+          index: number,
+        ) => (chunks[index] ??= Promise.withResolvers());
         return {
           onActivity: () => at(seen++).resolve(),
           chunk: (n: number) => at(n - 1).promise,
