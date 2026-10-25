@@ -50,3 +50,4 @@ Version bump: not applicable — no `deno.json` version change.
 ## Test Plan
 - `worker/deno/tests/run_core_slot_pool_test.ts` filtered to `Issue #4246` — 2 passed, 0 failed, including the `waiting up to 0s` tail and no sleep of 300 s or more. The two existing `shutdown grace` tests in the same file passed (2 passed, 0 failed).
 - Twins: `drainSlots` and `raceShutdownGrace` in `worker/deno/lib/run_core.ts`, both calling `finishDrainBound`. The abandon callback uses `result: "success"`; the shutdown callback still uses `result: "failure"`. The checkpoint the drain waits for is `startWipCheckpoints` in `worker/deno/lib/wip_checkpoint.ts`, which the resume test calls directly because `processIssue` is mocked.
+- `worker/deno/lib/vibe_env_registry.ts` keeps a single `VIBE_HARD_KILL_AT_EPOCH` entry, the Issue #4247 note. The second entry from the milestone merge is removed. It does not change the drain.

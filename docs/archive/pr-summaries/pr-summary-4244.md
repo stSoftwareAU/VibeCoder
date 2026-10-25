@@ -50,3 +50,4 @@ Version bump: not applicable — no `deno.json` version change.
 ## Test Plan
 - `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts` — 5 passed, 0 failed, including the five acceptance cases above.
 - Twins of the prompt rule: the user-prompt append in `runClaudeWithTimeoutBody` and the system-prompt argument, which the byte-identical test reads back from the stub. `runClaudeWithRetry` copies `finishDeadline` so the execute phase sees the same flag the body sets.
+- `worker/deno/lib/vibe_env_registry.ts` keeps a single `VIBE_HARD_KILL_AT_EPOCH` entry, the Issue #4247 note. The second entry from the milestone merge is removed. It does not change the session clamp.
