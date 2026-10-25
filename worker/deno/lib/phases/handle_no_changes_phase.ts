@@ -305,9 +305,11 @@ export async function workOnIssueHandleNoChanges(
   const { blocked, selfFiledDependency } = declaredOutcome;
 
   // Issue #4298: a benchmark run with no gain records the results and the
-  // `negative-result` label; the worker closes the issue on that record.
+  // `negative-result` label; the worker closes the issue on that record. The
+  // label is the agent's own word, so the image gate withholds this close as
+  // it does the already-resolved one (Issue #1385).
   if (
-    !blocked &&
+    !blocked && !gateAlreadyResolvedClose(ctx.untrustedImages).withheld &&
     await closeNegativeResultIssue({
       ghClient: deps.github.createClient(logger),
       repo,

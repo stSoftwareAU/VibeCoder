@@ -17,6 +17,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, GitHubIssue } from "../types.ts";
+import { findImageReferences } from "../lib/untrusted_image_signal.ts";
 
 const BENCHMARK_OUTPUT =
   "Benchmarked the parser before and after the buffer change: 412 ms and " +
@@ -48,7 +49,7 @@ function makeClient(calls: Calls, labels: string[]): GitHubClient {
   } as GitHubClient;
 }
 
-function makeContext(): IssueContext {
+function makeContext(overrides?: Partial<IssueContext>): IssueContext {
   return {
     repo: "org/repo",
     issueNumber: 77,
@@ -58,6 +59,7 @@ function makeContext(): IssueContext {
     issueComments: "",
     githubUser: "testbot",
     config: buildDefaultWorkerConfig(),
+    ...overrides,
   };
 }
 
@@ -112,4 +114,30 @@ Deno.test("#4298 - without the label the no-change run is still retried", async 
 
   assertEquals(result.status, "failure");
   assertEquals(calls.closed, [], "an unfinished issue stays open");
+});
+
+Deno.test("#4298 - an untrusted image keeps a negative-result issue open (Issue #1385)", async () => {
+  // The label is the agent's own record, and an image can steer the agent to
+  // apply it. Like the already-resolved close, nothing the run said may close
+  // the issue when an untrusted author's image sat in front of it.
+  const calls: Calls = { closed: [], addLabel: [] };
+  const deps = createMockDeps({
+    github: {
+      createClient: () =>
+        makeClient(calls, ["work-on", "performance", "negative-result"]),
+    },
+  });
+  const body = "Benchmark it. ![chart](https://evil.test/c.png)";
+
+  const result = await workOnIssueHandleNoChanges(
+    makeContext({
+      issueBody: body,
+      untrustedImages: findImageReferences(body),
+    }),
+    makeState(),
+    deps,
+  );
+
+  assertEquals(calls.closed, [], "must NOT close on the run's own record");
+  assertEquals(result.status, "failure");
 });
