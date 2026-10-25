@@ -73,8 +73,12 @@ import {
   countCommitsAheadRepairingBrokenRef,
 } from "./git_issue_branches.ts";
 import { syncMilestoneBranchWithDefault } from "./git_pull.ts";
-import { heavyBuildDeferral } from "./heavy_build_gate.ts";
+import {
+  type HeavyBuildAdmission,
+  heavyBuildAdmission,
+} from "./heavy_build_gate.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
+import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
@@ -168,12 +172,14 @@ export interface MilestonePresyncDeps {
     defaultSha: string | undefined,
   ) => Promise<GateRefusalConclusion>;
   /**
-   * Must the merge wait for host disk (Issue #3178)? The merge is verified by
-   * the repository's own build and test, and below the host floor that build
-   * is what tips the host over. A reason defers; null proceeds. Absent:
-   * nothing is gated.
+   * May the merge run its build, or must it wait for host disk or land without
+   * it (Issue #3178, Issue #4326)? The merge is verified by the repository's own
+   * build and test, and below the host floor that build is what tips the host
+   * over. `defer` waits; `merge-only` lands the merge without the build, with
+   * the reason carried as `SyncBranchOptions.mergeOnly`; `build` proceeds.
+   * Absent: nothing is gated.
    */
-  heavyBuildDeferral?: () => Promise<string | null>;
+  heavyBuildAdmission?: () => Promise<HeavyBuildAdmission>;
   log: (message: string) => void;
 }
 
@@ -338,10 +344,22 @@ export async function presyncMilestoneBranch(
 
   // Issue #3178: below the host floor the merge's verification build is the
   // one thing that must not run. Checked before the ledger, so a deferral
-  // charges and paces nothing.
-  if (deps.heavyBuildDeferral) {
-    const wait = await deps.heavyBuildDeferral();
-    if (wait !== null) return deferral(wait, behindBy);
+  // charges and paces nothing. Issue #4326: over the ephemeral cargo budget
+  // cargo builds wait for CI while Deno checks remain; the reason travels with it.
+  let mergeOnly: string | undefined;
+  if (deps.heavyBuildAdmission) {
+    const admission = await deps.heavyBuildAdmission();
+    if (admission.mode === "defer") {
+      return deferral(admission.reason, behindBy);
+    }
+    if (admission.mode === "merge-only") {
+      mergeOnly = admission.reason;
+      deps.log(
+        `[HOST_DISK_BUDGET] Milestone sync for '${milestoneBranch}' in ${repo} ` +
+          `uses cargo-only build deferral; Deno projects keep their normal checks: ` +
+          `${admission.reason}`,
+      );
+    }
   }
 
   const streaks: SyncStreaks = streakPath
@@ -456,7 +474,12 @@ export async function presyncMilestoneBranch(
   entry = openConflictAttempt(entry, nowMs);
   await persist("the attempt marker");
 
-  const sync = await deps.syncBranch(grant);
+  // Issue #4326: a merge-only attempt is granted the disk-budget reason, so the
+  // sync defers cargo builds but retains Deno checks. The judgement below reads
+  // the original grant.
+  const sync = await deps.syncBranch(
+    mergeOnly !== undefined ? { ...grant, mergeOnly } : grant,
+  );
 
   if (sync.ok) {
     // The merge landed, but a merge that CONFLICTED landed on a resolution
@@ -600,10 +623,10 @@ export interface IssueRunPresyncArgs {
   /** Injected for tests; production passes the real implementations. */
   countCommitsAheadFn?: typeof countCommitsAhead;
   /**
-   * The host-disk gate on the merge's verification build (Issue #3178).
-   * Defaults to `heavyBuildDeferral` against `cwd`.
+   * The host-disk gate on the merge's verification build (Issue #3178,
+   * Issue #4326). Defaults to `heavyBuildAdmission` against `cwd`.
    */
-  heavyBuildDeferralFn?: () => Promise<string | null>;
+  heavyBuildAdmissionFn?: () => Promise<HeavyBuildAdmission>;
   syncMilestoneBranchFn?: typeof syncMilestoneBranchWithDefault;
   runAgentFn?: typeof runClaudeWithRetry;
   runGitCommandFn?: typeof runGitCommand;
@@ -810,8 +833,8 @@ export async function presyncMilestoneBranchForIssueRun(
           },
         ),
       defaultTipSha: () => readLocalDefaultTip(defaultBranch, cwd),
-      heavyBuildDeferral: args.heavyBuildDeferralFn ??
-        (() => heavyBuildDeferral(cwd)),
+      heavyBuildAdmission: args.heavyBuildAdmissionFn ??
+        (() => heavyBuildAdmission(cwd)),
       milestoneTipSha: () =>
         readRefSha(`origin/${milestoneBranch}`, cwd, gitFn),
       ...(ghFn
@@ -842,28 +865,31 @@ export async function presyncMilestoneBranchForIssueRun(
             ),
         }
         : {}),
-      syncBranch: (syncGrant) =>
-        syncFn(
+      syncBranch: (syncGrant) => {
+        // The ladder's last rung, bound exactly as the sweep binds it. It is
+        // both the real agent a merge-only attempt falls back to for a tree
+        // without a cargo build (Issue #4326) and the agent of an attempt that
+        // is not merge-only.
+        const agentFn = bindMilestoneConflictAgent({
+          repo,
+          grant: syncGrant,
+          config,
+          logger,
+          runAgent,
+        });
+        // Issue #4326: a merge-only attempt swaps in the gates and agent that
+        // land the merge without the repository's build for a cargo tree.
+        return syncWithMergeOnlyBindings({
+          syncFn,
           milestoneBranch,
           defaultBranch,
-          { cwd },
-          // Issue #589: named so the sync can raise a PR when a repository
-          // rule refuses the direct push.
+          options: { cwd },
           repo,
-          // The default gates: the repository's own type check, and the
-          // stricter resolution gate derived from it.
-          undefined,
-          undefined,
-          // The ladder's last rung, bound exactly as the sweep binds it.
-          bindMilestoneConflictAgent({
-            repo,
-            grant: syncGrant,
-            config,
-            logger,
-            runAgent,
-          }),
+          mergeOnly: syncGrant.mergeOnly,
+          agentFn,
           logger,
-        ),
+        });
+      },
       log: bindLogger(logger),
     }));
 }

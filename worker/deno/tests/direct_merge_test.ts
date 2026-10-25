@@ -502,6 +502,212 @@ Deno.test("direct_merge - checkCiStatus falls back to REST pair when GraphQL fai
 });
 
 // =============================================================================
+// checkCiStatus — REST fallback pagination (Issue #4370)
+// =============================================================================
+
+/** One check run for a paginated REST fallback fixture. */
+function fallbackRun(
+  id: number,
+  conclusion: string,
+): { id: number; name: string; status: string; conclusion: string } {
+  return {
+    id,
+    name: `check-${id}`,
+    status: "completed",
+    conclusion,
+  };
+}
+
+/** One `gh api --paginate --jq` page: a single check-runs object. */
+function fallbackPage(
+  totalCount: number,
+  runs: ReadonlyArray<ReturnType<typeof fallbackRun>>,
+): string {
+  return JSON.stringify({ total_count: totalCount, check_runs: runs });
+}
+
+/**
+ * GraphQL fails, then the REST pair runs. The check-runs stub answers with
+ * `paginated` only when the call asks for every page; otherwise it answers
+ * with the first page alone, which is what unpaginated `gh api` returns.
+ */
+function fallbackGh(
+  firstPage: string,
+  paginated: string,
+): (args: string[]) => Promise<string> {
+  return (args: string[]) => {
+    const joined = args.join(" ");
+    if (args[0] === "api" && args[1] === "graphql") {
+      return Promise.reject(new Error("GraphQL error"));
+    }
+    if (joined.includes("pr view")) {
+      return Promise.resolve(PR_VIEW_RESPONSE);
+    }
+    if (joined.includes("check-runs")) {
+      const readsEveryPage = args.includes("--paginate") &&
+        args.some((arg) => arg.includes("per_page=100"));
+      return Promise.resolve(readsEveryPage ? paginated : firstPage);
+    }
+    if (joined.includes("/status")) {
+      return Promise.resolve(
+        JSON.stringify({ state: "success", statuses: [] }),
+      );
+    }
+    return Promise.reject(new Error(`Unexpected: ${joined}`));
+  };
+}
+
+Deno.test("direct_merge - REST fallback does not pass when the failing run is only on the second page (Issue #4370)", async () => {
+  const first = Array.from(
+    { length: 30 },
+    (_, index) => fallbackRun(index + 1, "success"),
+  );
+  const firstPage = fallbackPage(31, first);
+  const bothPages = `${firstPage}\n${
+    fallbackPage(31, [fallbackRun(31, "failure")])
+  }\n`;
+
+  const result = await checkCiStatus(
+    "owner/repo",
+    42,
+    fallbackGh(firstPage, bothPages),
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.status === "passed", false);
+    assertEquals(result.value.status, "failed");
+  }
+});
+
+Deno.test("direct_merge - REST fallback passes when every check run across pages is green (Issue #4370)", async () => {
+  const first = Array.from(
+    { length: 30 },
+    (_, index) => fallbackRun(index + 1, "success"),
+  );
+  const firstPage = fallbackPage(31, first);
+  const bothPages = `${firstPage}\n${
+    fallbackPage(31, [fallbackRun(31, "success")])
+  }\n`;
+  const seen: { args: string[] | null } = { args: null };
+  const gh = fallbackGh(firstPage, bothPages);
+  const recordingGh = (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("check-runs")) seen.args = args;
+    return gh(args);
+  };
+
+  const result = await checkCiStatus("owner/repo", 42, recordingGh);
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.status, "passed");
+  }
+  const checkRunArgs = seen.args ?? [];
+  assertEquals(checkRunArgs.includes("--paginate"), true);
+  assertEquals(
+    checkRunArgs.some((arg) => arg.includes("per_page=100")),
+    true,
+  );
+});
+
+Deno.test("direct_merge - REST fallback fails closed when a check-run page is short of total_count (Issue #4370)", async () => {
+  const first = Array.from(
+    { length: 30 },
+    (_, index) => fallbackRun(index + 1, "success"),
+  );
+  const shortPage = fallbackPage(31, first);
+
+  const result = await checkCiStatus(
+    "owner/repo",
+    42,
+    fallbackGh(shortPage, shortPage),
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message.includes("incomplete"), true);
+  }
+});
+
+const UNREADABLE_CHECK_RUN_PAGES: ReadonlyArray<{
+  name: string;
+  payload: string;
+  message: string;
+}> = [
+  {
+    name: "malformed JSON",
+    payload: "{",
+    message: "not JSON",
+  },
+  {
+    name: "blank",
+    payload: "\n",
+    message: "no pages",
+  },
+  {
+    name: "JSON array",
+    payload: "[]",
+    message: "not a check-runs object",
+  },
+  {
+    name: "null",
+    payload: "null",
+    message: "not a check-runs object",
+  },
+  {
+    name: "string",
+    payload: '"x"',
+    message: "not a check-runs object",
+  },
+  {
+    name: "non-numeric total_count",
+    payload: JSON.stringify({ total_count: "31", check_runs: [] }),
+    message: "no numeric total_count",
+  },
+  {
+    name: "missing check_runs",
+    payload: JSON.stringify({ total_count: 0 }),
+    message: "no check_runs array",
+  },
+  {
+    name: "disagreeing totals",
+    payload: [
+      fallbackPage(1, [fallbackRun(1, "success")]),
+      fallbackPage(2, [fallbackRun(2, "success")]),
+    ].join("\n"),
+    message: "disagree",
+  },
+  {
+    name: "numeric run",
+    payload: JSON.stringify({ total_count: 1, check_runs: [1] }),
+    message: "non-object run",
+  },
+  {
+    name: "null run",
+    payload: JSON.stringify({ total_count: 1, check_runs: [null] }),
+    message: "non-object run",
+  },
+];
+
+for (const unread of UNREADABLE_CHECK_RUN_PAGES) {
+  Deno.test(`direct_merge - REST fallback fails closed on ${unread.name} (Issue #4370)`, async () => {
+    const result = await checkCiStatus(
+      "owner/repo",
+      42,
+      fallbackGh(unread.payload, unread.payload),
+    );
+    assertEquals(result.ok, false, unread.name);
+    if (!result.ok) {
+      assertEquals(
+        result.error.message.includes(unread.message),
+        true,
+        `${unread.name}: ${result.error.message}`,
+      );
+    }
+  });
+}
+
+// =============================================================================
 // checkCiStatus — API error handling
 // =============================================================================
 

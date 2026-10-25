@@ -300,6 +300,27 @@ Deno.test("planCodingFailure - a non-transient failure steps the ladder and the 
   assertEquals(plan.cooldownKind, "non_transient");
 });
 
+Deno.test("planCodingFailure - an infra tool-missing failure recorded as criteria-unmet does not cool the issue (Issue #4362)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    category: "criteria_unmet",
+    reason: "the run did not meet every acceptance criterion",
+    transcript: [
+      { type: "function_call", name: "shell", status: "completed" },
+      {
+        type: "error",
+        message:
+          "Code Mode is unavailable because failed to spawn code-mode host /usr/local/bin/codex-code-mode-host: host executable was not found.",
+      },
+    ],
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+  assertEquals(plan.decision?.disposition, "transient");
+  assertEquals(plan.decision?.failureClass, "tool-runtime");
+});
+
 Deno.test("planCodingFailure - a transient failure steps neither", () => {
   const plan = planCodingFailure({
     success: false,

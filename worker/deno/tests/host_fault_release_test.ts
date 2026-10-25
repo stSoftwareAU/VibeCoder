@@ -280,6 +280,53 @@ Deno.test("releaseHostFaultFailureLabels - a forged record from a non-fleet auth
   assertEquals(gh.byNumber.get(104)?.labels, ["failed"]);
 });
 
+Deno.test("releaseHostFaultFailureLabels - an ordinary owner comment is not a forged marker; a non-fleet failure record still is (Issue #4357)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const warnings: string[] = [];
+  const issues: FakeIssue[] = [
+    {
+      number: 4357,
+      labels: ["failed-once"],
+      comments: [
+        LEGACY_CLONE_CORRUPT_COMMENT,
+        { body: "I'll take a look at this.", author: "nleck" },
+      ],
+    },
+    {
+      number: 4358,
+      labels: ["failed-once"],
+      comments: [{
+        body: LEGACY_CLONE_CORRUPT_COMMENT,
+        author: "drive-by-account",
+      }],
+    },
+  ];
+  const gh = fakeGh(issues);
+  await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+    log: (message) => warnings.push(message),
+  });
+
+  const markerWarnings = warnings.filter((w) =>
+    w.includes("ignored") && w.includes("marker match")
+  );
+  assertEquals(
+    markerWarnings.filter((w) => w.includes("#4357")),
+    [],
+    `ordinary owner comment was logged as a marker: ${
+      markerWarnings.join(" | ")
+    }`,
+  );
+  assert(
+    markerWarnings.some((w) =>
+      w.includes("#4358") && w.includes("ignored 1 marker match")
+    ),
+    `non-fleet failure record was not logged: ${markerWarnings.join(" | ")}`,
+  );
+});
+
 Deno.test("releaseHostFaultFailureLabels - a marker embedded mid-body in an agent-failure record is not a host fault (Issue #2890)", async () => {
   resetHostFaultReleaseSweepsForTest();
   const midBodyMarker =

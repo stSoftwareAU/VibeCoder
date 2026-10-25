@@ -714,6 +714,41 @@ Deno.test("runPrFeedbackDriftCheck - nothing changed since beforeSha is skipped 
   }
 });
 
+Deno.test("runPrFeedbackDriftCheck - a push that changed nothing is logged at info (Issue #4361)", async () => {
+  const { dir, beforeSha } = await setupBaseline();
+  try {
+    const lines: { level: string; message: string }[] = [];
+    const calls: AgentCall[] = [];
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent: makeRunAgent([], calls),
+        logger: {
+          info: (message) => lines.push({ level: "info", message }),
+          warn: (message) => lines.push({ level: "warn", message }),
+          error: (message) => lines.push({ level: "error", message }),
+        },
+      },
+    );
+
+    assertEquals(outcome.status, "skipped");
+    assertEquals(calls.length, 0);
+    const skipped = lines.filter((line) =>
+      line.message === "Drift check skipped — this push changed nothing"
+    );
+    assertEquals(
+      skipped.map((line) => line.level),
+      ["info"],
+      "nothing to check is the correct outcome, not a degradation",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Unparseable model output.
 // ---------------------------------------------------------------------------
