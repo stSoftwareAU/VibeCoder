@@ -1996,11 +1996,16 @@ invocation may **name** its provider:
 
 - `runClaudeWithTimeout` / `runClaudeWithRetry` take `agentProvider` (a
   registered id or a descriptor) on `RunClaudeOptions`;
-- `runExecuteClaudePhase` takes the same `agentProvider` option and forwards
-  it;
-- `selectAgentProvider(selector?)` in `agent_provider.ts` is the one resolution
-  point: with no argument it is `activeAgentProvider()`, so **omitting it
-  reproduces today's behaviour exactly**.
+- `runExecuteClaudePhase` takes the same `agentProvider` option. It forwards
+  the named provider to the runner, except that an issue run the pre-spawn
+  planner (`planIssueRunProvider`) reroutes to Claude (outcome
+  `rerouted-to-claude`, Issue #4109) is forwarded as `claude` instead;
+- `selectAgentProvider(selector?)` in `agent_provider.ts` is the resolution
+  point for a call: with no argument it is `activeAgentProvider()`, so
+  **omitting it reproduces today's behaviour exactly**. The issue-run phases
+  also read the active provider through `plannedActiveAgentProvider()`, which
+  skips the installed-set check, to plan before spawn; the runner's install
+  assert still refuses an uninstalled provider.
 
 Naming a provider changes nothing process-wide — not `agent_provider`, not
 `VIBE_AGENT_PROVIDER`. The descriptor is resolved **once per call** and held as

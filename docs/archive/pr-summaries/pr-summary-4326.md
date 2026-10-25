@@ -257,3 +257,12 @@ flowchart TD
   (`The running container image did not install the "codex" coding-agent provider`);
   the serial pass did not run because the parallel pass failed. Not checked: a
   live GRQ-23 run.
+
+## Merge with `main` (#4338)
+
+`main` landed a parallel fix for #4326 (`shouldSkipEphemeralCargoBuild`,
+`CargoBudgetVerdict.skipCargoBuild`, the gates' cargo skip). Both survive: the
+sweep follows `heavyBuildAdmission` (`merge-only` carries the reason as
+`mergeOnly`), while `main`'s gate-level cargo skip stays as a second guard in
+`milestone_merge_gate.ts` and `milestone_resolution_gate.ts`. The merge-only
+sweep log names both the ephemeral cargo build and the repository's build.

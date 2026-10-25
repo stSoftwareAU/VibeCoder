@@ -146,6 +146,13 @@ function belongsTo(path: string, key: string): boolean {
   return name === key || name.startsWith(`${key}-`);
 }
 
+/**
+ * Phrase a deferral carries when the merge may land and cargo must not run
+ * (Issue #4326). Callers match it with {@link deferralSkipsCargoForMerge}.
+ */
+export const CARGO_BUILD_SKIPPED_FOR_MERGE =
+  "the ephemeral cargo build is skipped and CI builds the merged tree";
+
 /** The budget's verdict for one build. */
 export interface CargoBudgetVerdict {
   proceed: boolean;
@@ -153,6 +160,24 @@ export interface CargoBudgetVerdict {
   prunedBytes: number;
   /** One line for the log. */
   detail: string;
+  /**
+   * Free space is at or above the floor and short of floor + headroom, and
+   * pruning freed nothing. Cargo must not run; a merge-only sync may land
+   * and the repository's CI builds the tree (Issue #4326).
+   */
+  skipCargoBuild: boolean;
+}
+
+/**
+ * Whether `deferral` is the merge-only cargo skip (Issue #4326).
+ *
+ * A real build still waits. A milestone sync that is only a merge does not.
+ */
+export function deferralSkipsCargoForMerge(
+  deferral: string | null,
+): boolean {
+  return deferral !== null &&
+    deferral.includes(CARGO_BUILD_SKIPPED_FOR_MERGE);
 }
 
 /**
@@ -186,6 +211,7 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: true,
       prunedBytes: 0,
+      skipCargoBuild: false,
       detail: `within budget (${terms})`,
     };
   }
@@ -197,6 +223,7 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: false,
       prunedBytes: 0,
+      skipCargoBuild: false,
       detail: `ephemeral cargo root over budget (${terms}) and ${root} could ` +
         `not be read to prune it: ${
           err instanceof Error ? err.message : String(err)
@@ -231,13 +258,29 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: true,
       prunedBytes: pruned,
+      skipCargoBuild: false,
       detail: `ephemeral cargo root back within budget (${terms}) — ` +
         `${prunedNote} (Issue #3178)`,
+    };
+  }
+  // Above the floor, with nothing pruned, a merge must not wait on cargo.
+  // The host stays at or above its floor because cargo does not run; CI
+  // builds the merged tree (Issue #4326). A prune that freed some bytes and
+  // is still short keeps refusing, so a partial free cannot start a build.
+  if (pruned === 0 && input.hostFreeBytes >= input.floorBytes) {
+    return {
+      proceed: false,
+      prunedBytes: 0,
+      skipCargoBuild: true,
+      detail: `ephemeral cargo root over budget (${terms}) — ${prunedNote} ` +
+        `and ${formatGb(shortfall)} is still short, so ` +
+        `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #3178 budget; Issue #4326 skip)`,
     };
   }
   return {
     proceed: false,
     prunedBytes: pruned,
+    skipCargoBuild: false,
     detail: `ephemeral cargo root over budget (${terms}) — ${prunedNote} and ` +
       `${formatGb(shortfall)} is still short, so the build is refused ` +
       `(Issue #3178)`,
@@ -305,6 +348,32 @@ export async function heavyBuildAdmission(
     reason: `${verdict.detail}; the merge lands without the repository's ` +
       `build and the repository's CI builds it (Issue #4326)`,
   };
+}
+
+/**
+ * Whether cargo must not run for `checkoutPath` (Issue #4326).
+ *
+ * True only when the host is above its floor, the runtime refuses the trim,
+ * and pruning idle target directories freed nothing. No registered probe
+ * (tests, ad hoc callers) never skips.
+ */
+export async function shouldSkipEphemeralCargoBuild(
+  checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<boolean> {
+  if (probe === undefined) return false;
+  const reading = await probe();
+  if (judgeHostDiskForBuild(reading) !== null) return false;
+  if (!reading.trimRefused) return false;
+  const free = reading.status.availableBytes;
+  if (reading.status.level !== "ok" || free === undefined) return false;
+  if (reading.floorBytes === undefined) return false;
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath,
+    hostFreeBytes: free,
+    floorBytes: reading.floorBytes,
+  }, deps);
+  return verdict.skipCargoBuild;
 }
 
 /** What {@link releaseCheckoutTargetDirs} removed. */

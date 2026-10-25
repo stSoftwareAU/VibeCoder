@@ -1,18 +1,19 @@
 # Manager-worker contract (provider-neutral)
 
-**Issue:** [#3641](https://github.com/stSoftwareAU/VibeCoder/issues/3641);
-the review-gate audit and the fail-loud rollout below were completed by
+**Issue:** [#3641](https://github.com/stSoftwareAU/VibeCoder/issues/3641); the
+review-gate audit and the fail-loud rollout below were completed by
 [#3933](https://github.com/stSoftwareAU/VibeCoder/issues/3933).
 
 The original audit below predates the opt-in implementation.
-[Role configuration](ROLE-CONFIGURATION.md) documents the runtime delivered
-for independent role selection, its supported adapters and rollback.
+[Role configuration](ROLE-CONFIGURATION.md) documents the runtime delivered for
+independent role selection, its supported adapters and rollback.
 
 This page is the design contract for how a manager (the advisor that plans an
 `issue`-phase run) hands work to executor and reviewer sub-agents, and how that
 hand-off must stay the same whichever provider CLI runs the phase. It records
 what the worker does today with citations, names the target contract, and sets
-the order in which the pieces should land. The original contract changed no runtime behaviour or default.
+the order in which the pieces should land. The original contract changed no
+runtime behaviour or default.
 
 ## 1. Purpose and scope
 
@@ -30,10 +31,11 @@ phases, except where they share the provider seam; the billing policy itself
 - **Vendor:** the company whose model is run (Anthropic, OpenAI, Google,
   DeepSeek).
 - **Provider CLI:** the program the worker spawns for one invocation. The four
-  are registered in `AGENT_PROVIDERS` (`worker/deno/lib/agent_provider.ts:1154`).
-  A provider CLI is not a vendor. The `deepseek` child environment points
-  `ANTHROPIC_BASE_URL` at DeepSeek's endpoint (`worker/deno/lib/deepseek_env.ts:166-167`),
-  so the vendor and the CLI are different axes.
+  are registered in `AGENT_PROVIDERS`
+  (`worker/deno/lib/agent_provider.ts:1188`). A provider CLI is not a vendor.
+  The `deepseek` child environment points `ANTHROPIC_BASE_URL` at DeepSeek's
+  endpoint (`worker/deno/lib/deepseek_env.ts:166-167`), so the vendor and the
+  CLI are different axes.
 - **Model:** the identifier passed to a provider CLI for one phase, such as
   `sonnet`, `haiku` or `opus` for Claude. The `issue` default is
   `DEFAULT_CLAUDE_MODEL_ISSUE` (`worker/deno/lib/config_defaults.ts:1102`).
@@ -43,54 +45,58 @@ phases, except where they share the provider seam; the billing policy itself
   (`worker/deno/lib/claude_env.ts:177`).
 - **Host-validated prerequisite:** a model that a provider has not shipped in
   the host's supported set. It must be validated on the host before any
-  configuration names it. It is never a default. Astra and Sol availability is
-  a prerequisite to validate per host, by checking that the CLI is installed
-  and the account is entitled. It is never assumed. Until a host is validated,
-  no routing changes for it.
+  configuration names it. It is never a default. Astra and Sol availability is a
+  prerequisite to validate per host, by checking that the CLI is installed and
+  the account is entitled. It is never assumed. Until a host is validated, no
+  routing changes for it.
 
 ## 3. Original behaviour audit (before independent role dispatch)
 
 Each row cites the file and line that was opened to verify it. Paths are
 relative to the repository root.
 
-| Area | Where | What it does today |
-| --- | --- | --- |
-| Split switch | `worker/deno/lib/issue_executor_split.ts:42-51` | `isIssueExecutorSplitEnabled` returns false unless the phase is `issue`. A repo boolean overrides the host value. |
-| Host defaults | `worker/deno/lib/config_defaults.ts:505`, `:515`, `:521` | `issueExecutorSplit: true`, `issueSubAgentTier: "haiku"`, `issueReviewerAgents: true`. |
-| Config load | `worker/deno/lib/config.ts:976-987` | Loads the three keys; the tier goes through `resolveHostIssueSubAgentTier`. |
-| Production wiring | `worker/deno/commands/execute_claude_phase.ts:173-178` | Threads the host values into the phase options. |
-| Tier resolution | `worker/deno/lib/issue_sub_agent_tier.ts:43`, `:72` | Host value first, then the `repo_config` override. |
-| Executor definitions | `worker/deno/lib/issue_executor_agents.ts:37`, `:54`, `:114`, `:146` | Sonnet model constant, Haiku model constant, `["Agent"]` disallowed, `buildIssueExecutorAgents`. |
-| Reviewer definitions | `worker/deno/lib/issue_executor_agents.ts:208`, `:296` | Read-only tools `Read`, `Grep`, `Glob`; `buildIssueReviewerAgents`. |
-| Explorer definition | `worker/deno/lib/issue_executor_agents.ts:337`, `:374` | Haiku, read-only. Built only on the haiku tier (see assembly below). |
-| Assembly | `worker/deno/lib/issue_executor_agents.ts:420-434` | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:434`). |
-| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1270-1306` | Resolves the split (`:1282-1286`), then the tier (the `"sonnet"` fallback at `:1291` applies only when no option is passed), then calls `buildIssueRunAgents` at `:1300`. |
-| Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
-| Hook settings | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240` | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload. |
-| Guard CLI | `worker/deno/lib/issue_edit_guard_cli.ts:46` | `runIssueEditGuard` is the hook entry point. |
-| Flag delivery | `worker/deno/lib/agent_provider.ts:595` (`buildClaudeCliArgs`), `:617-618`, `:622-623`, `:638-639` | `buildClaudeCliArgs` emits `--agents` JSON (`:617-618`), and `--settings` at two places (`:622-623`, `:638-639`). The `--settings` argument is emitted twice when `settingsJson` is set. This is recorded here and not fixed by this change. |
-| Descriptor | `worker/deno/lib/agent_provider.ts:373` (`agents`), `:412` (`settingsJson`), `:446` (`promptTransport`), `:508` (`buildInvocation`), `:517` (`buildChildEnv`) | The `AgentProviderDescriptor` fields. |
+| Area                 | Where                                                                                                                                                         | What it does today                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Split switch         | `worker/deno/lib/issue_executor_split.ts:42-51`                                                                                                               | `isIssueExecutorSplitEnabled` returns false unless the phase is `issue`. A repo boolean overrides the host value.                                                                                                                                                                                                                                                                   |
+| Host defaults        | `worker/deno/lib/config_defaults.ts:505`, `:515`, `:521`                                                                                                      | `issueExecutorSplit: true`, `issueSubAgentTier: "haiku"`, `issueReviewerAgents: true`.                                                                                                                                                                                                                                                                                              |
+| Config load          | `worker/deno/lib/config.ts:976-987`                                                                                                                           | Loads the three keys; the tier goes through `resolveHostIssueSubAgentTier`.                                                                                                                                                                                                                                                                                                         |
+| Production wiring    | `worker/deno/commands/execute_claude_phase.ts:173-178`                                                                                                        | Threads the host values into the phase options.                                                                                                                                                                                                                                                                                                                                     |
+| Tier resolution      | `worker/deno/lib/issue_sub_agent_tier.ts:43`, `:72`                                                                                                           | Host value first, then the `repo_config` override.                                                                                                                                                                                                                                                                                                                                  |
+| Executor definitions | `worker/deno/lib/issue_executor_agents.ts:37`, `:54`, `:114`, `:146`                                                                                          | Sonnet model constant, Haiku model constant, `["Agent"]` disallowed, `buildIssueExecutorAgents`.                                                                                                                                                                                                                                                                                    |
+| Reviewer definitions | `worker/deno/lib/issue_executor_agents.ts:208`, `:296`                                                                                                        | Read-only tools `Read`, `Grep`, `Glob`; `buildIssueReviewerAgents`.                                                                                                                                                                                                                                                                                                                 |
+| Explorer definition  | `worker/deno/lib/issue_executor_agents.ts:337`, `:374`                                                                                                        | Haiku, read-only. Built only on the haiku tier (see assembly below).                                                                                                                                                                                                                                                                                                                |
+| Assembly             | `worker/deno/lib/issue_executor_agents.ts:420-434`                                                                                                            | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:434`).                                                                                                                                                                                                   |
+| Phase wiring         | `worker/deno/lib/execute_claude_phase.ts:1297-1344`                                                                                                           | Resolves the split (`:1308-1313`), then the tier (`:1314-1318`; the `"sonnet"` fallback at `:1315` applies only when no option is passed), then settles the provider with `planIssueRunProvider` (`:1323`), then calls `buildIssueRunAgents` at `:1339` with the planner's switches. The planner is skipped when external orchestration is on.                                      |
+| Edit guard           | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138`                                                                                     | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
+| Hook settings        | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240`                                                                                                   | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload.                                                                                                                                                                                                                                                                             |
+| Guard CLI            | `worker/deno/lib/issue_edit_guard_cli.ts:46`                                                                                                                  | `runIssueEditGuard` is the hook entry point.                                                                                                                                                                                                                                                                                                                                        |
+| Flag delivery        | `worker/deno/lib/agent_provider.ts:623` (`buildClaudeCliArgs`), `:646-648`, `:653-655`                                                                        | `buildClaudeCliArgs` emits `--agents` JSON (`:646-648`) and one `--settings` argument (`:653-655`) when `settingsJson` is set.                                                                                                                                                                                                                                                      |
+| Descriptor           | `worker/deno/lib/agent_provider.ts:394` (`agents`), `:422` (`settingsJson`), `:456` (`promptTransport`), `:536` (`buildInvocation`), `:545` (`buildChildEnv`) | The `AgentProviderDescriptor` fields.                                                                                                                                                                                                                                                                                                                                               |
 
 Per-provider behaviour, from the same file:
 
-- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:720`). Its
-  `buildInvocation` is at `:748` and `buildChildEnv` at `:761-762`, which calls
-  `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:228`).
-- **Codex:** `promptTransport` is `"stdin"` (`:853`). `buildInvocation` (`:878`)
-  calls `buildCodexArgs` (`:901`, defined at `worker/deno/lib/codex_executor.ts:384`),
-  which carries no `agents` but does pass `settingsJson` through (`:904`) and turns it into per-spawn `hooks.PreToolUse` `-c` arguments (`codex_executor.ts:414-415`). `buildChildEnv` (`:916`) calls
-  `buildIsolatedCodexChildEnv` (`worker/deno/lib/codex_env.ts:116`), which calls
-  `buildCodexChildEnv` (`worker/deno/lib/codex_env.ts:90`).
-- **Gemini:** `promptTransport` is `"argv"` (`:973`). `buildInvocation` (`:988`)
-  calls `buildGeminiArgs` (`:990`, defined at `worker/deno/lib/gemini_executor.ts:251`)
-  and carries no `agents` or `settingsJson`. `buildChildEnv` (`:1006`) uses
-  `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`).
-- **DeepSeek:** `promptTransport` is `"stdin"` (`:1067`). `buildInvocation`
-  (`:1103`) destructures out `agents` and `settingsJson` (`:1120`). `agents`
-  triggers `warnDeepSeekAgentsUnsupported` (`:1121`,
-  `worker/deno/lib/deepseek_executor.ts:253`). `settingsJson` is dropped
-  silently, with `settingsJson: undefined` at `:1132`. `buildChildEnv` (`:1138`)
-  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:157`).
+- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:737`). Its
+  `buildInvocation` is at `:765` and `buildChildEnv` at `:778-780`, which calls
+  `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:229`).
+- **Codex:** `promptTransport` is `"stdin"` (`:861`). `buildInvocation` (`:900`)
+  calls `buildCodexArgs` (`:923`, defined at
+  `worker/deno/lib/codex_executor.ts:540`), which carries no `agents` but does
+  pass `settingsJson` through (`:926`) and turns it into per-spawn
+  `hooks.PreToolUse` `-c` arguments (`codex_executor.ts:525`). `buildChildEnv`
+  (`:948`) calls `buildIsolatedCodexChildEnv`
+  (`worker/deno/lib/codex_env.ts:116`), which calls `buildCodexChildEnv`
+  (`worker/deno/lib/codex_env.ts:90`).
+- **Gemini:** `promptTransport` is `"argv"` (`:1005`). `buildInvocation`
+  (`:1020`) calls `buildGeminiArgs` (`:1022`, defined at
+  `worker/deno/lib/gemini_executor.ts:251`) and carries no `agents` or
+  `settingsJson`. `buildChildEnv` (`:1038`) uses `buildGeminiChildEnv`
+  (`worker/deno/lib/gemini_env.ts:92`).
+- **DeepSeek:** `promptTransport` is `"stdin"` (`:1099`). `buildInvocation`
+  (`:1135`) destructures out `agents` and `settingsJson` (`:1154`). `agents`
+  triggers `warnDeepSeekAgentsUnsupported` (`:1155`,
+  `worker/deno/lib/deepseek_executor.ts:255`). `settingsJson` is dropped
+  silently, with `settingsJson: undefined` at `:1166`. `buildChildEnv` (`:1172`)
+  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:158`).
 
 Prompt templates. The advisor and executor instructions are built in code, and
 the template carries only a placeholder.
@@ -100,7 +106,8 @@ the template carries only a placeholder.
 - `buildPrompt` splices it into `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` when the split
   is on, and renders the empty string otherwise
   (`worker/deno/lib/prompt_builder.ts:718-728`, `:782`, `:832-834`).
-- It warns when a split run's template lacks the placeholder (`prompt_builder.ts:845-856`).
+- It warns when a split run's template lacks the placeholder
+  (`prompt_builder.ts:845-856`).
 - The placeholder is optional for the `issue` template
   (`worker/deno/lib/prompt_manager.ts:259-270`, `:267`).
 - The shipped template carries it at `prompts/issue/prompt.md:405`. A
@@ -116,13 +123,13 @@ The audit list's "review gates" area covers more than the two reviewer
 sub-agents. Each row below was opened to verify it, and the citations are
 current.
 
-| Gate | Where | What it does today |
-| --- | --- | --- |
-| Reviewer sub-agents | `worker/deno/lib/issue_executor_agents.ts:296` | `buildIssueReviewerAgents` builds the spec and standards reviewers as read-only — `ISSUE_REVIEWER_TOOLS` is `Read`, `Grep`, `Glob` (`:208`) and `ISSUE_REVIEWER_DISALLOWED_TOOLS` is `Agent` (`:214`) — delivered through `--agents` on Claude only. |
-| Issue-reviewer switch | `worker/deno/lib/config.ts:1013-1014` | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions. |
-| PR review claim lease | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102` | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host. |
-| Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803` | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation. |
-| External review gate | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial it cannot enforce, and the subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run. |
+| Gate                   | Where                                                                                                      | What it does today                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reviewer sub-agents    | `worker/deno/lib/issue_executor_agents.ts:296`                                                             | `buildIssueReviewerAgents` builds the spec and standards reviewers as read-only — `ISSUE_REVIEWER_TOOLS` is `Read`, `Grep`, `Glob` (`:208`) and `ISSUE_REVIEWER_DISALLOWED_TOOLS` is `Agent` (`:214`) — delivered through `--agents` on Claude only.                                                                                                                                                                                      |
+| Issue-reviewer switch  | `worker/deno/lib/config.ts:1013-1014`                                                                      | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions.                                                                                                                                                                                                                                                                                                                                                 |
+| PR review claim lease  | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102`                                        | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host. |
+| Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803`         | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation.                                                                                                             |
+| External review gate   | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial it cannot enforce, and the subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run.           |
 
 The code has no `pr_review` key: `PHASE_MODEL_DEFAULTS`
 (`worker/deno/lib/config_defaults.ts:1236`) lists `pr_feedback` instead, pinned
@@ -140,18 +147,19 @@ Sonnet.
 ## 4. Target contract
 
 The target is a provider-neutral contract between the manager and each
-sub-agent. It is described below and sketched in TypeScript. This section records the original target rather than the current runtime API;
-see [Role configuration](ROLE-CONFIGURATION.md) for the implementation.
+sub-agent. It is described below and sketched in TypeScript. This section
+records the original target rather than the current runtime API; see
+[Role configuration](ROLE-CONFIGURATION.md) for the implementation.
 
 ### Role contracts
 
-| Role | Duty | Tools | Today (Claude) |
-| --- | --- | --- | --- |
-| Manager | Plans, dispatches, verifies. Read-only for edits. | Full read, dispatch | Advisor. `Edit` and `Write` are denied when `agent_id` is absent (except on the advisor's own run-record files), by the #2344 `PreToolUse` hook delivered via `--settings`. Enforced on Claude only today. |
-| Executor | Makes the mechanical edits in one unit of work. | Edit, Write, read tools, scoped to `workspaceDir`. No further delegation. | `buildIssueExecutorAgents`, with `Agent` disallowed. |
-| Spec reviewer | Checks the change against the issue. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
-| Standards reviewer | Checks the change against the standards. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
-| Explorer | Answers a narrow question about the repository. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueExplorerAgents`, haiku tier only. |
+| Role               | Duty                                                       | Tools                                                                     | Today (Claude)                                                                                                                                                                                             |
+| ------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Manager            | Plans, dispatches, verifies. Read-only for edits.          | Full read, dispatch                                                       | Advisor. `Edit` and `Write` are denied when `agent_id` is absent (except on the advisor's own run-record files), by the #2344 `PreToolUse` hook delivered via `--settings`. Enforced on Claude only today. |
+| Executor           | Makes the mechanical edits in one unit of work.            | Edit, Write, read tools, scoped to `workspaceDir`. No further delegation. | `buildIssueExecutorAgents`, with `Agent` disallowed.                                                                                                                                                       |
+| Spec reviewer      | Checks the change against the issue. Read-only.            | `Read`, `Grep`, `Glob`                                                    | `buildIssueReviewerAgents`.                                                                                                                                                                                |
+| Standards reviewer | Checks the change against the standards. Read-only.        | `Read`, `Grep`, `Glob`                                                    | `buildIssueReviewerAgents`.                                                                                                                                                                                |
+| Explorer           | Answers a narrow question about the repository. Read-only. | `Read`, `Grep`, `Glob`                                                    | `buildIssueExplorerAgents`, haiku tier only.                                                                                                                                                               |
 
 ### Task envelope and structured result
 
@@ -227,14 +235,14 @@ export interface ProviderCapabilities {
 
 ### Original native path
 
-The diagram below shows the path a Claude `issue` run takes today. It reads
-from the claim through the advisor and its sub-agents to the result.
+The diagram below shows the path a Claude `issue` run takes today. It reads from
+the claim through the advisor and its sub-agents to the result.
 
 ```mermaid
 flowchart LR
-  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1270-1306"]
+  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1297-1344"]
   B --> C["buildIssueRunAgents<br/>issue_executor_agents.ts:420"]
-  C --> D["buildClaudeCliArgs<br/>agent_provider.ts:595"]
+  C --> D["buildClaudeCliArgs<br/>agent_provider.ts:623"]
   D --> E["claude CLI<br/>--agents and --settings"]
   E --> F["Advisor, no agent_id<br/>Edit and Write denied<br/>except run-record files"]
   E --> G["Executor or reviewer<br/>agent_id present"]
@@ -244,14 +252,14 @@ flowchart LR
 
 Supporting lifecycle code, each cited from the file it lives in:
 
-- `worker/deno/lib/claude_runner.ts:1126` `runClaudeWithTimeout` runs the CLI
+- `worker/deno/lib/claude_runner.ts:1151` `runClaudeWithTimeout` runs the CLI
   under a timeout.
 - `worker/deno/lib/claim_issue.ts:471` `findLiveHeartbeatMarker` and `:1784`
   `releaseClaimWithCooldown` cover the heartbeat and release.
 - `worker/deno/lib/pr_review_claim_lease.ts:70` `isLeaseLive` and `:102`
   `createClaimLeaseRenewer` cover the lease used by PR review.
-- `worker/deno/lib/stream_compaction.ts:67-70` lists the compactable
-  providers (`claude` and `deepseek` only). `:160` is `supportsCompaction`.
+- `worker/deno/lib/stream_compaction.ts:67-70` lists the compactable providers
+  (`claude` and `deepseek` only). `:160` is `supportsCompaction`.
 - **Session persistence and resume.** `worker/deno/lib/session_resume.ts:132`
   `recordPhaseCompletion` increments the phase count on a session-state record
   (called from `worker/deno/lib/planning_processor.ts:1872`). `:216`
@@ -259,7 +267,7 @@ Supporting lifecycle code, each cited from the file it lives in:
   `:233-247` `sessionResumeForProvider` filters the stored state to the calling
   provider. A state tagged with another `providerId` is dropped (`:238`). An
   untagged legacy state is kept only for `claude` or `deepseek` (`:239-245`).
-  DeepSeek calls it at `worker/deno/lib/agent_provider.ts:1125-1128`. Compaction
+  DeepSeek calls it at `worker/deno/lib/agent_provider.ts:1159-1162`. Compaction
   is a separate path (`stream_compaction.ts:67-70`, see section 7).
 
 ### Target
@@ -296,10 +304,10 @@ stateDiagram-v2
 
 - **Executing to Dispatched (retry).** A failed attempt is dispatched again
   while the attempt count is below `maxRetries`.
-- **Executing to TimedOut.** The attempt ran past `timeoutMs`. It is stopped
-  and released with the timeout reported. This diagram does not retry it.
-- **Executing to Cancelled.** A cancel request stops the attempt. It is
-  released with the cancellation reported and is not reviewed.
+- **Executing to TimedOut.** The attempt ran past `timeoutMs`. It is stopped and
+  released with the timeout reported. This diagram does not retry it.
+- **Executing to Cancelled.** A cancel request stops the attempt. It is released
+  with the cancellation reported and is not reviewed.
 - **Executing to Recovering.** The lease lapsed or no heartbeat arrived within
   `heartbeatIntervalMs`. The host treats the executor as gone and starts
   recovery.
@@ -314,10 +322,10 @@ stateDiagram-v2
 
 - **Advisor cannot edit.** The edit guard denies `Edit` and `Write` when
   `agent_id` is absent (`worker/deno/lib/issue_executor_enforcement.ts:124`,
-  `:138`), except on the advisor's own run-record files: the PR summary and
-  the PR-feedback reply file are allowed without `agent_id` (`:142-145`). The
-  hook is delivered through `--settings`, and the runner supplies the edit
-  guard in that payload for the Claude provider only
+  `:138`), except on the advisor's own run-record files: the PR summary and the
+  PR-feedback reply file are allowed without `agent_id` (`:142-145`). The hook
+  is delivered through `--settings`, and the runner supplies the edit guard in
+  that payload for the Claude provider only
   (`worker/deno/lib/claude_runner.ts`). Codex also consumes a `settingsJson`
   payload (`worker/deno/lib/codex_executor.ts:414`), but only for the RTK
   `PreToolUse` hook (Issue #4121), never the edit guard.
@@ -326,67 +334,86 @@ stateDiagram-v2
   are read-only.
 - **Target: no recursive delegation.** Today every sub-agent definition
   disallows `Agent`: the executor
-  (`worker/deno/lib/issue_executor_agents.ts:114`), the reviewers (`:214`)
-  and the explorer (`:349`). This is enforced only by the Claude `--agents`
-  payload. In the target, every provider adapter that runs a worker must
-  enforce that a worker cannot dispatch further workers. An adapter that
-  cannot enforce it is refused (section 8), not run with delegation open.
+  (`worker/deno/lib/issue_executor_agents.ts:114`), the reviewers (`:214`) and
+  the explorer (`:349`). This is enforced only by the Claude `--agents` payload.
+  In the target, every provider adapter that runs a worker must enforce that a
+  worker cannot dispatch further workers. An adapter that cannot enforce it is
+  refused (section 8), not run with delegation open.
 - **Target: executor workspace is scoped.** Today sub-agents run inside the
-  advisor's single CLI process, so they share its working directory. The CLI
-  is spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1424`), and
-  there is no per-executor workspace. In the target, the manager hands each
-  executor a `workspaceDir` in the task envelope (section 4). The executor's
-  edits and commands are confined to it, and the manager stays read-only.
+  advisor's single CLI process, so they share its working directory. The CLI is
+  spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1424`), and there is
+  no per-executor workspace. In the target, the manager hands each executor a
+  `workspaceDir` in the task envelope (section 4). The executor's edits and
+  commands are confined to it, and the manager stays read-only.
 - **Credentials are scrubbed per provider.** Each provider builds its own child
   environment.
-  - Claude: `withholdNonSubscriptionCredentials` (`worker/deno/lib/claude_env.ts:177`)
-    keeps non-subscription credentials out of subscription runs.
+  - Claude: `withholdNonSubscriptionCredentials`
+    (`worker/deno/lib/claude_env.ts:177`) keeps non-subscription credentials out
+    of subscription runs.
   - Codex: `buildIsolatedCodexChildEnv` (`worker/deno/lib/codex_env.ts:116`)
     deletes `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_HOME`, and fails closed
     when a Codex home is selected.
   - DeepSeek: `ANTHROPIC_AUTH_TOKEN` is set only from `DEEPSEEK_API_KEY`
     (`worker/deno/lib/deepseek_env.ts:172-173`).
-  - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates to
-    `buildAgentChildEnv` with a Gemini denylist and secret allowlist.
-- **The gap today.** The edit guard exists only for Claude. Gemini drops `agents` and `settingsJson` silently, Codex drops `agents` silently but forwards `settingsJson` as per-spawn hook arguments (throwing on a malformed payload), and DeepSeek drops `settingsJson` silently, at the descriptor's `buildInvocation` layer. On the native split
-  path that `--agents` drop is no longer reachable: `runClaudeWithTimeoutBody`
-  (`worker/deno/lib/claude_runner.ts`) refuses loudly before spawn when a run
-  carries `agents` but the provider's argv lacks `--agents` (Issue #4010). The
-  target still closes the descriptor-layer drop with a refusal (section 8).
+  - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates
+    to `buildAgentChildEnv` with a Gemini denylist and secret allowlist.
+- **The gap today.** The edit guard exists only for Claude. Gemini drops
+  `agents` and `settingsJson` silently, Codex drops `agents` silently but
+  forwards `settingsJson` as per-spawn hook arguments (throwing on a malformed
+  payload), and DeepSeek drops `settingsJson` silently, at the descriptor's
+  `buildInvocation` layer. On the native split path that `--agents` drop is no
+  longer reachable for an `issue` run: the issue-run planner reroutes or strips
+  such a run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
+  (`worker/deno/lib/claude_runner.ts`) refuses loudly as a backstop for a caller
+  that bypasses the planner and for a run the retry ladder moves to
+  `agent_provider_fallback` (Issue #4010, #4034). The target still closes the
+  descriptor-layer drop with a refusal (section 8).
 
 ## 7. Compatibility matrix
 
-Compatibility with the split switched on. "Silent" means no warning is logged
-by the descriptor's `buildInvocation`; on the native split path the runner
-refuses loudly before spawn when `--agents` is dropped (Issue #4010).
+Compatibility with the split switched on. "Silent" means no warning is logged by
+the descriptor's `buildInvocation`. On the native split path the issue-run
+planner (`planIssueRunProvider`,
+`worker/deno/lib/issue_run_provider_agents.ts:77-136`) reroutes or strips such
+an `issue` run before spawn (Issue #4109); the runner
+(`runClaudeWithTimeoutBody`, `worker/deno/lib/claude_runner.ts:1263-1275`) only
+refuses, as a backstop (Issue #4010).
 
-| Provider | Prompt transport | `--agents` | `--settings` (edit guard) | `supportsCompaction` | Behaviour with split on |
-| --- | --- | --- | --- | --- | --- |
-| `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active. |
-| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Translated to per-spawn `hooks.PreToolUse` `-c` arguments when present (`agent_provider.ts:904`, `codex_executor.ts:414`); carries the RTK hook only, never the edit guard | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard (the Codex `--settings` column carries only the RTK hook). |
-| `gemini` | argv (`:973`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
-| `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; the descriptor warns for `agents` only. No edit guard. |
+| Provider   | Prompt transport                | `--agents`                               | `--settings` (edit guard)                                                                                                                                                  | `supportsCompaction`               | Behaviour with split on                                                                                                                                                                                                                                                                                 |
+| ---------- | ------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`   | stdin (`agent_provider.ts:737`) | Emitted (`:646-648`)                     | Emitted (`:653-655`)                                                                                                                                                       | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active.                                                                                                                                                                                                                                             |
+| `codex`    | stdin (`:861`)                  | Not carried, silent at `buildInvocation` | Translated to per-spawn `hooks.PreToolUse` `-c` arguments when present (`agent_provider.ts:926`, `codex_executor.ts:414`); carries the RTK hook only, never the edit guard | No                                 | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard (the Codex `--settings` column carries only the RTK hook). |
+| `gemini`   | argv (`:1005`)                  | Not carried, silent at `buildInvocation` | Not carried, silent                                                                                                                                                        | No                                 | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard.                                                           |
+| `deepseek` | stdin (`:1099`)                 | Stripped, warned (`:1154-1155`)          | Stripped, silent (`:1154`, `:1166`)                                                                                                                                        | Yes                                | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); the descriptor warns for `agents` only. No edit guard.                   |
 
-**The prompt block renders on every provider (confirmed).** The advisor/executor
-block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
-phase, repo and host config only (`worker/deno/lib/issue_executor_split.ts:42-59`).
-Both phase paths call it with no provider argument
-(`worker/deno/lib/execute_claude_phase.ts:1282-1286`,
-`worker/deno/lib/phases/execute_phase.ts:665-669`) and pass the result to
-`buildPrompt` (`execute_claude_phase.ts:1342`, `phases/execute_phase.ts:729-730`).
-`prompt_builder.ts:832-834` splices the block whenever it is true. The
-`--settings` hook is gated to Claude (`worker/deno/lib/claude_runner.ts`,
-the `issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID` guard). The
-`agents` request still reaches every provider's `buildInvocation`, where the
-Codex, Gemini and DeepSeek rows above drop it — but on the native split path
-the runner now refuses loudly before spawn when `agents` is present and the
-argv lacks `--agents` (Issue #4010). The advisor is therefore no longer
-silently told to dispatch `executor` sub-agents the CLI never defines.
+**The block is not gated on the provider, but the planner clears it on the strip
+path.** `isIssueExecutorSplitEnabled` takes the phase, repo and host config only
+(`worker/deno/lib/issue_executor_split.ts:42-60`), so it does not gate on the
+provider. Both phase paths call it with no provider argument
+(`worker/deno/lib/execute_claude_phase.ts:1308-1313`,
+`worker/deno/lib/phases/execute_phase.ts:816-821`). What reaches `buildPrompt`
+is the planner's `executorSplit` (`execute_claude_phase.ts:1335-1337`,
+`phases/execute_phase.ts:850-852`, passed at `execute_claude_phase.ts:1468` and
+`phases/execute_phase.ts:918`). On the strip path the planner sets it to `false`
+(`worker/deno/lib/issue_run_provider_agents.ts:129-135`), so no advisor/executor
+block renders there. The block renders on the unchanged and rerouted-to-Claude
+outcomes. `prompt_builder.ts:832-834` splices the block whenever it is true. The
+`--settings` hook is gated to Claude
+(`worker/deno/lib/claude_runner.ts:1238-1239`, the
+`issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID` guard). The `agents`
+request reaches a non-Claude provider's `buildInvocation` from the planner's own
+capability probe (`probeDescriptorInvocationCapabilities`, which builds the argv
+quietly to see whether it carries `--agents`), from a caller that bypasses the
+planner, and after the retry loop falls back to another provider (section 8).
+The Codex, Gemini and DeepSeek rows above drop it there; the runner refuses a
+real spawn that still carries it (Issue #4010). On the native split path the
+planner settles the run first, so the advisor is not silently told to dispatch
+`executor` sub-agents the CLI never defines.
 
 **Two paths now.** The table above is the native split path, which runs only
 when external orchestration is off
-(`worker/deno/lib/execute_claude_phase.ts:1338`,
-`worker/deno/lib/phases/execute_phase.ts:796`). The opt-in external
+(`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
+`worker/deno/lib/phases/execute_phase.ts:799-815`). The opt-in external
 orchestration path never sets `--agents`
 (`worker/deno/lib/orchestration/issue_run_gate.ts:112`) and refuses a provider
 that cannot carry a role before any paid work: `assertRoleSupported`
@@ -403,17 +430,19 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
 - **Flags.** Each key is read host-wide, and a repository can override some of
   them.
   - `issue_executor_split`: host value `worker/deno/lib/config.ts:1003-1004`; a
-    `repo_config` boolean overrides it (`worker/deno/lib/issue_executor_split.ts:49-51`).
+    `repo_config` boolean overrides it
+    (`worker/deno/lib/issue_executor_split.ts:49-51`).
   - `issue_sub_agent_tier` (`haiku` or `sonnet`): host value read through
     `resolveHostIssueSubAgentTier` (`worker/deno/lib/config.ts:1008-1009`,
     `worker/deno/lib/issue_sub_agent_tier.ts:43`); the repo override is applied
-    by `resolveIssueSubAgentTier` (`worker/deno/lib/issue_sub_agent_tier.ts:72`).
+    by `resolveIssueSubAgentTier`
+    (`worker/deno/lib/issue_sub_agent_tier.ts:72`).
   - `issue_reviewer_agents`: host only (`worker/deno/lib/config.ts:1013-1014`).
   - `external_orchestration` (default `false`): opts a host or repository into
     the independent provider-neutral path. When it is on, the native split and
     `--agents` are not resolved
-    (`worker/deno/lib/execute_claude_phase.ts:1338`,
-    `worker/deno/lib/phases/execute_phase.ts:796`). See
+    (`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
+    `worker/deno/lib/phases/execute_phase.ts:799-815`). See
     [Role configuration](ROLE-CONFIGURATION.md).
 
   See [Configuration Reference](CONFIGURATION.md), rows for these keys.
@@ -427,33 +456,50 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   (`worker/deno/lib/orchestration/issue_run_gate.ts:112`).
 - **Native split, current state.** The native `issue_executor_split` path runs
   only when external orchestration is off
-  (`worker/deno/lib/execute_claude_phase.ts:1338`,
-  `worker/deno/lib/phases/execute_phase.ts:796`). The fail-loud invariant is now
-  delivered on this path too: `runClaudeWithTimeoutBody`
-  (`worker/deno/lib/claude_runner.ts`) refuses loudly before spawn when a run
-  carries `agents` but the provider's argv lacks `--agents` (Issue #4010).
-  Codex, Gemini and DeepSeek no longer silently drop `agents` on the native
-  split. The `settingsJson` drop at the descriptor layer (section 3) is out of
-  scope for #4010; the edit-guard hook is already gated to Claude.
+  (`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
+  `worker/deno/lib/phases/execute_phase.ts:799-815`). The fail-loud invariant is
+  now delivered on this path too: the issue-run planner
+  (`worker/deno/lib/issue_run_provider_agents.ts:77-136`) reroutes or strips
+  such a run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
+  (`worker/deno/lib/claude_runner.ts:1263-1275`) refuses loudly as a backstop
+  when a run carries `agents` but the provider's argv lacks `--agents` (Issue
+  #4010). The retry ladder (`runRetryLadder`,
+  `worker/deno/lib/claude_runner.ts:2938`) can also move a run to another
+  provider: after a model refusal with no cheaper model, it switches
+  `agentProvider` to `agent_provider_fallback`
+  (`worker/deno/lib/claude_runner.ts:3496-3516`, Issue #4034) and keeps
+  `agents`, so the #4010 refusal can still fire for a fallback provider such as
+  Codex. Codex, Gemini and DeepSeek no longer silently drop `agents` on the
+  native split. The `settingsJson` drop at the descriptor layer (section 3) is
+  out of scope for #4010; the edit-guard hook is already gated to Claude.
 - **No default change.** `issue_executor_split` stays `true`,
   `issue_sub_agent_tier` stays `"haiku"` and `issue_reviewer_agents` stays
   `true`. `external_orchestration` stays `false` until a host opts in. Nothing
   in the rollout changes them. The defaults keep `--agents` on every native
-  `issue` run, so with them a host whose `issue` phase runs on `codex`,
-  `gemini` or `deepseek` is refused until it applies the full rollback below or
-  opts into external orchestration (Issue #4010).
+  `issue` run, so with them a host whose `issue` phase runs on `gemini` or
+  `deepseek` has each such run rerouted to Claude when Claude is enabled and
+  installed and the run is not on a health-gate fallback, or stripped with a
+  warning otherwise (Issue #4109), unless it
+  applies the full rollback below or opts into external orchestration. A `codex`
+  run under automatic provider routing is forced onto external orchestration
+  (`worker/deno/lib/orchestration/role_config.ts:370`) and is never planned, so
+  it is neither rerouted nor stripped; a `codex` run that is not on automatic
+  routing and has external orchestration off is rerouted or stripped like the
+  others.
 - **Rollback.** Native: setting `issue_executor_split: false` and
   `issue_reviewer_agents: false` alone does not remove `--agents` on the default
-  `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-434`)
-  still adds the explorer definition from `buildIssueExplorerAgents()`
+  `haiku` tier. `buildIssueRunAgents`
+  (`worker/deno/lib/issue_executor_agents.ts:420-434`) still adds the explorer
+  definition from `buildIssueExplorerAgents()`
   (`worker/deno/lib/issue_executor_agents.ts:374`) when `issue_sub_agent_tier`
   is `"haiku"`. A full rollback to no `--agents` argument also sets
   `issue_sub_agent_tier: "sonnet"`. The run is then a single session, as it was
   before the split. The full rollback (all three keys) is also what lets a
-  non-Claude provider run the native `issue` phase. External orchestration: set
-  `external_orchestration` to
-  `false` on the host or repository and restart the worker; the native path
-  resumes with the existing configuration keys.
+  non-Claude provider run the native `issue` phase unchanged; otherwise the
+  issue-run planner reroutes or strips the run (Issue #4109). External
+  orchestration: set `external_orchestration` to `false` on the host or
+  repository and restart the worker; the native path resumes with the existing
+  configuration keys.
 
 ## 9. Incremental implementation order
 
@@ -475,8 +521,9 @@ flowchart TD
    `AgentProviderDescriptor` fields.
 4. Refuse unsupported providers loudly when the split is on. This is the first
    behaviour change, and it sits behind the existing flags. Delivered on the
-   native split path by Issue #4010 (`runClaudeWithTimeoutBody` in
-   `worker/deno/lib/claude_runner.ts`).
+   native split path by Issue #4010 as a runner backstop
+   (`runClaudeWithTimeoutBody` in `worker/deno/lib/claude_runner.ts`), and
+   before spawn by the issue-run planner (Issue #4109).
 5. Add a parser for the structured result, Claude first.
 6. Port the edit-guard decision to a provider-neutral check. Keep the Claude
    hook as the enforcement mechanism for that provider.
@@ -485,10 +532,11 @@ flowchart TD
 
 ## 10. Tests protecting the current path
 
-These tests cover the behaviour this document describes. Each file was
-confirmed to exist under `worker/deno/tests/`.
+These tests cover the behaviour this document describes. Each file was confirmed
+to exist under `worker/deno/tests/`.
 
-- `worker/deno/tests/manager_worker_contract_3641_test.ts` (added for this issue)
+- `worker/deno/tests/manager_worker_contract_3641_test.ts` (added for this
+  issue)
 - `worker/deno/tests/issue_executor_split_test.ts`
 - `worker/deno/tests/readme_docs_reachability_test.ts`
 - `worker/deno/tests/agent_provider_readme_docs_test.ts`
@@ -500,12 +548,12 @@ confirmed to exist under `worker/deno/tests/`.
   advisor/executor pilot.
 - [#2341](https://github.com/stSoftwareAU/VibeCoder/issues/2341): the split
   executor switch.
-- [#2342](https://github.com/stSoftwareAU/VibeCoder/issues/2342): the
-  `--agents` definitions for the split.
+- [#2342](https://github.com/stSoftwareAU/VibeCoder/issues/2342): the `--agents`
+  definitions for the split.
 - [#2343](https://github.com/stSoftwareAU/VibeCoder/issues/2343): the
   advisor/executor prompt block.
-- [#2344](https://github.com/stSoftwareAU/VibeCoder/issues/2344): the edit
-  guard hook delivered through `--settings`.
+- [#2344](https://github.com/stSoftwareAU/VibeCoder/issues/2344): the edit guard
+  hook delivered through `--settings`.
 - [#2575](https://github.com/stSoftwareAU/VibeCoder/issues/2575): the reviewer
   sub-agents.
 - [#2812](https://github.com/stSoftwareAU/VibeCoder/issues/2812): the split and
