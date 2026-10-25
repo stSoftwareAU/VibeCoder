@@ -2132,17 +2132,16 @@ export async function syncMilestoneBranches(
               // the rung's own binding fires if and when it is entered.
               // Issue #4326: a merge-only sync carries the disk-budget reason,
               // so the sync lands without the repository's build.
-              agentAllowed
-                ? {
-                  ...grant,
-                  ...(mergeOnly !== undefined ? { mergeOnly } : {}),
-                  onAgentRungEntered: () =>
-                    announceAgentRung(repo, milestone, streakKey),
-                }
-                : {
-                  ...grant,
-                  ...(mergeOnly !== undefined ? { mergeOnly } : {}),
-                },
+              {
+                ...grant,
+                ...(mergeOnly !== undefined ? { mergeOnly } : {}),
+                ...(agentAllowed
+                  ? {
+                    onAgentRungEntered: () =>
+                      announceAgentRung(repo, milestone, streakKey),
+                  }
+                  : {}),
+              },
             );
           } finally {
             // The claim guards the sync, not the outcome: it is released on

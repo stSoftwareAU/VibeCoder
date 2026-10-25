@@ -110,11 +110,17 @@ export interface MilestoneSyncConflict {
    * Which resolution produced the merge that landed.
    *
    * `auto` is the triaged resolution of Issue #1559 — each file decided on its
-   * own and verified before the push. `theirs` and `manual` are the older
+   * own and verified before the push (unless {@link unverified}). `theirs` and `manual` are the older
    * whole-merge resolutions towards the default branch, kept because comments
    * carrying them are already in the wild.
    */
   resolution: "theirs" | "manual" | "auto";
+  /**
+   * True when an `auto` resolution landed without its verification, because a
+   * merge-only sync (Issue #4326) could not afford the repository's build. The
+   * report then says so, and leaves the build to the milestone PR's CI.
+   */
+  unverified?: boolean;
   /**
    * What the triage decided, file by file (Issue #1559). Present only for an
    * `auto` resolution, and the reason each decision was safe to take.
@@ -321,6 +327,16 @@ export function buildConflictEscalationComment(
   // the reader is told what was decided and why, not asked to check what was
   // overwritten.
   if (e.conflict.resolution === "auto") {
+    // Issue #4326: a merge-only sync could not afford the build, so the
+    // resolution landed unchecked and the milestone PR's CI is what builds it.
+    const verification = e.conflict.unverified
+      ? `The host could not afford the repository's build this cycle, so the ` +
+        `merged tree was NOT checked before it landed (Issue #4326): the ` +
+        `milestone PR's CI builds it, and a red build there is a resolution ` +
+        `to revisit.`
+      : `The merged tree passed the repository's own check, its manifest ` +
+        `check and its unit suite before it landed — a red tree would have ` +
+        `been rolled back instead.`;
     const decisions = (e.conflict.decisions ?? []).map((d) =>
       `- \`${d.path}\` — ${
         describeDecisionRung(d, {
@@ -349,9 +365,7 @@ export function buildConflictEscalationComment(
       `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
       `\`${e.repo}\` conflicted, and every conflicted file was settled by a ` +
       `rung of the ladder — the triage, the dependency rules, then the ` +
-      `resolution agent (Issues #1559, #1777). The merged tree passed the ` +
-      `repository's own check, its manifest check and its unit suite before ` +
-      `it landed — a red tree would have been rolled back instead. The ` +
+      `resolution agent (Issues #1559, #1777). ${verification} The ` +
       `merge ${describeSyncLanding(e.landing)}.\n\n` +
       `${
         decisions || "- (no decision was recorded)"

@@ -77,7 +77,7 @@ import {
   heavyBuildAdmission,
 } from "./heavy_build_gate.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
-import { mergeOnlyBindings } from "./milestone_merge_only.ts";
+import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
@@ -871,22 +871,16 @@ export async function presyncMilestoneBranchForIssueRun(
         });
         // Issue #4326: a merge-only attempt swaps in the gates and agent that
         // land the merge without the repository's build for a cargo tree.
-        const mergeOnly = mergeOnlyBindings(syncGrant.mergeOnly, agentFn);
-        return syncFn(
+        return syncWithMergeOnlyBindings({
+          syncFn,
           milestoneBranch,
           defaultBranch,
-          { cwd },
-          // Issue #589: named so the sync can raise a PR when a repository
-          // rule refuses the direct push.
+          options: { cwd },
           repo,
-          // The default gates: the repository's own type check, and the
-          // stricter resolution gate derived from it. A merge-only attempt
-          // has its own gates (Issue #4326).
-          mergeOnly?.mergeGate,
-          mergeOnly?.resolutionGate,
-          mergeOnly !== undefined ? mergeOnly.agentFn : agentFn,
+          mergeOnly: syncGrant.mergeOnly,
+          agentFn,
           logger,
-        );
+        });
       },
       log: bindLogger(logger),
     }));

@@ -536,7 +536,7 @@ import {
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "./heavy_build_gate.ts";
-import { mergeOnlyBindings } from "./milestone_merge_only.ts";
+import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
 import {
   reclaimWorkVolumeTiers,
@@ -6620,6 +6620,67 @@ export async function createProductionRunCoreDeps(
   return { deps, config: coreConfig, cleanup };
 }
 
+/** What {@link syncMilestoneBranchForSweep} needs for one branch. */
+export interface SweepMilestoneSyncInput {
+  repo: string;
+  milestoneBranch: string;
+  defaultBranch: string;
+  /** The cycle's grant for this branch, including any merge-only reason. */
+  syncOptions: import("./milestone_branch_sync.ts").SyncBranchOptions;
+  workDir: string;
+  config: WorkerConfig;
+  logger: Logger;
+  /** Injected for tests; production runs the real sync. */
+  syncFn?: typeof import("./git_pull.ts").syncMilestoneBranchWithDefault;
+  /** Injected for tests; production runs the real agent. */
+  runAgent?: typeof import("./claude_runner.ts").runClaudeWithRetry;
+}
+
+/**
+ * One branch of the milestone sweep: bind the agent rung, then sync with the
+ * gates and agent the cycle's budget calls for (Issue #4326).
+ *
+ * Exported so a test can drive the sweep's own binding rather than only the
+ * helper it calls.
+ */
+export async function syncMilestoneBranchForSweep(
+  input: SweepMilestoneSyncInput,
+) {
+  const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
+  const { bindMilestoneConflictAgent } = await import(
+    "./milestone_conflict_agent_binding.ts"
+  );
+  const { runClaudeWithRetry } = await import("./claude_runner.ts");
+  const { repo, syncOptions } = input;
+  // Issue #2309: every behind branch is offered the agent rung, and only the
+  // handler's remaining budget refuses one. A branch that was not granted it
+  // is handed no agent at all, so the ladder stops after the deterministic
+  // rules rather than starting a run the watchdog would kill mid-edit
+  // (Issues #1778, #1693).
+  // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so this
+  // sweep and a child run's pre-cut sync hand the ladder exactly the same
+  // rung — including the grant's own timeout.
+  const agentFn = bindMilestoneConflictAgent({
+    repo,
+    grant: syncOptions,
+    config: input.config,
+    logger: input.logger,
+    runAgent: input.runAgent ?? runClaudeWithRetry,
+  });
+  // Issue #4326: a merge-only sync swaps in the gates and agent that land the
+  // merge without the repository's build for a cargo tree.
+  return syncWithMergeOnlyBindings({
+    syncFn: input.syncFn ?? syncMilestoneBranchWithDefault,
+    milestoneBranch: input.milestoneBranch,
+    defaultBranch: input.defaultBranch,
+    options: { cwd: `${input.workDir}/${repo.split("/")[1]}` },
+    repo,
+    mergeOnly: syncOptions.mergeOnly,
+    agentFn,
+    logger: input.logger,
+  });
+}
+
 /** Helper: sync milestone branches using lib function (Issue #1238). */
 async function syncMilestoneBranchesFn(
   repos: string[],
@@ -6642,16 +6703,8 @@ async function syncMilestoneBranchesFn(
   const { selfHealMilestoneBranches } = await import(
     "./milestone_branch_self_heal.ts"
   );
-  const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
-  // Issue #1777: the sync climbs the same ladder the PR pass does, so it
-  // needs the same agent — bound here because only this layer knows the
-  // repository's instructions and the run's timeouts.
-  const { bindMilestoneConflictAgent } = await import(
-    "./milestone_conflict_agent_binding.ts"
-  );
-  const { runClaudeWithRetry } = await import("./claude_runner.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
 
@@ -6748,44 +6801,16 @@ async function syncMilestoneBranchesFn(
         );
       }
     },
-    syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
-      // Issue #2309: every behind branch is offered the agent rung, and only
-      // the handler's remaining budget refuses one. A branch that was not
-      // granted it is handed no agent at all, so the ladder stops after the
-      // deterministic rules rather than starting a run the watchdog would
-      // kill mid-edit (Issues #1778, #1693).
-      // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
-      // this sweep and a child run's pre-cut sync hand the ladder exactly the
-      // same rung — including the grant's own timeout.
-      const agentFn = bindMilestoneConflictAgent({
+    syncBranchFn: (repo, milestoneBranch, defaultBranch, syncOptions) =>
+      syncMilestoneBranchForSweep({
         repo,
-        grant: syncOptions,
-        config,
-        logger,
-        runAgent: runClaudeWithRetry,
-      });
-      // Issue #4326: a merge-only sync swaps in the gates and agent that land
-      // the merge without the repository's build.
-      const mergeOnly = mergeOnlyBindings(syncOptions.mergeOnly, agentFn);
-      return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,
-        { cwd: `${workDir}/${repo.split("/")[1]}` },
-        // Issue #589: named so the sync can raise a PR when a repository
-        // rule refuses the direct push.
-        repo,
-        // The default gates: the repository's own type check, and the
-        // stricter resolution gate derived from it. A merge-only sync has its
-        // own gates (Issue #4326).
-        mergeOnly?.mergeGate,
-        mergeOnly?.resolutionGate,
-        // Issue #1777: the last rung before a human. It runs in the very
-        // clone the merge conflicted in, against a branch target. A merge-only
-        // sync binds its own agent for a cargo tree (Issue #4326).
-        mergeOnly !== undefined ? mergeOnly.agentFn : agentFn,
+        syncOptions,
+        workDir,
+        config,
         logger,
-      );
-    },
+      }),
     localCloneExistsFn,
     // Issue #2309: longest-behind first within each repository. The
     // measurement itself lives in `milestone_behind_count.ts`, where both its

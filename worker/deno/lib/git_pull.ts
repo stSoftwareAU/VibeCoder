@@ -493,7 +493,8 @@ async function readRef(
  * conflict — the same fix landed twice, or one side keeps every line of the
  * other — the decision is applied, recorded on the merge commit, verified
  * against the repository's own check, manifest check and unit suite, and only
- * then pushed.
+ * then pushed. A merge-only sync (Issue #4326) pushes it unverified with the
+ * `UNGATED:` note instead, leaving the build to the milestone PR's CI.
  *
  * What the triage cannot decide climbs the rest of the ladder the PR pass
  * climbs (Issue #1777): the deterministic dependency rules, then the
@@ -1223,7 +1224,9 @@ async function syncMilestoneBranchWithDefaultBody(
   // A resolution the worker chose is verified the way a human's would be
   // (Issue #1559): the repository's own check, its manifest check and its
   // unit suite. A tree that defines none of them verified nothing, so
-  // `skipped` refuses the push rather than reading as a pass.
+  // `skipped` refuses the push rather than reading as a pass — except a
+  // merge-only gate's `skipped` marked `landUnverified` (Issue #4326), which is
+  // pushed with the `UNGATED:` note.
   const runResolutionGate = (): Promise<MergeGateOutcome> =>
     resolutionGate(options.cwd ?? ".");
 
@@ -1351,6 +1354,7 @@ async function syncMilestoneBranchWithDefaultBody(
         milestoneSha: preMergeSha,
         defaultSha,
         resolution: "auto",
+        ...(finalGate.status === "skipped" ? { unverified: true } : {}),
         decisions: resolved,
         ...(repaired ? { repair: repaired } : {}),
         // Issue #2306: the agent names each judgement call file by file in

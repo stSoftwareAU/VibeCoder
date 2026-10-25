@@ -17,7 +17,6 @@ import {
   type IssueRunPresyncArgs,
   presyncMilestoneBranchForIssueRun,
 } from "../lib/milestone_presync.ts";
-import { MERGE_ONLY_NO_BUILD } from "../lib/milestone_merge_only.ts";
 import type { HeavyBuildAdmission } from "../lib/heavy_build_gate.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import type { MilestoneConflictAgentFn } from "../lib/milestone_conflict_ladder.ts";
@@ -154,12 +153,12 @@ Deno.test("presync - a merge-only admission hands the sync the merge-only gates 
     assert(agentFn !== undefined, "a merge-only sync hands its agent");
 
     // The gates decide from the tree they are handed, so a cargo tree's
-    // conflict-free merge is skipped and its resolution is refused.
+    // conflict-free merge is skipped and its resolution lands unverified.
     const merged = await mergeGate(tree);
     assertEquals(merged.status, "skipped");
     const resolved = await resolutionGate(tree);
-    assertEquals(resolved.status, "failed");
-    assertStringIncludes(resolved.detail, MERGE_ONLY_NO_BUILD);
+    assertEquals(resolved.status, "skipped");
+    assertEquals(resolved.landUnverified, true);
 
     // The agent is the merge-only stub: it reports the provider unavailable,
     // and the real agent is never run.

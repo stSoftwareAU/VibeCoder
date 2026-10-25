@@ -8,8 +8,9 @@
  * git throughout — a bare remote, a clone, a milestone branch and a default
  * branch that has moved on. The assertions that matter at runtime: a
  * conflict-free merge in a cargo tree lands without the repository's build
- * (`UNGATED`), a Deno-only tree still runs its own gate, and a conflicted merge
- * is neither pushed nor charged.
+ * (`UNGATED`), so does a conflict the deterministic rules settle, a Deno-only
+ * tree still runs its own gate, and a conflict that needs the agent is neither
+ * pushed nor charged.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -18,7 +19,6 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { judgeSyncFailure } from "../lib/milestone_branch_sync.ts";
 import {
-  MERGE_ONLY_NO_BUILD,
   type MergeOnlyBindings,
   mergeOnlyBindings,
   type MergeOnlyDeps,
@@ -122,10 +122,6 @@ Deno.test("mergeOnlyBindings - no reason means no bindings: the build runs as us
   assertEquals(mergeOnlyBindings(undefined, recordingAgent().agent), undefined);
 });
 
-Deno.test("mergeOnlyBindings - the no-build constant names the budget, so a refusal carrying it is recognisable (Issue #4326)", () => {
-  assertStringIncludes(MERGE_ONLY_NO_BUILD, "no repository build was run");
-});
-
 Deno.test("mergeOnlyBindings - a tree with only a deno.json is detected as Deno, not cargo (Issue #4326)", async () => {
   await withTree({ "deno.json": DENO_JSON }, async (dir) => {
     const projects = await findTypeCheckProjects(dir);
@@ -182,7 +178,12 @@ Deno.test("mergeOnlyBindings - a Deno-only tree with no real agent: the agent re
     const result = await bindingsFor(REASON).agentFn(requestIn(dir));
     assert(result.ok, "the agent binding returns an ok result");
     assertEquals(result.value.terminated, false);
-    assertStringIncludes(result.value.providerUnavailable ?? "", REASON);
+    // Not the host's budget: this tree runs no cargo build, and the grant
+    // withheld the agent.
+    assertEquals(
+      result.value.providerUnavailable,
+      "no agent run: the agent rung was not granted this cycle",
+    );
   });
 });
 
@@ -201,18 +202,21 @@ Deno.test("mergeOnlyBindings - a cargo tree: the merge gate skips and never runs
     }).mergeGate(dir);
     assertEquals(outcome.status, "skipped");
     assertStringIncludes(outcome.detail, REASON);
+    assertEquals(outcome.output, "");
+    assertEquals(outcome.landUnverified, undefined);
     assertEquals(check.calls, []);
   });
 });
 
-Deno.test("mergeOnlyBindings - a cargo tree: the resolution gate fails with the no-build reason and never verifies (Issue #4326)", async () => {
+Deno.test("mergeOnlyBindings - a cargo tree: the resolution gate skips, lands unverified and never verifies (Issue #4326)", async () => {
   await withTree({ "Cargo.toml": CARGO_TOML }, async (dir) => {
     const verify = recordingGate(PASSED);
     const outcome = await bindingsFor(REASON, undefined, {
       verifyResolvedTree: verify.gate,
     }).resolutionGate(dir);
-    assertEquals(outcome.status, "failed");
-    assertStringIncludes(outcome.detail, MERGE_ONLY_NO_BUILD);
+    assertEquals(outcome.status, "skipped");
+    assertEquals(outcome.landUnverified, true);
+    assertEquals(outcome.output, "");
     assertStringIncludes(outcome.detail, REASON);
     assertEquals(verify.calls, []);
   });
@@ -247,8 +251,8 @@ Deno.test("mergeOnlyBindings - a tree whose projects cannot be listed is treated
     const merged = await bindings.mergeGate(dir);
     assertEquals(merged.status, "skipped");
     const resolved = await bindings.resolutionGate(dir);
-    assertEquals(resolved.status, "failed");
-    assertStringIncludes(resolved.detail, MERGE_ONLY_NO_BUILD);
+    assertEquals(resolved.status, "skipped");
+    assertEquals(resolved.landUnverified, true);
     const agent = await bindings.agentFn(requestIn(dir));
     assert(agent.ok, "the agent binding returns an ok result");
     assertStringIncludes(agent.value.providerUnavailable ?? "", REASON);
@@ -550,9 +554,58 @@ Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pu
   }
 });
 
-Deno.test("merge-only e2e - a conflict the worker resolves is judged by the resolution gate, not pushed (Issue #4326)", async () => {
+Deno.test("merge-only e2e - a conflict the worker resolves lands unverified: UNGATED, the milestone carries main's lines (Issue #4326)", async () => {
   // Main keeps the milestone's line and adds one: the triage takes main's side
-  // as a superset, so the worker resolves it and the resolution gate decides.
+  // as a superset, so the worker resolves it with no agent. The resolution
+  // gate cannot afford the build, so the resolution lands with the UNGATED note
+  // rather than waiting for a cycle with budget.
+  const f = await fixture({
+    milestone: ["shared.txt", "a\nB\nc\n"],
+    main: ["shared.txt", "a\nB\nB2\nc\n"],
+  });
+  try {
+    const before = await remoteSha(f.remote, MILESTONE);
+    const verify = recordingGate(PASSED);
+    const bindings = bindingsFor(REASON, undefined, {
+      verifyResolvedTree: verify.gate,
+    });
+
+    const result = await syncMilestoneBranchWithDefault(
+      MILESTONE,
+      "main",
+      { cwd: f.clone },
+      undefined,
+      bindings.mergeGate,
+      bindings.resolutionGate,
+      bindings.agentFn,
+    );
+
+    assert(
+      result.ok,
+      `expected the resolved merge to land, got: ${
+        result.ok ? "ok" : result.error.message
+      }`,
+    );
+    assertStringIncludes(result.value.message, "UNGATED");
+    assertStringIncludes(result.value.message, REASON);
+    assertEquals(result.value.conflict?.resolution, "auto");
+    assertEquals(result.value.conflict?.unverified, true);
+    assertEquals(verify.calls, [], "no verification build was run");
+    const after = await remoteSha(f.remote, MILESTONE);
+    assert(after !== before, "the milestone branch must have moved");
+    assertEquals(
+      await git(["show", `${MILESTONE}:shared.txt`], f.clone),
+      "a\nB\nB2\nc",
+    );
+    assertEquals(await mergeInProgress(f.clone), false);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("merge-only e2e - control: the same resolved conflict is refused by a skipped resolution gate that does not land unverified (Issue #4326)", async () => {
+  // Without `landUnverified` a skipped resolution is a refusal (Issue #1559),
+  // so the landing above is the flag's doing and nothing else's.
   const f = await fixture({
     milestone: ["shared.txt", "a\nB\nc\n"],
     main: ["shared.txt", "a\nB\nB2\nc\n"],
@@ -567,13 +620,17 @@ Deno.test("merge-only e2e - a conflict the worker resolves is judged by the reso
       { cwd: f.clone },
       undefined,
       bindings.mergeGate,
-      bindings.resolutionGate,
+      () =>
+        Promise.resolve({
+          status: "skipped" as const,
+          detail: "control: nothing verified the resolution",
+          output: "",
+        }),
       bindings.agentFn,
     );
 
-    assert(!result.ok, "a resolved conflict the gate refuses must not land");
-    const conclusion = judgeSyncFailure(result.error, true);
-    assertEquals(conclusion.outcome, "not-charged");
+    assert(!result.ok, "a skipped resolution without the flag must not land");
+    assertEquals(judgeSyncFailure(result.error, true).outcome, "not-charged");
     assertEquals(await remoteSha(f.remote, MILESTONE), before);
     assertEquals(await mergeInProgress(f.clone), false);
   } finally {

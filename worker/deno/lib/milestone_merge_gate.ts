@@ -100,6 +100,13 @@ export interface MergeGateOutcome {
    * caller must not spend a repair round on it.
    */
   toolchainGap?: RustToolchainGap;
+  /**
+   * Set only by a merge-only gate (Issue #4326) on a `skipped` verdict: the
+   * host cannot afford the build, so a conflict the deterministic rules
+   * settled is pushed unverified with the `UNGATED:` note rather than refused
+   * as a resolution nothing verified (Issue #1559).
+   */
+  landUnverified?: boolean;
 }
 
 /**

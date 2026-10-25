@@ -3,7 +3,7 @@
   "chunk": "top-up-4326",
   "title": "top-up: merge-only milestone sync bindings",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4326",
-  "definition": "worker/deno/lib/milestone_merge_only.ts: the gate and agent bindings a milestone sync runs with when the host disk budget cannot afford the repository's build; reads nothing, spawns nothing, only returns outcomes",
+  "definition": "worker/deno/lib/milestone_merge_only.ts: the gate and agent bindings a milestone sync runs with when the host disk budget cannot afford the repository's build; lists the tree's projects to decide cargo or not, then returns a skipped outcome or hands off to the repository's own gates and agent",
   "status": "claimed",
   "sweptAt": "ef4b4760ab6c3aa81f946e3017f374cecb3dff4c",
   "paths": [

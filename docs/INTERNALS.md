@@ -3074,8 +3074,9 @@ open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
 A build refused by the ephemeral cargo root's budget is a different case: with
-the host above its floor, a conflict-free merge in a cargo tree lands without
-the build; a merge that conflicts waits for a cycle with budget (Issue #4326,
+the host above its floor, a conflict-free merge or a deterministically resolved
+one in a cargo tree lands without the build; a conflict that needs the agent
+waits for a cycle with budget (Issue #4326,
 see
 [HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
@@ -4284,7 +4285,11 @@ than the wall of `TS2304` that made #1542 nearly useless. A gate refusal is not
 a conflict the budget can retry its way out of, so it is charged nothing — and
 that is exactly why it needed its own conclusion (Issue #2388, below). A tree
 with no type check or no unit suite verified nothing and is refused the same
-way — a resolution that cannot be verified is not a resolution. What the triage
+way — a resolution that cannot be verified is not a resolution. The one
+exception is a merge-only cycle (Issue #4326): a host that cannot afford the
+cargo build marks its `skipped` verdict `landUnverified`, the resolution is
+pushed with the `UNGATED` note, and the report says the tree was not checked.
+What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
 ([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts));
 a resolution the worker made and verified is a report, never a `needs-human`
@@ -4452,15 +4457,18 @@ When the ephemeral cargo root is over its budget (Issue #4326), the sync runs
 in merge-only mode for that cycle, but only on a tree that holds a cargo
 project, because only a cargo build writes to the ephemeral cargo root. A
 repository with no cargo project keeps its own check and the normal agent. In a
-cargo tree the repository's cargo type-check is skipped: a conflict-free merge
+cargo tree every check the repository would run is skipped (the cargo type
+check, the manifest check and the unit suite, and any Deno check in a mixed
+tree): a conflict-free merge
 is pushed with the same `UNGATED` note, and the milestone PR's own CI builds it.
-A merge that conflicts is not landed in that cycle. A conflict the deterministic
-rules settle is refused by the resolution gate (concluded `not-charged`), and a
-conflict that needs the agent is not offered to it (concluded `disrupted`, with
-nothing charged). Neither writes the gate-wedge ledger (`MERGE_ONLY_NO_BUILD` in
-`concludeGateRefusal`), so the branch is retried every cycle and lands in the
-first cycle whose budget admits a build. Only a merge that conflicts can still
-wait on disk budget, because verifying a resolved merge needs the build. See
+So is a conflict the deterministic rules settle: the resolution gate reports a
+`skipped` verdict marked `landUnverified`, which `judgeResolutionVerdict` lets
+through where it would otherwise refuse an unverified resolution. A conflict
+that needs the agent is not landed in that cycle: the agent is free to run the
+very cargo build the host cannot afford, so it is not offered (concluded
+`disrupted`, with nothing charged, and the gate-wedge ledger is not written), and
+the branch is retried every cycle until one whose budget admits a build. Only
+that case can still wait on disk budget. See
 [HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
 
 #### 🪦 The sync never resurrects a deleted file

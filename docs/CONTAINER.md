@@ -1324,27 +1324,26 @@ budget (described under *The root has a budget* below), on a runtime that
 refuses the trim. Before Issue #4326 that refusal kept the milestone
 behind indefinitely: the over-budget build was refused every cycle (GRQ-23,
 2026-10-24: about 150 refusals, 27 issues held). Now the sync still lands that
-cycle, in **merge-only** mode, unless its merge conflicts. Merge-only applies
+cycle, in **merge-only** mode, unless its conflict needs the agent. Merge-only applies
 to a tree that holds a cargo project, because only a cargo build writes to the
 ephemeral cargo root. A repository with no cargo project keeps its own check
 (the repository's own type check) and the normal agent. In a cargo tree the
-repository's cargo type-check is skipped:
+repository's checks are skipped (the cargo type check, the manifest check and
+the unit suite, and any Deno check in a mixed tree):
 
 - **A conflict-free merge is pushed unverified.** The sync outcome carries the
   existing `UNGATED:` note (Issue #974), and the milestone PR's own CI builds
   the merged tree.
-- **A merge that conflicts is not landed in that cycle.** There are two
-  outcomes, and both charge nothing:
-  - A conflict the deterministic rules settle is refused by the resolution
-    gate, which concludes it `not-charged`, because verifying a resolved merge
-    needs the build.
-  - A conflict that needs the agent is not offered to it, so the attempt is
-    concluded `disrupted`.
-
-  In both, the gate-wedge ledger is deliberately not written
-  (`MERGE_ONLY_NO_BUILD` in `concludeGateRefusal`), so the branch is retried
-  every cycle and lands in the first cycle whose budget admits a build. Only a
-  merge that conflicts can still wait on disk budget.
+- **A conflict the deterministic rules settle is pushed unverified too.** The
+  resolution gate reports a `skipped` verdict marked `landUnverified`, so the
+  resolution is pushed with the same `UNGATED:` note instead of being refused as
+  a resolution nothing verified (Issue #1559). The merge commit still records
+  which rung settled each file, and the milestone PR's CI builds it.
+- **A conflict that needs the agent is not landed in that cycle.** The agent can
+  run the very cargo build the host cannot afford, so it is not offered. The
+  attempt is concluded `disrupted`, nothing is charged, the gate-wedge ledger is
+  not written, and the branch is retried every cycle until one whose budget
+  admits a build. This is the one case that can still wait on disk budget.
 
 The log names the reason:
 
@@ -1535,8 +1534,9 @@ build artefacts.
   skipping any written to in the last 20 minutes (another slot's build in
   progress) and the building checkout's own (its incremental cache). If the
   build is still not covered, the sync does not wait: it lands that cycle
-  without the repository's build, a conflict-free merge pushed unverified and a
-  conflicted one left for a later cycle (see
+  without the repository's build, a conflict-free merge or a deterministically
+  resolved one pushed unverified and a conflict that needs the agent left for a
+  later cycle (see
   [HOST_DISK_BUDGET](#host_disk_budget-merges-without-the-build-issue-4326)).
   Pruning counts as room even where the trim is refused: the
   guest filesystem reuses the freed blocks, so a build writing into them does

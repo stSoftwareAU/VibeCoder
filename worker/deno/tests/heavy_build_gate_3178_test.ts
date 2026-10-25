@@ -290,6 +290,60 @@ Deno.test("heavyBuildAdmission - on a trimming runtime the budget is not consult
   }
 });
 
+Deno.test("heavyBuildAdmission - a reading that is not ok builds without consulting the budget, however little it says is free (Issue #4326)", async () => {
+  // 48 GB free is over budget (floor 46 + 25 headroom), so were the budget
+  // read the answer would be merge-only. An `unknown` level is a blind probe,
+  // which must never stop a build (Issue #226).
+  let listed = 0;
+  const watching: EphemeralRootDeps = {
+    listTargetDirs: () => {
+      listed++;
+      return Promise.resolve([]);
+    },
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  };
+  const admission = await admitWith(
+    reading({
+      status: {
+        level: "unknown",
+        availableBytes: 48 * GB,
+        totalBytes: 460 * GB,
+        source: "none",
+        detail: "blind",
+      },
+    }),
+    watching,
+  );
+  assertEquals(admission, { mode: "build" });
+  assertEquals(listed, 0, "the ephemeral root must be left alone");
+});
+
+Deno.test("heavyBuildAdmission - an ok reading that states no free space builds without consulting the budget (Issue #4326)", async () => {
+  let listed = 0;
+  const watching: EphemeralRootDeps = {
+    listTargetDirs: () => {
+      listed++;
+      return Promise.resolve([]);
+    },
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  };
+  const admission = await admitWith(
+    reading({
+      status: {
+        level: "ok",
+        totalBytes: 460 * GB,
+        source: "launch-baseline",
+        detail: "free space not stated",
+      },
+    }),
+    watching,
+  );
+  assertEquals(admission, { mode: "build" });
+  assertEquals(listed, 0, "the ephemeral root must be left alone");
+});
+
 Deno.test("heavyBuildAdmission - above the floor but over the cargo budget lands merge-only, not deferred (Issue #4326)", async () => {
   registerHeavyBuildDiskProbe(() =>
     Promise.resolve(reading({ free: 48 * GB }))

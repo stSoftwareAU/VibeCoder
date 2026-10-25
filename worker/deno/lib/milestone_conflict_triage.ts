@@ -756,8 +756,9 @@ export function buildResolutionCommitMessage(o: {
     `${lines.join("\n")}\n\n` +
     `Each resolution was verified before it was pushed: the merged tree ` +
     `passes the repository's own check, its manifest check and its unit ` +
-    `suite. No conflicted test file was resolved by taking a side that ` +
-    `drops cases (Issue #1559).`;
+    `suite, unless the sync's note says UNGATED: a merge-only sync (Issue ` +
+    `#4326) leaves that build to the milestone PR's CI. No conflicted test ` +
+    `file was resolved by taking a side that drops cases (Issue #1559).`;
 }
 
 /**

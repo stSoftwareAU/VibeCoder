@@ -32,15 +32,15 @@
  *   cargo project, because only a cargo build writes to the ephemeral cargo
  *   root; a repository with no cargo project keeps its own type check and the
  *   normal agent. In a cargo tree a conflict-free merge is pushed unverified
- *   with the `UNGATED:` note, and the milestone PR's own CI builds it. A merge
- *   that conflicts is not landed in that cycle: a conflict the deterministic
- *   rules settle is refused by the resolution gate (concluded not-charged), and
- *   a conflict that needs the agent is not offered to it (concluded disrupted,
- *   nothing charged). Neither writes the gate-wedge ledger, so the branch is
- *   retried every cycle and lands in the first cycle whose budget admits a
- *   build. Only a merge that conflicts can still wait on disk budget, because
- *   verifying a resolved merge needs the build. So the floor is never
- *   approached.
+ *   with the `UNGATED:` note, and the milestone PR's own CI builds it. So is a
+ *   merge whose conflicts the deterministic rules settle: its resolution gate
+ *   reports a `skipped` verdict marked `landUnverified`, which is pushed with
+ *   the same note. Only a conflict that needs the resolution agent is not
+ *   landed in that cycle, because the agent is free to run the very cargo build
+ *   the host cannot afford: it is not offered to the agent (concluded
+ *   disrupted, nothing charged), the gate-wedge ledger is not written, and the
+ *   branch is retried every cycle until one whose budget admits a build. So
+ *   the floor is never approached.
  *
  *   No further reclaim step exists. On a runtime that refuses the trim,
  *   deleting artefacts inside the guest returns nothing to the host
