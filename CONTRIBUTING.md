@@ -260,6 +260,13 @@ themselves:
   issue), an `## Evidence` section (screenshot, benchmark numbers, or
   test results as appropriate), and a `## Test Plan` enumerating the
   tests added or modified.
+- **Arm auto-merge the moment a PR is opened** (owner, 2026-10-25). Run
+  `gh pr merge <n> --auto --squash` straight after `gh pr create`, whoever
+  opens the PR: the worker, an interactive session, Cursor or any other
+  agent. A PR merges once it has an approving review and CI is green.
+  Nothing else holds it, and a PR left unarmed merges late and collects
+  conflicts. When a review requests changes, fix them and dismiss that
+  review with a message naming the fix.
 - **An incomplete PR is a draft** (owner, 2026-10-23). A draft is work in
   progress: the Quality and dependency checks skip it, the required `gate`
   fails on purpose (so auto-merge can never act on a stale pass), the PR
