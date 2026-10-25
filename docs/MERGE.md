@@ -1062,8 +1062,9 @@ the abandoned one. Its preconditions and its exits are in
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
 constant, two consumers — so the PR ladder and the milestone ladder cannot
 drift apart. The sync pass opens and concludes an attempt around every
-conflicting merge and hands an exhausted budget to the roll-back
-(Issue #1778); nothing is posted to a comment, a label or an issue while an
+conflicting merge and hands an exhausted budget on: to a rebuild first when a
+roll-back was already spent on the branch, otherwise to the roll-back
+(Issues #1778, #4328); nothing is posted to a comment, a label or an issue while an
 automatic attempt remains.
 
 What does and does not spend an attempt:

@@ -2244,6 +2244,47 @@ Deno.test(
   },
 );
 
+// Issue #4328: a milestone branch with no milestone PR is announced through the
+// escalation target, so no `gh pr comment` is made for it.
+Deno.test(
+  "abandonAndRebuildMilestone - with announce the notice goes through it and no PR comment is made (Issue #4328)",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: [
+        subPrRow({
+          number: 11,
+          headRefName: "issue-1-a",
+          mergedAt: "2026-01-01T00:00:00Z",
+          sha: SHA_11,
+        }),
+      ],
+      issueStates: {},
+    });
+    const gitFake = makeMilestoneGit({ failingCherryPicks: new Set() });
+    const announced: string[] = [];
+
+    const outcome = await abandonAndRebuildMilestone(
+      milestoneRequest({ prNumber: 0 }),
+      {
+        gh: ghFake.gh,
+        git: gitFake.git,
+        announce: (body) => {
+          announced.push(body);
+          return Promise.resolve();
+        },
+      },
+    );
+
+    assertEquals(outcome.outcome, "milestone-rebuilt");
+    assertEquals(announced.length, 1);
+    assertStringIncludes(announced[0]!, "sub-issue #1");
+    const prComments = ghFake.calls.filter((a) =>
+      a[0] === "pr" && a[1] === "comment"
+    );
+    assertEquals(prComments, []);
+  },
+);
+
 Deno.test("buildMilestoneRebuildPrComment - a rebuild restarts the shared budget, so the redo gets its own (Issue #3036)", () => {
   const rebuilt: MilestoneRebuilt = {
     outcome: "milestone-rebuilt",

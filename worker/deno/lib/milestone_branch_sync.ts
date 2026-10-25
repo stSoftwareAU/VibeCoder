@@ -571,7 +571,8 @@ export function escalateRepeatedRefusal(
   if (!verdict.refusal || refusedBefore < ceiling) return verdict;
   return {
     outcome: "failed",
-    reason: `refused ${refusedBefore} cycles in a row (${verdict.reason}) — climbing to the next rung`,
+    reason:
+      `refused ${refusedBefore} cycles in a row (${verdict.reason}) — climbing to the next rung`,
     ...(verdict.rung ? { rung: verdict.rung } : {}),
     exhaust: true,
   };
@@ -1111,7 +1112,9 @@ async function prepareRollbackWorktree(
   // no ref; HEAD is unchanged. The checkout is then retried once.
   if (
     checkout.code !== 0 &&
-    `${checkout.stderr}${checkout.stdout}`.includes("resolve your current index")
+    `${checkout.stderr}${checkout.stdout}`.includes(
+      "resolve your current index",
+    )
   ) {
     await gitFn(request.repo, ["reset", "--hard", "HEAD"]);
     checkout = await gitFn(request.repo, checkoutArgs);
@@ -1741,7 +1744,8 @@ export async function syncMilestoneBranches(
         await deps.emitSelfHealEvent?.({
           module: "milestone_branch_sync",
           action: "rebuilt",
-          reason: `${repo} branch ${branch}: replayed ${replayed}, skipped ${skipped}`,
+          reason:
+            `${repo} branch ${branch}: replayed ${replayed}, skipped ${skipped}`,
           result: "ok",
         }).catch(() => undefined);
         return entry;
@@ -2721,9 +2725,10 @@ export async function syncMilestoneBranches(
                 const attempts = headPr
                   ? spentConflictAttempts(headPr.attempts) + 1
                   : entry.conflictAttempts ?? 0;
-                const exhausted = verdict.exhaust === true || (headPr
-                  ? attempts >= CONFLICT_RESOLUTION_BUDGET
-                  : isConflictBudgetExhausted(entry));
+                const exhausted = verdict.exhaust === true ||
+                  (headPr
+                    ? attempts >= CONFLICT_RESOLUTION_BUDGET
+                    : isConflictBudgetExhausted(entry));
                 if (exhausted) {
                   // Every automatic rung has been spent (Issue #1781). The
                   // hand-off runs the rebuild first when a roll-back is already

@@ -4288,8 +4288,8 @@ issue. A clean merge is pushed without ceremony and raises nothing.
 **A gate refusal that cannot change must conclude** (Issue #2388,
 [milestone_gate_wedge.ts](../worker/deno/lib/milestone_gate_wedge.ts)). The
 `not-charged` verdict is right — the conflict is not answerable for a gate that
-cannot verify the tree — but it means nothing is ever spent, so nothing ever
-ends: one milestone was claimed and dropped ~150 times in a day rebuilding the
+cannot verify the tree — but it means nothing is ever spent, so nothing ends on
+its own (the refusal ceiling below bounds it, Issue #4328): one milestone was claimed and dropped ~150 times in a day rebuilding the
 same correct resolution for the same refusal, once per issue per hour. Three
 things close that loop, and none of them asks a human:
 
@@ -4307,6 +4307,13 @@ things close that loop, and none of them asks a human:
    verdict and the count — so the *gate* gets fixed — instead of a
    "needs a human" comment on an arbitrary sibling issue of the milestone,
    where nobody looks. A conflict is the worker's to resolve end to end.
+
+Issue #4328 adds a bound that the wedge does not supply. A gate refusal of the
+resolution is a refusal too: it is counted in `refusedCycles`, and once the
+sync has been refused `MILESTONE_REFUSAL_CEILING` (3) cycles in a row, the next
+refusal is charged as a failure and climbs to the hand-off. The wedge holds the
+milestone's claims back; the ceiling is what ends the ladder on a cycle that
+does run the sync.
 
 ```mermaid
 stateDiagram-v2
@@ -4329,7 +4336,7 @@ flowchart TD
     AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>charge the ledger, log the rung,<br/>post nothing (Issue #1778)"]
     X --> XB{"Budget exhausted?"}
     XB -- "no" --> XW["Retry on the next cycle"]
-    XB -- "yes" --> XR["Hand off to the roll-back"]
+    XB -- "yes" --> XR["Hand off: rebuild first if a roll-back was already spent (Issue #4328), else the roll-back"]
     AG -- decided --> V["Commit the per-file rungs, then verify:<br/>#974 type check + check:manifests + unit suite"]
     T -- decided --> V
     RU -- decided --> V
@@ -4577,7 +4584,7 @@ open PR — `readMilestoneHeadPr` in
 reads the shared budget from that PR's own trusted markers, and the sync
 records each attempt there (`pass="sync"` plus its conclusion) exactly as the
 ladder does, so the PR-marker budget takes precedence over the local ledger
-whenever one exists — including the roll-back decision on a spent budget.
+whenever one exists — including the hand-off decision on a spent budget.
 There is no #2311-style re-arm for the PR budget; only a `resolved` marker
 resets the PR's tally. A milestone branch with **no** open PR still has nowhere
 to write one, so for it the ledger is persisted per branch in
@@ -4595,7 +4602,10 @@ answered for), `gateRefusal` (the resolution-gate verdict the branch is
 repeating — `conflictKey`, `reason`, both tips, the consecutive `count` and
 whether the worker diagnostic has been `reported`, Issue #2388),
 `lastSyncedDefaultSha` and
-`rollbacks`. Every field is optional and every malformed field is dropped, so a
+`rollbacks`, plus three fields Issue #4328 adds: `refusedCycles` (consecutive
+not-charged refusals, zeroed by a charged conclusion or a landed sync),
+`rollbackFailures` (lifetime roll-backs that could not merge) and `rebuilds`
+(lifetime milestone rebuilds on the branch). Every field is optional and every malformed field is dropped, so a
 file written before the ledger existed loads as a branch with an unspent budget
 rather than failing the whole load — and a `deferUntil` an older worker wrote
 is dropped on load, so a cooldown that no longer exists cannot pace a branch
@@ -4624,8 +4634,9 @@ Three rules decide what the ledger does, and each is a pure helper:
   the local ledger attempt `not-charged` as above.
 - **A failure paces nothing.** A `failed` conclusion charges one of the three
   attempts and writes no deferral (Issue #2305): the branch is due again on the
-  very next cycle, and the budget itself — three runs, then the roll-back — is
-  what bounds the retrying. `isConflictAttemptDue` is therefore "no attempt is
+  very next cycle, and the budget itself — three runs, then the hand-off (a rebuild
+  or the roll-back) — is what bounds the retrying, and the refusal ceiling
+  bounds the refused cycles (Issue #4328). `isConflictAttemptDue` is therefore "no attempt is
   open on this host"; a sibling host's live attempt is refused by the sync
   claim (`milestone_sync_claim.ts`), which is cross-host as the ledger is not.
   A moved tip never refills `conflictAttempts` **while the ladder still has
@@ -4639,17 +4650,20 @@ Three rules decide what the ledger does, and each is a pure helper:
   The alternative was a branch that sat out every remaining cycle for ever with
   nobody asked to look at it; the cost is bounded by the default branch's own
   cadence — one re-arm per default push, never one per sync cycle.
-- **Only success — or that fallback re-arm — zeroes it.**
+- **Only a landed sync, a rebuild that lands, or that fallback re-arm zeroes it.**
   `resetConflictLedgerOnSuccess` is the one thing that returns
-  `conflictAttempts` to zero; the lifetime `rollbacks` count survives, because
-  it describes the branch rather than the conflict that just ended, while
-  `failedAttempts` and `fallbackDefaultSha` go with the budget they describe.
+  `conflictAttempts` to zero; the lifetime `rollbacks`, `rollbackFailures` and `rebuilds` counts survive,
+  because they describe the branch rather than the conflict that just ended,
+  while `failedAttempts`, `fallbackDefaultSha` and `refusedCycles` go with the
+  budget or streak they describe (Issue #4328). Because `rollbacks` and
+  `rollbackFailures` survive, every later spent budget on a branch that has
+  rolled back is offered a rebuild first.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
     Idle --> Open: openConflictAttempt
-    Open --> Idle: conclude disrupted / not-charged<br/>(budget untouched)
+    Open --> Idle: conclude disrupted / not-charged<br/>(budget untouched; a refusal counts refusedCycles)
     Open --> Idle: conclude failed<br/>(+1 attempt, due again at once)
     Idle --> Exhausted: conflictAttempts == budget (3)
     Open --> Idle: resetConflictLedgerOnSuccess
@@ -4674,8 +4688,9 @@ is the branch's to answer for:
 | Conflicted and every rung left it undecided                     | `failed` — one attempt charged, due again next cycle |
 | The agent ran out **its own** timeout                           | `failed` — the rung was climbed and the conflict beat it (Issue #2305) |
 | The **worker** ended the run at the cycle deadline              | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305) |
-| Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309) |
-| Merge gate refused the merged tree, or refused the resolution    | `not-charged` — the gate keeps its own escalation, reported once |
+| Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309); counted in `refusedCycles`, and the fourth consecutive refusal is `failed` and climbs to the hand-off (Issue #4328) |
+| Merge gate refused the merged tree (`isMergeGateFailure`)        | `failed` — one attempt charged, as for a textual conflict (Issue #4304) |
+| Merge gate refused the resolution (`gateFailure`)                | `not-charged` — counted in `refusedCycles` like the row above (Issue #4328); the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
 | Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
 | Merged                                                          | `resetConflictLedgerOnSuccess`             |
@@ -4686,14 +4701,22 @@ label and no issue. The per-conflict analysis escalation Issue #1559 posted on
 the first conflicting commit is gone: it fired before any of the automatic
 attempts had been spent, which is exactly the "needs-human while a rung
 remains" this budget removes. On the last concluded failure the branch is
-handed to the roll-back (`executeRollback`, Issue #1781). **Both outcomes file
+handed off by `handOffSpentBudget` (Issues #1781, #4328): when a roll-back was
+already spent on the branch (`rollbacks` or `rollbackFailures` above zero) it
+is first rebuilt by `abandonAndRebuildMilestone`, and a rebuild that fails
+falls through to the roll-back (`executeRollback`, Issue #1781). The same
+hand-off runs from the skip site, so a budget spent by the child run's
+pre-cut sync is handed off rather than left for a roll-back that never runs,
+for a branch with no open PR, unless a roll-back that could not merge is already
+waiting for the default tip to move (`fallbackDefaultSha`, Issue #2311). **Both outcomes file
 or append the one `merge-fallback` flag** first (Issue #2311), so it reports
 the budget that was actually spent, and the flag's number is linked from the
 notice that follows. On `merged: true` the ledger is reset, `rollbacks` is
 incremented and the reverted SHAs are recorded; on `merged: false` the notice
 goes out with **no** `needs-human` label, the budget stays spent, and
 `fallbackDefaultSha` records the tip answered for so a moved default branch
-re-arms the three runs. Without a clone git
+re-arms the three runs. A `merged: false` also increments `rollbackFailures`,
+which is what makes the next spent budget on the branch a rebuild first. Without a clone git
 runner the default still logs `budget exhausted: roll-back not yet available`.
 
 **Every behind branch is offered the agent rung; the budget decides**
@@ -4718,7 +4741,8 @@ budget could still have covered (Issue #1778). Issue #2309 removed the latch.
 `grantAgentRun` is asked **per branch**, reading the deadline that is actually
 left, so a second conflicting branch is refused only when the floor above says
 the cycle can no longer cover a run — and a refused branch still concludes
-`agent deferred: cycle budget`, never a charged failure. Priority 1.72 is
+`agent deferred: cycle budget`, and is charged only once it has been refused
+`MILESTONE_REFUSAL_CEILING` (3) cycles in a row (Issue #4328). Priority 1.72 is
 declared `agentBacked` (like the drain's own handler) so the handler that spawns
 that agent gets the cycle-deadline watchdog rather than the flat 600-second one.
 
