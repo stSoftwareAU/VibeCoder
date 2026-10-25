@@ -2053,23 +2053,15 @@ not imply an automatic patch policy. Exact release/build evidence belongs in
 Evidence with its final commit or release provenance. Preserve dependency pins,
 historical reproduction versions, migration examples and changelog entries.
 
-The worker checks this mechanically too (Issues #3347, #3715, #3731).
-Whenever a PR summary was loaded, the first-run claim check asks a read-only
-model, before the PR is raised, about added or edited manual/prompt Markdown,
-changed source comments, and unchanged module headers or doc comments attached
-to changed declarations. It also checks heading-bounded manual sections named
-by the Docs sweep entry or mentioning a changed source path, basename or
-exported declaration; this extra manual scope excludes `docs/archive/`.
-The prose scope is capped at 20 files and 40 affected manual sections; anything
-past a cap is logged as not checked, never passed. For unchanged prose the
-question is whether this change makes it false, and sets without one code list
-require a grep of the whole head tree for other members. A confirmed
-contradiction is a summary-rule block: on the run's first summary-rule block
-the run gets one recovery turn to rewrite the sentence, and a block that
-survives it fails the run or, when a PR already exists, finalises it as
-`summary_incomplete`. On a review-fix push the drift check builds the same
-prose scope and gives one recovery turn before reporting what remains. This
-enforces the rule above; it does not replace it.
+The first-run claim check that used to ask this before the pull request was
+raised was removed (Issue #4234). A review-fix push still asks the shared
+doc-prose question through the drift check's model pass (Issues #3347, #3715,
+#3731), over changed comments, unchanged attached headers and heading-bounded
+manual sections the summary names or that mention a changed source path. That
+scope excludes `docs/archive/` and is capped at 20 files and 40 manual
+sections; anything past a cap is logged as not checked, never passed. A
+finding that remains is reported on the pull request. This does not replace
+the rule above.
 
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling

@@ -1268,9 +1268,8 @@ rewrite it, never append to it:
   still points at what it meant — if not, move the insertion after it or
   reword the sentence to name its subject. Read the first and last context
   lines of every hunk that adds a block; that is where these breaks appear,
-  and the docs sweep misses them because the sentence made wrong is not one
-  the diff adds or edits (see **Check where you insert** in
-  `CODING-STANDARDS.md`).
+  because the sentence made wrong is not one the diff adds or edits (see
+  **Check where you insert** in `CODING-STANDARDS.md`).
 
 **Project version wording (Issue #3954).** Write the summary's own version-bump
 statement in Summary using durable wording, for example:

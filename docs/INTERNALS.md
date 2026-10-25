@@ -5266,12 +5266,11 @@ and last 2,000 characters: the head holds the `[PRE_PUSH_BLOCKED] ... command`
 line that names the failing check, the tail the end of its output, and GitHub
 refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
 swallows). Second, only a verdict on the branch's content carries the marker, a
-`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan or the
-`sweptAt` ancestry failing, an unsafe base ref, or any other
-non-infrastructure error from `runPrePushGate` (such as malformed hook input),
-which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
+`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan, an
+unsafe base ref, or any other non-infrastructure error from `runPrePushGate`
+(such as malformed hook input), which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
-`runPrePushGate`, a failed history deepen in the sweep check, a `rev-list` of
+`runPrePushGate`, a `rev-list` of
 the base range) comes back as a `PrePushGateInfrastructureError`
 with no gate marker, and `gateBeforePush()` reports it as
 `PRE_PUSH_LOOKUP_FAILED_MARKER` ("Git push failed: the pre-push gate could not
@@ -5654,7 +5653,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts) | Post-agent drift check on review-fix runs: model pass, change-request quotes, Test Plan recount and a mutation check, one recovery turn (Issues #3143, #3244, #3750). Docs-sweep and branch-outcome citation checks were removed (Issue #4234). |
 |                             | [fenced_json.ts](../worker/deno/lib/fenced_json.ts)                              | Fence-tolerant reply unwrapping (`unwrapJsonFence`), shared by claim correction and revision parsing so one json or plain code fence around a JSON reply is tolerated (Issue #4115) |
 |                             | [doc_prose_claims.ts](../worker/deno/lib/doc_prose_claims.ts)                                                     | Safe manual/source path selection and the shared prose-against-code question (Issues #3347, #3715, #3731)                                                                               |
-|                             | [doc_prose_scope.ts](../worker/deno/lib/doc_prose_scope.ts) | Shared bounded scope of changed comments, attached headers and affected manual sections for first-run and review-fix claim checks (Issues #3715, #3731) |
+|                             | [doc_prose_scope.ts](../worker/deno/lib/doc_prose_scope.ts) | Shared bounded scope of changed comments, attached headers and affected manual sections for the review-fix drift check (Issues #3715, #3731). The first-run claim check was removed (Issue #4234). |
 |                             | [summary_scrub_gate.ts](../worker/deno/lib/summary_scrub_gate.ts) | Refuses prompt-scrubbed HTML-comment/Mermaid markers in PR summaries at completion and in the local checker (Issue #3710) |
 |                             | [change_request_quotes.ts](../worker/deno/lib/change_request_quotes.ts)                                           | Parses a change request's findings and quoted spans; flags quoted PR-summary sentences still present in a summary; called by the drift check (Issue #3244)                                                                      |
 |                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143), including a paired `N passed, M failed` result checked as N + M (Issue #3381); several counts over several files are compared file by file or reported unchecked (Issue #3356); each count in a mixed unit is decided on its own, so a whole-file count is compared and only a partial figure is unchecked (Issue #3740)                                                              |

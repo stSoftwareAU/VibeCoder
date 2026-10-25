@@ -89,11 +89,7 @@ committed to the repository as permanent documentation and contains:
 The worker reads this file and includes its contents in the PR body. If no PR
 summary file is created, a warning note is included in the PR body. PR
 creation records a SHA-256 digest of the summary's content in the PR body as
-a hidden marker (when the agent also wrote the optional
-`pr-summary-{issue_number}.facts.json` facts file beside the summary, the digest
-covers the facts content too, and its Branch outcomes list is rendered into the
-body's summary; with no facts file the digest is of the summary alone, so older
-digests stay valid, Issue #3535), and the sub-agent tier the issue run resolved as a second
+a hidden marker (the digest is of the summary alone, Issue #4234), and the sub-agent tier the issue run resolved as a second
 one, `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`), so a later PR
 outcome can be attributed to that tier (Issue #3403); the fleet summary's
 per-tier PR-outcome figures do this (Issue #3404). A re-sync carries the
@@ -106,7 +102,7 @@ re-syncs under the same condition, and also when it pushed nothing and has no
 commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
-file or its facts file. So the description never drifts from a summary rewritten
+file. So the description never drifts from a summary rewritten
 after creation, for as long as that run's conditions are met. Priority 1.64 also
 catches a push the worker did not make (Issue #3760), such as a review-fix
 commit pushed by hand: each cycle it re-syncs, in the repos due that cycle, an

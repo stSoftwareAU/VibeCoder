@@ -704,7 +704,13 @@ async function postCompletionAdvisory(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<void> {
-  const findings = state.completionAdvisoryComment?.trim() ?? "";
+  const findings = [
+    state.screenshotAdvisoryComment,
+    state.completionAdvisoryComment,
+  ]
+    .map((part) => part?.trim() ?? "")
+    .filter((part) => part !== "")
+    .join("\n\n");
   if (findings === "" || prNumber <= 0) return;
   const body = [
     "## Notes for the reviewer",
@@ -2233,10 +2239,12 @@ async function completionBody(
       "Screenshot evidence is still missing after the one extra turn — " +
         "noted on the pull request for the reviewer (Issue #4234)",
     );
-    const shotNote = failureMessage;
-    state.completionAdvisoryComment = state.completionAdvisoryComment
-      ? `${state.completionAdvisoryComment}\n\n${shotNote}`
-      : shotNote;
+    // Recorded once. A later completion pass must not append it again, or
+    // it would occupy the reviewer note and hide a summary finding that
+    // is still unresolved (Issue #4234).
+    if (!state.screenshotAdvisoryComment) {
+      state.screenshotAdvisoryComment = failureMessage;
+    }
   }
 
   // Remove needs-screenshot label if validation passed and label was present
@@ -2488,8 +2496,8 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
-  // Result-placeholder verdict, computed early alongside the docs-sweep and
-  // removed-assertion ones (Issue #3124), for the same reason:
+  // Result-placeholder verdict, computed early (Issue #3124), for the same
+  // reason:
   // `recoverFromSummaryRuleBlock` only gets one recovery turn per run, so a
   // summary that both fails an earlier gate AND still carries a
   // fill-in-later token (e.g. `QUALITY_RESULT_PLACEHOLDER`) where a
@@ -2551,14 +2559,11 @@ async function completionBody(
 
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
-   * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, branch outcomes, mutation check, coverage carry-over, the
-   * summary claim check, then the pre-PR verifier (Issue #3147 added branch
-   * outcomes; Issue #3393 the mutation check; Issue #3795 the coverage
-   * carry-over check; Issue #3257 the claim check; Issue #3395 added the
-   * verifier last). One
-   * source of truth for both the ordered fold below and the gates' own
-   * standalone blocks further down.
+   * an earlier gate's block: summary scrub, result placeholder, mutation
+   * check, coverage carry-over, the pre-PR verifier, then unmet criteria
+   * (Issue #3393 the mutation check; Issue #3795 the coverage carry-over
+   * check; Issue #3395 the verifier). One source of truth for both the
+   * ordered fold below and the gates' own standalone blocks further down.
    */
   interface LateSummaryVerdict {
     categories?: readonly FailureCategory[];
@@ -2852,9 +2857,9 @@ async function completionBody(
   const standingViolations = standing.violations;
 
   /**
-   * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes, mutation check, coverage carry-over, summary
-   * claim check, pre-PR verifier — in that order) other than those in `skip`
+   * Fold every blocked late verdict (summary scrub, result placeholder,
+   * mutation check, coverage carry-over, pre-PR verifier, unmet criteria —
+   * in that order) other than those in `skip`
    * into an earlier gate's block.
    * `allowsTestChanges` is set on the result when the block, or any verdict
    * folded in, is one that only a test change satisfies (the mutation check
@@ -3014,30 +3019,13 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
-  // Late summary gates: docs sweep (Issue #3073), removed assertions
-  // (Issue #3131), result placeholder (Issue #3124), branch outcomes
-  // (Issue #3147), the mutation check (Issue #3393), the coverage carry-over
-  // check (Issue #3795), the summary claim check (Issue #3257), and the
-  // pre-PR verifier (Issue #3395) — in that order.
-  //
-  // The PR-summary contract already asked for a one-line Docs sweep entry
-  // and now also a `Branch outcomes:` list, but nothing checked either: a
-  // term-only grep sweep still missed the manual for the changed surface,
-  // some PRs carried no Docs sweep line at all, a dropped test assertion
-  // went unaccounted for, and fleet PRs shipped a new branch with no test
-  // reaching it (or named a test that did not exist), and a first-run
-  // summary described named code wrongly. When the diff changes a
-  // non-test, non-doc file, the summary must name the manual `section:` that
-  // documents the surface and the `siblings:` it grepped (Issue #3371),
-  // account for every removed assertion, carry no unfilled result placeholder,
-  // carry a `Branch outcomes:` list whose every named test exists at the head,
-  // and get its claims about named code right.
-  //
-  // `reportSummaryRuleBlock` does the right thing by branch below, PR or no
-  // PR, and unmet criteria fold into every block (Issue #4146), so none of
-  // these gates needs to short-circuit around another. Each gate folds every later-named gate still blocked
-  // into its own comment, so a summary failing more than one of them is
-  // told about all of them in the one recovery turn it gets.
+  // Late summary gates that remain: result placeholder (Issue #3124), the
+  // mutation check (Issue #3393), the coverage carry-over check (Issue
+  // #3795) and the pre-PR verifier (Issue #3395). The summary-scrub and
+  // unmet-criteria verdicts fold with them. Each gate folds every
+  // later-named gate still blocked into its own comment, so a summary
+  // failing more than one of them is told about all of them in the one
+  // recovery turn it gets (Issue #4234).
   // ---------------------------------------------------------------------
   // ---------------------------------------------------------------------
   // Result-placeholder gate (Issue #3124).
@@ -3045,8 +3033,8 @@ async function completionBody(
   // A fill-in-later token such as `QUALITY_RESULT_PLACEHOLDER` left in the
   // summary where a command's actual result belongs reads as "the gate was
   // run" to anyone who does not know the fleet's internal scaffolding, when
-  // nothing was actually reported. Blocked the same way as the docs-sweep
-  // and removed-assertion gates above.
+  // nothing was actually reported. Reported the same way as the other
+  // remaining summary gates.
   // ---------------------------------------------------------------------
   if (scrubVerdict.blocked) {
     const held = await reportSummaryRuleBlock(
@@ -3087,9 +3075,8 @@ async function completionBody(
   // change nothing checks. Blocked like the other summary-rule gates so the
   // single recovery turn is told the `file:line` and the mutation and either
   // adds a test that kills it or records an exemption in the summary. Folds
-  // in the coverage carry-over check (Issue #3795), the summary claim check
-  // and the pre-PR verifier (Issue #3395), the late verdicts still named
-  // below it.
+  // in the coverage carry-over check (Issue #3795) and the pre-PR verifier
+  // (Issue #3395), the late verdicts still named below it.
   // ---------------------------------------------------------------------
   if (mutationVerdict.blocked) {
     logger.warn("Mutation gate blocked PR creation", {
@@ -3120,8 +3107,8 @@ async function completionBody(
   // line; if the PR leaves that line uncovered, nothing checks it any more.
   // Blocked like the mutation gate so the single recovery turn is told the
   // `file:line` and either adds a test that reaches it or records an
-  // exemption in the summary. Folds in the summary claim check and the
-  // pre-PR verifier (Issue #3395), the late verdicts still named below it.
+  // exemption in the summary. Folds in the pre-PR verifier (Issue #3395),
+  // the late verdict still named below it.
   // ---------------------------------------------------------------------
   if (coverageCarryOverVerdict.blocked) {
     logger.warn("Coverage carry-over gate blocked PR creation", {
