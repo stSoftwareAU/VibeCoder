@@ -345,8 +345,9 @@ export async function heavyBuildAdmission(
   if (verdict.proceed) return { mode: "build" };
   return {
     mode: "merge-only",
-    reason: `${verdict.detail}; the merge lands without the repository's ` +
-      `build and the repository's CI builds it (Issue #4326)`,
+    reason:
+      `${verdict.detail}; cargo builds wait for CI; Deno projects keep their ` +
+      `normal checks (Issue #4326)`,
   };
 }
 

@@ -2057,9 +2057,8 @@ export async function syncMilestoneBranches(
           if (admission.mode === "merge-only") {
             log(
               `[HOST_DISK_BUDGET] Milestone sync for ` +
-                `'${milestone.milestoneTitle}' in ${repo} lands this cycle ` +
-                `without the ephemeral cargo build (the repository's build ` +
-                `is skipped): ${admission.reason}`,
+                `'${milestone.milestoneTitle}' in ${repo}: cargo builds wait ` +
+                `for CI; Deno projects keep their normal checks: ${admission.reason}`,
             );
             mergeOnly = admission.reason;
           }

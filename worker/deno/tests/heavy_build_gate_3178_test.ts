@@ -1,3 +1,5 @@
+import { mergeOnlyBindings } from "../lib/milestone_merge_only.ts";
+import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
 /**
  * The host-disk gate on heavy builds (Issue #3178).
  *
@@ -597,7 +599,9 @@ Deno.test("syncMilestoneBranches - between the floor and headroom, with nothing 
   assertEquals(result.value.skipped, 0);
   assertEquals(root.removed, []);
   assert(
-    logs.some((line) => line.includes("without the ephemeral cargo build")),
+    logs.some((line) =>
+      line.includes("Deno projects keep their normal checks")
+    ),
     `no merge-only line in ${logs.join("\n")}`,
   );
 });
@@ -844,4 +848,63 @@ Deno.test("presyncMilestoneBranch - a build admission grants the merge with no m
   );
   assertEquals(result.status, "synced");
   assertEquals(synced.grants.map((g) => "mergeOnly" in g), [false]);
+});
+
+Deno.test("merge-only admission keeps Deno checks and truthful logs in sweep and presync (PR #4343)", async () => {
+  const tree = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${tree}/deno.json`, "{}");
+    let checks = 0;
+    const sync = async (grant: SyncBranchOptions) => {
+      const bindings = mergeOnlyBindings(grant.mergeOnly, undefined, {
+        checkMergedTree: (dir, _runner, skip) =>
+          checkMergedTree(dir, () => {
+            checks++;
+            return Promise.resolve({ code: 0, output: "" });
+          }, skip),
+      });
+      assert(bindings);
+      assertEquals((await bindings.mergeGate(tree)).status, "passed");
+      return { ok: true as const, value: { message: "checked" } };
+    };
+    const admission = { mode: "merge-only" as const, reason: "cargo budget" };
+    const logs: string[] = [];
+    await syncMilestoneBranches(sweepDeps(
+      {
+        heavyBuildGateFn: () => Promise.resolve(admission),
+        syncBranchFn: (_repo, _branch, _base, grant) => sync(grant),
+      },
+      [],
+      logs,
+    ));
+    await presyncMilestoneBranch(
+      {
+        repo: "owner/repo",
+        milestoneBranch: "milestone/1-x",
+        defaultBranch: "main",
+        grant: { agentAllowed: true },
+        nowMs: NOW,
+      },
+      presyncDeps(
+        {
+          heavyBuildAdmission: () => Promise.resolve(admission),
+          syncBranch: sync,
+        },
+        { count: 0 },
+        logs,
+      ),
+    );
+    assertEquals(checks, 2);
+    const budgetLogs = logs.filter((line) =>
+      line.includes("[HOST_DISK_BUDGET]")
+    );
+    assertEquals(budgetLogs.length, 2);
+    for (const line of budgetLogs) {
+      assertStringIncludes(line, "Deno projects keep their normal checks");
+      assert(!line.includes("build is skipped"));
+      assert(!line.includes("lands without"));
+    }
+  } finally {
+    await Deno.remove(tree, { recursive: true });
+  }
 });

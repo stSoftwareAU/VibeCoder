@@ -4457,9 +4457,8 @@ When the ephemeral cargo root is over its budget (Issue #4326), the sync runs
 in merge-only mode for that cycle, but only on a tree that holds a cargo
 project, because only a cargo build writes to the ephemeral cargo root. A
 repository with no cargo project keeps its own check and the normal agent. In a
-cargo tree every check the repository would run is skipped (the cargo type
-check, the manifest check and the unit suite, and any Deno check in a mixed
-tree): a conflict-free merge
+mixed tree the Deno checks and unit suites remain required; only cargo checks
+and cargo unit suites wait for CI. In a cargo-only tree, a conflict-free merge
 is pushed with the same `UNGATED` note, and the milestone PR's own CI builds it.
 So is a conflict the deterministic rules settle: the resolution gate reports a
 `skipped` verdict marked `landUnverified`, which `judgeResolutionVerdict` lets

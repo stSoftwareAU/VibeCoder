@@ -24,10 +24,12 @@ import {
   type MergeOnlyDeps,
 } from "../lib/milestone_merge_only.ts";
 import {
+  checkMergedTree,
   findTypeCheckProjects,
   type MergeGateFn,
   type MergeGateOutcome,
 } from "../lib/milestone_merge_gate.ts";
+import { verifyResolvedTree } from "../lib/milestone_resolution_gate.ts";
 import type {
   MilestoneConflictAgentFn,
   MilestoneConflictAgentRequest,
@@ -194,31 +196,19 @@ Deno.test("mergeOnlyBindings - a tree with a Cargo.toml is detected as cargo (Is
   });
 });
 
-Deno.test("mergeOnlyBindings - a cargo tree: the merge gate skips and never runs the check (Issue #4326)", async () => {
+Deno.test("mergeOnlyBindings - a cargo-only tree delegates with cargo disabled (Issue #4326)", async () => {
   await withTree({ "Cargo.toml": CARGO_TOML }, async (dir) => {
-    const check = recordingGate(PASSED);
-    const outcome = await bindingsFor(REASON, undefined, {
-      checkMergedTree: check.gate,
-    }).mergeGate(dir);
-    assertEquals(outcome.status, "skipped");
-    assertStringIncludes(outcome.detail, REASON);
-    assertEquals(outcome.output, "");
-    assertEquals(outcome.landUnverified, undefined);
-    assertEquals(check.calls, []);
-  });
-});
-
-Deno.test("mergeOnlyBindings - a cargo tree: the resolution gate skips, lands unverified and never verifies (Issue #4326)", async () => {
-  await withTree({ "Cargo.toml": CARGO_TOML }, async (dir) => {
-    const verify = recordingGate(PASSED);
-    const outcome = await bindingsFor(REASON, undefined, {
-      verifyResolvedTree: verify.gate,
-    }).resolutionGate(dir);
-    assertEquals(outcome.status, "skipped");
-    assertEquals(outcome.landUnverified, true);
-    assertEquals(outcome.output, "");
-    assertStringIncludes(outcome.detail, REASON);
-    assertEquals(verify.calls, []);
+    const bindings = bindingsFor(REASON);
+    const merged = await bindings.mergeGate(dir);
+    assertEquals(merged.status, "skipped");
+    assertStringIncludes(merged.detail, REASON);
+    assertEquals(merged.output, "");
+    assertEquals(merged.landUnverified, undefined);
+    const resolved = await bindings.resolutionGate(dir);
+    assertEquals(resolved.status, "skipped");
+    assertEquals(resolved.landUnverified, true);
+    assertEquals(resolved.output, "");
+    assertStringIncludes(resolved.detail, REASON);
   });
 });
 
@@ -235,7 +225,7 @@ Deno.test("mergeOnlyBindings - a cargo tree: the agent reports the provider unav
   });
 });
 
-Deno.test("mergeOnlyBindings - a tree whose projects cannot be listed is treated as cargo, so nothing is built (Issue #4326)", async () => {
+Deno.test("mergeOnlyBindings - a tree whose projects cannot be listed cannot bypass resolution verification (Issue #4326)", async () => {
   // The listing fails on a tree that does hold a Deno project. The bindings
   // take the conservative merge-only path rather than run a build blind.
   await withTree({ "deno.json": DENO_JSON }, async (dir) => {
@@ -249,15 +239,15 @@ Deno.test("mergeOnlyBindings - a tree whose projects cannot be listed is treated
     });
 
     const merged = await bindings.mergeGate(dir);
-    assertEquals(merged.status, "skipped");
+    assertEquals(merged.status, "passed");
     const resolved = await bindings.resolutionGate(dir);
-    assertEquals(resolved.status, "skipped");
-    assertEquals(resolved.landUnverified, true);
+    assertEquals(resolved.status, "failed");
+    assertEquals(resolved.landUnverified, undefined);
     const agent = await bindings.agentFn(requestIn(dir));
     assert(agent.ok, "the agent binding returns an ok result");
     assertStringIncludes(agent.value.providerUnavailable ?? "", REASON);
 
-    assertEquals(check.calls, []);
+    assertEquals(check.calls, [dir]);
     assertEquals(verify.calls, []);
     assertEquals(real.calls, []);
   });
@@ -565,9 +555,19 @@ Deno.test("merge-only e2e - a conflict the worker resolves lands unverified: UNG
   });
   try {
     const before = await remoteSha(f.remote, MILESTONE);
-    const verify = recordingGate(PASSED);
+    const verificationTasks: string[] = [];
     const bindings = bindingsFor(REASON, undefined, {
-      verifyResolvedTree: verify.gate,
+      verifyResolvedTree: (dir, _runner, typed, now, skip) =>
+        verifyResolvedTree(
+          dir,
+          (task) => {
+            verificationTasks.push(task.kind);
+            return Promise.resolve({ code: 0, output: "" });
+          },
+          typed,
+          now,
+          skip,
+        ),
     });
 
     const result = await syncMilestoneBranchWithDefault(
@@ -590,7 +590,7 @@ Deno.test("merge-only e2e - a conflict the worker resolves lands unverified: UNG
     assertStringIncludes(result.value.message, REASON);
     assertEquals(result.value.conflict?.resolution, "auto");
     assertEquals(result.value.conflict?.unverified, true);
-    assertEquals(verify.calls, [], "no verification build was run");
+    assertEquals(verificationTasks, [], "no cargo verification build was run");
     const after = await remoteSha(f.remote, MILESTONE);
     assert(after !== before, "the milestone branch must have moved");
     assertEquals(
@@ -633,6 +633,95 @@ Deno.test("merge-only e2e - control: the same resolved conflict is refused by a 
     assertEquals(judgeSyncFailure(result.error, true).outcome, "not-charged");
     assertEquals(await remoteSha(f.remote, MILESTONE), before);
     assertEquals(await mergeInProgress(f.clone), false);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("mergeOnlyBindings - mixed trees keep Deno checks and suites while skipping cargo (PR #4343)", async () => {
+  for (const nested of [false, true]) {
+    for (const failure of ["none", "check", "unit"]) {
+      await withTree({}, async (dir) => {
+        const denoDir = nested ? `${dir}/web` : dir;
+        const cargoDir = nested ? `${dir}/engine` : dir;
+        await Deno.mkdir(denoDir, { recursive: true });
+        await Deno.mkdir(cargoDir, { recursive: true });
+        await Deno.writeTextFile(`${cargoDir}/Cargo.toml`, CARGO_TOML);
+        await Deno.writeTextFile(
+          `${denoDir}/deno.json`,
+          JSON.stringify({
+            tasks: { check: "deno check main.ts", "test:unit": "deno test" },
+          }),
+        );
+        const checks: string[] = [];
+        const units: string[] = [];
+        const bindings = bindingsFor(REASON, undefined, {
+          checkMergedTree: (path, _runner, skip) =>
+            checkMergedTree(path, (project) => {
+              checks.push(project.kind);
+              return Promise.resolve({
+                code: failure === "check" ? 1 : 0,
+                output: "type check",
+              });
+            }, skip),
+          verifyResolvedTree: (path, _runner, typed, now, skip) =>
+            verifyResolvedTree(
+              path,
+              (task) => {
+                units.push(task.kind);
+                return Promise.resolve({
+                  code: failure === "unit" ? 1 : 0,
+                  output: "unit suite",
+                });
+              },
+              typed,
+              now,
+              skip,
+            ),
+        });
+        const merged = await bindings.mergeGate(dir);
+        assertEquals(merged.status, failure === "check" ? "failed" : "passed");
+        const resolved = await bindings.resolutionGate(dir);
+        assertEquals(resolved.status, failure === "none" ? "passed" : "failed");
+        assertEquals(resolved.landUnverified, undefined);
+        assertEquals(checks, ["deno", "deno"], "cargo is never checked");
+        assertEquals(
+          units,
+          failure === "check" ? [] : ["deno"],
+          "cargo is never tested",
+        );
+      });
+    }
+  }
+});
+
+Deno.test("merge-only e2e - a failing Deno check in a mixed tree refuses the push (PR #4343)", async () => {
+  const f = await fixture({
+    milestone: ["deno.json", DENO_JSON],
+    main: ["default.txt", "new default"],
+  });
+  try {
+    const before = await remoteSha(f.remote, MILESTONE);
+    const checked: string[] = [];
+    const bindings = bindingsFor(REASON, undefined, {
+      checkMergedTree: (dir, _runner, skip) =>
+        checkMergedTree(dir, (project) => {
+          checked.push(project.kind);
+          return Promise.resolve({ code: 1, output: "broken Deno code" });
+        }, skip),
+    });
+    const result = await syncMilestoneBranchWithDefault(
+      MILESTONE,
+      "main",
+      { cwd: f.clone },
+      undefined,
+      bindings.mergeGate,
+      bindings.resolutionGate,
+      bindings.agentFn,
+    );
+    assertEquals(result.ok, false);
+    assertEquals(checked, ["deno"]);
+    assertEquals(await remoteSha(f.remote, MILESTONE), before);
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }

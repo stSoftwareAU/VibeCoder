@@ -1,40 +1,10 @@
 /**
- * The gate and agent bindings a merge-only milestone sync runs with
- * (Issue #4326).
- *
- * When the ephemeral cargo root is still short of its budget after pruning,
- * the milestone sync lands without the repository's build rather than
- * deferring. The merge lands unverified: the repository's CI builds the merged
- * tree on the milestone's PR, so the push is not held for a build the host
- * cannot afford. That holds for a conflict-free merge and for a conflict the
- * deterministic rules settle. Only a conflict that needs the resolution agent
- * is left for a cycle when the budget holds, uncharged, because the agent is
- * free to run the very cargo build the host cannot afford.
- *
- * Only a cargo build writes to the ephemeral cargo root, so only a tree that
- * holds a Cargo project loses its check. Each binding decides at call time,
- * from the tree it is handed:
- *
- * - a tree with no Cargo project keeps its own checks exactly as they run in
- *   a normal sync (a Deno type check, a Deno unit suite, or the agent);
- * - a tree with a Cargo project takes the merge-only path below.
- *
- * The merge-only path reuses paths that already exist rather than inventing
- * new ones:
- *
- * - the merge gate reports `skipped`, which `git_pull.ts` pushes with an
- *   `UNGATED:` note (Issue #974);
- * - the resolution gate reports `skipped` with {@link MergeGateOutcome.landUnverified}
- *   set, which `judgeResolutionVerdict` lets through where it would otherwise
- *   turn `skipped` into a refusal, so a conflict the deterministic rules settled
- *   is pushed with the same `UNGATED:` note (Issue #4326). The merge commit
- *   still records which rung settled each file;
- * - the agent reports the provider as unavailable, which the conflict ladder
- *   turns into `AGENT_PROVIDER_UNAVAILABLE`, and `judgeSyncFailure` concludes
- *   `disrupted` with nothing charged. A conflict that needs the agent is
- *   therefore the one case that waits for a cycle with budget.
- *
- * Australian English spelling throughout (behaviour, colour, organisation).
+ * Budget-limited milestone sync bindings (Issue #4326).
+ * Cargo builds wait for CI; the repository gates still check and test every
+ * Deno project, including mixed Cargo/Deno trees. A cargo-only tree may land
+ * unverified after deterministic conflict resolution. The agent remains
+ * withheld on cargo trees because it may launch an unaffordable cargo build.
+ * Australian English throughout.
  */
 
 import {
@@ -55,14 +25,12 @@ import type {
 /** The three bindings a merge-only sync is run with. */
 export interface MergeOnlyBindings {
   /**
-   * Checks a conflict-free merge. A tree with a Cargo project reports
-   * `skipped`, so it lands unverified; any other tree runs its own check.
+   * Checks a conflict-free merge. Cargo is skipped; Deno projects retain their checks.
    */
   mergeGate: MergeGateFn;
   /**
-   * Checks a merge the worker resolved. A tree with a Cargo project reports
-   * `skipped` with `landUnverified`, so a conflict the deterministic rules
-   * settled lands unverified; any other tree runs its own verification.
+   * Checks a merge the worker resolved. Only a cargo-only tree may report
+   * `skipped` with `landUnverified`; Deno verification stays required.
    */
   resolutionGate: MergeGateFn;
   /**
@@ -75,9 +43,9 @@ export interface MergeOnlyBindings {
 /** The delegates a merge-only binding calls, injectable so tests can state them. */
 export interface MergeOnlyDeps {
   /** The Issue #974 type check. Production: {@link checkMergedTree}. */
-  checkMergedTree?: MergeGateFn;
+  checkMergedTree?: typeof checkMergedTree;
   /** The Issue #1559 verification. Production: {@link verifyResolvedTree}. */
-  verifyResolvedTree?: MergeGateFn;
+  verifyResolvedTree?: typeof verifyResolvedTree;
   /** Lists the tree's projects. Production: `findTypeCheckProjects`. */
   findTypeCheckProjects?: (repoDir: string) => Promise<TypeCheckProject[]>;
 }
@@ -87,8 +55,8 @@ export interface MergeOnlyDeps {
  * merge-only.
  *
  * Each binding decides at call time whether the tree it is handed holds a
- * Cargo project. Only one does the merge-only path; the rest delegate to the
- * repository's own checks, so a Deno-only repository is still verified.
+ * Cargo project. The repository gates skip cargo only; all Deno projects
+ * still require their own checks and verification.
  *
  * @param reason - Why the build was skipped (the budget verdict), or undefined
  *   when the build runs as usual
@@ -108,12 +76,9 @@ export function mergeOnlyBindings(
   const runVerifyResolvedTree = deps.verifyResolvedTree ?? verifyResolvedTree;
   const findProjects = deps.findTypeCheckProjects ?? findProjectsInTree;
 
-  // Whether the tree holds a Cargo project. If the projects cannot be listed,
-  // the tree is treated as holding one: the conservative path skips the build
-  // rather than running a cargo build the host may not be able to afford
-  // (Issue #4326). `findTypeCheckProjects` handles its own I/O errors, so this
-  // is a guard against a listing that throws, reachable through the injected
-  // listing; it does not make the merge safer, and the push says UNGATED.
+  // An unlistable tree cannot safely be handed to an agent that may run cargo.
+  // The gates below still require their own checks; resolution fails closed
+  // when the project listing is unavailable.
   const holdsCargo = async (dir: string): Promise<boolean> => {
     try {
       return (await findProjects(dir)).some((p) => p.kind === "cargo");
@@ -124,24 +89,41 @@ export function mergeOnlyBindings(
 
   return {
     mergeGate: async (repoDir) => {
-      if (!(await holdsCargo(repoDir))) return runCheckMergedTree(repoDir);
-      return {
-        status: "skipped",
-        detail: `the repository's build was left to its CI — ${reason}`,
-        output: "",
-      };
+      const outcome = await runCheckMergedTree(
+        repoDir,
+        undefined,
+        () => Promise.resolve(true),
+      );
+      return outcome.status === "skipped"
+        ? { ...outcome, detail: `${outcome.detail} — ${reason}` }
+        : outcome;
     },
     resolutionGate: async (repoDir) => {
-      if (!(await holdsCargo(repoDir))) {
-        return runVerifyResolvedTree(repoDir);
+      const projects = await findProjects(repoDir).catch(() => undefined);
+      if (projects === undefined) {
+        return {
+          status: "failed",
+          detail: "could not list projects — resolution remains unverified",
+          output: "",
+        };
       }
-      return {
-        status: "skipped",
-        detail: "a conflict resolved by the deterministic rules was left " +
-          `to the repository's CI — ${reason}`,
-        output: "",
-        landUnverified: true,
-      };
+      const outcome = await runVerifyResolvedTree(
+        repoDir,
+        undefined,
+        (dir) =>
+          runCheckMergedTree(dir, undefined, () => Promise.resolve(true)),
+        undefined,
+        () => Promise.resolve(true),
+      );
+      const cargoOnly = projects.length > 0 &&
+        projects.every((p) => p.kind === "cargo");
+      return outcome.status === "skipped" && cargoOnly
+        ? {
+          ...outcome,
+          detail: `${outcome.detail} — ${reason}`,
+          landUnverified: true,
+        }
+        : outcome;
     },
     agentFn: async (request: MilestoneConflictAgentRequest) => {
       const cargo = await holdsCargo(request.workDir);

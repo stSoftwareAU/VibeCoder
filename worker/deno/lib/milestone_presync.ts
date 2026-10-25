@@ -355,7 +355,7 @@ export async function presyncMilestoneBranch(
       mergeOnly = admission.reason;
       deps.log(
         `[HOST_DISK_BUDGET] Milestone sync for '${milestoneBranch}' in ${repo} ` +
-          `lands without the repository's build this cycle: ` +
+          `uses cargo-only build deferral; Deno projects keep their normal checks: ` +
           `${admission.reason}`,
       );
     }

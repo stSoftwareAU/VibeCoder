@@ -1327,9 +1327,8 @@ behind indefinitely: the over-budget build was refused every cycle (GRQ-23,
 cycle, in **merge-only** mode, unless its conflict needs the agent. Merge-only applies
 to a tree that holds a cargo project, because only a cargo build writes to the
 ephemeral cargo root. A repository with no cargo project keeps its own check
-(the repository's own type check) and the normal agent. In a cargo tree the
-repository's checks are skipped (the cargo type check, the manifest check and
-the unit suite, and any Deno check in a mixed tree):
+(the repository's own type check) and the normal agent. Only cargo checks and cargo unit suites are skipped. Mixed trees still run
+and must pass their Deno checks and unit suites. For a cargo-only tree:
 
 - **A conflict-free merge is pushed unverified.** The sync outcome carries the
   existing `UNGATED:` note (Issue #974), and the milestone PR's own CI builds
@@ -1348,11 +1347,10 @@ the unit suite, and any Deno check in a mixed tree):
 The log names the reason:
 
 ```text
-[HOST_DISK_BUDGET] Milestone sync for '2285 …' in stSoftwareAU/GRQ-AutoTrader lands without the repository's build this cycle: ephemeral cargo root over budget (…) — pruned … of idle target dirs and … is still short …; the merge lands without the repository's build and the repository's CI builds it (Issue #4326)
+[HOST_DISK_BUDGET] Milestone sync for '2285 …' in stSoftwareAU/GRQ-AutoTrader uses cargo-only build deferral; Deno projects keep their normal checks: ephemeral cargo root over budget (…) — pruned … of idle target dirs and … is still short …; cargo builds wait for CI; Deno projects keep their normal checks (Issue #4326)
 ```
 
-The host's free space never drops below the floor in this mode, because no
-build runs. No further reclaim step is taken: on a runtime that refuses the
+The deferred cargo build cannot consume the host's remaining headroom. No further reclaim step is taken: on a runtime that refuses the
 trim, deleting artefacts inside the guest returns nothing to the host, so the
 ephemeral root's idle target directories, already pruned first, are the only
 space the worker can hand back.
