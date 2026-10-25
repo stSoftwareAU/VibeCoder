@@ -2041,6 +2041,11 @@ the registry:
   would otherwise let it through. `worker/deno/lib/agent_env.ts` holds the
   shared filter; each provider module holds only its three lists.
 
+Since 0.163.0 the `codex` CLI also spawns `/usr/local/bin/codex-code-mode-host`,
+a separate release asset that `container/providers/codex.sh` verifies against
+`codeModeHost.sha256` in `container/tools.json` and installs beside the CLI;
+without it every session runs with no tools (Issue #4323).
+
 Gemini is the third, and in Quorum mode it is the **judge**
 rather than a planner: it reads the two planners' candidate plans and picks a
 winner. That role shapes two of its facets:

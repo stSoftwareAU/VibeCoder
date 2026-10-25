@@ -68,7 +68,13 @@
         "amd64": "beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4",
         "arm64": "a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4"
       },
-      "notes": "The second registered coding-agent provider (Issue #4106) — the first addition made purely through the seam. Checksums are of the static musl release archives codex-<target>-unknown-linux-musl.tar.gz from tag rust-v<version>, which run on the glibc base image. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex\"` is what puts both CLIs in one image. Raised from 0.147.0 to 0.163.0 on 2026-10-22 (owner: newest version of each provider): the newest non-prerelease rust-v tag, published 2026-10-15. Both checksums match the GitHub release's asset digests, and every flag codex_executor.ts passes (exec, resume, --json, --skip-git-repo-check, --dangerously-bypass-approvals-and-sandbox, --sandbox, -c, --model) is still in `codex exec --help`."
+      "codeModeHost": {
+        "sha256": {
+          "amd64": "314263128ba6592e7e807c265deeaf928a692b72dcbfeb5e0b20c9423b703529",
+          "arm64": "284356aefb197f00b76b912efdfdbae8ccf3ea1f89b976dde064b7ccb43214ef"
+        }
+      },
+      "notes": "The second registered coding-agent provider (Issue #4106) — the first addition made purely through the seam. Checksums are of the static musl release archives codex-<target>-unknown-linux-musl.tar.gz from tag rust-v<version>, which run on the glibc base image. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex\"` is what puts both CLIs in one image. Raised from 0.147.0 to 0.163.0 on 2026-10-22 (owner: newest version of each provider): the newest non-prerelease rust-v tag, published 2026-10-15. Both checksums match the GitHub release's asset digests, and every flag codex_executor.ts passes (exec, resume, --json, --skip-git-repo-check, --dangerously-bypass-approvals-and-sandbox, --sandbox, -c, --model) is still in `codex exec --help`. Since 0.163.0 the CLI also spawns /usr/local/bin/codex-code-mode-host, without which every session runs with no tools (Issue #4323); codeModeHost.sha256 pins the separate release asset codex-code-mode-host-<target>-unknown-linux-musl.tar.gz from the same tag, matching the GitHub release's asset digests, and codex.sh verifies and installs it next to the CLI."
     },
     {
       "id": "gemini",
