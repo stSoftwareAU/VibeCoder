@@ -67,20 +67,27 @@ unchanged, still used by 30+ tests.
   `tests/parallel_safety_cap_test.ts` and
   `tests/timing_assertion_policy_test.ts`: `ok | 111 passed | 0 failed`.
   `deno fmt --check` and `deno lint` clean.
-- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: the four
-  `assertLinearGrowth(` calls on `splitMarkdownCode` (non-matching indent,
-  block-quote marker, dash run, block-quote prefix) and the one on
-  `parseFenceLine`. Required by: "Make both tests deterministic under load, for
-  example by measuring operation counts or growth with an injected clock."
-  Replaced by: `assertHangSizedProse(` (asserts one prose segment equal to the
-  input) and `assertEquals(parseFenceLine(input), {` with
-  `length: HANG_SIZE_CHARS - 2`.
-- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: the
-  `assertLinearGrowth(` call on the distinct-length shape. Required by: "Make
-  both tests deterministic under load, for example by measuring operation counts
-  or growth with an injected clock." Replaced by:
-  `assert(elapsedHostile < 3 * elapsedControl,` and
-  `assertEquals(hostileSegments.map((s) => s.value).join(""), hostile);`
+- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: `assertLinearGrowth( "parseFenceLine on a long run followed by a lone CR", build, (input) => parseFenceLine(input) !== null, { baseChars: 4_000, sizeFactor: 4 }, );`
+  Required by: "Make both tests deterministic under load, for example by measuring operation counts or growth with an injected clock."
+  Replaced by: ``assertEquals(parseFenceLine(input), { char: "`", length: HANG_SIZE_CHARS - 2, rest: "\rx", });``
+- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: `assertLinearGrowth( "splitMarkdownCode on many distinct-length unmatched runs", build, (input) => splitMarkdownCode(input).length, { baseChars: 150_000, sizeFactor: 16 }, );`
+  Required by: "Make both tests deterministic under load, for example by measuring operation counts or growth with an injected clock."
+  Replaced by: ``assert(elapsedHostile < 3 * elapsedControl, `not under 3x: ${readings}`);`` and `assertEquals(hostileSegments.map((s) => s.value).join(""), hostile);`
+- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: `assertLinearGrowth( "splitMarkdownCode on a long non-matching leading-whitespace run", build, (input) => splitMarkdownCode(input).length, { baseChars: 150_000, sizeFactor: 8 }, );`
+  Required by: "Make both tests deterministic under load, for example by measuring operation counts or growth with an injected clock."
+  Replaced by: ``assertHangSizedProse(`${" ".repeat(HANG_SIZE_CHARS - 1)}x`);``, which runs `assertEquals(segments.map((s) => s.value).join(""), text);`, `assertEquals(segments.filter((s) => s.inCode).length, 0);` and `assertEquals(segments.length, 1);` inside `assertHangSizedProse`
+- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: `assertLinearGrowth( "splitMarkdownCode on a long leading-whitespace run before a block quote marker", build, (input) => splitMarkdownCode(input).length, { baseChars: 150_000, sizeFactor: 8 }, );`
+  Required by: "Make both tests deterministic under load, for example by measuring operation counts or growth with an injected clock."
+  Replaced by: ``assertHangSizedProse(`${" ".repeat(HANG_SIZE_CHARS - 1)}>`);``, which runs `assertEquals(segments.map((s) => s.value).join(""), text);`, `assertEquals(segments.filter((s) => s.inCode).length, 0);` and `assertEquals(segments.length, 1);` inside `assertHangSizedProse`
+- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: `assertLinearGrowth( "splitMarkdownCode on a long dash run rejected by a trailing non-dash character", build, (input) => splitMarkdownCode(input).length, { baseChars: 150_000, sizeFactor: 8 }, );`
+  Required by: "Make both tests deterministic under load, for example by measuring operation counts or growth with an injected clock."
+  Replaced by: ``assertHangSizedProse(`${"-".repeat(HANG_SIZE_CHARS - 1)}x`);``, which runs `assertEquals(segments.map((s) => s.value).join(""), text);`, `assertEquals(segments.filter((s) => s.inCode).length, 0);` and `assertEquals(segments.length, 1);` inside `assertHangSizedProse`
+- Removed from `worker/deno/tests/markdown_code_spans_test.ts`: `assertLinearGrowth( "splitMarkdownCode on a long repeated block-quote-marker prefix", build, (input) => splitMarkdownCode(input).length, { baseChars: 150_000, sizeFactor: 8 }, );`
+  Required by: "Make both tests deterministic under load, for example by measuring operation counts or growth with an injected clock."
+  Replaced by: ``assertHangSizedProse(`${">".repeat(HANG_SIZE_CHARS - 1)}x`);``, which runs `assertEquals(segments.map((s) => s.value).join(""), text);`, `assertEquals(segments.filter((s) => s.inCode).length, 0);` and `assertEquals(segments.length, 1);` inside `assertHangSizedProse`
+- Removed from `worker/deno/tests/prompt_leak_redaction_test.ts`: `const out = assertLinearGrowth( "redactPromptLeakage over one unbroken block", (chars) => sentence.repeat(Math.ceil(chars / sentence.length)), (input) => redactPromptLeakage(input), { baseChars: 200_000 }, );`
+  Required by: "Make both tests deterministic under load, for example by measuring operation counts or growth with an injected clock."
+  Replaced by: `{ baseChars: 200_000, sizeFactor: 4, repeats: 5 }` in the same `assertLinearGrowth(` call (same file; the growth rule is kept, with the fastest of 5 runs per size so a loaded host cannot fail it)
 - Red checks (each mutation made on `lib/markdown_code_spans.ts`, then
   restored): tail of `parseFenceLine` restored to `(.*)$` → CR test did not
   return (exit 124 at 60 s); `\1*` changed to `\1*\1*` → dash-run test exit 124;
