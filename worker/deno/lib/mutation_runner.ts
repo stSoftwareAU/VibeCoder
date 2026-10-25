@@ -566,6 +566,13 @@ function packageNameOf(toml: string): string | null {
   return null;
 }
 
+/** Allow-listed `[package] name` from a Cargo.toml, or null. */
+export function allowListedCargoPackageName(toml: string): string | null {
+  const name = packageNameOf(toml);
+  if (name === null || !PACKAGE_NAME.test(name)) return null;
+  return name;
+}
+
 /**
  * Distinct, allow-listed package names owning the changed `.rs` files: for
  * each file the nearest ancestor `Cargo.toml` with a `[package]` section.

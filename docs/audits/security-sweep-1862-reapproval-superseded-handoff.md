@@ -7,6 +7,12 @@ This is the written record for the one module that entered `worker/deno/lib/`
 after the chunk-12 slices recorded their coverage:
 
 - `worker/deno/lib/reapproval_superseded_handoff.ts` — added by #1862.
+  Renamed `worker/deno/lib/reapproval_superseded_close.ts` by #4298, when the
+  hand-off to a human became a close as completed by the merged PR. The close
+  keeps the same two-fact guard (a recorded post-merge re-approval **and** a
+  superseded outcome), writes through the run's own `gh` runner, and its
+  comment carries only the label, login, timestamps and PR number the
+  pre-check recorded — no agent output.
 
 ## Why a new slice rather than a line in an old one
 

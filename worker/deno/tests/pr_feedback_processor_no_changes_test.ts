@@ -3,10 +3,11 @@
  *
  * - With a failing CI check name attached to feedback, the worker classifies
  *   the failure (using the comment body as the log excerpt) and routes the
- *   response by category, adding `needs-human` for code-fix-required.
- * - With no CI check name, the worker bypasses the classifier and posts a
- *   neutral "could not identify a code change" message — never asserts
- *   transience.
+ *   response by category. Since Issue #4304 no category adds `needs-human`.
+ * - With no CI check name, the worker posts the agent's own reasoned reply
+ *   (`.pr_response_message`) when it wrote one, and otherwise a plain
+ *   statement that no change was made — never a request to clarify, never
+ *   a claim of transience.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -118,14 +119,29 @@ function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
 
 async function runNoChangesScenario(
   input: PrFeedbackInput,
+  responseMessage?: string,
+  claudeValue?: Record<string, unknown>,
+  logs?: string[],
 ): Promise<CapturedGh> {
   const captured: CapturedGh = { comments: [], labelsAdded: [] };
+  const workDir = await Deno.makeTempDir();
+  if (responseMessage !== undefined) {
+    await Deno.writeTextFile(
+      `${workDir}/.pr_response_message`,
+      responseMessage,
+    );
+  }
 
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: (() =>
       Promise.resolve({
         ok: true,
-        value: { output: "", exitCode: 0, timedOut: false },
+        value: {
+          output: "",
+          exitCode: 0,
+          timedOut: false,
+          ...claudeValue,
+        },
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
 
@@ -146,16 +162,24 @@ async function runNoChangesScenario(
     },
   });
 
+  const logger = makeSilentLogger();
+  if (logs) {
+    logger.info = (message: string) => logs.push(message);
+  }
   const processorDeps: PrFeedbackProcessorDeps = {
     promptsDir: PROMPTS_DIR,
-    logger: makeSilentLogger(),
+    logger,
     deps,
-    workDir: "/tmp/test-feedback",
-    workRoot: "/tmp/test-feedback",
+    workDir,
+    workRoot: workDir,
   };
 
-  const result = await processPrFeedback(input, processorDeps);
-  assertEquals(result.ok, true);
+  try {
+    const result = await processPrFeedback(input, processorDeps);
+    assertEquals(result.ok, true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
   return captured;
 }
 
@@ -163,55 +187,57 @@ async function runNoChangesScenario(
 // Tests
 // ---------------------------------------------------------------------------
 
-Deno.test("processPrFeedback no-changes - no CI check uses neutral message, no needs-human", async () => {
+Deno.test("processPrFeedback no-changes - no CI check never asks the reviewer to clarify (Issue #4304)", async () => {
+  // GRQ-AutoTrader#4261 got "Please clarify if a change is required."
   const captured = await runNoChangesScenario(makeInput());
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "could not identify a code change");
+  assertEquals(body.toLowerCase().includes("clarify"), false);
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
 
-Deno.test("processPrFeedback no-changes - code-fix-required check adds needs-human", async () => {
+Deno.test("processPrFeedback no-changes - posts the agent's reasoned reply, not stock text (Issue #4304)", async () => {
+  const rebuttal = "No change: `parseLimit` already rejects a negative " +
+    "limit at line 40, and `limits_test.ts` covers it.";
+  const captured = await runNoChangesScenario(makeInput(), rebuttal);
+  assertEquals(captured.comments.at(-1), rebuttal);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processPrFeedback no-changes - code-fix-required check retries, never needs-human (Issue #4304)", async () => {
   const captured = await runNoChangesScenario(makeInput({
     failingCheckName: "semgrep",
     commentBody:
       "CI failed: semgrep blocking code rules fired — detect-non-literal-regexp",
   }));
   const body = captured.comments.at(-1) ?? "";
-  assertStringIncludes(body, "needs-human");
   assertStringIncludes(body, "Classifier reason");
+  assertEquals(body.includes("needs-human"), false);
   assertEquals(body.toLowerCase().includes("transient"), false);
-  // Issue #2211: comment is now posted through escalateToHuman, so the
-  // body MUST carry the helper's `**Why:**` and `**Next step:**` markers.
-  assertStringIncludes(body, "**Why:**");
-  assertStringIncludes(body, "**Next step:**");
-  assertEquals(
-    captured.labelsAdded.includes("needs-human"),
-    true,
-    `expected needs-human label; got: ${captured.labelsAdded.join(",")}`,
-  );
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
 
-Deno.test("processPrFeedback no-changes - timing check suggests re-run, no needs-human", async () => {
+Deno.test("processPrFeedback no-changes - timing check: the worker re-runs it, no needs-human (Issue #4304)", async () => {
   const captured = await runNoChangesScenario(makeInput({
     failingCheckName: "tests",
     commentBody: "The test timed out after 30s in this PR.",
   }));
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "timing");
-  assertStringIncludes(body, "re-run");
+  assertStringIncludes(body, "re-runs the failing check");
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
 
-Deno.test("processPrFeedback no-changes - infrastructure check suggests re-run, no needs-human", async () => {
+Deno.test("processPrFeedback no-changes - infrastructure check: the worker re-runs it, no needs-human (Issue #4304)", async () => {
   const captured = await runNoChangesScenario(makeInput({
     failingCheckName: "deploy",
     commentBody: "Got connect ETIMEDOUT against 140.82.112.6:443",
   }));
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "infrastructure");
-  assertStringIncludes(body, "re-run");
+  assertStringIncludes(body, "re-runs the failing check");
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
@@ -225,4 +251,20 @@ Deno.test("processPrFeedback no-changes - unknown check does not assert transien
   assertStringIncludes(body, "could not determine");
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processPrFeedback - a finish deadline is released on schedule and adds no label (Issue #4245)", async () => {
+  const logs: string[] = [];
+  const captured = await runNoChangesScenario(makeInput(), undefined, {
+    finishDeadline: true,
+    timedOut: true,
+    timeoutReason: "hard-timeout",
+    exitCode: 124,
+  }, logs);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(
+    logs.some((line) => line.includes("released on schedule")),
+    true,
+    logs.join("\n"),
+  );
 });

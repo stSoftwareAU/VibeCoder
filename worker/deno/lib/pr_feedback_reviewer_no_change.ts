@@ -1,6 +1,6 @@
 /**
- * Retry-and-escalate handling for an unanswered request-changes review
- * (Issue #3246).
+ * Retry-and-restart handling for an unanswered request-changes review
+ * (Issues #3246, #4304).
  *
  * When a reviewer posts a CHANGES_REQUESTED review (claimed as commentType
  * `"pr_review"`), and the PR-feedback agent run ends with no commit and no
@@ -10,10 +10,12 @@
  * `.pr_response_message` rebuttal on the no-change path.
  *
  * A `pr_review` claim no longer dismisses the review at claim time
- * (Issue #3383) — the review is only dismissed once the run retires it. But a
- * run that ends with no fix and no rebuttal still escalates to
- * `needs-human` rather than looping forever, so the agent needs its second
- * attempt inside this run, before that escalation happens.
+ * (Issue #3383) — the review is only dismissed once the run retires it. A
+ * run that ends with no fix and no rebuttal is never handed to a human
+ * (Issue #4304): it is charged as a failed attempt so the next cycle retries
+ * the review, and a review that has already failed once closes the PR and
+ * redoes its issue through `abandonAndRestart`. The agent still gets a
+ * second attempt inside this run first.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -21,8 +23,7 @@
 import type { CommentType } from "./pr_comments.ts";
 
 /**
- * Agent runs at one claimed request-changes review before the worker
- * escalates to a human rather than retrying indefinitely.
+ * Agent runs at one claimed request-changes review within a single cycle.
  */
 export const MAX_REVIEWER_NO_CHANGE_ATTEMPTS = 2;
 
@@ -55,7 +56,8 @@ export const REVIEWER_NO_CHANGE_RETRY_NOTE =
   "apply it and push the commit, or write `.pr_response_message` rebutting " +
   "that finding by name with evidence — the command you ran and its " +
   "output, or the line you cite. If this run also ends with neither, the " +
-  "worker labels the PR `needs-human`.";
+  "review is retried in a later cycle, and a review still unanswered then " +
+  "closes this PR and redoes its issue from scratch.";
 
 /** What one probe of the agent's run found. */
 export type AgentAnswerProbe = "answered" | "nothing" | "unknown";
@@ -96,33 +98,21 @@ export async function probeAgentAnswer(
   return "nothing";
 }
 
-/** Escalation content for an unanswered request-changes review. */
-export interface ReviewerNoChangeEscalation {
-  heading: string;
-  reason: string;
-  nextStep: string;
-}
-
 /**
- * Build the `needs-human` escalation content for a request-changes review
- * that no run answered with either a fix or a rebuttal (Issue #3246).
+ * The record of a request-changes review no run answered with either a fix
+ * or a rebuttal — the failed-attempt message on the first cycle, and the
+ * abandon reason on the next (Issue #4304). A record, never a request for a
+ * human.
  */
-export function buildReviewerNoChangeEscalation(opts: {
+export function describeUnansweredReview(opts: {
   reviewId: string;
   attempts: number;
   lastExitCode: number;
   lastDurationSeconds: number;
-}): ReviewerNoChangeEscalation {
+}): string {
   const { reviewId, attempts, lastExitCode, lastDurationSeconds } = opts;
-  return {
-    heading: "PR review not answered",
-    reason:
-      `Review ${reviewId} requested changes, and ${attempts} feedback run(s) ` +
-      `on it ended with no fix pushed and no rebuttal written in ` +
-      `\`.pr_response_message\` (last run: exit code ${lastExitCode}, ` +
-      `${lastDurationSeconds}s). The worker claimed the review by ` +
-      `dismissing it, so no later cycle will pick it up again.`,
-    nextStep: "Apply the review's findings on this branch, or submit a new " +
-      "request-changes review so the worker tries again.",
-  };
+  return `Review ${reviewId} requested changes, and ${attempts} feedback ` +
+    `run(s) on it ended with no fix pushed and no rebuttal written in ` +
+    `\`.pr_response_message\` (last run: exit code ${lastExitCode}, ` +
+    `${lastDurationSeconds}s).`;
 }

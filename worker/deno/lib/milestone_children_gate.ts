@@ -31,8 +31,15 @@ import type { Result } from "../types.ts";
 import {
   type AlertDedupAuthorOptions,
   parseAuthoredCommentRows,
+  resolveAlertDedupAuthors,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import {
+  abandonAndRestart,
+  type AbandonRestartDeps,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneBranch } from "./milestone_branch_names.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
@@ -53,6 +60,7 @@ import {
   type PendingDependency,
   renderPendingDependenciesBlockComment,
 } from "./milestone_dependency_hold.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Types and constants
@@ -666,8 +674,10 @@ async function postMarkerDedupedBlockComment(
       log,
     );
   } catch (err) {
-    log(
-      `WARNING: could not read comments on ${repo}#${prNumber} to de-duplicate ` +
+    logAt(
+      log,
+      "warn",
+      `could not read comments on ${repo}#${prNumber} to de-duplicate ` +
         `the ${description} block comment: ` +
         `${err instanceof Error ? err.message : String(err)} (${issueRef})`,
     );
@@ -690,8 +700,10 @@ async function postMarkerDedupedBlockComment(
     ]);
     return "posted";
   } catch (err) {
-    log(
-      `WARNING: failed to post the ${description} block comment on ` +
+    logAt(
+      log,
+      "warn",
+      `failed to post the ${description} block comment on ` +
         `${repo}#${prNumber}: ` +
         `${err instanceof Error ? err.message : String(err)} (${issueRef})`,
     );
@@ -785,7 +797,9 @@ export function renderPendingDependenciesWarning(
  * as COMPLETED because a PR really had merged. Merging into a milestone
  * branch whose rollup has merged, or whose milestone is closed, is refused
  * here — loud, naming the rollup PR — so the caller holds the PR on its base
- * for a human (Issue #3433).
+ * and never retargets it (Issue #3433). An open milestone that still has
+ * open work is not that case: a fresh rollup is the route, and an open
+ * rollup supersedes the merged one (Issue #4175).
  *
  * Failure policy mirrors {@link decideSummaryPrMerge}: a base that is not
  * a milestone branch is allowed without a lookup; a milestone base that
@@ -834,6 +848,19 @@ export type MilestoneBaseMergeDecision =
     detail: string;
     /** Commits the milestone branch is behind the default branch. */
     behindBy: number;
+  }
+  | {
+    /**
+     * A rollup has merged and no open rollup has replaced it, but the
+     * milestone still has open work (Issue #4175). This gate does not merge
+     * the child. The arming path lands it through the ordinary merge checks
+     * and opens the rollup only once that merge has landed. Not a hold:
+     * nothing is disarmed or retargeted.
+     */
+    decision: "defer";
+    reason: "route-waiting";
+    milestoneBranch: string;
+    detail: string;
   }
   | {
     decision: "block";
@@ -1121,6 +1148,78 @@ async function routeOpenDecision(
     { decision: "allow", reason: "route-open" };
 }
 
+/**
+ * Whether a merged rollup still closes the route (Issue #4175).
+ *
+ * An open milestone with open work does not: the historical rollup is not
+ * the route any more, and the caller opens a fresh one when the branch is
+ * ahead. A closed milestone, or one with no open work, stays closed.
+ * An unreadable milestone or child list is not evidence either way.
+ */
+async function mergedRollupChildRoute(
+  options: MilestoneBaseMergeGateOptions,
+  milestoneBranch: string,
+): Promise<
+  | { kind: "open-work" }
+  | { kind: "closed" }
+  | { kind: "unreadable"; detail: string }
+> {
+  const { repo, ghCommandFn } = options;
+  let milestones: Array<
+    { number?: unknown; title?: unknown; state?: unknown }
+  >;
+  try {
+    const raw = await ghCommandFn([
+      "api",
+      "--paginate",
+      `repos/${repo}/milestones?state=all&per_page=100`,
+    ]);
+    milestones = [];
+    for (const item of parseJsonArrayPages(raw)) {
+      if (item && typeof item === "object") {
+        milestones.push(
+          item as { number?: unknown; title?: unknown; state?: unknown },
+        );
+      }
+    }
+  } catch (err) {
+    return {
+      kind: "unreadable",
+      detail: `could not read milestones: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+  const milestone = milestones.find((item) =>
+    typeof item.title === "string" &&
+    createMilestoneBranchName(item.title) === milestoneBranch
+  );
+  if (!milestone || milestone.state !== "open") return { kind: "closed" };
+  if (typeof milestone.number !== "number") {
+    return {
+      kind: "unreadable",
+      detail: `milestone "${milestone.title}" has no number`,
+    };
+  }
+  const children = await fetchOpenMilestoneChildren({
+    repo,
+    milestoneNumber: milestone.number,
+    milestoneBranch,
+    ghCommandFn,
+  });
+  if (!children.ok) {
+    return { kind: "unreadable", detail: children.error.message };
+  }
+  return children.value.length > 0 ? { kind: "open-work" } : { kind: "closed" };
+}
+
+/** An open pull request from the milestone branch to a non-milestone base. */
+function isOpenRouteRollup(pr: RawRollupPr): boolean {
+  return typeof pr.state === "string" && pr.state.toUpperCase() === "OPEN" &&
+    typeof pr.number === "number" &&
+    (typeof pr.baseRefName !== "string" || !isMilestoneBranch(pr.baseRefName));
+}
+
 /** Refuse a merge into a milestone branch whose route to the default branch has closed. */
 export async function decideMilestoneBaseMerge(
   options: MilestoneBaseMergeGateOptions,
@@ -1173,17 +1272,42 @@ export async function decideMilestoneBaseMerge(
   const merged = rollups.find((pr) =>
     typeof pr.state === "string" && pr.state.toUpperCase() === "MERGED"
   );
-  if (merged && typeof merged.number === "number") {
+  // An open rollup is the route, even after an older one merged (Issue
+  // #4175). A merged rollup with no open successor still closes the route.
+  // Open work does not make it safe to merge: the child stays unarmed until
+  // a rollup is open, so the issue cannot close on a branch with no route.
+  if (
+    !rollups.some(isOpenRouteRollup) && merged &&
+    typeof merged.number === "number"
+  ) {
+    const childRoute = await mergedRollupChildRoute(options, base);
+    if (childRoute.kind === "unreadable") {
+      return {
+        decision: "defer",
+        reason: "lookup-failed",
+        milestoneBranch: base,
+        detail: childRoute.detail,
+      };
+    }
+    if (childRoute.kind !== "open-work") {
+      return {
+        decision: "block",
+        reason: "rollup-merged",
+        milestoneBranch: base,
+        rollupPrNumber: merged.number,
+        detail: `rollup PR #${merged.number} (${base} → ${
+          typeof merged.baseRefName === "string" ? merged.baseRefName : "?"
+        }) merged${
+          typeof merged.mergedAt === "string" ? ` at ${merged.mergedAt}` : ""
+        }`,
+      };
+    }
     return {
-      decision: "block",
-      reason: "rollup-merged",
+      decision: "defer",
+      reason: "route-waiting",
       milestoneBranch: base,
-      rollupPrNumber: merged.number,
-      detail: `rollup PR #${merged.number} (${base} → ${
-        typeof merged.baseRefName === "string" ? merged.baseRefName : "?"
-      }) merged${
-        typeof merged.mergedAt === "string" ? ` at ${merged.mergedAt}` : ""
-      }`,
+      detail:
+        `rollup PR #${merged.number} has merged and ${base} has no open rollup, so the child stays unarmed until a rollup is open`,
     };
   }
 
@@ -1240,37 +1364,36 @@ export async function decideMilestoneBaseMerge(
 }
 
 // ---------------------------------------------------------------------------
-// Hold an orphan-bound PR where it is (Issue #4396 gate, Issue #3433 hold)
+// Close an orphan-bound PR and redo its work (Issue #4396 gate, Issue #4304)
 // ---------------------------------------------------------------------------
 
-/**
- * Marker so the hold comment is posted once per PR. A new marker on purpose:
- * the retired retarget comment claimed the PR had been moved to the default
- * branch, which the fleet no longer does (Issue #3433).
- */
-export const ROUTE_CLOSED_HOLD_MARKER = "<!-- milestone-route-closed-hold -->";
-
-/** Options for {@link holdOrphanBoundPr}. */
-export interface HoldOrphanBoundPrOptions {
+/** Options for {@link abandonOrphanBoundPr}. */
+export interface AbandonOrphanBoundPrOptions {
   repo: string;
   prNumber: number;
+  /** The PR's head branch; read from GitHub when the caller has none. */
+  headRefName?: string;
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>;
   ghCommandFn: GhCommandFn;
   log: (message: string) => void;
-  /** Fleet identity inputs for the marker author check (Issue #1249). */
+  /** Fleet identity the abandon reads restart claims against (Issue #1247). */
   authorOptions?: AlertDedupAuthorOptions;
+  /** Abandon override (tests); defaults to {@link abandonAndRestart}. */
+  abandon?: (
+    request: AbandonRestartRequest,
+    deps: AbandonRestartDeps,
+  ) => Promise<AbandonRestartOutcome>;
 }
 
 /**
- * The comment left on the PR when it is held. It is posted in the target
- * repo, so it carries no VibeCoder issue reference — GitHub would autolink a
- * bare `#N` to an unrelated issue there (Issue #3501). The design history
- * (Issue #4396, Issue #3433) stays in these comments and the local log line.
+ * Why the PR cannot land where it is, as a clause completing "This PR …". It
+ * is posted in the target repo, so it carries no VibeCoder issue reference —
+ * GitHub would autolink a bare `#N` to an unrelated issue there (Issue #3501).
  *
  * A closed milestone is named by title and linked by URL, never as `#N`:
  * GitHub would autolink that to an unrelated issue or PR (Issue #3673).
  */
-export function renderRouteClosedHoldComment(
+export function describeClosedRoute(
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>,
   repo: string,
 ): string {
@@ -1286,61 +1409,80 @@ export function renderRouteClosedHoldComment(
     : gate.reason === "milestone-closed"
     ? `its milestone${milestoneName ? ` ${milestoneName}` : ""} is closed`
     : `its state could not be verified (${gate.detail})`;
-  return [
-    ROUTE_CLOSED_HOLD_MARKER,
-    `⚠️ **Not merged into \`${gate.milestoneBranch}\`** — ${why}, so that branch has no route to the default branch any more. ` +
-    "Merging there would orphan this work while the issue closed as completed.",
-    "",
-    "The fleet does not move this PR to the default branch: a PR off a milestone branch carries the milestone's work onto the default branch without the milestone's final review. " +
-    "Auto-merge has been disarmed. A human decides — retarget it by hand or close it.",
-  ].join("\n");
+  return `targets \`${gate.milestoneBranch}\`, which has no route to the ` +
+    `default branch any more — ${why} — so merging there would orphan the work`;
 }
 
 /**
- * Refuse the milestone-branch merge loudly and leave the PR on its base:
- * log, disarm auto-merge (best effort), and comment once
- * (marker-deduplicated). Never retargets and never throws. Only a gate
- * carrying positive evidence — a merged rollup, or a closed milestone —
- * reaches here. An unreadable route defers instead (Issue #477).
+ * A PR whose milestone branch has no route to the default branch is never
+ * merged there and never moved to the default branch (a PR off a milestone
+ * branch would carry the milestone's work there without its final review).
+ * Nor is it left on hold for a human (Issue #4304): auto-merge is disarmed,
+ * then the PR is closed and its originating issue redone through
+ * `abandonAndRestart`, so the work comes back against the current base. Only
+ * a gate carrying positive evidence — a merged rollup, or a closed milestone —
+ * reaches here; an unreadable route defers instead (Issue #477). Never throws:
+ * an abandon that does not happen is logged and tried again next scan.
  */
-export async function holdOrphanBoundPr(
-  options: HoldOrphanBoundPrOptions,
+export async function abandonOrphanBoundPr(
+  options: AbandonOrphanBoundPrOptions,
 ): Promise<void> {
   const { repo, prNumber, gate, ghCommandFn, log } = options;
-  log(
-    `WARNING: refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
-      "(Issue #3433) — holding it on its base, not retargeting; auto-merge disarmed",
+  logAt(
+    log,
+    "warn",
+    `refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
+      "— auto-merge disarmed; closing it and redoing its issue (Issue #4304)",
   );
   await disarmAutoMerge(repo, prNumber, ghCommandFn, log);
-  let alreadyExplained = false;
   try {
-    alreadyExplained = await hasFleetAuthoredMarker(
-      repo,
-      prNumber,
-      ROUTE_CLOSED_HOLD_MARKER,
-      ghCommandFn,
+    const branchName = options.headRefName ||
+      (await ghCommandFn([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefName",
+        "--jq",
+        ".headRefName",
+      ])).trim();
+    if (!branchName) throw new Error("its head branch could not be read");
+    const trustedAuthors = await resolveAlertDedupAuthors(
       options.authorOptions ?? {},
       log,
     );
-  } catch {
-    alreadyExplained = false;
-  }
-  if (alreadyExplained) return;
-  try {
-    await ghCommandFn([
-      "pr",
-      "comment",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--body",
-      renderRouteClosedHoldComment(gate, repo),
-    ]);
+    const outcome = await (options.abandon ?? abandonAndRestart)(
+      {
+        repo,
+        prNumber,
+        branchName,
+        baseBranch: gate.milestoneBranch,
+        reason: {
+          kind: "stalled",
+          detail: describeClosedRoute(gate, repo),
+          tried: "route-closed-hold",
+        },
+      },
+      { gh: ghCommandFn, trustedAuthors },
+    );
+    if (outcome.outcome === "declined" || outcome.outcome === "failed") {
+      logAt(
+        log,
+        "warn",
+        `could not abandon ${repo}#${prNumber} (${
+          outcome.outcome === "declined" ? outcome.reason.kind : outcome.step
+        }) — retried next scan (Issue #4304)`,
+      );
+    }
   } catch (err) {
-    log(
-      `WARNING: could not post the hold comment on ${repo}#${prNumber}: ${
+    logAt(
+      log,
+      "warn",
+      `could not abandon ${repo}#${prNumber}: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      } — retried next scan (Issue #4304)`,
     );
   }
 }

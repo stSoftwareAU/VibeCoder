@@ -53,6 +53,7 @@ import {
   type SelfDiagnosticFiling,
 } from "./self_diagnostic_attestation.ts";
 import { redactedTail } from "./redacted_text.ts";
+import { getRepoVisibility } from "./repo_visibility.ts";
 
 /** Marker prefix; the body carries `<!-- VIBE_RUN_FAILURE:<class> -->`. */
 export const RUN_FAILURE_MARKER_PREFIX = "VIBE_RUN_FAILURE";
@@ -69,7 +70,11 @@ export const RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS = 24 * 60 * 60;
 /** State file beside the other worker state files. */
 export const RUN_FAILURE_STATE_FILE = ".run_failure_filing_state.json";
 /** Classes filed as `bug`; the rest as `enhancement`. */
-const CRASH_CLASSES: ReadonlySet<string> = new Set(["worker-crash", "oom"]);
+const CRASH_CLASSES: ReadonlySet<string> = new Set([
+  "worker-crash",
+  "oom",
+  "tool-runtime",
+]);
 
 export function formatRunFailureMarker(failureClass: string): string {
   return `<!-- ${RUN_FAILURE_MARKER_PREFIX}:${failureClass} -->`;
@@ -123,6 +128,12 @@ export interface RunFailureReport {
   machineId: string;
   /** Permalink to the release comment, when known. */
   releaseCommentUrl?: string;
+  /**
+   * Codex session items (Issue #4324). When they show the tool runtime
+   * failing, the run is filed as infrastructure even if the outcome was
+   * already classed as an agent outcome.
+   */
+  transcript?: readonly unknown[];
 }
 
 /** Filing decision, logged at every no-PR release. */
@@ -226,11 +237,43 @@ export function formatRunFailureTitle(failureClass: string): string {
   return `fix(worker): ${failureClass} — runs releasing with no PR`;
 }
 
+/**
+ * Whether the source repository may be named in the public VibeCoder issue
+ * (Issue #4318).
+ *
+ * `repo_visibility` maps anything other than `"public"` to private. A failed
+ * lookup is unknown, and unknown is private: the Source line, the release
+ * comment and the agent excerpt stay off the public issue.
+ */
+async function sourceIsPublic(
+  repo: string,
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  const result = await getRepoVisibility(repo, {
+    runCommand: async (cmd) => {
+      try {
+        const stdout = await ghFn(cmd.slice(1));
+        return { success: true, stdout, stderr: "" };
+      } catch (err) {
+        return {
+          success: false,
+          stdout: "",
+          stderr: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
+  if (!result.ok) return false;
+  return result.value === "public";
+}
+
 /** Issue body: marker first, then the diagnosis a human needs. */
-export function formatRunFailureBody(
+export async function formatRunFailureBody(
   report: RunFailureReport,
   classification: RunFailureClassification,
-): string {
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<string> {
+  const disclose = await sourceIsPublic(report.sourceRepo, ghFn);
   const o = report.outcome;
   const lines = [
     formatRunFailureMarker(classification.failureClass),
@@ -238,29 +281,253 @@ export function formatRunFailureBody(
     `Auto-filed by the Vibe Coder (Issue #4329): a run released its claim with **no PR** for a reason classified as fixable by code.`,
     "",
     `**Failure class:** \`${classification.failureClass}\` (${classification.fixability})`,
-    `**Rationale:** ${classification.rationale}`,
+    ...(disclose ? [`**Rationale:** ${classification.rationale}`] : []),
     `**Category:** \`${getFailureCategoryDisplay(o.category)}\``,
     `**Phase that died:** \`${o.phase}\` after ${o.elapsedSeconds}s`,
     `**Host:** \`${report.machineId}\``,
-    `**Source:** ${report.sourceRepo}#${report.sourceIssueNumber}`,
-    ...(report.releaseCommentUrl
+    ...(disclose
+      ? [`**Source:** ${report.sourceRepo}#${report.sourceIssueNumber}`]
+      : []),
+    ...(disclose && report.releaseCommentUrl
       ? [`**Release comment:** ${report.releaseCommentUrl}`]
       : []),
-    "",
-    "## Failure message (bounded excerpt)",
-    "",
-    "```",
-    formatRunFailureExcerpt(o.message),
-    "```",
+    ...(disclose
+      ? [
+        "",
+        "## Failure message (bounded excerpt)",
+        "",
+        "```",
+        formatRunFailureExcerpt(o.message),
+        "```",
+      ]
+      : []),
     "",
     "Later occurrences of this class add one follow-up comment per window on this issue rather than filing again.",
   ];
   return lines.join("\n");
 }
 
-function formatOccurrenceLine(report: RunFailureReport, epoch: number): string {
+async function formatOccurrenceLine(
+  report: RunFailureReport,
+  epoch: number,
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<string> {
+  const disclose = await sourceIsPublic(report.sourceRepo, ghFn);
   const when = new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-  return `- ${when} \`${report.machineId}\` — ${report.sourceRepo}#${report.sourceIssueNumber}, phase \`${report.outcome.phase}\` after ${report.outcome.elapsedSeconds}s`;
+  const where = disclose
+    ? `${report.sourceRepo}#${report.sourceIssueNumber}, `
+    : "";
+  return `- ${when} \`${report.machineId}\` — ${where}phase \`${report.outcome.phase}\` after ${report.outcome.elapsedSeconds}s`;
+}
+
+/** Inputs to {@link postRunFailureFollowUp}. */
+export interface RunFailureFollowUpOptions {
+  ghFn: (args: string[]) => Promise<string>;
+  targetRepo: string;
+  /** The open issue carrying the class marker. */
+  issueNumber: number;
+  failureClass: string;
+  /** Injected clock (epoch seconds): stamps the follow-up and the window. */
+  nowSeconds: number;
+  /** One follow-up per window; later occurrences update it in place. */
+  windowSeconds: number;
+  /** The occurrence line appended to the follow-up. */
+  occurrenceLine: string;
+  /** The parenthetical that explains a recurrence, e.g. the rationale. */
+  recurrenceText: string;
+  log?: (message: string) => void;
+  /** Fleet logins whose follow-up markers are trusted (see FileRunFailureIssueOptions). */
+  fleetAuthors?: readonly string[];
+}
+
+/**
+ * Step 3 of {@link fileRunFailureIssue} (Issue #4254 extracted it so the
+ * hard-kill reporter shares the one-follow-up-per-window rule): at most one
+ * follow-up per window; later occurrences update it in place.
+ *
+ * Throws when GitHub refuses a call; the caller keeps its own catch and
+ * decides what the failure means for its decision.
+ */
+export async function postRunFailureFollowUp(
+  opts: RunFailureFollowUpOptions,
+): Promise<{ updated: boolean }> {
+  const log = opts.log ?? (() => {});
+  const t = opts.nowSeconds;
+  // Issue #1216: the follow-up marker carries an attacker-choosable
+  // epoch and lives in a comment body anyone may write, so the author
+  // is asked for and checked exactly as step 1 checks the issue's. An
+  // unverified match let one planted comment absorb every later
+  // occurrence of the class — or, when the edit was refused, suppress
+  // the class outright.
+  const rawComments = await opts.ghFn([
+    "api",
+    `repos/${opts.targetRepo}/issues/${opts.issueNumber}/comments`,
+    "--jq",
+    "[.[] | {id: .id, body: .body, author: .user.login}]",
+  ]);
+  const comments = JSON.parse(rawComments || "[]") as {
+    id: number;
+    body?: string;
+    author?: string | null;
+  }[];
+  const fleetComments = await selectFleetAuthoredComments(
+    comments.filter((c) =>
+      parseRunFailureFollowUpMarker(c.body ?? "") !== null
+    ),
+    `run-failure follow-up ${opts.failureClass}`,
+    { fleetAuthors: opts.fleetAuthors },
+    log,
+    "none counts as an existing follow-up and a fresh comment is " +
+      "posted. A duplicate follow-up is noise; a suppressed one hides " +
+      "a recurring worker fault",
+  );
+  const inWindow = fleetComments
+    .map((c) => ({ c, m: parseRunFailureFollowUpMarker(c.body ?? "") }))
+    .filter((x) =>
+      x.m !== null && x.m.failureClass === opts.failureClass &&
+      t - x.m.epoch < opts.windowSeconds
+    )
+    .sort((a, b) => b.m!.epoch - a.m!.epoch)[0];
+  if (inWindow) {
+    const body = (inWindow.c.body ?? "").trimEnd() + "\n" +
+      opts.occurrenceLine;
+    await opts.ghFn([
+      "api",
+      "--method",
+      "PATCH",
+      `repos/${opts.targetRepo}/issues/comments/${inWindow.c.id}`,
+      "-f",
+      `body=${body}`,
+    ]);
+    return { updated: true };
+  }
+  const body = [
+    formatRunFailureFollowUpMarker(opts.failureClass, t),
+    "",
+    `Recurred (class \`${opts.failureClass}\`, ${opts.recurrenceText})`,
+    "",
+    opts.occurrenceLine,
+  ].join("\n");
+  await opts.ghFn([
+    "issue",
+    "comment",
+    String(opts.issueNumber),
+    "--repo",
+    opts.targetRepo,
+    "--body",
+    body,
+  ]);
+  return { updated: false };
+}
+
+/** Inputs to {@link findOpenRunFailureIssue}. */
+export interface FindOpenRunFailureIssueOptions {
+  ghFn: (args: string[]) => Promise<string>;
+  targetRepo: string;
+  failureClass: string;
+  /** Fleet logins whose markers are trusted (see FileRunFailureIssueOptions). */
+  fleetAuthors?: readonly string[];
+  log?: (message: string) => void;
+}
+
+/**
+ * Step 1 of {@link fileRunFailureIssue} (Issue #4254 extracted it so the
+ * hard-kill reporter shares the dedup rule): the lowest-numbered open issue
+ * that carries the class marker AND was authored by a fleet account, or null.
+ *
+ * Throws when GitHub refuses the search; the caller keeps its own catch and
+ * decides what the failure means for its decision.
+ */
+export async function findOpenRunFailureIssue(
+  opts: FindOpenRunFailureIssueOptions,
+): Promise<{ number: number } | null> {
+  const log = opts.log ?? (() => {});
+  const failureClass = opts.failureClass;
+  const raw = await opts.ghFn([
+    "issue",
+    "list",
+    "--repo",
+    opts.targetRepo,
+    "--state",
+    "open",
+    "--search",
+    `"${RUN_FAILURE_MARKER_PREFIX}:${failureClass}" in:body`,
+    "--json",
+    ALERT_DEDUP_JSON_FIELDS,
+    "--limit",
+    "20",
+  ]);
+  const list = JSON.parse(raw || "[]") as AlertDedupRow[];
+  const verified = await selectFleetAuthoredMatches(
+    list.filter((i) => isRunFailureIssue(i.body ?? "", failureClass)),
+    `run-failure ${failureClass}`,
+    { fleetAuthors: opts.fleetAuthors },
+    log,
+  );
+  const match = verified.sort((a, b) => a.number - b.number)[0];
+  return match ? { number: match.number } : null;
+}
+
+/** Inputs to {@link createRunFailureIssue}. */
+export interface CreateRunFailureIssueOptions {
+  ghFn: (args: string[]) => Promise<string>;
+  targetRepo: string;
+  title: string;
+  body: string;
+  /** The guarded `--label` arguments, built by the caller. */
+  labelArgs: string[];
+  failureClass: string;
+  /** The `filedBy` the attestation records: the caller's module path. */
+  filedBy: string;
+  /**
+   * Runs once the new issue number is known and before the attestation, so a
+   * caller can persist its own state first (the order the rate limit needs).
+   */
+  onCreated?: (issueNumber: number) => Promise<void>;
+  log?: (message: string) => void;
+  /** Injected so a test never appends to the host's audit chain (Issue #1277). */
+  recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
+}
+
+/**
+ * Step 2 of {@link fileRunFailureIssue} when no open issue matches: create the
+ * issue, then attest the filing out of band (Issue #1277) so tier 2b can tell
+ * this diagnostic from one an injected agent typed the marker into.
+ *
+ * Throws when GitHub refuses the create; the caller keeps its own catch.
+ */
+export async function createRunFailureIssue(
+  opts: CreateRunFailureIssueOptions,
+): Promise<{ issueNumber: number }> {
+  const raw = await opts.ghFn([
+    "issue",
+    "create",
+    "--repo",
+    opts.targetRepo,
+    "--title",
+    opts.title,
+    "--body",
+    opts.body,
+    ...opts.labelArgs,
+  ]);
+  const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
+  const issueNumber = m ? parseInt(m[1]!, 10) : 0;
+  await opts.onCreated?.(issueNumber);
+  // `opts.log` defaults to a silent sink in this module, so the attestation
+  // logs through `recordSelfDiagnosticFiling`'s own stderr default when the
+  // caller supplied none.
+  const recordFiling = opts.recordFiling ??
+    ((filing: SelfDiagnosticFiling) =>
+      recordSelfDiagnosticFiling(filing, { log: opts.log }));
+  await recordFiling({
+    repo: opts.targetRepo,
+    issueNumber,
+    familyId: RUN_FAILURE_FAMILY_ID,
+    title: opts.title,
+    body: opts.body,
+    filedBy: opts.filedBy,
+  });
+  return { issueNumber };
 }
 
 /**
@@ -271,12 +538,19 @@ function formatOccurrenceLine(report: RunFailureReport, epoch: number): string {
 export async function fileRunFailureIssue(
   opts: FileRunFailureIssueOptions,
 ): Promise<RunFailureFilingDecision> {
-  const classification = opts.report.outcome.classification ??
-    classifyRunFailure(
-      opts.report.outcome.category,
-      opts.report.outcome.message,
-      false,
-    );
+  const outcome = opts.report.outcome;
+  // Re-read a supplied transcript even when the outcome already carries an
+  // agent-outcome classification (Issue #4324). Every other precomputed
+  // classification stands, so a declared OOM is not re-diagnosed.
+  const recomputed = classifyRunFailure(
+    outcome.category,
+    outcome.message,
+    outcome.classification !== undefined,
+    opts.report.transcript,
+  );
+  const classification = recomputed.failureClass === "tool-runtime"
+    ? recomputed
+    : outcome.classification ?? recomputed;
   const failureClass = classification.failureClass;
   const log = opts.log ?? (() => {});
   const decide = (d: RunFailureFilingDecision): RunFailureFilingDecision => {
@@ -326,29 +600,13 @@ export async function fileRunFailureIssue(
       // issue stand in for this alert and silence it.
       let existing: { number: number } | null = null;
       try {
-        const raw = await opts.ghFn([
-          "issue",
-          "list",
-          "--repo",
+        existing = await findOpenRunFailureIssue({
+          ghFn: opts.ghFn,
           targetRepo,
-          "--state",
-          "open",
-          "--search",
-          `"${RUN_FAILURE_MARKER_PREFIX}:${failureClass}" in:body`,
-          "--json",
-          ALERT_DEDUP_JSON_FIELDS,
-          "--limit",
-          "20",
-        ]);
-        const list = JSON.parse(raw || "[]") as AlertDedupRow[];
-        const verified = await selectFleetAuthoredMatches(
-          list.filter((i) => isRunFailureIssue(i.body ?? "", failureClass)),
-          `run-failure ${failureClass}`,
-          opts,
+          failureClass,
+          fleetAuthors: opts.fleetAuthors,
           log,
-        );
-        const match = verified.sort((a, b) => a.number - b.number)[0];
-        existing = match ? { number: match.number } : null;
+        });
       } catch (err) {
         recordFaultEvent(
           "catch_block_warning",
@@ -369,39 +627,28 @@ export async function fileRunFailureIssue(
           [CRASH_CLASSES.has(failureClass) ? "bug" : "enhancement"],
           "worker/deno/lib/run_failure_issue.ts",
         );
-        const body = formatRunFailureBody(opts.report, classification);
+        const body = await formatRunFailureBody(
+          opts.report,
+          classification,
+          opts.ghFn,
+        );
         const title = formatRunFailureTitle(failureClass);
         try {
-          const raw = await opts.ghFn([
-            "issue",
-            "create",
-            "--repo",
+          const { issueNumber } = await createRunFailureIssue({
+            ghFn: opts.ghFn,
             targetRepo,
-            "--title",
-            title,
-            "--body",
-            body,
-            ...labelArgs,
-          ]);
-          const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
-          const issueNumber = m ? parseInt(m[1]!, 10) : 0;
-          state.classes[failureClass] = { lastWriteEpoch: t, issueNumber };
-          await writeState(statePath, state);
-          // Issue #1277: attest the filing out of band, so tier 2b can tell
-          // this diagnostic from one an injected agent typed the marker into.
-          // `opts.log` defaults to a silent sink in this module, so the
-          // attestation logs through `recordSelfDiagnosticFiling`'s own
-          // stderr default when the caller supplied none.
-          const recordFiling = opts.recordFiling ??
-            ((filing: SelfDiagnosticFiling) =>
-              recordSelfDiagnosticFiling(filing, { log: opts.log }));
-          await recordFiling({
-            repo: targetRepo,
-            issueNumber,
-            familyId: RUN_FAILURE_FAMILY_ID,
             title,
             body,
+            labelArgs,
+            failureClass,
             filedBy: "worker/deno/lib/run_failure_issue.ts",
+            log: opts.log,
+            recordFiling: opts.recordFiling,
+            // The rate-limit state is written before the attestation.
+            onCreated: async (issueNumber) => {
+              state.classes[failureClass] = { lastWriteEpoch: t, issueNumber };
+              await writeState(statePath, state);
+            },
           });
           return decide({ action: "filed", issueNumber, failureClass });
         } catch (err) {
@@ -419,80 +666,18 @@ export async function fileRunFailureIssue(
 
       // 3. Exists → at most one follow-up per window; update it in place.
       try {
-        // Issue #1216: the follow-up marker carries an attacker-choosable
-        // epoch and lives in a comment body anyone may write, so the author
-        // is asked for and checked exactly as step 1 checks the issue's. An
-        // unverified match let one planted comment absorb every later
-        // occurrence of the class — or, when the edit was refused, suppress
-        // the class outright.
-        const rawComments = await opts.ghFn([
-          "api",
-          `repos/${targetRepo}/issues/${existing.number}/comments`,
-          "--jq",
-          "[.[] | {id: .id, body: .body, author: .user.login}]",
-        ]);
-        const comments = JSON.parse(rawComments || "[]") as {
-          id: number;
-          body?: string;
-          author?: string | null;
-        }[];
-        const fleetComments = await selectFleetAuthoredComments(
-          comments.filter((c) =>
-            parseRunFailureFollowUpMarker(c.body ?? "") !== null
-          ),
-          `run-failure follow-up ${failureClass}`,
-          opts,
-          log,
-          "none counts as an existing follow-up and a fresh comment is " +
-            "posted. A duplicate follow-up is noise; a suppressed one hides " +
-            "a recurring worker fault",
-        );
-        const inWindow = fleetComments
-          .map((c) => ({ c, m: parseRunFailureFollowUpMarker(c.body ?? "") }))
-          .filter((x) =>
-            x.m !== null && x.m.failureClass === failureClass &&
-            t - x.m.epoch < window
-          )
-          .sort((a, b) => b.m!.epoch - a.m!.epoch)[0];
-        if (inWindow) {
-          const body = (inWindow.c.body ?? "").trimEnd() + "\n" +
-            formatOccurrenceLine(opts.report, t);
-          await opts.ghFn([
-            "api",
-            "--method",
-            "PATCH",
-            `repos/${targetRepo}/issues/comments/${inWindow.c.id}`,
-            "-f",
-            `body=${body}`,
-          ]);
-          state.classes[failureClass] = {
-            lastWriteEpoch: t,
-            issueNumber: existing.number,
-          };
-          await writeState(statePath, state);
-          return decide({
-            action: "commented",
-            issueNumber: existing.number,
-            failureClass,
-            updated: true,
-          });
-        }
-        const body = [
-          formatRunFailureFollowUpMarker(failureClass, t),
-          "",
-          `Recurred (class \`${failureClass}\`, ${classification.rationale})`,
-          "",
-          formatOccurrenceLine(opts.report, t),
-        ].join("\n");
-        await opts.ghFn([
-          "issue",
-          "comment",
-          String(existing.number),
-          "--repo",
+        const { updated } = await postRunFailureFollowUp({
+          ghFn: opts.ghFn,
           targetRepo,
-          "--body",
-          body,
-        ]);
+          issueNumber: existing.number,
+          failureClass,
+          nowSeconds: t,
+          windowSeconds: window,
+          occurrenceLine: await formatOccurrenceLine(opts.report, t, opts.ghFn),
+          recurrenceText: classification.rationale,
+          log,
+          fleetAuthors: opts.fleetAuthors,
+        });
         state.classes[failureClass] = {
           lastWriteEpoch: t,
           issueNumber: existing.number,
@@ -502,7 +687,7 @@ export async function fileRunFailureIssue(
           action: "commented",
           issueNumber: existing.number,
           failureClass,
-          updated: false,
+          updated,
         });
       } catch (err) {
         recordFaultEvent(

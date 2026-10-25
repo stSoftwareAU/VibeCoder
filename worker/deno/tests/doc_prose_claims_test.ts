@@ -1,5 +1,6 @@
-// Tests for the manual/prompt prose scope and question shared by the
-// first-run claim check and the review-fix drift check (Issue #3347).
+// Tests for the manual and prompt prose helpers the review-fix drift check
+// uses: path selection, the file cap, and the prose-against-code question
+// (Issue #3347). The first-run claim check was removed (Issue #4234).
 // Uses Australian English throughout.
 
 import {
@@ -12,6 +13,7 @@ import {
 import { collectDocProseScope } from "../lib/doc_prose_scope.ts";
 import {
   docProseClaimInstruction,
+  docProseParityRule,
   isManualProsePath,
   selectManualProseFiles,
 } from "../lib/doc_prose_claims.ts";
@@ -94,6 +96,42 @@ Deno.test("selectManualProseFiles splits at the cap", () => {
 Deno.test("selectManualProseFiles rejects an invalid cap", () => {
   assertThrows(() => selectManualProseFiles(["a.md"], -1));
   assertThrows(() => selectManualProseFiles(["a.md"], 1.5));
+});
+
+Deno.test("docProseParityRule names the base ref, or drops git show when there is none (Issue #4223)", () => {
+  const withRef = docProseParityRule("origin/main");
+  assertStringIncludes(withRef, "git show origin/main:");
+  assertStringIncludes(withRef, "as before");
+  assertStringIncludes(withRef, "file:line");
+  assertFalse(withRef.includes("\n"));
+  assertFalse(withRef.includes("  "));
+
+  const missing = docProseParityRule(undefined);
+  assertFalse(missing.includes("git show"));
+  assertFalse(missing.includes("undefined"));
+  assertStringIncludes(missing, "as before");
+  assertStringIncludes(missing, "other path");
+  assertStringIncludes(missing, "not reported");
+  assertStringIncludes(missing, "file:line");
+});
+
+Deno.test("docProseClaimInstruction asks about a parity sentence on both sides (Issue #4223)", () => {
+  const withRef = docProseClaimInstruction("this branch's diff", "origin/main");
+  assertStringIncludes(withRef, "git show origin/main:");
+  assertStringIncludes(withRef, "as before");
+  assertStringIncludes(withRef, "file:line");
+  assertFalse(withRef.includes("\n"));
+  assertFalse(withRef.includes("  "));
+
+  const missing = docProseClaimInstruction("this push's change", undefined);
+  assertFalse(missing.includes("git show"));
+  assertFalse(missing.includes("git show :"));
+  assertFalse(missing.includes("git show undefined:"));
+  assertStringIncludes(missing, "as before");
+  assertStringIncludes(missing, "other path");
+  assertStringIncludes(missing, "file:line");
+  assertFalse(missing.includes("\n"));
+  assertFalse(missing.includes("  "));
 });
 
 Deno.test("docProseClaimInstruction substitutes the change phrase", () => {

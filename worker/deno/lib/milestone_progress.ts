@@ -17,6 +17,7 @@ import {
   fetchClosedIssuesByMilestone,
   fetchOpenIssuesByMilestone,
 } from "./issue_query.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -169,8 +170,10 @@ export async function postMilestoneProgressComment(
   );
 
   if (!progressResult.ok) {
-    log(
-      `WARNING: Could not query milestone progress for '${milestoneTitle}' in ${repo}: ${progressResult.error.message}`,
+    logAt(
+      log,
+      "warn",
+      `Could not query milestone progress for '${milestoneTitle}' in ${repo}: ${progressResult.error.message}`,
     );
     return { ok: true, value: false };
   }
@@ -198,8 +201,10 @@ export async function postMilestoneProgressComment(
     return { ok: true, value: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: Failed to post milestone progress comment on #${issueNumber} in ${repo}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `Failed to post milestone progress comment on #${issueNumber} in ${repo}: ${message}`,
     );
     return { ok: true, value: false };
   }

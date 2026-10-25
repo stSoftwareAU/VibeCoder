@@ -339,19 +339,23 @@ Deno.test("postNoIssuesFoundComments - logs and continues on individual failures
     }
     return Promise.resolve("");
   };
-  const logs: string[] = [];
+  const logs: Array<{ message: string; level: string }> = [];
   await postNoIssuesFoundComments({
     repo: "owner/repo",
     issueNumbers: [2694, 2703],
     milestoneTitle: "idle-task: security-scan",
     changedFiles: [],
     ghCommandFn: ghFn,
-    log: (m) => logs.push(m),
+    log: (m, level = "info") => logs.push({ message: m, level }),
   });
-  const failed = logs.find((l) => l.includes("WARNING") && l.includes("2694"));
-  const succeeded = logs.find((l) =>
-    l.includes("Posted") && l.includes("2703")
+  const failed = logs.find((l) =>
+    l.level === "warn" &&
+    l.message.includes("failed to post no-issues-found comment") &&
+    l.message.includes("2694")
   );
-  assertEquals(typeof failed, "string");
-  assertEquals(typeof succeeded, "string");
+  const succeeded = logs.find((l) =>
+    l.message.includes("Posted") && l.message.includes("2703")
+  );
+  assertEquals(typeof failed, "object");
+  assertEquals(typeof succeeded, "object");
 });

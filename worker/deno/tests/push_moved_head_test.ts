@@ -18,6 +18,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+
 import { assertEquals } from "@std/assert";
 import { commitAndPushPending } from "../lib/git_push.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -53,47 +55,31 @@ interface TestRepos {
 
 async function setupRepos(): Promise<TestRepos> {
   const tmpDir = await Deno.makeTempDir({ prefix: "moved_head_" });
-  const remotePath = `${tmpDir}/remote.git`;
-  const seedPath = `${tmpDir}/seed`;
+  const remotePath = await seedGitRemote(tmpDir, DEFAULT_BRANCH, [
+    {
+      branch: DEFAULT_BRANCH,
+      subject: "Initial commit",
+      files: { "README.md": "# Test\n" },
+    },
+    {
+      branch: FEATURE_BRANCH,
+      parent: 1,
+      subject: "Feature work",
+      files: { "feature.txt": "feature\n" },
+    },
+  ]);
   const workerPath = `${tmpDir}/worker`;
   const siblingPath = `${tmpDir}/sibling`;
-
-  await Deno.mkdir(remotePath, { recursive: true });
-  await git(["init", "--bare"], remotePath);
-  await git(
-    ["symbolic-ref", "HEAD", `refs/heads/${DEFAULT_BRANCH}`],
-    remotePath,
-  );
-
-  await git(["clone", remotePath, seedPath], tmpDir);
-  await git(["config", "user.email", "seed@example.com"], seedPath);
-  await git(["config", "user.name", "Seed"], seedPath);
-  await git(["checkout", "-b", DEFAULT_BRANCH], seedPath);
-  await Deno.writeTextFile(`${seedPath}/README.md`, "# Test\n");
-  await git(["add", "README.md"], seedPath);
-  await git(["commit", "-m", "Initial commit"], seedPath);
-  await git(["push", "-u", "origin", DEFAULT_BRANCH], seedPath);
-  await git(["checkout", "-b", FEATURE_BRANCH], seedPath);
-  await Deno.writeTextFile(`${seedPath}/feature.txt`, "feature\n");
-  await git(["add", "feature.txt"], seedPath);
-  await git(["commit", "-m", "Feature work"], seedPath);
-  await git(["push", "-u", "origin", FEATURE_BRANCH], seedPath);
-
-  await git([
-    "clone",
-    "--single-branch",
-    "--branch",
-    FEATURE_BRANCH,
-    remotePath,
-    workerPath,
-  ], tmpDir);
-  await git(["config", "user.email", "worker@example.com"], workerPath);
-  await git(["config", "user.name", "Worker"], workerPath);
-
-  await git(["clone", remotePath, siblingPath], tmpDir);
-  await git(["config", "user.email", "sibling@example.com"], siblingPath);
-  await git(["config", "user.name", "Sibling"], siblingPath);
-  await git(["checkout", FEATURE_BRANCH], siblingPath);
+  await cloneGitFixture(remotePath, workerPath, {
+    singleBranch: FEATURE_BRANCH,
+    name: "Worker",
+    email: "worker@example.com",
+  });
+  await cloneGitFixture(remotePath, siblingPath, {
+    checkout: FEATURE_BRANCH,
+    name: "Sibling",
+    email: "sibling@example.com",
+  });
 
   return { tmpDir, remotePath, workerPath, siblingPath };
 }

@@ -1,15 +1,17 @@
 /**
- * Tests for the merge-gate escalation in the milestone sync (Issue #974).
+ * Tests for a merge-gate refusal in the milestone sync (Issues #974, #4304).
  *
  * A merged tree that does not compile is not a transient failure a retry
- * clears, so it escalates to the milestone's tracking issue on the first
- * occurrence rather than after the ordinary failure-streak threshold — and
- * only once, so a branch stuck for days does not comment every cycle.
+ * clears. It used to be handed to a human with a "resolve the merge by hand"
+ * comment on the milestone's tracking issue. It is now the conflict ladder's
+ * (Issue #4304): each refusal is charged to the branch's conflict budget, and
+ * a spent budget rolls the branch back and files the `merge-fallback` flag —
+ * the same self-heal path a conflict takes. Nobody is asked to act.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   type MilestoneBranchSyncDeps,
   syncMilestoneBranches,
@@ -17,9 +19,8 @@ import {
 import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
 import {
   loadSyncStreaks,
-  MILESTONE_SYNC_ESCALATION_THRESHOLD,
+  MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   milestoneSyncStreakPath,
-  saveSyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 
 const MILESTONE_TITLE = "#974 CI gates";
@@ -76,9 +77,9 @@ function commentCalls(calls: string[][]): string[][] {
 }
 
 Deno.test(
-  "milestone sync - a gate failure escalates on the first cycle, not at the streak threshold (Issue #974)",
+  "milestone sync - a gate failure asks nobody to resolve it by hand, and is charged to the conflict budget (Issue #4304)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-974-escalation-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-4304-gate-" });
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
@@ -90,23 +91,11 @@ Deno.test(
 
       assert(result.ok);
       assertEquals(result.value.failed, 1, "the sync is reported as failed");
-      const comments = commentCalls(calls);
-      assertEquals(
-        comments.length,
-        1,
-        "one needs-human comment on the very first gate failure",
-      );
-      const args = comments[0]!;
-      assertEquals(args[2], "974", "posted on the milestone's tracking issue");
-      const body = args[args.length - 1] ?? "";
-      assertStringIncludes(body, MILESTONE_BRANCH);
-      assertStringIncludes(body, "main");
-      assertStringIncludes(body, "onSlotIdle");
-      assertStringIncludes(body, "not pushed");
-      assert(
-        MILESTONE_SYNC_ESCALATION_THRESHOLD > 1,
-        "precondition: the ordinary streak escalation would not have fired yet",
-      );
+      assertEquals(commentCalls(calls), [], "no hand-back comment");
+      const streaks = await loadSyncStreaks(streakPath);
+      const entry = streaks[`owner/repo|${MILESTONE_BRANCH}`];
+      assertEquals(entry?.conflictAttempts, 1);
+      assertEquals(entry?.lastAttempt?.outcome, "failed");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
@@ -114,48 +103,27 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - a stuck gate failure comments once, not every cycle (Issue #974)",
+  "milestone sync - a gate failure that repeats reaches the roll-back ladder (Issue #4304)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-974-escalation-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-4304-gate-" });
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const all: string[][] = [];
-      for (let cycle = 0; cycle < 4; cycle++) {
-        await syncMilestoneBranches(gateFailingDeps(all, streakPath));
+      const rollbacks: string[] = [];
+      for (let cycle = 0; cycle < MILESTONE_CONFLICT_ATTEMPT_BUDGET; cycle++) {
+        const deps = gateFailingDeps(all, streakPath);
+        deps.rollbackFn = (request) => {
+          rollbacks.push(`${request.milestoneBranch}|${request.attempts}`);
+          return Promise.resolve();
+        };
+        await syncMilestoneBranches(deps);
       }
-      assertEquals(
-        commentCalls(all).length,
-        1,
-        "exactly one comment across four failing cycles",
-      );
-      const streaks = await loadSyncStreaks(streakPath);
-      const entry = streaks[`owner/repo|${MILESTONE_BRANCH}`];
-      assert(entry?.gateEscalated, "the streak records that it escalated");
-      assertEquals(entry?.count, 4, "every failing cycle is still counted");
-    } finally {
-      await Deno.remove(dir, { recursive: true });
-    }
-  },
-);
-
-Deno.test(
-  "milestone sync - a gate failure still speaks up after an ordinary escalation (Issue #974)",
-  async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-974-escalation-" });
-    try {
-      const streakPath = milestoneSyncStreakPath(dir);
-      // The branch has already escalated for an ordinary sync failure.
-      await saveSyncStreaks(streakPath, {
-        [`owner/repo|${MILESTONE_BRANCH}`]: { count: 5, escalated: true },
-      });
-
-      const calls: string[][] = [];
-      await syncMilestoneBranches(gateFailingDeps(calls, streakPath));
-
-      assertEquals(
-        commentCalls(calls).length,
-        1,
-        "the refused merge is reported even though the branch already escalated",
+      assertEquals(rollbacks, [
+        `${MILESTONE_BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+      ]);
+      assert(
+        !all.some((c) => c.join(" ").includes("needs a human")),
+        "nothing asks a human",
       );
     } finally {
       await Deno.remove(dir, { recursive: true });
@@ -164,53 +132,24 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - without a streak file the refusal is logged, not re-commented every cycle (Issue #974)",
+  "milestone sync - without a streak file the refusal is logged, not commented (Issue #974)",
   async () => {
     const calls: string[][] = [];
-    const logs: string[] = [];
+    const logs: Array<{ message: string; level: string }> = [];
     for (let cycle = 0; cycle < 3; cycle++) {
       const deps = gateFailingDeps(calls);
-      deps.log = (m: string) => logs.push(m);
+      deps.log = (m: string, level = "info") =>
+        logs.push({ message: m, level });
       await syncMilestoneBranches(deps);
     }
-    assertEquals(
-      commentCalls(calls).length,
-      0,
-      "nothing can record that a comment went out, so none is repeated",
-    );
+    assertEquals(commentCalls(calls).length, 0);
     assert(
       logs.some((l) =>
-        l.includes("WARNING") && l.includes("onSlotIdle") &&
-        l.includes(MILESTONE_BRANCH)
+        l.level === "warn" &&
+        l.message.includes("onSlotIdle") &&
+        l.message.includes(MILESTONE_BRANCH)
       ),
       "the refusal is still loud in the log",
     );
-  },
-);
-
-Deno.test(
-  "milestone sync - an ordinary merge failure still waits for the streak threshold (Issue #974)",
-  async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-974-escalation-" });
-    try {
-      const streakPath = milestoneSyncStreakPath(dir);
-      const calls: string[][] = [];
-      const deps = gateFailingDeps(calls, streakPath);
-      deps.syncBranchFn = () =>
-        Promise.resolve({
-          ok: false as const,
-          error: new Error("refusing to merge unrelated histories"),
-        });
-
-      await syncMilestoneBranches(deps);
-
-      assertEquals(
-        commentCalls(calls).length,
-        0,
-        "a non-gate failure does not escalate on its first cycle",
-      );
-    } finally {
-      await Deno.remove(dir, { recursive: true });
-    }
   },
 );

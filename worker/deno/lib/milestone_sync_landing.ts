@@ -20,6 +20,7 @@ import {
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
 import { syncBranchFor } from "./milestone_sync_pr.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Where a confirmed merge actually landed. */
 export type SyncLanding =
@@ -86,8 +87,10 @@ async function compareStatus(
     ]);
     return out.trim();
   } catch (err) {
-    log(
-      `WARNING: Could not compare '${base}' with '${head}' in ${repo} while ` +
+    logAt(
+      log,
+      "warn",
+      `Could not compare '${base}' with '${head}' in ${repo} while ` +
         `confirming a milestone sync landing: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #2998)`,
@@ -110,7 +113,7 @@ export function describeUnconfirmedLanding(
   milestoneBranch: string,
   landing: UnconfirmedLanding,
 ): string {
-  return `WARNING: Milestone sync conflict for '${milestoneBranch}' in ` +
+  return `Milestone sync conflict for '${milestoneBranch}' in ` +
     `${repo}: the merge ${landing.expectedSha} is not confirmed on ` +
     `'${milestoneBranch}' in ${repo} — observed tip ` +
     `${landing.observedSha}: ${landing.reason}; no report posted ` +
@@ -233,8 +236,10 @@ export async function confirmSyncLanding(
       }
     }
   } catch (err) {
-    log(
-      `WARNING: Could not list open sync PRs for '${milestoneBranch}' in ` +
+    logAt(
+      log,
+      "warn",
+      `Could not list open sync PRs for '${milestoneBranch}' in ` +
         `${repo} while confirming a milestone sync landing: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #2998)`,

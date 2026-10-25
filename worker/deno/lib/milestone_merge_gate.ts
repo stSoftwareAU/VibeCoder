@@ -31,6 +31,10 @@
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { stripJsonc } from "./jsonc.ts";
+import {
+  CARGO_BUILD_SKIPPED_FOR_MERGE,
+  shouldSkipEphemeralCargoBuild,
+} from "./heavy_build_gate.ts";
 
 /** How long the merged-tree type check may run before it is killed. */
 export const MERGE_GATE_TIMEOUT_MS = 300_000;
@@ -477,6 +481,12 @@ const spawnTypeCheck: TypeCheckRunner = async (project) => {
 export async function checkMergedTree(
   repoDir: string,
   runner: TypeCheckRunner = spawnTypeCheck,
+  /**
+   * Whether the ephemeral cargo build must not run (Issue #4326).
+   * Defaults to the host-disk budget. A merge still lands; CI builds it.
+   */
+  skipCargoBuild: () => Promise<boolean> = () =>
+    shouldSkipEphemeralCargoBuild(repoDir),
 ): Promise<MergeGateOutcome> {
   // A tree that cannot be read is a check that could not be run, not a
   // repository without one — refuse rather than wave it through as "skipped".
@@ -508,7 +518,16 @@ export async function checkMergedTree(
   }
 
   const checked: string[] = [];
+  const skipCargo = await skipCargoBuild();
+  let skippedCargo = false;
   for (const project of projects) {
+    if (project.kind === "cargo" && skipCargo) {
+      // The host is above its floor and short of cargo headroom, and
+      // pruning freed nothing. Running cargo here is what would take free
+      // space through the floor, so the merge lands and CI builds it.
+      skippedCargo = true;
+      continue;
+    }
     const where = `${describeProject(project)} in ${project.dir}`;
     let result: { code: number; output: string };
     try {
@@ -544,9 +563,20 @@ export async function checkMergedTree(
     checked.push(where);
   }
 
+  if (checked.length === 0 && skippedCargo) {
+    return {
+      status: "skipped",
+      detail: `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`,
+      output: "",
+    };
+  }
+
+  const cargoNote = skippedCargo
+    ? `; ${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`
+    : "";
   return {
     status: "passed",
-    detail: `${checked.join("; ")} passed`,
+    detail: `${checked.join("; ")} passed${cargoNote}`,
     output: "",
   };
 }
@@ -577,37 +607,4 @@ export function mergeGateFailureError(
 /** Whether an error is the merge-gate refusal. */
 export function isMergeGateFailure(err: unknown): boolean {
   return err instanceof Error && err.name === MILESTONE_MERGE_GATE_ERROR;
-}
-
-/** Everything the escalation comment names. */
-export interface MergeGateEscalation {
-  repo: string;
-  milestoneBranch: string;
-  defaultBranch: string;
-  /** The refusal message, including the check output. */
-  reason: string;
-}
-
-/**
- * Body of the needs-human comment posted on the milestone's tracking issue.
- *
- * The merge is named, the check output travels with it, and the comment says
- * plainly that nothing was pushed — so the reader knows the branch is intact
- * and what has to be resolved before it moves.
- */
-export function buildMergeGateEscalationComment(
-  e: MergeGateEscalation,
-): string {
-  return `## Milestone sync merge fails the repo's own check — needs a human\n\n` +
-    `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
-    `\`${e.repo}\` produced a tree that fails the repository's own check ` +
-    `(a type error, or whatever else that check enforces — a stale lockfile ` +
-    `under \`--frozen\`, say), so it was **not pushed** and the local merge ` +
-    `was discarded (Issue #974).\n\n` +
-    `Git reported no conflict: both sides were internally consistent and ` +
-    `only their combination is not, which is how the same wiring was lost ` +
-    `three times before this gate existed (#928, #796).\n\n` +
-    `Check output:\n\n\`\`\`\n${e.reason}\n\`\`\`\n\n` +
-    `Resolve the merge by hand on \`${e.milestoneBranch}\`. The sync will ` +
-    `keep refusing to push until the merged tree compiles.`;
 }

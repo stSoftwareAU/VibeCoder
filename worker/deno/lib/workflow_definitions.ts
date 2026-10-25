@@ -87,7 +87,7 @@ const CHECKOUT_NO_CREDENTIALS = `        with:
  * outside the 24h supply-chain quarantine. Bump this in lock-step with
  * `container/tools.json` and `.github/workflows/markdown-lint.yml`.
  */
-const MARKDOWNLINT_CLI2_VERSION = "0.23.2";
+const MARKDOWNLINT_CLI2_VERSION = "0.24.0";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -285,7 +285,11 @@ const semgrep: WorkflowSpec = {
   category: "security",
   // The container image is pinned to an immutable digest — identical to
   // this repository's own .github/workflows/semgrep.yml — so a hijacked
-  // `latest` tag cannot run with SEMGREP_APP_TOKEN in scope (Issue #3645).
+  // `latest` tag cannot run in CI (Issue #3645). No SEMGREP_APP_TOKEN is
+  // passed: `semgrep ci` exits fatally when a token is combined with an
+  // explicit `--config` (Issue #4341; semgrep v1.173.0
+  // cli/src/semgrep/commands/ci.py), so the scan stays a plain p/default
+  // scan like the local gate stage in semgrep_check.ts.
   template: `name: Semgrep
 
 on:
@@ -307,8 +311,6 @@ jobs:
       - uses: ${pinnedAction("actions/checkout")}
 ${CHECKOUT_NO_CREDENTIALS}
       - run: semgrep ci --config p/default
-        env:
-          SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
 `,
 };
 

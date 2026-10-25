@@ -363,7 +363,8 @@ function createFixtureGh(
   return (args: string[]): Promise<string> => {
     recorder.gh.push(args);
     const [noun, verb = ""] = args;
-    const path = args[1] ?? "";
+    // `gh api --paginate` puts the path after the flag, so it is not args[1].
+    const path = args.find((arg) => arg.startsWith("repos/")) ?? args[1] ?? "";
     const byNumber = (n: number) => prs.find((pr) => pr.number === n);
 
     if (noun === "pr" && verb === "list") {

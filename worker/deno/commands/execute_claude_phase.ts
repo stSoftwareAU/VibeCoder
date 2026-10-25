@@ -45,6 +45,7 @@ import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 import { saveSession } from "../lib/session_manager.ts";
 import { buildProgressExtension } from "../lib/progress_extension_runtime.ts";
 import { resolveRunHardCap } from "../lib/run_hard_cap.ts";
+import { extensionCeiling } from "../lib/run_timeline.ts";
 import { promptOverrideMappings } from "../lib/custom_label_prompts_config.ts";
 
 export const executeClaudePhaseCommand: Command = {
@@ -126,11 +127,19 @@ export const executeClaudePhaseCommand: Command = {
     // The supervisor's wall-clock cap when this command runs under loop.sh
     // (Issue #421); a bare CLI invocation has no cap and stays unbounded.
     const hardCap = resolveRunHardCap({ killAfterSeconds: claudeKillAfter });
+    const extensionBound = extensionCeiling(
+      claudeKillAfter,
+      hardCap.capped ? hardCap.cap.ceilingMs : undefined,
+    );
     const progressExtension = await buildProgressExtension(
       config,
       repoPath,
       undefined,
-      hardCap.capped ? hardCap.cap.ceilingMs : undefined,
+      extensionBound?.ceilingMs,
+      undefined,
+      extensionBound?.label === "the finish deadline"
+        ? extensionBound.label
+        : undefined,
     );
 
     const result = await runExecuteClaudePhase({
@@ -187,7 +196,6 @@ export const executeClaudePhaseCommand: Command = {
       contextBudgetWarningPercent: config.contextBudgetWarningPercent,
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,
       contextBudgetBlockPercent: config.contextBudgetBlockPercent,
-      needsHumanLabel: config.needsHumanLabel,
       ...(progressExtension ? { progressExtension } : {}),
     });
 

@@ -161,6 +161,7 @@ export async function buildProgressExtension(
   onExtension?: RunDeadlineReporter,
   ceilingMs?: number,
   typicalGateSeconds?: number,
+  ceilingLabel?: "the finish deadline" | "the run hard cap",
 ): Promise<ProgressExtensionOptions | undefined> {
   if (!config.progressExtensionEnabled) return undefined;
 
@@ -204,6 +205,7 @@ export async function buildProgressExtension(
     ...(callStorm ? { callStorm } : {}),
     ...(onExtension ? { onExtension } : {}),
     ...(ceilingMs !== undefined ? { ceilingMs } : {}),
+    ...(ceilingLabel !== undefined ? { ceilingLabel } : {}),
     ...(typicalGateSeconds !== undefined ? { typicalGateSeconds } : {}),
   };
 }

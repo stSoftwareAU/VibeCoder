@@ -330,7 +330,9 @@ Deno.test({
       ].join("\n");
 
       await withAgentStub(stubBody, async (stub) => {
-        const clock = fakeClock();
+        // The dispatch loop's clock starts at zero; the agent must share
+        // that epoch when it reads the loop's finish deadline (Issue #4244).
+        const clock = fakeClock(0);
         const sleeping = Promise.withResolvers<void>();
         const logger = {
           info: (m: string) => {

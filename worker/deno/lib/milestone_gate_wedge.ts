@@ -33,6 +33,7 @@ import {
   recordGateRefusal,
   type SyncStreakEntry,
 } from "./milestone_sync_streak.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Callsite recorded in the label guard's audit line. */
 const CALLER = "worker/deno/lib/milestone_gate_wedge.ts";
@@ -156,8 +157,10 @@ export async function reportGateWedge(
   } catch (err) {
     // Fail open on the search, not on the write: a duplicate diagnostic is
     // noise, a suppressed one leaves the gate unfixed.
-    deps.log(
-      `WARNING: Could not search ${target} for the milestone sync gate ` +
+    logAt(
+      deps.log,
+      "warn",
+      `Could not search ${target} for the milestone sync gate ` +
         `diagnostic titled '${title}': ${
           err instanceof Error ? err.message : String(err)
         } — filing it anyway (Issue #2388)`,
@@ -202,8 +205,10 @@ export async function reportGateWedge(
     );
     return true;
   } catch (err) {
-    deps.log(
-      `WARNING: Could not report the wedged milestone sync gate for ` +
+    logAt(
+      deps.log,
+      "warn",
+      `Could not report the wedged milestone sync gate for ` +
         `'${report.milestoneBranch}' in ${report.repo} to ${target}: ${
           err instanceof Error ? err.message : String(err)
         } — the branch is still held back, nothing durable records why ` +

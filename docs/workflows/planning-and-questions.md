@@ -17,11 +17,11 @@ follow-up); **planning** → draft-then-self-critique a breakdown into sub-issue
 (carrying **no** reserved labels — you triage priority), post a model-usage
 stats block, comment, close parent; **refine-issue** → update title/body from
 your feedback; **clarification** (no label) → before implementing, worker may
-ask questions and add `needs-human` if the issue is unclear. **Target
-behaviour:** if the clarification phase detects an issue is too complex for a
-single PR, it automatically adds the `planning` label and routes the issue
-through planning (complexity-to-planning escalation). All of this happens on the
-issue only — no branches or PRs until you go to implementation.
+ask questions and add `needs-human` if the issue is unclear. The fleet does
+not ask a human to choose a breakdown merely because the scope heuristic counts
+many requirements. It proceeds to implementation, where the agent can request
+planning with `vibe-needs-planning` when needed. The explicit non-coding
+workflows happen on the issue only — no branches or PRs until implementation.
 
 ```mermaid
 flowchart TD
@@ -38,9 +38,8 @@ flowchart TD
   Work["✅ Implementation workflow"]
   Ref["✅ Update issue from comments"]
   Impl["Implementation path"]
-  Clar["Clarify or implement"]
-  Complex{"Too complex?"}
-  Escalate["🔄 Auto-escalate to planning"]
+  Clar{"Information missing?"}
+  Ask["✅ Implement, stating assumptions"]
   Label --> Q
   Q -->|Yes| Quest
   Q -->|No| G
@@ -55,10 +54,8 @@ flowchart TD
   R -->|Yes| Ref
   R -->|No| Impl
   Impl --> Clar
-  Clar --> Complex
-  Complex -->|Yes| Escalate
-  Escalate -.->|"Next run"| Plan
-  Complex -->|No| Impl
+  Clar -->|Yes| Ask
+  Clar -->|No or scope only| Work
   style Label fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -73,8 +70,7 @@ flowchart TD
   style Ref fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Impl fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Clar fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Complex fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style Escalate fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Ask fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
 > **See also:** [grill-me.md](grill-me.md) for the full mobile-friendly grill
@@ -1065,103 +1061,17 @@ If the refinement fails (e.g. Claude times out, API errors), the worker:
 
 ### 💡 Clarification
 
-The clarification phase runs **before** implementation and is important for
-getting good results. It does three things:
+The fleet clarification phase runs **before** implementation. It routes an
+issue whose labels name another handler, then runs a quick clarity check. It
+never hands an approved issue back to a human (Issue #4298). A vague or
+missing-information result used to post questions, add `needs-human` and
+unassign; the round cap then proceeded anyway after three rounds. The first
+round now does what the cap did: the run proceeds, and the agent states each
+assumption it made under `### Essential Design Decisions` in the PR summary.
 
-1. **Is the issue clear?** If **unclear**, the worker posts questions as a
-   comment, adds `needs-human`, unassigns, and exits (no implementation this
-   run). You respond on the issue and remove the label; next run re-assesses.
-2. **Is it small enough for a single PR / one run?** If the issue is too large,
-   the worker posts an escalation comment asking a trusted human to add the
-   `planning` label so the issue can be broken into smaller sub-issues. The
-   worker does not add `planning` itself — see
-   [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels).
-3. **Is it too large for a single PR?** If **clear but too complex** for one
-   implementation, the worker posts an escalation comment and unassigns — a
-   trusted human then adds the `planning` label and the issue is broken into
-   sub-issues via the planning workflow (see
-   [Automatic complexity-to-planning escalation](#-automatic-complexity-to-planning-escalation-target-behaviour)).
-   No code is written until the issue is appropriately scoped.
-
-**Flow:**
-
-1. **Assess** — Run clarity assessment (e.g. Claude) on issue and comments.
-2. **If CLEAR** — Proceed to complexity check (see below).
-3. **If UNCLEAR** — Post clarifying questions as comment; add `needs-human`;
-   unassign; exit (no implementation this run). User responds and removes label;
-   next run re-assesses.
-
-### 🔄 Automatic complexity-to-planning escalation (target behaviour)
-
-> **📌 Note:** This section describes the **target workflow** — the intended
-> behaviour for how the clarification phase should handle complex issues. The
-> implementation may not yet fully match this documented behaviour; subsequent
-> issues will bring the implementation in line.
-
-When the clarification phase determines an issue is **clear but too complex**
-for a single implementation attempt, it should automatically escalate the issue
-to planning mode rather than proceeding with implementation. This avoids failed
-implementation attempts on issues that are inherently multi-PR tasks.
-
-#### How it works
-
-1. **Complexity assessment** — After the clarity check passes, a complexity
-   assessment evaluates whether the issue can be implemented in a single PR.
-2. **If simple enough** — Proceed to implementation as normal.
-3. **If too complex** — The worker automatically:
-   - Posts a comment explaining why the issue was escalated (e.g. "This issue
-     spans multiple directories and has several independent acceptance criteria
-     — breaking into sub-issues for incremental implementation.") and asking a
-     trusted human to add the `planning` label.
-   - Unassigns itself from the issue.
-   - Once a trusted human adds the `planning` label, the issue is picked up in a
-     subsequent run via the normal **planning** workflow (create sub-issues,
-     comment, close parent). The worker does **not** add the `planning` label
-     itself — it is operational and reserved for trusted humans (see
-     [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels);,).
-
-#### Criteria for automatic escalation
-
-The following indicators suggest an issue is too complex for a single PR and
-should be escalated to planning:
-
-| Indicator                                           | Example                                                                                        |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| 🗂️ **Multiple directories in scope**                | Changes required in `worker/`, `tests/`, `docs/`, and `prompts/` with independent concerns     |
-| 📄 **Many files referenced**                        | Issue explicitly names 5+ files that need non-trivial modifications                            |
-| 🔍 **Audit/review spanning large scope**            | "Review all shell scripts for X" or "Update every workflow to include Y"                       |
-| ✅ **Multiple independent acceptance criteria**     | Several acceptance criteria that could each be a standalone PR                                 |
-| 🔀 **Cross-cutting concerns**                       | Changes that touch multiple subsystems with no shared implementation path                      |
-| 📏 **Estimated scope exceeds single-PR guidelines** | The combined changes would produce an unreviewable PR (e.g. 500+ lines across unrelated files) |
-
-These criteria are not exhaustive — the complexity assessment should use
-judgement based on the overall scope and structure of the issue.
-
-#### Flow: clarification with complexity escalation
-
-```mermaid
-flowchart TD
-  Assess["Assess clarity"]
-  Clear{"Clear?"}
-  AskQ["❌ Post questions, needs-human, unassign"]
-  Complex{"Too complex\nfor single PR?"}
-  Escalate["🔄 Comment asking human to add planning label, unassign"]
-  PlanFlow["Planning workflow picks up issue"]
-  Implement["✅ Proceed to implementation"]
-  Assess --> Clear
-  Clear -->|No| AskQ
-  Clear -->|Yes| Complex
-  Complex -->|Yes| Escalate
-  Escalate --> PlanFlow
-  Complex -->|No| Implement
-  style Assess fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
-  style Clear fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style AskQ fill:#c45858,stroke:#6b2020,color:#fff
-  style Complex fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style Escalate fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style PlanFlow fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style Implement fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-```
+A scope-only `too_complex` result proceeds the same way (Issue #4147). The
+implementing agent decides whether decomposition is needed and uses the
+existing `vibe-needs-planning` path when it is.
 
 ## 📊 Diagram: workflow type routing
 
@@ -1172,13 +1082,11 @@ flowchart TD
   Planning{"planning label?"}
   Refine{"refine-issue label?"}
   Impl["Implementation path"]
-  Clar{"Clarification needed?"}
+  Clar{"Unclear?"}
   QWork["✅ Post answer, remove question, add needs-human"]
   PlanWork["✅ Create sub-issues, comment, close parent"]
   RefWork["✅ Update issue from feedback"]
   Ask["❌ Post questions, needs-human, unassign"]
-  Complex{"Too complex\nfor single PR?"}
-  Escalate["🔄 Comment asking human to add planning label, unassign"]
   Code["✅ Implement issue"]
   Issue --> Question
   Question -->|Yes| QWork
@@ -1189,10 +1097,7 @@ flowchart TD
   Refine -->|No| Impl
   Impl --> Clar
   Clar -->|Yes| Ask
-  Clar -->|No| Complex
-  Complex -->|Yes| Escalate
-  Escalate -.->|"Next run"| PlanWork
-  Complex -->|No| Code
+  Clar -->|No| Code
   style Issue fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style Question fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style Planning fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -1202,9 +1107,7 @@ flowchart TD
   style QWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style PlanWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style RefWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style Ask fill:#c45858,stroke:#6b2020,color:#fff
-  style Complex fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style Escalate fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Ask fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Code fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 

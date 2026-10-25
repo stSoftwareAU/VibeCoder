@@ -12,8 +12,9 @@
  * Changes`, that a finding naming a file, a line and a fix is never left
  * unanswered: fix and push it, or rebut it by name in `.pr_response_message`
  * with evidence, because a run that does neither gets no reply of its own —
- * the worker re-runs the agent once on the same review, and escalates to
- * `needs-human` if that also produces nothing.
+ * the worker re-runs the agent once on the same review, retries the review
+ * in a later cycle, and then closes the PR and redoes its issue — never
+ * `needs-human` (Issue #4304).
  *
  * Each pinned phrase was absent from the base branch's `## Making Changes`
  * section (checked with `deno task drift-pins-on-base`), so deleting the
@@ -46,7 +47,7 @@ Deno.test("pr_feedback - a change request is never answered with no change (Issu
       '"no change" is not an answer to a change request',
       "rebut that finding by name",
       "re-runs you once",
-      "it labels the pr `needs-human` instead of replying",
+      "closes this pr and redoes its issue",
     ]
   ) {
     assertStringIncludes(body, required);

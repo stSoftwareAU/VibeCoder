@@ -407,10 +407,17 @@ export async function climbConflictLadder(
       escalations: stillEscalated(() => `agent: ${outcome.error.message}`),
     };
   }
-  if (outcome.value.terminated) {
-    // The worker itself ended the run, so the tree is half-edited through no
-    // fault of the conflict. Not a verdict — the merge is abandoned and the
-    // branch is left where it was (Issue #1693).
+  if (outcome.value.terminated || outcome.value.finishDeadline) {
+    // The worker itself ended the run, or the finish deadline did (Issue
+    // #4245), so the tree is half-edited through no fault of the conflict.
+    // Not a verdict — the merge is abandoned and the branch is left where
+    // it was (Issue #1693). A finish deadline is logged as a scheduled
+    // release and carries the same marker, so nothing is charged.
+    if (outcome.value.finishDeadline) {
+      logger?.info(
+        "Milestone sync released on schedule: the finish deadline was reached",
+      );
+    }
     return {
       resolved,
       escalations: stillEscalated(() =>

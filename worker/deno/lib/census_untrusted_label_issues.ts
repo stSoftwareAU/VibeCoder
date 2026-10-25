@@ -26,6 +26,7 @@
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { wasLabelAddedByAllowedAuthor } from "./issue_query.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
+import { logAt } from "./log_sink.ts";
 
 /**
  * Return the numbers of the issues whose every carried priority label was
@@ -80,8 +81,10 @@ export async function censusUntrustedLabelIssues(
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log(
-        `[idle-census] WARNING: could not read the label-author gate for ` +
+      logAt(
+        log,
+        "warn",
+        `[idle-census] could not read the label-author gate for ` +
           `${repo}#${issue.number} (${message}); treating the issue as ` +
           `trusted so the census does not over-count refusals`,
       );

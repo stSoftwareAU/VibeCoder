@@ -35,6 +35,19 @@ export const MILESTONE_SYNC_ESCALATION_THRESHOLD = 3;
 export const MILESTONE_CONFLICT_ATTEMPT_BUDGET = CONFLICT_RESOLUTION_BUDGET;
 
 /**
+ * Consecutive cycles a milestone branch may be **refused** a conflict
+ * resolution — a not-charged verdict such as "agent deferred: cycle budget" or
+ * a merge gate that refused the resolution — before the ladder climbs to the
+ * roll-back anyway (Issue #4328).
+ *
+ * A refusal never spends the conflict budget, so without this ceiling a branch
+ * refused every cycle would be retried for ever and never reach the roll-back.
+ * The refusal that reaches the ceiling concludes as a charged failure instead,
+ * which spends the budget and hands the branch to the next rung.
+ */
+export const MILESTONE_REFUSAL_CEILING = 3;
+
+/**
  * How a conflict-resolution attempt on a milestone branch ended.
  *
  * - `failed` — the merge was judged and did not produce a mergeable branch.
@@ -212,6 +225,17 @@ export interface SyncStreakEntry {
   revertedPrs?: number[];
   /** Merge SHAs those roll-backs undid (Issue #1781). */
   revertedShas?: string[];
+  /**
+   * Consecutive cycles refused a conflict resolution with a not-charged
+   * verdict (Issue #4328). A charged conclusion zeroes it. Absent reads as 0.
+   */
+  refusedCycles?: number;
+  /**
+   * Lifetime roll-backs that could not merge (Issue #4328). Absent reads as 0.
+   */
+  rollbackFailures?: number;
+  /** Lifetime milestone rebuilds on this branch (Issue #4328). Absent reads as 0. */
+  rebuilds?: number;
 }
 
 /** Streak state keyed by "owner/repo|milestone-branch". */
@@ -459,7 +483,14 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const fallbackSha = optionalText(entry.fallbackDefaultSha);
   const revertedPrs = readPositiveInts(entry.revertedPrs);
   const revertedShas = readShaList(entry.revertedShas);
+  // Issue #4328: an older file has none of these, and reads as zero.
+  const refusedCycles = optionalCount(entry.refusedCycles);
+  const rollbackFailures = optionalCount(entry.rollbackFailures);
+  const rebuilds = optionalCount(entry.rebuilds);
   return {
+    ...(refusedCycles !== undefined ? { refusedCycles } : {}),
+    ...(rollbackFailures !== undefined ? { rollbackFailures } : {}),
+    ...(rebuilds !== undefined ? { rebuilds } : {}),
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
     ...(announcedAt ? { announcedAttemptAt: announcedAt } : {}),
@@ -526,6 +557,10 @@ export function openConflictAttempt(
  * @param details - The host that ran it, its stage timings and what it made
  *   of the conflict (Issue #2311), so the `merge-fallback` flag can report
  *   what each run cost, where it ran and what it concluded.
+ *   `refusal` marks a not-charged refusal (Issue #4328): it adds one to
+ *   {@link SyncStreakEntry.refusedCycles}. `exhaust` marks a verdict that
+ *   climbs to the roll-back (Issue #4328): a charged conclusion then lifts the
+ *   budget to its full size.
  */
 export function concludeConflictAttempt(
   entry: SyncStreakEntry,
@@ -533,7 +568,13 @@ export function concludeConflictAttempt(
   reason: string,
   defaultSha?: string,
   nowMs: number = Date.now(),
-  details: { host?: string; timings?: string; analysis?: string } = {},
+  details: {
+    host?: string;
+    timings?: string;
+    analysis?: string;
+    refusal?: boolean;
+    exhaust?: boolean;
+  } = {},
 ): SyncStreakEntry {
   const { attemptOpenedAt: _opened, ...rest } = entry;
   const charged = outcome === "failed";
@@ -555,11 +596,25 @@ export function concludeConflictAttempt(
       -MILESTONE_CONFLICT_ATTEMPT_BUDGET,
     )
     : entry.failedAttempts;
+  // Issue #4328: a charged failure ends any refusal streak; a not-charged
+  // refusal extends it; every other conclusion leaves it where it was.
+  const refusedCycles = charged
+    ? 0
+    : details.refusal === true && outcome === "not-charged"
+    ? (entry.refusedCycles ?? 0) + 1
+    : entry.refusedCycles;
+  const spent = (entry.conflictAttempts ?? 0) + (charged ? 1 : 0);
+  // Issue #4328: a verdict escalated to the roll-back lifts the budget to its
+  // full size, so the hand-off sees it spent whatever the ledger held before.
+  const conflictAttempts = charged && details.exhaust === true
+    ? Math.max(spent, MILESTONE_CONFLICT_ATTEMPT_BUDGET)
+    : spent;
   return {
     ...rest,
-    conflictAttempts: (entry.conflictAttempts ?? 0) + (charged ? 1 : 0),
+    conflictAttempts,
     lastAttempt: record,
     ...(failedAttempts !== undefined ? { failedAttempts } : {}),
+    ...(refusedCycles !== undefined ? { refusedCycles } : {}),
   };
 }
 
@@ -643,6 +698,8 @@ export function resetConflictLedgerOnSuccess(
     // A landed sync is the proof the gate is no longer refusing anything
     // (Issue #2388) — the wedge goes with the conflict it described.
     gateRefusal: _wedged,
+    // A landed sync ends any refusal streak too (Issue #4328).
+    refusedCycles: _refused,
     ...rest
   } = entry;
   return { ...rest, conflictAttempts: 0 };

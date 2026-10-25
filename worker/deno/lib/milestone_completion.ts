@@ -18,6 +18,7 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
+import { readBranchCompare } from "./milestone_route_restore.ts";
 import {
   evaluateWorkerIdentity,
   IdentityGuardError,
@@ -75,6 +76,7 @@ import {
   renderNotPlannedDocSection,
 } from "./milestone_not_planned_refs.ts";
 import { fetchOpenMilestonePages } from "./open_milestone_pages.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -530,6 +532,10 @@ async function closedByRollback(
  * @param ignorePrNumbers - Closed final PRs a roll-back superseded (Issue
  *   #3474): they must not count as existing, or the fresh final PR is never
  *   raised
+ * @param defaultBranch - When set, a merged rollup does not count if the
+ *   milestone branch still has a file diff against this branch (Issue
+ *   #4175). An unreadable compare is not that proof, so the merged rollup
+ *   still counts and the next scan tries again.
  * @returns Result with the existing PR number, or null if not found
  */
 export async function hasExistingMilestoneSummaryPr(
@@ -539,6 +545,7 @@ export async function hasExistingMilestoneSummaryPr(
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
   ignorePrNumbers: readonly number[] = [],
+  defaultBranch?: string,
 ): Promise<Result<number | null>> {
   try {
     const prs = await fetchAllStatePRsByBranch(
@@ -554,6 +561,26 @@ export async function hasExistingMilestoneSummaryPr(
       pr.headRefName === milestoneBranch && !ignorePrNumbers.includes(pr.number)
     );
     const first = matching[0];
+    const branch = defaultBranch?.trim() ?? "";
+    const everyMatchMerged = matching.length > 0 &&
+      matching.every((pr) => pr.state === "MERGED");
+    if (first !== undefined && everyMatchMerged && branch !== "") {
+      const compare = await readBranchCompare(
+        repo,
+        branch,
+        milestoneBranch,
+        ghCommandFn,
+      );
+      // A file diff means the merged rollup did not carry the branch tip.
+      // No diff, or a compare that cannot be read, keeps the merged PR so
+      // a second summary is not raised on a guess.
+      if (
+        compare.ok && compare.value.aheadBy > 0 &&
+        compare.value.fileCount !== 0
+      ) {
+        return { ok: true, value: null };
+      }
+    }
     return { ok: true, value: first !== undefined ? first.number : null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1013,8 +1040,10 @@ Raise a PR to merge the milestone branch to \`${defaultBranch}\`.`;
     return match ? Number(match[1]) : null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: Failed to create milestone tracking issue in ${repo}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `Failed to create milestone tracking issue in ${repo}: ${message}`,
     );
     return null;
   }
@@ -1105,8 +1134,10 @@ async function armSummaryPrAutoMerge(
   // `finalisePr` reports `ok: false` for nothing today, but an error result
   // must never be read as an armed PR (fail loud, never silently green).
   if (!armed.ok) {
-    log(
-      `WARNING: auto-merge was not armed on the ${prKind} ` +
+    logAt(
+      log,
+      "warn",
+      `auto-merge was not armed on the ${prKind} ` +
         `${repo}#${prNumber}: ${armed.error.message}`,
     );
     return "failed";
@@ -1132,8 +1163,10 @@ async function armSummaryPrAutoMerge(
     return "withheld";
   }
 
-  log(
-    `WARNING: auto-merge was not armed on the ${prKind} ` +
+  logAt(
+    log,
+    "warn",
+    `auto-merge was not armed on the ${prKind} ` +
       `${repo}#${prNumber}: ${outcome.message}`,
   );
   try {
@@ -1141,8 +1174,10 @@ async function armSummaryPrAutoMerge(
   } catch (err) {
     // The refusal must never go silent because the comment could not be
     // posted — the warning above named the reason, this names the loss too.
-    log(
-      `WARNING: could not post the auto-merge reason comment on ` +
+    logAt(
+      log,
+      "warn",
+      `could not post the auto-merge reason comment on ` +
         `${repo}#${prNumber}: ${
           err instanceof Error ? err.message : String(err)
         }`,
@@ -1180,8 +1215,10 @@ async function buildSummaryPrBody(
   });
   if (pendingResult.ok) {
     if (pendingResult.value.length > 0) {
-      log(
-        `WARNING: milestone '${milestoneTitle}' in ${repo} has ` +
+      logAt(
+        log,
+        "warn",
+        `milestone '${milestoneTitle}' in ${repo} has ` +
           `${pendingResult.value.length} declared dependencies not merged ` +
           `yet — the summary PR is raised held and the merge gate refuses ` +
           `it until they land (Issue #3014)`,
@@ -1189,8 +1226,10 @@ async function buildSummaryPrBody(
       dependencyNote = renderPendingDependenciesSection(pendingResult.value);
     }
   } else {
-    log(
-      `WARNING: could not verify declared dependencies for milestone ` +
+    logAt(
+      log,
+      "warn",
+      `could not verify declared dependencies for milestone ` +
         `'${milestoneTitle}' in ${repo}: ${pendingResult.error.message} — ` +
         `the merge gate re-checks before merging (Issue #3014)`,
     );
@@ -1217,8 +1256,10 @@ async function buildSummaryPrBody(
       notPlannedResult.value.unchecked.length > 0
     ) {
       if (notPlannedResult.value.references.length > 0) {
-        log(
-          `WARNING: milestone '${milestoneTitle}' in ${repo} has ` +
+        logAt(
+          log,
+          "warn",
+          `milestone '${milestoneTitle}' in ${repo} has ` +
             `${notPlannedResult.value.references.length} Markdown line(s) ` +
             `that name issues closed as not planned — listed in the ` +
             `summary PR body (Issue #3223)`,
@@ -1227,8 +1268,10 @@ async function buildSummaryPrBody(
       notPlannedNote = renderNotPlannedDocSection(notPlannedResult.value);
     }
   } else {
-    log(
-      `WARNING: could not check milestone '${milestoneTitle}' docs for ` +
+    logAt(
+      log,
+      "warn",
+      `could not check milestone '${milestoneTitle}' docs for ` +
         `issues closed as not planned in ${repo}: ` +
         `${notPlannedResult.error.message} (Issue #3223)`,
     );
@@ -1369,8 +1412,10 @@ async function refreshExistingSummaryPr(p: SummaryPrRefresh): Promise<void> {
   const { repo, prNumber, milestone, ghCommandFn, log } = p;
   const live = await readLiveSummaryPr(repo, prNumber, ghCommandFn);
   if (!live.ok) {
-    log(
-      `WARNING: could not read summary PR #${prNumber} for milestone '${milestone.title}' in ${repo}: ${live.error.message} — its body is left as it is (Issue #3476)`,
+    logAt(
+      log,
+      "warn",
+      `could not read summary PR #${prNumber} for milestone '${milestone.title}' in ${repo}: ${live.error.message} — its body is left as it is (Issue #3476)`,
     );
     return;
   }
@@ -1415,8 +1460,10 @@ async function refreshExistingSummaryPr(p: SummaryPrRefresh): Promise<void> {
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not refresh summary PR #${prNumber} body for milestone '${milestone.title}' in ${repo}: ${message} — the stale body may still claim a reopened issue (Issue #3476)`,
+    logAt(
+      log,
+      "warn",
+      `could not refresh summary PR #${prNumber} body for milestone '${milestone.title}' in ${repo}: ${message} — the stale body may still claim a reopened issue (Issue #3476)`,
     );
   }
 }
@@ -1452,6 +1499,7 @@ async function createMilestoneSummaryPr(
     ghCommandFn,
     cache,
     supersededPrNumbers,
+    defaultBranch,
   );
   const existingPrNumber = existingResult.ok && existingResult.value !== null
     ? existingResult.value
@@ -1470,8 +1518,10 @@ async function createMilestoneSummaryPr(
         ".name",
       ]);
     } catch {
-      log(
-        `WARNING: Milestone branch '${milestoneBranch}' does not exist in ${repo} — cannot create summary PR`,
+      logAt(
+        log,
+        "warn",
+        `Milestone branch '${milestoneBranch}' does not exist in ${repo} — cannot create summary PR`,
       );
       return { outcome: "failed", reason: "branch_missing" };
     }
@@ -1531,8 +1581,10 @@ async function createMilestoneSummaryPr(
     ]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: Failed to create milestone summary PR for '${milestoneTitle}' in ${repo}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `Failed to create milestone summary PR for '${milestoneTitle}' in ${repo}: ${message}`,
     );
     return { outcome: "failed", reason: message };
   }
@@ -1552,8 +1604,10 @@ async function createMilestoneSummaryPr(
   // milestone's tracking issue open.
   const prNumber = summaryPrNumberFromUrl(prUrl);
   if (prNumber === null) {
-    log(
-      `WARNING: could not read a PR number from '${prUrl.trim()}' — the ` +
+    logAt(
+      log,
+      "warn",
+      `could not read a PR number from '${prUrl.trim()}' — the ` +
         `milestone summary PR for '${milestoneTitle}' in ${repo} was not ` +
         `armed for auto-merge; the Auto-Merge sweep retries`,
     );
@@ -1647,8 +1701,10 @@ export async function closeGitHubMilestone(
     log(`Closed GitHub milestone #${milestoneNumber} in ${repo} (Issue #1210)`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: Failed to close milestone #${milestoneNumber} in ${repo}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `Failed to close milestone #${milestoneNumber} in ${repo}: ${message}`,
     );
   }
 }
@@ -1693,8 +1749,10 @@ async function closeMilestoneTrackingIssue(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: Failed to close tracking issue #${issueNumber} in ${repo}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `Failed to close tracking issue #${issueNumber} in ${repo}: ${message}`,
     );
   }
 }
@@ -1928,8 +1986,10 @@ async function refreshOpenSummaryPrBodyWhileIncomplete(
   // Publishing "_No issues found_" over a good body after a failed read would
   // be worse than leaving it stale, so leave it for a later scan.
   if (closedIssues === null) {
-    log(
-      `WARNING: could not refresh summary PR body for milestone ` +
+    logAt(
+      log,
+      "warn",
+      `could not refresh summary PR body for milestone ` +
         `'${milestone.title}' in ${repo}: closed-issue read failed — leaving ` +
         `the body as it is for a later scan (Issue #3662)`,
     );
@@ -2056,7 +2116,7 @@ export async function checkAndHandleMilestoneCompletions(
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log(`WARNING: Milestone check failed for ${repo}: ${message}`);
+      logAt(log, "warn", `Milestone check failed for ${repo}: ${message}`);
     }
   }
 
@@ -2102,15 +2162,19 @@ async function processRepoMilestones(
   // quota slot every run_core cycle).
   const branchResult = await defaultBranchFn(repo);
   if (!branchResult.ok) {
-    log(
-      `WARNING: Could not determine default branch for ${repo} — skipping milestone check`,
+    logAt(
+      log,
+      "warn",
+      `Could not determine default branch for ${repo} — skipping milestone check`,
     );
     return;
   }
   const defaultBranch = branchResult.value.trim();
   if (!defaultBranch) {
-    log(
-      `WARNING: Could not determine default branch for ${repo} — skipping milestone check`,
+    logAt(
+      log,
+      "warn",
+      `Could not determine default branch for ${repo} — skipping milestone check`,
     );
     return;
   }
@@ -2126,8 +2190,10 @@ async function processRepoMilestones(
     ) as GitHubMilestone[];
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not list open milestones for ${repo} — skipping milestone check: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `could not list open milestones for ${repo} — skipping milestone check: ${message}`,
     );
     return;
   }
@@ -2227,16 +2293,20 @@ async function processRepoMilestones(
       verification,
     );
     if (!authoritative.ok) {
-      log(
-        `WARNING: ${authoritative.error.message} — refusing to finalise ` +
+      logAt(
+        log,
+        "warn",
+        `${authoritative.error.message} — refusing to finalise ` +
           `milestone '${milestone.title}' this pass (Issue #3908)`,
       );
       continue;
     }
     const authority = authoritative.value;
     if (!authority.childListAvailable) {
-      log(
-        `WARNING: Could not read the fresh open-child list for milestone ` +
+      logAt(
+        log,
+        "warn",
+        `Could not read the fresh open-child list for milestone ` +
           `'${milestone.title}' in ${repo}: ${authority.childListError} — ` +
           `falling back to the unadjusted open_issues count ` +
           `(${authority.rawOpenIssues}), tracking issues not excluded ` +
@@ -2251,8 +2321,10 @@ async function processRepoMilestones(
       verification,
     );
     if (authority.openCount !== cachedOpen.length) {
-      log(
-        `WARNING: Open-children disagreement for milestone ` +
+      logAt(
+        log,
+        "warn",
+        `Open-children disagreement for milestone ` +
           `'${milestone.title}' in ${repo} — GitHub reports ` +
           `${authority.openCount} open non-tracking child(ren) ` +
           `[${formatChildNumbers(authority.children)}] ` +
@@ -2308,8 +2380,10 @@ async function processRepoMilestones(
       resolveFleetForRollbackCloses,
     );
     if (!finalPrs.ok) {
-      log(
-        `WARNING: ${finalPrs.error.message} — continuing close-out without ` +
+      logAt(
+        log,
+        "warn",
+        `${finalPrs.error.message} — continuing close-out without ` +
           `final PR classification (Issue #3474)`,
       );
     } else if (finalPrs.value.kind === "merged") {
@@ -2367,8 +2441,10 @@ async function processRepoMilestones(
         );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        log(
-          `WARNING: Could not comment on the close-out of milestone ` +
+        logAt(
+          log,
+          "warn",
+          `Could not comment on the close-out of milestone ` +
             `'${milestone.title}' in ${repo}: ${message} (Issue #3474)`,
         );
       }
@@ -2410,8 +2486,10 @@ async function processRepoMilestones(
     // Issue #3662: a failed read is null, not an empty milestone. Skip it for
     // this scan so it neither closes (nothing-to-merge) nor is read as empty.
     if (closedIssues === null) {
-      log(
-        `WARNING: Milestone '${milestone.title}' in ${repo}: closed-issue ` +
+      logAt(
+        log,
+        "warn",
+        `Milestone '${milestone.title}' in ${repo}: closed-issue ` +
           `read failed; skipping this milestone for this scan, not treating ` +
           `it as empty (Issue #3662)`,
       );
@@ -2524,6 +2602,7 @@ async function processRepoMilestones(
       ghCommandFn,
       cache,
       supersededPrNumbers,
+      defaultBranch,
     );
     if (existingSummary.ok && existingSummary.value === null) {
       await retireMilestoneSyncPrs({
@@ -2617,8 +2696,10 @@ async function processRepoMilestones(
       armCreatedPr: async (prUrl, snapshotBranch) => {
         const prNumber = summaryPrNumberFromUrl(prUrl);
         if (prNumber === null) {
-          log(
-            `WARNING: could not read a PR number from '${prUrl.trim()}' — ` +
+          logAt(
+            log,
+            "warn",
+            `could not read a PR number from '${prUrl.trim()}' — ` +
               `the partial rollup PR was not armed for auto-merge; the ` +
               `Auto-Merge sweep retries`,
           );
@@ -2646,8 +2727,10 @@ async function processRepoMilestones(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: milestone deadlock scan failed for ${repo}: ${message} (Issue #2835)`,
+    logAt(
+      log,
+      "warn",
+      `milestone deadlock scan failed for ${repo}: ${message} (Issue #2835)`,
     );
   }
 }

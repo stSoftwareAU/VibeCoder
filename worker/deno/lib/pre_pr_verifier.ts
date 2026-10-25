@@ -46,6 +46,7 @@ import {
   runClaudeWithRetry,
 } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { ensureHistoryDepth, type GitRunner } from "./git_history.ts";
 import {
   buildBoundaryIntegrityInstruction,
   fenceUntrustedIssueText,
@@ -485,6 +486,29 @@ function summaryPathProblem(path: string): string | null {
 }
 
 /**
+ * Adapt the verifier's git runner to the history helper. A spawn failure is
+ * an error, the same way the rest of this module treats a null git result.
+ */
+function historyRunner(runGit: PrePrVerifierDeps["runGit"]): GitRunner {
+  return async (args, options) => {
+    const cwd = options?.cwd;
+    if (cwd === undefined) {
+      return {
+        ok: false,
+        error: new Error(
+          "history deepen was asked to run git without a directory",
+        ),
+      };
+    }
+    const ran = await runGit(args, cwd);
+    if (ran === null) {
+      return { ok: false, error: new Error("git could not be spawned") };
+    }
+    return { ok: true, value: ran };
+  };
+}
+
+/**
  * Run the verifier. Every failure to run yields `not_checked` with a reason;
  * a change the verifier made to the issue checkout yields a checked review
  * with a synthetic blocking finding.
@@ -529,6 +553,20 @@ export async function runPrePrVerifier(
   }
   const headSha = head.stdout.trim();
   const baseSha = base.stdout.trim();
+
+  // Issue #4059: a shallow checkout whose base has moved past the fetched
+  // history has no merge base for the caller-list three-dot diff. Deepen
+  // before the disposable clone: `git clone --shared` copies the source
+  // shallow file at clone time, so a later deepen would not reach it.
+  const depth = await ensureHistoryDepth(["HEAD", input.baseRef], {
+    cwd: input.repoPath,
+    gitRunner: historyRunner(deps.runGit),
+  });
+  if (!depth.ok) {
+    return notChecked(
+      `no merge base after deepening: ${depth.error.message}`,
+    );
+  }
 
   const before = await snapshotCheckout(deps, input.repoPath);
   if (!before) return notChecked("cannot snapshot the issue checkout");

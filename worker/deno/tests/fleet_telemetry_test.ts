@@ -24,6 +24,7 @@ import {
   recordIssuePhaseRun,
   recordMergedPr,
   recordOutcome,
+  recordPreprReviewChangesRequested,
   recordPrFeedbackRun,
   recordPrRejection,
   resetFleetTelemetry,
@@ -572,6 +573,20 @@ Deno.test("fleet_telemetry - a sonnet-only fleet's summary is byte-identical to 
       "failures_by_class=none utilisation=none",
   );
   assertEquals(line.includes("issue_tier_"), false, line);
+});
+
+Deno.test("fleet_telemetry - a pre-PR review record is counted apart from failures (Issue #4236)", () => {
+  fresh(0);
+  startFleetCycle(0);
+  recordClaim();
+  recordOutcome("success");
+  recordPreprReviewChangesRequested(2);
+  recordCycleIdle("served", 100_000);
+
+  const line = formatFleetSummary(100_000);
+  assertStringIncludes(line, "failures=0");
+  assertStringIncludes(line, "successes=1");
+  assertStringIncludes(line, "prepr_review_changes_requested=2");
 });
 
 Deno.test("fleet_telemetry - a haiku run adds the tier tokens right after issue_duration", () => {

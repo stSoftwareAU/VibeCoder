@@ -9,11 +9,12 @@ import {
   assertFalse,
   assertStringIncludes,
 } from "@std/assert";
-import { assertLinearGrowth } from "./support/growth.ts";
+import { measureGrowth } from "./support/growth.ts";
 import {
   detectPromptLeakage,
   PROMPT_LEAK_PLACEHOLDER,
   redactPromptLeakage,
+  type ScanMeter,
 } from "../lib/prompt_leak_redaction.ts";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 
@@ -274,16 +275,26 @@ Deno.test("prompt leak - leaves an answer that discusses the defences unchanged 
 Deno.test("prompt leak - the token matcher grows linearly with one block (Issue #1463)", () => {
   // The window matcher runs over attacker-influenced text on the main thread,
   // and a single unbroken block is its worst case: one window pass per phrase
-  // over every token. Measured as a shape, not a wall-clock budget, so a slow
-  // host cannot fail it (CODING-STANDARDS.md).
+  // over every token. The pass records a step per token, so the ratio is
+  // steps against steps. A busy host cannot stretch it (Issue #4312).
   const sentence = "the agent reads issue text and answers questions in prose ";
-  const out = assertLinearGrowth(
-    "redactPromptLeakage over one unbroken block",
+  const meter: ScanMeter = { steps: 0 };
+  const out = measureGrowth(
     (chars) => sentence.repeat(Math.ceil(chars / sentence.length)),
-    (input) => redactPromptLeakage(input),
-    { baseChars: 200_000 },
+    (input) => redactPromptLeakage(input, meter),
+    { baseChars: 200_000, graceMs: 0, repeats: 1, now: () => meter.steps },
   );
-  assertStringIncludes(out, "the agent reads issue text");
+  assert(
+    out.baseMs > 0 && out.scaledMs > 0,
+    `redactPromptLeakage over one unbroken block: counted ${out.baseMs} steps — the scan recorded no work`,
+  );
+  assert(
+    !out.superLinear,
+    `redactPromptLeakage over one unbroken block: ${out.baseChars} chars took ${out.baseMs} steps but ` +
+      `${out.scaledChars} chars (${out.sizeFactor.toFixed(1)}x) took ` +
+      `${out.scaledMs} steps, over the ${out.allowedMs} steps a linear rule allows`,
+  );
+  assertStringIncludes(out.output, "the agent reads issue text");
 });
 
 Deno.test("prompt leak - keeps documentation prose for a verbatim-only phrase (Issue #1463)", () => {

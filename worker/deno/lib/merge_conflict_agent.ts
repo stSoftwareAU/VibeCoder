@@ -16,6 +16,7 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import type { RunStats } from "./run_stats.ts";
 import type { runClaudeWithRetry } from "./claude_runner.ts";
 import {
   buildMergeConflictPrompt,
@@ -27,6 +28,7 @@ import { readPrResponseMessage } from "./pr_branch_preparation.ts";
 import type { ConflictIssueContext } from "./conflict_issue_context.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { isProviderUnavailableFailure } from "./agent_output.ts";
+import { beginHandlerLandingStep } from "./handler_watchdog.ts";
 
 export type {
   MergeConflictRepairContext,
@@ -84,6 +86,12 @@ export interface MergeConflictAgentRequest {
   repair?: MergeConflictRepairContext;
   /** The agent runner — `deps.claude.runClaudeWithRetry` in production. */
   runAgent: typeof runClaudeWithRetry;
+  /**
+   * Every invocation's stats, once the agent has actually been asked
+   * (Issue #4153). Called on a failed run too, so the cost is recorded
+   * either way. Absent for a caller that does not record.
+   */
+  onRunStats?: (stats: readonly (RunStats | undefined)[]) => void;
 }
 
 /**
@@ -98,6 +106,12 @@ export interface MergeConflictAgentRequest {
 export interface MergeConflictAgentOutcome {
   /** The run was ended by the worker (SIGTERM, exit 143). */
   terminated: boolean;
+  /**
+   * The finish deadline ended the run (Issue #4245). Like `terminated`, the
+   * tree is not a verdict: the caller logs the release and applies no
+   * failure label.
+   */
+  finishDeadline?: boolean;
   /**
    * Set when the provider refused to serve the run — a spent balance, a
    * rejected credential or an outlasting 429/5xx (Issue #2613). Like
@@ -129,6 +143,7 @@ export async function runMergeConflictAgent(
     logger,
     repair,
     runAgent,
+    onRunStats,
   } = request;
   const claudeTimeout = request.timeouts?.claudeTimeout ??
     DEFAULT_CONFLICT_AGENT_TIMEOUT;
@@ -171,11 +186,19 @@ export async function runMergeConflictAgent(
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "merge_conflict",
+      captureInvocationStats: true,
       repo,
       cwd: workDir,
       logger,
     },
     { maxRetries },
+  );
+  // The cost was spent whether or not the run resolved the conflict
+  // (Issue #4153). A prompt that never reached the agent does not get here.
+  onRunStats?.(
+    claudeResult.ok
+      ? claudeResult.value.invocationStats ?? [claudeResult.value.runStats]
+      : [undefined],
   );
 
   if (!claudeResult.ok) {
@@ -190,6 +213,15 @@ export async function runMergeConflictAgent(
   // failure the target must pay for.
   if (claudeResult.value.terminated) {
     return { ok: true, value: { terminated: true } };
+  }
+  if (claudeResult.value.finishDeadline) {
+    const targetLabel = target.kind === "pr"
+      ? `${repo}#${target.prNumber}`
+      : `${repo} ${target.intoBranch}`;
+    logger.info(
+      `Merge-conflict resolution for ${targetLabel} released on schedule: the finish deadline was reached`,
+    );
+    return { ok: true, value: { terminated: false, finishDeadline: true } };
   }
   if (claudeResult.value.timedOut) {
     return {
@@ -219,6 +251,10 @@ export async function runMergeConflictAgent(
     };
   }
 
+  // The agent has exited. Commit, the pre-commit safety gate and push are
+  // still to come, and those count as the handler still working (Issue #4173).
+  // A no-op when this run is not inside a watched handler.
+  beginHandlerLandingStep("commit");
   return { ok: true, value: { terminated: false } };
 }
 

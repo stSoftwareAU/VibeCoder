@@ -58,7 +58,7 @@ sequenceDiagram
         else blocked twice in one run
             C->>S: recordSecurityFixGateBlock(countsAsBlockedRun=true)
             C->>GH: one comment carrying BOTH verdicts
-            C->>GH: needs-human after 2 consecutive blocked runs
+            C->>GH: gate-bug issue in VibeCoder after 2 consecutive blocked runs
             C-->>E: PR creation blocked — attempt N+1 reads run state
         end
     else evidence complete
@@ -242,7 +242,7 @@ what nobody could tell during #1385.
 
 A retry the worker could not launch at all — a rate limit, a failed spawn — is
 not a second gate verdict: the block is still reported on the issue, but it
-charges no blocked run, so a flaky CLI cannot spend the hand-off budget below.
+charges no blocked run, so a flaky CLI cannot trigger the gate-bug filing below.
 Its reason is deliberately left unmarked, so the launch error is still
 classified on its own text.
 
@@ -268,10 +268,14 @@ counts (Issue #1279).
 
 ### After two blocked runs
 
-Two consecutive blocked runs on one issue and the worker stops re-attempting:
-`needs-human` is applied through the guarded `escalateToHuman` chokepoint, with
-a comment quoting the last verdict and naming the gate itself as a suspect. The
-label and its explanation are always applied together.
+Two consecutive blocked runs on one issue are a Vibe Coder defect, never a
+hand-off (Issue #4298). The worker files — or dedupes onto — one gate-bug issue
+in `stSoftwareAU/VibeCoder` through the run-failure filer
+(`run_failure_issue.ts`, class `security-fix-gate-blocked`), quoting the last
+verdict, naming the source issue and naming the suspect: the gate itself, or the
+discrimination runner when the block rests on an executed check. The source
+issue keeps its `failed-once` record and is retried on the normal ladder; no
+`needs-human` is applied.
 
 ## Configuration
 

@@ -48,6 +48,10 @@
 
 import { formatGb, type HostDiskStatus } from "./host_disk.ts";
 import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+import {
   cargoTargetDirForCheckout,
   EPHEMERAL_CARGO_TARGET_ROOT,
 } from "./ephemeral_build_cache.ts";
@@ -123,6 +127,13 @@ function belongsTo(path: string, key: string): boolean {
   return name === key || name.startsWith(`${key}-`);
 }
 
+/**
+ * Phrase a deferral carries when the merge may land and cargo must not run
+ * (Issue #4326). Callers match it with {@link deferralSkipsCargoForMerge}.
+ */
+export const CARGO_BUILD_SKIPPED_FOR_MERGE =
+  "the ephemeral cargo build is skipped and CI builds the merged tree";
+
 /** The budget's verdict for one build. */
 export interface CargoBudgetVerdict {
   proceed: boolean;
@@ -130,6 +141,24 @@ export interface CargoBudgetVerdict {
   prunedBytes: number;
   /** One line for the log. */
   detail: string;
+  /**
+   * Free space is at or above the floor and short of floor + headroom, and
+   * pruning freed nothing. Cargo must not run; a merge-only sync may land
+   * and the repository's CI builds the tree (Issue #4326).
+   */
+  skipCargoBuild: boolean;
+}
+
+/**
+ * Whether `deferral` is the merge-only cargo skip (Issue #4326).
+ *
+ * A real build still waits. A milestone sync that is only a merge does not.
+ */
+export function deferralSkipsCargoForMerge(
+  deferral: string | null,
+): boolean {
+  return deferral !== null &&
+    deferral.includes(CARGO_BUILD_SKIPPED_FOR_MERGE);
 }
 
 /**
@@ -162,6 +191,7 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: true,
       prunedBytes: 0,
+      skipCargoBuild: false,
       detail: `within budget (${terms})`,
     };
   }
@@ -173,6 +203,7 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: false,
       prunedBytes: 0,
+      skipCargoBuild: false,
       detail: `ephemeral cargo root over budget (${terms}) and ${root} could ` +
         `not be read to prune it: ${
           err instanceof Error ? err.message : String(err)
@@ -207,13 +238,29 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: true,
       prunedBytes: pruned,
+      skipCargoBuild: false,
       detail: `ephemeral cargo root back within budget (${terms}) — ` +
         `${prunedNote} (Issue #3178)`,
+    };
+  }
+  // Above the floor, with nothing pruned, a merge must not wait on cargo.
+  // The host stays at or above its floor because cargo does not run; CI
+  // builds the merged tree (Issue #4326). A prune that freed some bytes and
+  // is still short keeps refusing, so a partial free cannot start a build.
+  if (pruned === 0 && input.hostFreeBytes >= input.floorBytes) {
+    return {
+      proceed: false,
+      prunedBytes: 0,
+      skipCargoBuild: true,
+      detail: `ephemeral cargo root over budget (${terms}) — ${prunedNote} ` +
+        `and ${formatGb(shortfall)} is still short, so ` +
+        `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`,
     };
   }
   return {
     proceed: false,
     prunedBytes: pruned,
+    skipCargoBuild: false,
     detail: `ephemeral cargo root over budget (${terms}) — ${prunedNote} and ` +
       `${formatGb(shortfall)} is still short, so the build is refused ` +
       `(Issue #3178)`,
@@ -261,6 +308,32 @@ export async function heavyBuildDeferral(
   return verdict.proceed ? null : verdict.detail;
 }
 
+/**
+ * Whether cargo must not run for `checkoutPath` (Issue #4326).
+ *
+ * True only when the host is above its floor, the runtime refuses the trim,
+ * and pruning idle target directories freed nothing. No registered probe
+ * (tests, ad hoc callers) never skips.
+ */
+export async function shouldSkipEphemeralCargoBuild(
+  checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<boolean> {
+  if (probe === undefined) return false;
+  const reading = await probe();
+  if (judgeHostDiskForBuild(reading) !== null) return false;
+  if (!reading.trimRefused) return false;
+  const free = reading.status.availableBytes;
+  if (reading.status.level !== "ok" || free === undefined) return false;
+  if (reading.floorBytes === undefined) return false;
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath,
+    hostFreeBytes: free,
+    floorBytes: reading.floorBytes,
+  }, deps);
+  return verdict.skipCargoBuild;
+}
+
 /** What {@link releaseCheckoutTargetDirs} removed. */
 export interface ReleasedTargetDirs {
   bytes: number;
@@ -283,9 +356,15 @@ export async function releaseCheckoutTargetDirs(
   let dirs: EphemeralTargetDir[];
   try {
     dirs = await deps.listTargetDirs(root);
-  } catch {
-    // No root yet means nothing was built there.
-    return { bytes: 0, errors: [] };
+  } catch (err) {
+    // No root yet means nothing was built there. Any other failure — a `du`
+    // that timed out among them — left this checkout's dirs in place, and
+    // saying so is what keeps a leak on the disk floor visible.
+    if (err instanceof Deno.errors.NotFound) return { bytes: 0, errors: [] };
+    return {
+      bytes: 0,
+      errors: [`${root}: ${err instanceof Error ? err.message : String(err)}`],
+    };
   }
   let bytes = 0;
   const errors: string[] = [];
@@ -302,17 +381,25 @@ export async function releaseCheckoutTargetDirs(
   return { bytes, errors };
 }
 
-/** `du -sk` of one directory, in bytes; 0 when it cannot be measured. */
-async function duBytes(path: string): Promise<number> {
+/** `du` of one cargo target. Long enough for a large tree, still bounded. */
+const DU_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** `du -sk` of one directory, in bytes; 0 when it cannot be measured. A timeout is a failure. */
+export async function measureDirectoryBytes(
+  path: string,
+  timeoutMs: number = DU_TIMEOUT_MS,
+): Promise<number> {
   try {
-    const out = await new Deno.Command("du", {
+    const out = await commandOutputWithTimeout("du", {
       args: ["-sk", "--", path],
       stdout: "piped",
       stderr: "null",
-    }).output();
+      timeoutMs,
+    });
     const kb = Number.parseInt(new TextDecoder().decode(out.stdout), 10);
     return Number.isFinite(kb) ? kb * 1024 : 0;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return 0;
   }
 }
@@ -343,7 +430,7 @@ export const productionEphemeralRootDeps: EphemeralRootDeps = {
       const path = `${root}/${entry.name}`;
       dirs.push({
         path,
-        bytes: await duBytes(path),
+        bytes: await measureDirectoryBytes(path),
         lastWriteMs: await lastWriteMs(path),
       });
     }

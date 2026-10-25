@@ -37,7 +37,6 @@ import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
-import type { AnalysisOnlyTrigger } from "../analysis_only_handoff.ts";
 import { retryUnfinishedIssue } from "../unfinished_issue_retry.ts";
 import { redactedTail } from "../redacted_text.ts";
 import {
@@ -262,7 +261,7 @@ export async function handOffDeclaredOutcome(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
-  trigger: AnalysisOnlyTrigger = "no_changes",
+  trigger: "no_changes" | "declared_handoff" = "no_changes",
 ): Promise<DeclaredOutcomeHandoff> {
   const { repo, issueNumber, githubUser, config } = ctx;
   const logger = deps.logger;

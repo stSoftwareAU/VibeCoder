@@ -52,6 +52,7 @@ import {
   scanArtifactUploads,
 } from "./artifact_upload_scanner.ts";
 import { scanGitleaksDrift } from "./gitleaks_drift_scanner.ts";
+import { scanSemgrepTokenDrift } from "./semgrep_token_drift_scanner.ts";
 import {
   collectActionPins,
   findVersionCommentDrift,
@@ -230,6 +231,12 @@ export const WORKFLOW_FILE_CHECKS: readonly WorkflowFileCheck[] = [
     id: "gitleaks-drift",
     label: "the gitleaks workflow still matches the canonical hardened shape",
     run: (files) => scanGitleaksDrift(files).map(fromScanner),
+  },
+  {
+    id: "semgrep-token-config",
+    label:
+      "no `semgrep ci --config` step has `SEMGREP_APP_TOKEN` in scope (`semgrep ci` rejects the pair)",
+    run: (files) => scanSemgrepTokenDrift(files).map(fromScanner),
   },
   {
     id: "strict-mode",

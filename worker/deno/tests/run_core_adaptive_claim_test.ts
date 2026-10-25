@@ -438,10 +438,9 @@ Deno.test("adaptive claim #425 - a long job 20 minutes before the cycle deadline
   );
 });
 
-Deno.test("adaptive claim #425 - an uncapped run has no adaptive floor at all", async () => {
-  // With no VIBE_RUN_MAX_SECONDS nothing will cut the execute short, so
-  // evidence of a long job is not evidence of a doomed claim. The inert floor
-  // is stated in the log rather than left silent (Issue #219).
+Deno.test("adaptive claim #4245 - without a supervisor cap the finish deadline still bounds claims", async () => {
+  // The two-hour finish now supplies the bound even without a supervisor
+  // cap. This claim still has enough time; the floor must not be inert.
   const { claimed, logs } = await runScenario({
     evidenceByIssue: {
       222: { preservedWip: true, previousExecuteTimeout: true },
@@ -452,10 +451,14 @@ Deno.test("adaptive claim #425 - an uncapped run has no adaptive floor at all", 
   assertEquals(claimed[0], 222);
   assert(
     logs.some((m) =>
-      m.includes("Claim-runway floor:") && m.includes("VIBE_RUN_MAX_SECONDS")
+      m.startsWith("Run timeline:") && m.includes("finish=") &&
+      m.includes("VIBE_RUN_MAX_SECONDS is not set")
     ),
-    `expected the inert-floor reason to be logged, got: ${logs.join(" | ")}`,
+    `expected the finish bound without a supervisor cap, got: ${
+      logs.join(" | ")
+    }`,
   );
+  assert(!logs.some((m) => m.startsWith("Claim-runway floor:")));
 });
 
 Deno.test("adaptive claim #245 - a scan that keeps re-offering a deferred issue stops the loop loudly", async () => {

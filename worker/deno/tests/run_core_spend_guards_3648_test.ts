@@ -528,7 +528,7 @@ Deno.test(
 );
 
 Deno.test(
-  "Issue #425 - an uncapped run states the inert floor and keeps claiming",
+  "Issue #4245 - without a supervisor cap the run claims within its finish deadline",
   async () => {
     const logs: string[] = [];
     let now = 0;
@@ -544,8 +544,8 @@ Deno.test(
         now += ms ?? 30_000;
         return Promise.resolve();
       },
-      // A floor is configured, but there is no supervisor cap to measure it
-      // against, so it can refuse nothing — and says so once.
+      // The finish deadline supplies the bound even without a supervisor
+      // cap. Both half-hour jobs still have enough runway to be claimed.
       minClaimRunwaySeconds: 300,
       findNextIssue: () =>
         Promise.resolve({
@@ -569,14 +569,17 @@ Deno.test(
     assertEquals(
       claims,
       2,
-      `an uncapped run must keep claiming until the deadline, got ${claims}`,
+      `both jobs fit before the target and finish deadline, got ${claims}`,
     );
     assert(
       logs.some((m) =>
-        m.includes("Claim-runway floor:") &&
-        m.includes("VIBE_RUN_MAX_SECONDS")
+        m.startsWith("Run timeline:") && m.includes("finish=") &&
+        m.includes("VIBE_RUN_MAX_SECONDS is not set")
       ),
-      `expected the inert-floor reason, got: ${logs.join(" | ")}`,
+      `expected the finish bound without a supervisor cap, got: ${
+        logs.join(" | ")
+      }`,
     );
+    assert(!logs.some((m) => m.startsWith("Claim-runway floor:")));
   },
 );

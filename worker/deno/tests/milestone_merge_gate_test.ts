@@ -12,7 +12,6 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  buildMergeGateEscalationComment,
   checkMergedTree,
   collapseRepeatedLines,
   detectRustToolchainGap,
@@ -21,6 +20,7 @@ import {
   mergeGateFailureError,
   type TypeCheckProject,
 } from "../lib/milestone_merge_gate.ts";
+import { CARGO_BUILD_SKIPPED_FOR_MERGE } from "../lib/heavy_build_gate.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
 /** Write a file, creating its parent directory. */
@@ -231,20 +231,6 @@ Deno.test("mergeGateFailureError - is typed so the sync can escalate on it (Issu
   assertStringIncludes(err.message, "onSlotIdle");
 });
 
-Deno.test("buildMergeGateEscalationComment - names the merge and the check output (Issue #974)", () => {
-  const body = buildMergeGateEscalationComment({
-    repo: "owner/repo",
-    milestoneBranch: "milestone/x",
-    defaultBranch: "main",
-    reason: "deno task check failed: TS2339 Property 'onSlotIdle'",
-  });
-  assertStringIncludes(body, "needs a human");
-  assertStringIncludes(body, "milestone/x");
-  assertStringIncludes(body, "main");
-  assertStringIncludes(body, "onSlotIdle");
-  assertStringIncludes(body, "not pushed");
-});
-
 Deno.test("checkMergedTree - a tree the gate cannot read fails, it is not assumed clean (Issue #974)", async () => {
   const missing = "/nonexistent-path-for-issue-974";
   const projects: TypeCheckProject[] = await findTypeCheckProjects(missing);
@@ -432,4 +418,25 @@ Deno.test("collapseRepeatedLines - consecutive duplicates collapse, non-consecut
   );
   assertEquals(collapseRepeatedLines("x\ny\nz"), "x\ny\nz");
   assertEquals(collapseRepeatedLines("only one line"), "only one line");
+});
+
+Deno.test("checkMergedTree - cargo is not run when the disk budget skips it, and the merge is not failed (Issue #4326)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    let ran = 0;
+    const outcome = await checkMergedTree(
+      dir,
+      () => {
+        ran++;
+        return Promise.resolve({ code: 1, output: "cargo must not run" });
+      },
+      () => Promise.resolve(true),
+    );
+    assertEquals(ran, 0, "the ephemeral cargo build must not start");
+    assertEquals(outcome.status, "skipped");
+    assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
+  });
 });

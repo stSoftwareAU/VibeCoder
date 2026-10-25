@@ -10,7 +10,6 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { buildSummaryRuleRetryPrompt } from "../lib/summary_rule_gate_retry.ts";
-import { buildSummaryClaimGateComment } from "../lib/summary_claim_check.ts";
 
 const VERDICT = {
   reason:
@@ -71,35 +70,27 @@ Deno.test("summary-rule retry - no existing PR says the worker will raise one", 
 
   assertStringIncludes(
     prompt,
-    "the worker will re-run the quality gate and raise the PR as soon as " +
-      "the summary satisfies the gate",
+    "raise the pull request and arm auto-merge",
   );
+  assertStringIncludes(prompt, "They are advice, not a block");
 });
 
 Deno.test("summary-rule retry - an existing PR says the worker will not finalise it yet", () => {
+  const existingPrUrl = "https://github.com/org/repo/pull/42";
   const prompt = buildSummaryRuleRetryPrompt(
-    { ...VERDICT, existingPrUrl: "https://github.com/org/repo/pull/42" },
+    { ...VERDICT, existingPrUrl },
     "org/repo",
     7,
   );
 
-  assertStringIncludes(prompt, "a PR is already open for this branch");
+  assertStringIncludes(prompt, "a pull request is already open");
   assertStringIncludes(
     prompt,
-    "the worker will not finalise it (or arm auto-merge on it) until the " +
-      "summary satisfies the gate",
+    "update that pull request and arm auto-merge",
   );
   assertStringIncludes(prompt, "Do not create the PR yourself");
-  // The URL itself is never interpolated into the prompt. A regex literal
-  // match (rather than String#includes) avoids CodeQL's
-  // incomplete-url-substring-sanitization heuristic, which treats any raw
-  // substring check against a URL-shaped literal as a would-be trust
-  // decision — this is a leak-absence assertion on generated text, not a
-  // URL validation.
-  assertEquals(
-    /https:\/\/github\.com\/org\/repo\/pull\/42/.test(prompt),
-    false,
-  );
+  // Removing the URL must leave the prompt unchanged: no occurrence leaked.
+  assertEquals(prompt.replaceAll(existingPrUrl, ""), prompt);
 });
 
 Deno.test("summary-rule retry - an unusable issue number fails loud", () => {
@@ -331,20 +322,8 @@ Deno.test("summary-rule retry - two folded sections render as two numbered REQUI
   assertEquals(sectionTwoIndex > item2HeaderIndex, true);
 });
 
-Deno.test("summary-rule retry - a folded summary-claim-check section reaches the prompt as its own required item", () => {
-  const claimComment = buildSummaryClaimGateComment({
-    findings: [
-      {
-        file: "docs/archive/pr-summaries/pr-summary-7.md",
-        sentence: "`parseRow()` escapes the phrase and joins its words.",
-        reason: "the head's parseRow builds no regex",
-      },
-    ],
-    docFindings: [],
-    unconfirmedFindings: [],
-    testPlanProblems: [],
-    notChecked: [],
-  });
+Deno.test("summary-rule retry - a folded second section reaches the prompt as its own required item", () => {
+  const claimComment = "PR summary describes named code wrongly";
   const baseComment = "⚠️ **Acceptance-criteria closure missing.**";
   const prompt = buildSummaryRuleRetryPrompt(
     {

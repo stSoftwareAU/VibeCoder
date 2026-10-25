@@ -24,42 +24,39 @@ function makeSilentLogger(): Logger {
   } as unknown as Logger;
 }
 
-/** Capture the arguments handed to the escalation helper. */
-interface EscalationCapture {
-  calls: Array<{
-    repo: string;
-    prNumber: number;
-    reason: string;
-    nextStep: string;
-    dedupKey?: string;
-  }>;
-  fn: NonNullable<Parameters<typeof handleMergeAttempt>[0]["escalateFn"]>;
+/** A gh runner that records every call and answers each with "". */
+function makeGhRecorder(): {
+  calls: string[][];
+  fn: (args: string[]) => Promise<string>;
+} {
+  const calls: string[][] = [];
+  return {
+    calls,
+    fn: (args) => {
+      calls.push(args);
+      return Promise.resolve("");
+    },
+  };
 }
 
-function makeEscalationCapture(
-  fail = false,
-): EscalationCapture {
-  const calls: EscalationCapture["calls"] = [];
-  const fn: EscalationCapture["fn"] = (options) => {
-    calls.push({
-      repo: options.repo,
-      prNumber: options.target.number,
-      reason: options.reason,
-      nextStep: options.nextStep,
-      dedupKey: options.dedupKey,
-    });
-    if (fail) {
-      return Promise.resolve({
-        ok: false,
-        error: new Error("escalation failed"),
-      } as Result<never>);
-    }
-    return Promise.resolve({
-      ok: true,
-      value: { commentPosted: true, labelAdded: true, dedupSkipped: false },
-    });
+/** Whether any recorded gh call comments on, or labels, the PR. */
+function handsBack(calls: readonly string[][]): boolean {
+  return calls.some((args) =>
+    args.includes("comment") || args.includes("--add-label") ||
+    args.some((a) => a.includes("needs-human"))
+  );
+}
+
+/** A logger that keeps its warnings, so a retry can be shown to be loud. */
+function makeWarnLogger(): { warns: string[]; logger: Logger } {
+  const warns: string[] = [];
+  return {
+    warns,
+    logger: {
+      ...makeSilentLogger(),
+      warn: (msg: string) => warns.push(msg),
+    } as unknown as Logger,
   };
-  return { calls, fn };
 }
 
 // ---------------------------------------------------------------------------
@@ -99,14 +96,18 @@ Deno.test("classifyMergeAttempt - a PR held for a review is a wait, not an escal
   );
 });
 
-Deno.test("classifyMergeAttempt - a green PR that will not merge escalates", () => {
+Deno.test("classifyMergeAttempt - a green PR that will not merge is retried, never handed to a human (Issue #4304)", () => {
   assertEquals(
     classifyMergeAttempt({
       kind: "merge_error",
       message: "GraphQL: Pull request is not mergeable",
     }),
-    "escalate",
+    "retry",
   );
+});
+
+Deno.test("classifyMergeAttempt - a head with no checks is retried, never handed to a human (Issue #4304)", () => {
+  assertEquals(classifyMergeAttempt({ kind: "no_checks" }), "retry");
 });
 
 // ---------------------------------------------------------------------------
@@ -114,57 +115,46 @@ Deno.test("classifyMergeAttempt - a green PR that will not merge escalates", () 
 // ---------------------------------------------------------------------------
 
 Deno.test("handleMergeAttempt - landed PR neither comments nor escalates", async () => {
-  const capture = makeEscalationCapture();
-  const ghCalls: string[][] = [];
+  const gh = makeGhRecorder();
   const result = await handleMergeAttempt({
     repo: "owner/repo",
     prNumber: 7,
     outcome: { kind: "landed" },
     logger: makeSilentLogger(),
-    ghFn: (args) => {
-      ghCalls.push(args);
-      return Promise.resolve("");
-    },
-    escalateFn: capture.fn,
+    ghFn: gh.fn,
   });
 
   assertEquals(result.disposition, "landed");
-  assertEquals(result.escalated, false);
   assertEquals(result.branchUpdateRequested, false);
-  assertEquals(capture.calls.length, 0);
-  assertEquals(ghCalls.length, 0);
+  assertEquals(gh.calls.length, 0);
 });
 
 Deno.test("handleMergeAttempt - pending checks do not escalate (gate must stay tight)", async () => {
-  const capture = makeEscalationCapture();
+  const gh = makeGhRecorder();
   const result = await handleMergeAttempt({
     repo: "owner/repo",
     prNumber: 7,
     outcome: { kind: "checks_pending" },
     logger: makeSilentLogger(),
-    ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
+    ghFn: gh.fn,
   });
 
   assertEquals(result.disposition, "await_checks");
-  assertEquals(result.escalated, false);
-  assertEquals(capture.calls.length, 0);
+  assertEquals(gh.calls.length, 0);
 });
 
 Deno.test("handleMergeAttempt - failed checks do not escalate from the merge path", async () => {
-  const capture = makeEscalationCapture();
+  const gh = makeGhRecorder();
   const result = await handleMergeAttempt({
     repo: "owner/repo",
     prNumber: 7,
     outcome: { kind: "checks_failed" },
     logger: makeSilentLogger(),
-    ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
+    ghFn: gh.fn,
   });
 
   assertEquals(result.disposition, "await_checks");
-  assertEquals(result.escalated, false);
-  assertEquals(capture.calls.length, 0);
+  assertEquals(gh.calls.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -172,15 +162,14 @@ Deno.test("handleMergeAttempt - failed checks do not escalate from the merge pat
 // ---------------------------------------------------------------------------
 
 Deno.test("handleMergeAttempt - stale base requests a branch update, no escalation", async () => {
-  const capture = makeEscalationCapture();
+  const gh = makeGhRecorder();
   const updated: Array<{ repo: string; prNumber: number }> = [];
   const result = await handleMergeAttempt({
     repo: "owner/repo",
     prNumber: 42,
     outcome: { kind: "behind_target" },
     logger: makeSilentLogger(),
-    ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
+    ghFn: gh.fn,
     updateBranchFn: (repo, prNumber) => {
       updated.push({ repo, prNumber });
       return Promise.resolve({ ok: true, value: undefined } as Result<void>);
@@ -189,20 +178,19 @@ Deno.test("handleMergeAttempt - stale base requests a branch update, no escalati
 
   assertEquals(result.disposition, "update_branch");
   assertEquals(result.branchUpdateRequested, true);
-  assertEquals(result.escalated, false);
   assertEquals(updated, [{ repo: "owner/repo", prNumber: 42 }]);
-  assertEquals(capture.calls.length, 0);
+  assertEquals(handsBack(gh.calls), false);
 });
 
-Deno.test("handleMergeAttempt - a failed branch update escalates rather than going quiet", async () => {
-  const capture = makeEscalationCapture();
+Deno.test("handleMergeAttempt - a failed branch update is retried next cycle, never handed to a human (Issue #4304)", async () => {
+  const gh = makeGhRecorder();
+  const { warns, logger } = makeWarnLogger();
   const result = await handleMergeAttempt({
     repo: "owner/repo",
     prNumber: 42,
     outcome: { kind: "behind_target" },
-    logger: makeSilentLogger(),
-    ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
+    logger,
+    ghFn: gh.fn,
     updateBranchFn: () =>
       Promise.resolve({
         ok: false,
@@ -210,20 +198,21 @@ Deno.test("handleMergeAttempt - a failed branch update escalates rather than goi
       } as Result<void>),
   });
 
-  assertEquals(result.disposition, "escalate");
+  assertEquals(result.disposition, "retry");
   assertEquals(result.branchUpdateRequested, false);
-  assertEquals(result.escalated, true);
-  assertEquals(capture.calls.length, 1);
-  assertStringIncludes(capture.calls[0]!.reason, "behind its base branch");
-  assertStringIncludes(capture.calls[0]!.reason, "merge conflict");
+  assertEquals(handsBack(gh.calls), false);
+  assertEquals(warns.length, 1);
+  assertStringIncludes(warns[0]!, "merge conflict");
 });
 
 // ---------------------------------------------------------------------------
-// handleMergeAttempt — escalation
+// handleMergeAttempt — retry (Issue #4304: no hand-back to a human)
 // ---------------------------------------------------------------------------
 
-Deno.test("handleMergeAttempt - unmergeable green PR comments and escalates", async () => {
-  const capture = makeEscalationCapture();
+Deno.test("handleMergeAttempt - an unmergeable green PR updates its branch and is retried, with no comment or label (Issue #4304)", async () => {
+  const gh = makeGhRecorder();
+  const { warns, logger } = makeWarnLogger();
+  const updated: number[] = [];
   const result = await handleMergeAttempt({
     repo: "owner/repo",
     prNumber: 99,
@@ -231,47 +220,44 @@ Deno.test("handleMergeAttempt - unmergeable green PR comments and escalates", as
       kind: "merge_error",
       message: "GraphQL: At least 1 approving review is required",
     },
-    logger: makeSilentLogger(),
-    ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
+    logger,
+    ghFn: gh.fn,
+    updateBranchFn: (_repo, prNumber) => {
+      updated.push(prNumber);
+      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    },
   });
 
-  assertEquals(result.disposition, "escalate");
-  assertEquals(result.escalated, true);
-  assertEquals(capture.calls.length, 1);
-  assertEquals(capture.calls[0]!.repo, "owner/repo");
-  assertEquals(capture.calls[0]!.prNumber, 99);
-  assertStringIncludes(
-    capture.calls[0]!.reason,
-    "At least 1 approving review is required",
-  );
-  assert(capture.calls[0]!.nextStep.length > 0);
+  assertEquals(result.disposition, "retry");
+  assertEquals(result.branchUpdateRequested, true);
+  assertEquals(updated, [99]);
+  assertEquals(handsBack(gh.calls), false);
+  assertEquals(warns.length, 1);
+  assertStringIncludes(warns[0]!, "At least 1 approving review is required");
 });
 
-Deno.test("handleMergeAttempt - escalation is deduplicated per PR", async () => {
-  const capture = makeEscalationCapture();
-  const outcome = {
-    kind: "merge_error" as const,
-    message: "protected branch update failed",
-  };
-  const base = {
+Deno.test("handleMergeAttempt - a head with no checks is retried with no comment or label (Issue #4304)", async () => {
+  const gh = makeGhRecorder();
+  const result = await handleMergeAttempt({
     repo: "owner/repo",
     prNumber: 5,
-    outcome,
+    outcome: { kind: "no_checks" },
     logger: makeSilentLogger(),
-    ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
-  };
-  await handleMergeAttempt(base);
-  await handleMergeAttempt(base);
+    ghFn: gh.fn,
+    updateBranchFn: () =>
+      Promise.resolve({
+        ok: false,
+        error: new Error("HTTP 422 no new commits"),
+      } as Result<void>),
+  });
 
-  assertEquals(capture.calls.length, 2);
-  assertEquals(capture.calls[0]!.dedupKey, capture.calls[1]!.dedupKey);
-  assertStringIncludes(capture.calls[0]!.dedupKey ?? "", "5");
+  assertEquals(result.disposition, "retry");
+  assertEquals(result.branchUpdateRequested, false);
+  assertEquals(handsBack(gh.calls), false);
 });
 
-Deno.test("handleMergeAttempt - secrets in the merge error are redacted before posting", async () => {
-  const capture = makeEscalationCapture();
+Deno.test("handleMergeAttempt - secrets in the merge error are redacted before they are logged", async () => {
+  const { warns, logger } = makeWarnLogger();
   // Split literal so the synthetic token is not itself a scannable secret.
   const token = "ghp_" + "F".repeat(36);
   await handleMergeAttempt({
@@ -281,39 +267,14 @@ Deno.test("handleMergeAttempt - secrets in the merge error are redacted before p
       kind: "merge_error",
       message: `HTTP 401 using token ${token}`,
     },
-    logger: makeSilentLogger(),
-    ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
-  });
-
-  assertEquals(capture.calls.length, 1);
-  assert(
-    !capture.calls[0]!.reason.includes(token),
-    "raw token must not reach the PR comment",
-  );
-});
-
-Deno.test("handleMergeAttempt - a failing escalation is reported, not swallowed", async () => {
-  const capture = makeEscalationCapture(true);
-  const errors: string[] = [];
-  const logger = {
-    ...makeSilentLogger(),
-    error: (msg: string) => errors.push(msg),
-  } as unknown as Logger;
-
-  const result = await handleMergeAttempt({
-    repo: "owner/repo",
-    prNumber: 5,
-    outcome: { kind: "merge_error", message: "boom" },
     logger,
     ghFn: () => Promise.resolve(""),
-    escalateFn: capture.fn,
+    updateBranchFn: () =>
+      Promise.resolve({ ok: true, value: undefined } as Result<void>),
   });
 
-  assertEquals(result.disposition, "escalate");
-  assertEquals(result.escalated, false);
-  assertEquals(errors.length, 1);
-  assertStringIncludes(errors[0]!, "escalate");
+  assertEquals(warns.length, 1);
+  assert(!warns[0]!.includes(token), "raw token must not reach the log");
 });
 
 // ---------------------------------------------------------------------------
@@ -400,6 +361,5 @@ Deno.test("handleMergeAttempt - a retired sync PR is not escalated to a human (I
   });
 
   assertEquals(handling.disposition, "await_checks");
-  assertEquals(handling.escalated, false);
   assertEquals(calls, []);
 });

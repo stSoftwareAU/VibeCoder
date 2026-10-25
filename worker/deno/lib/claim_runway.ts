@@ -12,23 +12,23 @@
  *   stayed "a documented exception rather than the default tail of every
  *   cycle".
  * - **After #420** a claim taken at minute 59 keeps its full `claude_timeout`
- *   budget and may extend past it while genuinely progressing. Nothing is
- *   truncated, so neither premise survives: #47's rule is retired outright
- *   (there are no deadline-bound executes left for it to make rare), and
- *   #4304's floor is re-based on the boundary that actually kills a run — the
- *   **supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`, resolved by
- *   `run_hard_cap.ts`, Issue #421).
+ *   budget. The two-hour finish (Issue #4242) leaves that claim at least 61
+ *   minutes, so the budget still fits (Issue #4245). #47's rule is retired
+ *   outright, and #4304's floor is re-based on the boundary that actually
+ *   ends the run: the **finish deadline** when a timeline is set and the
+ *   finish arrives before the supervisor ceiling, otherwise the supervisor
+ *   hard cap (`VIBE_RUN_MAX_SECONDS`, Issue #421).
  *
  * The rule this module resolves, post-#397:
  *
- * - The floor is measured against the runway left **to the hard-cap ceiling**,
- *   not to the cycle deadline. A claim is refused only when the supervisor
- *   will step in before the run could finish setup — which is what #4304
- *   always meant, now stated against the deadline that still bites.
- * - With **no hard cap published** (`VIBE_RUN_MAX_SECONDS` unset or `0`, a CLI
- *   run, a test) nothing bounds the run, so no claim can be doomed for want of
- *   runway and the floor is inert. That is never silent: the caller logs
- *   {@link ClaimRunwayFloor.inertReason} once per cycle.
+ * - The floor is measured against the runway left **to the finish deadline**
+ *   when {@link ClaimHardCap.finishMs} is set, and otherwise to the hard-cap
+ *   ceiling. It is never measured to the cycle deadline. A claim is refused
+ *   only when that instant arrives before the run could finish setup.
+ * - With **no finish deadline and no hard cap** nothing bounds the run, so no
+ *   claim can be doomed for want of runway and the floor is inert. That is
+ *   never silent: the caller logs {@link ClaimRunwayFloor.inertReason} once
+ *   per cycle.
  * - The cycle deadline itself is unchanged and is **not** this module's
  *   business: the scan loop and the slot pool still refuse every claim once
  *   `now >= endTime` (Issue #397's soft gate).
@@ -38,6 +38,12 @@
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
+
+import {
+  DEFAULT_RUN_TARGET_SECONDS,
+  finishDeadlineBounds,
+  getRunTimeline,
+} from "./run_timeline.ts";
 
 /**
  * Default `MIN_CLAIM_RUNWAY_SECONDS` (VibeCoder#170): five minutes — enough
@@ -58,15 +64,82 @@ export const DEFAULT_MIN_CLAIM_RUNWAY_SECONDS = 300;
  * can ever offer.
  */
 export interface ClaimHardCap {
-  /** Epoch-ms past which no run of this worker survives. */
+  /**
+   * Epoch-ms past which an extension grant must not move a deadline: the
+   * finish less the kill grace and the WIP reserve when a timeline is set,
+   * otherwise the supervisor ceiling.
+   */
   ceilingMs: number;
-  /** Seconds between the run's start and {@link ceilingMs}. */
+  /**
+   * The finish deadline itself, when a timeline is set (Issue #4245).
+   *
+   * The claim floor measures runway to this instant. Absent, the floor
+   * measures to {@link ceilingMs} — the supervisor hard cap.
+   */
+  finishMs?: number;
+  /** Seconds between the run's start and the instant the floor measures to. */
   windowSeconds: number;
+}
+
+/**
+ * Point a claim cap at the finish deadline when a timeline is published.
+ *
+ * Called at claim time, after `runCoreLoop` has published the timeline.
+ * A snapshot taken before that publication is unchanged. The extension
+ * ceiling is the nearer of the supervisor ceiling and the finish less the
+ * reserve. The floor reads {@link ClaimHardCap.finishMs} when the finish
+ * is the sooner end of the run. A supervisor ceiling that arrives before
+ * the finish still ends the run, so `finishMs` is left unset and the floor
+ * keeps measuring to that ceiling.
+ *
+ * @param base - The supervisor cap, when this run has one.
+ * @param killAfterSeconds - The worker's SIGTERM-to-SIGKILL grace.
+ * @returns The cap the floor should read, or undefined when nothing bounds it.
+ */
+export function anchorClaimCapToFinish(
+  base: ClaimHardCap | undefined,
+  killAfterSeconds: number,
+): ClaimHardCap | undefined {
+  const bounds = finishDeadlineBounds(killAfterSeconds);
+  if (!bounds) return base;
+  const timeline = getRunTimeline();
+  const startedMs = timeline
+    ? timeline.targetMs - DEFAULT_RUN_TARGET_SECONDS * 1000
+    : undefined;
+  const supervisorFirst = base !== undefined &&
+    base.ceilingMs < bounds.finishMs;
+  const finishWindow = startedMs === undefined
+    ? (base?.windowSeconds ?? 0)
+    : Math.max(0, Math.round((bounds.finishMs - startedMs) / 1000));
+  return {
+    ceilingMs: base
+      ? Math.min(base.ceilingMs, bounds.ceilingMs)
+      : bounds.ceilingMs,
+    ...(supervisorFirst ? {} : { finishMs: bounds.finishMs }),
+    windowSeconds: supervisorFirst ? base.windowSeconds : finishWindow,
+  };
+}
+
+/** The instant {@link belowClaimRunwayFloor} measures runway to. */
+function claimRunwayDeadlineMs(hardCap: ClaimHardCap): number {
+  return hardCap.finishMs ?? hardCap.ceilingMs;
+}
+
+/**
+ * The words for the instant {@link hardCapRunwaySeconds} measured.
+ *
+ * A timeline names the finish deadline. With no timeline the floor still
+ * measures to the supervisor hard cap.
+ */
+export function claimRunwayBoundPhrase(floor: ClaimRunwayFloor): string {
+  return floor.hardCap?.finishMs !== undefined
+    ? "the finish deadline"
+    : "the supervisor hard cap";
 }
 
 /** Outcome of {@link resolveClaimRunwayFloor}. */
 export interface ClaimRunwayFloor {
-  /** Seconds of hard-cap runway a new claim must have. 0 disables the floor. */
+  /** Seconds of runway a new claim must have. 0 disables the floor. */
   floorSeconds: number;
   /** The cap the floor is measured against; absent means the run is uncapped. */
   hardCap?: ClaimHardCap;
@@ -117,8 +190,8 @@ export function resolveClaimRunwayFloor(options: {
 }
 
 /**
- * Seconds of runway left to the hard-cap ceiling, or undefined when this run
- * is uncapped.
+ * Seconds of runway left to the finish deadline when one is set, otherwise
+ * to the hard-cap ceiling. Undefined when this run is uncapped.
  *
  * @param floor - The resolved floor.
  * @param nowMs - Current epoch-ms.
@@ -128,11 +201,15 @@ export function hardCapRunwaySeconds(
   nowMs: number,
 ): number | undefined {
   if (!floor.hardCap) return undefined;
-  return Math.max(0, Math.round((floor.hardCap.ceilingMs - nowMs) / 1000));
+  return Math.max(
+    0,
+    Math.round((claimRunwayDeadlineMs(floor.hardCap) - nowMs) / 1000),
+  );
 }
 
 /**
- * True when a claim taken now would have less hard-cap runway than the floor.
+ * True when a claim taken now would have less runway to the finish deadline
+ * (or the hard-cap ceiling, when no timeline is set) than the floor.
  *
  * Always false on an uncapped run and on a disabled floor — both are inert by
  * construction, and {@link ClaimRunwayFloor.inertReason} says so.
@@ -145,5 +222,6 @@ export function belowClaimRunwayFloor(
   nowMs: number,
 ): boolean {
   if (floor.floorSeconds <= 0 || !floor.hardCap) return false;
-  return nowMs + floor.floorSeconds * 1000 >= floor.hardCap.ceilingMs;
+  return nowMs + floor.floorSeconds * 1000 >=
+    claimRunwayDeadlineMs(floor.hardCap);
 }

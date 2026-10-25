@@ -27,6 +27,28 @@ import {
   formatMissingToolsMessage,
   formatQualityFailureMessage,
 } from "../lib/quality_helpers.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "../lib/subprocess_timeout.ts";
+
+/** Port and process probes. Seconds, not an unbounded wait. */
+const PROBE_TIMEOUT_MS = 10_000;
+
+function probeCommand(
+  binary: string,
+  args: string[],
+  stdout: "piped" | "null",
+  timeoutMs: number,
+): Promise<Deno.CommandOutput> {
+  return commandOutputWithTimeout(binary, {
+    args,
+    stdout,
+    stderr: "null",
+    stdin: "null",
+    timeoutMs,
+  });
+}
 
 /** Data returned by quality helper operations. */
 interface QualityHelpersData {
@@ -156,7 +178,7 @@ export const qualityHelpersCommand: Command = {
         // Clean up ports before running
         await cleanupDevServerPorts();
 
-        const exitCode = await runWithTimeout(command, timeoutSeconds);
+        const exitCode = await runQualityCommand(command, timeoutSeconds);
 
         // Clean up after running
         await cleanupQualitySubprocesses();
@@ -200,31 +222,37 @@ export const qualityHelpersCommand: Command = {
 
 /**
  * Clean up stale processes on common dev server ports.
+ *
+ * A probe that times out is rethrown. Swallowing it reported the cleanup as
+ * complete when the ports were never inspected.
  */
-async function cleanupDevServerPorts(): Promise<void> {
+export async function cleanupDevServerPorts(
+  timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<void> {
   const ports = (Deno.env.get("DEV_SERVER_PORTS") ?? "3000 3001 5173 8080 8081")
     .split(/\s+/);
 
   for (const port of ports) {
     try {
-      const lsof = new Deno.Command("lsof", {
-        args: ["-ti:" + port],
-        stdout: "piped",
-        stderr: "null",
-      });
-      const result = await lsof.output();
+      const result = await probeCommand(
+        "lsof",
+        ["-ti:" + port],
+        "piped",
+        timeoutMs,
+      );
       if (result.success) {
         const pids = new TextDecoder().decode(result.stdout).trim();
         if (pids) {
-          const kill = new Deno.Command("kill", {
-            args: ["-9", ...pids.split("\n")],
-            stdout: "null",
-            stderr: "null",
-          });
-          await kill.output();
+          await probeCommand(
+            "kill",
+            ["-9", ...pids.split("\n")],
+            "null",
+            timeoutMs,
+          );
         }
       }
-    } catch {
+    } catch (error) {
+      if (isCommandTimeoutError(error)) throw error;
       // Port not in use or lsof not available
     }
   }
@@ -247,38 +275,40 @@ async function cleanupQualitySubprocesses(): Promise<void> {
 
   for (const pattern of patterns) {
     try {
-      const pgrep = new Deno.Command("pgrep", {
-        args: ["-f", pattern],
-        stdout: "piped",
-        stderr: "null",
-      });
-      const result = await pgrep.output();
+      const result = await probeCommand(
+        "pgrep",
+        ["-f", pattern],
+        "piped",
+        PROBE_TIMEOUT_MS,
+      );
       if (result.success) {
         const pids = new TextDecoder().decode(result.stdout).trim();
         if (pids) {
-          const kill = new Deno.Command("kill", {
-            args: ["-9", ...pids.split("\n")],
-            stdout: "null",
-            stderr: "null",
-          });
-          await kill.output();
+          await probeCommand(
+            "kill",
+            ["-9", ...pids.split("\n")],
+            "null",
+            PROBE_TIMEOUT_MS,
+          );
         }
       }
-    } catch {
+    } catch (error) {
+      if (isCommandTimeoutError(error)) throw error;
       // pgrep not available or no matching processes
     }
   }
 }
 
 /**
- * Run a command with a timeout.
+ * Run a quality command with a timeout.
  *
- * Returns the exit code (124 if timed out, 137 if killed).
+ * Returns the exit code. A timeout is a non-zero code, never success.
  */
-async function runWithTimeout(
+export async function runQualityCommand(
   command: string,
   timeoutSeconds: number,
 ): Promise<number> {
+  const timeoutMs = timeoutSeconds * 1000;
   // Try to find a timeout command
   const timeoutCmd = Deno.env.get("TIMEOUT_CMD") ?? "";
   let cmdArgs: string[];
@@ -297,17 +327,13 @@ async function runWithTimeout(
     let foundTimeout = "";
     for (const t of ["gtimeout", "timeout"]) {
       try {
-        const which = new Deno.Command("which", {
-          args: [t],
-          stdout: "null",
-          stderr: "null",
-        });
-        const result = await which.output();
+        const result = await probeCommand("which", [t], "null", timeoutMs);
         if (result.success) {
           foundTimeout = t;
           break;
         }
-      } catch {
+      } catch (error) {
+        if (isCommandTimeoutError(error)) return 124;
         // Not found
       }
     }
@@ -322,21 +348,22 @@ async function runWithTimeout(
         command,
       ];
     } else {
-      // No timeout command available — run directly
+      // No timeout command available — run directly, still bounded below.
       cmdArgs = ["bash", "-c", command];
     }
   }
 
   try {
-    const proc = new Deno.Command(cmdArgs[0]!, {
+    const result = await commandOutputWithTimeout(cmdArgs[0] ?? "", {
       args: cmdArgs.slice(1),
       stdout: "piped",
       stderr: "piped",
       stdin: "null",
+      timeoutMs,
     });
-    const result = await proc.output();
     return result.code;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) return 124;
     return 1;
   }
 }

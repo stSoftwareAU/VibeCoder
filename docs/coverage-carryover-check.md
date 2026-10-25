@@ -1,29 +1,29 @@
 # Coverage carry-over check
 
-The coverage carry-over check is a PR-raise gate (Issue #3795). It checks that
-the production lines a removed or rewritten test used to execute are still
-executed by some test on the branch, and blocks the PR when a carried line is
-not.
+The coverage carry-over check is an advisory PR-raise gate (Issue #3795,
+Issue #4234). It checks that the production lines a removed or rewritten test
+used to execute are still executed by some test on the branch. A carried line
+that remains uncovered is one in-session note, then one comment on the pull
+request, which is still raised.
 
 ## Why
 
 A fleet PR that rewrites or deletes a test the linked issue retires sometimes
-leaves a branch whose only test was that test. The removed-assertion gate checks
-the stated reason for each removed assertion, and the mutation check mutates only
-the lines a PR adds or changes. The orphaned lines are unchanged, so neither gate
-looks at them, and the branch can ship with no test reaching them. The target
+leaves a branch whose only test was that test. The mutation check mutates only
+the lines a PR adds or changes. The orphaned lines are unchanged, so that check
+does not look at them, and the branch can ship with no test reaching them. The target
 pattern is `rewritten-test-drops-live-branch`.
 
 ## When it runs
 
 The gate runs in the issue-run completion phase, beside the mutation check:
 after the PR summary is final and before the PR is raised. It joins the late
-summary gates and feeds the same single recovery turn, which may change tests.
+summary gates and feeds the same single in-session note, which may change tests.
 
 Unless `skip_coverage_carryover_check` is set (or the runner is not wired), the
 worker first collects the PR diff with `git diff --unified=0 --no-renames
 <base>...HEAD`. A base ref that cannot be resolved, or a diff that cannot be
-collected, is an `error` and blocks the PR, whatever the PR touches. Then the
+collected, is an `error` and is noted on the pull request, which is still raised, whatever the PR touches. Then the
 repository's `quality_credentials` are resolved; if they cannot be, the check is
 not applicable.
 

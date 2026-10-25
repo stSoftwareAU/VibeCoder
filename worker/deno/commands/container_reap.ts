@@ -4,21 +4,24 @@
  * The host-side kill-and-reap watchdog the launchers call. Two modes, one per
  * layer of Issue #4173:
  *
- *   --name <container> [--client-pid <pid>]
+ *   --name <container> [--client-pid <pid>] [--evidence-dir /path]
  *       The outer watchdog fired: the container outlived the launcher's
- *       deadline. Kill it, and if the runtime refuses ("running and can not be
- *       deleted"), SIGKILL the host-side client and the runtime helper holding
- *       it, so the launcher — and the supervisor behind it — is freed.
+ *       deadline. Capture hard-kill evidence into the evidence directory
+ *       before the kill (Issue #4253), then kill it, and if the runtime refuses
+ *       ("running and can not be deleted"), SIGKILL the host-side client and
+ *       the runtime helper holding it, so the launcher — and the supervisor
+ *       behind it — is freed. Without --evidence-dir no evidence is captured.
  *
  *   --stale --max-age-seconds <n> [--exclude <container>] [--refuse-live]
  *       Pre-launch reaper: reap every `vibe-coder-*` container older than the
  *       deadline, or whose launcher process is gone (which is also how a wedge
- *       that survived a host reboot is caught).
+ *       that survived a host reboot is caught). No evidence is captured.
  *
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run \
  *     mod.ts container-reap --runtime container --name vibe-coder-1234 \
- *     [--client-pid 1234] [--grace-seconds 30] [--work-dir /path]
+ *     [--client-pid 1234] [--grace-seconds 30] [--work-dir /path] \
+ *     [--evidence-dir /path]
  *
  * Exits non-zero when a reap was attempted and the container survived it: a
  * host that cannot reap its own containers must not look healthy (#3234).
@@ -140,6 +143,7 @@ export async function reap(
 
     if (containerName) {
       const clientPid = optionalNumber(args["client-pid"]);
+      const evidenceDir = optionalString(args["evidence-dir"]);
       results.push(
         await reapWedgedContainer(deps, {
           containerName,
@@ -148,6 +152,7 @@ export async function reap(
           reason: optionalString(args["reason"]) ??
             "the launcher's watchdog deadline expired",
           trigger: "watchdog",
+          ...(evidenceDir ? { evidenceDir } : {}),
         }),
       );
     }

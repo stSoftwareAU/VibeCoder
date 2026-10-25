@@ -46,6 +46,7 @@ import { createDocumentationAuditTemplate } from "../lib/idle_task_templates/doc
 import { createDuplicatedKnowledgeTemplate } from "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import { createFormatDriftTemplate } from "../lib/idle_task_templates/format_drift_template.ts";
 import { createGateSkipDriftTemplate } from "../lib/idle_task_templates/gate_skip_drift_template.ts";
+import { createPonytailDebtTemplate } from "../lib/idle_task_templates/ponytail_debt_template.ts";
 import { createGitHubActionsAuditTemplate } from "../lib/idle_task_templates/github_actions_audit_template.ts";
 import { createOrphanDepsTemplate } from "../lib/idle_task_templates/orphan_deps_template.ts";
 import { createPrivateRepoReferenceTemplate } from "../lib/idle_task_templates/private_repo_reference_template.ts";
@@ -133,6 +134,17 @@ const FACTORIES = new Map<string, Factory>([
         dedupAuthors: d,
         // `shouldFile` never reaches the scanner; throwing rather than
         // stubbing keeps a future change that does reach it loud.
+        scanFn: () => {
+          throw new Error("the wrapper dedup must not run the scanner");
+        },
+      }),
+  ],
+  [
+    "ponytail-debt",
+    (gh, d) =>
+      createPonytailDebtTemplate({
+        ghCommandFn: gh,
+        dedupAuthors: d,
         scanFn: () => {
           throw new Error("the wrapper dedup must not run the scanner");
         },

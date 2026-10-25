@@ -26,6 +26,7 @@ import {
 } from "../lib/cross_repo_fix.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
+import { runDirectCommand } from "../lib/subprocess_timeout.ts";
 
 /**
  * Default command runner using `Deno.Command`.
@@ -52,18 +53,7 @@ export const defaultRunCommand: RunCommand = async (
       stderr: result.stderr.trim(),
     };
   }
-  const command = new Deno.Command(cmd[0]!, {
-    args: cmd.slice(1),
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const output = await command.output();
-  const decoder = new TextDecoder();
-  return {
-    success: output.success,
-    stdout: decoder.decode(output.stdout).trim(),
-    stderr: decoder.decode(output.stderr).trim(),
-  };
+  return await runDirectCommand(cmd);
 };
 
 /** Typed data returned by the command. */

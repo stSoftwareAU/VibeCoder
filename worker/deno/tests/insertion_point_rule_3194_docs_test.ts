@@ -4,8 +4,8 @@
  * and the thing it describes: a new function between another function's doc
  * comment and that function (GRQ-AutoTrader#2218, #2413), and a new paragraph
  * in front of a sentence reading "Both paragraphs above …"
- * (GRQ-AutoTrader#2478). The docs sweep misses it, because the sentence made
- * wrong is one the diff neither adds nor edits.
+ * (GRQ-AutoTrader#2478). The sentence made wrong is one the diff neither
+ * adds nor edits.
  *
  * CODING-STANDARDS.md "A Code Change Owes a Docs Change" and its mirror in
  * the coding_guidelines prompt must both carry the same "check where you

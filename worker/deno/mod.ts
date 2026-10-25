@@ -170,7 +170,6 @@ import { milestoneBranchSyncCommand } from "./commands/milestone_branch_sync.ts"
 import { diagnoseCommand } from "./commands/diagnose.ts";
 import { diagnoseIssueCommand } from "./commands/diagnose_issue.ts";
 import { diagnoseRepoCommand } from "./commands/diagnose_repo.ts";
-import { clarityPhaseCommand } from "./commands/clarity_phase.ts";
 import { qualityGatePhaseCommand } from "./commands/quality_gate_phase.ts";
 import { executeClaudePhaseCommand } from "./commands/execute_claude_phase.ts";
 import { workOnIssueCommand } from "./commands/work_on_issue.ts";
@@ -187,6 +186,7 @@ import { notifyAuditFailureCommand } from "./commands/notify_audit_failure.ts";
 import { purgeStaleWorkflowIssuesCommand } from "./commands/purge_stale_workflow_issues.ts";
 import { sweepHeartbeatCommentsCommand } from "./commands/sweep_heartbeat_comments.ts";
 import { sweepDriftCommand } from "./commands/sweep_drift.ts";
+import { libSweepRecordCommand } from "./commands/lib_sweep_record.ts";
 import { containerImageHashCommand } from "./commands/container_image_hash.ts";
 import { firstRunVerifyCommand } from "./commands/first_run_verify.ts";
 import { containerRuntimeDetectCommand } from "./commands/container_runtime_detect.ts";
@@ -374,7 +374,6 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(diagnoseCommand);
   registry.register(diagnoseIssueCommand);
   registry.register(diagnoseRepoCommand);
-  registry.register(clarityPhaseCommand);
   registry.register(qualityGatePhaseCommand);
   registry.register(executeClaudePhaseCommand);
   registry.register(workOnIssueCommand);
@@ -391,6 +390,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(purgeStaleWorkflowIssuesCommand);
   registry.register(sweepHeartbeatCommentsCommand);
   registry.register(sweepDriftCommand);
+  registry.register(libSweepRecordCommand);
   registry.register(containerImageHashCommand);
   registry.register(toolchainSelfcheckCommand);
   registry.register(firstRunVerifyCommand);
@@ -671,6 +671,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // Checks the sweep ledger's sweptAt ancestry in CI with no config
       // (Issue #2754).
       "sweep-drift",
+      // Writes sweptAt as git merge-base origin/main HEAD (Issue #4235).
+      "lib-sweep-record",
       // Full-history secrets sweep; runs in CI with no config (Issue #4190).
       "secrets-history-scan",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
@@ -801,6 +803,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // Checks the sweep ledger's sweptAt ancestry in CI with no config
       // (Issue #2754).
       "sweep-drift",
+      // Writes sweptAt as git merge-base origin/main HEAD (Issue #4235).
+      "lib-sweep-record",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
       "security-tabletop",
       // Dossier checker; a pure file check with no config (Issue #4200).

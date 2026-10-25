@@ -273,7 +273,7 @@ Deno.test("processCiFailure - the heartbeat and milestone state land in the work
   }
 });
 
-Deno.test("processCiFailure - skips when max retries exceeded", async () => {
+Deno.test("processCiFailure - max retries re-runs the check and asks nobody to intervene (Issue #4304)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const stateDir = `${tmpDir}/.ci_check_state`;
@@ -281,13 +281,15 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
     await Deno.writeTextFile(`${stateDir}/org_repo_67890.retries`, "3");
 
     const ghCalls: string[][] = [];
-    const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: (args: string[]) => {
-        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-        ghCalls.push(args);
-        return Promise.resolve("");
-      },
+    const gh = (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      ghCalls.push(args);
+      if (args[1] === "repos/org/repo/actions/jobs/67890") {
+        return Promise.resolve(JSON.stringify({ run_id: 808, steps: [] }));
+      }
+      return Promise.resolve("");
     };
+    const mockGithub: Partial<GitHubDeps> = { runGhCommand: gh };
     const deps = createMockDeps({ github: mockGithub });
 
     const processorDeps: CiProcessorDeps = {
@@ -297,11 +299,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
       stateDir,
       workRoot: tmpDir,
       maxCiRetries: 3,
-      ghCommandFn: (args: string[]) => {
-        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-        ghCalls.push(args);
-        return Promise.resolve("");
-      },
+      ghCommandFn: gh,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -310,6 +308,16 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
       assertEquals(result.value.processed, false);
       assertEquals(result.value.summary.includes("exceeded max retries"), true);
     }
+    // No "Manual intervention is required" comment: the failed jobs are
+    // re-run, so a fresh check run with a fresh retry budget follows.
+    assertEquals(
+      ghCalls.filter((a) => a[0] === "pr" && a[1] === "comment"),
+      [],
+    );
+    assertEquals(
+      ghCalls.filter((a) => a[0] === "run" && a[1] === "rerun"),
+      [["run", "rerun", "808", "--failed", "--repo", "org/repo"]],
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

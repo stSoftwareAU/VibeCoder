@@ -6,7 +6,6 @@
 
 import { assertEquals } from "@std/assert";
 import {
-  buildMaxRetriesComment,
   encodeBase64,
   formatFailedCheck,
   getCiCheckRetryCount,
@@ -85,18 +84,6 @@ Deno.test("pr_ci_checks - recordCiCheckRetry handles different checks independen
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
-
-// --- buildMaxRetriesComment ---
-
-Deno.test("pr_ci_checks - buildMaxRetriesComment includes check name and count", () => {
-  const comment = buildMaxRetriesComment("validate-scripts", "12345", 3);
-  assertEquals(comment.includes("validate-scripts"), true);
-  assertEquals(comment.includes("12345"), true);
-  assertEquals(comment.includes("3 times"), true);
-  assertEquals(comment.includes("Manual intervention"), true);
-});
-
-// --- isSpellingCheck ---
 
 Deno.test("pr_ci_checks - isSpellingCheck identifies spelling checks", () => {
   assertEquals(isSpellingCheck("cspell"), true);

@@ -23,24 +23,37 @@ function classification(
   return { category, reason, signals };
 }
 
-Deno.test("buildCiNoChangesResponse - code-fix-required adds needs-human and quotes signals", () => {
+/**
+ * Issue #4304: a no-change outcome is never handed to a human. The worker
+ * re-runs the failing check and retries; the attempt cap then abandons the
+ * PR and redoes its issue. No body may ask a person to act.
+ */
+function assertNoHandBack(body: string): void {
+  assertEquals(body.includes("needs-human"), false, body);
+  for (const ask of ["please re-run", "please review", "please clarify"]) {
+    assertEquals(body.toLowerCase().includes(ask), false, `${ask}: ${body}`);
+  }
+}
+
+Deno.test("buildCiNoChangesResponse - code-fix-required retries rather than adding needs-human (Issue #4304)", () => {
   const c = classification(
     "code-fix-required",
     "semgrep finding (blocking code rules fired)",
     ["check:semgrep", "text:blocking code rules fired"],
   );
   const res = buildCiNoChangesResponse("semgrep", c);
-  assertEquals(res.addNeedsHuman, true);
+  assertEquals(res.addNeedsHuman, false);
   assertEquals(res.category, "code-fix-required");
   assertStringIncludes(res.body, "**semgrep**");
-  assertStringIncludes(res.body, "needs-human");
+  assertStringIncludes(res.body, "re-runs the failing check");
   assertStringIncludes(res.body, "semgrep finding");
   assertStringIncludes(res.body, "check:semgrep");
+  assertNoHandBack(res.body);
   // Must not assert transience.
   assertEquals(res.body.toLowerCase().includes("transient"), false);
 });
 
-Deno.test("buildCiNoChangesResponse - timing suggests re-run, no needs-human", () => {
+Deno.test("buildCiNoChangesResponse - timing: the worker re-runs the check itself (Issue #4304)", () => {
   const c = classification("timing", "timing failure: timed out", [
     "check:test",
     "text:timed out",
@@ -49,11 +62,12 @@ Deno.test("buildCiNoChangesResponse - timing suggests re-run, no needs-human", (
   assertEquals(res.addNeedsHuman, false);
   assertEquals(res.category, "timing");
   assertStringIncludes(res.body, "timing");
-  assertStringIncludes(res.body, "re-run");
+  assertStringIncludes(res.body, "re-runs the failing check");
+  assertNoHandBack(res.body);
   assertEquals(res.body.toLowerCase().includes("transient"), false);
 });
 
-Deno.test("buildCiNoChangesResponse - infrastructure suggests re-run, no needs-human", () => {
+Deno.test("buildCiNoChangesResponse - infrastructure: the worker re-runs the check itself (Issue #4304)", () => {
   const c = classification(
     "infrastructure",
     "infrastructure failure: connect etimedout",
@@ -63,7 +77,8 @@ Deno.test("buildCiNoChangesResponse - infrastructure suggests re-run, no needs-h
   assertEquals(res.addNeedsHuman, false);
   assertEquals(res.category, "infrastructure");
   assertStringIncludes(res.body, "infrastructure");
-  assertStringIncludes(res.body, "re-run");
+  assertStringIncludes(res.body, "re-runs the failing check");
+  assertNoHandBack(res.body);
 });
 
 Deno.test("buildCiNoChangesResponse - unknown is honest, no transience claim", () => {
@@ -74,6 +89,8 @@ Deno.test("buildCiNoChangesResponse - unknown is honest, no transience claim", (
   assertEquals(res.addNeedsHuman, false);
   assertEquals(res.category, "unknown");
   assertStringIncludes(res.body, "could not determine");
+  assertStringIncludes(res.body, "re-runs the failing check");
+  assertNoHandBack(res.body);
   assertEquals(res.body.toLowerCase().includes("transient"), false);
 });
 
@@ -90,22 +107,26 @@ Deno.test("buildCiNoChangesResponse - throws via assertNever on an out-of-union 
   );
 });
 
-Deno.test("buildFeedbackNoChangesResponse - no classification yields neutral message", () => {
+Deno.test("buildFeedbackNoChangesResponse - no classification never asks for clarification (Issue #4304)", () => {
+  // GRQ-AutoTrader#4261 got "Please clarify if a change is required." — a
+  // question handed back to the reviewer instead of an answer.
   const res = buildFeedbackNoChangesResponse();
   assertEquals(res.addNeedsHuman, false);
   assertStringIncludes(res.body, "could not identify a code change");
+  assertNoHandBack(res.body);
+  assertEquals(res.body.toLowerCase().includes("clarify"), false);
   assertEquals(res.body.toLowerCase().includes("transient"), false);
 });
 
-Deno.test("buildFeedbackNoChangesResponse - code-fix classification triggers needs-human", () => {
+Deno.test("buildFeedbackNoChangesResponse - code-fix classification retries, no needs-human (Issue #4304)", () => {
   const c = classification(
     "code-fix-required",
     "semgrep finding",
     ["check:semgrep"],
   );
   const res = buildFeedbackNoChangesResponse(c);
-  assertEquals(res.addNeedsHuman, true);
-  assertStringIncludes(res.body, "needs-human");
+  assertEquals(res.addNeedsHuman, false);
+  assertNoHandBack(res.body);
 });
 
 Deno.test("buildCiNoChangesResponse - a surviving secret finding points at the base branch", () => {
@@ -177,9 +198,9 @@ Deno.test("formatClassifierTrailer - the stock body ends with exactly this trail
   );
 });
 
-Deno.test("buildCiNoChangesResponse - human-gate returns the code-fix-required response (Issue #2726)", () => {
+Deno.test("buildCiNoChangesResponse - human-gate returns the code-fix-required response (Issues #2726, #4304)", () => {
   // This path classifies the agent's own output, so a gate line there must not
-  // let the agent dodge the escalation a code-fix failure gets.
+  // let the agent dodge the retry a code-fix failure gets.
   const signals = ["check:bootstrap-applied", "text:vibe-human-gate"];
   const gate: CiFailureClassification = {
     ...classification("human-gate", "shared reason", signals),
@@ -192,6 +213,7 @@ Deno.test("buildCiNoChangesResponse - human-gate returns the code-fix-required r
   );
   assertEquals(res, expected);
   assertEquals(res.category, "code-fix-required");
-  assertEquals(res.addNeedsHuman, true);
-  assertStringIncludes(res.body, "needs-human");
+  // Issue #4304: and that response no longer hands the PR to a human.
+  assertEquals(res.addNeedsHuman, false);
+  assertNoHandBack(res.body);
 });

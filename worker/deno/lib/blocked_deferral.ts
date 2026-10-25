@@ -55,8 +55,7 @@ export const BLOCKED_DEFERRAL_MARKER_PREFIX = "<!-- vibe-blocked-deferral:";
 /**
  * The hidden marker a deferral comment carries, naming the dependency.
  *
- * Mirrors `buildAnalysisHandoffMarker`: a later run reads it to tell a first
- * deferral from a repeat one.
+ * A later run reads it to tell a first deferral from a repeat one.
  */
 export function buildDeferralMarker(ref: string): string {
   return `${BLOCKED_DEFERRAL_MARKER_PREFIX}${ref.toLowerCase()} -->`;
