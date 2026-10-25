@@ -71,6 +71,18 @@
  * flag must be present for a supporting dialect and can never appear without
  * its scratch — so neither half can be dropped by a later edit.
  *
+ * ## The network
+ *
+ * Where the runtime can confine a container to an internal network (Docker and
+ * Podman, `egressEnforced`, Issue #4047), the worker has **no route out at
+ * all**: it joins a per-launch `--internal` network, and its `HTTPS_PROXY` and
+ * `NO_PROXY` variables point at an egress-proxy sidecar. The sidecar is the one
+ * container that also joins the outbound bridge; it runs the allowlisting
+ * CONNECT proxy (Issue #4046) read-only, with every capability dropped and no
+ * published port. The sidecar's construction lives in `container_egress.ts`.
+ * Apple container has no internal network mode, so its worker keeps the
+ * runtime's default network exactly as before and the plan says `egress=none`.
+ *
  * ## What it refuses
  *
  * Building a plan throws — loudly, per Issue #3234 — rather than emitting a
@@ -90,6 +102,12 @@ import {
   type TmpfsOwnershipStyle,
 } from "./container_runtime.ts";
 import { renderKeepReferences } from "./container_image_prune.ts";
+import {
+  buildEgressSidecarPlan,
+  DEFAULT_EGRESS_NETWORK_NAME,
+  DEFAULT_EGRESS_PROXY_NAME,
+  type EgressSidecarPlan,
+} from "./container_egress.ts";
 import type { ContainerManifest } from "./container_manifest.ts";
 import {
   DEFAULT_CREDENTIAL_DIR_SUFFIX,
@@ -285,6 +303,26 @@ export interface ContainerLaunchInputs {
    * nothing; a missing name must be a compile error, not a fallback.
    */
   volumes?: { work: string; approvalState: string; agentState: string };
+  /**
+   * The resolved egress allowlist (Issue #4045): every host the worker may
+   * reach through the egress proxy sidecar. Used by enforcing dialects
+   * (Docker, Podman) only; Apple container ignores it.
+   *
+   * REQUIRED, like `buildCommit`: a default here would silently narrow or
+   * widen the worker's egress, so every caller states the list it means.
+   */
+  egressAllowlist: readonly string[];
+  /**
+   * Per-run throwaway names for the egress network and proxy container, for
+   * the containment integration tests (Issue #4047) — exactly as `volumes`
+   * isolates the named volumes. Production never sets this and uses the
+   * DEFAULT_* names.
+   *
+   * A fixed production name is safe: the pre-launch reaper allows one worker
+   * per host, so no two launches share a host, and a crashed launch's leftover
+   * network or proxy is removed by that same name before the next launch.
+   */
+  egressNames?: { network: string; proxy: string };
   /**
    * Absolute host paths of the operator's `custom_label_prompts` templates
    * (Issue #850, part of #843), in configuration order.
@@ -547,6 +585,17 @@ export interface ContainerLaunchPlan {
   builderAbsentPatterns: string[];
   /** Arguments that run the worker container. */
   runArgs: string[];
+  /**
+   * The egress sidecar that confines the worker to an internal network
+   * (Issue #4047): the network it creates and removes, the proxy container's
+   * run, connect, logs and remove argv, the proxy's readiness marker, and the
+   * `NAME=value` environment the worker is handed to reach it.
+   *
+   * Present only when the dialect enforces egress (Docker, Podman). Undefined
+   * for Apple container, whose plan is exactly what it was before the sidecar
+   * existed, and which renders `egress=none` with no sidecar keys.
+   */
+  egress?: EgressSidecarPlan;
 }
 
 /** Flags that would broaden the container beyond its intended privileges. */
@@ -1131,6 +1180,43 @@ export function buildContainerLaunchPlan(
   }
 
   const { dialect } = descriptor;
+  // The egress sidecar (Issue #4047). On an enforcing dialect the worker is
+  // confined to a per-launch internal network with no route out, and the
+  // #4046 CONNECT proxy, run from the checkout's own worker code, is the one
+  // container that also joins the outbound bridge. Apple container does not
+  // enforce, so the sidecar is absent and nothing below it changes.
+  let egress: EgressSidecarPlan | undefined;
+  if (dialect.egressEnforced) {
+    // An empty list would make the proxy refuse every host, which a worker
+    // cannot run under. Named here so the refusal says why.
+    if (inputs.egressAllowlist.length === 0) {
+      throw new Error(
+        "Refusing to launch: the egress allowlist is empty, so the egress " +
+          "proxy would refuse every host the worker needs (Issue #4047).",
+      );
+    }
+    // The checkout's worker code, mounted read-only into the proxy so it runs
+    // the same egress-proxy command the tests exercise (Issue #4046).
+    const checkoutSource = normalise(joinPath(base, "worker/deno", style), style);
+    assertMountSourcePermitted(checkoutSource, home, style);
+    egress = buildEgressSidecarPlan({
+      dialect,
+      image: runImage,
+      networkName: inputs.egressNames?.network ?? DEFAULT_EGRESS_NETWORK_NAME,
+      proxyName: inputs.egressNames?.proxy ?? DEFAULT_EGRESS_PROXY_NAME,
+      allowlist: [...inputs.egressAllowlist],
+      checkout: {
+        source: checkoutSource,
+        target: `${targets.base}/worker/deno`,
+      },
+    });
+    // The proxy is held to the same containment contract as the worker: a
+    // read-only root, no privilege-broadening flag, and no published port. The
+    // empty expected-tmpfs list says the proxy's argv carries no scratch
+    // `--tmpfs` to check against; it is not a claim the proxy needs none.
+    assertRunArgumentsContained(egress.proxyRunArgs, true, []);
+  }
+
   const runArgs: string[] = ["run", "--rm", "--name", containerName];
 
   // VM sizing: never the runtime's 1 GiB memory default (see
@@ -1142,8 +1228,16 @@ export function buildContainerLaunchPlan(
     runArgs.push("--cpus", inputs.resources.cpus);
   }
 
-  // Networking: outbound only. No published ports and never host networking.
-  if (dialect.networkMode) runArgs.push("--network", dialect.networkMode);
+  // Networking (Issue #4047). No published ports and never host networking. On
+  // an enforcing dialect the worker joins only the per-launch internal network,
+  // which has no route out; the egress proxy sidecar is the one member that
+  // also joins the outbound bridge. Elsewhere the runtime's network is used as
+  // it always was.
+  if (egress) {
+    runArgs.push("--network", egress.internalNetwork);
+  } else if (dialect.networkMode) {
+    runArgs.push("--network", dialect.networkMode);
+  }
   // Least privilege, where the runtime understands the flag. Apple container
   // gives each container its own lightweight VM and takes neither.
   if (dialect.supportsCapDrop) runArgs.push("--cap-drop", "ALL");
@@ -1189,6 +1283,12 @@ export function buildContainerLaunchPlan(
   // this points every command inside the container at the staged read-only
   // copy rather than the writable one in the checkout mount.
   runArgs.push("--env", `CONFIG_PATH=${targets.config}/.config.json`);
+  // The proxy settings that point the worker at the egress sidecar (Issue
+  // #4047): HTTPS_PROXY and friends, and NO_PROXY for loopback. Present only
+  // when the dialect enforces egress; Apple's plan gets none.
+  for (const entry of egress?.workerEnv ?? []) {
+    runArgs.push("--env", entry);
+  }
   // The staged configuration still names the operator's *host* prompt paths —
   // one `.config.json` works in both modes — so the worker is handed the map
   // from each of those paths to where the mount above makes it readable
@@ -1382,6 +1482,9 @@ export function buildContainerLaunchPlan(
     builderStopArgs: [...dialect.builderStopArgs],
     builderAbsentPatterns: [...dialect.builderAbsentPatterns],
     runArgs,
+    // Absent entirely, not undefined, on a dialect that does not enforce
+    // egress: the Apple plan keeps the exact shape it had before (Issue #4047).
+    ...(egress ? { egress } : {}),
   };
 }
 
@@ -1395,6 +1498,8 @@ export type ContainerLaunchPlanKey =
   | "keep"
   | "name"
   | "watchdog"
+  // Whether the worker is confined to the egress sidecar's network (#4047).
+  | "egress"
   | "ensure"
   | "volume"
   // Volumes a disk reset may destroy, by role (Issue #2216).
@@ -1404,6 +1509,15 @@ export type ContainerLaunchPlanKey =
   | "build"
   // The operator's private layer, built after `build` (Issue #980).
   | "extension-build"
+  // The egress sidecar's own argv, present only when `egress` is enforced
+  // (Issue #4047).
+  | "network-create"
+  | "network-remove"
+  | "proxy-run"
+  | "proxy-connect"
+  | "proxy-logs"
+  | "proxy-remove"
+  | "proxy-ready"
   | "run";
 
 /** A parsed plan, as the launcher reconstructs it. */
@@ -1414,6 +1528,8 @@ export interface ParsedContainerLaunchPlan {
   keep: string;
   name: string;
   watchdog: string;
+  /** `enforced` or `none` — whether the worker uses the egress sidecar (#4047). */
+  egress: string;
   ensure: string[];
   volume: string[];
   /** The volumes a disk reset may destroy and recreate (Issue #2216). */
@@ -1431,7 +1547,35 @@ export interface ParsedContainerLaunchPlan {
   build: string[];
   /** The operator's private layer build, empty when none is configured. */
   extensionBuild: string[];
+  /** The egress sidecar's network and proxy argv (Issue #4047); empty when none. */
+  networkCreate: string[];
+  networkRemove: string[];
+  proxyRun: string[];
+  proxyConnect: string[];
+  proxyLogs: string[];
+  proxyRemove: string[];
+  /** The line the proxy prints once it is listening; empty when none. */
+  proxyReady: string;
   run: string[];
+}
+
+/**
+ * The stream tokens for the egress sidecar (Issue #4047): one token per argv
+ * element, like every other argument list, and the proxy's readiness marker.
+ *
+ * @param egress - The sidecar plan of an enforcing launch
+ * @returns The `key=value` tokens, in the order the launcher runs them
+ */
+function renderEgressTokens(egress: EgressSidecarPlan): string[] {
+  return [
+    ...egress.networkCreateArgs.map((arg) => `network-create=${arg}`),
+    ...egress.networkRemoveArgs.map((arg) => `network-remove=${arg}`),
+    ...egress.proxyRunArgs.map((arg) => `proxy-run=${arg}`),
+    ...egress.proxyConnectArgs.map((arg) => `proxy-connect=${arg}`),
+    ...egress.proxyLogsArgs.map((arg) => `proxy-logs=${arg}`),
+    ...egress.proxyRemoveArgs.map((arg) => `proxy-remove=${arg}`),
+    `proxy-ready=${egress.proxyReadyMarker}`,
+  ];
 }
 
 /**
@@ -1452,6 +1596,9 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     `keep=${renderKeepReferences(plan.keepImages)}`,
     `name=${plan.containerName}`,
     `watchdog=${plan.watchdogSeconds}`,
+    // Stated on every plan, so a launcher reading the stream can tell an
+    // enforced launch from an unenforced one by reading one key (Issue #4047).
+    `egress=${plan.egress ? "enforced" : "none"}`,
     ...plan.ensureDirectories.map((dir) => `ensure=${dir}`),
     ...plan.volumes.map((name) => `volume=${name}`),
     ...plan.resettableVolumes.map((name) => `volume-resettable=${name}`),
@@ -1468,6 +1615,10 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.extensionBuildArgs.map((arg) => `extension-build=${arg}`),
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
     ...plan.builderAbsentPatterns.map((p) => `builder-absent=${p}`),
+    // The egress sidecar (Issue #4047), before the worker's own run so the
+    // launcher creates the network and starts the proxy before the worker
+    // that depends on them. Emitted only when the dialect enforces egress.
+    ...(plan.egress ? renderEgressTokens(plan.egress) : []),
     ...plan.runArgs.map((arg) => `run=${arg}`),
   ];
 
@@ -1514,6 +1665,14 @@ export function parseContainerLaunchPlanText(
     exists: [],
     build: [],
     extensionBuild: [],
+    egress: "",
+    networkCreate: [],
+    networkRemove: [],
+    proxyRun: [],
+    proxyConnect: [],
+    proxyLogs: [],
+    proxyRemove: [],
+    proxyReady: "",
     run: [],
   };
 
@@ -1576,6 +1735,30 @@ export function parseContainerLaunchPlanText(
         break;
       case "extension-build":
         parsed.extensionBuild.push(value);
+        break;
+      case "egress":
+        parsed.egress = value;
+        break;
+      case "network-create":
+        parsed.networkCreate.push(value);
+        break;
+      case "network-remove":
+        parsed.networkRemove.push(value);
+        break;
+      case "proxy-run":
+        parsed.proxyRun.push(value);
+        break;
+      case "proxy-connect":
+        parsed.proxyConnect.push(value);
+        break;
+      case "proxy-logs":
+        parsed.proxyLogs.push(value);
+        break;
+      case "proxy-remove":
+        parsed.proxyRemove.push(value);
+        break;
+      case "proxy-ready":
+        parsed.proxyReady = value;
         break;
       case "run":
         parsed.run.push(value);

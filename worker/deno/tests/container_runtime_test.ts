@@ -314,6 +314,33 @@ Deno.test("candidatesForPlatform - dialects record the flags each runtime suppor
   }
 });
 
+Deno.test("dialects - Docker and Podman enforce egress through an internal network (Issue #4047)", () => {
+  for (const kind of ["docker", "podman"] as const) {
+    const dialect = CONTAINER_RUNTIMES[kind].dialect;
+    assertEquals(dialect.egressEnforced, true);
+    assertEquals(dialect.networkMode, "bridge");
+    assertEquals(dialect.networkCreateArgs, [
+      "network",
+      "create",
+      "--internal",
+    ]);
+    assertEquals(dialect.networkRemoveArgs, ["network", "rm"]);
+    assertEquals(dialect.networkConnectArgs, ["network", "connect"]);
+    assertEquals(dialect.containerRemoveArgs, ["rm", "-f"]);
+    assertEquals(dialect.containerLogsArgs, ["logs"]);
+  }
+});
+
+Deno.test("dialects - Apple container does not enforce egress and issues no network commands (Issue #4047)", () => {
+  const dialect = CONTAINER_RUNTIMES["apple-container"].dialect;
+  assertEquals(dialect.egressEnforced, false);
+  assertEquals(dialect.networkCreateArgs, []);
+  assertEquals(dialect.networkRemoveArgs, []);
+  assertEquals(dialect.networkConnectArgs, []);
+  assertEquals(dialect.containerRemoveArgs, []);
+  assertEquals(dialect.containerLogsArgs, []);
+});
+
 Deno.test("dialects - tmpfs options and tmpfs ownership are separate capabilities (Issue #727)", () => {
   // Podman parses `path:options` exactly as Docker does — it must NOT be
   // flipped to "ignores options", which would drop mode=0700 and noexec from

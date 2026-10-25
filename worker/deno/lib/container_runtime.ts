@@ -138,8 +138,53 @@ export interface ContainerRuntimeDialect {
    * Explicit non-host network mode to request, when the runtime takes one.
    * Undefined means "leave the runtime's own default", which is never host
    * networking on any supported runtime.
+   *
+   * On an egress-enforcing dialect (see {@link ContainerRuntimeDialect.egressEnforced})
+   * this names the OUTBOUND network that only the egress-proxy sidecar joins.
+   * The worker container never gets it: it runs on the per-launch internal
+   * network with no route out (Issue #4047).
    */
   networkMode?: string;
+  /**
+   * Whether this dialect confines the worker to a per-launch internal network
+   * with an egress-proxy sidecar as its only route out (Issue #4047).
+   *
+   * True for Docker and Podman, which can create a `--internal` network that
+   * has no default gateway. False for Apple `container`, which has no internal
+   * network mode, so its worker keeps the existing launch path and
+   * {@link ContainerRuntimeDialect.networkMode} is not used for egress.
+   */
+  egressEnforced: boolean;
+  /**
+   * Sub-command that creates a per-launch internal network, with the network
+   * name appended by the caller (Issue #4047). Empty when the dialect does
+   * not enforce egress.
+   */
+  networkCreateArgs: readonly string[];
+  /**
+   * Sub-command that removes a per-launch network, with the network name
+   * appended by the caller (Issue #4047). Empty when the dialect does not
+   * enforce egress.
+   */
+  networkRemoveArgs: readonly string[];
+  /**
+   * Sub-command that attaches a running container to a network, with the
+   * network name and then the container name appended by the caller
+   * (Issue #4047). Empty when the dialect does not enforce egress.
+   */
+  networkConnectArgs: readonly string[];
+  /**
+   * Sub-command that force-removes one container, with the container name
+   * appended by the caller (Issue #4047). Empty when the dialect does not
+   * enforce egress.
+   */
+  containerRemoveArgs: readonly string[];
+  /**
+   * Sub-command that prints one container's logs, with the container name
+   * appended by the caller (Issue #4047). Empty when the dialect does not
+   * enforce egress.
+   */
+  containerLogsArgs: readonly string[];
   /** Sub-command that reports whether an image is present locally. */
   imageInspectArgs: readonly string[];
   /**
@@ -342,8 +387,17 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   tmpfsOwnership: "mount-options",
   supportsReadOnly: true,
   // Explicit rather than implicit: the launcher asks for bridge networking so
-  // a reviewer can see host networking was never requested.
+  // a reviewer can see host networking was never requested. Only the egress
+  // proxy sidecar joins it (Issue #4047).
   networkMode: "bridge",
+  // Docker and Podman can confine the worker to an internal network (Issue
+  // #4047), so the worker has no route out except through the sidecar.
+  egressEnforced: true,
+  networkCreateArgs: ["network", "create", "--internal"],
+  networkRemoveArgs: ["network", "rm"],
+  networkConnectArgs: ["network", "connect"],
+  containerRemoveArgs: ["rm", "-f"],
+  containerLogsArgs: ["logs"],
   imageInspectArgs: ["image", "inspect"],
   // A reference per line rather than `--format json`: the Go template has been
   // understood by both Docker and Podman for far longer than the `json`
@@ -413,7 +467,16 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   // is the protection (Issue #570).
   tmpfsOwnership: "none",
   supportsReadOnly: false,
-  // Singular `image` — `container images ...` is not a subcommand on Apple
+  // Apple `container` has no internal-network mode, so egress is not enforced
+  // by the runtime on this dialect (Issue #4047). Every network and container
+  // sub-command is empty, so nothing can be issued by accident.
+  egressEnforced: false,
+  networkCreateArgs: [],
+  networkRemoveArgs: [],
+  networkConnectArgs: [],
+  containerRemoveArgs: [],
+  containerLogsArgs: [],
+  // Singular `image` —`container images ...` is not a subcommand on Apple
   // container 1.2.2: the CLI resolves it as a plugin named `container-images`,
   // fails, and exits 64. run.sh reads any non-zero exists-check as "image
   // absent", so the plural argv would trigger a full rebuild on every launch.

@@ -4,9 +4,11 @@
  * Emits everything `run.sh` (and, from Issue #4066, `run.ps1`) needs to launch
  * the worker container: the runtime executable, the content-derived image
  * reference, the host directories to create, and the exact argument lists for
- * the image-presence check, the build and the run. The launcher executes the
- * plan and does no deciding of its own, so the containment contract lives in
- * one auditable module instead of two shells.
+ * the image-presence check, the build and the run. On a runtime that enforces
+ * egress (Docker, Podman, Issue #4047) it also carries the egress sidecar's
+ * network and proxy argv, and the worker is confined to that network with no
+ * route out. The launcher executes the plan and does no deciding of its own, so
+ * the containment contract lives in one auditable module instead of two shells.
  *
  * Usage:
  *   deno run --allow-env --allow-read --allow-run --allow-write=/tmp/plan \
@@ -46,6 +48,9 @@ import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
+import { readConfiguredEgressInputs } from "../lib/egress_launch_config.ts";
+import { resolveEgressAllowlist } from "../lib/egress_allowlist.ts";
+import { readImgbbApiKeyFromEnv } from "../lib/imgbb_upload.ts";
 import { resolveContainerExtensionLaunch } from "../lib/container_extension_launch.ts";
 import { readConfiguredLogDir } from "../lib/log_dir.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
@@ -151,6 +156,31 @@ export async function buildLaunchPlanForCommand(
       hostPaths.configFile,
       manifest.installedProviders,
     );
+
+  // The egress allowlist (Issue #4045, fed to the sidecar by Issue #4047),
+  // resolved the way `lib/config.ts` resolves it so the proxy and the worker
+  // name the same hosts. Computed on every dialect because it also validates
+  // the configuration: a bad `egress_allow_hosts` entry stops the launch here,
+  // naming the entry, whether or not this runtime enforces egress.
+  const configuredEgress = await readConfiguredEgressInputs(
+    hostPaths.configFile,
+  );
+  let egressAllowlist: string[];
+  try {
+    egressAllowlist = resolveEgressAllowlist({
+      enabledProviderIds: providers.map((provider) => provider.id),
+      imgbbConfigured: configuredEgress.imgbbConfigured ||
+        readImgbbApiKeyFromEnv(env) !== "",
+      anthropicBaseUrl: env("ANTHROPIC_BASE_URL"),
+      extraHosts: configuredEgress.extraHosts,
+    });
+  } catch (error) {
+    throw new Error(
+      `Cannot launch: ${hostPaths.configFile} is invalid: ${
+        (error as Error).message
+      }`,
+    );
+  }
 
   // The launcher runs on the host, before the worker loads its configuration,
   // so the tool selection is read here (Issue #72). Validation is fail-loud at
@@ -331,6 +361,7 @@ export async function buildLaunchPlanForCommand(
     hostPaths,
     agentProviders: providers,
     buildCommit,
+    egressAllowlist,
     ...(customPromptPaths.length > 0 ? { customPromptPaths } : {}),
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
