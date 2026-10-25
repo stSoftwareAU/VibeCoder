@@ -1309,3 +1309,100 @@ Deno.test("prepareRollbackWorktree - a checkout that succeeded is not reset even
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("syncMilestoneBranches - a landed hand-off rebuild ends recovery before the next cycle (PR #4344)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    await saveSyncStreaks(streakPath, {
+      [KEY]: spentLedger({
+        count: 5,
+        rollbackFailures: 1,
+        conflictAttempts: 2,
+      }),
+    });
+    const rebuilds: string[] = [];
+    const syncCalls: string[] = [];
+    const deps = sweepDeps({
+      streakPath,
+      defaultSha: tip(1),
+      syncCalls,
+      syncError: gateRefusedMerge,
+      rebuilds,
+      rebuildOutcome: REBUILT,
+    });
+    let closes = 0;
+    deps.closeMilestoneFn = () => {
+      closes++;
+      return Promise.resolve(true);
+    };
+    await syncMilestoneBranches(deps);
+    assertEquals(rebuilds.length, 1);
+    assertEquals((await readEntry(streakPath))?.rebuilds, 1);
+    assertEquals((await readEntry(streakPath))?.conflictAttempts, 0);
+    await syncMilestoneBranches({
+      ...deps,
+      defaultTipShaFn: () =>
+        Promise.resolve({ ok: true as const, value: tip(2) }),
+    });
+    assertEquals(
+      syncCalls.length,
+      2,
+      "the recovered branch is synced next cycle",
+    );
+    assertEquals(rebuilds.length, 1, "no redundant rebuild");
+    assertEquals(closes, 0, "a recovered milestone must not be retired");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - resolver rebuild resets the same recovery ledger (PR #4344)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    await saveSyncStreaks(streakPath, {
+      [KEY]: spentLedger({
+        count: 6,
+        rollbackFailures: 1,
+        rebuilds: 2,
+        lastAttempt: {
+          at: new Date(NOW).toISOString(),
+          outcome: "failed",
+          reason: "recovery rung: rollback",
+        },
+      }),
+    });
+    const syncCalls: string[] = [];
+    const deps = sweepDeps({
+      streakPath,
+      defaultSha: tip(1),
+      syncCalls,
+      syncError: gateRefusedMerge,
+    });
+    let rebuilds = 0;
+    let closes = 0;
+    deps.rebuildMilestoneFn = () => {
+      rebuilds++;
+      return Promise.resolve(true);
+    };
+    deps.closeMilestoneFn = () => {
+      closes++;
+      return Promise.resolve(true);
+    };
+    await syncMilestoneBranches(deps);
+    assertEquals(rebuilds, 1);
+    const entry = await readEntry(streakPath);
+    assertEquals(entry?.conflictAttempts, 0);
+    assertEquals(entry?.rebuilds, 3);
+    assertEquals(entry?.count, 0);
+    await syncMilestoneBranches({
+      ...deps,
+      defaultTipShaFn: () =>
+        Promise.resolve({ ok: true as const, value: tip(2) }),
+    });
+    assertEquals(syncCalls.length, 1);
+    assertEquals(rebuilds, 1);
+    assertEquals(closes, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

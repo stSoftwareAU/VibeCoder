@@ -1934,6 +1934,18 @@ export async function syncMilestoneBranches(
         ...(deps.dedupAuthors ?? {}),
       }));
 
+  /** Finish either rebuild route without carrying its old refusal streak. */
+  const recordLandedRebuild = (entry: SyncStreakEntry): SyncStreakEntry => ({
+    ...resetConflictLedgerOnSuccess(entry),
+    count: 0,
+    rebuilds: (entry.rebuilds ?? 0) + 1,
+    lastAttempt: {
+      at: new Date(now()).toISOString(),
+      outcome: "not-charged",
+      reason: RECOVERY_CLOSE,
+    },
+  });
+
   /**
    * Take one recovery rung for a resolver refusal (Issue #4328).
    *
@@ -2034,6 +2046,8 @@ export async function syncMilestoneBranches(
       landed = await closeMilestone();
     }
 
+    if (landed && settled === "rebuild") entry = recordLandedRebuild(entry);
+
     const marker = landed && settled === "close"
       ? RECOVERY_CLOSE
       : landed && settled === "rollback"
@@ -2107,8 +2121,7 @@ export async function syncMilestoneBranches(
           : {}),
       });
       if (rebuilt && rebuilt.outcome === "milestone-rebuilt") {
-        entry = resetConflictLedgerOnSuccess(entry);
-        entry.rebuilds = (entry.rebuilds ?? 0) + 1;
+        entry = recordLandedRebuild(entry);
         const replayed = rebuilt.replayed.length;
         const skipped = rebuilt.skipped.length;
         log(
