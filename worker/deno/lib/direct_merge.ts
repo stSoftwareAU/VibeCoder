@@ -299,6 +299,81 @@ export interface CombinedStatusResponse {
 /** Injectable function type for running gh commands (enables testing). */
 export type GhCommandFn = (args: string[]) => Promise<string>;
 
+/**
+ * One page of the check-runs REST read, as `--jq` prints it.
+ *
+ * `gh api --paginate` applies `--jq` to each page, so the payload is one
+ * JSON object per line rather than a single document.
+ */
+const CHECK_RUNS_PAGE_JQ =
+  "{total_count, check_runs: [.check_runs[] | {id, name, status, conclusion}]}";
+
+/**
+ * Merge every check-runs page from a paginated REST read (Issue #4370).
+ *
+ * A missing page, a page that does not parse, pages that disagree on
+ * `total_count`, or a merged run count other than `total_count` throws.
+ * The caller treats that as a failed lookup and does not judge CI from the
+ * runs it happened to see.
+ */
+function mergeCheckRunPages(raw: string): CheckRunsResponse {
+  const pages: CheckRunsResponse[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    pages.push(readCheckRunsPage(trimmed));
+  }
+  const first = pages[0];
+  if (first === undefined) {
+    throw new Error("check-runs lookup returned no pages");
+  }
+  const total = first.total_count;
+  for (const page of pages) {
+    if (page.total_count !== total) {
+      throw new Error(
+        `check-runs pages disagree on total_count (${page.total_count} vs ${total})`,
+      );
+    }
+  }
+  const check_runs = pages.flatMap((page) => page.check_runs);
+  if (check_runs.length !== total) {
+    throw new Error(
+      `check-runs pagination incomplete: read ${check_runs.length} of ${total}`,
+    );
+  }
+  return { total_count: total, check_runs };
+}
+
+/** Parse one check-runs page. Throws when the page cannot be trusted. */
+function readCheckRunsPage(line: string): CheckRunsResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`check-runs page was not JSON: ${message}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("check-runs page was not a check-runs object");
+  }
+  const page = parsed as Record<string, unknown>;
+  if (typeof page.total_count !== "number") {
+    throw new Error("check-runs page has no numeric total_count");
+  }
+  if (!Array.isArray(page.check_runs)) {
+    throw new Error("check-runs page has no check_runs array");
+  }
+  for (const run of page.check_runs) {
+    if (typeof run !== "object" || run === null) {
+      throw new Error("check-runs page contained a non-object run");
+    }
+  }
+  return {
+    total_count: page.total_count,
+    check_runs: page.check_runs as CheckRun[],
+  };
+}
+
 // =============================================================================
 // checkCiStatus
 // =============================================================================
@@ -308,7 +383,9 @@ export type GhCommandFn = (args: string[]) => Promise<string>;
  * suites (Issue #4347).
  *
  * Returns a Result indicating whether all checks have passed, are still
- * pending, or have failed.
+ * pending, or have failed. When the GraphQL rollup cannot be read, the REST
+ * fallback requests every check run (`per_page=100`, `--paginate`). A page
+ * set that cannot be completed is a lookup failure, not a green verdict.
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - Pull request number
@@ -343,6 +420,8 @@ export async function checkCiStatus(
   }
 
   // Fallback: REST check-runs, status and check-suites, keyed by head SHA.
+  // Issue #4370: the unpaginated call returns 30 runs, and `total_count`
+  // only says whether any exist, so a failed run past page one read as passed.
   let prJson: string;
   try {
     prJson = await ghCommandFn([
@@ -384,9 +463,10 @@ export async function checkCiStatus(
   try {
     checkRunsJson = await ghCommandFn([
       "api",
-      `repos/${repo}/commits/${headSha}/check-runs`,
+      `repos/${repo}/commits/${headSha}/check-runs?per_page=100`,
+      "--paginate",
       "--jq",
-      "{total_count, check_runs: [.check_runs[] | {id, name, status, conclusion}]}",
+      CHECK_RUNS_PAGE_JQ,
     ]);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -431,9 +511,20 @@ export async function checkCiStatus(
   }
 
   let checkRuns: CheckRunsResponse;
+  try {
+    checkRuns = mergeCheckRunPages(checkRunsJson);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to read every check run for PR #${prNumber}: ${message}`,
+      ),
+    };
+  }
+
   let combinedStatus: CombinedStatusResponse;
   try {
-    checkRuns = JSON.parse(checkRunsJson) as CheckRunsResponse;
     combinedStatus = JSON.parse(combinedStatusJson) as CombinedStatusResponse;
   } catch {
     return {

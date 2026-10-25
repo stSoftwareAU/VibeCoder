@@ -302,6 +302,15 @@ GitHub's own aggregate verdict, `statusCheckRollup.state` (fetched by
 verdicts wins, so a red rollup can never be masked by check runs that
 individually look green.
 
+When that rollup cannot be read, `checkCiStatus()` falls back to
+`repos/{repo}/commits/{sha}/check-runs` with `per_page=100` and `--paginate`.
+`gh` applies `--jq` per page and prints one object per line; those pages are
+merged before `determineCiStatus()` runs. A page that cannot be parsed, pages
+that disagree on `total_count`, or a merged run count that does not equal
+`total_count` is a lookup failure, and the gate retries. A short page is not
+the full set, so a failed or still-running check past the first page cannot
+read as `passed`.
+
 This matters because a PR waiting on a manual approval (`action_required`)
 reports a completed check run. Under the old denylist that conclusion hit
 neither the failure branch nor the pending branch, so it fell through to
@@ -332,6 +341,7 @@ re-runs the entire workflow because a startup failure has no failed job to
 re-run. Startup suites stay eligible for repair even after the local job retry
 budget is spent; the fleet-wide attempt cap still bounds them and invokes the
 existing abandon-and-restart path, including when GitHub refuses a rerun.
+
 
 ```mermaid
 flowchart TD

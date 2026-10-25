@@ -48,6 +48,8 @@ check runs remains governed by the latest check-run verdict. Closes #4347.
 
 ## Evidence
 
+The latest main merge retains both Issue #4370 check-run pagination and Issue #4347 zero-run suite detection. The pagination fixtures now answer the additional suite lookup without changing their assertions. A combined regression proves that green runs on multiple pages cannot hide a startup-failed suite. After resolving the code comment and operator-guide conflicts, 124 direct-merge, batch-check and shared-predicate tests passed, as did all 857 manifest checks (one ignored).
+
 Validation after the latest review fixes: 418 focused regression tests passed;
 the manifest gate passed with 857 tests and 1 ignored; formatting and lint passed
 for the 12 changed TypeScript files. GitHub accepted the exact repaired reviewer

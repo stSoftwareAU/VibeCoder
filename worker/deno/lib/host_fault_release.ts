@@ -265,18 +265,22 @@ export async function releaseHostFaultFailureLabels(
       // Only the comment AUTHOR is authenticated: a failure record is plain
       // Markdown anyone who can comment on the repository may write, and
       // here a forged one REMOVES a `failed` label and puts the issue back
-      // in the queue. Filter every comment through the fleet identity before
-      // it is read as a record (the `alert_dedup_authors.ts` chokepoint).
-      // Fail direction: an unresolvable fleet set discards every comment, so
-      // no record is found and the label is kept.
+      // in the queue. The failure-record heading is applied first, then the
+      // fleet identity (the `alert_dedup_authors.ts` chokepoint), so the
+      // discard log names a forged record and not an ordinary comment
+      // (Issue #4357). Fail direction: an unresolvable fleet set discards
+      // every record, so no record is found and the label is kept.
+      const records = parseCommentRows(raw).filter((row) =>
+        isFailureRecord(row.body)
+      );
       const rows = await selectFleetAuthoredComments(
-        parseCommentRows(raw),
+        records,
         `host-fault release ${repo}#${issueNumber}`,
         options.authorOptions ?? {},
         log,
         "no failure record is recognised and the issue keeps its labels",
       );
-      bodies = rows.map((row) => row.body).filter(isFailureRecord);
+      bodies = rows.map((row) => row.body);
     } catch (err) {
       outcome.errors.push(
         `reading comments on #${issueNumber}: ${

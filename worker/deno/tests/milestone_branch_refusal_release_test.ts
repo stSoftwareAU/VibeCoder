@@ -496,6 +496,52 @@ Deno.test("releaseMilestoneBranchRefusalLabels - a refusal record written outsid
   assertEquals(gh.byNumber.get(200)?.labels, ["failed"]);
 });
 
+Deno.test("releaseMilestoneBranchRefusalLabels - an ordinary owner comment is not a forged marker; a non-fleet failure record still is (Issue #4357)", async () => {
+  resetMilestoneBranchRefusalSweepsForTest();
+  const warnings: string[] = [];
+  const issues: FakeIssue[] = [
+    {
+      number: 4357,
+      labels: ["failed-once"],
+      comments: [
+        REFUSAL_COMMENT,
+        { body: "I'll take a look at this.", author: "nleck" },
+      ],
+    },
+    {
+      number: 4358,
+      labels: ["failed-once"],
+      comments: [{ body: REFUSAL_COMMENT, author: "drive-by-account" }],
+    },
+  ];
+  const gh = fakeGh(issues);
+  await releaseMilestoneBranchRefusalLabels({
+    repo: REPO,
+    milestoneTitle: MILESTONE,
+    milestoneBranch: BRANCH,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+    log: (message) => warnings.push(message),
+  });
+
+  const markerWarnings = warnings.filter((w) =>
+    w.includes("ignored") && w.includes("marker match")
+  );
+  assertEquals(
+    markerWarnings.filter((w) => w.includes("#4357")),
+    [],
+    `ordinary owner comment was logged as a marker: ${
+      markerWarnings.join(" | ")
+    }`,
+  );
+  assert(
+    markerWarnings.some((w) =>
+      w.includes("#4358") && w.includes("ignored 1 marker match")
+    ),
+    `non-fleet failure record was not logged: ${markerWarnings.join(" | ")}`,
+  );
+});
+
 Deno.test("releaseMilestoneBranchRefusalLabels - an unresolvable fleet keeps every label (Issue #2220)", async () => {
   // Fail direction: when the fleet identity cannot be resolved no comment can
   // be attributed, so no record is recognised and nothing is released.
