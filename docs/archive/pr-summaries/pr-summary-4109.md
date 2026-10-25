@@ -104,17 +104,17 @@ re-read and kept (they describe the runner refusal as the backstop, for a caller
 that bypasses the planner and for the retry ladder's fallback provider); also
 re-pointed the `file:line` cites in `docs/MANAGER-WORKER-CONTRACT.md` and
 `docs/PROVIDER-FEASIBILITY.md` after the merge of `origin/main` moved the code:
-the external-orchestration test (`execute_claude_phase.ts:1309-1319`,
-`execute_phase.ts:800-815`), the `isIssueExecutorSplitEnabled` calls
-(`execute_claude_phase.ts:1320-1325`, `execute_phase.ts:817-822`), the planner's
-`executorSplit` and `buildPrompt` inputs (`execute_claude_phase.ts:1347-1349`,
-`:1477`; `execute_phase.ts:851-853`, `:906`), the planner and its strip return
+the external-orchestration test (`execute_claude_phase.ts:1298-1307`,
+`execute_phase.ts:799-815`), the `isIssueExecutorSplitEnabled` calls
+(`execute_claude_phase.ts:1308-1313`, `execute_phase.ts:816-821`), the planner's
+`executorSplit` and `buildPrompt` inputs (`execute_claude_phase.ts:1335-1337`,
+`:1468`; `execute_phase.ts:850-852`, `:911`), the planner and its strip return
 (`issue_run_provider_agents.ts:75-125`, `:118-124`), the retry ladder
-(`claude_runner.ts:2887`, `:3450-3470`), the provider-table cites
+(`claude_runner.ts:2938`, `:3496-3516`), the provider-table cites
 (`agent_provider.ts:646-648`, `:653-655`, `:737`, `:861`, `:900`, `:926`,
 `:1005`, `:1099`, `:1154-1155`, `:1166`) and the "Phase wiring" row and its
-mermaid label (`execute_claude_phase.ts:1305-1355`: split `:1320-1325`, tier
-`:1326-1330`, planner `:1335`, `buildIssueRunAgents` `:1351`), which the branch
+mermaid label (`execute_claude_phase.ts:1297-1344`: split `:1308-1313`, tier
+`:1314-1318`, planner `:1323`, `buildIssueRunAgents` `:1339`), which the branch
 moved; also corrected three sentences in `docs/CONTAINER.md` (per-invocation
 selection: the `agentProvider` forwarding and `selectAgentProvider` as the only
 resolution point) and `docs/MANAGER-WORKER-CONTRACT.md` ("No default change": a
@@ -270,8 +270,8 @@ The call-site tests are hermetic against the image stamp (the pre-PR verifier
 found 10 of them failing with `VIBE_IMAGE_AGENT_PROVIDERS=claude`, this
 container's value). The injected env lookup now also reaches the two
 pre-existing `selectAgentProvider` calls that decide external orchestration
-(`lib/execute_claude_phase.ts:1287` with `deps.env`,
-`lib/phases/execute_phase.ts:809` with `deps.claude.env`); with no lookup
+(`lib/execute_claude_phase.ts:1305` with `deps.env`,
+`lib/phases/execute_phase.ts:806-809` with `deps.claude.env`); with no lookup
 injected they read the process environment as before.
 `tests/issue_4109_callsite_test.ts` alone gives `ok | 10 passed | 0 failed` with
 the container's `VIBE_IMAGE_AGENT_PROVIDERS=claude` set.
