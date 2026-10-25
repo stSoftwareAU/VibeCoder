@@ -344,7 +344,7 @@ export async function presyncMilestoneBranch(
   // Issue #3178: below the host floor the merge's verification build is the
   // one thing that must not run. Checked before the ledger, so a deferral
   // charges and paces nothing. Issue #4326: over the ephemeral cargo budget
-  // the merge lands without its build instead, and the reason travels with it.
+  // cargo builds wait for CI while Deno checks remain; the reason travels with it.
   let mergeOnly: string | undefined;
   if (deps.heavyBuildAdmission) {
     const admission = await deps.heavyBuildAdmission();
@@ -474,7 +474,7 @@ export async function presyncMilestoneBranch(
   await persist("the attempt marker");
 
   // Issue #4326: a merge-only attempt is granted the disk-budget reason, so the
-  // sync lands without the repository's build. The judgement below still reads
+  // sync defers cargo builds but retains Deno checks. The judgement below reads
   // the original grant.
   const sync = await deps.syncBranch(
     mergeOnly !== undefined ? { ...grant, mergeOnly } : grant,

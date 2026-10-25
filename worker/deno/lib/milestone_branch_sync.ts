@@ -201,9 +201,9 @@ export interface SyncBranchOptions {
    */
   agentTimeoutSeconds?: number;
   /**
-   * Set when the host disk budget cannot afford the repository's build this
-   * cycle (Issue #4326). The value is the reason. The sync must merge without
-   * the build (see milestone_merge_only.ts).
+   * Set when the host disk budget cannot afford cargo builds this cycle
+   * (Issue #4326). The value is the reason. Deno checks remain required
+   * (see milestone_merge_only.ts).
    */
   mergeOnly?: string;
 }
@@ -421,7 +421,7 @@ export interface MilestoneBranchSyncDeps {
    * Ask whether a sync that would merge — and so run the repository's own
    * build and test to verify it — may run its build this cycle (Issue #3178,
    * Issue #4326). `defer`: the branch waits this cycle, with the reason in the
-   * log. `merge-only`: the sync lands without the build, and the reason is
+   * log. `merge-only`: cargo builds wait for CI, Deno checks remain, and the reason is
    * passed on as {@link SyncBranchOptions.mergeOnly}. `build`: proceed.
    * Omitted: nothing is gated. Production wires `heavyBuildAdmission` against
    * the repository's shared clone.
@@ -2040,8 +2040,8 @@ export async function syncMilestoneBranches(
         // Below the host floor that build is what tips the host over, so the
         // branch waits — a deferral, not a failure, and charged nothing. A
         // branch measured level has nothing to merge and nothing to build.
-        // Issue #4326: over the ephemeral cargo budget the sync lands without
-        // the build instead, and the reason travels with it as `mergeOnly`.
+        // Issue #4326: over the ephemeral cargo budget, cargo builds wait for
+        // CI while Deno checks remain; the reason travels as `mergeOnly`.
         let mergeOnly: string | undefined;
         if (deps.heavyBuildGateFn && behindBy !== 0) {
           const admission = await deps.heavyBuildGateFn(repo);
@@ -2455,7 +2455,7 @@ export async function syncMilestoneBranches(
               // Issue #2309: an offered rung carries the announcement, which
               // the rung's own binding fires if and when it is entered.
               // Issue #4326: a merge-only sync carries the disk-budget reason,
-              // so the sync lands without the repository's build.
+              // so cargo builds wait for CI while Deno checks remain.
               {
                 ...grant,
                 ...(mergeOnly !== undefined ? { mergeOnly } : {}),

@@ -307,8 +307,8 @@ export function registerHeavyBuildDiskProbe(
  * - `defer` — the host is below its floor: no build and no merge this cycle
  *   (Issue #3178).
  * - `merge-only` — the ephemeral root is still short of budget after pruning:
- *   the merge lands without the build. The repository's CI builds the merged
- *   tree on the milestone's PR instead. The reason names the budget verdict.
+ *   cargo builds wait for the milestone PR's CI. Deno projects retain their
+ *   normal verification. The reason names the budget verdict.
  */
 export type HeavyBuildAdmission =
   | { mode: "build" }
