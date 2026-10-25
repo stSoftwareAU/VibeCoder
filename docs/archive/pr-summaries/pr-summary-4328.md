@@ -66,10 +66,10 @@ flowchart LR
   rebuilt tree through the sync's own merge gate (`checkMergedTree`, wired as
   `rebuildGateFn`) before pushing or re-queuing anything; a refused tree is a
   failed rebuild at step `milestone-gate`, and an unwired gate means no rebuild
-  (PR #4344 review). The issue's fourth option (close the milestone and
-  requeue its open issues) is not built: the rebuild already re-queues issues
-  whose sub-PRs do not replay, and closing a milestone is a larger decision than
-  this change makes.
+  (PR #4344 review). The issue's fourth option (close the milestone and requeue
+  its open issues) is not built: the rebuild already re-queues issues whose
+  sub-PRs do not replay, and closing a milestone is a larger decision than this
+  change makes.
 - New ledger fields (`refusedCycles`, `rollbackFailures`, `rebuilds`) are
   optional and additive; old ledgers read them as 0, and `readConflictLedger`
   keeps them across a load. No key bump is needed.
@@ -126,15 +126,15 @@ there unchanged.
 
 - `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (35 tests at
   head, run on the head: 117 passed with `conflict_abandon_restart_test.ts`):
-  `judgeSyncFailure` refusal flags (set on the two, not set on
-  disrupted, ruleset, non-conflict and merge-gate verdicts);
-  `escalateRepeatedRefusal` below/at ceiling and non-refusals; the sweep
-  acceptance tests (agent and gate) ; the presync twin; spent-elsewhere hand-off
-  with a negative control (`fallbackDefaultSha` set still skips); rebuild after
-  a spent roll-back, roll-back first when none is spent, failed rebuild falls
-  through, `rollbackFailures` counted; `prepareRollbackWorktree` retry and its
-  failure cause; old-shape ledger and save/load round trip;
-  `concludeConflictAttempt` and `resetConflictLedgerOnSuccess` rules.
+  `judgeSyncFailure` refusal flags (set on the two, not set on disrupted,
+  ruleset, non-conflict and merge-gate verdicts); `escalateRepeatedRefusal`
+  below/at ceiling and non-refusals; the sweep acceptance tests (agent and gate)
+  ; the presync twin; spent-elsewhere hand-off with a negative control
+  (`fallbackDefaultSha` set still skips); rebuild after a spent roll-back,
+  roll-back first when none is spent, failed rebuild falls through,
+  `rollbackFailures` counted; `prepareRollbackWorktree` retry and its failure
+  cause; old-shape ledger and save/load round trip; `concludeConflictAttempt`
+  and `resetConflictLedgerOnSuccess` rules.
 - Same file, added for the pre-PR verifier and the mutation check:
   - `a refusal climbs to the roll-back on a branch with an open head PR`: gh
     returns an open milestone PR with an empty tally; the roll-back is not
@@ -176,16 +176,16 @@ there unchanged.
   re-queued. (b) Spent budget from `mergeGateFailureError` with a failing gate →
   no `push`, no `rebuilds`, roll-back runs, log names `milestone-gate` and the
   gate's output; the same budget with a passing gate pushes and rebuilds
-  (control); no `rebuildGateFn` → no cherry-pick or push, roll-back runs;
-  unit tests: gate refusal and gate throw return `milestone-gate` with no push
-  and no re-queue, gate `passed`/`skipped` deliver (`skipped` logs `UNGATED`).
+  (control); no `rebuildGateFn` → no cherry-pick or push, roll-back runs; unit
+  tests: gate refusal and gate throw return `milestone-gate` with no push and no
+  re-queue, gate `passed`/`skipped` deliver (`skipped` logs `UNGATED`).
   Red-checks (each guard broken, tests went red, guard restored): gate call
   disabled → 4 red; exclude filter dropped → 2 red; `revertedPrs` not passed
   from `handOffSpentBudget` → 1 red; not passed to the rebuild in
   `defaultRebuildFn` → 1 red; `gate` not wired in `defaultRebuildFn` → 1 red;
-  unwired-gate refusal removed → 1 red.
-  exempt (untestable): `run_core_production_deps.ts` `rebuildGateFn` — the
-  production wiring needs the worker's real clone and `deno`; searched
+  unwired-gate refusal removed → 1 red. exempt (untestable):
+  `run_core_production_deps.ts` `rebuildGateFn` — the production wiring needs
+  the worker's real clone and `deno`; searched
   `grep -rn rollbackGitFn worker/deno/tests` for a harness that builds the
   production deps, none reaches it.
 - Added `worker/deno/tests/unit_test_passes_test.ts` "the container image stamp
@@ -225,9 +225,9 @@ there unchanged.
   the sweep and `milestone_presync.ts` only; both pass `refusal`/`exhaust` and
   use `escalateRepeatedRefusal`. `abandonAndRebuildMilestone` has one other
   caller (`pr_merge_conflict_processor.ts`), which passes no `announce` and
-  keeps `gh pr comment`, runs no gate and excludes nothing. `rebuildFn`'s
-  other callers (`handOffSpentBudget`, from the same-cycle failure and the skip
-  site) both pass `revertedPrs` from the ledger.
+  keeps `gh pr comment`, runs no gate and excludes nothing. `rebuildFn`'s other
+  callers (`handOffSpentBudget`, from the same-cycle failure and the skip site)
+  both pass `revertedPrs` from the ledger.
 - Twinned rules: the pre-cut sync and the sweep share the verdict; no other copy
   found.
 - Docs updated: `docs/workflows/milestones.md`, `docs/INTERNALS.md`,
@@ -238,10 +238,11 @@ there unchanged.
   integration, checkov); `deno tests` stage passed with
   `VIBE_IMAGE_AGENT_PROVIDERS=claude` set.
 - PR #4344 mutation survivors: `conflict_milestone_rebuild.ts:515` (negated
-  left-out log condition) is now killed by `abandonAndRebuildMilestone - logs
-  the left-out sub-PRs only when some were left out` in
-  `worker/deno/tests/conflict_abandon_restart_test.ts`; red-checked by negating
-  the condition → red.
+  left-out log condition) is now killed by
+  `abandonAndRebuildMilestone - logs
+  the left-out sub-PRs only when some were left out`
+  in `worker/deno/tests/conflict_abandon_restart_test.ts`; red-checked by
+  negating the condition → red.
   - exempt (untestable): `worker/deno/lib/conflict_milestone_rebuild.ts:626` —
     `output: ""` in the gate-threw verdict; an absent `output` is falsy and the
     only reader (`verdict.output ? … : ""`) renders the same message, so the
