@@ -38,6 +38,7 @@ import {
   DEFAULT_GH_CLONE_TIMEOUT,
   DEFAULT_GH_COMMAND_TIMEOUT,
   DEFAULT_GH_PAGINATED_TIMEOUT,
+  GH_TIMEOUT_EXIT_CODE,
 } from "../lib/gh_timeout.ts";
 
 const NOW = 1_700_000_000_000;
@@ -361,6 +362,162 @@ Deno.test({
     } finally {
       console.error = original;
       _resetKillGraceMsForTests();
+    }
+  },
+});
+
+Deno.test("chokepoints - past the finish with no hard kill the spawn is not refused", async () => {
+  pin(timeline({ finishMs: NOW - 1, hardKillMs: null }));
+  const pending = runWithTimeout("echo", ["still-wrapping-up"], {
+    timeoutMs: 5_000,
+  });
+  unpin();
+  const result = await pending;
+  assert(result.ok);
+  if (result.ok) {
+    assertEquals(result.value.timedOut, false);
+    assertEquals(result.value.success, true);
+    assertStringIncludes(result.value.stdout, "still-wrapping-up");
+  }
+
+  const seen = captureBudget();
+  pin(timeline({ finishMs: NOW - 1, hardKillMs: null }));
+  const ghPending = spawnGh(["api", "user"]);
+  unpin();
+  try {
+    await ghPending;
+    assertEquals(seen.timeoutMs, DEFAULT_GH_COMMAND_TIMEOUT * 1000);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+
+  // A caller signal is the only bound. A non-finite clamp must not become
+  // an immediate timeout that refuses wrap-up.
+  const signalled = captureBudget();
+  pin(timeline({ finishMs: NOW - 1, hardKillMs: null }));
+  const signalPending = spawnGh(["api", "user"], {
+    signal: new AbortController().signal,
+  });
+  unpin();
+  try {
+    await signalPending;
+    assertEquals(signalled.timeoutMs, undefined);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+/**
+ * A `gh` script on PATH, so the production runner is the code under test.
+ *
+ * The stub directory is prepended to the inherited PATH. Replacing PATH
+ * would hide `sleep` and the shell would exit 127 before the runner's
+ * timer or kill path ran.
+ */
+async function stubGh(
+  body: string,
+): Promise<{ dir: string; env: { PATH: string } }> {
+  const dir = await Deno.makeTempDir({ prefix: "gh-real-runner-" });
+  const path = `${dir}/gh`;
+  await Deno.writeTextFile(path, `#!/bin/bash\n${body}\n`);
+  await Deno.chmod(path, 0o755);
+  const inherited = Deno.env.get("PATH") ?? "";
+  return { dir, env: { PATH: `${dir}:${inherited}` } };
+}
+
+Deno.test({
+  name: "spawnGh production runner - a timeout is exit 124 and not success",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const stub = await stubGh("exec /bin/sleep 30");
+    _resetGhSpawnRunner();
+    resetRunTimelineForTests();
+    const started = Date.now();
+    try {
+      const result = await spawnGh(["api", "user"], {
+        timeoutMs: 200,
+        env: stub.env,
+      });
+      const elapsed = Date.now() - started;
+      assertEquals(result.code, GH_TIMEOUT_EXIT_CODE);
+      assertEquals(result.success, false);
+      assert(
+        elapsed < 3_000,
+        `timed out gh took ${elapsed}ms`,
+      );
+    } finally {
+      _resetGhSpawnRunner();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "spawnGh production runner - a caller abort rejects with AbortError",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const stub = await stubGh("exec /bin/sleep 30");
+    _resetGhSpawnRunner();
+    resetRunTimelineForTests();
+    const controller = new AbortController();
+    const pending = spawnGh(["api", "user"], {
+      signal: controller.signal,
+      env: stub.env,
+    });
+    const abortTimer = setTimeout(() => controller.abort(), 100);
+    try {
+      const error = await assertRejects(() => pending, DOMException);
+      assertEquals(error.name, "AbortError");
+    } finally {
+      clearTimeout(abortTimer);
+      _resetGhSpawnRunner();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "spawnGh production runner - a gh that ignores SIGTERM is given up inside the grace",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const stub = await stubGh("trap '' TERM\nwhile true; do :; done");
+    _resetGhSpawnRunner();
+    resetRunTimelineForTests();
+    _setKillGraceMsForTests(300);
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map((arg) => String(arg)).join(" "));
+    };
+    const started = Date.now();
+    try {
+      const result = await spawnGh(["api", "user"], {
+        timeoutMs: 200,
+        env: stub.env,
+      });
+      const elapsed = Date.now() - started;
+      assertEquals(result.code, GH_TIMEOUT_EXIT_CODE);
+      assertEquals(result.success, false);
+      const line = lines.find((entry) =>
+        entry.includes("did not complete within")
+      );
+      assert(
+        line !== undefined,
+        `missing kill log (stderr: ${result.stderr}; lines: ${lines.join(" | ")})`,
+      );
+      assertStringIncludes(line, "kill of gh");
+      assertEquals(line.includes("WARNING:"), false);
+      assertEquals(line.includes("ERROR:"), false);
+      assert(
+        elapsed < 3_000,
+        `kill outcome took ${elapsed}ms, past the grace cap`,
+      );
+    } finally {
+      console.error = original;
+      _resetKillGraceMsForTests();
+      _resetGhSpawnRunner();
+      await Deno.remove(stub.dir, { recursive: true });
     }
   },
 });

@@ -335,7 +335,14 @@ export function resolveGhSpawnBudget(
   }
   if (options.signal) {
     if (getRunTimeline() === undefined) return undefined;
-    return clampTimeoutToRunTimeline(Number.POSITIVE_INFINITY, command);
+    // No numeric budget of our own. A finite clamp is the timeline's cap;
+    // a non-finite result means no hard kill is known past the finish, so
+    // the caller's signal stays the only abort and wrap-up still runs.
+    const clamped = clampTimeoutToRunTimeline(
+      Number.POSITIVE_INFINITY,
+      command,
+    );
+    return Number.isFinite(clamped) ? clamped : undefined;
   }
   return clampTimeoutToRunTimeline(
     getGhTimeoutForOperation(args) * 1000,

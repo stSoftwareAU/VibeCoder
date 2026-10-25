@@ -2103,9 +2103,11 @@ prevent indefinite hangs:
 
 `spawnGh` applies that table when the caller passes no timeout and no signal.
 `runGitCommand`, `spawnGh` and `runWithTimeout` then clamp the budget to the
-time left before the run timeline's finish. Once the finish has passed, the
-budget is clamped to 300 s before the hard kill so wrap-up can still run. A
-budget that clamps to nothing is refused before the process starts. After a
+time left before the run timeline's finish. Once the finish has passed and a
+hard kill is known, the budget is clamped to 300 s before that kill so wrap-up
+can still run. With no hard kill known, the requested budget is kept, because
+refusing the spawn would stop the WIP push, the claim release and the hooks.
+A budget that clamps to nothing is refused before the process starts. After a
 timeout, the child has a capped grace to exit on SIGTERM; if it does not, the
 chokepoint logs `kill of <command> did not complete within <N>s` and returns
 a timed-out result (Issue #4247). With no timeline set, the budgets stay the

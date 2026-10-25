@@ -77,9 +77,12 @@ export function formatTimeoutSeconds(ms: number): string {
  * Clamp a chokepoint budget to the run timeline (Issue #4247).
  *
  * With no timeline set, the budget is unchanged. Before the finish it is
- * capped at the time remaining. After the finish it is capped at 300 s
- * before the hard kill, so wrap-up can still run. A result of 0 or less
- * throws and names `command`; the caller must not spawn.
+ * capped at the time remaining. After the finish, when a hard kill is known,
+ * it is capped at 300 s before that kill so wrap-up can still run. When no
+ * hard kill is known, the requested budget is kept: nothing else can tell
+ * wrap-up when to stop, and refusing the spawn would block the WIP push,
+ * the claim release and the hooks. A result of 0 or less throws and names
+ * `command`; the caller must not spawn.
  */
 export function clampTimeoutToRunTimeline(
   requestedMs: number,
@@ -91,7 +94,7 @@ export function clampTimeoutToRunTimeline(
   const now = chokepointNow();
   const limit = timeline.pastFinish(now)
     ? timeline.hardKillMs === null
-      ? 0
+      ? requestedMs
       : timeline.hardKillMs - HARD_KILL_WRAP_UP_RESERVE_MS - now
     : timeline.remainingToFinishMs(now);
   const allowed = Math.min(requestedMs, limit);
