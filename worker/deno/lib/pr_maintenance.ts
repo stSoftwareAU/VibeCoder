@@ -290,14 +290,13 @@ export interface AutoMergeOptions extends PrScanOptions {
   ) => Promise<MergeAttemptOutcome>;
   /**
    * Handler for a merge attempt's outcome (Issue #3584). Defaults to
-   * {@link handleMergeAttempt}, which updates a stale branch and escalates
-   * a PR that cannot be landed. Injectable for testing.
+   * {@link handleMergeAttempt}, which updates a stale branch and retries
+   * a PR that cannot be landed next cycle (Issue #4304). Injectable for
+   * testing.
    */
   handleMergeAttemptFn?: (
     options: HandleMergeAttemptOptions,
   ) => Promise<MergeAttemptHandling>;
-  /** Label applied when a merge is escalated. Defaults to `needs-human`. */
-  needsHumanLabel?: string;
   /** Needs-screenshot label name. */
   needsScreenshotLabel?: string;
   /**
@@ -1871,7 +1870,8 @@ export async function findFailedCiChecks(
  *
  * Every outcome is then handled loudly by {@link handleMergeAttempt}: a
  * stale branch is updated so its checks re-run, and a PR that cannot be
- * landed gets an explanatory comment plus `needs-human`.
+ * landed is logged and retried next cycle — never handed to a human
+ * (Issue #4304).
  *
  * The scan lists PRs the fleet itself authored (host login + `prAuthors`
  * — Issue #4076), so a PR from outside the fleet, including a trusted
@@ -1893,7 +1893,6 @@ export async function ensureAutoMergeOnOpenPrs(
     enableAutoMergeFn,
     directMergeFn,
     needsScreenshotLabel = "needs-screenshot",
-    needsHumanLabel = "needs-human",
     handleMergeAttemptFn = handleMergeAttempt,
     cache,
     prAuthors,
@@ -2002,20 +2001,19 @@ export async function ensureAutoMergeOnOpenPrs(
       );
 
       // Issue #3584: act on the outcome loudly — a stale branch is updated
-      // so its checks re-run, and a PR that cannot be landed gets an
-      // explanatory comment plus `needs-human`. Nothing is swallowed.
+      // so its checks re-run, and a PR that cannot be landed is logged and
+      // retried next cycle (Issue #4304). Nothing is swallowed.
       const handling = await handleMergeAttemptFn({
         repo,
         prNumber,
         outcome,
         logger,
         ghFn: ghCommandFn,
-        needsHumanLabel,
       });
 
       if (handling.disposition === "landed") {
         enabledCount++;
-      } else if (handling.disposition === "escalate") {
+      } else if (handling.disposition === "retry") {
         failedCount++;
       } else {
         skippedCount++;
@@ -2109,9 +2107,10 @@ async function closeIssueForMergedPr(
  * Try to arrange for a PR to merge, and report what happened (Issue #3584).
  *
  * Precedence: native auto-merge first; direct merge only when native
- * auto-merge is refused because the target branch is unprotected. Any
- * other result — including a thrown gh error — is a merge error, so the
- * caller escalates instead of counting a silent failure.
+ * auto-merge is refused because the target branch is unprotected, or because
+ * the repository has auto-merge switched off (Issue #4304). Any other
+ * result — including a thrown gh error — is a merge error, so the caller
+ * retries it instead of counting a silent success.
  */
 async function attemptMerge(
   repo: string,
@@ -2177,7 +2176,13 @@ async function attemptMerge(
       return { kind: "landed", merged: true };
     }
 
-    if (result.result === "not_allowed" && directMergeFn) {
+    // Issue #4304: a repository with auto-merge switched off takes the same
+    // gated direct merge as an unprotected base — it lands once it is
+    // approved and green, and nobody is asked to merge it by hand.
+    if (
+      (result.result === "not_allowed" ||
+        result.result === "not_enabled_on_repo") && directMergeFn
+    ) {
       // Issue #553: say WHY. GitHub's refusal was dropped here, so a PR that
       // merged directly looked like one where auto-merge had "randomly" not
       // been set. It is deterministic — GitHub refuses to arm auto-merge on a
