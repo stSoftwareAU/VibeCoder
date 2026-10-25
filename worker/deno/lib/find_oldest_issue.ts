@@ -74,9 +74,18 @@ import {
 import {
   heldIssueGateFor,
   reportHeldIssueGate,
+  retireMergedPrOpenHold,
 } from "./held_issue_gate_comment.ts";
 import { defaultLogger } from "./logger.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+
+/** Copy blocked details with the discovery tier selection-reasoning sorts on. */
+function withDiscoveryTier(
+  details: readonly BlockedCandidateInfo[],
+  tier: "configured-label" | "work-on",
+): BlockedCandidateInfo[] {
+  return details.map((detail) => ({ ...detail, tier }));
+}
 
 /**
  * Find the oldest eligible issue across all configured repositories.
@@ -206,6 +215,8 @@ export async function findOldestIssue(
   // Issue #2535: the refusals of the two human-scheduled tiers only — the
   // issues whose gate is named in a comment once selection is settled.
   const gateHeld: BlockedCandidateInfo[] = [];
+  /** Merged PR numbers seen this scan, keyed by lower-cased repo. */
+  const mergedPrNumbersByRepo = new Map<string, ReadonlySet<number>>();
   let configuredLabelConsidered = 0;
 
   // Issue #2495: the dependency-blocked candidates whose chain should be
@@ -358,6 +369,12 @@ export async function findOldestIssue(
       cache,
       ghFn,
     );
+    mergedPrNumbersByRepo.set(
+      repo.toLowerCase(),
+      new Set(
+        repoClosedPRs.filter((pr) => pr.merged === true).map((pr) => pr.number),
+      ),
+    );
 
     // Issue #1672: reuse the all-issues list captured during availability
     // classification when present. Fall back to fetchAllIssues only if the
@@ -406,8 +423,12 @@ export async function findOldestIssue(
     );
     allLabelCandidates.push(...labelResult.candidates);
     allBlocked.push(...labelResult.blocked);
-    allBlockedDetails.push(...labelResult.blockedDetails);
-    gateHeld.push(...labelResult.blockedDetails);
+    allBlockedDetails.push(
+      ...withDiscoveryTier(labelResult.blockedDetails, "configured-label"),
+    );
+    gateHeld.push(
+      ...withDiscoveryTier(labelResult.blockedDetails, "configured-label"),
+    );
     noteChainBlocked(repo, labelResult.blockedDetails, "configured-label");
     configuredLabelConsidered += labelResult.considered;
 
@@ -423,8 +444,12 @@ export async function findOldestIssue(
     allWorkOnCandidates.push(...workOnResult.candidates);
     // Issue #460: the work-on collector's per-issue skip reasons join the
     // label collector's, so the result names every gate that refused work.
-    allBlockedDetails.push(...workOnResult.blockedDetails);
-    gateHeld.push(...workOnResult.blockedDetails);
+    allBlockedDetails.push(
+      ...withDiscoveryTier(workOnResult.blockedDetails, "work-on"),
+    );
+    gateHeld.push(
+      ...withDiscoveryTier(workOnResult.blockedDetails, "work-on"),
+    );
     noteChainBlocked(repo, workOnResult.blockedDetails, "work-on");
     // Issue #2610: suppress this repo's low-priority/idle-task tiers only
     // when it has an open work-on issue that is not *solely* dependency-
@@ -506,6 +531,9 @@ export async function findOldestIssue(
       issueNumber: c.number,
       milestone: c.milestone,
       reason,
+      ...(c.source === "configured-label" || c.source === "work-on"
+        ? { tier: c.source }
+        : {}),
     });
   };
 
@@ -879,6 +907,49 @@ export async function findOldestIssue(
         repo: held.repo,
         issue: `#${held.issueNumber}`,
         gate: gate.kind,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Issue #4362: a pr-open hold whose blocking PR merged this cycle is
+  // deleted here, unless this scan already rewrote that issue's gate.
+  // Positive merge evidence only — absence from the capped open-PR list
+  // is not enough. A failure is logged and discovery carries on.
+  const seenForRetirement = new Set<string>();
+  const retireTargets: Array<{ repo: string; number: number }> = [];
+  const considerRetirement = (repo: string, number: number): void => {
+    const key = blockedKeyOf({ repo, number });
+    if (reported.has(key) || seenForRetirement.has(key)) return;
+    seenForRetirement.add(key);
+    retireTargets.push({ repo, number });
+  };
+  for (const candidate of allLabelCandidates) {
+    considerRetirement(candidate.repo, candidate.number);
+  }
+  for (const candidate of allWorkOnCandidates) {
+    considerRetirement(candidate.repo, candidate.number);
+  }
+  for (const held of gateHeld) {
+    considerRetirement(held.repo, held.issueNumber);
+  }
+  for (const target of retireTargets) {
+    const merged = mergedPrNumbersByRepo.get(target.repo.toLowerCase());
+    if (!merged || merged.size === 0) continue;
+    try {
+      await retireMergedPrOpenHold({
+        repo: target.repo,
+        issueNumber: target.number,
+        mergedPrNumbers: merged,
+        ghFn,
+        fleetAuthors: chainFleetAuthors,
+        cache,
+      });
+    } catch (err) {
+      defaultLogger.warn("findOldestIssue: gate comment failed", {
+        repo: target.repo,
+        issue: `#${target.number}`,
+        gate: "pr-open",
         error: err instanceof Error ? err.message : String(err),
       });
     }

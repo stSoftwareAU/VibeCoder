@@ -1918,7 +1918,10 @@ it up. The blocked-candidate counter is **unchanged** by promotion:
 `configured-label-blocked=N` on the `selection-reasoning` line still counts every
 blocked candidate recorded that scan — the label *and* work-on collectors both
 feed `allBlockedDetails` — whether or not a chain yielded a promotion, so the two
-lines stay independently readable. That counter rides `logSelectionReasoning`,
+lines stay independently readable. The `blocked=` field lists configured-label
+skips first and drops other entries first once it would pass 1024 characters, so
+a truncated log line still names why a top-priority issue was skipped
+(Issue #4362). The counter itself stays the full count. That counter rides `logSelectionReasoning`,
 which only fires when an issue was selected and its source was not
 `configured-label`, so a scan that selected nothing prints no counter at all.
 
@@ -3415,6 +3418,10 @@ left out; the issue is still told which dependency it waits on.
   stand-alone, never-edited comment (`vibe-chain-root-unworkable`) that went
   stale when the chain moved. Once the gate comment is posted or edited, the
   fleet-authored ones on that thread are deleted.
+- **A merged `pr-open` hold is cleared in that scan.** When the closed-PR
+  listing shows the remembered PR merged, and this scan did not replace the
+  hold with a new gate, the fleet-authored `vibe-held-issue-gate` comment is
+  deleted (Issue #4362). Absence from the capped open-PR list is not enough.
 - **Best effort.** A failure logs `findOldestIssue: gate comment failed` and
   discovery carries on; a missing comment never costs the fleet its selection.
 - `low-priority`, `idle-task` and self-diagnostic refusals are never commented.
