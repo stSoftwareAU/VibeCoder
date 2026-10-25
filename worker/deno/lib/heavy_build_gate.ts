@@ -26,8 +26,29 @@
  *   `/var/tmp/vibe-cargo-target`, a build starts only when the host has the
  *   floor **plus** {@link EPHEMERAL_CARGO_HEADROOM_BYTES} free — room for one
  *   build of the size that took GRQ-23 down. Short of that, idle checkouts'
- *   target directories are pruned (largest first); a build that is still not
- *   covered is refused ({@link enforceEphemeralCargoBudget}).
+ *   target directories are pruned (largest first). A build still not covered
+ *   after pruning is not run, and the sync is not deferred. Merge-only mode
+ *   ({@link heavyBuildAdmission}, Issue #4326) applies to a tree that holds a
+ *   cargo project, because only a cargo build writes to the ephemeral cargo
+ *   root; a repository with no cargo project keeps its own type check and the
+ *   normal agent. In a cargo-only tree a conflict-free merge is pushed
+ *   unverified with the `UNGATED:` note, and the milestone PR's own CI builds
+ *   it. So is a merge whose conflicts the deterministic rules settle: its
+ *   resolution gate reports a `skipped` verdict marked `landUnverified`, which
+ *   is pushed with the same note. A Deno-only tree and a mixed tree keep their
+ *   Deno checks and suites and are rolled back when those are red; a mixed
+ *   tree whose Deno half passed records that cargo was left to CI. A conflict
+ *   that needs the resolution agent is not landed in that cycle, because the
+ *   agent is free to run the very cargo build the host cannot afford. The
+ *   first such cycle is a refusal and is not charged. The next over-budget
+ *   cycle charges the attempt, so the recovery ladder applies and the branch
+ *   does not stay behind on disk budget alone.
+ *
+ *   No further reclaim step exists. On a runtime that refuses the trim,
+ *   deleting artefacts inside the guest returns nothing to the host
+ *   (`ephemeral_build_cache.ts`, `judgeGuestReclaim` in
+ *   `work_volume_ratchet.ts`), so the ephemeral root's idle target directories
+ *   are the only space the worker can hand back.
  * - **A pass cleans up after itself.** {@link releaseCheckoutTargetDirs}
  *   removes a checkout's target directories when the maintenance pass that
  *   built in it finishes, rather than leaving them to the relaunch.
@@ -140,8 +161,7 @@ function belongsTo(path: string, key: string): boolean {
  * Phrase a deferral carries when the merge may land and cargo must not run
  * (Issue #4326). Callers match it with {@link deferralSkipsCargoForMerge}.
  */
-export const CARGO_BUILD_SKIPPED_FOR_MERGE =
-  "the ephemeral cargo build is skipped and CI builds the merged tree";
+export const CARGO_BUILD_SKIPPED_FOR_MERGE = "cargo builds wait for CI";
 
 /** The budget's verdict for one build. */
 export interface CargoBudgetVerdict {
@@ -176,9 +196,10 @@ export function deferralSkipsCargoForMerge(
  * The bound is tied to host free space: a build may start when
  * `free − headroom ≥ floor`. Short of that, other checkouts' idle target
  * directories are removed, largest first, until the shortfall is covered;
- * still short, the build is refused. The checkout's own directories (its
- * incremental cache) and any written to recently (another slot's build in
- * progress) are never pruned.
+ * still short, `proceed` is false and {@link heavyBuildAdmission} turns the
+ * sync into a merge-only one (Issue #4326). The checkout's own directories
+ * (its incremental cache) and any written to recently (another slot's build
+ * in progress) are never pruned.
  */
 export async function enforceEphemeralCargoBudget(
   input: {
@@ -263,7 +284,7 @@ export async function enforceEphemeralCargoBudget(
       skipCargoBuild: true,
       detail: `ephemeral cargo root over budget (${terms}) — ${prunedNote} ` +
         `and ${formatGb(shortfall)} is still short, so ` +
-        `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`,
+        `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #3178 budget; Issue #4326 skip)`,
     };
   }
   return {
@@ -290,31 +311,54 @@ export function registerHeavyBuildDiskProbe(
 }
 
 /**
+ * What a maintenance pass does with a repository build or test (Issue #4326).
+ *
+ * - `build` — run it as usual.
+ * - `defer` — the host is below its floor: no build and no merge this cycle
+ *   (Issue #3178).
+ * - `merge-only` — the ephemeral root is still short of budget after pruning:
+ *   cargo builds wait for the milestone PR's CI. Deno projects retain their
+ *   normal verification. The reason names the budget verdict.
+ */
+export type HeavyBuildAdmission =
+  | { mode: "build" }
+  | { mode: "defer"; reason: string }
+  | { mode: "merge-only"; reason: string };
+
+/**
  * The one call a maintenance pass makes before it runs a repository build or
  * test in `checkoutPath`.
  *
- * @returns Why the build must wait, or null to proceed.
+ * @returns How the pass proceeds; see {@link HeavyBuildAdmission}
  */
-export async function heavyBuildDeferral(
+export async function heavyBuildAdmission(
   checkoutPath: string,
   deps: EphemeralRootDeps = productionEphemeralRootDeps,
-): Promise<string | null> {
-  if (probe === undefined) return null;
+): Promise<HeavyBuildAdmission> {
+  if (probe === undefined) return { mode: "build" };
   const reading = await probe();
   const low = judgeHostDiskForBuild(reading);
-  if (low !== null) return low;
+  if (low !== null) return { mode: "defer", reason: low };
   // The budget is about the ephemeral root, which builds use only where the
   // runtime refuses the trim (Issue #2247).
-  if (!reading.trimRefused) return null;
+  if (!reading.trimRefused) return { mode: "build" };
   const free = reading.status.availableBytes;
-  if (reading.status.level !== "ok" || free === undefined) return null;
-  if (reading.floorBytes === undefined) return null;
+  if (reading.status.level !== "ok" || free === undefined) {
+    return { mode: "build" };
+  }
+  if (reading.floorBytes === undefined) return { mode: "build" };
   const verdict = await enforceEphemeralCargoBudget({
     checkoutPath,
     hostFreeBytes: free,
     floorBytes: reading.floorBytes,
   }, deps);
-  return verdict.proceed ? null : verdict.detail;
+  if (verdict.proceed) return { mode: "build" };
+  return {
+    mode: "merge-only",
+    reason:
+      `${verdict.detail}; cargo builds wait for CI; Deno projects keep their ` +
+      `normal checks (Issue #4326)`,
+  };
 }
 
 /**
@@ -375,14 +419,19 @@ export function inFlightHostDiskGateEnabled(): boolean {
 /**
  * Why an in-flight build must not run in `checkoutPath` (Issue #4360).
  *
- * Same floor and ephemeral headroom as {@link heavyBuildDeferral}. Null when
+ * Same floor and ephemeral headroom as {@link heavyBuildAdmission}. Null when
  * the gate is not armed, no probe is registered, or the host has room.
  */
 export async function parkInFlightBuild(
   checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
 ): Promise<string | null> {
   if (!inFlightGateEnabled) return null;
-  return inFlightParkReason(await heavyBuildDeferral(checkoutPath));
+  const admission = await heavyBuildAdmission(checkoutPath, deps);
+  // A merge-only admission permits a milestone merge, never its build.
+  return inFlightParkReason(
+    admission.mode === "build" ? null : admission.reason,
+  );
 }
 
 /**

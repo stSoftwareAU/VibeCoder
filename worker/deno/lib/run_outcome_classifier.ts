@@ -302,9 +302,11 @@ function toolFailedToSpawn(item: Record<string, unknown>): boolean {
  *
  * Two shapes count. A provider error item — `Code Mode is unavailable`, a
  * missing code-mode host, or tools reported unavailable — when no tool call
- * then succeeded. Or at least one tool call, every one of which failed to
- * spawn. A transcript whose tools ran is an ordinary agent outcome: the
- * model had a runtime and simply did not deliver.
+ * *after that error* succeeded. Or at least one tool call, every one of
+ * which failed to spawn. A later session counts on its own (Issue #4362):
+ * the implementing agent may have used tools, and the pre-PR verifier's
+ * session can still open with the code-mode host missing. A tool that
+ * succeeds after the error means the runtime recovered.
  */
 /**
  * Parse a Codex session JSONL into items.
@@ -335,11 +337,24 @@ function transcriptShowsToolRuntimeFailure(
     const item = unwrapTranscriptItem(entry);
     if (item) items.push(item);
   }
+  // A provider error counts when nothing after it actually ran. Tools that
+  // succeeded *before* the error are an earlier session (Issue #4362).
+  let sawRuntimeError = false;
+  let toolSucceededAfterError = false;
+  for (const item of items) {
+    if (isProviderToolRuntimeError(item)) sawRuntimeError = true;
+    if (
+      sawRuntimeError && isToolItem(item) && !toolFailedToSpawn(item)
+    ) {
+      toolSucceededAfterError = true;
+    }
+  }
+  if (sawRuntimeError && !toolSucceededAfterError) return true;
+
   const tools = items.filter(isToolItem);
-  // A tool that actually ran means the runtime was up. Quoted errors in a
-  // later agent message do not undo that.
+  // A tool that actually ran, with no provider error after it, means the
+  // runtime was up. Quoted errors in a later agent message do not undo that.
   if (tools.some((tool) => !toolFailedToSpawn(tool))) return false;
-  if (items.some(isProviderToolRuntimeError)) return true;
   return tools.length > 0 && tools.every(toolFailedToSpawn);
 }
 
@@ -349,9 +364,12 @@ function transcriptShowsToolRuntimeFailure(
  * ORDER MATTERS and is fixed here, most specific first — exactly as
  * `detectFailureCategory` documents its own ordering:
  *
- * 0. Every registered worker gate category (`WORKER_GATE_MARKERS`: summary,
+ * 0. A transcript that shows the tool runtime failing (Issue #4362) —
+ *    infrastructure, even when the recorded category is a worker gate such
+ *    as `criteria_unmet`. The signal is the session items, not quoted prose.
+ * 0b. Every registered worker gate category (`WORKER_GATE_MARKERS`: summary,
  *    security-fix and pre-push gates; Issues #3431, #3454, #3716) — answered
- *    before everything else, because the gate refusal quotes the agent's
+ *    before the message rules, because the gate refusal quotes the agent's
  *    summary, tests or tool output and a quoted "ENOSPC", usage limit or stack
  *    trace must not turn it into another class.
  * 1. Account limits (`rate_limit` category, out-of-credit message) — the
@@ -399,6 +417,12 @@ export function classifyRunFailure(
       ? splitAgentNarration(failureMessage ?? "").worker
       : ""
     : failureMessage ?? "";
+
+  // A broken tool runtime is infrastructure whatever category the run was
+  // recorded under (Issue #4362). The signal is the session items, not the
+  // gate's quoted reason, so a criteria-unmet record whose verifier or agent
+  // had no working tools is not an agent outcome.
+  if (transcriptShowsToolRuntimeFailure(transcript)) return TOOL_RUNTIME;
 
   // A worker gate refusal (summary, security-fix or pre-push gate) quotes text
   //    the worker did not write, so any message-pattern rule below (secondary

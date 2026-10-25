@@ -71,6 +71,8 @@ Closes #4360.
 
 ## Evidence
 
+Merge with main: retained both the milestone merge-only policy from Issue #4326 and the in-flight stop policy from Issue #4360 in the operator documentation. The in-flight guard now consumes `heavyBuildAdmission`: both `defer` and `merge-only` park an actual build, while `build` proceeds. The regression first failed with `ReferenceError: heavyBuildDeferral is not defined`; after the adaptation it covers low disk, insufficient headroom, sufficient space and an unknown reading. All 300 focused disk, mutation, discrimination and fault-classification tests passed, as did all 857 manifest checks (one ignored), formatting and lint.
+
 Backend-only change; no UI files touched.
 
 **Docs sweep** — grep: `HOST_DISK_LOW defers maintenance builds`, `plus 25 GB`,

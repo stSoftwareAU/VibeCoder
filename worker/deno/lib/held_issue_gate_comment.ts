@@ -13,7 +13,9 @@
  * and keyed by root+reason: when the gate moved on, the old comment simply
  * stayed, which is why the stale "#832" comments on GRQ-AutoTrader #830/#831
  * and #846 were never replaced. Here a changed gate rewrites the comment the
- * fleet already wrote.
+ * fleet already wrote. A `pr-open` comment whose PR has merged, and which this
+ * scan did not replace with a new gate, is deleted instead (Issue #4362) — the
+ * same marker, not a second comment format.
  *
  * Two boundaries the upsert must not soften:
  *
@@ -364,6 +366,70 @@ export const HELD_ISSUE_GATE_RECHECK_SECONDS = 24 * 60 * 60;
 /** The cache key under which a confirmed gate is remembered. */
 function recheckCacheKey(issueNumber: number): string {
   return `held_issue_gate_${issueNumber}`;
+}
+
+/** Cache keys written for a PR-open hold, e.g. `held-gate-pr-open-77`. */
+const PR_OPEN_GATE_KEY = /^held-gate-pr-open-(\d+)$/;
+
+/**
+ * Delete the fleet's `pr-open` hold once that PR has merged (Issue #4362).
+ *
+ * The scan only learns the merge from the closed-PR listing. A missing open
+ * PR is not evidence: the open listing is capped. When the remembered gate
+ * names a PR in `mergedPrNumbers`, every fleet-authored marker on the issue
+ * is deleted and the remembered gate is forgotten. A delete failure throws
+ * and leaves the cache, so the next scan retries. A stranger's marker is
+ * never deleted.
+ */
+export async function retireMergedPrOpenHold(opts: {
+  repo: string;
+  issueNumber: number;
+  mergedPrNumbers: ReadonlySet<number>;
+  ghFn: GhFn;
+  fleetAuthors: string[];
+  cache?: IssueCache;
+}): Promise<"cleared" | "kept"> {
+  if (!opts.cache || opts.mergedPrNumbers.size === 0) return "kept";
+  const cacheKey = recheckCacheKey(opts.issueNumber);
+  const confirmed = await opts.cache.read<{ key: string }>(
+    opts.repo,
+    cacheKey,
+    { ttlSeconds: HELD_ISSUE_GATE_RECHECK_SECONDS },
+  );
+  const match = confirmed ? PR_OPEN_GATE_KEY.exec(confirmed.key) : null;
+  const prNumber = match ? Number(match[1]) : NaN;
+  if (!Number.isInteger(prNumber) || !opts.mergedPrNumbers.has(prNumber)) {
+    return "kept";
+  }
+
+  const existing = await fetchMarkerComments(
+    opts.repo,
+    opts.issueNumber,
+    HELD_ISSUE_GATE_MARKER,
+    opts.ghFn,
+  );
+  const ours = existing.filter((comment) =>
+    isFleetAuthor(comment.author, opts.fleetAuthors)
+  );
+  if (ours.length === 0) {
+    await opts.cache.invalidate(opts.repo, cacheKey);
+    return "kept";
+  }
+
+  const errors: Error[] = [];
+  for (const comment of ours) {
+    const err = await deleteIssueComment(opts.repo, comment.id, opts.ghFn);
+    if (err) errors.push(err);
+  }
+  if (errors.length > 0) {
+    throw new Error(
+      `held-issue gate comment for #${opts.issueNumber} could not be cleared after PR #${prNumber} merged: ${
+        errors.map((err) => err.message).join("; ")
+      }`,
+    );
+  }
+  await opts.cache.invalidate(opts.repo, cacheKey);
+  return "cleared";
 }
 
 /** What {@link reportHeldIssueGate} did on one issue. */

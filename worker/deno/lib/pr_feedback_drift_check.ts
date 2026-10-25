@@ -1303,7 +1303,8 @@ export async function runPrFeedbackDriftCheck(
     [...diffNames, ...untracked].filter((f) => !isWorkerStatePath(f)),
   );
   if (pushFiles.length === 0) {
-    logger.warn("Drift check skipped — this push changed nothing", {
+    // Nothing to check is the correct outcome, not a degradation (Issue #4361).
+    logger.info("Drift check skipped — this push changed nothing", {
       repo,
       prNumber,
     });
