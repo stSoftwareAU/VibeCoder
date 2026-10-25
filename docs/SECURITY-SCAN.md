@@ -813,8 +813,9 @@ with the same scope, after the audit is actually complete. A changed list needs
 a new issue/top-up. Existing invalid records are refused without modification:
 use the historical repoint procedure below, preserving its original landed
 coverage rather than replacing it with today's tip. Never edit a SHA manually
-to make a new top-up pass. The CI and pre-push ancestry guards remain required
-and catch invalid records written outside this supported producer.
+to make a new top-up pass. The CI ancestry guard remains required
+and catches invalid records written outside this supported producer. The
+pre-push sweptAt check was removed (Issue #4234).
 
 **`sweptAt` is a commit reachable from the default branch.** For a new record
 the supported producer takes it from the default-branch merge-base at

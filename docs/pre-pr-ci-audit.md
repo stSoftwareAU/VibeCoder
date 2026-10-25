@@ -112,8 +112,10 @@ worker test job is also class local and is already covered by `quality.sh`.
 The sweptAt failures were a feature-branch commit recorded as the sweep
 ledger's `sweptAt`, which is not an ancestor of the base branch. The check
 needs deeper history than the shallow worker checkout has, and no pre-PR stage
-checked ancestry. #3689 adds a sweptAt check to the pre-push gate that deepens
-shallow history and fails closed, plus a rule in the `security_scan` prompt.
+checked ancestry. #3689 added a sweptAt check to the pre-push gate that deepened
+shallow history and failed closed, plus a rule in the `security_scan` prompt.
+That pre-push check was removed (Issue #4234). CI still refuses a `sweptAt`
+that is not an ancestor of the default branch.
 
 The agent pre-push hook runs markdownlint on the agent's own `git push`.
 markdownlint now also runs in the completion-phase gate, which covers the whole

@@ -85,11 +85,10 @@
  * ```
  *
  * The verdict renderer ({@link renderDriftVerdictQuestion}), verdict parser
- * ({@link parseDriftVerdict}) and {@link DRIFT_CHECK_DISALLOWED_TOOLS} are
- * shared with a removed summary gate (Issue #3257), the first-run
- * counterpart of this module's model question — run from the completion
- * phase, where a PR summary describes named code wrongly on the very first
- * run rather than drifting from it on a later review-fix push.
+ * ({@link parseDriftVerdict}) and {@link DRIFT_CHECK_DISALLOWED_TOOLS} were
+ * shared with the first-run claim check (Issue #3257). That check was
+ * removed (Issue #4234). This review-fix question is the pass that still
+ * uses them.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -304,8 +303,8 @@ const SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
  * Render a constrained, read-only drift-verdict question (Issues #3143,
  * #3257).
  *
- * The shared shape behind {@link buildDriftQuestionPrompt} (review-fix
- * drift) and a removed summary gate's first-run question: no file edits
+ * Review-fix drift uses this shape (Issue #3143). The first-run claim
+ * question that used the same shape was removed (Issue #4234). No file edits
  * this turn, an intro naming what to read, the files to check inside a
  * CSPRNG-nonced untrusted fence, a narrowed instruction, and a single
  * `DRIFT_VERDICT_OPEN`/`DRIFT_VERDICT_CLOSE` JSON reply block.
