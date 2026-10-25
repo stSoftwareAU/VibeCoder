@@ -41,6 +41,8 @@ import {
   repairMilestoneRulesetCreateBlock,
 } from "./milestone_ruleset_check.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { repairAdminOnlyFinding } from "./admin_only_finding.ts";
+import { hardenRepo } from "./repo_settings_harden.ts";
 
 // Git operations
 import {
@@ -256,6 +258,15 @@ export interface GitHubDeps {
    * spawn `gh` at github.com.
    */
   repairMilestoneCreateBlock: (repo: string) => Promise<RepairMilestoneResult>;
+  /**
+   * Apply the setting a repository-admin finding asks for (Issue #4298),
+   * returning the applied steps or the refusal. A seam for the same reason as
+   * the ruleset repair above: a test must not write settings on github.com.
+   */
+  repairRepoSettingsFinding: (
+    repo: string,
+    issueBody: string,
+  ) => Promise<Result<string>>;
 }
 
 /** Git operations — branching, push, conflict resolution, state recovery. */
@@ -709,6 +720,19 @@ export function createDefaultDeps(
           (args, stdin) =>
             runGhOrThrow(args, stdin === undefined ? {} : { stdin }),
         ),
+      // Issue #4298: the worker applies a repository-admin finding's setting
+      // with its own token, and only that finding's steps.
+      repairRepoSettingsFinding: (repo: string, issueBody: string) =>
+        repairAdminOnlyFinding(
+          repo,
+          issueBody,
+          (target, kinds) =>
+            hardenRepo(target, {
+              apply: true,
+              ghCommandFn: runGhCommand,
+              onlyKinds: kinds,
+            }),
+        ),
     },
 
     git: {
@@ -1039,6 +1063,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         reason: "mock: no ruleset read",
       })
     ),
+    // Issue #4298: a mocked repository's setting already holds. A test that
+    // wants a refusal overrides it.
+    repairRepoSettingsFinding: mockFn<
+      GitHubDeps["repairRepoSettingsFinding"]
+    >(() => Promise.resolve({ ok: true, value: "mock: already holds" })),
     ...overrides?.github,
   };
 

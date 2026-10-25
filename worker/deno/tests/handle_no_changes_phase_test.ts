@@ -260,7 +260,7 @@ Deno.test(
 );
 
 Deno.test(
-  "handle_no_changes_phase - described change on an analysis-only issue still hands off (Issue #2687)",
+  "handle_no_changes_phase - described change on an analysis-only issue is closed with its analysis (Issues #2687, #4298)",
   async () => {
     const calls = makeStubGhCalls();
     const ctx = makeContext({
@@ -279,8 +279,43 @@ Deno.test(
     assertEquals(result.status, "early_exit");
     assertEquals(
       (result as { reason: string }).reason,
-      "analysis_only_handed_off",
+      "analysis_only_completed",
     );
+    assertEquals(calls.closeIssue.length, 1, "the analysis is the deliverable");
+    assert(
+      !calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+      "an analysis-only issue is never handed back (Issue #4298)",
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - an untrusted image keeps an analysis-only issue open and retries it (Issues #1385, #4298)",
+  async () => {
+    // The image gate withholds the one close that rests on the agent's word
+    // alone. Closing the issue as a completed analysis instead would hand the
+    // same image the same power, so the run is retried rather than closed.
+    const calls = makeStubGhCalls();
+    const body = "Audit the login.\n\n<!-- analysis-only -->\n" +
+      "![repro](https://example.test/shot.png)";
+    const ctx = makeContext({
+      issueBody: body,
+      untrustedImages: findImageReferences(body),
+    });
+    const state = makeState({
+      claudeOutput: "A".repeat(200) +
+        "\nThis has already been fixed. No code change was required.\n" +
+        '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+        'verified="read the code on the default branch" -->',
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals(calls.closeIssue.length, 0, "must NOT close the issue");
+    assertRetried(result, calls, ctx);
   },
 );
 

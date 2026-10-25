@@ -41,7 +41,7 @@ import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 import type { SummaryRuleRunVerdict } from "./summary_rule_gate_retry.ts";
 import type { SummaryClaimCorrection } from "./summary_claim_correction.ts";
 import type { ScreenshotGateBlock } from "./screenshot_gate_retry.ts";
-import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
+import type { PostMergeReapproval } from "./reapproval_superseded_close.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {

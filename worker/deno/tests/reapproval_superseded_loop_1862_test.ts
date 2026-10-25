@@ -16,9 +16,9 @@
  *     each an Opus invocation for no output.
  *
  * These tests drive the whole `workOnIssue` pipeline with injected doubles and
- * assert what a human and the next scan actually see: one explanatory comment
- * carrying the dedup marker, `needs-human` applied, the reason stated on the
- * claim release, and no second comment on a repeat run.
+ * assert what the next scan actually sees: the issue closed as completed by
+ * the merged PR, the reason stated on the claim release, and no `needs-human`
+ * (Issue #4298 — the issue is never handed back to a human).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -27,7 +27,6 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssue } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { reapprovalSupersededDedupKey } from "../lib/reapproval_superseded_handoff.ts";
 import type { IssueContext } from "../lib/issue_worker_types.ts";
 import type { WorkOnIssueResult } from "../lib/issue_worker_types.ts";
 
@@ -43,10 +42,6 @@ const AFTER_MERGE = "2026-09-09T15:49:15Z";
 /** An approval that pre-dates the merge — the ordinary close case. */
 const BEFORE_MERGE = "2026-09-08T09:00:00Z";
 
-const MARKER = `<!-- needs-human-escalation: ${
-  reapprovalSupersededDedupKey(ISSUE)
-} -->`;
-
 /** What one run of the pipeline did to the issue. */
 interface RunRecord {
   result: WorkOnIssueResult;
@@ -54,6 +49,8 @@ interface RunRecord {
   comments: string[];
   /** Labels added through the REST labels endpoint. */
   labelsAdded: string[];
+  /** `gh issue close` argument lists. */
+  closes: string[][];
 }
 
 /**
@@ -66,6 +63,7 @@ async function runCycle(opts: {
 }): Promise<RunRecord> {
   const comments: string[] = [];
   const labelsAdded: string[] = [];
+  const closes: string[][] = [];
 
   const deps = createMockDeps({
     claude: {
@@ -130,6 +128,10 @@ async function runCycle(opts: {
             return Promise.resolve("[]");
           }
         }
+        if (args[0] === "issue" && args[1] === "close") {
+          closes.push(args);
+          return Promise.resolve("");
+        }
         if (args[0] === "issue" && args[1] === "view") {
           return Promise.resolve(
             JSON.stringify({ state: "OPEN", milestone: null, labels: [] }),
@@ -156,77 +158,53 @@ async function runCycle(opts: {
   };
 
   const result = await workOnIssue(ctx, deps);
-  return { result, comments, labelsAdded };
+  return { result, comments, labelsAdded, closes };
+}
+
+/** The close this run made on the issue for the re-approval, if any. */
+function reapprovalClose(run: RunRecord): string[] | undefined {
+  return run.closes.find((args) =>
+    args.some((a) => a.includes("Re-approved after"))
+  );
 }
 
 Deno.test(
-  "workOnIssue - a re-approved run that ends superseded is handed to a human once (Issue #1862)",
+  "workOnIssue - a re-approved run that ends superseded closes the issue as done by the merged PR (Issues #1862, #4298)",
   async () => {
     const run = await runCycle({ labelAddedAt: AFTER_MERGE });
 
     // The #218 stop still stands: superseded, not a failure.
     assertEquals(run.result.outcome?.kind, "superseded");
 
-    // Exactly one comment, and it explains the loop.
-    assertEquals(run.comments.length, 1);
-    const body = run.comments[0]!;
-    assertStringIncludes(body, "Re-approved after the PR merged");
-    // The PR that resolved the issue, and who re-approved it afterwards.
+    // The merged PR already did the work, so the worker closes the issue as
+    // completed instead of asking a human what the re-approval was for.
+    const close = reapprovalClose(run);
+    assert(close, `expected a close, got ${JSON.stringify(run.closes)}`);
+    assertEquals(close[close.indexOf("--reason") + 1], "completed");
+    const body = close[close.indexOf("--comment") + 1]!;
     assertStringIncludes(body, "PR #116");
     assertStringIncludes(body, "@nleck");
-    // The request: say what the re-approval should change.
-    assertStringIncludes(body, "Put it in the issue description");
-    // The marker a repeat run recognises.
-    assertStringIncludes(body, MARKER);
 
-    // `needs-human` is what drops the issue from the next scan, and the main
-    // loop's discovery-label strip keys off it.
-    assert(
-      run.labelsAdded.includes("needs-human"),
-      `expected needs-human to be applied, got ${run.labelsAdded.join(", ")}`,
-    );
+    // Never handed back.
+    assertEquals(run.labelsAdded.includes("needs-human"), false);
 
     // The claim release says why the run produced nothing.
     const notes = run.result.outcome?.notes ?? [];
     assert(
-      notes.some((note) => note.includes("nothing left to change")),
-      `expected a hand-off note on the outcome, got ${JSON.stringify(notes)}`,
+      notes.some((note) => note.includes("closed as completed")),
+      `expected a close note on the outcome, got ${JSON.stringify(notes)}`,
     );
   },
 );
 
 Deno.test(
-  "workOnIssue - a repeat run posts no second comment (Issue #1862)",
-  async () => {
-    const first = await runCycle({ labelAddedAt: AFTER_MERGE });
-    assertEquals(first.comments.length, 1);
-
-    // The next cycle sees the comment the first run left. Created now, so the
-    // 24-hour dedup window is measured against the run's own clock rather
-    // than a fixed date that would age out of it.
-    const second = await runCycle({
-      labelAddedAt: AFTER_MERGE,
-      priorComments: [{
-        body: first.comments[0]!,
-        author: WORKER,
-        createdAt: new Date().toISOString(),
-      }],
-    });
-
-    assertEquals(second.comments.length, 0);
-    // The label add stays idempotent, so a stripped label is re-applied.
-    assert(second.labelsAdded.includes("needs-human"));
-  },
-);
-
-Deno.test(
-  "workOnIssue - an approval that pre-dates the merge closes as before, with no hand-off (Issue #1862)",
+  "workOnIssue - an approval that pre-dates the merge takes the ordinary close, not the re-approval one (Issue #1862)",
   async () => {
     const run = await runCycle({ labelAddedAt: BEFORE_MERGE });
 
     // No re-approval, so the pre-check takes its ordinary close path and the
-    // hand-off never fires — the loop this issue fixes is the re-approved one.
-    assertEquals(run.comments.filter((c) => c.includes(MARKER)).length, 0);
+    // re-approval close never fires.
+    assertEquals(reapprovalClose(run), undefined);
     assertEquals(run.labelsAdded.includes("needs-human"), false);
   },
 );

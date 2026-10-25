@@ -444,7 +444,7 @@ Deno.test("self-schedule - fleet PRs below the slot cap do not defer the diagnos
   assertEquals(result.candidates.length, 1);
 });
 
-Deno.test("self-schedule - a merged PR blocks permanently and escalates to a human", async () => {
+Deno.test("self-schedule - a diagnostic a merged PR names is closed as resolved, never handed to a human (Issue #4298)", async () => {
   const calls: GhCall[] = [];
   const gh = makeGh(calls);
   const { result } = await collect({
@@ -466,15 +466,13 @@ Deno.test("self-schedule - a merged PR blocks permanently and escalates to a hum
   const joined = calls.map((c) => c.args.join(" "));
   assert(
     joined.some((c) =>
-      c.includes("issues/39/labels") && c.includes("needs-human")
+      c.startsWith("issue close 39") && c.includes("--reason completed") &&
+      c.includes("#12")
     ),
-    `expected a needs-human escalation, got ${JSON.stringify(joined)}`,
+    `expected the diagnostic closed as resolved, got ${JSON.stringify(joined)}`,
   );
   assert(
-    joined.some((c) =>
-      c.includes("issues/39/comments") &&
-      c.includes("cannot be self-scheduled")
-    ),
-    "escalation must come with an explanatory comment",
+    !joined.some((c) => c.includes("needs-human")),
+    "a resolved diagnostic is never handed to a human",
   );
 });

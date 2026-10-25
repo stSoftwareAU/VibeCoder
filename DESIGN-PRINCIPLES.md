@@ -2850,47 +2850,42 @@ See
 [`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#-1-worker-run-loop-and-process-lifecycle)
 for where this sits in the claim/heartbeat lifecycle.
 
-### Analysis-only / no-PR hand-off for `work-on`
+### Analysis-only / no-PR issues under `work-on`
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
 deliverable is analysis — a gap analysis, coverage matrix, or
 "populate the issue" recommendation posted as a comment — produces no PR, so the
 "no PR" outcome reads as "not done" and the issue is re-picked-up and re-run
 indefinitely (the loop, which re-posted the same matrix plus an "unable to
-make code changes" note about five times). The worker now detects an
-analysis-only / no-PR issue from **two signals on a marked issue** and hands
-it off cleanly to `needs-human`. An approved issue without the marker is
-retried as not finished instead (Issue #4227):
+make code changes" note about five times).
 
-- **(a) Up-front body marker** — `<!-- analysis-only -->` in the issue body. The
-  worker hands off **before** cloning the repo or running Claude.
-- **(b) Post-run signal on a marked issue** — Claude made no code changes but
-  produced useful text on an issue with the analysis-only marker. The worker
-  posts the partial answer, then hands off.
+An issue whose body carries `<!-- analysis-only -->` (or `<!-- no-pr -->`) is
+run like any other: the analysis is the deliverable, so the agent must produce
+it. A run that ends with no code changes and useful text posts the analysis
+and **closes the issue as completed** (Issue #4298). It used to be handed to a
+human to read and decide; that hand-off — up front before Claude ran, and after
+the run — is gone, because handing an issue back is a failure, not an
+outcome. An approved issue without the marker is retried as not finished
+instead (Issue #4227). The loop guard for the remaining case (no changes
+**and** no useful output) is the `failed-once` record and its escalating
+cooldown in [`label_failure.ts`](worker/deno/lib/label_failure.ts), so
+`work-on` re-runs the same issue at most once a day, and never parks it
+(Issue #4158). The image gate still wins: when an untrusted author's image sat
+in front of an agent that reported the issue already fixed, nothing it said
+closes the issue, marked or not (Issue #1385).
 
-Both route through the shared
-[`escalateToHuman`](worker/deno/lib/needs_human_escalation.ts) chokepoint, which
-applies `needs-human` + a paired explanation comment and (via
-`stripDiscoveryLabelsOnEscalation`) drops the `work-on` label server-side so the
-issue leaves discovery. A clean hand-off is **not** a `failed` outcome — the task
-did its job. The fallback loop guard for the remaining case (no changes **and**
-no useful output) is the `failed-once` record and its escalating cooldown in
-[`label_failure.ts`](worker/deno/lib/label_failure.ts), so `work-on` re-runs
-the same issue at most once a day, and never parks it (Issue #4158).
-
-**Implementation:** [`analysis_only_handoff.ts`](worker/deno/lib/analysis_only_handoff.ts)
-(`hasAnalysisOnlyMarker`, `handOffAnalysisOnly`), wired into
-[`issue_worker.ts`](worker/deno/lib/issue_worker.ts) (signal a) and
+**Implementation:** [`analysis_only.ts`](worker/deno/lib/analysis_only.ts)
+(`hasAnalysisOnlyMarker`) and
 [`phases/handle_no_changes_phase.ts`](worker/deno/lib/phases/handle_no_changes_phase.ts)
-(signal b). See
+(`finishOrRetry`). See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
-Analysis-only / no-PR hand-off for the operator detail.
+Analysis-only / no-PR issues for the operator detail.
 
 ### Blocked on a dependency is a deferral, not a closure
 
 A `work-on` run that produces no code changes can close as already complete,
-hand off an explicitly marked analysis-only issue, defer on an open dependency,
-or retry as not finished (Issue #4227).
+close an explicitly marked analysis-only issue with its analysis (Issue #4298),
+defer on an open dependency, or retry as not finished (Issue #4227).
 Historically, a run that read the code and found the work genuinely blocked
 on another issue had no ending, so it fell through to the analysis-only
 branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
@@ -2977,7 +2972,7 @@ flowchart TD
     B -- no --> C{"Verified already resolved,<br/>citing a commit / PR?"}
     C -- yes --> X["Close as complete,<br/>evidence in the comment"]
     C -- no --> A{"Issue marked analysis-only?"}
-    A -- yes --> H["Analysis-only hand-off<br/>(needs-human)"]
+    A -- yes --> H["Post the analysis,<br/>close as completed (#4298)"]
     A -- no --> R["Not finished: retry on the failure ladder (#4227)"]
 ```
 
@@ -3113,9 +3108,8 @@ deterministically like `vibe-cross-repo-pr` — with the broadened keyword list
 kept as a fallback for agents that phrase it in prose.
 
 **Closing requires cited evidence.** A commit and/or PR reference, plus (on the
-marker path) how the fix was verified. Without it the run falls back to the
-analysis-only hand-off, which is deliberately tighter than the keyword path it
-replaces: that path closed on a plain "already fixed" claim. The evidence is
+marker path) how the fix was verified. Without it the run is retried as not
+finished, which is deliberately tighter than the keyword path it replaces: that path closed on a plain "already fixed" claim. The evidence is
 recorded in the close comment, so the closure is auditable from the issue alone,
 and it is what keeps this from recreating the failure of closing an issue by
 inference from a PR that merely references it — the agent must verify the code
