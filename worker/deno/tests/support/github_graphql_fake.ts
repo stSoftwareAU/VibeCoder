@@ -101,6 +101,37 @@ export interface FakeGh {
   queries: string[];
 }
 
+/** Reject truncated selection sets rather than returning a plausible payload. */
+function validateSelectionSets(query: string): void {
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let comment = false;
+  for (const char of query) {
+    if (comment) {
+      if (char === "\n") comment = false;
+      continue;
+    }
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === "#") comment = true;
+    else if (char === '"') quoted = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth < 0) {
+      throw new Error("GraphQL syntax error: unexpected closing selection set");
+    }
+  }
+  if (quoted || depth !== 0) {
+    throw new Error(
+      "GraphQL syntax error: unterminated selection set or string",
+    );
+  }
+}
+
 /** Connection arguments as GitHub interprets them. */
 interface Slice {
   first?: number;
@@ -318,6 +349,7 @@ export function fakeGithubGraphQL(state: FakeRepoState): FakeGh {
     if (!field) throw new Error("fake gh received no query= field");
     const query = field.slice("query=".length);
     queries.push(query);
+    validateSelectionSets(query);
 
     const repo = /repository\(owner:\s*"([^"]*)",\s*name:\s*"([^"]*)"\)/.exec(
       query,
@@ -443,6 +475,7 @@ export function fakeGithubPrSearch(prs: readonly FakeSearchPr[]): FakeGh {
     if (!qArg) throw new Error("fake gh received no q= search variable");
     const query = queryArg.slice("query=".length);
     queries.push(query);
+    validateSelectionSets(query);
     if (!/\bsearch\s*\(/.test(query)) {
       throw new Error("fake gh received a non-search GraphQL query");
     }

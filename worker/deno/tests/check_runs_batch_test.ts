@@ -821,7 +821,13 @@ Deno.test("check_runs_batch - rollupToStartupFailedSuites turns a zero-run start
   ]));
   assertEquals(entries, [{
     id: 31,
+    checkSuiteId: 31,
     name: "GitHub Actions workflow startup failure",
+    annotations: [{
+      path: "(workflow path unavailable)",
+      start_line: 1,
+      message: "GitHub Actions rejected this workflow before any job started.",
+    }],
     status: "completed",
     conclusion: "startup_failure",
   }]);
@@ -842,6 +848,7 @@ Deno.test("check_runs_batch - rollupToStartupFailedSuites names the workflow fil
   ]));
   assertEquals(entries, [{
     id: 31,
+    checkSuiteId: 31,
     name: "actionlint (.github/workflows/actionlint.yml)",
     annotations: [{
       path: ".github/workflows/actionlint.yml",
@@ -915,7 +922,13 @@ Deno.test("check_runs_batch - fetchFailedCheckRunsBatch adds startup-failed suit
   );
   assertEquals(withSuites?.get(10), [{
     id: 55,
+    checkSuiteId: 55,
     name: "GitHub Actions workflow startup failure",
+    annotations: [{
+      path: "(workflow path unavailable)",
+      start_line: 1,
+      message: "GitHub Actions rejected this workflow before any job started.",
+    }],
     status: "completed",
     conclusion: "startup_failure",
   }]);

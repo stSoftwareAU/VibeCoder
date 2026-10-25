@@ -71,6 +71,14 @@ function makeMockGithub(captured: CapturedGh): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
       if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      if (
+        args[0] === "api" &&
+        args[1] === "repos/org/repo/actions/runs?check_suite_id=77"
+      ) {
+        return Promise.resolve(
+          JSON.stringify({ workflow_runs: [{ id: 99, check_suite_id: 77 }] }),
+        );
+      }
       // Issue #4304: the job → run lookup and the re-run itself.
       if (args[0] === "api" && args[1] === "repos/org/repo/actions/jobs/111") {
         return Promise.resolve(JSON.stringify({ run_id: RUN_ID, steps: [] }));
@@ -157,6 +165,7 @@ async function runNoChangesScenario(
   input: CiFixInput,
   claudeOutput: string,
   responseMessage?: string,
+  retryCount = 0,
 ): Promise<CapturedGh> {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -202,6 +211,13 @@ async function runNoChangesScenario(
       workRoot: tmpDir,
     };
 
+    if (retryCount > 0) {
+      await Deno.mkdir(processorDeps.stateDir!, { recursive: true });
+      await Deno.writeTextFile(
+        `${processorDeps.stateDir}/org_repo_${input.checkRunId}.retries`,
+        String(retryCount),
+      );
+    }
     const result = await processCiFailure(input, processorDeps);
     assertEquals(result.ok, true);
     return captured;
@@ -690,5 +706,23 @@ Deno.test("processCiFailure - HEAD moved but the remote disagrees: no success cl
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure no-changes - a startup suite re-runs its workflow even with exhausted job retries (Issue #4347)", async () => {
+  for (const retryCount of [0, 3]) {
+    const captured = await runNoChangesScenario(
+      makeInput({ checkRunId: "suite-77" }),
+      "No changes needed.",
+      undefined,
+      retryCount,
+    );
+    assertEquals(captured.reruns, [[
+      "run",
+      "rerun",
+      "99",
+      "--repo",
+      "org/repo",
+    ]]);
   }
 });

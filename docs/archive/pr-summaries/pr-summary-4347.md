@@ -25,6 +25,12 @@ check runs remains governed by the latest check-run verdict. Closes #4347.
 - Name startup failures by workflow and file path, with a stable generic
   fallback. Carry the run URL in annotations, which the processor already
   renders as failure evidence and normalises before computing its signature.
+- Carry startup suites as `suite-<id>` through the CI-fix handoff so no consumer
+  mistakes a suite id for an Actions job. Re-run the entire workflow by its
+  suite association; normal check runs still re-run only failed jobs.
+- Startup suites retain their identity across reruns and therefore bypass the
+  local job retry cap. The existing fleet-wide marker cap still bounds repair
+  and reaches abandon-and-restart, even when no rerun is available.
 - The standalone reviewer gate retains its predicate copy. The shared-case
   test `actions_suite_predicate_4347_test.ts` checks it against the worker's
   predicate across statuses, apps, conclusions and check-run counts.
@@ -42,9 +48,10 @@ check runs remains governed by the latest check-run verdict. Closes #4347.
 
 ## Evidence
 
-Validation after the fixes: 284 focused regression tests passed; the manifest
-gate passed with 857 tests and 1 ignored; formatting and lint passed for all
-five changed TypeScript files. Full CI runs after the push.
+Validation after the latest review fixes: 418 focused regression tests passed;
+the manifest gate passed with 857 tests and 1 ignored; formatting and lint passed
+for the 12 changed TypeScript files. GitHub accepted the exact repaired reviewer
+search query. Full CI runs after the push.
 
 Backend change; no UI. The merge contract in `docs/MERGE.md` and the matching
 CI verdict principle in `DESIGN-PRINCIPLES.md` describe the zero-run rule and
@@ -72,3 +79,17 @@ and signature function, with different suite ids and run URLs.
 - Existing test expectations changed only for the new check-suites REST call
   and stable startup-failure names. Workflow/run diagnostic assertions were
   moved to the annotations; none were removed.
+
+### Latest review-fix validation
+
+- The actual reviewer search now passes a validating GraphQL fake and consumes
+  a zero-run failed suite response. Its regression failed on the missing-brace
+  query; a live read-only GitHub query accepted the fix.
+- The scan retains a startup-suite candidate after three local attempts. The
+  processor's no-change path resolves suite 77 to workflow 99 and re-runs the
+  whole workflow at retry counts zero and three.
+- Unavailable workflow runs and rejected rerun requests never fall back to a
+  job lookup. The processor still reaches the fleet-wide abandon bound after
+  three markers; restoring the old local retry guard makes this regression
+  fail. Startup suites always carry a diagnostic annotation, even when workflow
+  metadata could not be read.

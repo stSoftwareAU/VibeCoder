@@ -327,6 +327,11 @@ so the agent can locate the startup refusal while the check name and failure
 signature stay stable across pushes. Without workflow metadata the name is
 `GitHub Actions workflow startup failure`. GraphQL reads the path from
 `workflowRun.file.path`; the REST fallback reads the workflow run by suite id.
+The CI-fix handoff distinguishes suite ids from job ids. A no-change repair
+re-runs the entire workflow because a startup failure has no failed job to
+re-run. Startup suites stay eligible for repair even after the local job retry
+budget is spent; the fleet-wide attempt cap still bounds them and invokes the
+existing abandon-and-restart path, including when GitHub refuses a rerun.
 
 ```mermaid
 flowchart TD

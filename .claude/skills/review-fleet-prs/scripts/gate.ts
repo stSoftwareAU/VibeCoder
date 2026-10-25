@@ -710,9 +710,12 @@ query($q: String!, $after: String) {
         autoMergeAllowed squashMergeAllowed mergeCommitAllowed
       }
       author { login }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state
-        contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
-      } checkSuites(first: 100) { nodes { app { slug } status conclusion checkRuns(first: 1) { totalCount } } } } }
+      commits(last: 1) { nodes { commit {
+        statusCheckRollup { state
+          contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
+        }
+        checkSuites(first: 100) { nodes { app { slug } status conclusion checkRuns(first: 1) { totalCount } } }
+      } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
     } }
   }

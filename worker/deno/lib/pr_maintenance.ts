@@ -184,6 +184,8 @@ export interface CommentEntry {
 /** Check run entry from the GitHub API. */
 export interface CheckRunEntry {
   id: number;
+  /** Synthetic startup entries carry their suite identity separately from jobs. */
+  checkSuiteId?: number;
   name: string;
   status: string;
   conclusion: string;
@@ -1501,6 +1503,7 @@ export async function findFailedPrChecks(
       const failedChecks = await getFailedChecks(pr);
 
       for (const check of failedChecks) {
+        if (check.checkSuiteId !== undefined) continue;
         // Route on the step that failed, not the job name (Issue #1579):
         // a `Scripts & spelling` job whose bats step failed is a CI-fix
         // job, and sending it here left the bats failure unfixed.
@@ -1857,12 +1860,17 @@ export async function findFailedCiChecks(
         if (deferredNames.has(check.name)) continue;
         if (gatedNames.has(check.name)) continue;
 
+        // A suite has no job id to replace on rerun. Preserve its identity all
+        // the way through the string-based worker handoff (Issue #4347).
+        const checkId = check.checkSuiteId === undefined
+          ? String(check.id)
+          : `suite-${check.checkSuiteId}`;
         // Skip genuine spelling failures — handled by findFailedPrChecks.
         // The decision reads the failed *step*, so a non-spelling step
         // inside a spelling-named job stays on this route (Issue #1579).
         const routing = await resolveCheckFixRoute({
           repo,
-          checkId: String(check.id),
+          checkId,
           checkName: check.name,
           ghCommandFn,
           logger,
@@ -1873,9 +1881,12 @@ export async function findFailedCiChecks(
         const retryCount = await getCiCheckRetryCount(
           stateDir,
           repo,
-          String(check.id),
+          checkId,
         );
-        if (retryCount >= maxRetries) {
+        // Startup suites retain their id across reruns, so a job-local cap
+        // would strand them. The processor's fleet-wide attempt cap still
+        // bounds repair and abandons/restarts the PR when it is spent.
+        if (retryCount >= maxRetries && check.checkSuiteId === undefined) {
           // Issue #4304: a spent check run is re-run rather than left red
           // for a person. The fresh run has a fresh retry budget and is
           // picked up next scan; the fleet-wide auto-fix cap bounds it.
@@ -1888,7 +1899,7 @@ export async function findFailedCiChecks(
           });
           await rerunFailedJobsOfCheck({
             repo,
-            checkId: String(check.id),
+            checkId,
             ghCommandFn,
             logger,
           });
@@ -1911,7 +1922,7 @@ export async function findFailedCiChecks(
           repo,
           prNumber,
           branchName,
-          checkId: String(check.id),
+          checkId,
           checkName: check.name,
           encodedAnnotations,
           // Issue #1880: the base branch, so the processor can verify an

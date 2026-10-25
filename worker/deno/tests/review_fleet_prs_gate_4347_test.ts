@@ -9,10 +9,13 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   type CheckSuiteNode,
+  pass,
   type RollupContextNode,
   type SearchPr,
   skipReason,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+
+import { fakeGithubPrSearch } from "./support/github_graphql_fake.ts";
 
 const suite = (
   app: string | null,
@@ -210,4 +213,39 @@ Deno.test("skipReason (#4347): a commit without a checkSuites list fails loud", 
     Error,
     "checkSuites",
   );
+});
+
+Deno.test("pass (#4347): the production search query is accepted by the GraphQL endpoint", async () => {
+  const dir = await Deno.makeTempDir();
+  const fake = fakeGithubPrSearch([]);
+  try {
+    const result = await pass(
+      new Set(["o/r"]),
+      new Set(["stservice"]),
+      "nleck",
+      {
+        dir,
+        gh: async (args) => {
+          await fake.gh(args); // Reject the same truncated query GitHub rejects.
+          return JSON.stringify({
+            data: {
+              search: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  searchPr("SUCCESS", [
+                    suite(GA, "COMPLETED", "STARTUP_FAILURE"),
+                  ]),
+                ],
+              },
+            },
+          });
+        },
+      },
+    );
+    assertEquals(fake.queries.length, 1);
+    assertEquals(result.ready, []);
+    assertEquals(result.skipped, { "ci-failed": 1 });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

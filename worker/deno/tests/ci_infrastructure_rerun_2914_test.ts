@@ -18,6 +18,7 @@ import {
 } from "../lib/pr_maintenance.ts";
 import {
   classifyRedChecks,
+  rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "../lib/ci_infrastructure_rerun.ts";
 import type { FleetCiFixMarkers } from "../lib/ci_fix_attempt_markers.ts";
@@ -877,7 +878,7 @@ Deno.test("findFailedCiChecks - a green run plus a zero-run startup_failure suit
 
     const found = await scan(ghFn, makeRecordingLogger(), stateDir);
     assert(found !== null);
-    assertEquals(found.checkId, String(SUITE_ID));
+    assertEquals(found.checkId, `suite-${SUITE_ID}`);
     assertEquals(
       found.checkName,
       "GitHub Actions workflow startup failure",
@@ -955,7 +956,7 @@ Deno.test("findFailedCiChecks - the REST fallback also hands a zero-run startup_
 
     const found = await scan(ghFn, makeRecordingLogger(), stateDir);
     assert(found !== null);
-    assertEquals(found.checkId, String(SUITE_ID));
+    assertEquals(found.checkId, `suite-${SUITE_ID}`);
     assertEquals(
       found.checkName,
       "GitHub Actions workflow startup failure",
@@ -1050,3 +1051,76 @@ function singleCall(calls: string[], needle: string): string {
   assertEquals(matches.length, 1);
   return matches[0] as string;
 }
+
+Deno.test("findFailedCiChecks - an exhausted startup suite still reaches the fleet-wide repair cap (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${stateDir}/org_repo_suite-77.retries`, "3");
+    const calls: string[] = [];
+    const found = await scan(
+      (args) => {
+        const key = args.join(" ");
+        calls.push(key);
+        if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+        if (key.includes("api graphql")) {
+          return Promise.reject(new Error("REST fallback"));
+        }
+        if (key.includes("/check-suites")) return Promise.resolve("[77]");
+        if (key.includes("actions/runs")) {
+          return Promise.resolve(JSON.stringify({
+            name: "actionlint",
+            path: ".github/workflows/actionlint.yml",
+            html_url: "https://github.com/org/repo/actions/runs/99",
+          }));
+        }
+        return Promise.resolve("[]");
+      },
+      makeRecordingLogger(),
+      stateDir,
+    );
+    assert(
+      found !== null,
+      "a suite with no replacement job must remain actionable",
+    );
+    assertEquals(found.checkId, "suite-77");
+    assertEquals(calls.filter((c) => c.includes("actions/jobs/77")), []);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("startup suite rerun - unavailable workflows and rejected reruns never fall back to a job id (Issue #4347)", async () => {
+  for (const unavailable of [true, false]) {
+    const calls: string[][] = [];
+    const run = await rerunFailedJobsOfCheck({
+      repo: REPO,
+      checkId: "suite-77",
+      logger: makeRecordingLogger(),
+      ghCommandFn: (args) => {
+        calls.push(args);
+        if (
+          args[0] === "api" &&
+          args[1] === `repos/${REPO}/actions/runs?check_suite_id=77`
+        ) {
+          return Promise.resolve(
+            JSON.stringify({
+              workflow_runs: unavailable
+                ? []
+                : [{ id: 99, check_suite_id: 77 }],
+            }),
+          );
+        }
+        return Promise.reject(new Error("rerun unavailable"));
+      },
+    });
+    assertEquals(run, null);
+    assertEquals(
+      calls.some((args) => args.some((arg) => arg.includes("actions/jobs/"))),
+      false,
+    );
+    assertEquals(
+      calls.filter((args) => args[0] === "run"),
+      unavailable ? [] : [["run", "rerun", "99", "--repo", REPO]],
+    );
+  }
+});

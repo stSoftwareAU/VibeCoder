@@ -570,20 +570,16 @@ export function startupFailedSuiteEntry(
   }
   return {
     id: suiteId,
+    checkSuiteId: suiteId,
     name: label,
     status: "completed",
     conclusion: STARTUP_FAILURE_CONCLUSION,
-    ...(path || url
-      ? {
-        annotations: [{
-          path: path ?? "(workflow path unavailable)",
-          start_line: 1,
-          message:
-            "GitHub Actions rejected this workflow before any job started." +
-            (url ? ` Workflow run: ${url}` : ""),
-        }],
-      }
-      : {}),
+    annotations: [{
+      path: path ?? "(workflow path unavailable)",
+      start_line: 1,
+      message: "GitHub Actions rejected this workflow before any job started." +
+        (url ? ` Workflow run: ${url}` : ""),
+    }],
   };
 }
 
