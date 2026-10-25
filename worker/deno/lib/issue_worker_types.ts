@@ -358,13 +358,21 @@ export interface PhaseState {
   summaryRuleBlocks?: SummaryRuleRunVerdict[];
   /**
    * Completion-gate findings still present after the one in-session note
-   * (Issue #4234). Posted once on the pull request for the reviewer. It never
-   * fails the run, adds a label, or disarms auto-merge.
+   * (Issue #4234). Posted once on the pull request for the reviewer, joined
+   * with {@link screenshotAdvisoryComment}. It never fails the run, adds a
+   * label, or disarms auto-merge.
    */
   completionAdvisoryComment?: string;
   /**
-   * Review-style findings (pre-PR verifier or summary claim check) that
-   * survived the in-run recovery (Issue #4236). The completion phase raises
+   * Screenshot evidence still missing after the one extra turn (Issue #4234).
+   * Recorded once, apart from the summary-gate findings, and joined with
+   * {@link completionAdvisoryComment} into the one reviewer comment.
+   */
+  screenshotAdvisoryComment?: string;
+  /**
+   * Review-style findings from the pre-PR verifier that
+   * survived the in-run recovery (Issue #4236). The summary claim check
+   * was removed (Issue #4234). The completion phase raises
    * the pull request and posts these as a change-request record instead of
    * failing the run. Absent when this run is not on that path.
    */
@@ -378,8 +386,8 @@ export interface PhaseState {
   screenshotGateBlock?: ScreenshotGateBlock;
   /**
    * The screenshot gate's one extra agent turn (Issue #2960) has already been
-   * tried this run. Caps the recovery at once per run: a second block fails
-   * exactly as the gate reported before this issue.
+   * tried this run. A later miss is recorded once on
+   * {@link screenshotAdvisoryComment} and does not fail the run (Issue #4234).
    */
   screenshotRetryAttempted?: boolean;
   /**

@@ -290,6 +290,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // Real SIGTERM-ignoring children exercise bounded kill completion at the
   // chokepoints; keep their elapsed assertions out of the parallel pass.
   "tests/subprocess_deadline_4247_test.ts",
+  // The prose-scope lexer scans source a pull request changes. Only a growth
+  // measurement separates its character loop from a super-linear one on a
+  // long line of open brackets and quotes (Issue #4234).
+  "tests/doc_prose_scope_lexer_test.ts",
 ];
 
 /**

@@ -396,7 +396,7 @@ type CheckedResult = Extract<PrSummaryCiResult, { kind: "checked" }>;
 export function formatCiReport(result: PrSummaryCiResult): string {
   if (result.kind === "no_summary") {
     return "[NO SUMMARY] this PR carries no " +
-      "docs/archive/pr-summaries/pr-summary-<N>.md or facts file, so there " +
+      "docs/archive/pr-summaries/pr-summary-<N>.md, so there " +
       "is nothing to check.";
   }
   if (result.kind === "not_checked") {

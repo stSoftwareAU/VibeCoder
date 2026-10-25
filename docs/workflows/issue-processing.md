@@ -1204,7 +1204,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and armed for auto-merge; surviving standing violations, verifier findings or manual findings are posted on the PR (Issue #4291); issue stays attached to the PR |
+| `summary_incomplete` | a PR exists and a summary rule is still unmet after the one in-session note (Issue #4234) | PR finalised and armed for auto-merge; the remaining findings are one comment on the PR; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -1213,13 +1213,9 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
-existing-PR branch finalises as `summary_incomplete` — except that when the
-claim check alone is still blocking on that second attempt, on summary or
-manual/prompt sentences, it first gets
-one claim correction turn (Issue #3324), and only a block that
-survives *that* turn finalises the PR. Either way the gate's
-remediation comment is posted, so the shortfall is on the issue thread rather
-than only in one host's log.
+existing-PR branch finalises as `summary_incomplete`. The remaining findings
+are one comment on the pull request (Issue #4234). The shortfall is on the
+pull request rather than only in one host's log.
 
 A degraded run, or a healthy run with its own `partial`/`missing` gaps
 (Issue #3506), on an existing-PR branch is the exception to
@@ -1299,23 +1295,14 @@ flowchart TD
     G -->|no| R{"First summary-rule block<br/>of this run?"}
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
-    CC -->|yes| CT["One claim correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
-    CT --> G
-    CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
-    Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
-    Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
+    R -->|no| N["Note what remains, then raise<br/>or finalise the PR and arm<br/>auto-merge (Issue #4234)"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style RT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style CC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style CT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style S fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style F fill:#c45858,stroke:#6b2020,color:#fff
+    style N fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style F2 fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
@@ -1360,16 +1347,9 @@ now recover the way the security-fix gate does
 A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
-recovered again, with one exception: when the claim check alone is still
-blocking on summary or manual/prompt sentences — every earlier summary gate having
-passed — the run instead gets
-one claim correction turn before it is treated as a second block
-(historical behaviour from Issue #3324; the claim check was removed by Issue #4234).
-Any other second block fails exactly as a block did before, with the
-comment already on the thread; on an existing-PR branch that PR is finalised
-as `summary_incomplete` (Issue #1140). The same verdict is never posted
-twice, so the thread records the shortfall rather than the number of attempts
-at it. A recovery invocation the worker could not launch at all — a rate
+recovered again. The pull request is still raised, or the existing one
+finalised, and auto-merge stays armed. Whatever remains is one comment on
+that pull request (Issue #4234). The same finding is not posted twice. A recovery invocation the worker could not launch at all — a rate
 limit, a failed spawn — changed nothing on the branch: with no PR the
 original block stands unaltered; with an existing PR, completion re-runs and
 that block finalises the PR as `summary_incomplete` rather than failing the
@@ -1384,10 +1364,8 @@ this way: the gate comment landed on the issue seconds after the agent's own
 PR, with no chance to fix the summary, and #3159 went out still describing
 the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
-survives that turn is handled as before — finalised as `summary_incomplete`
-when a PR exists, failed when none does — unless it is the claim check
-alone still blocking on summary or manual/prompt sentences, in which case it gets the
-one claim correction turn first (Issue #3324).
+survives that turn is noted on the pull request, which is raised or finalised
+and armed either way (Issue #4234).
 
 **Issue #3382.** The recovery turn used to be told the code had already
 passed the quality gate and must not change, while the Issue #3196 gate
@@ -1433,14 +1411,13 @@ The Issue #3196 reason rules still cannot see the diff. This routing runs
 whatever headings the linked issue uses, so an issue that states no criteria
 still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
 
-All nine summary gates route through it: closure (#518), independent review
-(#663), reproduction status (#521), docs sweep (#3073), removed test
-assertions (#3131), the placeholder-token gate (#3124), the
-branch-outcomes gate (#3147), the summary claim check (#3257) and the pre-PR
-verifier (#3395). The two
-exceptions above do not — the
-security-fix and changed-workflow gates report defects in the change, not
-documentation shortfalls, so they still stop the run.
+The summary gates that still run route through it: closure (#518),
+independent review (#663), reproduction status (#521), the placeholder-token
+gate (#3124), the mutation check (#3393), coverage carry-over (#3795), the
+pre-PR verifier (#3395) and unmet criteria (#4146). Each is advice: the first
+report is one in-session note, and whatever remains is one pull-request
+comment (Issue #4234). The security-fix and changed-workflow gates do not —
+they report defects in the change, so they still stop the run.
 
 **Implementation.**
 [`summary_rule_gate_retry.ts`](../../worker/deno/lib/summary_rule_gate_retry.ts)

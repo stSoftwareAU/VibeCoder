@@ -213,14 +213,13 @@ recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
 rule). After a verified push to the PR's own head, the worker re-syncs the
 description from `pr-summary-<N>.md` when the summary at the head differs
-from the SHA-256 digest recorded in the body's hidden marker (the digest also
-covers the optional `pr-summary-<N>.facts.json` beside it, Issue #3535) — whichever push
+from the SHA-256 digest recorded in the body's hidden marker (the digest is
+of the summary alone, Issue #4234) — whichever push
 changed it, this run's or an earlier one. A pr_feedback run also re-syncs
 when it pushed nothing and has no commits left unpushed, so a run that
 answers a finding without a push still refreshes a stale body (Issue #3315).
 A body raised before the digest marker existed keeps the older rule:
-rebuilt only when this run's own push changed the summary file or its facts
-file. Fix branches
+rebuilt only when this run's own push changed the summary file. Fix branches
 for a gated milestone head are skipped, and only a worker-authored PR is
 edited. A failed sync is logged once at warning and does not fail the run
 (Issue #3089).
@@ -238,10 +237,11 @@ is first fetched with `gh pr view <n> --json body,headRefOid`; a failure there
 is logged at warning naming the cause, as for a contents read failure, and the
 body is left unchanged. For a PR whose body carries both the worker marker and
 the `vibe-pr-summary sha256` digest marker, it reads `pr-summary-<N>.md`
-(falling back to the legacy `docs/pr-summary-<N>.md`) and
-`pr-summary-<N>.facts.json` at the PR's head commit through the contents API
+(falling back to the legacy `docs/pr-summary-<N>.md`) at the PR's head
+commit through the contents API
 (`gh api repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and
-computes the same digest the body records. When the digest matches, nothing is
+computes the same digest the body records. The digest is of the summary
+alone (Issue #4234). When the digest matches, nothing is
 edited and nothing is logged. The match is memoised per PR, keyed on the head
 SHA and the recorded digest, and reused only while both are unchanged, so later
 cycles make no contents calls for that PR; an entry is pruned once the PR is no
@@ -528,9 +528,10 @@ Six checks run, each only when it applies:
    manual, prompt or source-comment file, it also asks the shared doc-prose
    question (Issues #3347, #3715, #3731), scoped to this push's change. The
    shared scope includes changed comments, unchanged attached declaration
-   comments and module headers, plus heading-bounded manual sections named by
-   the Docs sweep entry or mentioning a changed source path, basename or
-   exported declaration. The extra manual sections exclude `docs/archive/`.
+   comments and module headers, plus heading-bounded manual sections the
+   summary names or that mention a changed source path, basename or exported
+   declaration. The extra manual sections exclude `docs/archive/`. No Docs
+   sweep entry is required (Issue #4234).
    This prose scope has its own 20-file and 40-section caps before the overall
    40-file model-pass cap; overflow and unreadable input are logged as not
    checked, never passed. It reports contradictions about triggers, refusals,
@@ -644,11 +645,9 @@ line-citation check reported. Whatever remains after the recovery turn —
 plus a model pass that returned no verdict and a summary that could not be
 checked — is appended to `.pr_response_message` under `### Drift check
 (Issue #3143)`, so it reaches the PR reply instead of being pushed silently.
-The residual lists the change-request quotes still present, the Branch-outcomes
-citations still at the previous head's numbers, the prose findings and Test
-Plan counts still standing, the Docs sweep problems, a model pass that returned
-no verdict, a named summary the quote check could not read, each citation case
-the line-citation check could not check, and — under the heading "Test Plan
+The residual lists the change-request quotes still present, the prose findings
+and Test Plan counts still standing, a model pass that returned
+no verdict, a named summary the quote check could not read, and — under the heading "Test Plan
 figures the drift check could not verify" (Issue #3740) — each Test Plan figure
 still unchecked after the recovery turn, with its reason. A push whose only
 drift is an unchecked figure is therefore not reported clean. Surviving mutants
@@ -659,7 +658,7 @@ by themselves.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check,<br/>mutation check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount,<br/>quoted-sentence check,<br/>mutation check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]

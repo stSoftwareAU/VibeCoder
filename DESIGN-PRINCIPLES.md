@@ -3183,18 +3183,15 @@ permanently-red test stops being read.
 case is `timeout`), **work done, summary incomplete** (`summary_incomplete`), and
 everything the existing outcomes already covered. A run that raised a mergeable
 PR is never recorded `failure` for a summary-format shortfall alone, and its
-issue stays attached to that PR instead of going back in the queue. With **no**
-PR the gate blocks exactly as before: that is what a pre-PR gate is for.
+issue stays attached to that PR instead of going back in the queue.
 
 The run's first summary-rule block gets the one in-run recovery turn whether
 or not the agent already raised the PR itself from inside the execute phase
 (Issue #3163): a PR the agent raised itself is not finalised or auto-merged
 until that turn has run. A block that survives that turn — the run's
-second — finalises an existing PR as before, unless the claim check alone is
-still blocking on the summary's own sentences (a doc finding never qualifies,
-since that turn can only rewrite the summary): that block first gets one
-summary-only correction turn (Issue #3324), and only a block that survives it
-finalises the PR. A standing Standards violation on the branch's own lines is
+second — does not fail the run (Issue #4234). The pull request is raised or
+finalised and auto-merge stays armed, and whatever remains is one comment
+for the reviewer. A standing Standards violation on the branch's own lines is
 a defect in the change, not a documentation shortfall, so that recovery turn
 may fix the code for it, and an existing PR finalised with one still standing
 has it posted on the PR for the next run to fix (Issues #3382, #4291).
