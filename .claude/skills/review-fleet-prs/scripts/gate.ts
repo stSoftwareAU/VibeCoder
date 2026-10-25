@@ -72,6 +72,16 @@ import {
   renderChecklistSection,
   REVIEW_CHECKLISTS_FILE,
 } from "../../../../worker/deno/lib/review_checklists.ts";
+import {
+  CAPABILITY_BUNDLE_PATH,
+  capabilityContextFromChange,
+  type CapabilityLoad,
+  effectiveCapabilityLoad,
+  loadCapabilityBundleFromText,
+  loadTrustedCapabilityBundle,
+  mergeCapabilityReview,
+  renderCapabilityReview,
+} from "../../../../worker/deno/lib/capability_security_guidance.ts";
 import { isDependencyAuditCheck } from "../../../../worker/deno/lib/dependency_audit_check.ts";
 import {
   metClosureItems,
@@ -103,7 +113,7 @@ const MAX_CONSECUTIVE_FAILURES = 12;
 type Skip =
   | "waiting-ci" // checks still running (or none reported yet)
   | "ci-failed" // the fleet fixes it; no review
-  | "ci-cancelled" // every red check is a cancelled run (Issue #2916): the fleet's CI-fix scan re-runs it once per head; no review
+  | "ci-cancelled" // every red check and failed Actions suite is a cancelled run (Issues #2916, #4347): the fleet's CI-fix scan re-runs it once per head; no review
   | "conflicting" // the fleet resolves it; no review
   | "draft"
   | "not-default-branch" // e.g. into a milestone branch: the merge to the default branch gets the review
@@ -171,6 +181,21 @@ export interface RollupContextNode {
   context?: string | null;
 }
 
+/** One check suite on the head commit (Issue #4347). */
+export interface CheckSuiteNode {
+  /** The app that created the suite. */
+  app?: { slug: string } | null;
+  /** GitHub's check status, e.g. QUEUED, IN_PROGRESS, COMPLETED. */
+  status?: string | null;
+  /** The suite's conclusion, set once it is COMPLETED. */
+  conclusion?: string | null;
+  /**
+   * Check runs this suite created. Only `totalCount === 0` is a suite signal:
+   * a suite with runs is already judged through the rollup (Issue #4347).
+   */
+  checkRuns?: { totalCount?: number | null } | null;
+}
+
 export interface SearchPr {
   number: number;
   title: string;
@@ -200,6 +225,9 @@ export interface SearchPr {
           // rollup carries no contexts).
           contexts?: { nodes: RollupContextNode[] };
         } | null;
+        // The head commit's check suites (Issue #4347). A workflow that fails
+        // at startup records a suite with no check run, so the rollup misses it.
+        checkSuites: { nodes: CheckSuiteNode[] };
       };
     }[];
   };
@@ -453,7 +481,9 @@ export async function ownDiffUnchanged(
 }
 
 // Sorts one searched PR: null when it is ready for review, else why not.
-// GitHub's rollup already treats skipped and neutral checks as passing.
+// GitHub's rollup already treats skipped and neutral checks as passing. A
+// failed GitHub Actions suite counts as red even when the rollup does not
+// (Issue #4347).
 export async function skipReason(
   pr: SearchPr,
   reviewer: string,
@@ -468,17 +498,33 @@ export async function skipReason(
   }
   if (pr.isDraft) return "draft";
   if (pr.mergeable === "CONFLICTING") return "conflicting";
-  const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup;
+  const commit = pr.commits.nodes[0]?.commit;
+  // A response without the suite list fails loud: reading it as "no failed
+  // suite" would pass a red PR (Issue #4347).
+  if (commit && !Array.isArray(commit.checkSuites?.nodes)) {
+    throw new Error(
+      `${pr.repository.nameWithOwner}#${pr.number}: the GraphQL response has no checkSuites list`,
+    );
+  }
+  const rollup = commit?.statusCheckRollup;
+  const redSuites = failedActionsSuiteConclusions(
+    commit?.checkSuites.nodes ?? [],
+  );
   if (rollup?.state === "FAILURE" || rollup?.state === "ERROR") {
     // GitHub rolls a CANCELLED check up as FAILURE, so the contexts tell
     // the two apart (Issue #2916): when every red context is a cancelled
     // CheckRun, the PR is stuck on infrastructure the fleet's CI-fix scan
     // re-runs once per head — same treatment as ci-failed, but named so
-    // the pass can say what it saw.
-    return everyRedCheckCancelled(rollup.contexts?.nodes ?? [])
-      ? "ci-cancelled"
-      : "ci-failed";
+    // the pass can say what it saw. A failed Actions suite counts the same
+    // way (Issue #4347): it is cancelled only when every one was.
+    const cancelled = everyRedCheckCancelled(rollup.contexts?.nodes ?? []) &&
+      redSuites.every((conclusion) => conclusion === "CANCELLED");
+    return cancelled ? "ci-cancelled" : "ci-failed";
   }
+  // A failed Actions suite with no check run (e.g. STARTUP_FAILURE) is red
+  // even though the rollup is not (Issue #4347). Checked before waiting-ci,
+  // since such a commit may have no rollup at all.
+  if (redSuites.length > 0) return "ci-failed";
   if (rollup?.state !== "SUCCESS") return "waiting-ci";
   if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
     return "already-reviewed";
@@ -581,6 +627,35 @@ function everyRedCheckCancelled(nodes: RollupContextNode[]): boolean {
   return sawRed;
 }
 
+// Suite conclusions that do not fail the suite. Mirrors PASSING_CONCLUSIONS
+// in worker/deno/lib/direct_merge.ts (lower-case there); this gate is a
+// standalone script, so it keeps its own copy. actions_suite_predicate_4347_test
+// fails when the two copies disagree.
+const PASSING_SUITE_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
+
+/**
+ * The conclusions of the failed GitHub Actions check suites that created no
+ * check run (Issue #4347). A workflow that fails at startup records a
+ * COMPLETED suite with no check run, so the rollup never shows it. A suite
+ * that has runs is already judged through the rollup's latest run, including
+ * a failed or cancelled run that a later run of the same workflow replaced.
+ * Suites from other apps, and suites not yet COMPLETED, are ignored.
+ */
+export function failedActionsSuiteConclusions(
+  nodes: CheckSuiteNode[],
+): string[] {
+  const failed: string[] = [];
+  for (const node of nodes) {
+    if (node.app?.slug !== "github-actions") continue;
+    if (node.status?.toUpperCase() !== "COMPLETED") continue;
+    if (node.conclusion === undefined || node.conclusion === null) continue;
+    if (node.checkRuns?.totalCount !== 0) continue;
+    const conclusion = node.conclusion.toUpperCase();
+    if (!PASSING_SUITE_CONCLUSIONS.has(conclusion)) failed.push(conclusion);
+  }
+  return failed;
+}
+
 export function authorKind(
   login: string,
   fleet: ReadonlySet<string>,
@@ -645,9 +720,12 @@ query($q: String!, $after: String) {
         autoMergeAllowed squashMergeAllowed mergeCommitAllowed
       }
       author { login }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state
-        contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
-      } } } }
+      commits(last: 1) { nodes { commit {
+        statusCheckRollup { state
+          contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
+        }
+        checkSuites(first: 100) { nodes { app { slug } status conclusion checkRuns(first: 1) { totalCount } } }
+      } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
     } }
   }
@@ -743,9 +821,13 @@ export async function pass(
     gh?: (args: string[]) => Promise<string>;
     dir?: string;
     limit?: number;
+    /** Trusted capability bundle. Defaults to the copy shipped with the worker. */
+    loadCapabilityBundle?: () => Promise<CapabilityLoad>;
   } = {},
 ) {
   const callGh = deps.gh ?? gh;
+  const loadCapabilityBundle = deps.loadCapabilityBundle ??
+    loadTrustedCapabilityBundle;
   const dir = deps.dir ?? stateDir();
   const limit = deps.limit ?? DEFAULT_LIMIT;
   const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
@@ -934,6 +1016,71 @@ export async function pass(
       console.error(line);
       continue;
     }
+    const bundleTouched = changed === null ||
+      changed.includes(CAPABILITY_BUNDLE_PATH);
+    let capabilityBase: CapabilityLoad = { kind: "absent" };
+    let capabilityHead: CapabilityLoad | null = null;
+    if (bundleTouched && changed !== null) {
+      capabilityBase = await loadCapabilityBundleAtRef(
+        callGh,
+        repo,
+        pr.baseRefName,
+      );
+      capabilityHead = await loadCapabilityBundleAtRef(
+        callGh,
+        repo,
+        pr.headRefOid,
+      );
+    }
+    if (
+      capabilityBase.kind === "fetch_failed" ||
+      capabilityHead?.kind === "fetch_failed"
+    ) {
+      skipped["capability-unreadable"] =
+        (skipped["capability-unreadable"] ?? 0) + 1;
+      const reason = capabilityBase.kind === "fetch_failed"
+        ? capabilityBase.reason
+        : capabilityHead?.kind === "fetch_failed"
+        ? capabilityHead.reason
+        : "fetch failed";
+      const line =
+        `${key} capability guidance fetch failed, retried next pass: ${reason}`;
+      upkeep.push(line);
+      console.error(line);
+      continue;
+    }
+    const trustedBundle = await loadCapabilityBundle();
+    const capabilityLoad = effectiveCapabilityLoad(
+      capabilityBase,
+      capabilityHead,
+      trustedBundle,
+    );
+    const capabilityReview = renderCapabilityReview(
+      capabilityLoad,
+      capabilityContextFromChange({
+        title: pr.title,
+        body: pr.body ?? "",
+        paths: changed ?? [],
+      }),
+    );
+    if (capabilityReview.retry) {
+      skipped["capability-unreadable"] =
+        (skipped["capability-unreadable"] ?? 0) + 1;
+      const line =
+        `${key} capability guidance not checked, retried next pass: ${
+          capabilityReview.retryReason ?? "unavailable"
+        }`;
+      upkeep.push(line);
+      console.error(line);
+      continue;
+    }
+    const repoChecklistMarkdown = renderChecklistSection(checklists, changed);
+    const repoChecklistState = checklistState(checklists, changed);
+    const mergedChecks = mergeCapabilityReview(
+      repoChecklistMarkdown,
+      repoChecklistState,
+      capabilityReview,
+    );
     ready.push({
       repo,
       number: pr.number,
@@ -946,11 +1093,11 @@ export async function pass(
       testChanges: existingTestChanges(files),
       noTestAdded: noTestAdded(files, kind),
       previousFindings: previousFindings(log, repo, pr.number),
-      reviewChecklists: renderChecklistSection(checklists, changed),
+      reviewChecklists: mergedChecks.markdown,
       closureEntries: renderClosureEntriesSection(
         metClosureItems(pr.body ?? ""),
       ),
-      checklistState: checklistState(checklists, changed),
+      checklistState: mergedChecks.state,
     });
   }
   // A single --repo run sees only part of the fleet, so it leaves the
@@ -1000,6 +1147,50 @@ export async function loadChecklistsAtRef(
     return loadChecklistsFromText(text);
   } catch (e) {
     return loadChecklistsFromText(
+      null,
+      `could not decode the gh api response: ${
+        firstLine((e as Error).message ?? String(e))
+      }`,
+    );
+  }
+}
+
+/** Read the capability bundle at a ref. Not found is absent; other gh failures retry. */
+export async function loadCapabilityBundleAtRef(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+  gitRef: string,
+): Promise<CapabilityLoad> {
+  const ref = encodeURIComponent(gitRef).replaceAll("%2F", "/");
+  let raw: string;
+  try {
+    raw = await gh([
+      "api",
+      `repos/${repo}/contents/${CAPABILITY_BUNDLE_PATH}?ref=${ref}`,
+    ]);
+  } catch (e) {
+    const message = (e as Error).message ?? String(e);
+    if (/HTTP 404|Not Found/i.test(message)) {
+      return loadCapabilityBundleFromText(null);
+    }
+    const cause = message.split("\n").map((l) => l.trim()).find((l) => l) ??
+      "gh failed";
+    return { kind: "fetch_failed", reason: `gh api failed: ${cause}` };
+  }
+  try {
+    const body = JSON.parse(raw);
+    if (
+      typeof body?.content !== "string" || body.content === "" ||
+      (body.encoding !== undefined && body.encoding !== "base64")
+    ) {
+      throw new Error("no base64 content in the response");
+    }
+    const bin = atob(body.content.replace(/\s/g, ""));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return loadCapabilityBundleFromText(text);
+  } catch (e) {
+    return loadCapabilityBundleFromText(
       null,
       `could not decode the gh api response: ${
         firstLine((e as Error).message ?? String(e))

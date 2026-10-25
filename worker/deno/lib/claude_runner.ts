@@ -26,6 +26,10 @@ import { agentPreFlightCommands } from "./agent_pre_flight.ts";
 import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  inFlightHostDiskGateEnabled,
+  parkInFlightBuild,
+} from "./heavy_build_gate.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import {
   appendFinishDeadlinePrompt,
@@ -623,6 +627,12 @@ export interface RunClaudeOptions {
    * `0` disables the snapshot and the collection. Default 20 s.
    */
   descendantSnapshotIntervalMs?: number;
+  /**
+   * How often a running agent is asked whether the host is still above its
+   * disk floor (Issue #4360). Default 30 s. The watch itself starts only
+   * once production has armed the in-flight gate.
+   */
+  hostDiskPollMs?: number;
   /** Process-table seams for the orphan collector — tests only. */
   orphanCollectorDeps?: OrphanCollectorDeps;
   /**
@@ -1228,6 +1238,14 @@ async function runClaudeWithTimeoutBody(
     };
   }
 
+  // An agent in a checkout runs cargo and deno. Below the floor it does not
+  // start (Issue #4360). No checkout means there is no build to bound, and
+  // the gate is a no-op until production arms it.
+  if (cwd) {
+    const park = await parkInFlightBuild(cwd);
+    if (park) return { ok: false, error: new Error(park) };
+  }
+
   // The provider seam (Issue #4067) owns the binary, the argument list and
   // the child environment, so a second provider is a new descriptor rather
   // than an edit here. Resolved once, per invocation (Issue #4109): the
@@ -1347,6 +1365,10 @@ async function runClaudeWithTimeoutBody(
   // the survivors of an external kill can be collected after the fact.
   let descendantSnapshotTimer: TimerHandle | undefined;
   let descendantTracker: DescendantTracker | undefined;
+  // Set when the host crosses its disk floor while the agent is running
+  // (Issue #4360). The run then fails as infrastructure, not as a timeout.
+  let hostDiskPark: string | undefined;
+  let hostDiskPoll: TimerHandle | undefined;
   let ghGuard: GhGuardShim | undefined;
   let prePushHook: PrePushHook | undefined;
   let transcript: AgentTranscriptWriter | undefined;
@@ -1722,6 +1744,32 @@ async function runClaudeWithTimeoutBody(
         killBoundMs,
       );
     };
+
+    // While the agent runs, a build it started can fill the host. Stop the
+    // tree when the reading crosses the floor and fail the run as a host
+    // fault, not as a timeout (Issue #4360).
+    if (cwd && inFlightHostDiskGateEnabled()) {
+      hostDiskPoll = clock.setInterval(() => {
+        if (runFinished || hostDiskPark) return;
+        void parkInFlightBuild(cwd).then((reason) => {
+          if (!reason || runFinished || hostDiskPark) return;
+          hostDiskPark = reason;
+          logger?.error(reason);
+          void killClaudeProcessTree(
+            childPid,
+            killAfterSeconds,
+            logger,
+            childIdentity,
+          ).catch((err) => {
+            logger?.error(
+              `Host-disk kill failed for PID ${childPid}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+        });
+      }, options.hostDiskPollMs ?? 30_000);
+    }
 
     // Periodic progress lines (Issue #4169): the same stream the silence
     // watchdog reads, folded into one compact line per interval so a long
@@ -2449,6 +2497,10 @@ async function runClaudeWithTimeoutBody(
       clock.clearInterval(descendantSnapshotTimer);
       descendantSnapshotTimer = undefined;
     }
+    if (hostDiskPoll) {
+      clock.clearInterval(hostDiskPoll);
+      hostDiskPoll = undefined;
+    }
 
     // Wait for any kill cascade to finish so its internal timers complete
     // before we return — otherwise they outlive the call and leak. Skipped
@@ -2723,6 +2775,9 @@ async function runClaudeWithTimeoutBody(
         await descendantTracker.settle();
       }
     }
+    if (hostDiskPark) {
+      return { ok: false, error: new Error(hostDiskPark) };
+    }
     return {
       ok: true,
       value: {
@@ -2772,6 +2827,7 @@ async function runClaudeWithTimeoutBody(
     if (silenceWatchdog) clock.clearTimeout(silenceWatchdog);
     if (killBoundTimer) clock.clearTimeout(killBoundTimer);
     if (descendantSnapshotTimer) clock.clearInterval(descendantSnapshotTimer);
+    if (hostDiskPoll) clock.clearInterval(hostDiskPoll);
     if (descendantTracker) await descendantTracker.settle();
     for (const [pid, run] of activeAgentRuns) {
       if (run.logger === logger && run.label.startsWith(phase ?? "agent")) {

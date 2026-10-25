@@ -17,6 +17,14 @@
  * Uses Australian English throughout (behaviour, organisation, colour).
  */
 
+/** A startup-suite identity is distinct from a check-run or Actions job id. */
+export function parseCheckSuiteId(checkId: string): number | null {
+  const match = /^suite-(\d+)$/.exec(checkId);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 /** Provider id logged on every CI-fix run so fall-through is visible. */
 export const GITHUB_ACTIONS_PROVIDER_ID = "github-actions";
 
@@ -224,6 +232,12 @@ export async function resolveActionsJobId(
   opts: ActionsLogOptions,
 ): Promise<ActionsJobResolution> {
   const { repo, checkRunId, checkName, targetUrl, ghFn } = opts;
+  if (parseCheckSuiteId(checkRunId) !== null) {
+    return {
+      kind: "not-applicable",
+      reason: "startup-failed suite has no Actions job",
+    };
+  }
 
   if (targetUrl) {
     const parsed = parseActionsCheckUrl(targetUrl);

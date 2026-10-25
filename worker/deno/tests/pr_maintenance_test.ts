@@ -1449,6 +1449,7 @@ Deno.test("findFailedCiChecks - issues 1 GraphQL call for N PRs instead of N RES
                 commits: {
                   nodes: [{
                     commit: {
+                      checkSuites: { nodes: [] },
                       statusCheckRollup: {
                         state: "FAILURE",
                         contexts: {
@@ -1469,6 +1470,7 @@ Deno.test("findFailedCiChecks - issues 1 GraphQL call for N PRs instead of N RES
                 commits: {
                   nodes: [{
                     commit: {
+                      checkSuites: { nodes: [] },
                       statusCheckRollup: {
                         state: "SUCCESS",
                         contexts: { nodes: [] },
@@ -1481,6 +1483,7 @@ Deno.test("findFailedCiChecks - issues 1 GraphQL call for N PRs instead of N RES
                 commits: {
                   nodes: [{
                     commit: {
+                      checkSuites: { nodes: [] },
                       statusCheckRollup: {
                         state: "SUCCESS",
                         contexts: { nodes: [] },

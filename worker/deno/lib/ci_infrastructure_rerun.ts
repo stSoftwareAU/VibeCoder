@@ -38,6 +38,7 @@ import {
   type JobNeedsMap,
 } from "./workflow_job_needs.ts";
 import type { Logger } from "../types.ts";
+import { parseCheckSuiteId } from "./github_actions_log_fetcher.ts";
 
 /** Red conclusions the CI-fix scan reads, beyond the historical `failure` only. */
 export const RED_CHECK_CONCLUSIONS = ["failure", "cancelled"] as const;
@@ -395,6 +396,10 @@ export async function rerunInfrastructureChecks(opts: {
  * repeat failure arrives as a fresh check run, so the CI-fix scan picks it
  * up again and the fleet-wide attempt cap — not a person — bounds the loop.
  *
+ * A `suite-<id>` startup failure has no job. Resolve its workflow by suite
+ * id and re-run the whole workflow, not `--failed` jobs. Its id need not
+ * change, so the scanner and processor use the fleet-wide repair cap.
+ *
  * Never throws. A check whose run cannot be resolved (not GitHub Actions,
  * or the lookup failed) or a re-run `gh` refuses is logged and reported as
  * `null`; the next scan retries.
@@ -408,8 +413,29 @@ export async function rerunFailedJobsOfCheck(opts: {
   logger: Logger;
 }): Promise<number | null> {
   const { repo, checkId, ghCommandFn, logger } = opts;
-  const job = await lookupActionsJob(repo, Number(checkId), ghCommandFn);
-  if (job?.runId == null) {
+  const suiteId = parseCheckSuiteId(checkId);
+  let runId: number | null = null;
+  if (suiteId !== null) {
+    try {
+      const response = JSON.parse(
+        await ghCommandFn([
+          "api",
+          `repos/${repo}/actions/runs?check_suite_id=${suiteId}`,
+        ]),
+      );
+      const runs: unknown = response?.workflow_runs;
+      if (Array.isArray(runs)) {
+        const run = runs.find((entry) => entry?.check_suite_id === suiteId);
+        if (Number.isSafeInteger(run?.id) && run.id > 0) runId = run.id;
+      }
+    } catch {
+      // The suite remains eligible for repair; the fleet-wide cap bounds it.
+    }
+  } else {
+    const job = await lookupActionsJob(repo, Number(checkId), ghCommandFn);
+    runId = job?.runId ?? null;
+  }
+  if (runId === null) {
     logger.warn(
       `Could not resolve the Actions run behind check ${checkId} on ${repo} ` +
         `— the failing check was not re-run; the next scan retries ` +
@@ -422,25 +448,25 @@ export async function rerunFailedJobsOfCheck(opts: {
     await ghCommandFn([
       "run",
       "rerun",
-      String(job.runId),
-      "--failed",
+      String(runId),
+      ...(suiteId === null ? ["--failed"] : []),
       "--repo",
       repo,
     ]);
   } catch (error) {
     logger.warn(
-      `Could not re-run the failed jobs of run ${job.runId} on ${repo}: ` +
+      `Could not re-run workflow ${runId} on ${repo}: ` +
         `${
           error instanceof Error ? error.message : String(error)
         } — the next scan retries (Issue #4304)`,
-      { repo, checkId, runId: job.runId },
+      { repo, checkId, runId },
     );
     return null;
   }
   logger.info(
-    `Re-ran the failed jobs of run ${job.runId} on ${repo} after a CI-fix ` +
+    `Re-ran workflow ${runId} on ${repo} after a CI-fix ` +
       `run that changed nothing (Issue #4304)`,
-    { repo, checkId, runId: job.runId },
+    { repo, checkId, runId },
   );
-  return job.runId;
+  return runId;
 }

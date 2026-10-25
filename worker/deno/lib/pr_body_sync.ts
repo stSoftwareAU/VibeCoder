@@ -83,6 +83,12 @@ import {
   findMissingCriteria,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
+import { GITHUB_ISSUE_BODY_MAX_CHARS } from "./idle_task_body_limit.ts";
+import {
+  degradePrBodyToGitHubLimit,
+  isGitHubBodyTooLongMessage,
+  prSummaryFilePath,
+} from "./pr_body_length.ts";
 
 /** Relative path of the PR summary file inside a repo checkout. */
 function prSummaryPath(issueNumber: number): string {
@@ -676,6 +682,29 @@ export async function syncPrBodyFromSummary(
     logger,
   );
 
+  // Issue #4359: `gh pr edit` rejects a body over the same limit as create.
+  // The summarise turn runs in completion, which commits the rewritten
+  // summary this edit then reads. A body that is still over the limit is
+  // shortened and published — the edit is not failed for length.
+  if (body.length > GITHUB_ISSUE_BODY_MAX_CHARS) {
+    const shortened = degradePrBodyToGitHubLimit(body, {
+      summaryPath: prSummaryFilePath(issueNumber),
+      issueNumber,
+    });
+    logger.warn(
+      "Pull request body is over GitHub's limit — publishing a mechanically " +
+        "shortened body (Issue #4359)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        issueNumber,
+        originalLength: shortened.originalLength,
+        publishedLength: shortened.body.length,
+      },
+    );
+    body = shortened.body;
+  }
+
   if (body.trim() === (view.body ?? "").trim()) {
     return {
       ok: true,
@@ -690,15 +719,51 @@ export async function syncPrBodyFromSummary(
       suffix: ".md",
     });
     await Deno.writeTextFile(tmpPath, body);
-    await deps.runGhCommand([
-      "pr",
-      "edit",
-      String(input.prNumber),
-      "--repo",
-      input.repo,
-      "--body-file",
-      tmpPath,
-    ]);
+    try {
+      await deps.runGhCommand([
+        "pr",
+        "edit",
+        String(input.prNumber),
+        "--repo",
+        input.repo,
+        "--body-file",
+        tmpPath,
+      ]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A length rejection means the pre-check was not enough (GitHub counted
+      // differently). Shorten once more and retry this edit. Any other gh
+      // failure is returned to the caller.
+      if (!isGitHubBodyTooLongMessage(message)) throw err;
+      const tighter = Math.max(
+        1,
+        Math.min(body.length, GITHUB_ISSUE_BODY_MAX_CHARS) - 1,
+      );
+      body = degradePrBodyToGitHubLimit(body, {
+        summaryPath: prSummaryFilePath(issueNumber),
+        issueNumber,
+        maxChars: tighter,
+      }).body;
+      logger.warn(
+        "GitHub rejected the pull request body as too long — retrying the " +
+          "edit with a shortened body (Issue #4359)",
+        {
+          repo: input.repo,
+          prNumber: input.prNumber,
+          publishedLength: body.length,
+        },
+      );
+      await Deno.writeTextFile(tmpPath, body);
+      await deps.runGhCommand([
+        "pr",
+        "edit",
+        String(input.prNumber),
+        "--repo",
+        input.repo,
+        "--body-file",
+        tmpPath,
+      ]);
+    }
   } catch (err) {
     return {
       ok: false,

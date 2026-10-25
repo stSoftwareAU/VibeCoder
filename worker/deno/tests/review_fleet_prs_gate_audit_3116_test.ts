@@ -67,6 +67,7 @@ function fleetPr(contexts: RollupContextNode[], reviews: Review[] = []) {
             state: "FAILURE",
             contexts: { nodes: contexts },
           },
+          checkSuites: { nodes: [] },
         },
       }],
     },

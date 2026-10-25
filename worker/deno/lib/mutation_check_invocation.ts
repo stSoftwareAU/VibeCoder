@@ -18,6 +18,7 @@ import {
 } from "./mutation_gate.ts";
 import type { MutationRunInput } from "./mutation_runner.ts";
 import type { Logger, RepoConfig, Result } from "../types.ts";
+import { parkInFlightBuild } from "./heavy_build_gate.ts";
 
 /** Upper bound on `mutation_check_budget_seconds` (Issue #3393). */
 export const MAX_MUTATION_BUDGET_SECONDS = 3600;
@@ -59,6 +60,11 @@ export interface MutationCheckInvocation {
   /** Collects the unified=0 diff whose added lines are mutated; an error result fails closed. */
   collectDiff: () => Promise<Result<string>>;
   logger: Pick<Logger, "info" | "warn">;
+  /**
+   * Host-disk park (Issue #4360). Production uses {@link parkInFlightBuild};
+   * a test injects its own so a low reading does not depend on process state.
+   */
+  parkBuild?: (cwd: string) => Promise<string | null>;
 }
 
 /**
@@ -82,6 +88,13 @@ export async function invokeMutationCheck(
       kind: "not_applicable",
       reason: "mutation runner not wired",
     };
+  }
+  // Before the diff and the runner: both can write, and a host already
+  // below its floor must not start another build (Issue #4360).
+  const park = await (opts.parkBuild ?? parkInFlightBuild)(repoPath);
+  if (park) {
+    logger.warn(park, { repo });
+    return { kind: "error", reason: park };
   }
   const budgetSeconds = resolveMutationBudgetSeconds(
     getRepoConfig(repoConfigs, repo, "mutationCheckBudgetSeconds"),

@@ -17,7 +17,11 @@ import {
   rollupToCheckRunsResponse,
   rollupToCombinedStatusResponse,
   rollupToFailedCheckRuns,
+  rollupToStartupFailedSuites,
+  startupFailedSuiteEntry,
 } from "../lib/check_runs_batch.ts";
+import { formatCiAnnotations } from "../lib/pr_ci_processor.ts";
+import { computeFailureSignature } from "../lib/auto_fix_attempt_tracker.ts";
 
 import { fakeGithubGraphQL } from "./support/github_graphql_fake.ts";
 import { RED_CHECK_CONCLUSIONS } from "../lib/ci_infrastructure_rerun.ts";
@@ -25,6 +29,63 @@ import { RED_CHECK_CONCLUSIONS } from "../lib/ci_infrastructure_rerun.ts";
 // ---------------------------------------------------------------------------
 // Behaviour against a fake that models GitHub's own resolution rules
 // ---------------------------------------------------------------------------
+
+Deno.test("check_runs_batch - GitHub workflow-run file metadata survives the batch query (#4347)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      42: {
+        headOid: "head-one",
+        rollupState: "SUCCESS",
+        contexts: [],
+        checkSuites: [{
+          appSlug: "github-actions",
+          status: "COMPLETED",
+          conclusion: "STARTUP_FAILURE",
+          workflowName: "actionlint",
+          workflowPath: ".github/workflows/actionlint.yml",
+          runUrl: "https://github.com/acme/tools/actions/runs/99",
+        }],
+      },
+    },
+  });
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(result.ok);
+  const suite = result.rollups.get(42)?.checkSuites[0];
+  assertEquals(suite?.workflowPath, ".github/workflows/actionlint.yml");
+  assertEquals(suite?.workflowName, "actionlint");
+});
+
+Deno.test("startup failure names and signatures survive new suite ids and run URLs (#4347)", () => {
+  const entries = [31, 32].map((id) =>
+    startupFailedSuiteEntry(id, {
+      name: "actionlint",
+      path: ".github/workflows/actionlint.yml",
+      htmlUrl: `https://github.com/acme/tools/actions/runs/${id}`,
+    })
+  );
+  assert(entries[0] && entries[1]);
+  assertEquals(entries[0].name, entries[1].name);
+  assertEquals(
+    computeFailureSignature({
+      repo: "acme/tools",
+      locus: { kind: "pr", number: 42 },
+      checkName: entries[0].name,
+      logExcerpt: formatCiAnnotations(entries[0].annotations ?? []),
+    }),
+    computeFailureSignature({
+      repo: "acme/tools",
+      locus: { kind: "pr", number: 42 },
+      checkName: entries[1].name,
+      logExcerpt: formatCiAnnotations(entries[1].annotations ?? []),
+    }),
+  );
+  assertEquals(
+    startupFailedSuiteEntry(31).name,
+    startupFailedSuiteEntry(32).name,
+  );
+});
 
 Deno.test("check_runs_batch - each PR receives its own rollup (Issue #471)", async () => {
   const { gh } = fakeGithubGraphQL({
@@ -86,6 +147,136 @@ Deno.test("check_runs_batch - a PR the API cannot resolve carries no state, not 
 });
 
 // ---------------------------------------------------------------------------
+// Check suites (Issue #4347)
+// ---------------------------------------------------------------------------
+
+Deno.test("check_runs_batch - fetchCheckRunsBatch reads the head commit's check suites, lowercased (Issue #4347)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      10: {
+        headOid: "aaa111",
+        rollupState: "SUCCESS",
+        contexts: [],
+        checkSuites: [
+          {
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "STARTUP_FAILURE",
+          },
+          { appSlug: "review-bot", status: "QUEUED", conclusion: null },
+        ],
+      },
+      20: { headOid: "bbb222", rollupState: "SUCCESS", contexts: [] },
+    },
+  });
+
+  const result = await fetchCheckRunsBatch("acme/tools", [10, 20], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(10)?.checkSuites, [
+    {
+      id: 9000,
+      appSlug: "github-actions",
+      status: "completed",
+      conclusion: "startup_failure",
+      checkRunCount: 0,
+      workflowName: null,
+      workflowPath: null,
+      runUrl: null,
+    },
+    {
+      id: 9001,
+      appSlug: "review-bot",
+      status: "queued",
+      conclusion: null,
+      checkRunCount: 0,
+      workflowName: null,
+      workflowPath: null,
+      runUrl: null,
+    },
+  ]);
+  // A PR whose head carries no suites reads as none, not as malformed.
+  assertEquals(result.rollups.get(20)?.checkSuites, []);
+});
+
+/** A batch response whose only commit is `commit`, for PR #42. */
+function rollupResponseWithCommit(commit: Record<string, unknown>): string {
+  return JSON.stringify({
+    data: {
+      repository: {
+        n0: {
+          commits: {
+            nodes: [{
+              commit: {
+                oid: "aaa111",
+                statusCheckRollup: {
+                  state: "SUCCESS",
+                  contexts: { nodes: [] },
+                },
+                ...commit,
+              },
+            }],
+          },
+        },
+      },
+    },
+  });
+}
+
+Deno.test("check_runs_batch - a commit lacking checkSuites is malformed, not an empty list (Issue #4347)", async () => {
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(rollupResponseWithCommit({}));
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assert(result.error instanceof Error);
+  assertEquals(
+    result.error.message,
+    "GraphQL response for PR #42 lacks commit.checkSuites.nodes",
+  );
+});
+
+Deno.test("check_runs_batch - checkSuites without nodes is malformed (Issue #4347)", async () => {
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(rollupResponseWithCommit({ checkSuites: {} }));
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(
+    result.error.message,
+    "GraphQL response for PR #42 lacks commit.checkSuites.nodes",
+  );
+});
+
+Deno.test("check_runs_batch - checkSuites with an empty nodes array is the documented empty state (Issue #4347)", async () => {
+  // Control for the malformed cases above: the same response, well formed.
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(
+      rollupResponseWithCommit({ checkSuites: { nodes: [] } }),
+    );
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(42)?.checkSuites, []);
+});
+
+Deno.test("check_runs_batch - no commit node means no check suites (Issue #4347)", async () => {
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(
+      JSON.stringify({
+        data: { repository: { n0: { commits: { nodes: [] } } } },
+      }),
+    );
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(42)?.checkSuites, []);
+  assertEquals(result.rollups.get(42)?.headSha, null);
+});
+
+// ---------------------------------------------------------------------------
 // Test fixtures
 // ---------------------------------------------------------------------------
 
@@ -112,6 +303,7 @@ function fakeRollupResponse(
         nodes: [
           {
             commit: {
+              checkSuites: { nodes: [] },
               statusCheckRollup: spec.rollupState === null ? null : {
                 state: spec.rollupState,
                 contexts: {
@@ -322,6 +514,7 @@ Deno.test("check_runs_batch - rollupToCheckRunsResponse converts shape", () => {
   const rollup: PrRollup = {
     rollupState: "FAILURE",
     headSha: null,
+    checkSuites: [],
     checkRuns: [
       {
         databaseId: 7,
@@ -344,10 +537,39 @@ Deno.test("check_runs_batch - rollupToCheckRunsResponse converts shape", () => {
   assertEquals(out.check_runs[1]?.conclusion, "failure");
 });
 
+Deno.test("check_runs_batch - rollupToCheckRunsResponse carries the check suites in REST shape (Issue #4347)", () => {
+  const rollup: PrRollup = {
+    rollupState: "SUCCESS",
+    headSha: "aaa111",
+    checkRuns: [],
+    statusContexts: [],
+    checkSuites: [
+      {
+        id: 31,
+        appSlug: "github-actions",
+        status: "completed",
+        conclusion: "startup_failure",
+        checkRunCount: 0,
+      },
+    ],
+  };
+  const out = rollupToCheckRunsResponse(rollup);
+  assertEquals(out.check_suites, [
+    {
+      id: 31,
+      app_slug: "github-actions",
+      status: "completed",
+      conclusion: "startup_failure",
+      check_run_count: 0,
+    },
+  ]);
+});
+
 Deno.test("check_runs_batch - rollupToCombinedStatusResponse: all success â†’ success", () => {
   const rollup: PrRollup = {
     rollupState: "SUCCESS",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [
       { context: "deploy", state: "success" },
@@ -363,6 +585,7 @@ Deno.test("check_runs_batch - rollupToCombinedStatusResponse: failure context â†
   const rollup: PrRollup = {
     rollupState: "FAILURE",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [
       { context: "deploy", state: "failure" },
@@ -376,6 +599,7 @@ Deno.test("check_runs_batch - rollupToCombinedStatusResponse: pending context â†
   const rollup: PrRollup = {
     rollupState: "PENDING",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [
       { context: "deploy", state: "pending" },
@@ -389,6 +613,7 @@ Deno.test("check_runs_batch - rollupToCombinedStatusResponse: no statuses â†’ pe
   const rollup: PrRollup = {
     rollupState: "SUCCESS",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [],
   };
@@ -402,6 +627,7 @@ Deno.test("check_runs_batch - rollupToFailedCheckRuns filters failures only", ()
   const rollup: PrRollup = {
     rollupState: "FAILURE",
     headSha: null,
+    checkSuites: [],
     checkRuns: [
       {
         databaseId: 1,
@@ -560,4 +786,150 @@ Deno.test("check_runs_batch - fetchFailedCheckRunsBatch returns empty Map on emp
   assert(result !== null);
   assertEquals(result.size, 0);
   assertEquals(calls, 0);
+});
+
+// ===========================================================================
+// Startup-failed Actions suites reach the CI-fix scan (Issue #4347)
+// ===========================================================================
+
+const GREEN_RUN: PrRollup["checkRuns"][number] = {
+  databaseId: 7,
+  name: "build",
+  status: "completed",
+  conclusion: "success",
+};
+
+function rollupWithSuites(suites: PrRollup["checkSuites"]): PrRollup {
+  return {
+    rollupState: "SUCCESS",
+    headSha: "aaa111",
+    checkRuns: [GREEN_RUN],
+    statusContexts: [],
+    checkSuites: suites,
+  };
+}
+
+Deno.test("check_runs_batch - rollupToStartupFailedSuites turns a zero-run startup_failure suite into an entry keyed by the suite id (Issue #4347)", () => {
+  const entries = rollupToStartupFailedSuites(rollupWithSuites([
+    {
+      id: 31,
+      appSlug: "github-actions",
+      status: "completed",
+      conclusion: "startup_failure",
+      checkRunCount: 0,
+    },
+  ]));
+  assertEquals(entries, [{
+    id: 31,
+    checkSuiteId: 31,
+    name: "GitHub Actions workflow startup failure",
+    annotations: [{
+      path: "(workflow path unavailable)",
+      start_line: 1,
+      message: "GitHub Actions rejected this workflow before any job started.",
+    }],
+    status: "completed",
+    conclusion: "startup_failure",
+  }]);
+});
+
+Deno.test("check_runs_batch - rollupToStartupFailedSuites names the workflow file and run URL (Issue #4347)", () => {
+  const entries = rollupToStartupFailedSuites(rollupWithSuites([
+    {
+      id: 31,
+      appSlug: "github-actions",
+      status: "completed",
+      conclusion: "startup_failure",
+      checkRunCount: 0,
+      workflowName: "actionlint",
+      workflowPath: ".github/workflows/actionlint.yml",
+      runUrl: "https://github.com/acme/tools/actions/runs/99",
+    },
+  ]));
+  assertEquals(entries, [{
+    id: 31,
+    checkSuiteId: 31,
+    name: "actionlint (.github/workflows/actionlint.yml)",
+    annotations: [{
+      path: ".github/workflows/actionlint.yml",
+      start_line: 1,
+      message:
+        "GitHub Actions rejected this workflow before any job started. Workflow run: https://github.com/acme/tools/actions/runs/99",
+    }],
+    status: "completed",
+    conclusion: "startup_failure",
+  }]);
+});
+
+Deno.test("check_runs_batch - rollupToStartupFailedSuites ignores every suite that is not a finished github-actions startup_failure (Issue #4347)", () => {
+  const base = {
+    id: 31,
+    appSlug: "github-actions",
+    status: "completed",
+    conclusion: "startup_failure" as string | null,
+    checkRunCount: 0,
+  };
+  const flips = [
+    { ...base, id: null },
+    { ...base, appSlug: "review-bot" },
+    { ...base, appSlug: null },
+    { ...base, status: "queued" },
+    { ...base, conclusion: null },
+    { ...base, conclusion: "success" },
+    { ...base, conclusion: "failure" },
+    { ...base, checkRunCount: 2 },
+  ];
+  for (const flip of flips) {
+    assertEquals(rollupToStartupFailedSuites(rollupWithSuites([flip])), []);
+  }
+});
+
+Deno.test("check_runs_batch - fetchFailedCheckRunsBatch adds startup-failed suites only when asked (Issue #4347)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      10: {
+        headOid: "aaa111",
+        rollupState: "SUCCESS",
+        contexts: [{
+          kind: "checkRun",
+          databaseId: 1,
+          name: "build",
+          status: "COMPLETED",
+          conclusion: "SUCCESS",
+        }],
+        checkSuites: [{
+          databaseId: 55,
+          appSlug: "github-actions",
+          status: "COMPLETED",
+          conclusion: "STARTUP_FAILURE",
+        }],
+      },
+    },
+  });
+
+  const without = await fetchFailedCheckRunsBatch("acme/tools", [10], gh);
+  assertEquals(without?.get(10), []);
+
+  const withSuites = await fetchFailedCheckRunsBatch(
+    "acme/tools",
+    [10],
+    gh,
+    RED_CHECK_CONCLUSIONS,
+    undefined,
+    true,
+  );
+  assertEquals(withSuites?.get(10), [{
+    id: 55,
+    checkSuiteId: 55,
+    name: "GitHub Actions workflow startup failure",
+    annotations: [{
+      path: "(workflow path unavailable)",
+      start_line: 1,
+      message: "GitHub Actions rejected this workflow before any job started.",
+    }],
+    status: "completed",
+    conclusion: "startup_failure",
+  }]);
 });

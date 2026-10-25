@@ -88,6 +88,16 @@ import {
   type EarlierVerdict,
   parseEarlierVerdicts,
 } from "./earlier_findings.ts";
+import {
+  CAPABILITY_BUNDLE_PATH,
+  capabilityContextFromChange,
+  type CapabilityLoad,
+  capabilityLoadFromGitShow,
+  effectiveCapabilityLoad,
+  loadTrustedCapabilityBundle,
+  mergeCapabilityReview,
+  renderCapabilityReview,
+} from "./capability_security_guidance.ts";
 
 /** Prompt directory name of the review brief shared with the fleet reviewer. */
 export const REVIEW_BRIEF_PROMPT_NAME = "pr_review_brief";
@@ -299,6 +309,8 @@ export interface PrePrVerifierDeps {
     retryOptions?: RetryOptions,
   ) => Promise<Result<ClaudeRunResult>>;
   loadBrief: () => Promise<Result<string>>;
+  /** Trusted capability bundle. Defaults to the copy shipped with the worker. */
+  loadTrustedCapabilityBundle?: () => Promise<CapabilityLoad>;
   makeTempDir: () => Promise<string>;
   removeDir: (path: string) => Promise<void>;
 }
@@ -310,6 +322,7 @@ export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
   },
   ask: runClaudeWithRetry,
   loadBrief: () => loadPrompt(REVIEW_BRIEF_PROMPT_NAME),
+  loadTrustedCapabilityBundle: loadTrustedCapabilityBundle,
   makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-pre-pr-verifier-" }),
   removeDir: (path) => Deno.remove(path, { recursive: true }),
 };
@@ -801,6 +814,70 @@ async function verifyInCheckout(
     input.changedFiles,
   );
   const checklistExpected = checklistState(checklists, input.changedFiles);
+  const bundleTouched = input.changedFiles === null ||
+    input.changedFiles.includes(CAPABILITY_BUNDLE_PATH);
+  const baseBundle = capabilityLoadFromGitShow(
+    await deps.runGit(
+      ["show", `${baseSha}:${CAPABILITY_BUNDLE_PATH}`],
+      checkout,
+    ),
+  );
+  if (baseBundle.kind === "fetch_failed") {
+    return notChecked(
+      `could not read ${CAPABILITY_BUNDLE_PATH} at the base ref: ${baseBundle.reason}`,
+    );
+  }
+  const headBundle = bundleTouched
+    ? capabilityLoadFromGitShow(
+      await deps.runGit(
+        ["show", `${headSha}:${CAPABILITY_BUNDLE_PATH}`],
+        checkout,
+      ),
+    )
+    : null;
+  if (headBundle?.kind === "fetch_failed") {
+    return notChecked(
+      `could not read ${CAPABILITY_BUNDLE_PATH} at the head ref: ${headBundle.reason}`,
+    );
+  }
+  const trustedBundle = await (deps.loadTrustedCapabilityBundle ??
+    loadTrustedCapabilityBundle)();
+  const capabilityLoad = effectiveCapabilityLoad(
+    baseBundle,
+    headBundle,
+    trustedBundle,
+  );
+  const diffResult = await deps.runGit(
+    ["diff", `${baseSha}...${headSha}`],
+    checkout,
+  );
+  if (!diffResult || diffResult.code !== 0) {
+    return notChecked(
+      `could not read the diff for capability guidance${
+        diffResult ? `: ${clip(diffResult.stderr, 300)}` : ""
+      }`,
+    );
+  }
+  const capabilityReview = renderCapabilityReview(
+    capabilityLoad,
+    capabilityContextFromChange({
+      title: input.issueTitle,
+      body: input.issueBody,
+      paths: input.changedFiles ?? [],
+      diff: diffResult.stdout,
+    }),
+  );
+  if (capabilityReview.retry) {
+    return notChecked(
+      capabilityReview.retryReason ??
+        "capability security guidance was not checked",
+    );
+  }
+  const mergedChecks = mergeCapabilityReview(
+    reviewChecklists,
+    checklistExpected,
+    capabilityReview,
+  );
   const metItems = metClosureItems(input.summaryContent);
   // Every existing caller of a changed function owes a verdict (Issue #3779).
   const callers = await collectCallerChecks(
@@ -825,7 +902,7 @@ async function verifyInCheckout(
     headSha,
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
-    reviewChecklists,
+    reviewChecklists: mergedChecks.markdown,
     closureItems: metItems,
     previousFindings: input.previousFindings,
     callerChecks: callers.state,
@@ -865,7 +942,7 @@ async function verifyInCheckout(
     // (Issue #3766), and for an existing caller left without a verdict or
     // marked regressed (Issue #3779).
     const gaps = [
-      ...checklistGapFindings(checklistExpected, parsed.checklist),
+      ...checklistGapFindings(mergedChecks.state, parsed.checklist),
       ...closureGapFindings(metItems, parsed.closure, input.summaryPath),
       ...earlierFindingGaps(
         input.previousFindings ?? [],

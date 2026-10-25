@@ -64,6 +64,12 @@ export interface ChecklistExpectation {
 export interface ChecklistState {
   problem: string | null;
   expected: ChecklistExpectation[];
+  /**
+   * File the problem is about, when it is not `review-checklists.json`.
+   * Capability-guidance failures set this so the finding is not attributed
+   * to the repo checklist (Issue #4366).
+   */
+  problemFile?: string;
 }
 
 const VERDICTS: readonly string[] = ["met", "missing", "not applicable"];
@@ -478,14 +484,19 @@ export function checklistGapFindings(
 ): ChecklistGapFinding[] {
   const out: ChecklistGapFinding[] = [];
   if (state.problem !== null) {
+    const capability = state.problemFile !== undefined &&
+      state.problemFile !== REVIEW_CHECKLISTS_FILE;
     out.push({
-      file: REVIEW_CHECKLISTS_FILE,
+      file: state.problemFile ?? REVIEW_CHECKLISTS_FILE,
       line: 1,
-      problem: `Repository review checklists were not applied: ${
-        gapText(state.problem, 600)
-      }.`,
-      fix:
-        `Repair \`${REVIEW_CHECKLISTS_FILE}\` in this change, or reduce the change so its file list is complete. The base ref's copy governs, except that a change which edits the file is judged on its own copy when the base copy is unusable, so a repair can be reviewed and merged.`,
+      problem: capability
+        ? gapText(state.problem, 600)
+        : `Repository review checklists were not applied: ${
+          gapText(state.problem, 600)
+        }.`,
+      fix: capability
+        ? `Restore \`${state.problemFile}\`. The trusted base revision governs, so this change cannot weaken the checks used to review it. A broken copy must be repaired before the change can merge.`
+        : `Repair \`${REVIEW_CHECKLISTS_FILE}\` in this change, or reduce the change so its file list is complete. The base ref's copy governs, except that a change which edits the file is judged on its own copy when the base copy is unusable, so a repair can be reviewed and merged.`,
     });
   }
   const reported = new Set(

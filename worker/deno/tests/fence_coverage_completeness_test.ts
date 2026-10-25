@@ -20,10 +20,15 @@ interface NoUntrustedInput {
   reason: string;
 }
 
-// All current exported builders accept untrusted text, including the security
-// scanner (open issue titles) and summariser (conversation text). Add an entry
-// only when its reason explains why no caller-controlled text enters a prompt.
-const NO_UNTRUSTED_INPUT: readonly NoUntrustedInput[] = [];
+// Add an entry only when its reason explains why no caller-controlled text
+// enters a prompt. Builders that accept text need a canary row instead.
+const NO_UNTRUSTED_INPUT: readonly NoUntrustedInput[] = [
+  {
+    name: "buildPrBodyLengthPrompt",
+    reason:
+      "Accepts only the numeric issue number, body and summary lengths, and character limit. The summary path is generated from that number; the summary body and other untrusted text never enter the prompt.",
+  },
+];
 
 function codeOnly(source: string, path: string): string {
   const lexed = sourceProseLines(source, path);
