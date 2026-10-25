@@ -87,7 +87,7 @@ const CHECKOUT_NO_CREDENTIALS = `        with:
  * outside the 24h supply-chain quarantine. Bump this in lock-step with
  * `container/tools.json` and `.github/workflows/markdown-lint.yml`.
  */
-const MARKDOWNLINT_CLI2_VERSION = "0.23.2";
+const MARKDOWNLINT_CLI2_VERSION = "0.24.0";
 
 // ---------------------------------------------------------------------------
 // Public types

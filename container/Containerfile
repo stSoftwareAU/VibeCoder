@@ -12,9 +12,9 @@
 # provider in container/providers/<id>.sh; both read their own pins, so neither
 # costs this file an ARG block (Issues #1594, #4067).
 
-ARG DENO_IMAGE="docker.io/denoland/deno:bin-2.9.6@sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba"
-ARG BASE_IMAGE="docker.io/library/ruby:3.4-trixie@sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b"
-ARG FLOCI_IMAGE="docker.io/floci/floci:2.2.0@sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520"
+ARG DENO_IMAGE="docker.io/denoland/deno:bin-2.9.8@sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543"
+ARG BASE_IMAGE="docker.io/library/ruby:3.4-trixie@sha256:48ecc7a76bacf6fc0da5f6c7a5b43f96461bac68fa571213a8afcf79c461c7b7"
+ARG FLOCI_IMAGE="docker.io/floci/floci:2.3.0@sha256:e0b292df4dc9559b7b1bf4f51bdda4bb8e269276236438cd03cae661260ea8a9"
 
 FROM ${DENO_IMAGE} AS deno
 
@@ -45,9 +45,9 @@ FROM ${BASE_IMAGE}
 ARG CURL_RETRY="--retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20 -C -"
 ARG PIP_RETRY="--retries 8 --resume-retries 20 --timeout 60"
 
-ARG GH_VERSION="2.97.0"
-ARG GH_SHA256_AMD64="a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112"
-ARG GH_SHA256_ARM64="73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5"
+ARG GH_VERSION="2.103.2"
+ARG GH_SHA256_AMD64="62ccf747115ddc61237efffdde66a3c8f70ba249433dc64f70801089b59c59c8"
+ARG GH_SHA256_ARM64="4c3e99a50bd8b181a3fe9d69b25dd978bac768148d88f01507c6b4d1ef61a443"
 ARG JQ_VERSION="1.8.2"
 ARG JQ_SHA256_AMD64="b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
 ARG JQ_SHA256_ARM64="8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309"
@@ -95,9 +95,9 @@ RUN set -eu; \
 # install time — the fragment proves the agent runs before the build moves on.
 # The image content is unchanged by the position; only the layer order is.
 # markdownlint-cli2 and Playwright, further down, use the same runtime.
-ARG NODE_VERSION="24.19.0"
-ARG NODE_SHA256_AMD64="14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647"
-ARG NODE_SHA256_ARM64="01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc"
+ARG NODE_VERSION="24.22.1"
+ARG NODE_SHA256_AMD64="6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6"
+ARG NODE_SHA256_ARM64="dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e"
 
 RUN set -eu; \
     arch="$(uname -m)"; \
@@ -118,8 +118,8 @@ RUN set -eu; \
 # rule as the other npm-sourced tools — verify the tarball, then install from
 # the local file. Bumping NODE_VERSION means checking npm's `engines` still
 # accepts it.
-ARG NPM_VERSION="12.0.2"
-ARG NPM_SHA256_NOARCH="5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1"
+ARG NPM_VERSION="12.2.1"
+ARG NPM_SHA256_NOARCH="228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67"
 
 RUN set -eu; \
     tarball="/tmp/npm.tgz"; \
@@ -208,10 +208,10 @@ ENV POWERSHELL_UPDATECHECK="Off" \
 # binary honours it. RTK_SUPPRESS_HOOK_WARNING asks for the daily missing-hook
 # warning to stay off stderr — noise here, where the hook reaches the agent CLI
 # through an explicit --settings path rather than the CLI's own user settings
-# file — but v0.49.0 reads no such variable (the warning is throttled by a
-# stamp file under its data dir), so it is declared and inert until a release
-# honours it. Image-wide, as DO_NOT_TRACK below is, and set before the install
-# so the fragment's own version probe is quiet too.
+# file. v0.49.0 read no such variable (it throttled the warning by a stamp
+# file under its data dir); the 1.0.1 binary does reference it. Image-wide,
+# as DO_NOT_TRACK below is, and set before the install so the fragment's own
+# version probe is quiet too.
 ENV RTK_TELEMETRY_DISABLED="1" \
     RTK_SUPPRESS_HOOK_WARNING="1"
 
@@ -231,10 +231,10 @@ RUN set -eu; \
 # and is removed once installed: CURL_RETRY carries `-C -`, which resumes from
 # an existing file, so a shared path made cspell resume from the
 # markdownlint-cli2 bytes and fail its checksum.
-ARG MARKDOWNLINT_CLI2_VERSION="0.23.2"
-ARG MARKDOWNLINT_CLI2_SHA256_NOARCH="b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
-ARG CSPELL_VERSION="10.3.6"
-ARG CSPELL_SHA256_NOARCH="b5d865984fa8a8c13d1ee2a25514b45a29c5186f64afa8586b0fb89517b10e9f"
+ARG MARKDOWNLINT_CLI2_VERSION="0.24.0"
+ARG MARKDOWNLINT_CLI2_SHA256_NOARCH="66ab8e028fd8e6eb64a4f277660142e1c4ea8c61501974d91a060f2586a0c548"
+ARG CSPELL_VERSION="10.4.0"
+ARG CSPELL_SHA256_NOARCH="73b8354d9bf11df027d08283848f67fc45fae15bdad804dd741ef6ffc1b22ac2"
 
 RUN set -eu; \
     for spec in "markdownlint-cli2 ${MARKDOWNLINT_CLI2_VERSION} ${MARKDOWNLINT_CLI2_SHA256_NOARCH}" "cspell ${CSPELL_VERSION} ${CSPELL_SHA256_NOARCH}"; do \
@@ -257,8 +257,8 @@ RUN set -eu; \
 # still reports success. Why each of those is load-bearing is in
 # docs/CONTAINER-IMAGE.md, "Graft — the one layer that compiles"; the
 # invariants are enforced by findGraftRebuildViolations (Issue #2097).
-ARG GRAFT_VERSION="0.18.0"
-ARG GRAFT_SHA256_NOARCH="729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc"
+ARG GRAFT_VERSION="0.25.0"
+ARG GRAFT_SHA256_NOARCH="685f2af74ab4ded3b2af01d92f25877648e78cf00c4db99baa5c0e732f8ef35e"
 
 # No telemetry round trip from an unattended container, the same reasoning as
 # POWERSHELL_TELEMETRY_OPTOUT above: as an image-wide setting this covers the
@@ -315,11 +315,11 @@ RUN set -eu; \
 # out of it — a downloaded-to `sg.whl` fails with "Invalid wheel filename".
 # Only semgrep's own dependency wheels still come from the index unverified.
 # ~350 MB, nearly all of it the bundled semgrep-core — docs/CONTAINER-IMAGE.md.
-ARG PIP_VERSION="26.2.1"
-ARG PIP_SHA256_NOARCH="71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
-ARG SEMGREP_VERSION="1.173.0"
-ARG SEMGREP_SHA256_AMD64="cb21aa06246bdd79d3e9e7f9118ec7baecb1be39cf89c46e07af13b4128d7b79"
-ARG SEMGREP_SHA256_ARM64="e1a508dd8bccaff05482bb2968d4ae84a432f932e502d3caccdb3d525da51f22"
+ARG PIP_VERSION="26.2.2"
+ARG PIP_SHA256_NOARCH="fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+ARG SEMGREP_VERSION="1.182.1"
+ARG SEMGREP_SHA256_AMD64="bba25e5a38db5061d725c0920699ecee3e8137026427e722a271bd9bb8d25a40"
+ARG SEMGREP_SHA256_ARM64="3fdfbd68ac5eeead60983dbcd539428bbc40d01f805e0569301068d06be7eaa3"
 
 # No upgrade nag and no version round trip from an unattended container; the
 # gate reads `semgrep --version` and compares it against the CI pin itself.

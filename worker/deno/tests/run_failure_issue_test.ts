@@ -43,7 +43,7 @@ function fakeGh(
     issues?: { number: number; body: string; author?: string }[];
     comments?: { id: number; body: string; author?: string }[];
   } = {},
-  behaviour: { failAll?: boolean } = {},
+  behaviour: { failAll?: boolean; visibility?: string } = {},
 ) {
   const rec: Recorded = { calls: [], creates: [], comments: [], patches: [] };
   const issues = [...(seed.issues ?? [])];
@@ -89,6 +89,18 @@ function fakeGh(
     if (args[0] === "api" && args.includes("PATCH")) {
       rec.patches.push(args);
       return Promise.resolve("{}");
+    }
+    // Source visibility (Issue #4318). Default public so existing filings
+    // still name the source; a test opts into private or a failed lookup.
+    if (
+      args[0] === "api" && args[1]?.startsWith("repos/") &&
+      args.includes(".visibility")
+    ) {
+      const visibility = behaviour.visibility ?? "public";
+      if (visibility === "fail") {
+        return Promise.reject(new Error("visibility lookup failed"));
+      }
+      return Promise.resolve(visibility);
     }
     return Promise.resolve("");
   };
@@ -598,6 +610,250 @@ Deno.test("run failure issue - filing records an attestation carrying the posted
       create[create.indexOf("--title") + 1],
       "and the title, so a rename does not slip past it",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Codex session whose tool runtime never came up (Issue #4324). */
+const CODE_MODE_TRANSCRIPT: readonly unknown[] = [
+  {
+    type: "error",
+    message: "Code Mode is unavailable: host executable was not found",
+  },
+  {
+    type: "agent_message",
+    message: "I cannot use tools in this session, so I made no code change.",
+  },
+];
+
+Deno.test("run failure issue - a Code Mode unavailable transcript files one VIBE_RUN_FAILURE issue and does not relabel the source (Issue #4324)", async () => {
+  const dir = await tmp();
+  try {
+    const sourceRepo = "stSoftwareAU/GRQ";
+    const { ghFn, rec } = fakeGh();
+    const decision = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: {
+        sourceRepo,
+        sourceIssueNumber: 23,
+        machineId: "vibe-coder-23",
+        transcript: CODE_MODE_TRANSCRIPT,
+        outcome: {
+          kind: "no_pr",
+          category: "no_changes",
+          phase: "execute",
+          elapsedSeconds: 77,
+          message: "Completed without making any changes",
+        },
+      },
+      ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1_700_000_000,
+    });
+    assertEquals(decision.action, "filed");
+    if (decision.action !== "filed") return;
+    assertEquals(decision.failureClass, "tool-runtime");
+    assertEquals(rec.creates.length, 1);
+    assertEquals(rec.comments.length, 0);
+    const create = rec.creates[0]!;
+    assertEquals(create[create.indexOf("--repo") + 1], RUN_FAILURE_TARGET_REPO);
+    const body = create[create.indexOf("--body") + 1]!;
+    assert(body.startsWith(formatRunFailureMarker("tool-runtime")), body);
+    assertEquals(create[create.indexOf("--label") + 1], "bug");
+    // The source issue's labels are untouched: no failed-once, no label edit.
+    const sourceLabelWrites = rec.calls.filter((args) =>
+      args.includes(sourceRepo) &&
+      (args.includes("failed-once") || args.includes("edit") ||
+        args.includes("--add-label"))
+    );
+    assertEquals(sourceLabelWrites, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("run failure issue - an ordinary no-change run, where tools worked, is not filed (Issue #4324)", async () => {
+  const dir = await tmp();
+  try {
+    const { ghFn, rec } = fakeGh();
+    const decision = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: {
+        sourceRepo: "stSoftwareAU/GRQ",
+        sourceIssueNumber: 24,
+        machineId: "vibe-coder-23",
+        transcript: [
+          { type: "function_call", name: "shell", status: "completed" },
+          { type: "agent_message", message: "No code change was required." },
+        ],
+        outcome: {
+          kind: "no_pr",
+          category: "no_changes",
+          phase: "execute",
+          elapsedSeconds: 600,
+          message: "Completed without making any changes",
+        },
+      },
+      ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1,
+    });
+    assertEquals(decision, {
+      action: "suppressed",
+      reason: "not_code_fixable",
+      failureClass: "agent-outcome",
+    });
+    assertEquals(rec.creates.length, 0);
+    assertEquals(rec.calls.length, 0, "no GitHub call of any kind");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** A string that must never reach a public issue from a private source. */
+const PRIVATE_MESSAGE = "zephyr-991 the private agent said this exact sentence";
+const PRIVATE_REPO = "acme/secret-fleet-repo";
+const PRIVATE_URL =
+  "https://github.com/acme/secret-fleet-repo/issues/42#issuecomment-99";
+
+function privateReport(): RunFailureReport {
+  return {
+    sourceRepo: PRIVATE_REPO,
+    sourceIssueNumber: 42,
+    machineId: "host-4318",
+    releaseCommentUrl: PRIVATE_URL,
+    outcome: {
+      kind: "no_pr",
+      category: "killed",
+      phase: "execute",
+      elapsedSeconds: 77,
+      message: PRIVATE_MESSAGE,
+      classification: {
+        fixability: "code_fixable",
+        failureClass: "oom",
+        rationale:
+          "The run was killed (SIGKILL) with out-of-memory evidence in the message.",
+      },
+    },
+  };
+}
+
+function postedText(args: string[]): string {
+  const index = args.indexOf("--body");
+  return index === -1 ? "" : args[index + 1] ?? "";
+}
+
+Deno.test("run failure issue - a private source omits the repo, the release comment and the excerpt from the body and the follow-up (Issue #4318)", async () => {
+  const dir = await tmp();
+  try {
+    const gh = fakeGh({}, { visibility: "private" });
+    let now = 1_700_000_000;
+    const filed = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: privateReport(),
+      ghFn: gh.ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => now,
+      minWriteIntervalSeconds: 0,
+    });
+    assertEquals(filed.action, "filed");
+    const body = postedText(gh.rec.creates[0]!);
+    assert(body.includes("**Failure class:** `oom`"), body);
+    assert(body.includes("**Category:**"), body);
+    assert(body.includes("`execute` after 77s"), body);
+    assert(body.includes("`host-4318`"), body);
+    assert(!body.includes(PRIVATE_REPO), body);
+    assert(!body.includes(PRIVATE_MESSAGE), body);
+    assert(!body.includes(PRIVATE_URL), body);
+    assert(!body.includes("**Source:**"), body);
+    assert(!body.includes("**Release comment:**"), body);
+    assert(!body.includes("## Failure message"), body);
+
+    now += 60;
+    const commented = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: privateReport(),
+      ghFn: gh.ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => now,
+      minWriteIntervalSeconds: 0,
+    });
+    assertEquals(commented.action, "commented");
+    const comment = postedText(gh.rec.comments[0]!);
+    assert(comment.includes("`host-4318`"), comment);
+    assert(comment.includes("`execute`"), comment);
+    assert(comment.includes("77s"), comment);
+    assert(!comment.includes(PRIVATE_REPO), comment);
+    assert(!comment.includes(PRIVATE_MESSAGE), comment);
+    assert(!comment.includes(PRIVATE_URL), comment);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("run failure issue - unknown source visibility is treated as private (Issue #4318)", async () => {
+  for (const visibility of ["fail", "internal", ""]) {
+    const dir = await tmp();
+    try {
+      const { ghFn, rec } = fakeGh({}, { visibility });
+      const decision = await fileRunFailureIssue({
+        recordFiling: () => Promise.resolve(true),
+        report: privateReport(),
+        ghFn,
+        workDir: dir,
+        fleetAuthors: FLEET,
+        nowSeconds: () => 1_700_000_000,
+      });
+      assertEquals(decision.action, "filed", visibility);
+      const body = postedText(rec.creates[0]!);
+      assert(!body.includes(PRIVATE_REPO), `${visibility}: ${body}`);
+      assert(!body.includes(PRIVATE_MESSAGE), visibility);
+      assert(!body.includes(PRIVATE_URL), visibility);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("run failure issue - a public source still names the repo, the release comment and the excerpt (Issue #4318)", async () => {
+  const dir = await tmp();
+  try {
+    const gh = fakeGh({}, { visibility: "public" });
+    let now = 1_700_000_000;
+    await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: privateReport(),
+      ghFn: gh.ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => now,
+      minWriteIntervalSeconds: 0,
+    });
+    const body = postedText(gh.rec.creates[0]!);
+    assert(body.includes(`${PRIVATE_REPO}#42`), body);
+    assert(body.includes(PRIVATE_URL), body);
+    assert(body.includes(PRIVATE_MESSAGE), body);
+
+    now += 60;
+    await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: privateReport(),
+      ghFn: gh.ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => now,
+      minWriteIntervalSeconds: 0,
+    });
+    const comment = postedText(gh.rec.comments[0]!);
+    assert(comment.includes(`${PRIVATE_REPO}#42`), comment);
+    assert(comment.includes("`host-4318`"), comment);
+    assert(comment.includes("`execute`"), comment);
+    assert(comment.includes("77s"), comment);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
