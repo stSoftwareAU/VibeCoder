@@ -279,9 +279,9 @@ Deno.test("completion - an uncovered carried line blocks the PR and names file:l
     true,
     "positive control: runner ran",
   );
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-  assertEquals(outcome.claudeCalls, 1, "one in-run recovery turn");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(outcome.claudeCalls, 1, "one in-session note");
   assertStringIncludes(outcome.prompts[0]!, `${CHANGED_FILE}:42`);
   assertEquals(outcome.comments.length, 1);
   assertStringIncludes(
@@ -347,7 +347,7 @@ Deno.test("completion - budget exhausted raises the PR and warns", async () => {
   );
 });
 
-Deno.test("completion - a runner error blocks the PR (fail closed)", async () => {
+Deno.test("completion - a runner error is noted and the PR is still raised", async () => {
   const outcome = await runCompletion({
     coverage: { kind: "error", reason: "coverage tests crashed" },
   });
@@ -357,12 +357,12 @@ Deno.test("completion - a runner error blocks the PR (fail closed)", async () =>
     true,
     "positive control: runner ran",
   );
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0);
-  assertStringIncludes(outcome.reason ?? "", "coverage tests crashed");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertStringIncludes(outcome.comments[0] ?? "", "coverage tests crashed");
 });
 
-Deno.test("completion - a throwing runner blocks the PR (fail closed)", async () => {
+Deno.test("completion - a throwing runner is noted and the PR is still raised", async () => {
   const outcome = await runCompletion({ coverage: new Error("boom") });
 
   assertEquals(
@@ -370,21 +370,24 @@ Deno.test("completion - a throwing runner blocks the PR (fail closed)", async ()
     true,
     "positive control: runner ran",
   );
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0);
-  assertStringIncludes(outcome.reason ?? "", "boom");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertStringIncludes(outcome.comments[0] ?? "", "boom");
 });
 
-Deno.test("completion - an uncollectable PR diff blocks the PR and the runner is not called", async () => {
+Deno.test("completion - an uncollectable PR diff is noted and the runner is not called", async () => {
   const outcome = await runCompletion({
     coverage: completed([]),
     fullDiffFails: true,
   });
 
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0);
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
   assertEquals(outcome.runnerInputs.length, 0, "runner must not run");
-  assertStringIncludes(outcome.reason ?? "", "could not collect the PR diff");
+  assertStringIncludes(
+    outcome.comments[0] ?? "",
+    "could not collect the PR diff",
+  );
   assertEquals(
     outcome.warnings.some((w) =>
       w.includes(

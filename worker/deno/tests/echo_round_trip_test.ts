@@ -9,12 +9,7 @@
  * Uses Australian English throughout (behaviour, artefact).
  */
 
-import {
-  assert,
-  assertEquals,
-  assertStringIncludes,
-  assertThrows,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CallerCheckState,
   type CallerGapFinding,
@@ -35,12 +30,6 @@ import {
 } from "../lib/prompt_delimiter.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import {
-  applyFlaggedSentenceReplacements,
-  CORRECTED_SUMMARY_CLOSE,
-  CORRECTED_SUMMARY_OPEN,
-  parseCorrectedSummary,
-} from "../lib/summary_claim_correction.ts";
-import {
   SCRUB_TRIGGER_CORPUS,
   syntheticGithubToken,
 } from "./support/scrub_trigger_corpus.ts";
@@ -49,12 +38,10 @@ import {
 export const ECHO_TABLE_MODULES: readonly string[] = [
   "caller_checks.ts",
   "closure_met_check.ts",
-  "summary_claim_correction.ts",
 ];
 
 const BOUNDARY_ID = "0123456789ab";
 const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-4210.md";
-const SENTENCE_FILE = "manual.md";
 
 const PLAIN = SCRUB_TRIGGER_CORPUS.find((row) => row.name === "plain-text");
 if (!PLAIN) throw new Error("corpus is missing the plain-text control");
@@ -156,10 +143,6 @@ function assertNoCallerGap(findings: readonly CallerGapFinding[]): void {
   }
 }
 
-function correctedReply(body: string): string {
-  return `${CORRECTED_SUMMARY_OPEN}\n${body}\n${CORRECTED_SUMMARY_CLOSE}`;
-}
-
 function assertNoUnreported(findings: readonly ClosureGapFinding[]): void {
   for (const finding of findings) {
     assertEquals(
@@ -235,91 +218,7 @@ for (const row of SCRUB_TRIGGER_CORPUS) {
       assertNoCallerGap(fenced);
     }
   });
-
-  Deno.test(`summary echo ${row.name}: verbatim raw is accepted and an artefact echo is refused`, () => {
-    const original = row.raw;
-    const accepted = parseCorrectedSummary(correctedReply(original), original);
-    assert(accepted.ok, row.name);
-    assertEquals(accepted.value, `${original}\n`);
-    assertEquals(original, row.raw);
-
-    const echo = fencedBody(original);
-    const echoed = parseCorrectedSummary(correctedReply(echo), original);
-    if (echo !== original) {
-      assert(!echoed.ok, `${row.name}: artefact reply was accepted`);
-      assertStringIncludes(
-        echoed.error.message,
-        "introduces prompt-scrubbing artefacts",
-      );
-      assertEquals(original, row.raw);
-    } else {
-      assert(
-        echoed.ok,
-        `${row.name}: an original that already holds its artefacts was refused`,
-      );
-      assertEquals(echoed.value, `${original}\n`);
-    }
-  });
-
-  Deno.test(`summary replacement ${row.name}: added artefacts throw, held artefacts do not`, () => {
-    const echo = fencedBody(row.raw);
-    const findings = [{
-      file: SENTENCE_FILE,
-      sentence: row.raw,
-      reason: "the head differs",
-    }];
-    const contents = new Map([[SENTENCE_FILE, row.raw]]);
-    const reply = (text: string) =>
-      JSON.stringify({ replacements: [{ index: 1, text }] });
-    if (echo !== row.raw) {
-      assertThrows(
-        () => applyFlaggedSentenceReplacements(reply(echo), findings, contents),
-        Error,
-        "prompt-scrubbing artefacts",
-      );
-      assertEquals(contents.get(SENTENCE_FILE), row.raw);
-    } else {
-      const replaced = applyFlaggedSentenceReplacements(
-        reply(echo),
-        findings,
-        contents,
-      );
-      assertEquals(replaced.get(SENTENCE_FILE), row.raw);
-    }
-    if (row.alreadyHoldsScrubArtefact) {
-      const kept = applyFlaggedSentenceReplacements(
-        reply("｛｛Y｝｝"),
-        findings,
-        contents,
-      );
-      assertEquals(kept.get(SENTENCE_FILE), "｛｛Y｝｝");
-    }
-  });
 }
-
-Deno.test("secret row: a reply cannot restore the redacted token", () => {
-  const row = SCRUB_TRIGGER_CORPUS.find((entry) =>
-    entry.name === "secret-token"
-  );
-  assert(row);
-  const secret = row.raw;
-  const echo = fencedBody(secret);
-  assertEquals(echo, REDACTION_PLACEHOLDER);
-  assertEquals(echo.includes(secret), false);
-
-  const restored = parseCorrectedSummary(correctedReply(echo), secret);
-  assert(!restored.ok);
-  assertEquals(restored.error.message.includes(secret), false);
-  assertStringIncludes(
-    restored.error.message,
-    "introduces prompt-scrubbing artefacts",
-  );
-
-  const verbatim = parseCorrectedSummary(correctedReply(secret), secret);
-  assert(verbatim.ok);
-  assertEquals(verbatim.value, `${secret}\n`);
-  assertEquals(verbatim.value.includes(REDACTION_PLACEHOLDER), false);
-});
 
 Deno.test("secret row: the redaction placeholder is not an identifier", () => {
   const left = `alpha ${syntheticGithubToken("A")}`;
@@ -348,17 +247,6 @@ Deno.test("secret row: the redaction placeholder is not an identifier", () => {
   assertEquals(
     closureGapFindings(items, [met(left), met(right)], SUMMARY_PATH),
     [],
-  );
-
-  assertThrows(
-    () =>
-      applyFlaggedSentenceReplacements(
-        JSON.stringify({ replacements: [{ index: 1, text: "safe text" }] }),
-        [{ file: "left.md", sentence: left, reason: "the head differs" }],
-        new Map([["left.md", right]]),
-      ),
-    Error,
-    "Flagged sentence is no longer locatable",
   );
 });
 

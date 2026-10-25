@@ -18,10 +18,52 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import {
-  type DocsSweepGitRunner,
-  parseChangedLines,
-} from "./docs_sweep_hits.ts";
+/** A git runner: resolves with the exit code and output; may reject. */
+type DiffGitRunner = (
+  args: string[],
+) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** A hunk header's new-side start and count, each omitted count being 1. */
+const HUNK_HEADER_RE = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
+
+/**
+ * The new-side line ranges each file's hunks added or changed, read from
+ * `git diff --unified=0`. Every file the diff touches gets an entry, so a
+ * file whose only change is a deletion maps to `[]`; a deleted file gets no
+ * entry. A `+++` line counts as a file header only straight after a `---`
+ * line, so an added line that itself starts with `++ ` is not read as one.
+ * A hunk header with no file header before it throws.
+ */
+function parseChangedLines(
+  diff: string,
+): Map<string, Array<[number, number]>> {
+  const changed = new Map<string, Array<[number, number]>>();
+  let current: string | null | undefined = undefined;
+  let previous = "";
+  for (const line of diff.split("\n")) {
+    const afterOld = previous.startsWith("--- ");
+    previous = line;
+    if (afterOld && line.startsWith("+++ ")) {
+      const target = line.slice(4).trim();
+      current = target === "/dev/null"
+        ? null
+        : target.replace(/^"|"$/g, "").replace(/^b\//, "");
+      if (current !== null && !changed.has(current)) changed.set(current, []);
+      continue;
+    }
+    const hunk = line.match(HUNK_HEADER_RE);
+    if (!hunk) continue;
+    if (current === undefined) {
+      throw new Error("diff hunk header with no file before it");
+    }
+    if (current === null) continue;
+    const start = Number(hunk[1]);
+    const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+    if (count === 0) continue;
+    changed.get(current)!.push([start, start + count - 1]);
+  }
+  return changed;
+}
 import {
   isStandingViolation,
   type ReviewEntry,
@@ -161,7 +203,7 @@ export async function findOwnLineStandingViolations(opts: {
   issueBody: string;
   prSummaryContent: string;
   base: string | null;
-  runGit: DocsSweepGitRunner;
+  runGit: DiffGitRunner;
 }): Promise<{ violations: StandingViolation[]; notChecked: string | null }> {
   const review = validateIndependentReview({
     issueBody: opts.issueBody,

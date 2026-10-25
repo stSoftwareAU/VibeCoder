@@ -9,7 +9,7 @@
  */
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { sourceProseLines } from "../lib/removed_assertion_gate.ts";
+import { sourceProseLines } from "../lib/doc_prose_scope.ts";
 import { ECHO_TABLE_MODULES } from "./echo_round_trip_test.ts";
 
 /** Names that make a module an echo-consumer candidate. */

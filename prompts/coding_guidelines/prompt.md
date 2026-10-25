@@ -395,9 +395,8 @@ not after a reviewer finds it weeks later.
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
   the same change, or is reworded so it no longer reads as complete. Name the
-  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
-  double-quoted, or write `siblings: none — <why no existing set gained a
-  member>`; fleet PRs that grepped only the new name left a list one short
+  siblings you grepped in the PR summary; fleet PRs that grepped only the new
+  name left a list one short
   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
@@ -408,9 +407,9 @@ not after a reviewer finds it weeks later.
 - Grep for the **stem** of a behavioural claim, not one inflection
   (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
   final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited. Each
-  remaining hit goes in the Docs sweep line by `file:line` with the reason it
-  is still true.
+  mentions the changed surface, not only the section you edited. Name each
+  remaining hit in the PR summary by `file:line` with the reason it is still
+  true.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item
@@ -1504,25 +1503,10 @@ it or forcing it to the value that lets the other operands decide, and name a
 test that goes red for each one. Reverting the whole change, or deleting the
 whole condition, does not show which operand a test reaches. An outcome with
 no test, or one whose flip leaves the suite green, is a blocking self-review
-finding: add a test for it. When the run writes or refreshes a PR summary,
-record the enumeration as structured facts in
-`docs/archive/pr-summaries/pr-summary-<N>.facts.json` beside it — one entry
-per outcome naming `path:line`, the outcome, the test that reaches it, and that
-flipping it went red, or `"noneAdded": true` when the diff adds no branch — and
-leave the `<!-- vibe-branch-outcomes -->` marker in its
-Test Plan, where the worker renders that record as the `Branch outcomes:` list
-(`CODING-STANDARDS.md` → **Branch outcomes facts file** gives the schema); every
-test it names must exist at the head (see **A named test must exist**). Without
-a facts file, the worker still reads a `Branch outcomes:` list written in the
-Test Plan, or `Branch outcomes: none added`. A `Branch outcomes:` line for a
-compound condition names the operand it covers, and its flip is that operand's
-flip (Issue #3376). An entry that admits no test reaches its outcome is work
-still to do, not a record: add the test that goes red, or remove the branch.
-Only an outcome the issue puts out of scope, or one production can reach but a
-test cannot stage, may stand, written `exempt (out of scope): <reason>` or
-`exempt (untestable): <reason>` (in the facts file, an `exempt` object of kind
-`out-of-scope` or `untestable` with that reason); an issue run's branch-outcomes
-gate blocks PR creation on any other admission (Issue #3288). An outcome no
+finding: add a test for it. Every test the summary names must exist at the
+head (see **A named test must exist**). The test plan names the operand it covers. A compound condition's flip is that
+operand's flip (Issue #3376). An outcome no test reaches is work still to do:
+add the test that goes red, or remove the branch. An outcome no
 input can reach is dead code: remove it, never exempt it. `exempt (untestable)`
 is for an outcome production can reach but a test cannot stage, such as a
 permission or I/O fault the suite cannot stage portably; its reason names what
@@ -1530,15 +1514,12 @@ blocks staging and the harness search — the test files that already call the
 enclosing function or script (a grep of the test tree for its name), each with
 why it cannot reach the outcome. "No existing harness" with no search named is
 not a reason. An outcome the linked issue asks a test for, in its acceptance
-criteria or Definition of done, cannot be `exempt (untestable)`. The gate checks
-only that an exemption gives a reason of three or more words, so the search must
-be named for a reviewer to check it (Issue #3428). The diff-scoped mutation
-check (Issue #3393, `docs/mutation-check.md`) blocks the PR on any added line
-whose mutation the tests do not catch, exempt only by the same
-`exempt (untestable): <reason>` record naming `path:line`. A fix to an existing
-PR re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the facts file (or, without one, the list) to the
-head.
+criteria or Definition of done, cannot be `exempt (untestable)`. Name the
+search so a reviewer can check it (Issue #3428). The diff-scoped mutation
+check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
+mutation the tests do not catch; it does not stop the pull request. A fix to
+an existing PR re-checks every branch its own commits add, not only those a
+review finding named.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that

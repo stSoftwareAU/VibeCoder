@@ -30,7 +30,7 @@
  * reach a public PR comment at all (`pr_branch_preparation.ts`'s
  * `readPrResponseMessage` chokepoint).
  *
- * Modelled on `docs_sweep_gate.ts`: pure functions only, hardcoded regexes
+ * Pure functions only, hardcoded regexes
  * (no `new RegExp()` built from input), and a bounded scan of text that is
  * agent-authored and steered by an untrusted issue body, so it is treated as
  * untrusted throughout.

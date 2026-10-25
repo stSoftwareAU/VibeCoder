@@ -70,12 +70,6 @@ import { buildWorkerFooter } from "./worker_identity.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
 import {
-  applyBranchOutcomesFacts,
-  prSummaryDigestInput,
-  prSummaryFactsPath,
-  resolveBranchOutcomesFacts,
-} from "./pr_summary_facts.ts";
-import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
 } from "./screenshot_validation.ts";
@@ -429,10 +423,7 @@ export async function buildSyncedPrBodyCandidate(
       };
     }
 
-    // Issue #3535: the facts file is a second pathspec so a facts-only change
-    // is not skipped.
     const summaryRelPath = prSummaryPath(issueNumber);
-    const factsRelPath = prSummaryFactsPath(issueNumber);
     const diffResult = await deps.runGitCommand(
       [
         "diff",
@@ -441,7 +432,6 @@ export async function buildSyncedPrBodyCandidate(
         "HEAD",
         "--",
         summaryRelPath,
-        factsRelPath,
       ],
       { cwd: input.repoPath },
     );
@@ -449,7 +439,7 @@ export async function buildSyncedPrBodyCandidate(
       return {
         ok: false,
         error: new Error(
-          `Failed to diff ${summaryRelPath} and ${factsRelPath}: ${diffResult.error.message}`,
+          `Failed to diff ${summaryRelPath}: ${diffResult.error.message}`,
         ),
       };
     }
@@ -473,31 +463,9 @@ export async function buildSyncedPrBodyCandidate(
   }
 
   const changedFiles = (view.files ?? []).map((f) => f.path);
-  const rawSummary = summaryResult.value.content;
-  // Issue #3535: fail loud on an invalid facts file; never rebuild without it.
-  const factsOutcome = await resolveBranchOutcomesFacts(
-    input.repoPath,
-    issueNumber,
-  );
-  if (factsOutcome.kind === "error") {
-    return { ok: false, error: new Error(factsOutcome.reason) };
-  }
+  const summaryContent = summaryResult.value.content;
   // Must equal the digest completion_phase records at PR creation.
-  const currentDigest = await prSummaryDigest(
-    prSummaryDigestInput(
-      rawSummary,
-      factsOutcome.kind === "valid" ? factsOutcome.content : null,
-    ),
-  );
-  let summaryContent = rawSummary;
-  if (factsOutcome.kind === "valid") {
-    const rendered = applyBranchOutcomesFacts(
-      rawSummary,
-      factsOutcome.rendered,
-    );
-    if (!rendered.ok) return rendered;
-    summaryContent = rendered.value;
-  }
+  const currentDigest = await prSummaryDigest(summaryContent);
 
   if (
     skipUnchanged && recordedDigest !== undefined &&

@@ -651,7 +651,7 @@ next run resumes the branch and finishes. Only once every criterion is met is
 the draft marked ready with `Closes #N`, and squash auto-merge is armed in the
 same step so it merges as soon as possible. Whether the run was degraded
 changes none of this. See
-[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-no-pr-until-every-acceptance-criterion-is-met).
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run).
 
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)
 

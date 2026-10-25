@@ -107,8 +107,10 @@ Deno.test("issue prompt step 3 sends the docs sweep to source doc comments (Issu
     assert(text.includes(phrase), `the issue prompt is missing "${phrase}"`);
   }
   assert(
-    text.includes("and over the comment lines of its source files"),
-    "the issue prompt does not say the worker re-runs the terms over source comments",
+    text.includes(
+      "Name the section you read and the doc files you updated in the PR summary",
+    ),
+    "the issue prompt must retain manual and source-comment review guidance",
   );
 });
 

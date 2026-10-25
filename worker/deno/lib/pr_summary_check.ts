@@ -16,7 +16,6 @@ import type { GitRunner } from "./git_base_ref.ts";
 import { validateAcceptanceClosure } from "./acceptance_criteria_gate.ts";
 import { validateIndependentReview } from "./independent_review_gate.ts";
 import { validateReproductionStatus } from "./reproduction_status_gate.ts";
-import { validateDocsSweep } from "./docs_sweep_gate.ts";
 import { validateResultPlaceholders } from "./result_placeholder_gate.ts";
 import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 import { closingKeywordLine, ensurePrReferencesIssue } from "./pr_body.ts";
@@ -25,16 +24,6 @@ import {
   maskMarkdownCode,
   splitMarkdownLines,
 } from "./markdown_code_spans.ts";
-import {
-  lookupTestsAtHead,
-  namedTestPaths,
-  parseBranchOutcomes,
-  validateBranchOutcomes,
-} from "./branch_outcomes_gate.ts";
-import {
-  applyBranchOutcomesFacts,
-  resolveBranchOutcomesFacts,
-} from "./pr_summary_facts.ts";
 
 /** Outcome of one gate. A `not_checked` gate is not a pass. */
 export type GateStatus =
@@ -57,8 +46,7 @@ export interface PrSummaryCheckInput {
   summaryContent: string;
   /**
    * Issue number from the `pr-summary-<N>.md` filename, or `null` when the
-   * name carries none. Locates `pr-summary-<N>.facts.json`; `null` skips the
-   * facts file.
+   * name carries none.
    */
   issueNumber: number | null;
   baseBranch: string;
@@ -162,22 +150,7 @@ export async function runPrSummaryCheck(
   input: PrSummaryCheckInput,
 ): Promise<Result<GateReport[], Error>> {
   const { issueBody, issueLabels, runGit, repoRoot } = input;
-  const rawSummary = input.summaryContent;
-
-  // Issue #3535: same facts-file handling as the completion phase, so a
-  // summary holding only the marker is judged on the rendered list.
-  const facts = input.issueNumber === null
-    ? ({ kind: "absent" } as const)
-    : await resolveBranchOutcomesFacts(repoRoot, input.issueNumber);
-  let summaryContent = rawSummary;
-  let factsProblem: string | null = facts.kind === "error"
-    ? facts.reason
-    : null;
-  if (facts.kind === "valid") {
-    const rendered = applyBranchOutcomesFacts(rawSummary, facts.rendered);
-    if (rendered.ok) summaryContent = rendered.value;
-    else factsProblem = rendered.error.message;
-  }
+  const summaryContent = input.summaryContent;
 
   const base = await resolveComparableBaseRef(runGit, input.baseBranch, {
     cwd: repoRoot,
@@ -202,11 +175,6 @@ export async function runPrSummaryCheck(
       ),
     };
   }
-  const changedFiles = diff.value.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
   const scrubProblem = summaryScrubProblem(summaryContent);
   const reports: GateReport[] = [{
     gate: "Prompt-scrubbed Markdown",
@@ -262,12 +230,6 @@ export async function runPrSummaryCheck(
       ),
   );
 
-  reports.push(fromVerdict(
-    "Docs sweep",
-    "#3073",
-    validateDocsSweep({ changedFiles, prSummaryContent: summaryContent }),
-  ));
-
   const placeholders = validateResultPlaceholders(summaryContent);
   reports.push({
     gate: "Result placeholders",
@@ -278,26 +240,6 @@ export async function runPrSummaryCheck(
     ],
   });
 
-  // Same wiring as the completion phase, with git run from the repo root.
-  const testsAtHead = await lookupTestsAtHead(
-    namedTestPaths(parseBranchOutcomes(summaryContent)),
-    (args) => runGit(args, { cwd: repoRoot }),
-  );
-  const branchOutcomes = fromVerdict(
-    "Branch outcomes",
-    "#3147",
-    validateBranchOutcomes({
-      changedFiles,
-      prSummaryContent: summaryContent,
-      testsAtHead,
-    }),
-  );
-  if (factsProblem !== null) {
-    branchOutcomes.status = "blocked";
-    branchOutcomes.problems.unshift(factsProblem);
-  }
-  reports.push(branchOutcomes);
-
   reports.push(
     input.issueNumber === null
       ? notChecked(
@@ -307,12 +249,6 @@ export async function runPrSummaryCheck(
       )
       : partOfStillClosesReport(summaryContent, input.issueNumber),
   );
-
-  reports.push(notChecked(
-    "Summary claim check",
-    "#3257",
-    "needs a model call; the worker runs it when it raises the PR",
-  ));
 
   return { ok: true, value: reports };
 }
