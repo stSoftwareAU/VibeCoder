@@ -212,3 +212,37 @@ Deno.test("escalated cleanup - defers without a gh call when the repo is leased 
   assert(outcome.deferred);
   assertEquals(github.calls, []);
 });
+
+Deno.test("escalated cleanup - a lease held elsewhere is logged at info (Issue #4361)", async () => {
+  const github = fakeGitHub({ escalatedPrs: [41], issues: [] });
+  const lines: { level: string; message: string }[] = [];
+  const logger: Logger = {
+    info: (message) => lines.push({ level: "info", message }),
+    warn: (message) => lines.push({ level: "warn", message }),
+    error: (message) => lines.push({ level: "error", message }),
+    debug: () => {},
+    security: () => {},
+    skipReason: () => {},
+    timing: () => {},
+    scanSummary: () => {},
+    workerSummary: () => {},
+  };
+
+  const outcome = await sweepEscalatedLeftovers(REPO, {
+    ghCommandFn: github.gh,
+    logger,
+    fleetAuthors: FLEET,
+    acquireLease: () => null,
+  });
+
+  assert(outcome.deferred);
+  const deferred = lines.filter((line) =>
+    line.message ===
+      "Escalated cleanup deferred: the repository is leased elsewhere"
+  );
+  assertEquals(
+    deferred.map((line) => line.level),
+    ["info"],
+    "another lane holding the lease is the next cycle's work, not a warning",
+  );
+});
