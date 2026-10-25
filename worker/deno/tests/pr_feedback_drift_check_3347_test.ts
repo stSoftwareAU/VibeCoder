@@ -446,3 +446,173 @@ Deno.test("runPrFeedbackDriftCheck - source under docs is checked but an executa
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+const REASON_LITERAL = "negative numbers are refused";
+
+Deno.test("runPrFeedbackDriftCheck - a yes on an unchanged reason string is a confirmed finding; a no is not (Issue #4196)", async () => {
+  const { dir } = await setupBaseline();
+  const source = `/** Classifies a number. */
+export function classify(n: number): string {
+  if (n < 0) {
+    return "${REASON_LITERAL}";
+  }
+  return "every other value is accepted";
+}
+`;
+  try {
+    await writeFile(dir, "src/classify.ts", source);
+    await writeFile(
+      dir,
+      SUMMARY_PATH,
+      SUMMARY.replace(
+        "section: none — nothing documented",
+        "grep: `classify`; section: none — no manual documents this flag; siblings: none — no existing set gained a member",
+      ),
+    );
+    await commitAll(dir, "baseline classify");
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(
+      dir,
+      "src/classify.ts",
+      source.replace("if (n < 0)", "if (n <= 0)"),
+    );
+
+    const yesCalls: AgentCall[] = [];
+    const yes = await runPrFeedbackDriftCheck({
+      ...DEFAULT_INPUT,
+      repoPath: dir,
+      beforeSha,
+    }, {
+      runGit: makeRunGit(dir),
+      runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
+      logger: noopLogger(),
+      runAgent: makeRunAgent([
+        {
+          ok: true,
+          output: verdictBlock([{
+            file: "src/classify.ts",
+            sentence: REASON_LITERAL,
+            reason: "src/classify.ts:3 now includes zero",
+          }]),
+        },
+        { ok: true, output: "left unchanged" },
+      ], yesCalls),
+    });
+    assertStringIncludes(
+      yesCalls[0]!.prompt,
+      "src/classify.ts:4-4 — user-visible string",
+    );
+    assertStringIncludes(yesCalls[0]!.prompt, REASON_LITERAL);
+    assertEquals(yes.status, "reported");
+    if (yes.status === "reported") {
+      assertEquals(
+        yes.residual.findings.map((f) => f.sentence),
+        [REASON_LITERAL],
+      );
+    }
+
+    await writeFile(
+      dir,
+      "src/classify.ts",
+      source.replace("if (n < 0)", "if (n <= 0)"),
+    );
+    const noCalls: AgentCall[] = [];
+    const no = await runPrFeedbackDriftCheck({
+      ...DEFAULT_INPUT,
+      repoPath: dir,
+      beforeSha,
+    }, {
+      runGit: makeRunGit(dir),
+      runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
+      logger: noopLogger(),
+      runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], noCalls),
+    });
+    assertEquals(no.status, "clean");
+    assertEquals(noCalls.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+const BADGE_LABEL = "Archived items stay hidden";
+
+Deno.test("runPrFeedbackDriftCheck - a yes on a newly called component's label is confirmed; a no is not (Issue #4197)", async () => {
+  const { dir } = await setupBaseline();
+  const badge = `export function StatusBadge(_props: { state: string }) {
+  const label = "${BADGE_LABEL}";
+  return label;
+}
+`;
+  const page = `import { StatusBadge } from "./StatusBadge.tsx";
+
+export function Page() {
+  return null;
+}
+`;
+  try {
+    await writeFile(dir, "src/StatusBadge.tsx", badge);
+    await writeFile(dir, "src/page.tsx", page);
+    await writeFile(
+      dir,
+      SUMMARY_PATH,
+      SUMMARY.replace(
+        "section: none — nothing documented",
+        "grep: `StatusBadge`; section: none — no manual documents this flag; siblings: none — no existing set gained a member",
+      ),
+    );
+    await commitAll(dir, "baseline badge");
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(
+      dir,
+      "src/page.tsx",
+      page.replace("return null;", 'return <StatusBadge state="archived" />;'),
+    );
+    const yesCalls: AgentCall[] = [];
+    const yes = await runPrFeedbackDriftCheck({
+      ...DEFAULT_INPUT,
+      repoPath: dir,
+      beforeSha,
+    }, {
+      runGit: makeRunGit(dir),
+      runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
+      logger: noopLogger(),
+      runAgent: makeRunAgent([
+        {
+          ok: true,
+          output: verdictBlock([{
+            file: "src/StatusBadge.tsx",
+            sentence: BADGE_LABEL,
+            reason: "src/page.tsx:4 newly renders the archived badge",
+          }]),
+        },
+        { ok: true, output: "left unchanged" },
+      ], yesCalls),
+    });
+    assertStringIncludes(yesCalls[0]!.prompt, BADGE_LABEL);
+    assertEquals(yes.status, "reported");
+    if (yes.status === "reported") {
+      assertEquals(
+        yes.residual.findings.map((f) => f.sentence),
+        [BADGE_LABEL],
+      );
+    }
+
+    const no = await runPrFeedbackDriftCheck({
+      ...DEFAULT_INPUT,
+      repoPath: dir,
+      beforeSha,
+    }, {
+      runGit: makeRunGit(dir),
+      runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
+      logger: noopLogger(),
+      runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], []),
+    });
+    assertEquals(no.status, "clean");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

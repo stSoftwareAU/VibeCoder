@@ -44,6 +44,17 @@ to complete that issue; nothing more from a person is needed or wanted.
 - **A crash is not an answer.** A run that failed, made no model turn, or
   stopped early is retried on the normal ladder. It is never read as "nothing
   to do".
+- **Every PR is armed for auto-merge.** A PR is armed when it is raised and
+  stays armed (owner, 25 October 2026). It merges once it has an approving
+  review and CI is green; nothing else holds it. The worker never disarms a PR
+  or skips arming it because of a finding or a label. A PR left unarmed does
+  not merge even after it is approved, and every late merge causes more
+  conflicts (Issue #4291).
+- **Requirements come from the owner.** A new gate, check, evidence
+  obligation or rule that can fail or hold back a run that delivered its issue
+  works against this principle. Fleet tooling (review learning, idle-task
+  audits) never invents one from its own findings. It proposes removing or
+  rewording guidance that causes mistakes, or files a worker defect.
 - **A failure is recorded, never parked.** Every failed run writes its
   evidence on the issue and keeps `failed-once`, so the failure is visible and
   countable. It is never relabelled as a hand-off, an analysis, or a partial
@@ -2666,7 +2677,7 @@ and claim handler.
 - [`worker/deno/lib/idle_task_claim_handler.ts`](worker/deno/lib/idle_task_claim_handler.ts)
   — Routes claimed `idle-task` issues to the template's `runTask()`.
 - [`worker/deno/lib/idle_task_templates/`](worker/deno/lib/idle_task_templates/)
-  — Per-template implementations. Nineteen production templates:
+  — Per-template implementations. Twenty production templates:
   `security_scan_template.ts` (#1, security audit), `best_practices_template.ts`
   (#2, bucket-scoped best-practices review — see
   [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md)),
@@ -2723,9 +2734,14 @@ and claim handler.
   tool the gate skips with a warning while CI installs and runs it — the drift
   that let NEAT-AI-core PR 597 pass locally and fail in CI; suppressed for a
   tool `container/tools.json` already pins for that repository — see
-  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md)).
-  The idle-task filer picks uniformly at random (1/19 each) between the
-  nineteen on every idle pass.
+  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md));
+  and `ponytail_debt_template.ts` (#20, native weekly report that lists every
+  `// SIMPLE-ON-PURPOSE:` marker with its path, line, ceiling and upgrade
+  condition, flags a marker with no `upgrade when`, and posts or refreshes one
+  ledger issue without committing or opening a pull request — see
+  [`docs/PONYTAIL-DEBT-SCAN.md`](docs/PONYTAIL-DEBT-SCAN.md)).
+  The idle-task filer picks uniformly at random (1/20 each) between the
+  twenty on every idle pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
@@ -2741,7 +2757,7 @@ claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
 full canonical GitHub label set to the target repo, configures the
-default-branch protection "wall", seeds all nineteen idle-task wrappers
+default-branch protection "wall", seeds all twenty idle-task wrappers
 in the target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
@@ -2770,7 +2786,7 @@ in the target repo, then comments and closes the add-repo issue.
   (through `escalateToHuman`), and the repo is **not** added.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
-  is delegated to the nineteen idle tasks. Visibility gating (which idle checks fire
+  is delegated to the twenty idle tasks. Visibility gating (which idle checks fire
   on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only
@@ -2834,47 +2850,42 @@ See
 [`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#-1-worker-run-loop-and-process-lifecycle)
 for where this sits in the claim/heartbeat lifecycle.
 
-### Analysis-only / no-PR hand-off for `work-on`
+### Analysis-only / no-PR issues under `work-on`
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
 deliverable is analysis — a gap analysis, coverage matrix, or
 "populate the issue" recommendation posted as a comment — produces no PR, so the
 "no PR" outcome reads as "not done" and the issue is re-picked-up and re-run
 indefinitely (the loop, which re-posted the same matrix plus an "unable to
-make code changes" note about five times). The worker now detects an
-analysis-only / no-PR issue from **two signals on a marked issue** and hands
-it off cleanly to `needs-human`. An approved issue without the marker is
-retried as not finished instead (Issue #4227):
+make code changes" note about five times).
 
-- **(a) Up-front body marker** — `<!-- analysis-only -->` in the issue body. The
-  worker hands off **before** cloning the repo or running Claude.
-- **(b) Post-run signal on a marked issue** — Claude made no code changes but
-  produced useful text on an issue with the analysis-only marker. The worker
-  posts the partial answer, then hands off.
+An issue whose body carries `<!-- analysis-only -->` (or `<!-- no-pr -->`) is
+run like any other: the analysis is the deliverable, so the agent must produce
+it. A run that ends with no code changes and useful text posts the analysis
+and **closes the issue as completed** (Issue #4298). It used to be handed to a
+human to read and decide; that hand-off — up front before Claude ran, and after
+the run — is gone, because handing an issue back is a failure, not an
+outcome. An approved issue without the marker is retried as not finished
+instead (Issue #4227). The loop guard for the remaining case (no changes
+**and** no useful output) is the `failed-once` record and its escalating
+cooldown in [`label_failure.ts`](worker/deno/lib/label_failure.ts), so
+`work-on` re-runs the same issue at most once a day, and never parks it
+(Issue #4158). The image gate still wins: when an untrusted author's image sat
+in front of an agent that reported the issue already fixed, nothing it said
+closes the issue, marked or not (Issue #1385).
 
-Both route through the shared
-[`escalateToHuman`](worker/deno/lib/needs_human_escalation.ts) chokepoint, which
-applies `needs-human` + a paired explanation comment and (via
-`stripDiscoveryLabelsOnEscalation`) drops the `work-on` label server-side so the
-issue leaves discovery. A clean hand-off is **not** a `failed` outcome — the task
-did its job. The fallback loop guard for the remaining case (no changes **and**
-no useful output) is the `failed-once` record and its escalating cooldown in
-[`label_failure.ts`](worker/deno/lib/label_failure.ts), so `work-on` re-runs
-the same issue at most once a day, and never parks it (Issue #4158).
-
-**Implementation:** [`analysis_only_handoff.ts`](worker/deno/lib/analysis_only_handoff.ts)
-(`hasAnalysisOnlyMarker`, `handOffAnalysisOnly`), wired into
-[`issue_worker.ts`](worker/deno/lib/issue_worker.ts) (signal a) and
+**Implementation:** [`analysis_only.ts`](worker/deno/lib/analysis_only.ts)
+(`hasAnalysisOnlyMarker`) and
 [`phases/handle_no_changes_phase.ts`](worker/deno/lib/phases/handle_no_changes_phase.ts)
-(signal b). See
+(`finishOrRetry`). See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
-Analysis-only / no-PR hand-off for the operator detail.
+Analysis-only / no-PR issues for the operator detail.
 
 ### Blocked on a dependency is a deferral, not a closure
 
 A `work-on` run that produces no code changes can close as already complete,
-hand off an explicitly marked analysis-only issue, defer on an open dependency,
-or retry as not finished (Issue #4227).
+close an explicitly marked analysis-only issue with its analysis (Issue #4298),
+defer on an open dependency, or retry as not finished (Issue #4227).
 Historically, a run that read the code and found the work genuinely blocked
 on another issue had no ending, so it fell through to the analysis-only
 branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
@@ -2961,7 +2972,7 @@ flowchart TD
     B -- no --> C{"Verified already resolved,<br/>citing a commit / PR?"}
     C -- yes --> X["Close as complete,<br/>evidence in the comment"]
     C -- no --> A{"Issue marked analysis-only?"}
-    A -- yes --> H["Analysis-only hand-off<br/>(needs-human)"]
+    A -- yes --> H["Post the analysis,<br/>close as completed (#4298)"]
     A -- no --> R["Not finished: retry on the failure ladder (#4227)"]
 ```
 
@@ -3097,9 +3108,8 @@ deterministically like `vibe-cross-repo-pr` — with the broadened keyword list
 kept as a fallback for agents that phrase it in prose.
 
 **Closing requires cited evidence.** A commit and/or PR reference, plus (on the
-marker path) how the fix was verified. Without it the run falls back to the
-analysis-only hand-off, which is deliberately tighter than the keyword path it
-replaces: that path closed on a plain "already fixed" claim. The evidence is
+marker path) how the fix was verified. Without it the run is retried as not
+finished, which is deliberately tighter than the keyword path it replaces: that path closed on a plain "already fixed" claim. The evidence is
 recorded in the close comment, so the closure is auditable from the issue alone,
 and it is what keeps this from recreating the failure of closing an issue by
 inference from a PR that merely references it — the agent must verify the code
@@ -3189,7 +3199,7 @@ summary-only correction turn (Issue #3324), and only a block that survives it
 finalises the PR. A standing Standards violation on the branch's own lines is
 a defect in the change, not a documentation shortfall, so that recovery turn
 may fix the code for it, and an existing PR finalised with one still standing
-is labelled `standing-violation` rather than auto-merged (Issue #3382).
+has it posted on the PR for the next run to fix (Issues #3382, #4291).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

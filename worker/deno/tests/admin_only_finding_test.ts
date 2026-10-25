@@ -5,11 +5,17 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   isAdminOnlyRepoSettingsIssue,
   parseRepoSettingsFindingId,
+  repairAdminOnlyFinding,
 } from "../lib/admin_only_finding.ts";
+import type {
+  HardenRepoOutcome,
+  HardenResult,
+  HardenStep,
+} from "../lib/repo_settings_harden.ts";
 import { REPO_ADMIN_ACTION } from "../lib/repo_settings_scanner.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
@@ -306,4 +312,77 @@ Deno.test("isAdminOnlyRepoSettingsIssue - other BP-REPO ids stay admin-only besi
       id,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// repairAdminOnlyFinding — the worker applies the setting itself (Issue #4298)
+// ---------------------------------------------------------------------------
+
+function hardenStub(
+  results: HardenResult[],
+  seen: Array<readonly string[]>,
+): (repo: string, kinds: readonly HardenStep["kind"][]) => Promise<
+  HardenRepoOutcome
+> {
+  return (_repo, kinds) => {
+    seen.push(kinds);
+    return Promise.resolve({
+      results,
+      coordinates: [],
+      referenceCount: 0,
+      unreadable: [],
+    });
+  };
+}
+
+function step(kind: HardenStep["kind"]): HardenStep {
+  return { kind, title: `Fix ${kind}`, method: "PUT", endpoint: "x" };
+}
+
+Deno.test("repairAdminOnlyFinding - applies only the finding's own setting (Issue #4298)", async () => {
+  const seen: Array<readonly string[]> = [];
+  const result = await repairAdminOnlyFinding(
+    "org/repo",
+    "<!-- finding-id: BP-REPO-DEFAULT-TOKEN-WRITE -->\n\nbody",
+    hardenStub([{ step: step("workflow-token"), status: "applied" }], seen),
+  );
+  assertEquals(seen, [["workflow-token"]]);
+  assertEquals(result.ok, true);
+  if (result.ok) assertStringIncludes(result.value, "Fix workflow-token");
+});
+
+Deno.test("repairAdminOnlyFinding - a setting that already holds is a success (Issue #4298)", async () => {
+  const result = await repairAdminOnlyFinding(
+    "org/repo",
+    "<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->",
+    hardenStub([], []),
+  );
+  assertEquals(result.ok, true);
+});
+
+Deno.test("repairAdminOnlyFinding - a refused write is a failure to retry, never a hand-off (Issue #4298)", async () => {
+  const result = await repairAdminOnlyFinding(
+    "org/repo",
+    "<!-- finding-id: BP-REPO-SECRET-SCANNING-OFF -->",
+    hardenStub([{
+      step: step("secret-scanning"),
+      status: "failed",
+      detail: "HTTP 403: Must have admin rights",
+    }], []),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "Must have admin rights");
+  }
+});
+
+Deno.test("repairAdminOnlyFinding - a finding with no automatic fix fails rather than guessing (Issue #4298)", async () => {
+  const seen: Array<readonly string[]> = [];
+  const result = await repairAdminOnlyFinding(
+    "org/repo",
+    "## Suggested fix\n\n" + REPO_ADMIN_ACTION + " Do something unusual.",
+    hardenStub([], seen),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(seen, [], "nothing is written for an unmapped finding");
 });

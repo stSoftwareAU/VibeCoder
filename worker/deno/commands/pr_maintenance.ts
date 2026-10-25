@@ -13,6 +13,7 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   assertSafeGitRef,
@@ -616,6 +617,12 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
             headRefName,
             ghCommandFn: runGhCommand,
             log: (message: string) => logger.warn(message),
+            // Issue #1082: tells a genuine review from a sibling's approval.
+            fleetAuthors: resolveFleetMaintenanceAuthorSet({
+              githubUser,
+              fleetPrAuthors: config.fleetPrAuthors ?? [],
+              serviceAccounts: config.serviceAccounts ?? [],
+            }),
           });
           return {
             result: autoMergeResult.result,

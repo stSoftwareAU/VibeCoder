@@ -459,7 +459,6 @@
         "worker/deno/lib/alert_feeds/alert_fingerprint.ts",
         "worker/deno/lib/already_resolved_outcome.ts",
         "worker/deno/lib/analysis_only.ts",
-        "worker/deno/lib/analysis_only_handoff.ts",
         "worker/deno/lib/answer_sanitiser.ts",
         "worker/deno/lib/array_utils.ts",
         "worker/deno/lib/artifact_upload_scanner.ts",
@@ -576,7 +575,6 @@
         "worker/deno/lib/docker_image_ref.ts",
         "worker/deno/lib/duplicate_block_scanner.ts",
         "worker/deno/lib/ensure_repo_clone.ts",
-        "worker/deno/lib/escalate_unworkable_work_on.ts",
         "worker/deno/lib/escape_hatch.ts",
         "worker/deno/lib/escape_hatch_label_strip.ts",
         "worker/deno/lib/escape_hatch_trusted_authors.ts",
@@ -1012,10 +1010,10 @@
       "chunk": "top-up-1862",
       "title": "top-up: the re-approved-then-superseded hand-off",
       "ledger": "docs/audits/security-sweep-1862-reapproval-superseded-handoff.md",
-      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: reapproval_superseded_handoff.ts (#1862), renamed reapproval_superseded_close.ts when the hand-off became a close (#4298)",
       "status": "swept",
       "paths": [
-        "worker/deno/lib/reapproval_superseded_handoff.ts"
+        "worker/deno/lib/reapproval_superseded_close.ts"
       ],
       "sweptAt": "53aabd13fba980911d5ed25a892536dfb6e520ba"
     },

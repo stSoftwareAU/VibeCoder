@@ -398,3 +398,24 @@ Deno.test("repo formatters - stages only the files it formatted", async () => {
   ]);
   assertEquals(result.committed, true);
 });
+
+Deno.test("repo formatters - a failing formatter's log keeps the error at the head (Issue #4113)", async () => {
+  // `cargo fmt` prints its error, then a long usage text. A tail-only excerpt
+  // keeps "Print help" and drops "Permission denied".
+  const usage = `${"-v, --verbose ".repeat(40)}Print help\n`;
+  const output =
+    `Error writing files: Permission denied (os error 13)\n${usage}`;
+  assert(
+    output.length > 500,
+    "the usage text must push the error out of a 500-character tail",
+  );
+  const { deps, logger } = makeDeps(["Cargo.toml"], {
+    "cargo fmt --all": { exitCode: 1, output },
+  });
+  const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
+  const warn = logger.warns.find((w) => w.includes("cargo fmt")) ?? "";
+  assertStringIncludes(warn, "Permission denied");
+  assertEquals(warn.includes("WARNING:"), false, warn);
+  assertEquals(warn.includes("ERROR:"), false, warn);
+  assertStringIncludes(result.failures[0]?.excerpt ?? "", "Permission denied");
+});

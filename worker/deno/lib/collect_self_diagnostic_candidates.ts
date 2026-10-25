@@ -79,7 +79,6 @@ import { isIssueTimeDeferred } from "./time_deferral.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
-import { escalateUnworkableWorkOn } from "./escalate_unworkable_work_on.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import {
   type AttestationVerdict,
@@ -87,13 +86,11 @@ import {
 } from "./self_diagnostic_attestation.ts";
 import {
   buildSelfScheduleAnnouncement,
-  buildUnschedulableDiagnosticEscalation,
   formatSelfScheduleMarker,
   isSelfDiagnosticRepo,
   recogniseSelfDiagnostic,
   SELF_SCHEDULE_AUDIT_VERB,
   type SelfDiagnosticFamily,
-  UNSCHEDULABLE_DIAGNOSTIC_HEADING,
 } from "./self_diagnostic_provenance.ts";
 
 /**
@@ -378,30 +375,39 @@ export async function collectSelfDiagnosticCandidates(
           } at ${closedPR.closedAt}`,
         );
         if (closedPR.merged) {
-          // Permanent (Issue #3151): nothing the worker does clears it, so
-          // the diagnostic must reach a person deliberately rather than sit
-          // open as an alarm nobody is obliged to read.
-          await escalateUnworkableWorkOn({
-            repo,
-            issueNumber: issue.number,
-            needsHumanLabel: config.needsHumanLabel,
-            escalation: buildUnschedulableDiagnosticEscalation({
-              issueNumber: issue.number,
-              family,
-              reason: `merged PR #${closedPR.number} names it, which blocks ` +
-                `re-pickup permanently`,
-            }),
-            heading: UNSCHEDULABLE_DIAGNOSTIC_HEADING,
-            githubUser: options.githubUser,
-            ghFn,
-            deps: options.escalateDeps,
-          });
-          diag?.logIssueSkipped(
-            repo,
-            issue.number,
-            "self-schedule-escalated",
-            config.needsHumanLabel,
-          );
+          // Issue #3151: a merged PR blocks re-pickup permanently. Issue
+          // #4298: that PR is the diagnostic's fix, so the worker closes the
+          // diagnostic as resolved rather than asking a human to. If the fault
+          // recurs, its filer opens a fresh diagnostic. Best-effort: a failed
+          // close leaves it open for the next scan to retry.
+          try {
+            await ghFn([
+              "issue",
+              "close",
+              String(issue.number),
+              "--repo",
+              repo,
+              "--reason",
+              "completed",
+              "--comment",
+              `Resolved by merged PR #${closedPR.number}, so this ` +
+              `auto-filed diagnostic is closed (Issue #4298). If the fault ` +
+              `recurs, the worker files a fresh one.`,
+            ]);
+            diag?.logIssueSkipped(
+              repo,
+              issue.number,
+              "self-schedule-resolved",
+              `PR #${closedPR.number}`,
+            );
+          } catch (err) {
+            log(
+              `[self-schedule] could not close ${repo}#${issue.number} ` +
+                `resolved by merged PR #${closedPR.number}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+            );
+          }
         }
         continue;
       }

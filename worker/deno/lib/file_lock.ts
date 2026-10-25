@@ -74,6 +74,14 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** `ps -p` liveness probe. Seconds. A timeout is not "the holder is gone". */
+const LOCK_PROBE_TIMEOUT_MS = 10_000;
+
 /** How long to wait for a held lock before giving up. */
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -194,17 +202,22 @@ async function readRecord(path: string): Promise<LockRecord | null> {
  *   no `ps`, or no run permission. Callers treat `null` as "not proven
  *   gone", never as gone.
  */
-async function holderGone(pid: number): Promise<boolean | null> {
+export async function holderGone(
+  pid: number,
+  timeoutMs: number = LOCK_PROBE_TIMEOUT_MS,
+): Promise<boolean | null> {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
-    const probe = await new Deno.Command("ps", {
+    const probe = await commandOutputWithTimeout("ps", {
       args: ["-p", String(pid)],
       stdout: "null",
       stderr: "null",
-    }).output();
+      timeoutMs,
+    });
     // `ps -p` exits non-zero precisely when no such process exists.
     return !probe.success;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return null;
   }
 }

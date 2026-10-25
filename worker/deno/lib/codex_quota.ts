@@ -15,6 +15,7 @@ import {
   parseCodexRateLimitSnapshot,
 } from "./codex_budget_source.ts";
 import { buildIsolatedCodexChildEnv } from "./codex_env.ts";
+import { spawnCommandWithTimeout } from "./subprocess_timeout.ts";
 import type { CodexBudgetSnapshot } from "./codex_budget.ts";
 import {
   type ProviderSubscriptionStatus,
@@ -129,7 +130,10 @@ export async function probeCodexSubscriptionQuota(
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     child = (options.spawn ?? ((command) =>
-      new Deno.Command("codex", command).spawn()))({
+      spawnCommandWithTimeout("codex", {
+        ...command,
+        timeoutMs: options.timeoutMs ?? 10_000,
+      })))({
         args: ["app-server"],
         cwd: options.codexHome,
         clearEnv: true,
@@ -201,8 +205,7 @@ export async function probeCodexSubscriptionQuota(
       protocol(),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(
-          () =>
-            reject(new Error("Quota read timed out")),
+          () => reject(new Error("Quota read timed out")),
           options.timeoutMs ?? 10_000,
         );
       }),

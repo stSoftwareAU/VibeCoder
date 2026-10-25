@@ -612,7 +612,7 @@ permissive. See
 2. **Claim issue** — Assign self to the issue; brief pause; re-read assignees; if contested, use alphabetical tie-break; losers unassign themselves.
 3. **Setup repo** — Clone or update target repo; reset worker repo to `origin/Develop`; create or sync feature branch from default or `milestone/<name>`.
 4. **Quality baseline** — Run `./quality.sh` on the clean repo (if it exists) to establish a baseline of any pre-existing quality failures. This baseline is threaded through to failure comments so reviewers can distinguish pre-existing issues from worker-introduced regressions. Non-blocking: work continues regardless of baseline result.
-5. **Clarification (important)** — Unless max rounds reached: the worker runs the clarification phase. **(1)** If the issue is **unclear**, it posts questions, adds `needs-human` (the standalone `needs-clarification` label was retired and the handoff consolidated onto `needs-human`), unassigns, and exits (no implementation this run). **(2)** It checks whether the issue is small enough to complete without timing out. **(3)** If **clear but too complex** for a single PR, it posts an escalation comment asking a trusted human to add the `planning` label and unassigns — once the label is added, the issue is processed via the planning workflow to create sub-issues. The worker does not add operational labels itself (see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels)). See [Clarification](planning-and-questions.md#-clarification) and [Automatic complexity-to-planning escalation](planning-and-questions.md#-automatic-complexity-to-planning-escalation-target-behaviour).
+5. **Clarification (important)** — Unless max rounds reached, the fleet assesses whether information is missing. An unclear issue gets questions, `needs-human`, claim release and no implementation this run. A `too_complex` heuristic result alone proceeds to implementation: numbered requirements, checkboxes and scope counts are not requests for human clarification. The implementing agent can use the existing `vibe-needs-planning` path when decomposition is actually needed. See [Clarification](planning-and-questions.md#-clarification).
 6. **Implement** — Run Claude with issue prompt; run `./quality.sh`; commit changes; push branch.
 7. **PR** — Build PR body from `docs/pr-summary-<issue>.md` (or `docs/archive/pr-summaries/pr-summary-<issue>.md`, or legacy `.pr_summary`); create or recover PR; enable auto-merge; resolve mergeability as needed.
 
@@ -716,14 +716,14 @@ gitGraph
 - **No eligible issue:** Skip implementation this iteration; continue to sleep and next loop.
 - **Claim fails:** Log and skip; do not retry same issue this run (another worker may have won).
 - **Clarification requested:** Post questions, add `needs-human`, unassign; user removes label and responds; next run re-evaluates.
-- **Complexity escalation (target behaviour):** If the issue is clear but too complex for a single PR, the worker posts an explanatory comment asking a trusted human to add the `planning` label, and unassigns. The planning workflow then breaks it into sub-issues once the label is added. The worker does not add `planning` itself — see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels). See also [Automatic complexity-to-planning escalation](planning-and-questions.md#-automatic-complexity-to-planning-escalation-target-behaviour). *Note: This is the target workflow — implementation may not yet fully match this documented behaviour.*
+- **Large scope alone:** The fleet does not apply `needs-human` or remove discovery labels because the clarity heuristic returned `too_complex`. Implementation proceeds; an actual decomposition decision uses the existing `vibe-needs-planning` path. Explicit vague or missing-information results still ask clarifying questions. See [Clarification](planning-and-questions.md#-clarification).
 - **Implementation failure (first):** Comment, add `failed-once`, clean stale branch, unassign; next run may retry. **Second failure:** Replace with `failed`, skip thereafter until user removes label.
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
 - **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat returns a not-finished failure on the retry ladder rather than deferring again (Issue #4227). A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run retries as not finished rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
-- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now only an issue whose body declares itself analysis-only via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker is handed off: the worker posts the analysis once, applies `needs-human`, unassigns, and stops. **Any other approved issue is never handed back (Issue #4227):** a run that ends with no PR posts one `## Not finished — retrying` comment carrying its output and returns a `no_changes` failure, so the issue is retried on the `failed-once` ladder with its escalating cooldown, keeping `work-on` and `top-priority`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins over this retry. A `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run instead takes the not-finished retry above (Issues #3146, #4227). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
-- **A crashed run is never analysis-only (Issue #4147):** the hand-off above is only for an agent that ran and finished cleanly. A run whose agent exited non-zero and changed nothing — the CLI could not load the resumed session (`No conversation found with session ID`), its autocompaction thrashed, or it died before any model turn — is a retried failure, so `work-on` stays and the issue is retried. The `work-on` pipeline makes this call in [`phases/execute_phase.ts`](../../worker/deno/lib/phases/execute_phase.ts) (Issue #4116; it returns `interrupted`), and a failed run hands no session on to its stream, so the stream's next issue does not resume the conversation that just broke. On 2026-10-22 46 implementation issues were handed to a human as "analysis-only" by runs in which no model ran. The runner also retries a resumed session it cannot use once without `--resume` (the #204 path), so the dead id is replaced by the fresh conversation's rather than failing every issue in the stream. See [`execute_claude_phase.ts`](../../worker/deno/lib/execute_claude_phase.ts) and `detectResumedSessionUnusable` in [`claude_executor.ts`](../../worker/deno/lib/claude_executor.ts).
+- **Analysis-only / no-PR issues:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now an issue whose body declares itself analysis-only via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker is finished by its analysis: the worker posts it and closes the issue as completed (Issue #4298), never handing it to a human. **Any other approved issue is never handed back (Issue #4227):** a run that ends with no PR posts one `## Not finished — retrying` comment carrying its output and returns a `no_changes` failure, so the issue is retried on the `failed-once` ladder with its escalating cooldown, keeping `work-on` and `top-priority`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins over this retry. A `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run instead takes the not-finished retry above (Issues #3146, #4227). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **A crashed run is never analysis-only (Issue #4147):** a run whose agent exited non-zero, reported a failed or unfinished structured result, or completed zero model turns is a run failure. With no recoverable local changes, commits or PR, both execution entry points reject it through the shared `emptyRunFailureReason` check: the standalone command reports `execution_error`; the fleet phase reports `interrupted` and takes its bounded infrastructure retry on a fresh session. A failed run hands no session on to its stream, including a structured failure reported with exit code zero. Providers without structured metadata retain their exit-code rule. On 2026-10-22 46 implementation issues were handed to a human as "analysis-only" by runs in which no model ran. The runner also retries an unusable resumed session once without `--resume` (the #204 path). See [`execute_claude_phase.ts`](../../worker/deno/lib/execute_claude_phase.ts), [`phases/execute_phase.ts`](../../worker/deno/lib/phases/execute_phase.ts) and `detectResumedSessionUnusable` in [`claude_executor.ts`](../../worker/deno/lib/claude_executor.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
@@ -794,7 +794,7 @@ flowchart TD
 
 For user-facing guidance, see [USAGE.md — Worker escalation via `needs-human`](../USAGE.md#-worker-escalation-via-needs-human). For the config key, see [CONFIGURATION.md — `needs_human_label`](../CONFIGURATION.md#-configuration-defaults).
 
-## 🧭 Analysis-only / no-PR hand-off
+## 🧭 Analysis-only / no-PR issues
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
 deliverable is analysis — a gap analysis, coverage matrix, or
@@ -834,47 +834,37 @@ checkpoint already pushed. A failed push applies no hand-off and posts no
 comment naming the branch. The phase raises no PR. See
 [`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
 
-The worker now detects an analysis-only / no-PR issue from **two signals** and
-hands it off cleanly to `needs-human` (the only operational label the worker may
-apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):
+An author, grill-me, or planning declares an issue analysis-only by adding the
+HTML-comment marker `<!-- analysis-only -->` (or `<!-- no-pr -->`) to the issue
+body. The worker runs Claude on it like any other issue — the analysis is the
+deliverable, so it has to be produced. When the run finishes with **no code
+changes** but useful text, the worker posts the analysis and **closes the issue
+as completed** (Issue #4298). It is never handed to a human, and the closed
+issue cannot loop. A run that does commit code on a marked issue raises its PR
+as normal.
 
-- **(a) Up-front body marker.** An author, grill-me, or planning can declare an
-  issue analysis-only by adding the HTML-comment marker `<!-- analysis-only -->`
-  to the issue body. The worker hands off **before** cloning the repo or running
-  Claude — no wasted run.
-- **(b) Post-run signal, on a marked issue only.** Claude finishes with **no
-  code changes** but useful text on an issue that carries the marker. The
-  worker posts the partial answer (the analysis is the deliverable) and then
-  hands off. On an approved issue without the marker the same outcome is
-  **not finished** and is retried, never handed back (Issue #4227,
-  [`unfinished_issue_retry.ts`](../../worker/deno/lib/unfinished_issue_retry.ts)).
-  The same applies to every guard that used to fall through to a human: a
-  repeat deferral or planning request, a self-filed or closed dependency, an
-  exhausted time deferral, and an unhonoured declared hand-off on committed
-  work.
-
-Both marker paths apply `needs-human` plus a paired explanation comment,
-which drops the issue from discovery and triggers
-[`stripDiscoveryLabelsOnEscalation`](../../worker/deno/lib/escalation_cleanup.ts)
-to remove `work-on` server-side, so the issue never loops. A clean hand-off is
-**not** a `failed` outcome — the task did its job.
+On an approved issue without the marker the same outcome is **not finished**
+and is retried, never handed back (Issue #4227,
+[`unfinished_issue_retry.ts`](../../worker/deno/lib/unfinished_issue_retry.ts)).
+The same applies to every guard that used to fall through to a human: a repeat
+deferral or planning request, a self-filed or closed dependency, an exhausted
+time deferral, and an unhonoured declared hand-off on committed work. One case
+keeps even a marked issue open: when an untrusted author's image sat in front of
+an agent that then reported the issue already fixed, nothing the agent said may
+close it (Issue #1385), so the run is retried.
 
 ```mermaid
 flowchart TD
-  Pick["work-on issue picked up"] --> Marker{"Body has<br/><!-- analysis-only --> ?"}
-  Marker -->|Yes| HandOff["Hand off to needs-human<br/>(before running Claude)"]
-  Marker -->|No| Run["Run Claude"]
+  Pick["work-on issue picked up"] --> Run["Run Claude"]
   Run --> Changes{"Code changes<br/>produced?"}
   Changes -->|Yes| PR["Quality gate → PR"]
   Changes -->|"No, blocked on another issue"| Defer["Defer: record Depends on owner/repo#N,<br/>keep the discovery label, release the claim"]
   Changes -->|"No, verified already resolved<br/>(commit / PR cited)"| Close["Close with the evidence<br/>in the comment"]
-  Changes -->|"No, useful text, marked analysis-only"| Partial["Post partial answer"] --> HandOff
+  Changes -->|"No, useful text, marked analysis-only"| Done["Post the analysis,<br/>close as completed (#4298)"]
   Changes -->|"No, anything else"| Retry["Not finished: comment + no_changes failure,<br/>retried on the failed-once ladder (#4227)"]
   Changes -->|"No, no output"| Guard["Fallback loop guard:<br/>failed-once + escalating cooldown"]
-  HandOff --> Stop["Apply needs-human + comment,<br/>release claim, stop"]
   style Pick fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-  style HandOff fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Stop fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Done fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Guard fill:#c45858,stroke:#6b2020,color:#fff
   style Defer fill:#5a86b0,stroke:#1d3a5a,color:#fff
@@ -889,11 +879,12 @@ The agent declares it with
 (`prompts/issue/prompt.md`); a broadened keyword list remains as a
 fallback for output that carries no marker. A claim with no commit or PR behind
 it is *not* enough to close a live issue — an unmarked approved issue is
-retried as not finished; a marked analysis-only issue keeps its hand-off. See
+retried as not finished; a marked analysis-only issue is closed with its
+analysis. See
 [already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 
 **A blocked run is checked first.** "Blocked on another issue" is a deferral, not
-an analysis-only hand-off — and it is decided before the already-complete check,
+an analysis-only answer — and it is decided before the already-complete check,
 because a blocked answer routinely contains phrases such as "no changes needed"
 and closing a live task is the one outcome the next scan cannot undo. The agent
 cannot make that call itself either: the `gh` guard refuses
@@ -971,17 +962,15 @@ flowchart TD
 **Implementation:** [`worker_record_block.ts`](../../worker/deno/lib/worker_record_block.ts)
 (shared grammar for the `Depends on` and `Deferred until` lines).
 
-**Fallback loop guard.** When neither clean signal fires — Claude produces no
-changes **and** no useful output — the run returns a failure and the existing
-`failed-once` → `failed` / `needs-human` ladder
-([label_failure.ts](../../worker/deno/lib/label_failure.ts)) ensures the issue is
-never re-run indefinitely.
+**Fallback loop guard.** When Claude produces no changes **and** no useful
+output, the run returns a failure and the `failed-once` record and its
+escalating cooldown ([label_failure.ts](../../worker/deno/lib/label_failure.ts))
+keep the issue from being re-run back to back.
 
-**Implementation:** [analysis_only_handoff.ts](../../worker/deno/lib/analysis_only_handoff.ts)
-(marker detection + hand-off), wired into
-[issue_worker.ts](../../worker/deno/lib/issue_worker.ts) (signal a) and
+**Implementation:** [analysis_only.ts](../../worker/deno/lib/analysis_only.ts)
+(marker detection) and
 [handle_no_changes_phase.ts](../../worker/deno/lib/phases/handle_no_changes_phase.ts)
-(signal b).
+(`finishOrRetry`: close with the analysis, or retry).
 
 ## ✅ Acceptance-criteria closure before the PR
 
@@ -1006,6 +995,11 @@ each criterion before writing the PR summary and record the assessment as a
 - **`unrequested`** — a change in the diff not traceable to the issue, with a
   one-line reason. This is the output surface the prose "Change Scope" rule never
   had: scope creep is named in the PR rather than found at review.
+
+Each assessment starts with its status word (plain, emphasised or code-formatted).
+A status word inside a criterion description or nested test name is prose, not
+an assessment: a negative test for a "missing or unreadable value" must not
+prevent the issue closing or trigger a human hand-off.
 
 **The gate.** [`acceptance_criteria_gate.ts`](../../worker/deno/lib/acceptance_criteria_gate.ts)
 parses both artefacts and blocks PR creation in
@@ -1065,9 +1059,12 @@ reads that signal at both ends
   issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
   milestone auto-close) and `ensureIssueClosedIfPrMerged` (used by the
   housekeeping sweep and the recovery path) — read the merged PR's closure
-  block. With a `missing` entry they leave the issue open, label it
-  `needs-human` and comment naming each missing criterion. An issue that
-  already carries `needs-human` is left alone, so the comment is posted once.
+  block. With a `missing` entry they leave the issue open and preserve its
+  existing discovery labels. They log the missing criteria without applying
+  `needs-human` or posting repeated hand-off comments. Existing-PR lookup
+  also skips such merged PRs, including when a cached title lookup finds
+  them, so the original issue can resume and raise its completion PR. The
+  cached path reads the merged PR body live; no persisted cache shape changes.
 
 ```mermaid
 flowchart TD
@@ -1075,7 +1072,7 @@ flowchart TD
     M -->|no| C["PR body: Closes #N"]
     M -->|yes| P["PR body: Part of #N<br/>+ Not closing #N section"]
     C --> X["Merged: issue closed"]
-    P --> H["Merged: issue left open,<br/>needs-human + comment<br/>naming the missing criteria"]
+    P --> H["Merged: issue left open,<br/>existing labels kept,<br/>missing criteria logged"]
     style X fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style H fill:#e9c46a,stroke:#b08900,color:#000
 ```
@@ -1279,9 +1276,14 @@ raised. The agent dispatches nothing for it.
   `{symbol, caller: "file:line", verdict, note}`, where `verdict` is
   `unchanged`, `changed and tested` or `regressed`. The code adds a blocking
   finding for every listed caller with no verdict and for every `regressed`
-  verdict, whatever the model's own findings say. A git failure while listing
-  callers, or a malformed `callers` array, makes the pass "not checked". The
-  fleet reviewer does not get this list.
+  verdict, whatever the model's own findings say. A verdict matches a listed
+  caller when it copies the symbol and caller either as the worker holds them
+  or as the fenced list shows them (the once-scrubbed text). A scrubbed form
+  shared by two different listed callers (for example two secrets both shown
+  as the redaction placeholder) matches neither, so each needs a verdict that
+  copies its raw symbol and caller. A git failure while listing callers, or a
+  malformed `callers` array, makes the pass "not checked". The fleet reviewer
+  does not get this list.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
   head commit, with its `origin` remote removed, holding the exact PR summary
   text the gates read. The verifier may run commands there: tests, flipping a
@@ -1314,8 +1316,8 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
 existing PR, with the comment on the issue thread. In the existing-PR case,
-auto-merge is withheld (and disarmed if already armed), `standing-violation` is applied and the surviving
-verifier findings are also posted on the PR (Issue #3796). A finding is
+the surviving verifier findings are also posted on the PR (Issue #3796), and
+the PR is still armed for auto-merge (Issue #4291). A finding is
 settled by a fix or an evidence-backed dispute naming the finding in the
 final message; marking a criterion partial, listing a known gap or noting a
 test as not red-checked does not settle it (Issue #3797). `testChanges: meaningful`
@@ -1580,8 +1582,8 @@ not need it, making a behaviour-carrying parameter required rather than
 defaulting it to a value that turns the behaviour off, and treating a caller
 left on the old hard-coded value as a blocking self-review finding.
 
-**A new state on an existing screen re-reads that screen's existing text
-(Issue #3259).** Fleet UI PRs added a state or mode to an existing screen
+**A new case re-reads the text it now reaches (Issue #3259).** Fleet UI
+PRs added a state or mode to an existing screen
 and left the screen's existing messages describing the old state; tests
 rendered only the new rows, so the suite stayed green. GRQ-AutoTrader#2560
 added "Load older decisions" paging to Activity, and its empty state still
@@ -2450,23 +2452,30 @@ declaration. These extra sections can be in untouched manuals, but never
 under `docs/archive/`. A named parent heading includes its subsections; a
 source-reference match ends at the next heading. The model asks whether
 **this change** makes the sentence false, not whether it was always right.
-Sentences the head still agrees with are not findings.
+Sentences the head still agrees with are not findings, except a parity
+sentence ("as before", "exactly as X", "the same as", "unchanged", "no
+behaviour change"), which is also checked against the base side or the other
+path it names.
 
 The combined prose scope is capped at 20 files and the extra manual scope at
 40 sections. The prompt lists selected paths and line ranges inside its
 untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
 unavailable diffs and unterminated source literals/comments are recorded as
-not checked, never passed. Both checks log these at warning level; the
-first-run check aggregates only cap overflow into one warning per claim check
-(the count and the first few names), not one line per range; every other
-not-checked reason is logged as its own warning. A deleted file has no
+not checked, never passed. Both checks log these at warning level. Both
+aggregate cap overflow into one warning per check (the count and the first
+few names), not one line per range; every other not-checked reason is logged
+as its own warning. A deleted file has no
 prose to check. If the changed-file list itself is unavailable, the summary is
 still questioned and its prose extension is recorded as not checked.
 
 `docProseClaimInstruction` retains the trigger classes: when behaviour
-happens, what it refuses, rejects, allows or skips, absolute words, and counted
-or closed lists. A reported contradiction quotes the sentence verbatim and
-names the contradicting head `file:line`. Confirmed findings go through the
+happens, what it refuses, rejects, allows or skips, absolute words, counted
+or closed lists, and a parity sentence ("as before", "exactly as X did",
+"the same as", "unchanged", "no behaviour change"). A parity sentence is a
+claim about both sides: the model opens the base with `git show <base>:<path>`,
+or the other path at the head, and names both `file:line`s. A reported
+contradiction quotes the sentence verbatim and names the contradicting head
+`file:line`. Confirmed findings go through the
 existing summary-rule recovery path. First-run `docFindings` carry the
 manual/comment findings separately from summary findings. Markdown findings
 can use the sentence correction below; source comments stay on the ordinary
@@ -2504,10 +2513,9 @@ if the next model check misses them; an unreadable manual does not clear its
 confirmed finding. A failed invocation, malformed reply or unchanged sentence
 therefore cannot silently clear the block. A later block folded with another
 gate does not get this extra turn. A surviving manual or source-comment finding
-holds an existing PR whether the block is claim-check-only or mixed:
-auto-merge is withheld (and disarmed if already armed),
-`standing-violation` is applied, and the findings are posted with the existing
-worker repair marker so PR feedback can act on them. With no PR, the run fails.
+on an existing PR, whether the block is claim-check-only or mixed, is posted
+with the existing worker repair marker so PR feedback can act on it, and the
+PR is still armed for auto-merge (Issue #4291). With no PR, the run fails.
 
 A pre-PR verifier block on that same attempt is checked again after the claim
 correction: the claim gate returns first and completion rechecks the gates.
@@ -2709,7 +2717,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised; auto-merge withheld for surviving standing violations, verifier findings or manual findings, otherwise armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and armed for auto-merge; surviving standing violations, verifier findings or manual findings are posted on the PR (Issue #4291); issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2921,25 +2929,19 @@ documentation-shortfall rule, "do not change the code", and "this turn cannot
 change code" is not a settling reason. The quality gate re-runs over the
 changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
-still standing, the worker does not arm auto-merge on that PR, labels it
-`standing-violation`, and disarms (`gh pr merge --disable-auto`) any auto-merge
-an earlier pass had already armed (Issue #4075), logging a warning; the rest of
-finalisation is unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
-skips a PR carrying `standing-violation` and disarms one that is already armed
-(`gh pr merge --disable-auto`), so the sweep never arms a held PR
-(Issue #3517). The CI-fix pass honours the label too: after it pushes a fix
-it does not re-arm auto-merge on a PR that carried the label when the pass
-claimed it, and logs the hold instead (Issue #3685). Disarming an already
-armed PR is left to the sweep.
-The same hold applies when a pre-PR verifier block survives the recovery
-turn, whether it blocks alone or was folded into an earlier gate's notice
+still standing, the worker posts the violation on that PR and arms auto-merge
+as usual; the rest of finalisation is unchanged. PRs do not merge until they
+have a review approval and CI is green, and GitHub enforces both, so no
+violation, finding or label withholds arming or disarms the PR (Issue #4291).
+The same applies when a pre-PR verifier block survives the recovery turn,
+whether it blocks alone or was folded into an earlier gate's notice
 (Issue #3796). The worker posts those findings on the PR with the leading
 `<!-- vibe-pre-pr-verifier-hold -->` marker. Failure to post is logged at
-error level; it does not arm auto-merge. The feedback scan accepts this
-top-level comment only through the special hold path when its author is a
-fleet login. It can process the host's own hold comment, but skips one with
-a fleet eyes reaction and still skips ordinary own-login comments
-(Issue #3798). Repairing the findings does not itself release the hold.
+error level, and the PR is still armed. The feedback scan accepts this
+top-level comment only through the special findings path when its author is
+a fleet login. It can process the host's own findings comment, but skips one
+with a fleet eyes reaction and still skips ordinary own-login comments
+(Issue #3798).
 The Issue #3196 reason rules still cannot see the diff. This routing runs
 whatever headings the linked issue uses, so an issue that states no criteria
 still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
@@ -3147,14 +3149,14 @@ an orphaned merge too:
   that PR already satisfied, the level branch released as superseded, a success
   with no output and the label untouched, so the next scan claimed it again —
   three Opus invocations in four hours. The pre-check now records the
-  re-approval on the phase state, and a run that **then** ends superseded is
-  handed to a human: one marker-deduped comment naming the PR that resolved the
-  issue and asking what the re-approval should change, `needs-human` applied
-  through the shared escalation chokepoint, and the discovery labels stripped by
-  `stripDiscoveryLabelsOnEscalation` — so the issue is not re-claimed until
-  someone answers. Both facts are required: a re-approved run that raised a PR
-  was worked normally, and a superseded release with no re-approval is the
-  ordinary #218 stop.
+  re-approval on the phase state, and a run that **then** ends superseded has
+  shown the merged PR already does what the issue asks, so the worker closes
+  the issue as completed by that PR, with a comment naming it (Issue #4298 — it
+  is never handed to a human). Anything the re-approval wanted beyond that PR
+  belongs in a new issue. Both facts are required: a re-approved run that
+  raised a PR was worked normally, and a superseded release with no
+  re-approval is the ordinary #218 stop. See
+  [`reapproval_superseded_close.ts`](../../worker/deno/lib/reapproval_superseded_close.ts).
 
 ```mermaid
 flowchart TD
@@ -3162,8 +3164,7 @@ flowchart TD
   Reapp -->|"Yes — re-approved"| Work["Continue the run:<br/>WARNING, no close"]
   Work --> Sup{"Run ended superseded?<br/>(nothing left to change)"}
   Sup -->|No| Pr["Ordinary outcome:<br/>the re-approved scope's PR"]
-  Sup -->|Yes| Hand["Hand off (Issue #1862):<br/>one deduped comment +<br/>needs-human, labels stripped"]
-  Hand --> Wait["Not re-claimed until<br/>a human answers"]
+  Sup -->|Yes| Hand["Close as completed by the merged PR<br/>(Issues #1862, #4298)"]
   Reapp -->|No| Landed{"Merge reachable from<br/>the default branch?"}
   Landed -->|Yes| Close["Close the issue<br/>(success)"]
   Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
@@ -3176,15 +3177,14 @@ flowchart TD
   style Bounce fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
   style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Pr fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style Hand fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Wait fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
+  style Hand fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
 **Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
 (the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
 (detect → self-heal → bounce, and the re-approval skip),
-[reapproval_superseded_handoff.ts](../../worker/deno/lib/reapproval_superseded_handoff.ts)
-(the re-approved-then-superseded hand-off), `isExpectedSkipResult` in
+[reapproval_superseded_close.ts](../../worker/deno/lib/reapproval_superseded_close.ts)
+(the re-approved-then-superseded close), `isExpectedSkipResult` in
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 

@@ -140,10 +140,6 @@ interface Scenario {
   prUrl?: string;
   /** Output of `git diff --unified=0 <base>...HEAD`, when a scenario needs it. */
   diffUnified0?: string;
-  /** Make `ensureLabelExists` report failure. */
-  ensureLabelFails?: boolean;
-  /** Make `updatePrLabels` report failure. */
-  labelFails?: boolean;
 }
 
 interface Observed {
@@ -223,12 +219,6 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
       },
     },
     github: {
-      ensureLabelExists: () =>
-        Promise.resolve(
-          scenario.ensureLabelFails
-            ? { ok: false as const, error: new Error("label create failed") }
-            : { ok: true as const, value: undefined },
-        ),
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
@@ -260,12 +250,6 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
     pr: {
       updatePrLabels: (_repo: string, _pr: number, labels: string[]) => {
         labelCalls.push([...labels]);
-        if (scenario.labelFails) {
-          return Promise.resolve({
-            ok: false as const,
-            error: new Error("label apply failed"),
-          });
-        }
         return Promise.resolve({ ok: true as const, value: undefined });
       },
       findExistingPrForIssue: () =>
@@ -511,108 +495,59 @@ const DIFF_ADDS_LINES_10_TO_15 =
 +f
 `;
 
-Deno.test(
-  "completion - an own-line standing violation left after recovery holds auto-merge and labels the PR (Issue #3382)",
-  async () => {
-    const observed = await runCompletion({
-      issueBody: ISSUE_WITH_CRITERIA,
-      summary: SUMMARY_STANDING_VIOLATION,
-      labels: ["enhancement"],
-      prExistsForBranch: true,
-      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
-    });
+/** True when a comment is the worker's findings comment naming the violation. */
+const isViolationFindingsComment = (c: string) =>
+  c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
+  c.includes("American spelling in the new code");
 
-    assertEquals(observed.status, "early_exit");
-    assertEquals(observed.outcomeKind, "summary_incomplete");
-    assertEquals(observed.recoverCalls, 1);
-    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
-    assertEquals(
-      observed.labelCalls.some((l) => l.includes("standing-violation")),
-      true,
-      "the PR must be labelled standing-violation",
-    );
-  },
-);
+for (
+  const [name, issueBody] of [
+    ["an issue with criteria", ISSUE_WITH_CRITERIA],
+    [
+      "an issue with no criteria heading (Issue #3761)",
+      "## Problem\n\nThe teardown leaks a snapshot.\n\n## Notes\n\n- no criteria heading here\n",
+    ],
+  ] as const
+) {
+  Deno.test(
+    `completion - an own-line standing violation left after recovery is posted on the PR, which is still armed — ${name} (Issues #3382, #4291)`,
+    async () => {
+      const observed = await runCompletion({
+        issueBody,
+        summary: SUMMARY_STANDING_VIOLATION,
+        labels: ["enhancement"],
+        prExistsForBranch: true,
+        diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+      });
 
-Deno.test(
-  "completion - an issue with no criteria heading still holds auto-merge on an own-line standing violation (Issue #3761)",
-  async () => {
-    const observed = await runCompletion({
-      issueBody:
-        "## Problem\n\nThe teardown leaks a snapshot.\n\n## Notes\n\n- no criteria heading here\n",
-      summary: SUMMARY_STANDING_VIOLATION,
-      labels: ["enhancement"],
-      prExistsForBranch: true,
-      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
-    });
-
-    assertEquals(observed.status, "early_exit");
-    assertEquals(observed.outcomeKind, "summary_incomplete");
-    assertEquals(observed.recoverCalls, 1);
-    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
-    assertEquals(
-      observed.labelCalls.some((l) => l.includes("standing-violation")),
-      true,
-      "the PR must be labelled standing-violation",
-    );
-  },
-);
-
-Deno.test(
-  "completion - a failed standing-violation label creation still labels the PR and holds auto-merge (Issue #3382)",
-  async () => {
-    const observed = await runCompletion({
-      issueBody: ISSUE_WITH_CRITERIA,
-      summary: SUMMARY_STANDING_VIOLATION,
-      labels: ["enhancement"],
-      prExistsForBranch: true,
-      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
-      ensureLabelFails: true,
-    });
-
-    assertEquals(observed.outcomeKind, "summary_incomplete");
-    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
-    assertEquals(
-      observed.labelCalls.some((l) => l.includes("standing-violation")),
-      true,
-      "the label is still applied after ensureLabelExists fails",
-    );
-    assertEquals(
-      observed.warnings.some((w) =>
-        w.includes("Could not ensure the standing-violation label exists")
-      ),
-      true,
-      "the ensure failure must be logged as a warning",
-    );
-  },
-);
+      assertEquals(observed.status, "early_exit");
+      assertEquals(observed.outcomeKind, "summary_incomplete");
+      assertEquals(observed.recoverCalls, 1);
+      assertEquals(
+        observed.finaliseCalls,
+        1,
+        "the CI quality gate is the only merge gate, so the PR is armed",
+      );
+      assertEquals(
+        observed.comments.filter(isViolationFindingsComment).length,
+        1,
+        "the surviving violation is posted for the next run to fix",
+      );
+      assertEquals(
+        observed.comments.some((c) => c.includes("Auto-merge withheld")),
+        false,
+      );
+      assertEquals(
+        observed.labelCalls.some((l) => l.includes("standing-violation")),
+        false,
+        "the standing-violation label is retired",
+      );
+    },
+  );
+}
 
 Deno.test(
-  "completion - a failed standing-violation PR labelling is logged and auto-merge stays held (Issue #3382)",
-  async () => {
-    const observed = await runCompletion({
-      issueBody: ISSUE_WITH_CRITERIA,
-      summary: SUMMARY_STANDING_VIOLATION,
-      labels: ["enhancement"],
-      prExistsForBranch: true,
-      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
-      labelFails: true,
-    });
-
-    assertEquals(observed.outcomeKind, "summary_incomplete");
-    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
-    assertEquals(
-      observed.errors.some((e) =>
-        e.includes("the auto-merge hold is not visible on the PR")
-      ),
-      true,
-      "the labelling failure must be logged as an error",
-    );
-  },
-);
-
-Deno.test(
-  "completion - a standing violation on unchanged context still arms auto-merge and adds no label (Issue #3382)",
+  "completion - a standing violation on unchanged context arms auto-merge and posts no findings comment (Issue #3382)",
   async () => {
     const observed = await runCompletion({
       issueBody: ISSUE_WITH_CRITERIA,
@@ -627,9 +562,6 @@ Deno.test(
     assertEquals(observed.outcomeKind, "summary_incomplete");
     assertEquals(observed.recoverCalls, 1);
     assertEquals(observed.finaliseCalls, 1);
-    assertEquals(
-      observed.labelCalls.some((l) => l.includes("standing-violation")),
-      false,
-    );
+    assertEquals(observed.comments.some(isViolationFindingsComment), false);
   },
 );

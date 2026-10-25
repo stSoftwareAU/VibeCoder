@@ -2,10 +2,12 @@
  * Disarm auto-merge on a pull request (Issue #3433).
  *
  * Shared by the orphan-bound hold and the milestone-fix sweep so a PR that must
- * not merge never keeps a live auto-merge. Import-free by design.
+ * not merge never keeps a live auto-merge.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
+
+import { logAt } from "./log_sink.ts";
 
 /**
  * Run `gh pr merge <N> --repo <repo> --disable-auto`.
@@ -32,8 +34,10 @@ export async function disarmAutoMerge(
     ]);
     return true;
   } catch (err) {
-    log(
-      `WARNING: could not disarm auto-merge on ${repo}#${prNumber}: ${
+    logAt(
+      log,
+      "warn",
+      `could not disarm auto-merge on ${repo}#${prNumber}: ${
         err instanceof Error ? err.message : String(err)
       } (Issue #3433)`,
     );

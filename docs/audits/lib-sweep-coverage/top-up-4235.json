@@ -1,0 +1,12 @@
+{
+  "issue": 4235,
+  "chunk": "top-up-4235",
+  "title": "Record sweep ledger sweptAt as the origin/main merge-base",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4235",
+  "definition": "worker command that writes a sweep-ledger slice and sets sweptAt to git merge-base origin/main HEAD (Issue #4235)",
+  "status": "claimed",
+  "sweptAt": "8795277ca6606470f9bb65af1e216fcdfa2b80cd",
+  "paths": [
+    "worker/deno/commands/lib_sweep_record.ts"
+  ]
+}
