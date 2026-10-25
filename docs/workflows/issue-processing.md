@@ -1124,6 +1124,11 @@ Reproduce the reported fault before changing production behaviour. Reproduction
 status is advisory at completion (Issue #4234); the testing standards still
 apply to the implementation and to review.
 
+A test named for a later step in a pipeline must reach that step: break only
+its own step and leave the earlier ones in place, then confirm the test fails.
+Passing because an earlier step rejects the input does not prove the later
+step works (Issue #3666).
+
 **Each operand of a compound condition is its own outcome (Issue #3376).**
 Fleet PRs flipped a compound condition as one outcome — reverting the whole
 change or deleting the whole condition — so one operand went untested or was

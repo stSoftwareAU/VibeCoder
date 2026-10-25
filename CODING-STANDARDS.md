@@ -1820,9 +1820,8 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
   the same change, or is reworded so it no longer reads as complete. Name the
-  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
-  double-quoted, or write `siblings: none — <why no existing set gained a
-  member>`; fleet PRs that grepped only the new name left a list one short
+  siblings you grepped in the PR summary; fleet PRs that grepped only the new
+  name left a list one short
   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
@@ -1833,9 +1832,8 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
 - Grep for the **stem** of a behavioural claim, not one inflection
   (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
   final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited. Each
-  remaining hit goes in the Docs sweep line by `file:line` with the reason it
-  is still true.
+  mentions the changed surface, not only the section you edited. Name each
+  remaining hit in the PR summary by `file:line` with the reason it is still true.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item
@@ -1911,7 +1909,8 @@ In this repository, `deno task pr-summary-check --base <base-branch>
 <summary-file>` from `worker/deno` reports the summary gates that remain:
 closure, independent review, reproduction status and result placeholders.
 A finding there is advice for the reviewer (Issue #4234). The check does not
-read a facts file.
+read a facts file. A result reported as not checked is not a pass; name the
+check that could not run and its reason.
 
 `deno task pr-summary-check`
 (`worker/deno/lib/pr_summary_check.ts`) is the twin of the completion phase's
