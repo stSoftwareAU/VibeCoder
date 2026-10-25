@@ -37,7 +37,10 @@ import {
 import type { RepoLease } from "./maintenance_lane.ts";
 import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
-import { isMergeGateFailure } from "./milestone_merge_gate.ts";
+import {
+  isMergeGateFailure,
+  type MergeGateOutcome,
+} from "./milestone_merge_gate.ts";
 import { deferralSkipsCargoForMerge } from "./heavy_build_gate.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
 import {
@@ -67,7 +70,15 @@ import {
   isConflictAttemptDue as isPrConflictAttemptDue,
   spentConflictAttempts,
 } from "./pr_merge_conflict_scan.ts";
-import { isConflictEscalation } from "./milestone_conflict_triage.ts";
+import {
+  isConflictEscalation,
+  type MilestoneConflictEscalation,
+} from "./milestone_conflict_triage.ts";
+import {
+  abandonAndRebuildMilestone,
+  type MilestoneRebuildOutcome,
+} from "./conflict_milestone_rebuild.ts";
+import { createLogger } from "./logger.ts";
 import {
   conflictEscalationMarkerPrefix,
   hasConflictEscalationComment,
@@ -100,6 +111,7 @@ import {
   loadSyncCursor,
   loadSyncStreaks,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+  MILESTONE_REFUSAL_CEILING,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   openConflictAttempt,
   recordDefaultSha,
@@ -247,6 +259,38 @@ export type RollbackGitFn = (
   repo: string,
   args: string[],
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** What a milestone branch that has rolled back and still conflicts is rebuilt from (Issue #4328). */
+export interface MilestoneRebuildRequest {
+  /** Repository in `owner/repo` form. */
+  repo: string;
+  /** The milestone branch to rebuild. */
+  milestoneBranch: string;
+  /** The default branch it is rebuilt onto. */
+  defaultBranch: string;
+  /** Milestone title, so the notice can find the escalation target. */
+  milestoneTitle: string;
+  /** GitHub milestone number, for the escalation target's fallback. */
+  milestoneNumber: number;
+  /** The open milestone PR against the branch, when there is one. */
+  headPrNumber?: number;
+  /**
+   * The sub-PRs an earlier roll-back reverted off the branch (PR #4344
+   * review). The rebuild leaves them out: their issues are re-queued for a
+   * redo, and replaying them would put the work back beside its redo.
+   */
+  revertedPrs?: readonly number[];
+}
+
+/**
+ * The rung after the roll-back (Issue #4328): rebuild the milestone branch
+ * from its base tip and replay its merged sub-PRs. Resolves with the rebuild's
+ * outcome, or nothing when no rebuild is wired — the caller then falls through
+ * to the roll-back.
+ */
+export type MilestoneRebuildFn = (
+  request: MilestoneRebuildRequest,
+) => Promise<MilestoneRebuildOutcome | void>;
 
 /**
  * Function signature for checking whether a repository has been cloned
@@ -472,6 +516,21 @@ export interface MilestoneBranchSyncDeps {
    */
   rollbackGitFn?: RollbackGitFn;
   /**
+   * Where a branch whose roll-back has already been spent, and which still
+   * conflicts, is rebuilt (Issue #4328). Defaults to {@link
+   * abandonAndRebuildMilestone} through {@link rollbackGitFn} and this pass's
+   * `ghCommandFn`; with no git runner the default says so in the log and the
+   * sweep falls through to the roll-back.
+   */
+  rebuildFn?: MilestoneRebuildFn;
+  /**
+   * The merge gate the default rebuild runs on the rebuilt tree in the repo's
+   * clone before delivering it (PR #4344 review). Unset, the default rebuild
+   * refuses to run — an unchecked rebuild could push the very tree the sync's
+   * gate refused — and the sweep falls through to the roll-back.
+   */
+  rebuildGateFn?: (repo: string) => Promise<MergeGateOutcome>;
+  /**
    * File (or append to) the one `merge-fallback` flag issue every fallback
    * leaves behind (Issues #2304, #2311). Defaults to
    * {@link fileMergeFallbackIssue} through this pass's `ghCommandFn`, so a
@@ -512,6 +571,44 @@ export interface ConflictConclusion {
   reason: string;
   /** The rung that could not decide, when the failure was a conflict. */
   rung?: ConflictLadderRung;
+  /**
+   * Set on a not-charged conflict refusal — the agent was not offered this
+   * cycle, or the merge gate refused the resolution (Issue #4328). Counted
+   * against {@link MILESTONE_REFUSAL_CEILING}.
+   */
+  refusal?: true;
+  /**
+   * Set when a refusal has reached the ceiling and must climb to the roll-back
+   * (Issue #4328). Only {@link escalateRepeatedRefusal} sets it.
+   */
+  exhaust?: true;
+}
+
+/**
+ * Escalate a refusal that has repeated to the ceiling (Issue #4328).
+ *
+ * A refused conflict never spends the budget, so a branch refused every cycle
+ * would be retried for ever. Once it has been refused `ceiling` cycles in a
+ * row, this verdict becomes a charged failure marked for the roll-back. Any
+ * other verdict, or a refusal below the ceiling, passes through unchanged.
+ *
+ * @param verdict - The verdict {@link judgeSyncFailure} reached
+ * @param refusedBefore - Consecutive refusals already on the ledger
+ * @param ceiling - Consecutive refusals tolerated before the climb
+ */
+export function escalateRepeatedRefusal(
+  verdict: ConflictConclusion,
+  refusedBefore: number,
+  ceiling: number = MILESTONE_REFUSAL_CEILING,
+): ConflictConclusion {
+  if (!verdict.refusal || refusedBefore < ceiling) return verdict;
+  return {
+    outcome: "failed",
+    reason:
+      `refused ${refusedBefore} cycles in a row (${verdict.reason}) — climbing to the next rung`,
+    ...(verdict.rung ? { rung: verdict.rung } : {}),
+    exhaust: true,
+  };
 }
 
 /**
@@ -860,7 +957,19 @@ export function resolverRungDue(
   if (reason === RECOVERY_ROLLBACK) return "rebuild";
   if (!climbsRecoveryLadder(reason)) return null;
   const rung = nextResolverRecoveryRung(entry.count);
+  // A roll-back already spent on the branch hands off to the rebuild-first
+  // path instead (Issue #4328, PR #4344).
+  if (rung === "rollback" && isRollbackSpent(entry)) return null;
   return rung === "resolve" ? null : rung;
+}
+
+/**
+ * A roll-back, landed or failed, has already been spent on this branch. The
+ * rebuild rung follows it, so the ladder's roll-back rung is not taken again
+ * (Issue #4328).
+ */
+function isRollbackSpent(entry: SyncStreakEntry): boolean {
+  return (entry.rollbacks ?? 0) + (entry.rollbackFailures ?? 0) > 0;
 }
 
 export function judgeSyncFailure(
@@ -872,6 +981,7 @@ export function judgeSyncFailure(
       return {
         outcome: "not-charged",
         reason: "the merge gate refused the resolution",
+        refusal: true,
       };
     }
     const reasons = error.analyses.map((a) => a.reason);
@@ -899,6 +1009,7 @@ export function judgeSyncFailure(
         outcome: "not-charged",
         reason: "agent deferred: cycle budget",
         rung,
+        refusal: true,
       };
     }
     if (isGenuineUndecidedConflict(error)) {
@@ -1051,6 +1162,9 @@ async function applyRollbackOutcome(opts: {
   // default branch that moves past it re-arms the two runs.
   const answeredSha = opts.defaultSha ?? entry.lastAttempt?.defaultSha;
   if (answeredSha) entry.fallbackDefaultSha = answeredSha;
+  // Issue #4328: a roll-back that could not merge is what the rebuild rung
+  // answers for, so the failure is counted for the ladder.
+  entry.rollbackFailures = (entry.rollbackFailures ?? 0) + 1;
   await escalateRollbackFailure({
     repo,
     milestoneTitle: milestone.milestoneTitle,
@@ -1204,21 +1318,144 @@ function defaultRollbackFn(
 /** Reset a leftover merge and check the milestone branch out. */
 async function prepareRollbackWorktree(
   gitFn: RollbackGitFn,
-  request: MilestoneRollbackRequest,
+  request: Pick<MilestoneRollbackRequest, "repo" | "milestoneBranch">,
 ): Promise<void> {
   await gitFn(request.repo, ["merge", "--abort"]);
-  const checkout = await gitFn(request.repo, [
+  const checkoutArgs = [
     "checkout",
     "-B",
     request.milestoneBranch,
     `origin/${request.milestoneBranch}`,
-  ]);
+  ];
+  let checkout = await gitFn(request.repo, checkoutArgs);
+  // Issue #4328: a prior merge can leave unmerged index entries with no
+  // MERGE_HEAD, so `merge --abort` has nothing to abort and the checkout
+  // refuses ("you need to resolve your current index first"). This clone is
+  // the worker's own maintenance clone, left mid-merge by the sync it ran, so
+  // a hard reset to HEAD is safe here. It touches no untracked file and moves
+  // no ref; HEAD is unchanged. The checkout is then retried once.
+  if (
+    checkout.code !== 0 &&
+    `${checkout.stderr}${checkout.stdout}`.includes(
+      "resolve your current index",
+    )
+  ) {
+    await gitFn(request.repo, ["reset", "--hard", "HEAD"]);
+    checkout = await gitFn(request.repo, checkoutArgs);
+  }
   if (checkout.code !== 0) {
     throw new Error(
       `Could not check out '${request.milestoneBranch}' for roll-back: ` +
         `${checkout.stderr || checkout.stdout} (Issue #1781)`,
     );
   }
+}
+
+/**
+ * The default rebuild (Issue #4328): {@link abandonAndRebuildMilestone} in the
+ * repo's clone. The notice goes to the milestone's escalation target, because
+ * the branch may have no milestone PR to comment on.
+ *
+ * With no git runner, or no merge gate, it says so in the log and resolves
+ * with nothing, so the sweep falls through to the roll-back exactly as it did
+ * before this rung. The rebuilt tree goes through the gate before it is
+ * delivered, and the sub-PRs an earlier roll-back reverted are not replayed
+ * (PR #4344 review).
+ */
+function defaultRebuildFn(
+  log: (message: string) => void,
+  gitFn: RollbackGitFn | undefined,
+  ghCommandFn: GhCommandFn,
+  gateFn: ((repo: string) => Promise<MergeGateOutcome>) | undefined,
+): MilestoneRebuildFn {
+  return async (request) => {
+    if (gitFn === undefined) {
+      logAt(
+        log,
+        "warn",
+        `Milestone branch '${request.milestoneBranch}' in ` +
+          `${request.repo}: rebuild not available — no git runner is wired ` +
+          `(Issue #4328)`,
+      );
+      return;
+    }
+    if (gateFn === undefined) {
+      logAt(
+        log,
+        "warn",
+        `Milestone branch '${request.milestoneBranch}' in ` +
+          `${request.repo}: rebuild not available — no merge gate is wired, ` +
+          `and a rebuild is never delivered unchecked (PR #4344 review)`,
+      );
+      return;
+    }
+    try {
+      await prepareRollbackWorktree(gitFn, request);
+    } catch (err) {
+      return {
+        outcome: "failed",
+        step: "milestone-rebuild",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const announce = async (body: string): Promise<void> => {
+      try {
+        const target = await resolveMilestoneEscalationTarget({
+          repo: request.repo,
+          milestone: {
+            title: request.milestoneTitle,
+            number: request.milestoneNumber,
+          },
+          ghCommandFn,
+          log,
+        });
+        // No `alreadyEscalated` check is passed above, so the only target
+        // without a destination is `none`.
+        if (target.kind === "none") {
+          log(
+            `No open issue to carry a milestone rebuild for ` +
+              `'${request.milestoneBranch}' in ${request.repo}: nowhere to ` +
+              `post, so the rebuild stands in this log (Issue #4328).`,
+          );
+          return;
+        }
+        await ghCommandFn([
+          "issue",
+          "comment",
+          String(target.issue),
+          "--repo",
+          request.repo,
+          "--body",
+          body,
+        ]);
+      } catch (err) {
+        log(
+          `Failed to announce a milestone rebuild for ` +
+            `'${request.milestoneBranch}' in ${request.repo}: ${
+              err instanceof Error ? err.message : String(err)
+            } (Issue #4328).`,
+        );
+      }
+    };
+    return abandonAndRebuildMilestone(
+      {
+        repo: request.repo,
+        prNumber: request.headPrNumber ?? 0,
+        branchName: request.milestoneBranch,
+        baseBranch: request.defaultBranch,
+      },
+      {
+        gh: ghCommandFn,
+        git: (args) => gitFn(request.repo, args),
+        logger: createLogger({ write: log, host: "" }),
+        announce,
+        gate: () => gateFn(request.repo),
+        ...(request.revertedPrs !== undefined
+          ? { excludePrNumbers: request.revertedPrs }
+          : {}),
+      },
+    );
+  };
 }
 
 /**
@@ -1671,6 +1908,14 @@ export async function syncMilestoneBranches(
   const now = deps.now ?? (() => Date.now());
   const rollbackFn = deps.rollbackFn ??
     defaultRollbackFn(log, deps.rollbackGitFn, ghCommandFn);
+  // The rung after the roll-back (Issue #4328).
+  const rebuildFn = deps.rebuildFn ??
+    defaultRebuildFn(
+      log,
+      deps.rollbackGitFn,
+      ghCommandFn,
+      deps.rebuildGateFn,
+    );
   // The running-attempt announcement (Issue #2309). The host is read once —
   // it cannot change mid-pass — and every attempt announced by this pass is
   // remembered here as well as in the ledger, so a host with no ledger file
@@ -1688,6 +1933,18 @@ export async function syncMilestoneBranches(
           }),
         ...(deps.dedupAuthors ?? {}),
       }));
+
+  /** Finish either rebuild route without carrying its old refusal streak. */
+  const recordLandedRebuild = (entry: SyncStreakEntry): SyncStreakEntry => ({
+    ...resetConflictLedgerOnSuccess(entry),
+    count: 0,
+    rebuilds: (entry.rebuilds ?? 0) + 1,
+    lastAttempt: {
+      at: new Date(now()).toISOString(),
+      outcome: "not-charged",
+      reason: RECOVERY_CLOSE,
+    },
+  });
 
   /**
    * Take one recovery rung for a resolver refusal (Issue #4328).
@@ -1758,6 +2015,20 @@ export async function syncMilestoneBranches(
       );
       if (deps.rebuildMilestoneFn) {
         landed = await deps.rebuildMilestoneFn(request);
+      } else {
+        // No injected rebuild: use the sweep's own (Issue #4328), which
+        // gates the rebuilt tree and resolves with nothing when unwired.
+        const rebuilt = await rebuildFn({
+          repo,
+          milestoneBranch: milestone.milestoneBranch,
+          defaultBranch: milestone.defaultBranch,
+          milestoneTitle: milestone.milestoneTitle,
+          milestoneNumber: milestone.milestoneNumber,
+          ...(entry.revertedPrs !== undefined
+            ? { revertedPrs: entry.revertedPrs }
+            : {}),
+        });
+        landed = rebuilt?.outcome === "milestone-rebuilt";
       }
       // No wired rebuild, or one that did not land, retires the milestone
       // in this cycle. Leaving it for the next cycle is how a check failure
@@ -1774,6 +2045,8 @@ export async function syncMilestoneBranches(
     } else {
       landed = await closeMilestone();
     }
+
+    if (landed && settled === "rebuild") entry = recordLandedRebuild(entry);
 
     const marker = landed && settled === "close"
       ? RECOVERY_CLOSE
@@ -1800,6 +2073,140 @@ export async function syncMilestoneBranches(
     ((announcement: AgentAttemptAnnouncement) =>
       announceAgentAttempt(announcement, ghCommandFn, log));
   const announced = new Set<string>();
+
+  /**
+   * Hand a branch whose conflict budget is spent to the rest of the ladder
+   * (Issues #1781, #4328): a rebuild when a roll-back was already spent on the
+   * branch, then the roll-back. The one place both the same-cycle failure and
+   * a budget spent elsewhere (the skip site) hand off, so they cannot drift.
+   *
+   * A rebuild that fails falls through to the roll-back, so a failing rebuild
+   * never removes what the roll-back did before. The caller stores the
+   * returned entry and persists it.
+   */
+  const handOffSpentBudget = async (opts: {
+    repo: string;
+    milestone: ActiveMilestone;
+    entry: SyncStreakEntry;
+    headPrNumber?: number;
+    attempts: number;
+    reason: string;
+    conflictError?: MilestoneConflictEscalation;
+    behindBy?: number;
+    defaultSha?: string;
+  }): Promise<SyncStreakEntry> => {
+    const {
+      repo,
+      milestone,
+      attempts,
+      reason,
+      conflictError,
+      behindBy,
+      defaultSha,
+      headPrNumber,
+    } = opts;
+    const branch = milestone.milestoneBranch;
+    let entry = opts.entry;
+
+    if (isRollbackSpent(entry)) {
+      const rebuilt = await rebuildFn({
+        repo,
+        milestoneBranch: branch,
+        defaultBranch: milestone.defaultBranch,
+        milestoneTitle: milestone.milestoneTitle,
+        milestoneNumber: milestone.milestoneNumber,
+        ...(headPrNumber !== undefined ? { headPrNumber } : {}),
+        ...(entry.revertedPrs !== undefined
+          ? { revertedPrs: entry.revertedPrs }
+          : {}),
+      });
+      if (rebuilt && rebuilt.outcome === "milestone-rebuilt") {
+        entry = recordLandedRebuild(entry);
+        const replayed = rebuilt.replayed.length;
+        const skipped = rebuilt.skipped.length;
+        log(
+          `Milestone branch '${branch}' in ${repo} rebuilt from its base ` +
+            `tip: replayed ${replayed}, skipped ${skipped} (Issue #4328)`,
+        );
+        await deps.emitSelfHealEvent?.({
+          module: "milestone_branch_sync",
+          action: "rebuilt",
+          reason:
+            `${repo} branch ${branch}: replayed ${replayed}, skipped ${skipped}`,
+          result: "ok",
+        }).catch(() => undefined);
+        return entry;
+      }
+      if (rebuilt && rebuilt.outcome === "failed") {
+        logAt(
+          log,
+          "warn",
+          `Milestone rebuild of '${branch}' in ${repo} failed at step ` +
+            `${rebuilt.step}: ${rebuilt.message} — falling through to the ` +
+            `roll-back (Issue #4328)`,
+        );
+        await deps.emitSelfHealEvent?.({
+          module: "milestone_branch_sync",
+          action: "rebuild_failed",
+          reason: `${repo} branch ${branch}: ${rebuilt.message}`,
+          result: "failed",
+        }).catch(() => undefined);
+      }
+    }
+
+    // Every automatic rung has been spent, so the branch is rolled back rather
+    // than reported to anyone (Issue #1781).
+    const outcome = await rollbackFn({
+      repo,
+      milestoneBranch: branch,
+      defaultBranch: milestone.defaultBranch,
+      attempts,
+      reason,
+      milestoneTitle: milestone.milestoneTitle,
+      milestoneNumber: milestone.milestoneNumber,
+      ...(conflictError
+        ? {
+          conflictingPaths: [
+            ...conflictError.analyses.map((a) => a.path),
+            ...conflictError.resolved.map((d) => d.path),
+          ],
+        }
+        : {}),
+      ...(entry.revertedPrs !== undefined
+        ? { alreadyReverted: entry.revertedPrs }
+        : {}),
+    });
+    if (!isRollbackOutcome(outcome)) return entry;
+    const conflictedFiles = conflictError
+      ? [
+        ...conflictError.analyses.map((a) => a.path),
+        ...conflictError.resolved.map((d) => d.path),
+      ]
+      : [];
+    return applyRollbackOutcome({
+      repo,
+      milestone,
+      entry,
+      outcome,
+      attempts,
+      fallback: {
+        ...(conflictedFiles.length > 0 ? { conflictedFiles } : {}),
+        ...(behindBy !== undefined ? { behindBy } : {}),
+        ...(await readBehindSince(
+          repo,
+          entry.lastSyncedDefaultSha,
+          milestone.defaultBranch,
+          ghCommandFn,
+          log,
+        )),
+      },
+      ...(defaultSha !== undefined ? { defaultSha } : {}),
+      fileMergeFallbackFn,
+      ghCommandFn,
+      log,
+      emitSelfHealEvent: deps.emitSelfHealEvent,
+    });
+  };
 
   /**
    * Announce one running agent attempt, once (Issue #2309).
@@ -2244,6 +2651,26 @@ export async function syncMilestoneBranches(
                 `so '${milestone.milestoneBranch}' is the roll-back's now and ` +
                 `no further attempt is made (Issue #1778)`,
             );
+            // Issue #4328: a budget spent by another path (the child run's
+            // pre-cut sync charges the same ledger) is handed off here, rather
+            // than left for a roll-back that never runs. A roll-back that could
+            // not merge keeps waiting for the default tip to move (Issue #2311).
+            const rollbackWired = deps.rollbackFn !== undefined ||
+              deps.rollbackGitFn !== undefined;
+            if (rollbackWired && entry.fallbackDefaultSha === undefined) {
+              entry = await handOffSpentBudget({
+                repo,
+                milestone,
+                entry,
+                attempts: entry.conflictAttempts ?? 0,
+                reason: entry.lastAttempt?.reason ?? "conflict budget spent",
+                ...(behindBy !== undefined ? { behindBy } : {}),
+                ...(defaultSha !== undefined ? { defaultSha } : {}),
+              });
+              streaks[streakKey] = entry;
+              streaksDirty = true;
+              await persistStreaks();
+            }
             skipped++;
             continue;
           }
@@ -2665,7 +3092,12 @@ export async function syncMilestoneBranches(
             // ledger (Issue #2998): a milestone branch with an open PR against
             // it must record the failure there, whether or not a streak file
             // is wired at all.
-            const verdict = judgeSyncFailure(syncResult.error, agentAllowed);
+            // A refusal that has repeated to the ceiling climbs to the
+            // roll-back (Issue #4328), before anything reads the verdict.
+            const verdict = escalateRepeatedRefusal(
+              judgeSyncFailure(syncResult.error, agentAllowed),
+              entry?.refusedCycles ?? 0,
+            );
             if (headPr && conflictError && verdict.outcome === "failed") {
               await recordSyncAttemptOnPr(
                 repo,
@@ -2696,6 +3128,8 @@ export async function syncMilestoneBranches(
                   ...(conflictError
                     ? { analysis: describeConflictAnalyses(conflictError) }
                     : {}),
+                  refusal: verdict.refusal === true,
+                  exhaust: verdict.exhaust === true,
                 },
               );
               streaks[streakKey] = entry;
@@ -2705,7 +3139,12 @@ export async function syncMilestoneBranches(
                 const recoveryNow = climbsRecoveryLadder(verdict.reason)
                   ? nextResolverRecoveryRung(priorRefusals)
                   : "resolve";
-                if (recoveryNow !== "resolve") {
+                // A roll-back already spent on the branch is followed by the
+                // rebuild, which the hand-off below runs first (Issue #4328).
+                if (
+                  recoveryNow !== "resolve" &&
+                  !(recoveryNow === "rollback" && isRollbackSpent(entry))
+                ) {
                   // Already refused for more than one budget. This cycle
                   // takes the rung those refusals have earned, so a branch
                   // that has been declined every cycle is not left behind
@@ -2729,9 +3168,10 @@ export async function syncMilestoneBranches(
                   const attempts = headPr
                     ? spentConflictAttempts(headPr.attempts) + 1
                     : entry.conflictAttempts ?? 0;
-                  const exhausted = headPr
-                    ? attempts >= CONFLICT_RESOLUTION_BUDGET
-                    : isConflictBudgetExhausted(entry);
+                  const exhausted = verdict.exhaust === true ||
+                    (headPr
+                      ? attempts >= CONFLICT_RESOLUTION_BUDGET
+                      : isConflictBudgetExhausted(entry));
                   if (
                     exhausted && climbsRecoveryLadder(verdict.reason) &&
                     verdict.reason !== MERGE_GATE_REFUSED_TREE
@@ -2747,63 +3187,22 @@ export async function syncMilestoneBranches(
                         `takes the roll-back (Issue #4328)`,
                     );
                   } else if (exhausted) {
-                    // Every automatic rung has been spent, so the branch is
-                    // rolled back rather than reported to anyone (Issue #1781).
-                    const outcome = await rollbackFn({
+                    // Every automatic rung has been spent (Issue #1781). The
+                    // hand-off runs the rebuild first when a roll-back is
+                    // already spent on the branch (Issue #4328).
+                    entry = await handOffSpentBudget({
                       repo,
-                      milestoneBranch: milestone.milestoneBranch,
-                      defaultBranch: milestone.defaultBranch,
+                      milestone,
+                      entry,
+                      ...(headPr ? { headPrNumber: headPr.number } : {}),
                       attempts,
                       reason: verdict.reason,
-                      milestoneTitle: milestone.milestoneTitle,
-                      milestoneNumber: milestone.milestoneNumber,
-                      ...(conflictError
-                        ? {
-                          conflictingPaths: [
-                            ...conflictError.analyses.map((a) => a.path),
-                            ...conflictError.resolved.map((d) => d.path),
-                          ],
-                        }
-                        : {}),
-                      ...(entry.revertedPrs !== undefined
-                        ? { alreadyReverted: entry.revertedPrs }
-                        : {}),
+                      ...(conflictError ? { conflictError } : {}),
+                      ...(behindBy !== undefined ? { behindBy } : {}),
+                      ...(defaultSha !== undefined ? { defaultSha } : {}),
                     });
-                    if (isRollbackOutcome(outcome)) {
-                      const conflictedFiles = conflictError
-                        ? [
-                          ...conflictError.analyses.map((a) => a.path),
-                          ...conflictError.resolved.map((d) => d.path),
-                        ]
-                        : [];
-                      entry = await applyRollbackOutcome({
-                        repo,
-                        milestone,
-                        entry,
-                        outcome,
-                        attempts,
-                        fallback: {
-                          ...(conflictedFiles.length > 0
-                            ? { conflictedFiles }
-                            : {}),
-                          ...(behindBy !== undefined ? { behindBy } : {}),
-                          ...(await readBehindSince(
-                            repo,
-                            entry.lastSyncedDefaultSha,
-                            milestone.defaultBranch,
-                            ghCommandFn,
-                            log,
-                          )),
-                        },
-                        ...(defaultSha !== undefined ? { defaultSha } : {}),
-                        fileMergeFallbackFn,
-                        ghCommandFn,
-                        log,
-                        emitSelfHealEvent: deps.emitSelfHealEvent,
-                      });
-                      streaks[streakKey] = entry;
-                      streaksDirty = true;
-                    }
+                    streaks[streakKey] = entry;
+                    streaksDirty = true;
                   } else {
                     // One line, and nothing posted: an automatic attempt still
                     // remains, so no human is asked about it yet.
