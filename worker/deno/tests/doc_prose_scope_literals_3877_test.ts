@@ -14,8 +14,7 @@ import {
   renderProseRanges,
 } from "../lib/doc_prose_scope.ts";
 import { buildDriftQuestionPrompt } from "../lib/pr_feedback_drift_check.ts";
-import { sourceStringLiterals } from "../lib/removed_assertion_gate.ts";
-import { buildSummaryClaimQuestionPrompt } from "../lib/summary_claim_check.ts";
+import { sourceStringLiterals } from "../lib/doc_prose_scope.ts";
 
 const REASON = "negative numbers are refused";
 
@@ -91,15 +90,6 @@ Deno.test("a widened predicate selects the unchanged reason string in that decla
 
   const rendered = renderProseRanges(visible);
   assertStringIncludes(rendered, "src/classify.ts:4-4 — user-visible string");
-  const promptOpts = {
-    repo: "acme/widgets",
-    issueNumber: 7,
-    baseRef: "origin/main" as string,
-    summaryPath: "docs/archive/pr-summaries/pr-summary-7.md",
-    docFiles: ["src/classify.ts"],
-    proseRanges: scope.ranges,
-  };
-  const summaryPrompt = buildSummaryClaimQuestionPrompt(promptOpts);
   const driftPrompt = buildDriftQuestionPrompt({
     repo: "acme/widgets",
     prNumber: 7,
@@ -108,10 +98,8 @@ Deno.test("a widened predicate selects the unchanged reason string in that decla
     files: ["src/classify.ts"],
     proseRanges: scope.ranges,
   });
-  for (const prompt of [summaryPrompt, driftPrompt]) {
-    assertStringIncludes(prompt, "src/classify.ts:4-4 — user-visible string");
-    assertStringIncludes(prompt, REASON);
-  }
+  assertStringIncludes(driftPrompt, "src/classify.ts:4-4 — user-visible string");
+  assertStringIncludes(driftPrompt, REASON);
 });
 
 Deno.test("docProseClaimInstruction asks whether a user-visible string is now false for a new case", () => {

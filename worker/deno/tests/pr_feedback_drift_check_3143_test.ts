@@ -593,57 +593,6 @@ No tests changed.
   }
 });
 
-Deno.test("runPrFeedbackDriftCheck - a code push with a Docs-sweep-less summary carries the problem into the recovery prompt", async () => {
-  const summaryNoDocsSweep = `## Summary
-
-Closes #7.
-
-Some unrelated prose.
-`;
-  const dir = await initRepo();
-  await writeFile(dir, "lib/rule.ts", RULE_TS_V1);
-  await commitAll(dir, "base");
-  assertEquals(
-    (await git(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"])).code,
-    0,
-  );
-  assertEquals((await git(dir, ["checkout", "-b", "issue-7-fix"])).code, 0);
-  await writeFile(dir, SUMMARY_PATH, summaryNoDocsSweep);
-  await commitAll(dir, "docs: add PR summary");
-  const rev = await git(dir, ["rev-parse", "HEAD"]);
-  const beforeSha = rev.stdout.trim();
-
-  try {
-    await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
-
-    const calls: AgentCall[] = [];
-    const runAgent = makeRunAgent(
-      [
-        { ok: true, output: verdictBlock([]) },
-        { ok: true, output: "did nothing" },
-      ],
-      calls,
-    );
-
-    const outcome = await runPrFeedbackDriftCheck(
-      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      {
-        runGit: makeRunGit(dir),
-        runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
-        runAgent,
-        logger: noopLogger(),
-      },
-    );
-
-    assertEquals(calls.length, 2);
-    assertStringIncludes(calls[1]!.prompt, "Docs sweep");
-    assertEquals(outcome.status, "reported");
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
 // ---------------------------------------------------------------------------
 // Worker-owned state files must never be treated as a code change
 // (Issue #3143 review): `.pr_response_message`, written by the agent at the

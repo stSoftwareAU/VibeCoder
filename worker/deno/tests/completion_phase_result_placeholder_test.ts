@@ -334,18 +334,19 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 }
 
 Deno.test(
-  "completion - a bare result-placeholder token blocks PR creation and posts a comment",
+  "completion - a bare result-placeholder token is noted and the PR is still raised",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_BARE_TOKEN,
       changedFiles: "crates/report/src/decisions.rs",
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "placeholder");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 1, "one in-session note");
     assertEquals(outcome.comments.length, 1);
     assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
+    assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
   },
 );
 
@@ -405,15 +406,12 @@ Deno.test(
       changedFiles: "crates/report/src/decisions.rs",
     });
 
-    // Neither the closure, review nor reproduction gates apply here, so this
-    // is caught by the standalone docs-sweep block — which must fold in the
-    // placeholder verdict too, so the one recovery turn is told about both.
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
+    // The docs-sweep gate is gone (Issue #4234). The placeholder is advice:
+    // one note, then the pull request.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(outcome.reason ?? "", "Docs sweep");
-    assertStringIncludes(outcome.reason ?? "", "placeholder");
-    assertStringIncludes(outcome.comments[0]!, "Docs sweep");
+    assertEquals(outcome.comments[0]!.includes("Docs sweep"), false);
     assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
   },
 );
@@ -427,11 +425,9 @@ Deno.test(
       changedFiles: "crates/report/src/decisions.rs",
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(outcome.reason ?? "", "Reproduction");
-    assertStringIncludes(outcome.reason ?? "", "QUALITY_RESULT_PLACEHOLDER");
     assertStringIncludes(outcome.comments[0]!, "Reproduction");
     assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
   },
@@ -450,8 +446,7 @@ Deno.test(
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
     assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
-    assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
+    assertEquals(outcome.comments.length, 0);
   },
 );
 
@@ -471,16 +466,15 @@ Deno.test(
 );
 
 Deno.test(
-  "completion - a GATE_OUTCOME_PENDING result token blocks PR creation (Issue #3248)",
+  "completion - a GATE_OUTCOME_PENDING result token is noted and the PR is still raised (Issue #3248)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_GATE_OUTCOME_PENDING,
       changedFiles: "crates/report/src/decisions.rs",
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "placeholder");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.comments.length, 1);
     assertStringIncludes(outcome.comments[0]!, "GATE_OUTCOME_PENDING");
   },

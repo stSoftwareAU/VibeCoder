@@ -66,10 +66,10 @@
  * The module now also answers "which lines form one statement?" via
  * {@link markdownLogicalUnits} (Issue #3356): a gate over Markdown prose
  * matches per logical unit rather than per physical line, because the prose is
- * hard-wrapped. Its callers are `parseDocsSweepLine` in `docs_sweep_gate.ts`,
+ * hard-wrapped. Its callers are a removed summary gate in a removed summary gate,
  * `logicalBlocks` in `test_plan_recount.ts` (and through it
- * `summary_claim_check.ts`), and the uncaptured-line grouping of the
- * unreached-admission check in `branch_outcomes_gate.ts`. A new gate over
+ * a removed summary gate), and the uncaptured-line grouping of the
+ * unreached-admission check in a removed summary gate. A new gate over
  * Markdown prose calls it rather than splitting on "\n".
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).

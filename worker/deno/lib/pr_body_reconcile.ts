@@ -44,10 +44,6 @@ import {
 } from "./pr_body_sync.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
-import {
-  prSummaryDigestInput,
-  prSummaryFactsPath,
-} from "./pr_summary_facts.ts";
 
 /** Prefix on every log line this pass writes. */
 export const PR_BODY_RECONCILE_LOG_TAG = "[pr-body-reconcile]";
@@ -141,8 +137,8 @@ async function readFileAtRef(
 }
 
 /**
- * Digest of the PR summary (and facts file) at `ref`, read through the
- * contents API — no checkout. `ref` must already be a validated 40-hex SHA.
+ * Digest of the PR summary at `ref`, read through the contents API — no
+ * checkout. `ref` must already be a validated 40-hex SHA.
  *
  * The summary candidates mirror `loadPrSummary` (`pr_summary_loader.ts`): the
  * archive path first, then the legacy loose path. The `.pr_summary` fallback
@@ -157,7 +153,6 @@ export async function headSummaryDigest(
 ): Promise<HeadSummaryDigest> {
   let path = "";
   let summary: string | undefined;
-  let facts: string | null = null;
   try {
     const candidates = [
       `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
@@ -173,8 +168,6 @@ export async function headSummaryDigest(
       }
     }
     if (summary === undefined) return { kind: "no-summary" };
-    path = prSummaryFactsPath(issueNumber);
-    facts = await readFileAtRef(repo, path, ref, gh);
   } catch (err) {
     return {
       kind: "error",
@@ -183,7 +176,7 @@ export async function headSummaryDigest(
   }
   return {
     kind: "digest",
-    digest: await prSummaryDigest(prSummaryDigestInput(summary, facts)),
+    digest: await prSummaryDigest(summary),
   };
 }
 

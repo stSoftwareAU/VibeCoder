@@ -21,21 +21,20 @@ import {
 } from "./pr_summary_check.ts";
 import type { GateReport } from "./pr_summary_check.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
-import { prSummaryFactsPath } from "./pr_summary_facts.ts";
 
 /** Repo-relative path prefixes that count as code. `docs/**` never does. */
 export const CODE_PATH_PREFIXES = ["worker/", "prompts/", ".claude/"] as const;
 
-/** `docs/archive/pr-summaries/pr-summary-<N>.md` or `.facts.json`, N > 0. */
+/** `docs/archive/pr-summaries/pr-summary-<N>.md`, N > 0. */
 const SUMMARY_FILE_RE =
-  /^docs\/archive\/pr-summaries\/pr-summary-([1-9]\d*)\.(?:md|facts\.json)$/;
+  /^docs\/archive\/pr-summaries\/pr-summary-([1-9]\d*)\.md$/;
 
 /** Whether a repo-relative path is code for the freshness rule. */
 export function isCodePath(path: string): boolean {
   return CODE_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
-/** The issue a summary or facts path belongs to, or `null` when it is neither. */
+/** The issue a summary path belongs to, or `null` when it is not one. */
 export function summaryIssueOf(path: string): number | null {
   const match = SUMMARY_FILE_RE.exec(path);
   if (!match) return null;
@@ -68,18 +67,17 @@ export type Freshness =
 /**
  * Judge the summary against the PR's commits, given newest first.
  *
- * The first commit that touches the summary (or its facts file) is `fresh`,
- * which includes a commit that touches both code and summary. The first
- * commit that touches code before any summary commit is `stale`.
+ * The first commit that touches the summary is `fresh`, which includes a
+ * commit that touches both code and summary. The first commit that touches
+ * code before any summary commit is `stale`.
  */
 export function judgeFreshness(
   commitsNewestFirst: readonly CommitChange[],
   issueNumber: number,
 ): Freshness {
   const summaryPath = summaryPathOf(issueNumber);
-  const factsPath = prSummaryFactsPath(issueNumber);
   const touchesSummary = (commit: CommitChange): boolean =>
-    commit.files.some((file) => file === summaryPath || file === factsPath);
+    commit.files.some((file) => file === summaryPath);
 
   for (let i = 0; i < commitsNewestFirst.length; i++) {
     const commit = commitsNewestFirst[i]!;
@@ -232,8 +230,8 @@ export type PrSummaryCiResult =
     issueNumber: number;
     summaryPath: string;
     /**
-     * `summary_missing` when only the facts file is on the branch, so there is
-     * no summary to judge; the gates are then not run.
+     * `summary_missing` when the selected summary file is not in the checkout.
+     * The gates are then not run.
      */
     freshness: Freshness | { kind: "summary_missing" };
     gates: GateReport[];
@@ -354,14 +352,11 @@ const MAX_LISTED_CODE_PATHS = 5;
 function freshnessLines(result: CheckedResult): string[] {
   const freshness = result.freshness;
   switch (freshness.kind) {
-    case "summary_missing": {
-      const factsPath = prSummaryFactsPath(result.issueNumber);
+    case "summary_missing":
       return [
         `[BLOCKED] ${FRESHNESS_TITLE}`,
-        `    - the facts file ${factsPath} is on the branch but the summary ` +
-        `${result.summaryPath} is not`,
+        `    - the summary ${result.summaryPath} is not in the checkout`,
       ];
-    }
     case "fresh":
       return [
         `[PASSED] ${FRESHNESS_TITLE}`,
@@ -388,8 +383,7 @@ function freshnessLines(result: CheckedResult): string[] {
         `[BLOCKED] ${FRESHNESS_TITLE}`,
         `    - code commit ${escapeControl(freshness.codeCommit)} changes ` +
         `${paths}, but ${summaryState}; rewrite ${result.summaryPath} for ` +
-        "the head: re-enumerate Branch outcomes, renumber path:line " +
-        "citations and add a Test Plan entry for the push",
+        "the head and add a Test Plan entry for the push",
       ];
     }
   }

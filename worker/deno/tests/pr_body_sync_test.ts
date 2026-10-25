@@ -28,15 +28,6 @@ import type {
   GitCommandOptions,
   GitCommandOutput,
 } from "../lib/git_timeout.ts";
-import {
-  BRANCH_OUTCOMES_MARKER,
-  prSummaryDigestInput,
-  prSummaryFactsPath,
-} from "../lib/pr_summary_facts.ts";
-import {
-  renderBranchOutcomes,
-  type SummaryFacts,
-} from "../lib/summary_facts.ts";
 import type { Logger, Result } from "../types.ts";
 
 const noop = () => {};
@@ -79,7 +70,7 @@ async function makeRepo(
   if (opts.facts !== undefined) {
     await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
     await Deno.writeTextFile(
-      `${root}/${prSummaryFactsPath(ISSUE_NUMBER)}`,
+      `${root}/docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.facts.json`,
       opts.facts,
     );
   }
@@ -1692,163 +1683,6 @@ Deno.test("sync - logs no re-derivation when the partial-delivery section is unc
   );
 });
 
-const FACTS: SummaryFacts = {
-  version: 1,
-  branchOutcomes: {
-    noneAdded: false,
-    entries: [{
-      path: "crates/report/src/decisions.rs",
-      line: 42,
-      outcome: "error",
-      test: "worker/deno/tests/pr_body_sync_test.ts",
-      testName: "rejects bad input",
-      flipWentRed: "went red when the guard was removed",
-    }],
-  },
-};
-const FACTS_JSON = JSON.stringify(FACTS);
-const PLAIN_SUMMARY =
-  `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`;
-const SYNC_INPUT = {
-  repo: REPO,
-  prNumber: PR_NUMBER,
-  beforeSha: BEFORE_SHA,
-  branchName: BRANCH,
-  workerName: "worker-a",
-  githubUser: "ghuser",
-};
-
-/** Runs one sync against a live body; returns the result and recorded calls. */
-async function syncFactsCase(opts: {
-  repoPath: string;
-  liveBody: string;
-  beforeSha?: string | undefined;
-}) {
-  const ghCalls: GhCall[] = [];
-  const gitCalls: string[][] = [];
-  const deps: SyncPrBodyDeps = {
-    runGhCommand: (args) => {
-      if (args[0] === "pr" && args[1] === "view") {
-        return Promise.resolve(viewJson(opts.liveBody));
-      }
-      return stubGh(ghCalls)(args);
-    },
-    runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-    logger,
-  };
-  const result = await syncPrBodyFromSummary(
-    {
-      ...SYNC_INPUT,
-      repoPath: opts.repoPath,
-      beforeSha: "beforeSha" in opts ? opts.beforeSha : BEFORE_SHA,
-      branchName: BRANCH,
-    },
-    deps,
-  );
-  return { result, ghCalls, gitCalls };
-}
-
-function bodyRecording(digest: string): string {
-  return `${baseBody(ISSUE_NUMBER)}\n${buildSummaryDigestMarker(digest)}`;
-}
-
-Deno.test("sync - a facts-only change refreshes the body (Issue #3535)", async () => {
-  const repoPath = await makeRepo({
-    summary: PLAIN_SUMMARY,
-    facts: FACTS_JSON,
-  });
-  try {
-    const { result, ghCalls } = await syncFactsCase({
-      repoPath,
-      liveBody: bodyRecording(await prSummaryDigest(PLAIN_SUMMARY)),
-    });
-    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-    if (result.ok) assertEquals(result.value.status, "updated");
-    assertEquals(ghCalls.length, 1);
-    assertEquals(
-      summaryDigestFromBody(ghCalls[0]?.bodyFileContent ?? ""),
-      await prSummaryDigest(prSummaryDigestInput(PLAIN_SUMMARY, FACTS_JSON)),
-    );
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-Deno.test("sync - with no facts file the digest input is the summary alone", async () => {
-  const repoPath = await makeRepo({ summary: PLAIN_SUMMARY });
-  try {
-    const { result, ghCalls } = await syncFactsCase({
-      repoPath,
-      liveBody: bodyRecording(await prSummaryDigest(PLAIN_SUMMARY)),
-    });
-    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-    if (result.ok) {
-      assertEquals(result.value, {
-        status: "skipped",
-        reason: "summary unchanged",
-      });
-    }
-    assertEquals(ghCalls.length, 0);
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-Deno.test("sync - valid facts render the Branch outcomes list into the rebuilt body", async () => {
-  const summary =
-    `## Summary\n\nText. Closes #${ISSUE_NUMBER}.\n\n${BRANCH_OUTCOMES_MARKER}\n\n## Test Plan\n\n- x\n`;
-  const repoPath = await makeRepo({ summary, facts: FACTS_JSON });
-  try {
-    const { result, ghCalls } = await syncFactsCase({
-      repoPath,
-      liveBody: bodyRecording(await prSummaryDigest(summary)),
-    });
-    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-    const newBody = ghCalls[0]?.bodyFileContent ?? "";
-    const rendered = renderBranchOutcomes(FACTS);
-    assertStringIncludes(newBody, rendered);
-    assertEquals(newBody.includes(BRANCH_OUTCOMES_MARKER), true);
-    assert(
-      newBody.indexOf(rendered) < newBody.indexOf("## Test Plan"),
-      "expected the list at the marker position, before Test Plan",
-    );
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-Deno.test("sync - an invalid facts file fails loud", async () => {
-  const repoPath = await makeRepo({
-    summary: PLAIN_SUMMARY,
-    facts: "{ not json",
-  });
-  try {
-    const { result, ghCalls } = await syncFactsCase({
-      repoPath,
-      liveBody: bodyRecording(await prSummaryDigest(PLAIN_SUMMARY)),
-    });
-    assertEquals(result.ok, false);
-    if (!result.ok) {
-      assertStringIncludes(
-        result.error.message,
-        prSummaryFactsPath(ISSUE_NUMBER),
-      );
-    }
-    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-/** `gh issue view --json title,body,labels,author,milestone`, two criteria. */
-const GAP_ISSUE_JSON = JSON.stringify({
-  title: "Move the data",
-  body: "## Acceptance Criteria\n\n- the export works\n- the import works\n",
-  labels: [{ name: "work-on" }],
-  author: { login: "owner" },
-  milestone: { title: "M1" },
-});
-
 Deno.test("Issue #3720: summary refresh preserves the originating assignment", async () => {
   const repoPath = await makeRepo();
   const assignmentId = "3f2c9a1e-4b5d-4c6e-8f70-1a2b3c4d5e6f";
@@ -1887,6 +1721,55 @@ Deno.test("Issue #3720: summary refresh preserves the originating assignment", a
   }
 });
 
+const PLAIN_SUMMARY =
+  `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`;
+
+/** Runs one sync against a live body; returns the result and recorded calls. */
+async function syncFactsCase(opts: {
+  repoPath: string;
+  liveBody: string;
+  beforeSha?: string | undefined;
+}) {
+  const ghCalls: GhCall[] = [];
+  const gitCalls: string[][] = [];
+  const deps: SyncPrBodyDeps = {
+    runGhCommand: (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.resolve(viewJson(opts.liveBody));
+      }
+      return stubGh(ghCalls)(args);
+    },
+    runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+    logger,
+  };
+  const result = await syncPrBodyFromSummary(
+    {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      beforeSha: "beforeSha" in opts ? opts.beforeSha : BEFORE_SHA,
+      branchName: BRANCH,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+      repoPath: opts.repoPath,
+    },
+    deps,
+  );
+  return { result, ghCalls, gitCalls };
+}
+
+function bodyRecording(digest: string): string {
+  return `${baseBody(ISSUE_NUMBER)}\n${buildSummaryDigestMarker(digest)}`;
+}
+
+/** `gh issue view --json title,body,labels,author,milestone`, two criteria. */
+const GAP_ISSUE_JSON = JSON.stringify({
+  title: "Move the data",
+  body: "## Acceptance Criteria\n\n- the export works\n- the import works\n",
+  labels: [{ name: "work-on" }],
+  author: { login: "owner" },
+  milestone: { title: "M1" },
+});
+
 Deno.test("sync - workflow version changes retain durable body wording without another edit (Issue #3954)", async () => {
   const raw =
     "## Summary\n\nVersion bump: `VERSION` 1.2.3 → 1.2.4\n\n## Evidence\n\nRelease evidence: 1.2.3 at commit abc123.\n";
@@ -1916,127 +1799,3 @@ Deno.test("sync - workflow version changes retain durable body wording without a
   }
 });
 
-Deno.test("sync - ambiguous outcome ownership fails without editing the PR (Issue #3979)", async () => {
-  const summary = `${BRANCH_OUTCOMES_MARKER}\n${BRANCH_OUTCOMES_MARKER}\n`;
-  const repoPath = await makeRepo({ summary, facts: FACTS_JSON });
-  try {
-    const { result, ghCalls } = await syncFactsCase({
-      repoPath,
-      liveBody: bodyRecording("older"),
-    });
-    assert(!result.ok);
-    assertStringIncludes(result.error.message, "ambiguous");
-    assertEquals(
-      ghCalls.filter((call) => call.args[0] === "pr" && call.args[1] === "edit")
-        .length,
-      0,
-    );
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-Deno.test("sync - a legacy body's before-push diff includes the facts file path (Issue #3535)", async () => {
-  const repoPath = await makeRepo({
-    summary: PLAIN_SUMMARY,
-    facts: FACTS_JSON,
-  });
-  try {
-    const { result, gitCalls } = await syncFactsCase({
-      repoPath,
-      liveBody: baseBody(ISSUE_NUMBER),
-    });
-    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-    const diff = gitCalls.find((c) => c[0] === "diff");
-    assertEquals(diff, [
-      "diff",
-      "--name-only",
-      BEFORE_SHA,
-      "HEAD",
-      "--",
-      `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
-      prSummaryFactsPath(ISSUE_NUMBER),
-    ]);
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-for (const scenario of ["marker", "adoptable", "foreign", "missing"] as const) {
-  Deno.test(`candidate - ${scenario} uses shared ownership without publication or image conversion`, async () => {
-    const repoPath = await makeRepo({
-      withSummary: scenario !== "missing",
-      summary:
-        "## Summary\n\nCorrected summary.\n\n![Evidence](docs/evidence/fix.png)\n",
-    });
-    try {
-      const result = await buildSyncedPrBodyCandidate({
-        ...SYNC_INPUT,
-        repoPath,
-        branchName: BRANCH,
-        beforeSha: undefined,
-      }, {
-        logger,
-        runGitCommand: () => {
-          throw new Error("candidate must not inspect publication state");
-        },
-      }, {
-        body: scenario === "adoptable" || scenario === "foreign"
-          ? "Agent draft"
-          : baseBody(ISSUE_NUMBER),
-        headRefName: scenario === "foreign" ? "someone-elses-branch" : BRANCH,
-        files: [],
-      });
-      assert(result.ok);
-      if (scenario === "foreign" || scenario === "missing") {
-        assertEquals(result.value, {
-          kind: "ineligible",
-          reason: scenario === "foreign"
-            ? "no worker marker"
-            : "summary file deleted",
-        });
-      } else {
-        assertEquals(result.value.kind, "candidate");
-        if (result.value.kind !== "candidate") {
-          throw new Error("expected candidate");
-        }
-        assertEquals(result.value.adopting, scenario === "adoptable");
-        assertEquals(result.value.issueNumber, ISSUE_NUMBER);
-        assertStringIncludes(result.value.body, "Corrected summary.");
-        assertStringIncludes(
-          result.value.body,
-          "![Evidence](docs/evidence/fix.png)",
-        );
-      }
-    } finally {
-      await Deno.remove(repoPath, { recursive: true });
-    }
-  });
-}
-
-Deno.test("candidate - facts and metadata match the body published by sync", async () => {
-  const repoPath = await makeRepo({
-    summary: PLAIN_SUMMARY,
-    facts: FACTS_JSON,
-  });
-  try {
-    const liveBody = bodyRecording(await prSummaryDigest(PLAIN_SUMMARY));
-    const input = {
-      ...SYNC_INPUT,
-      repoPath,
-      branchName: BRANCH,
-      beforeSha: BEFORE_SHA,
-    };
-    const result = await buildSyncedPrBodyCandidate(input, {
-      logger,
-      runGitCommand: stubGit([]),
-    }, JSON.parse(viewJson(liveBody)));
-    assert(result.ok && result.value.kind === "candidate");
-    const published = await syncFactsCase({ repoPath, liveBody });
-    assert(published.result.ok);
-    assertEquals(published.ghCalls[0]?.bodyFileContent, result.value.body);
-    assertStringIncludes(result.value.body, renderBranchOutcomes(FACTS));
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});

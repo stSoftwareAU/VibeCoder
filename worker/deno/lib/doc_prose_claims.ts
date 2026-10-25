@@ -6,7 +6,7 @@
  * new behaviour that the head code contradicts (GRQ-AutoTrader#2609, #2685,
  * #2699, VibeCoder#3308), after #3120 and #3232 asked for this in prose only.
  * The two model passes that read prose against head code, the first-run claim
- * check (`summary_claim_check.ts`, Issue #3257) and the review-fix drift check
+ * review-fix drift check
  * (`pr_feedback_drift_check.ts`, Issue #3143), share this module's scope and
  * question so both ask the same thing about prose affected by the change.
  *

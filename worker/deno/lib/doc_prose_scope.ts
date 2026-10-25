@@ -5,13 +5,8 @@ import {
   MAX_DOC_PROSE_FILES,
   selectManualProseFiles,
 } from "./doc_prose_claims.ts";
-import { parseDocsSweepLine } from "./docs_sweep_gate.ts";
 import { githubSlug } from "./markdown_anchors.ts";
 import { maskMarkdownCode } from "./markdown_code_spans.ts";
-import {
-  sourceProseLines,
-  sourceStringLiterals,
-} from "./removed_assertion_gate.ts";
 
 /** Cap on unchanged user-visible strings asked about in one run (Issue #4196). */
 const MAX_USER_VISIBLE_STRINGS = 40;
@@ -546,7 +541,7 @@ export async function collectDocProseScope(input: {
     if (scope.ranges.length > before) keptStrings++;
   }
   for (const name of identifiers) mentions.add(name);
-  const named = parseDocsSweepLine(input.summaryContent).section;
+  const named = "";
   let sections = 0;
   for (
     const file of selectManualProseFiles([
@@ -635,4 +630,540 @@ export function renderProseRanges(ranges: readonly ProseRange[]): string {
     const line = `${r.file}:${r.start}-${r.end} — ${r.kind}`;
     return r.text ? `${line}: ${r.text}` : line;
   }).join("\n");
+}
+
+interface SideLine {
+  raw: string;
+  /** True for a `-` line on the old side or a `+` line on the new side. */
+  changed: boolean;
+  /** Position of the line in the patch, shared by both sides. */
+  seq: number;
+}
+
+// ---------------------------------------------------------------------------
+// Source lexing — blank out comments and string contents before matching
+// (CODING-STANDARDS.md § Writing a gate over text: "A gate that reads source
+// code blanks out comments and literals before it matches").
+// ---------------------------------------------------------------------------
+
+/** Comment and string rules a test file is lexed with. */
+type Lang = "rust" | "python" | "shell" | "sql" | "c";
+
+/** File extensions whose comments start with `#`, by language. */
+const PYTHON_EXT_RE = /\.pyi?$/i;
+const SHELL_EXT_RE = /\.(?:sh|bash|bats|zsh|rb)$/i;
+const RUST_EXT_RE = /\.rs$/i;
+
+/** The lexing rules for a test file, chosen by its extension. */
+function langFor(path: string): Lang {
+  if (RUST_EXT_RE.test(path)) return "rust";
+  if (/\.sql$/i.test(path)) return "sql";
+  if (PYTHON_EXT_RE.test(path)) return "python";
+  if (SHELL_EXT_RE.test(path)) return "shell";
+  return "c";
+}
+
+/** One lexed line of a side. */
+interface LexedLine {
+  /** Original comment text, excluding code and string literals. */
+  comment: string;
+  /** The line with comments and string contents replaced by spaces. */
+  code: string;
+  /** The line with comments removed and strings kept. */
+  stripped: string;
+  /** True when the line holds a comment and nothing else. */
+  commentOnly: boolean;
+  /**
+   * True when the line began inside a string or block comment carried over
+   * from an earlier line — the one case where a lexer mistake (a regex
+   * literal holding a quote, say) can hide a whole line.
+   */
+  startsInside: boolean;
+}
+
+/** An open string literal carried between characters (and lines). */
+interface OpenString {
+  close: string;
+  escapes: boolean;
+  multiline: boolean;
+}
+
+/** Whether `ch` can be part of an identifier. */
+function isIdentChar(ch: string | undefined): boolean {
+  return ch !== undefined && /[\w$]/.test(ch);
+}
+
+/** A side's lexed lines, and where its lexer was left inside a literal. */
+interface LexedSide {
+  lines: LexedLine[];
+  /**
+   * Index of the line that opened the string, template literal, `${…}`
+   * substitution or block comment still open at the end of the side, or -1
+   * when the side ends in code. Valid source never ends inside one, so this
+   * marks a lexer mistake from that line on (PR #3148 review).
+   */
+  unterminatedFrom: number;
+}
+
+/** A template literal resumed at the `}` that closes its `${…}` substitution. */
+const TEMPLATE: OpenString = { close: "`", escapes: true, multiline: true };
+
+/**
+ * Lex a side's lines with a manual character loop (linear time, no regex
+ * over the whole text). Line comments, block comments and string contents
+ * are blanked in `code`; comments alone are removed in `stripped`. In the
+ * C-like rules a JS/TS regex literal is blanked like a string, so a quote
+ * or backtick inside it does not open a phantom string that hides the
+ * lines below (PR #3148 review), and a template literal's `${…}`
+ * substitutions are lexed as code: a stack of brace depths resumes the
+ * template at the `}` that closes each one, so a nested template or quote
+ * inside a substitution cannot close the outer template early.
+ * Lexing is a heuristic — an exotic string form can still mislead it — so
+ * {@link findRemovedAssertions} fails closed on any removed assertion line
+ * the lexer entered inside a carried-over string or block comment, and on a
+ * side whose lexer ends still inside one ({@link LexedSide.unterminatedFrom}).
+ */
+function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
+  const out: LexedLine[] = [];
+  let inBlockComment = false;
+  let open: OpenString | null = null;
+  /** Line that opened the multi-line string or block comment now open. */
+  let openLine = -1;
+  /** Brace depth outside each open `${`, and the line that opened it. */
+  const substitutions: { depth: number; line: number }[] = [];
+  let braceDepth = 0;
+  const slashComments = lang === "rust" || lang === "c";
+  // The last significant code token, carried across lines so a `/` that
+  // opens a line continuing an expression (`a\n  / b`) stays division.
+  let prev: PrevToken = { char: "", word: "" };
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const raw = lines[lineIndex]!.raw;
+    let code = "";
+    let stripped = "";
+    let comment = "";
+    const startsInside = inBlockComment || open !== null;
+    let sawComment = inBlockComment;
+    let sawCode = false;
+    let i = 0;
+    while (i < raw.length) {
+      const ch = raw[i]!;
+      if (inBlockComment) {
+        comment += ch;
+        if (ch === "*" && raw[i + 1] === "/") {
+          comment += "/";
+          inBlockComment = false;
+          code += "  ";
+          i += 2;
+        } else {
+          code += " ";
+          i++;
+        }
+        continue;
+      }
+      if (open) {
+        sawCode = true;
+        if (open.escapes && ch === "\\") {
+          code += "  ";
+          stripped += raw.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (raw.startsWith(open.close, i)) {
+          code += open.close;
+          stripped += open.close;
+          i += open.close.length;
+          open = null;
+          prev = OPERAND;
+          continue;
+        }
+        if (open === TEMPLATE && ch === "$" && raw[i + 1] === "{") {
+          // A substitution is code until its matching `}`.
+          substitutions.push({ depth: braceDepth, line: lineIndex });
+          code += "  ";
+          stripped += "${";
+          i += 2;
+          open = null;
+          prev = { char: "{", word: "" };
+          continue;
+        }
+        code += " ";
+        stripped += ch;
+        i++;
+        continue;
+      }
+      if (slashComments && ch === "/" && raw[i + 1] === "/") {
+        sawComment = true;
+        comment += raw.slice(i);
+        break;
+      }
+      if (
+        (slashComments || lang === "sql") && ch === "/" && raw[i + 1] === "*"
+      ) {
+        comment += "/*";
+        sawComment = true;
+        inBlockComment = true;
+        openLine = lineIndex;
+        code += "  ";
+        i += 2;
+        continue;
+      }
+      if (
+        ch === "#" && (lang === "python" ||
+          (lang === "shell" && (i === 0 || /\s/.test(raw[i - 1]!))))
+      ) {
+        sawComment = true;
+        comment += raw.slice(i);
+        break;
+      }
+      if (lang === "sql" && ch === "-" && raw[i + 1] === "-") {
+        sawComment = true;
+        comment += raw.slice(i);
+        break;
+      }
+      if (lang === "c" && ch === "/" && regexCanStart(prev)) {
+        const end = regexLiteralEnd(raw, i);
+        if (end !== -1) {
+          sawCode = true;
+          code += "/" + " ".repeat(end - i - 2) + "/";
+          stripped += raw.slice(i, end);
+          i = end;
+          prev = OPERAND;
+          continue;
+        }
+      }
+      if (lang === "c" && (ch === "{" || ch === "}")) {
+        const top = substitutions[substitutions.length - 1];
+        if (ch === "}" && top !== undefined && top.depth === braceDepth) {
+          // The `}` closing a `${…}`: the template literal resumes.
+          substitutions.pop();
+          sawCode = true;
+          code += " ";
+          stripped += ch;
+          i++;
+          open = TEMPLATE;
+          continue;
+        }
+        braceDepth += ch === "{" ? 1 : -1;
+      }
+      const opened = openStringAt(raw, i, lang);
+      if (opened) {
+        sawCode = true;
+        code += raw.slice(i, i + opened.length);
+        stripped += raw.slice(i, i + opened.length);
+        i += opened.length;
+        open = opened.string.close === "`" && lang === "c"
+          ? TEMPLATE
+          : opened.string;
+        if (open.multiline) openLine = lineIndex;
+        prev = OPERAND;
+        continue;
+      }
+      if (!/\s/.test(ch)) {
+        sawCode = true;
+        let word = "";
+        if (isIdentChar(ch)) {
+          // Capped: no keyword is longer, and a long identifier stays linear.
+          const cont = i > 0 && isIdentChar(raw[i - 1]);
+          word = !cont
+            ? ch
+            : prev.word.length > 10
+            ? prev.word
+            : prev.word + ch;
+        }
+        prev = { char: ch, word };
+      }
+      code += ch;
+      stripped += ch;
+      i++;
+    }
+    if (open && !open.multiline) open = null;
+    out.push({
+      comment,
+      code,
+      stripped,
+      commentOnly: sawComment && !sawCode,
+      startsInside,
+    });
+  }
+  let unterminatedFrom = inBlockComment || open !== null ? openLine : -1;
+  const outer = substitutions[0];
+  if (outer !== undefined) {
+    unterminatedFrom = unterminatedFrom === -1
+      ? outer.line
+      : Math.min(unterminatedFrom, outer.line);
+  }
+  return { lines: out, unterminatedFrom };
+}
+
+/** Reuse the assertion scanner's language-aware lexer for prose selection. */
+export function sourceProseLines(source: string, path: string): {
+  lines: Array<{ code: string; comment: string }>;
+  unterminatedFrom: number;
+} {
+  return lexLines(
+    source.split("\n").map((raw, seq) => ({ raw, changed: false, seq })),
+    langFor(path),
+  );
+}
+
+/** One string literal recovered from a lexed line. Column is 1-based. */
+export interface SourceStringLiteral {
+  text: string;
+  line: number;
+  column: number;
+}
+
+/**
+ * String literals on each line. `stripped` keeps the characters inside the
+ * quotes and `code` blanks them, so a quote-delimited run that differs
+ * between the two is a literal. Comment blanks exist only in `code` and are
+ * skipped. The return shape of {@link sourceProseLines} is unchanged.
+ */
+export function sourceStringLiterals(
+  source: string,
+  path: string,
+): SourceStringLiteral[] {
+  const lexed = lexLines(
+    source.split("\n").map((raw, seq) => ({ raw, changed: false, seq })),
+    langFor(path),
+  );
+  const literals: SourceStringLiteral[] = [];
+  for (let lineIndex = 0; lineIndex < lexed.lines.length; lineIndex++) {
+    const { code, stripped } = lexed.lines[lineIndex]!;
+    let i = 0;
+    let j = 0;
+    while (i < code.length && j < stripped.length) {
+      if (code[i] !== stripped[j]) {
+        // A comment is blanked in `code` and absent from `stripped`.
+        if (code[i] === " ") i++;
+        else {
+          i++;
+          j++;
+        }
+        continue;
+      }
+      const ch = stripped[j]!;
+      if (ch !== '"' && ch !== "'" && ch !== "`") {
+        i++;
+        j++;
+        continue;
+      }
+      const column = i + 1;
+      i++;
+      j++;
+      let text = "";
+      let closed = false;
+      while (i < code.length && j < stripped.length) {
+        if (stripped.startsWith(ch, j) && code.startsWith(ch, i)) {
+          literals.push({ text, line: lineIndex + 1, column });
+          i += ch.length;
+          j += ch.length;
+          closed = true;
+          break;
+        }
+        text += stripped[j];
+        i++;
+        j++;
+      }
+      if (!closed) break;
+    }
+  }
+  return literals;
+}
+
+/** The last significant code character, and the identifier it ends. */
+interface PrevToken {
+  char: string;
+  word: string;
+}
+
+/** A token after which a `/` is division: a closed string, regex or operand. */
+const OPERAND: PrevToken = { char: ")", word: "" };
+
+/**
+ * Punctuation after which an expression — so a regex literal — can begin:
+ * opening brackets and separators, and every operator, including the `>` of
+ * an arrow (`=> /`/.test(c)`) or a comparison (`a > /x/` cannot be a
+ * division). After a postfix `++`/`--` a `/` divides, but a regex literal
+ * must close on its line, so a misread there blanks at most one line's
+ * slashes rather than opening a phantom string (PR #3148 review).
+ */
+const REGEX_PRECEDERS = new Set([
+  "(",
+  ",",
+  "=",
+  ":",
+  "[",
+  "!",
+  "&",
+  "|",
+  "?",
+  "{",
+  "}",
+  ";",
+  ">",
+  "<",
+  "+",
+  "-",
+  "*",
+  "%",
+  "^",
+  "~",
+]);
+
+/** Keywords after which an expression — so a regex literal — can begin. */
+const REGEX_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "throw",
+  "case",
+  "do",
+  "else",
+  "yield",
+  "await",
+]);
+
+/**
+ * Whether a `/` after `prev` opens a regex literal rather than dividing:
+ * at the start of the file, after an operator or opening punctuation, or
+ * after a keyword such as `return` or `typeof`.
+ */
+function regexCanStart(prev: PrevToken): boolean {
+  if (prev.char === "") return true;
+  if (REGEX_PRECEDERS.has(prev.char)) return true;
+  return prev.word !== "" && REGEX_KEYWORDS.has(prev.word);
+}
+
+/**
+ * The index just past a single-line regex literal opening at `raw[i]` (its
+ * closing `/` and any flags), or -1 when none closes on the line — then the
+ * `/` is division after all, since a regex literal cannot span lines. A `/`
+ * inside a `[…]` class or escaped with a backslash does not close it. `//`
+ * and `/*` are comments, matched before this is called.
+ */
+function regexLiteralEnd(raw: string, i: number): number {
+  let inClass = false;
+  for (let j = i + 1; j < raw.length; j++) {
+    const ch = raw[j];
+    if (ch === "\\") {
+      j++;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") inClass = true;
+    else if (ch === "/") {
+      let end = j + 1;
+      while (end < raw.length && /[a-z]/i.test(raw[end]!)) end++;
+      return end;
+    }
+  }
+  return -1;
+}
+
+/** A string literal opening at `raw[i]`: how many chars open it, and its rules. */
+function openStringAt(
+  raw: string,
+  i: number,
+  lang: Lang,
+): { length: number; string: OpenString } | null {
+  const ch = raw[i]!;
+  if (lang === "python") {
+    if (ch === '"' || ch === "'") {
+      const triple = ch.repeat(3);
+      if (raw.startsWith(triple, i)) {
+        return {
+          length: 3,
+          string: { close: triple, escapes: true, multiline: true },
+        };
+      }
+      return {
+        length: 1,
+        string: { close: ch, escapes: true, multiline: false },
+      };
+    }
+    return null;
+  }
+  if (lang === "shell") {
+    if (ch === '"' || ch === "'") {
+      return {
+        length: 1,
+        string: { close: ch, escapes: ch === '"', multiline: false },
+      };
+    }
+    return null;
+  }
+  if (lang === "rust") {
+    if ((ch === "r" || ch === "b") && !isIdentChar(raw[i - 1])) {
+      // Raw string: r"…", r#"…"#, br#"…"#.
+      let j = i + (ch === "b" && raw[i + 1] === "r" ? 2 : 1);
+      if (ch === "b" && raw[i + 1] !== "r") return null;
+      let hashes = 0;
+      while (raw[j] === "#") {
+        hashes++;
+        j++;
+      }
+      if (raw[j] === '"') {
+        return {
+          length: j - i + 1,
+          string: {
+            close: '"' + "#".repeat(hashes),
+            escapes: false,
+            multiline: true,
+          },
+        };
+      }
+      return null;
+    }
+    if (ch === '"') {
+      return {
+        length: 1,
+        string: { close: '"', escapes: true, multiline: true },
+      };
+    }
+    if (ch === "'") {
+      // A char literal ('x', '\n', '\u{1F600}'), not a lifetime ('a).
+      if (raw[i + 1] === "\\") {
+        const close = raw.indexOf("'", i + 2);
+        if (close !== -1 && close - i <= 12) {
+          return {
+            length: 1,
+            string: { close: "'", escapes: true, multiline: false },
+          };
+        }
+        return null;
+      }
+      if (raw[i + 2] === "'") {
+        return {
+          length: 1,
+          string: { close: "'", escapes: true, multiline: false },
+        };
+      }
+      return null;
+    }
+    return null;
+  }
+  // C-like: TypeScript, JavaScript, Go, Java, Kotlin, C#, Swift…
+  if (ch === '"' || ch === "'") {
+    return {
+      length: 1,
+      string: { close: ch, escapes: true, multiline: false },
+    };
+  }
+  if (ch === "`") {
+    return {
+      length: 1,
+      string: { close: "`", escapes: true, multiline: true },
+    };
+  }
+  return null;
 }
