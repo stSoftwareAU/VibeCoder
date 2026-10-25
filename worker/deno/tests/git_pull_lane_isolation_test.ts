@@ -17,6 +17,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { updatePrBranch } from "../lib/git_pull.ts";
 import { classifyCloneContention } from "../lib/clone_contention.ts";
@@ -45,53 +47,34 @@ async function setupFixture(
 ): Promise<Fixture> {
   const raw = await Deno.makeTempDir({ prefix: "git_pull_lane_" });
   const tmpDir = await Deno.realPath(raw);
-  const remotePath = `${tmpDir}/remote.git`;
   const authorPath = `${tmpDir}/author`;
   const clonePath = `${tmpDir}/VibeCoder`;
-
-  await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
-    cwd: remotePath,
+  const remotePath = await seedGitRemote(tmpDir, "main", [
+    { branch: "main", subject: "initial", files: { "base.txt": "base\n" } },
+    {
+      branch: "issue-373-fix",
+      parent: 1,
+      subject: "PR work",
+      files: { "feature.txt": "feature\n" },
+    },
+    {
+      branch: "main",
+      parent: 1,
+      subject: "base moves on",
+      files: { "base.txt": "base\nmore\n" },
+    },
+  ]);
+  await cloneGitFixture(remotePath, authorPath, {
+    name: "Author",
+    email: "author@example.com",
   });
-
-  await runGitCommand(["clone", remotePath, authorPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "author@example.com"], {
-    cwd: authorPath,
+  // Only the default branch is local; a legacy single-branch clone also
+  // lacks the PR's remote-tracking ref until production repairs its refspec.
+  await cloneGitFixture(remotePath, clonePath, {
+    name: "Worker",
+    email: "worker@example.com",
+    ...(options.singleBranch ? { singleBranch: "main" } : {}),
   });
-  await runGitCommand(["config", "user.name", "Author"], { cwd: authorPath });
-  await Deno.writeTextFile(`${authorPath}/base.txt`, "base\n");
-  await runGitCommand(["add", "."], { cwd: authorPath });
-  await runGitCommand(["commit", "-m", "initial"], { cwd: authorPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: authorPath });
-
-  // The PR: its own file, so it rebases onto main cleanly.
-  await runGitCommand(["checkout", "-b", "issue-373-fix"], { cwd: authorPath });
-  await Deno.writeTextFile(`${authorPath}/feature.txt`, "feature\n");
-  await runGitCommand(["add", "."], { cwd: authorPath });
-  await runGitCommand(["commit", "-m", "PR work"], { cwd: authorPath });
-  await runGitCommand(["push", "origin", "issue-373-fix"], { cwd: authorPath });
-
-  // main moves on, so the PR is behind by one.
-  await runGitCommand(["checkout", "main"], { cwd: authorPath });
-  await Deno.writeTextFile(`${authorPath}/base.txt`, "base\nmore\n");
-  await runGitCommand(["commit", "-am", "base moves on"], { cwd: authorPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: authorPath });
-
-  // The worker's clone. It has no *local* copy of the PR branch — the state
-  // PR #392 was in when the pass reported "pathspec did not match". With
-  // `singleBranch` it is additionally a legacy single-branch clone, in which
-  // even `origin/issue-373-fix` is invisible until the refspec is repaired.
-  await runGitCommand(
-    options.singleBranch === true
-      ? ["clone", "--single-branch", "--branch", "main", remotePath, clonePath]
-      : ["clone", remotePath, clonePath],
-    { cwd: tmpDir },
-  );
-  await runGitCommand(["config", "user.email", "worker@example.com"], {
-    cwd: clonePath,
-  });
-  await runGitCommand(["config", "user.name", "Worker"], { cwd: clonePath });
 
   return { tmpDir, clonePath, authorPath };
 }

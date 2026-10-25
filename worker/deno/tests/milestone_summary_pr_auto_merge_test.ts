@@ -17,6 +17,9 @@ import {
 } from "../lib/milestone_completion.ts";
 import { _resetBaseProtectionMemo } from "../lib/pr_auto_merge.ts";
 
+/** A log line and the level the call site passed (Issue #4176). */
+type LoggedLine = { message: string; level: string };
+
 const REPO = "owner/repo";
 const MILESTONE = "v1.0";
 const MILESTONE_BRANCH = "milestone/v1-0";
@@ -131,13 +134,15 @@ function scriptGh(
 
 function deps(
   gh: (args: string[]) => Promise<string>,
-  logs: string[],
+  logs: LoggedLine[],
   overrides: Partial<MilestoneCompletionDeps> = {},
 ): MilestoneCompletionDeps {
   return {
     repos: [REPO],
     ghCommandFn: gh,
-    log: (msg: string) => logs.push(msg),
+    log: (msg: string, level?: string) => {
+      logs.push({ message: msg, level: level ?? "info" });
+    },
     authorOptions: { fleetAuthors: ["bot"] },
     ...overrides,
   };
@@ -158,7 +163,7 @@ function commentCalls(calls: GhCall[]): GhCall[] {
 Deno.test("summary PR arming - a created summary PR is armed before the function returns", async () => {
   _resetBaseProtectionMemo();
   const { gh, calls } = scriptGh();
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const result = await checkAndHandleMilestoneCompletions(deps(gh, logs));
   assertEquals(result.ok, true);
@@ -179,7 +184,7 @@ Deno.test("summary PR arming - open children withhold arming with no second comm
   const { gh, calls } = scriptGh({
     openChildPrs: [{ number: 42, title: "Still open" }],
   });
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const result = await checkAndHandleMilestoneCompletions(deps(gh, logs));
   assertEquals(result.ok, true);
@@ -198,7 +203,7 @@ Deno.test("summary PR arming - a refused --auto call yields exactly one reason c
   const { gh, calls } = scriptGh({
     mergeError: "GraphQL: Base branch was modified (mergePullRequest)",
   });
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const result = await checkAndHandleMilestoneCompletions(deps(gh, logs));
   assertEquals(result.ok, true);
@@ -211,8 +216,9 @@ Deno.test("summary PR arming - a refused --auto call yields exactly one reason c
   assertStringIncludes(body, "Auto-Merge sweep retries");
   assertEquals(
     logs.some((l) =>
-      l.includes("WARNING") && l.includes("was not armed") &&
-      l.includes(`${REPO}#${PR_NUMBER}`)
+      l.level === "warn" &&
+      l.message.includes("was not armed") &&
+      l.message.includes(`${REPO}#${PR_NUMBER}`)
     ),
     true,
   );
@@ -221,7 +227,7 @@ Deno.test("summary PR arming - a refused --auto call yields exactly one reason c
 Deno.test("summary PR arming - skip_auto_merge repositories are never armed", async () => {
   _resetBaseProtectionMemo();
   const { gh, calls } = scriptGh();
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const result = await checkAndHandleMilestoneCompletions(
     deps(gh, logs, { skipAutoMerge: () => true }),
@@ -236,7 +242,7 @@ Deno.test("summary PR arming - skip_auto_merge repositories are never armed", as
 Deno.test("summary PR arming - an unreadable PR URL fails loud and arms nothing", async () => {
   _resetBaseProtectionMemo();
   const { gh, calls } = scriptGh({ prCreateOutput: "created, no URL here" });
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const result = await checkAndHandleMilestoneCompletions(deps(gh, logs));
   assertEquals(result.ok, true);
@@ -245,7 +251,7 @@ Deno.test("summary PR arming - an unreadable PR URL fails loud and arms nothing"
   assertEquals(commentCalls(calls).length, 0);
   assertEquals(
     logs.some((l) =>
-      l.includes("WARNING") && l.includes("could not read a PR number")
+      l.level === "warn" && l.message.includes("could not read a PR number")
     ),
     true,
   );
@@ -254,7 +260,7 @@ Deno.test("summary PR arming - an unreadable PR URL fails loud and arms nothing"
 Deno.test("summary PR arming - an unprotected default branch takes the gated merge with the fleet logins", async () => {
   _resetBaseProtectionMemo();
   const { gh, calls } = scriptGh({ baseProtected: false });
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const result = await checkAndHandleMilestoneCompletions(
     deps(gh, logs, { fleetAuthors: ["bot"] }),
@@ -293,7 +299,7 @@ Deno.test("summary PR arming - an existing summary PR is left untouched", async 
     }
     return base(args);
   };
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const result = await checkAndHandleMilestoneCompletions(deps(gh, logs));
   assertEquals(result.ok, true);

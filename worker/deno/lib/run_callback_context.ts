@@ -37,6 +37,10 @@ import {
   type WorkerBuildFacts,
   workerBuildFacts,
 } from "./worker_build_info.ts";
+import type { UpdateMode } from "../types.ts";
+import { UPDATE_MODES } from "./config_defaults.ts";
+import { pinValueErrors } from "./config_validator.ts";
+import { runGitReadSync } from "./git_timeout.ts";
 
 /** Host-side facts the loop cannot supply on its own. */
 export interface CallbackIdentity {
@@ -87,6 +91,13 @@ export interface CallbackContextSeams {
    * process-wide memo, so a caller never resolves it per run.
    */
   buildFacts?: () => WorkerBuildFacts;
+  /**
+   * Checkout whose tag, commit and update mode identify this worker
+   * (Issue #4120). Set, that checkout is read. Unset, the builder reads
+   * the worker repository unless {@link buildFacts} was injected, which
+   * keeps a test that supplies the build stamp off the real checkout.
+   */
+  checkoutDir?: string;
 }
 
 /**
@@ -191,6 +202,124 @@ export function callbackOutcomeFromRun(
   return result;
 }
 
+/** Identity of the checkout this worker is running, when each fact can be read. */
+export interface CheckoutWorkerFacts {
+  /** Release tag, or `git describe`, with one leading `v` removed. */
+  version?: string;
+  /** Full 40-character SHA of HEAD. */
+  commit?: string;
+  /** `dynamic` when `.config.json` is absent or names no mode. */
+  updateMode?: UpdateMode;
+  /** The pin. Present only when {@link updateMode} is `frozen`. */
+  pinnedRef?: string;
+}
+
+/** The worker repository that contains this module. */
+export function defaultWorkerCheckoutDir(): string {
+  return decodeURIComponent(new URL("../../../", import.meta.url).pathname);
+}
+
+function gitText(dir: string, args: string[]): string | undefined {
+  try {
+    const out = runGitReadSync(["-C", dir, ...args]);
+    if (out.code !== 0) return undefined;
+    const text = out.stdout.trim();
+    return text.length > 0 ? text : undefined;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotCapable) return undefined;
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+}
+
+/** `v1.10.124` and `1.10.124` are the same release tag. */
+function versionFromTag(raw: string): string {
+  return /^v\d/.test(raw) ? raw.slice(1) : raw;
+}
+
+/**
+ * Read `update_mode` the way the checkout updater does (Issue #624).
+ *
+ * A missing file is `dynamic`. Unreadable, malformed, an unrecognised mode,
+ * or `frozen` without a usable `pinned_ref` throws: reporting that host as
+ * dynamic would hide a pin it asked for.
+ */
+function readCheckoutUpdateModeSync(
+  dir: string,
+): { updateMode: UpdateMode; pinnedRef?: string } {
+  const configPath = `${dir}/.config.json`;
+  let content: string;
+  try {
+    content = Deno.readTextFileSync(configPath);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { updateMode: "dynamic" };
+    }
+    throw new Error(
+      `cannot read ${configPath} to resolve update_mode: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error(
+      `${configPath} contains invalid JSON, so update_mode cannot be resolved`,
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `${configPath} is not a JSON object, so update_mode cannot be resolved`,
+    );
+  }
+  const record = parsed as Record<string, unknown>;
+  const rawMode = record.update_mode;
+  if (rawMode === undefined) return { updateMode: "dynamic" };
+  if (
+    typeof rawMode !== "string" ||
+    !(UPDATE_MODES as readonly string[]).includes(rawMode)
+  ) {
+    throw new Error(
+      `Invalid update_mode ${JSON.stringify(rawMode)} in ${configPath}. ` +
+        `Accepted values: ${UPDATE_MODES.join(", ")}.`,
+    );
+  }
+  if (rawMode !== "frozen") return { updateMode: "dynamic" };
+  const rawRef = record.pinned_ref;
+  if (typeof rawRef !== "string" || rawRef.trim() === "") {
+    throw new Error(
+      `update_mode "frozen" requires pinned_ref in ${configPath}`,
+    );
+  }
+  const ref = rawRef.trim();
+  const errors = pinValueErrors("pinned_ref", ref);
+  if (errors.length > 0) throw new Error(errors.join(" "));
+  return { updateMode: "frozen", pinnedRef: ref };
+}
+
+/**
+ * Version, commit and update mode of a worker checkout (Issue #4120).
+ *
+ * Version is `git describe --tags --exact-match` when HEAD is a release
+ * tag, otherwise `git describe --tags`. The commit is `git rev-parse HEAD`.
+ * Either is omitted when git cannot say. The update mode follows
+ * {@link readCheckoutUpdateModeSync}.
+ */
+export function readCheckoutWorkerFacts(dir: string): CheckoutWorkerFacts {
+  const exact = gitText(dir, ["describe", "--tags", "--exact-match"]);
+  const described = exact ?? gitText(dir, ["describe", "--tags"]);
+  const commit = gitText(dir, ["rev-parse", "HEAD"]);
+  const mode = readCheckoutUpdateModeSync(dir);
+  return {
+    ...(described ? { version: versionFromTag(described) } : {}),
+    ...(commit && /^[0-9a-f]{40}$/.test(commit) ? { commit } : {}),
+    updateMode: mode.updateMode,
+    ...(mode.pinnedRef ? { pinnedRef: mode.pinnedRef } : {}),
+  };
+}
+
 /** Assemble the versioned context handed to every hook this run triggers. */
 export function buildIssueRunCallbackContext(
   run: TerminalIssueRun,
@@ -203,7 +332,16 @@ export function buildIssueRunCallbackContext(
     seams,
   );
   const outcome = callbackOutcomeFromRun(run);
+  const injected = seams.buildFacts !== undefined;
   const facts = (seams.buildFacts ?? (() => workerBuildFacts()))();
+  // Issue #4120: the checkout is the source of the tag, the commit and the
+  // update mode. An injected build stamp (the tests for Issue #2444) is
+  // left alone unless the caller also names a checkout.
+  const checkout = seams.checkoutDir !== undefined || !injected
+    ? readCheckoutWorkerFacts(seams.checkoutDir ?? defaultWorkerCheckoutDir())
+    : undefined;
+  const version = checkout?.version ?? facts.version;
+  const commit = checkout?.commit ?? facts.commit;
   return {
     runId: identity.runId,
     result: run.result,
@@ -215,8 +353,10 @@ export function buildIssueRunCallbackContext(
       : {}),
     // Issue #2444: omitted rather than guessed when the build could not be
     // read; resolved once per process, never per run.
-    ...(facts.version ? { workerVersion: facts.version } : {}),
-    ...(facts.commit ? { workerCommit: facts.commit } : {}),
+    ...(version ? { workerVersion: version } : {}),
+    ...(commit ? { workerCommit: commit } : {}),
+    ...(checkout?.updateMode ? { updateMode: checkout.updateMode } : {}),
+    ...(checkout?.pinnedRef ? { pinnedRef: checkout.pinnedRef } : {}),
     // Issue #2100: the workflow label the dispatch matched, so an archive can
     // compare implementation runs only. Absent when the loop named none.
     ...(present(run.mode) ? { mode: present(run.mode)! } : {}),

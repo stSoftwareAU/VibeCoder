@@ -25,6 +25,8 @@ import type {
 import type { WorkerConfig } from "../types.ts";
 import { lookupStreamSession } from "../lib/resume_state_store.ts";
 import { resolveStreamId } from "../lib/stream_identity.ts";
+import { CLAUDE_OUTPUT_ADAPTER } from "../lib/claude_output_adapter.ts";
+import { buildRunStats } from "../lib/run_stats.ts";
 
 /** The stream session a sibling issue left, which this run resumed. */
 const STREAM_SESSION_ID = "0199fd1e-2a4b-4c3d-8e5f-000000004116";
@@ -129,19 +131,25 @@ Deno.test("execute_phase #4116 - a clean exit with no changes is still no_change
 });
 
 /** Run one exit code on a resumed stream and report what the stream holds. */
-async function streamAfterRun(exitCode: number): Promise<string> {
+async function streamAfterRun(
+  exitCode: number,
+  output = exitCode === 0 ? "Read the code; nothing to change." : THRASH_OUTPUT,
+): Promise<string> {
   const workDir = await Deno.makeTempDir({ prefix: "issue4116-stream-" });
   const stream = resolveStreamId("org/repo", undefined);
   try {
     await runWith(
       {
-        output: exitCode === 0
-          ? "Read the code; nothing to change."
-          : THRASH_OUTPUT,
+        output,
         exitCode,
         rawExitCode: exitCode,
         timedOut: false,
         provider: "claude",
+        agentOutput: CLAUDE_OUTPUT_ADAPTER.decode(output),
+        runStats: buildRunStats(output, {
+          requestedModel: "test",
+          wallClockMs: 0,
+        }),
       },
       (config, state) => {
         config.workDir = workDir;
@@ -169,3 +177,15 @@ Deno.test("execute_phase #4116 - a failed agent hands no session on to the strea
 Deno.test("execute_phase #4116 - a clean run still hands its session on to the stream", async () => {
   assertEquals(await streamAfterRun(0), "usable");
 });
+
+for (
+  const output of [
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1}',
+    '{"type":"result","is_error":false,"num_turns":0}',
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"Starting work"}]}}',
+  ]
+) {
+  Deno.test(`execute_phase #4147 - exit-zero incomplete run hands no session to the stream: ${output}`, async () => {
+    assertEquals(await streamAfterRun(0, output), "none");
+  });
+}

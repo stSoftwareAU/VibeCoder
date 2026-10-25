@@ -138,7 +138,7 @@ const MAX_REASON_DETAIL_CHARS = 300;
 /** Subprocess options this module needs — the injectable half of the seam. */
 export interface GraftRunOptions {
   cwd?: string;
-  timeoutMs?: number;
+  timeoutMs: number;
   env?: Record<string, string>;
 }
 
@@ -146,7 +146,7 @@ export interface GraftRunOptions {
 export type GraftRunner = (
   executable: string,
   args: string[],
-  options?: GraftRunOptions,
+  options: GraftRunOptions,
 ) => Promise<Result<SubprocessResult>>;
 
 /** The git seam. Defaults to `runGitCommand`. */

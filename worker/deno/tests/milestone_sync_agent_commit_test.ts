@@ -14,6 +14,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
@@ -62,44 +64,23 @@ async function setup(
   mainFiles: Record<string, string> = { "docs/development.md": MAIN },
 ): Promise<Fixture> {
   const root = await Deno.makeTempDir({ prefix: "issue-1964-" });
-  const remote = `${root}/remote.git`;
-  const seed = `${root}/seed`;
-  await Deno.mkdir(remote, { recursive: true });
-  await gitOk(["init", "--bare", "--initial-branch=main", "."], remote);
-  await gitOk(["clone", remote, seed], root);
-  await gitOk(["config", "user.email", "t@example.com"], seed);
-  await gitOk(["config", "user.name", "Test"], seed);
-
-  const write = async (files: Record<string, string>) => {
-    for (const [path, content] of Object.entries(files)) {
-      const dir = path.includes("/")
-        ? `${seed}/${path.slice(0, path.lastIndexOf("/"))}`
-        : seed;
-      await Deno.mkdir(dir, { recursive: true });
-      await Deno.writeTextFile(`${seed}/${path}`, content);
-    }
-    await gitOk(["add", "-A"], seed);
-  };
-
-  await write(seedFiles);
-  await gitOk(["commit", "-m", "Seed"], seed);
-  await gitOk(["push", "origin", "main"], seed);
-
-  await gitOk(["checkout", "-b", "milestone/1964"], seed);
-  await write(milestoneFiles);
-  await gitOk(["commit", "-m", "Issue #1964: the branch reworded it"], seed);
-  await gitOk(["push", "origin", "milestone/1964"], seed);
-
-  await gitOk(["checkout", "main"], seed);
-  await write(mainFiles);
-  await gitOk(["commit", "-m", "Issue #1964: main reworded it"], seed);
-  await gitOk(["push", "origin", "main"], seed);
-
+  const remote = await seedGitRemote(root, "main", [
+    { branch: "main", subject: "Seed", files: seedFiles },
+    {
+      branch: "milestone/1964",
+      parent: 1,
+      subject: "Issue #1964: the branch reworded it",
+      files: milestoneFiles,
+    },
+    {
+      branch: "main",
+      parent: 1,
+      subject: "Issue #1964: main reworded it",
+      files: mainFiles,
+    },
+  ]);
   const clone = `${root}/clone`;
-  await gitOk(["clone", remote, clone], root);
-  await gitOk(["config", "user.email", "t@example.com"], clone);
-  await gitOk(["config", "user.name", "Test"], clone);
-  await gitOk(["checkout", "milestone/1964"], clone);
+  await cloneGitFixture(remote, clone, { checkout: "milestone/1964" });
 
   return {
     clone,

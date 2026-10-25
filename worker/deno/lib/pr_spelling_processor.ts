@@ -15,6 +15,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   buildSpellingFixPrompt,
   type SpellingFixPromptOptions,
@@ -434,7 +435,7 @@ async function _processSpellingWithHeartbeat(
   const finaliseResult = await deps.git.commitAndPushPending(
     input.branchName,
     `Fix spelling check failures: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
-    { cwd: processorDeps.workDir },
+    { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
     false,
     preFlight,
   );
@@ -466,7 +467,7 @@ async function _processSpellingWithHeartbeat(
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
         input.branchName,
-        { cwd: processorDeps.workDir },
+        { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
       );
       // Issue #211: keep the reason the recovery failed — it names the step
       // that failed and carries git's stderr.
@@ -477,7 +478,7 @@ async function _processSpellingWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
           `Fix spelling check failures: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
-          { cwd: processorDeps.workDir },
+          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
           false,
           preFlight,
         );
@@ -519,17 +520,31 @@ async function _processSpellingWithHeartbeat(
       { cwd: processorDeps.workDir },
     );
     if (movedResult.ok && movedResult.value) {
-      logger.info("Branch HEAD moved during Claude run", {
-        branchName: input.branchName,
-        beforeSha,
+      const extended = await classifyHeadExtension(beforeSha, {
+        cwd: processorDeps.workDir,
       });
-      hasChanges = true;
-      // A moved HEAD proves a commit exists locally. It proves nothing about
-      // the remote — which is the whole of Issue #579 — so this only re-opens
-      // the question, and the verification below answers it. A push that was
-      // refused outright (Issue #1679) is not re-opened at all: the refusal
-      // is the answer.
-      pushSucceeded = !pushAttemptFailed && finalUnpushedAfterPush === 0;
+      if (extended.status === "unrelated") {
+        logger.info(
+          "Branch HEAD moved off the starting head during the run; not treating it as this pass's work",
+          {
+            branchName: input.branchName,
+            beforeSha,
+            detail: extended.message,
+          },
+        );
+      } else {
+        logger.info("Branch HEAD moved during Claude run", {
+          branchName: input.branchName,
+          beforeSha,
+        });
+        hasChanges = true;
+        // A moved HEAD proves a commit exists locally. It proves nothing about
+        // the remote — which is the whole of Issue #579 — so this only re-opens
+        // the question, and the verification below answers it. A push that was
+        // refused outright (Issue #1679) is not re-opened at all: the refusal
+        // is the answer.
+        pushSucceeded = !pushAttemptFailed && finalUnpushedAfterPush === 0;
+      }
     }
   }
 

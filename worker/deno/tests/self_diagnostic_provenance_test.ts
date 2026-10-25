@@ -11,7 +11,6 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildSelfScheduleAnnouncement,
-  buildUnschedulableDiagnosticEscalation,
   formatSelfScheduleMarker,
   isSelfDiagnosticRepo,
   recogniseSelfDiagnostic,
@@ -99,15 +98,4 @@ Deno.test("buildSelfScheduleAnnouncement - carries its dedup marker and the cap"
   assertStringIncludes(body, "**1**");
   assertStringIncludes(body, SELF_SCHEDULE_AUDIT_VERB);
   assertStringIncludes(body, "self_schedule_diagnostics_enabled");
-});
-
-Deno.test("buildUnschedulableDiagnosticEscalation - dedups per issue and names the next step", () => {
-  const escalation = buildUnschedulableDiagnosticEscalation({
-    issueNumber: 39,
-    family: SELF_DIAGNOSTIC_FAMILIES[0]!,
-    reason: "a merged fleet PR names it, which blocks it permanently",
-  });
-  assertEquals(escalation.dedupKey, "self-diagnostic-unschedulable-39");
-  assertStringIncludes(escalation.reason, "merged fleet PR");
-  assertStringIncludes(escalation.nextStep, "work-on");
 });

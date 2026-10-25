@@ -281,6 +281,26 @@ Deno.test("releaseCheckoutTargetDirs - removes every account's dir for that chec
   assertEquals(released.errors, []);
 });
 
+Deno.test("releaseCheckoutTargetDirs - a root that cannot be listed is an error, not 'nothing built'", async () => {
+  const released = await releaseCheckoutTargetDirs(CHECKOUT, {
+    listTargetDirs: () =>
+      Promise.reject(new Error("du timed out after 120000ms")),
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  }, ROOT);
+  assertEquals(released.bytes, 0);
+  assertEquals(released.errors, [`${ROOT}: du timed out after 120000ms`]);
+});
+
+Deno.test("releaseCheckoutTargetDirs - a missing root means nothing was built", async () => {
+  const released = await releaseCheckoutTargetDirs(CHECKOUT, {
+    listTargetDirs: () => Promise.reject(new Deno.errors.NotFound("no root")),
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  }, ROOT);
+  assertEquals(released, { bytes: 0, errors: [] });
+});
+
 // ---------------------------------------------------------------------------
 // Regression: the milestone sync that ran on GRQ-23
 // ---------------------------------------------------------------------------

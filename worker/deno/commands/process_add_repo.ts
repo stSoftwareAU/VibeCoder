@@ -81,6 +81,7 @@ import {
 import { runGhCommand as defaultGhCommand } from "../lib/github.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
+import { runDirectCommand } from "../lib/subprocess_timeout.ts";
 import {
   type LabelSyncResult,
   syncLabelsForRepo,
@@ -633,18 +634,7 @@ export const defaultRunCommand: RunCommand = async (cmd: string[]) => {
       stderr: result.stderr.trim(),
     };
   }
-  const command = new Deno.Command(cmd[0]!, {
-    args: cmd.slice(1),
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const output = await command.output();
-  const decoder = new TextDecoder();
-  return {
-    success: output.success,
-    stdout: decoder.decode(output.stdout).trim(),
-    stderr: decoder.decode(output.stderr).trim(),
-  };
+  return await runDirectCommand(cmd);
 };
 
 /**

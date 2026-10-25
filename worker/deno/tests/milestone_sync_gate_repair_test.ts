@@ -17,6 +17,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { LogContext, Logger } from "../types.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
@@ -111,56 +113,36 @@ const DOCS_RESOLVED = "The workspace holds 14 crates.\n";
  */
 async function setup(): Promise<Fixture> {
   const root = await Deno.makeTempDir({ prefix: "issue-1965-" });
-  const remote = `${root}/remote.git`;
-  const seed = `${root}/seed`;
-  await Deno.mkdir(remote, { recursive: true });
-  await gitOk(["init", "--bare", "--initial-branch=main", "."], remote);
-  await gitOk(["clone", remote, seed], root);
-  await gitOk(["config", "user.email", "t@example.com"], seed);
-  await gitOk(["config", "user.name", "Test"], seed);
-
-  const write = async (files: Record<string, string>) => {
-    for (const [path, content] of Object.entries(files)) {
-      const dir = path.includes("/")
-        ? `${seed}/${path.slice(0, path.lastIndexOf("/"))}`
-        : seed;
-      await Deno.mkdir(dir, { recursive: true });
-      await Deno.writeTextFile(`${seed}/${path}`, content);
-    }
-    await gitOk(["add", "-A"], seed);
-  };
-
-  await write({
-    "docs/development.md": DOCS_SEED,
-    "crates/control/src/broker.rs": TRAIT_SEED,
-  });
-  await gitOk(["commit", "-m", "Seed"], seed);
-  await gitOk(["push", "origin", "main"], seed);
-
-  await gitOk(["checkout", "-b", "milestone/1965"], seed);
-  await write({
-    "docs/development.md": DOCS_BRANCH,
-    "crates/control/tests/runtime.rs": FAKE_BRANCH,
-  });
-  await gitOk(["commit", "-m", "Issue #1965: the branch added a fake"], seed);
-  await gitOk(["push", "origin", "milestone/1965"], seed);
-
-  await gitOk(["checkout", "main"], seed);
-  await write({
-    "docs/development.md": DOCS_MAIN,
-    "crates/control/src/broker.rs": TRAIT_MAIN,
-  });
-  await gitOk(
-    ["commit", "-m", "Issue #284: add find_by_client_order_id to Broker"],
-    seed,
-  );
-  await gitOk(["push", "origin", "main"], seed);
-
+  const remote = await seedGitRemote(root, "main", [
+    {
+      branch: "main",
+      subject: "Seed",
+      files: {
+        "docs/development.md": DOCS_SEED,
+        "crates/control/src/broker.rs": TRAIT_SEED,
+      },
+    },
+    {
+      branch: "milestone/1965",
+      parent: 1,
+      subject: "Issue #1965: the branch added a fake",
+      files: {
+        "docs/development.md": DOCS_BRANCH,
+        "crates/control/tests/runtime.rs": FAKE_BRANCH,
+      },
+    },
+    {
+      branch: "main",
+      parent: 1,
+      subject: "Issue #284: add find_by_client_order_id to Broker",
+      files: {
+        "docs/development.md": DOCS_MAIN,
+        "crates/control/src/broker.rs": TRAIT_MAIN,
+      },
+    },
+  ]);
   const clone = `${root}/clone`;
-  await gitOk(["clone", remote, clone], root);
-  await gitOk(["config", "user.email", "t@example.com"], clone);
-  await gitOk(["config", "user.name", "Test"], clone);
-  await gitOk(["checkout", "milestone/1965"], clone);
+  await cloneGitFixture(remote, clone, { checkout: "milestone/1965" });
 
   return {
     clone,

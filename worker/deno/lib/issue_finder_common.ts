@@ -18,7 +18,6 @@ import type {
   IssueFinderDiagnostics,
 } from "./issue_finder_logger.ts";
 import type { ContentApprovalDeps } from "./content_approval_tracker.ts";
-import type { EscalateUnworkableDeps } from "./escalate_unworkable_work_on.ts";
 import type { SelfDiagnosticDeps } from "./collect_self_diagnostic_candidates.ts";
 import type { SelectionOptions } from "./issue_priority.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
@@ -142,13 +141,6 @@ export interface FindIssuesOptions {
   diagnostics?: IssueFinderDiagnostics;
   /** Optional content approval deps for testing (Issue #1341) */
   contentApprovalDeps?: ContentApprovalDeps;
-  /**
-   * Optional injectable deps for unworkable-work-on escalation (Issue
-   * #2752). Mainly used by tests to inject a recording GitHub client,
-   * a hermetic `ensureLabelExists`, or a fixed clock. In production the
-   * escalation routes through the iteration's `ghCommandFn`.
-   */
-  escalateDeps?: EscalateUnworkableDeps;
   /**
    * Optional injectable deps for tier 2b self-scheduling (Issue #1277).
    *

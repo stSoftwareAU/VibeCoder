@@ -322,6 +322,154 @@ Deno.test("oversized legacy evidence is refused before ownership is inferred fro
   );
 });
 
+Deno.test("facts sync keeps red-check prose that is not a branch-outcomes list (Issue #4178)", () => {
+  const pointer = [
+    "## Test Plan",
+    "",
+    "**Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json`, including the cost-query status.",
+    "",
+    "The cost verifier adds production branches and a target default.",
+    "",
+    "Red checks (each run on the real template, then restored):",
+    "",
+    '- `RecordingFrequency DAILY → CONTINUOUS`: test red (panics with "…")',
+    "- `RecordingMode removed`: test red (missing-property panic naming #4051).",
+    "",
+  ].join("\n");
+  const rendered = "Branch outcomes: none added";
+  const result = applyBranchOutcomesFacts(pointer, rendered);
+  assert(result.includes("RecordingMode removed"));
+  assert(result.includes("The cost verifier adds production branches"));
+  assert(result.includes(BRANCH_OUTCOMES_MARKER));
+  assert(result.includes(rendered));
+  assertEquals(applyBranchOutcomesFacts(result, rendered), result);
+
+  // The live PR body shape: one closed owned block, then the same red checks.
+  const owned = [
+    "## Test Plan",
+    "",
+    BRANCH_OUTCOMES_MARKER,
+    "Branch outcomes: recorded in docs/archive/pr-summaries/pr-summary-4051.facts.json",
+    BRANCH_OUTCOMES_END_MARKER,
+    "",
+    "The cost verifier adds production branches and a target default.",
+    "",
+    "Red checks (each run on the real template, then restored):",
+    "",
+    '- `RecordingFrequency DAILY → CONTINUOUS`: test red (panics with "…")',
+    "- `RecordingMode removed`: test red (missing-property panic naming #4051).",
+    "",
+  ].join("\n");
+  const synced = applyBranchOutcomesFacts(owned, rendered);
+  assert(synced.includes("RecordingMode removed"));
+  assert(synced.includes(rendered));
+  assertEquals(applyBranchOutcomesFacts(synced, rendered), synced);
+});
+
+Deno.test("a second hand-written branch-outcomes block outside the markers is still refused (Issue #4178)", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned +
+          "\n**Branch outcomes:**\n\n- A reviewer finding still needs investigation.\n",
+        "Branch outcomes: none added",
+      ),
+    Error,
+    "unowned evidence",
+  );
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned + "\n**Branch outcomes:** unresolved evidence\n",
+        "Branch outcomes: none added",
+      ),
+    Error,
+    "unowned evidence",
+  );
+});
+
+const FACTS_POINTER_LINE =
+  "**Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json`";
+
+Deno.test("a facts-pointer header followed directly by a non-outcome bullet is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  for (
+    const bullet of [
+      `\n${FACTS_POINTER_LINE}\n\n- A reviewer finding still needs investigation.\n`,
+      `\n${FACTS_POINTER_LINE}\n- A reviewer finding still needs investigation.\n`,
+    ]
+  ) {
+    assertThrows(
+      () => applyBranchOutcomesFacts(owned + bullet, rendered),
+      Error,
+      "unowned evidence",
+    );
+  }
+});
+
+const BULLETED_FACTS_POINTER =
+  "- **Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json`";
+
+Deno.test("a bulleted facts-pointer header followed directly by a sibling non-outcome bullet is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned +
+          `\n${BULLETED_FACTS_POINTER}\n- A reviewer finding still needs investigation.\n`,
+        rendered,
+      ),
+    Error,
+    "unowned evidence",
+  );
+});
+
+Deno.test("a bulleted facts-pointer header followed directly by a sibling admission is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned +
+          `\n${BULLETED_FACTS_POINTER}\n- lib/a.ts:1 — outcome — no test reaches it\n`,
+        rendered,
+      ),
+    Error,
+    "admits no test reaches",
+  );
+});
+
+Deno.test("inline unresolved evidence after a facts pointer is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned + `\n${FACTS_POINTER_LINE} unresolved evidence\n`,
+        rendered,
+      ),
+    Error,
+    "unowned evidence",
+  );
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned + `\n${FACTS_POINTER_LINE}\nunresolved evidence\n`,
+        rendered,
+      ),
+    Error,
+    "unowned evidence",
+  );
+});
+
 Deno.test("a known renderer marker directly after a legacy entry is a boundary (Issue #3979)", () => {
   const legacy =
     "**Branch outcomes:**\n\n- `lib/a.ts:1` — outcome — test `tests/a_test.ts` — flip: went red\n";

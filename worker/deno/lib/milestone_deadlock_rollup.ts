@@ -38,6 +38,7 @@ import {
   detectMilestoneDeadlocks,
   type MilestoneDependencyGraph,
 } from "./milestone_deadlock.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Same page size `fetchOpenIssuesByMilestone` uses, so the two share a cache entry. */
 const OPEN_ISSUES_LIMIT = 200;
@@ -120,8 +121,10 @@ export async function buildMilestoneDependencyGraph(
   const unresolved = [...candidates].filter((n) => !closedByNumber.has(n))
     .sort((a, b) => a - b);
   if (unresolved.length > 0) {
-    log(
-      `WARNING: milestone deadlock detection could not resolve ` +
+    logAt(
+      log,
+      "warn",
+      `milestone deadlock detection could not resolve ` +
         `${unresolved.map((n) => `#${n}`).join(", ")} in ${repo} — not in ` +
         `the open listing or the recent closed listing`,
     );
@@ -169,8 +172,10 @@ export async function raiseDeadlockPartialRollups(
 
   for (const deadlock of deadlocks) {
     try {
-      o.log(
-        `WARNING: Milestone deadlock: '${deadlock.milestone}' in ${o.repo} holds ` +
+      logAt(
+        o.log,
+        "warn",
+        `Milestone deadlock: '${deadlock.milestone}' in ${o.repo} holds ` +
           `#${deadlock.heldIssue} behind closed dependency ` +
           `#${deadlock.closedDependency}, blocking open issue(s) ` +
           `${deadlock.blockingOpenIssues.map((n) => `#${n}`).join(", ")} ` +
@@ -211,16 +216,20 @@ export async function raiseDeadlockPartialRollups(
           );
           break;
         case "failed":
-          o.log(
-            `WARNING: partial rollup for '${deadlock.milestone}' in ` +
+          logAt(
+            o.log,
+            "warn",
+            `partial rollup for '${deadlock.milestone}' in ` +
               `${o.repo} failed: ${result.reason}`,
           );
           break;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      o.log(
-        `WARNING: could not raise a partial rollup for milestone ` +
+      logAt(
+        o.log,
+        "warn",
+        `could not raise a partial rollup for milestone ` +
           `'${deadlock.milestone}' in ${o.repo}: ${message} (Issue #2835)`,
       );
     }

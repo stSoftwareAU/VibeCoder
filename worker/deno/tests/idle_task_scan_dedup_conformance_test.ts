@@ -592,6 +592,11 @@ const NON_PARTICIPATING = new Map<string, string>([
     "repository. No LLM, no prompt.",
   ],
   [
+    "ponytail-debt",
+    "Native: lists every SIMPLE-ON-PURPOSE marker into one refreshed " +
+    "report. No LLM, no prompt, no per-finding duplicates.",
+  ],
+  [
     "workflow-annotation-scan",
     "Native: reports GitHub Actions annotations verbatim, keyed on the " +
     "annotation. No LLM, no prompt.",

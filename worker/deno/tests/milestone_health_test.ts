@@ -696,6 +696,28 @@ function healthWithGh(
   );
 }
 
+/**
+ * A failed listing must fail the report. An empty success reads as
+ * "No active milestones" or "Complete — all issues closed" (Issue #4106).
+ */
+function assertFetchFailure(
+  result: Result<MilestoneHealthReport>,
+  expectedFragments: string[],
+): void {
+  assertEquals(result.ok, false);
+  if (result.ok) throw new Error("unreachable");
+  const message = result.error.message;
+  for (const fragment of expectedFragments) {
+    assertStringIncludes(message, fragment);
+  }
+  assertEquals(message.includes("No active milestones"), false, message);
+  assertEquals(
+    message.includes("Complete — all issues closed"),
+    false,
+    message,
+  );
+}
+
 /** Assert a failed result names each expected fragment and never leaks the raw marker. */
 function assertMalformedFailure(
   result: Result<MilestoneHealthReport>,
@@ -863,7 +885,7 @@ Deno.test("getMilestoneHealth - GraphQL compare with null compare payload falls 
   assertEquals(branch?.behindBy, 1);
 });
 
-Deno.test("getMilestoneHealth - failed milestone list transport still gives an empty repo (Issue #3856)", async () => {
+Deno.test("getMilestoneHealth - a failed milestone list is a failed report (Issue #4106)", async () => {
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("repos/org/repo/milestones")) {
@@ -873,9 +895,73 @@ Deno.test("getMilestoneHealth - failed milestone list transport still gives an e
     return "[]";
   };
   const result = await healthWithGh(ghFn);
+  assertFetchFailure(result, ["org/repo", "HTTP 500"]);
+});
+
+Deno.test("getMilestoneHealth - a rate-limited closed issue list is not reported complete (Issue #4106)", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("repos/org/repo/milestones")) {
+      return `[{"title":"OIDC","number":1}]`;
+    }
+    if (key.includes("--state closed")) {
+      throw new Error("API rate limit exceeded");
+    }
+    if (key.includes(".default_branch")) return "main";
+    return "[]";
+  };
+  const result = await healthWithGh(ghFn);
+  assertFetchFailure(result, [
+    "org/repo",
+    "closed",
+    "API rate limit exceeded",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - an open issue list HTTP 503 is not reported complete (Issue #4106)", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("repos/org/repo/milestones")) {
+      return `[{"title":"OIDC","number":1}]`;
+    }
+    if (key.includes("--state closed")) return "[]";
+    if (key.includes("--state open")) {
+      throw new Error("HTTP 503");
+    }
+    if (key.includes(".default_branch")) return "main";
+    return "[]";
+  };
+  const result = await healthWithGh(ghFn);
+  assertFetchFailure(result, ["org/repo", "open", "HTTP 503"]);
+});
+
+Deno.test("getMilestoneHealth - a non-JSON open issue list is not reported complete (Issue #4106)", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("repos/org/repo/milestones")) {
+      return `[{"title":"OIDC","number":1}]`;
+    }
+    if (key.includes("--state closed")) return "[]";
+    if (key.includes("--state open")) return "HTTP 503";
+    if (key.includes(".default_branch")) return "main";
+    return "[]";
+  };
+  const result = await healthWithGh(ghFn);
+  assertFetchFailure(result, ["org/repo", "open"]);
+});
+
+Deno.test("getMilestoneHealth - an empty issue list is still complete (Issue #4106)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "--state closed": "[]",
+    "--state open": "[]",
+    ".default_branch": "main",
+    "graphql": buildGraphQLBranchResponse(null),
+  }));
   assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.repos.length, 1);
-    assertEquals(result.value.repos[0]!.milestones.length, 0);
-  }
+  if (!result.ok) throw new Error("unreachable");
+  assertEquals(
+    result.value.repos[0]!.milestones[0]!.statusSummary,
+    "Complete — all issues closed",
+  );
 });

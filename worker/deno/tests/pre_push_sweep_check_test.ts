@@ -114,7 +114,7 @@ Deno.test("checkSweptAtAncestry: a top-up whose sweptAt is a main commit passes"
   }
 });
 
-Deno.test("checkSweptAtAncestry: a branch-only sweptAt blocks, naming slice and sha", async () => {
+Deno.test("checkSweptAtAncestry: a branch-only sweptAt is repointed to the merge base", async () => {
   const f = await makeFixture();
   try {
     await git(f.clone, "checkout", "-qb", "feat");
@@ -122,15 +122,17 @@ Deno.test("checkSweptAtAncestry: a branch-only sweptAt blocks, naming slice and 
     await git(f.clone, "add", ".");
     await git(f.clone, "commit", "-qm", "branch only");
     const branchSha = await git(f.clone, "rev-parse", "HEAD");
+    const mergeBase = await git(f.clone, "merge-base", "origin/main", "HEAD");
     await commitTopUp(f.clone, branchSha);
     const result = await checkSweptAtAncestry({
       cwd: f.clone,
       changed: [TOP_UP],
       git: defaultPrePushGit,
     });
-    assert(!result.ok);
-    assert(result.error.includes("top-up-5000"), result.error);
-    assert(result.error.includes(branchSha), result.error);
+    assert(result.ok, result.ok ? "" : result.error);
+    const onDisk = JSON.parse(await Deno.readTextFile(`${f.clone}/${TOP_UP}`));
+    assertEquals(onDisk.sweptAt, mergeBase);
+    assert(onDisk.sweptAt !== branchSha);
   } finally {
     await cleanup(f.root);
   }
@@ -148,19 +150,26 @@ Deno.test("checkSweptAtAncestry: only changed slices are checked", async () => {
       git: defaultPrePushGit,
     });
     assert(result.ok, result.ok ? "" : result.error);
+    const untouched = JSON.parse(
+      await Deno.readTextFile(`${f.clone}/${LEDGER}`),
+    );
+    assertEquals(untouched.slices[0].sweptAt, "0".repeat(40));
     const ledgerChanged = await checkSweptAtAncestry({
       cwd: f.clone,
       changed: [LEDGER],
       git: defaultPrePushGit,
     });
-    assert(!ledgerChanged.ok);
-    assert(ledgerChanged.error.includes("12a"), ledgerChanged.error);
+    assert(ledgerChanged.ok, ledgerChanged.ok ? "" : ledgerChanged.error);
+    const repaired = JSON.parse(
+      await Deno.readTextFile(`${f.clone}/${LEDGER}`),
+    );
+    assertEquals(repaired.slices[0].sweptAt, f.secondMain);
   } finally {
     await cleanup(f.root);
   }
 });
 
-Deno.test("checkSweptAtAncestry: a branch-only sweptAt on the ledger file's own top-up slice blocks", async () => {
+Deno.test("checkSweptAtAncestry: a branch-only sweptAt on the ledger file's own top-up slice is repointed", async () => {
   const f = await makeFixture();
   try {
     await git(f.clone, "checkout", "-qb", "feat");
@@ -168,6 +177,7 @@ Deno.test("checkSweptAtAncestry: a branch-only sweptAt on the ledger file's own 
     await git(f.clone, "add", ".");
     await git(f.clone, "commit", "-qm", "branch only");
     const branchSha = await git(f.clone, "rev-parse", "HEAD");
+    const mergeBase = await git(f.clone, "merge-base", "origin/main", "HEAD");
     // The ledger file holds in-file `top-up-<n>` slices for issues up to
     // LEDGER_FILE_LAST_TOP_UP_ISSUE; a changed one must still be checked.
     await writeJson(`${f.clone}/${LEDGER}`, {
@@ -186,9 +196,10 @@ Deno.test("checkSweptAtAncestry: a branch-only sweptAt on the ledger file's own 
       changed: [LEDGER],
       git: defaultPrePushGit,
     });
-    assert(!result.ok);
-    assert(result.error.includes("top-up-1885"), result.error);
-    assert(result.error.includes(branchSha), result.error);
+    assert(result.ok, result.ok ? "" : result.error);
+    const onDisk = JSON.parse(await Deno.readTextFile(`${f.clone}/${LEDGER}`));
+    assertEquals(onDisk.slices[0].sweptAt, f.firstMain);
+    assertEquals(onDisk.slices[1].sweptAt, mergeBase);
   } finally {
     await cleanup(f.root);
   }
@@ -259,14 +270,20 @@ Deno.test("checkSweptAtAncestry: a failed history deepen is infrastructure, a br
     const branchSha = await git(f.clone, "rev-parse", "HEAD");
     const tip = await commitTopUp(f.clone, branchSha);
 
-    // Positive control: with git answering, the same input is a verdict.
+    // With git answering, the branch commit is repointed before the check.
     const verdict = await checkSweptAtAncestry({
       cwd: f.clone,
       changed: [TOP_UP],
       git: defaultPrePushGit,
     });
-    assert(!verdict.ok);
-    assertEquals(verdict.infrastructure, undefined);
+    assert(verdict.ok, verdict.ok ? "" : verdict.error);
+    const repaired = JSON.parse(
+      await Deno.readTextFile(`${f.clone}/${TOP_UP}`),
+    );
+    assertEquals(
+      repaired.sweptAt,
+      await git(f.clone, "merge-base", "origin/main", "HEAD"),
+    );
 
     // The clone reads as shallow and every fetch fails: the check could not run.
     const outage: typeof defaultPrePushGit = (args, cwd) => {
@@ -338,7 +355,7 @@ Deno.test("checkSweptAtAncestry: a failed history deepen is infrastructure, a br
   }
 });
 
-Deno.test("runPrePushGate: a branch-only sweptAt in a pushed top-up blocks the push", async () => {
+Deno.test("runPrePushGate: a branch-only sweptAt in a pushed top-up is repointed and the push passes", async () => {
   const f = await makeFixture();
   try {
     await git(f.clone, "checkout", "-qb", "feat");
@@ -346,6 +363,7 @@ Deno.test("runPrePushGate: a branch-only sweptAt in a pushed top-up blocks the p
     await git(f.clone, "add", ".");
     await git(f.clone, "commit", "-qm", "branch only");
     const branchSha = await git(f.clone, "rev-parse", "HEAD");
+    const mergeBase = await git(f.clone, "merge-base", "origin/main", "HEAD");
     const tip = await commitTopUp(f.clone, branchSha);
     const stdin = `refs/heads/feat ${tip} refs/heads/feat ${"0".repeat(40)}\n`;
     const result = await runPrePushGate({
@@ -353,8 +371,86 @@ Deno.test("runPrePushGate: a branch-only sweptAt in a pushed top-up blocks the p
       stdin,
       preFlightCommands: [],
     });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const onDisk = JSON.parse(await Deno.readTextFile(`${f.clone}/${TOP_UP}`));
+    assertEquals(onDisk.sweptAt, mergeBase);
+    const committed = JSON.parse(await git(f.clone, "show", `HEAD:${TOP_UP}`));
+    assertEquals(committed.sweptAt, mergeBase);
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+Deno.test("runPrePushGate: an agent-recorded branch-commit sweptAt is repointed to the merge base and the push passes (Issue #4235)", async () => {
+  const f = await makeFixture();
+  try {
+    await git(f.clone, "checkout", "-qb", "feat");
+    await Deno.writeTextFile(`${f.clone}/branch.txt`, "b\n");
+    await git(f.clone, "add", ".");
+    await git(f.clone, "commit", "-qm", "branch only");
+    const branchSha = await git(f.clone, "rev-parse", "HEAD");
+    const mergeBase = await git(f.clone, "merge-base", "origin/main", "HEAD");
+    assert(mergeBase !== branchSha);
+    assert(mergeBase === f.secondMain, mergeBase);
+    await writeJson(`${f.clone}/${LEDGER}`, {
+      roots: ["worker/deno/lib"],
+      parent: 1,
+      description: "fixture",
+      slices: [slice(1, "12a", branchSha)],
+    });
+    await git(f.clone, "add", ".");
+    await git(f.clone, "commit", "-qm", "agent wrote a branch sweptAt");
+    const tip = await git(f.clone, "rev-parse", "HEAD");
+    const result = await runPrePushGate({
+      cwd: f.clone,
+      stdin: `refs/heads/feat ${tip} refs/heads/feat ${"0".repeat(40)}\n`,
+      preFlightCommands: [],
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const onDisk = JSON.parse(await Deno.readTextFile(`${f.clone}/${LEDGER}`));
+    assertEquals(onDisk.slices[0].sweptAt, mergeBase);
+    const committed = JSON.parse(
+      await git(f.clone, "show", `HEAD:${LEDGER}`),
+    );
+    assertEquals(committed.slices[0].sweptAt, mergeBase);
+    await git(f.clone, "merge-base", "--is-ancestor", mergeBase, "origin/main");
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+Deno.test("checkSweptAtAncestry: a failed merge-base is an error and keeps the branch sweptAt unpushed (Issue #4235)", async () => {
+  const f = await makeFixture();
+  try {
+    await git(f.clone, "checkout", "-qb", "feat");
+    await Deno.writeTextFile(`${f.clone}/branch.txt`, "b\n");
+    await git(f.clone, "add", ".");
+    await git(f.clone, "commit", "-qm", "branch only");
+    const branchSha = await git(f.clone, "rev-parse", "HEAD");
+    await commitTopUp(f.clone, branchSha);
+    const result = await checkSweptAtAncestry({
+      cwd: f.clone,
+      changed: [TOP_UP],
+      git: (args, cwd) => {
+        if (
+          args[0] === "merge-base" && args[1] === "origin/main" &&
+          args[2] === "HEAD"
+        ) {
+          return Promise.resolve({
+            code: 128,
+            stdout: "",
+            stderr: "fatal: Not a valid object name origin/main",
+          });
+        }
+        return defaultPrePushGit(args, cwd);
+      },
+    });
     assert(!result.ok);
-    assert(result.error.message.includes(branchSha), result.error.message);
+    assert(result.error.includes("merge-base origin/main HEAD"), result.error);
+    assert(!result.error.includes("WARNING:"));
+    assert(!result.error.includes("ERROR:"));
+    const onDisk = JSON.parse(await Deno.readTextFile(`${f.clone}/${TOP_UP}`));
+    assertEquals(onDisk.sweptAt, branchSha);
   } finally {
     await cleanup(f.root);
   }
