@@ -252,6 +252,13 @@ export interface MilestoneRebuildDeps {
   ) => Promise<Result<void>>;
   /** Sync-PR raiser — defaults to {@link raiseMilestoneSyncPr}. */
   raiseSyncPr?: typeof raiseMilestoneSyncPr;
+  /**
+   * Where the notice goes when there is no milestone PR to comment on
+   * (Issue #4328): the milestone's escalation target. When set, step 7 posts
+   * through it instead of `gh pr comment`; when unset the PR comment is posted
+   * as before.
+   */
+  announce?: (body: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -690,15 +697,21 @@ export async function abandonAndRebuildMilestone(
 
   // --- Step 7: one comment on the milestone PR. -----------------------------
   try {
-    await gh([
-      "pr",
-      "comment",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--body",
-      buildMilestoneRebuildPrComment(outcome),
-    ]);
+    if (deps.announce) {
+      // Issue #4328: a branch with no milestone PR is announced on its
+      // escalation target instead.
+      await deps.announce(buildMilestoneRebuildPrComment(outcome));
+    } else {
+      await gh([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        buildMilestoneRebuildPrComment(outcome),
+      ]);
+    }
   } catch (error) {
     return failed("pr-comment", errorMessage(error));
   }

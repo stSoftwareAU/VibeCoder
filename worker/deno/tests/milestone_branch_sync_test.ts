@@ -2941,10 +2941,13 @@ Deno.test("syncMilestoneBranches - a branch past its budget is not merged again 
     };
     const result = await syncMilestoneBranches(deps);
 
-    // No merge, no fourth charge, and no second hand-off: the branch belongs
-    // to the roll-back now.
+    // No merge and no fourth charge. The spent budget is handed to the
+    // roll-back once (Issue #4328, where a spent budget elsewhere used to be
+    // only skipped), and the branch is not handed off again by this pass.
     assertEquals(attempts, 0);
-    assertEquals(rollbacks, []);
+    assertEquals(rollbacks, [
+      `owner/repo|${LEDGER_BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+    ]);
     assertEquals(result.ok && result.value.skipped, 1);
     assertEquals(
       (await readLedger(streakPath))?.conflictAttempts,
