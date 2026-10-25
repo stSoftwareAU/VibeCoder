@@ -64,6 +64,15 @@
  * probe registered (tests, ad hoc callers) nothing is gated, which is the
  * documented `unknown` default of Issue #226.
  *
+ * Issue #4360: a build already running is held to the same floor. The claim
+ * gate only stops new claims, so {@link parkInFlightBuild} parks an agent,
+ * mutation or discrimination build when the reading is low or the ephemeral
+ * budget is short, and {@link hostDiskLaunchStopReason} ends the launch when
+ * the trim was refused and the host is below the floor — exiting the container
+ * is what discards the ephemeral layer and lets the next launch recreate the
+ * volume. The in-flight gate stays off until production enables it, so a test
+ * that registers a probe does not park every other test in the process.
+ *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
@@ -350,6 +359,79 @@ export async function heavyBuildAdmission(
       `${verdict.detail}; cargo builds wait for CI; Deno projects keep their ` +
       `normal checks (Issue #4326)`,
   };
+}
+
+/**
+ * The sentence appended when a build is parked for the host disk (Issue #4360).
+ *
+ * Both host-fault classifiers match it, and it is not a worker-gate marker, so
+ * the issue is not charged a failed-once or a gate verdict.
+ */
+export const HOST_DISK_PARK_NOTE = "Parked as infrastructure (Issue #4360).";
+
+/** The deferral, plus {@link HOST_DISK_PARK_NOTE}, or null when the build may run. */
+export function inFlightParkReason(deferral: string | null): string | null {
+  if (deferral === null) return null;
+  return `${deferral} ${HOST_DISK_PARK_NOTE}`;
+}
+
+/**
+ * Whether this launch must end so the host gets its space back (Issue #4360).
+ *
+ * Deleting files inside a volume whose trim was refused does not return host
+ * blocks. Ending the launch discards the container's ephemeral layer, and the
+ * next launch recreates the volume when the host is still below the floor.
+ * Above the floor, or where the trim is honoured, the build is parked and the
+ * launch continues: fstrim can return the blocks, and a recreate would not.
+ *
+ * @returns The reason to end the launch, naming the floor, or null to continue.
+ */
+export function hostDiskLaunchStopReason(
+  reading: HeavyBuildDiskReading,
+): string | null {
+  if (reading.status.level !== "low" || !reading.trimRefused) return null;
+  const deferral = judgeHostDiskForBuild(reading);
+  if (deferral === null) return null;
+  return `${deferral} The work volume trim was refused, so this launch ends ` +
+    `and the ephemeral build layer is discarded; the next launch recreates ` +
+    `the volume if the host is still below the floor (Issue #4360). ` +
+    `${HOST_DISK_PARK_NOTE}`;
+}
+
+/**
+ * Off until production turns it on. A process-global probe is how the
+ * maintenance gate already reads the disk; enabling the in-flight callers
+ * only in the worker process keeps a test's probe from parking another
+ * test's agent (deno test runs files in parallel).
+ */
+let inFlightGateEnabled = false;
+
+/** Enable or clear the in-flight host-disk gate for this process. */
+export function enableInFlightHostDiskGate(enabled: boolean): void {
+  inFlightGateEnabled = enabled;
+}
+
+/** Whether production has armed {@link parkInFlightBuild}. */
+export function inFlightHostDiskGateEnabled(): boolean {
+  return inFlightGateEnabled;
+}
+
+/**
+ * Why an in-flight build must not run in `checkoutPath` (Issue #4360).
+ *
+ * Same floor and ephemeral headroom as {@link heavyBuildAdmission}. Null when
+ * the gate is not armed, no probe is registered, or the host has room.
+ */
+export async function parkInFlightBuild(
+  checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<string | null> {
+  if (!inFlightGateEnabled) return null;
+  const admission = await heavyBuildAdmission(checkoutPath, deps);
+  // A merge-only admission permits a milestone merge, never its build.
+  return inFlightParkReason(
+    admission.mode === "build" ? null : admission.reason,
+  );
 }
 
 /**

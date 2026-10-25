@@ -1317,6 +1317,32 @@ test (`worker/deno/lib/heavy_build_gate.ts`), reading the same
 An `unknown` reading never defers, the same rule as the claim gate: a blind
 probe must not stop every build in the fleet.
 
+### In-flight builds stop at the same floor (Issue #4360)
+
+The maintenance deferral above does not cover a build that is already
+running. On GRQ-23 (2026-10-25) a security-fix discrimination `cargo` started
+with about 60 GB free and the host was at 0 forty minutes later. The worker's
+reading of `host-disk.json` can be minutes old (the launcher refreshes it on
+`HOST_DISK_REFRESH_SECONDS`, default five minutes), so the claim gate did not
+drain the pool until after the filesystem had gone read-only.
+
+Before an agent invocation in a checkout, a quality-gate run, a mutation
+check or a discrimination `cargo`/`deno`, the worker reads the same monitor
+with the cache skipped (`check({ force: true })`) and parks the step when the
+host is below the floor or, where the trim is refused, short of the floor
+plus the 25 GB headroom. The park is infrastructure: the reason carries
+`Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
+gate verdict, and it does not earn `failed-once`. A `Read-only file system`
+/`os error 30` failure is classified the same way. While `cargo` or `deno` is
+still running, the same check repeats and the child is stopped.
+
+Where the runtime refuses the trim **and** the host is below the floor, the
+launch ends with status 74. Deleting files in that volume does not return
+host blocks; leaving the container discards the ephemeral layer, and the next
+launch's heal recreates the volume if the host is still short. Above the
+floor, or where the trim is honoured, the build is parked and the launch
+continues.
+
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 
 Above the floor, a build can still be refused by the ephemeral cargo root's
@@ -1354,6 +1380,7 @@ The deferred cargo build cannot consume the host's remaining headroom. No furthe
 trim, deleting artefacts inside the guest returns nothing to the host, so the
 ephemeral root's idle target directories, already pruned first, are the only
 space the worker can hand back.
+
 
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
@@ -1524,23 +1551,27 @@ build artefacts.
 - **An unusable root is a reported fallback, not a broken build.** If
   `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
   the build stays on the volume.
-- **The root has a budget (Issues #3178, #4326).** The layer is released at
-  every relaunch, but **within** a launch every byte written there is real host
-  disk. Before a maintenance build, the host must have its floor **plus 25 GB
-  of headroom** free (one build the size of the one that took GRQ-23 down).
-  Short of that, other checkouts' target directories are pruned, largest first,
-  skipping any written to in the last 20 minutes (another slot's build in
-  progress) and the building checkout's own (its incremental cache). If the
-  build is still not covered, the sync does not wait on cargo. A cargo-only
-  tree lands that cycle without its cargo build: a conflict-free merge or a
-  deterministically resolved one is pushed unverified. A Deno-only tree and a
-  mixed tree keep their Deno checks and suites and are rolled back when those
-  are red. A conflict that needs the agent on a cargo tree is charged on the
-  next over-budget cycle, so the recovery ladder applies (see
+- **The root has a budget (Issues #3178, #4326, #4360).** The layer is
+  released at every relaunch, but **within** a launch every byte written there
+  is real host disk. Before a maintenance build, and before an in-flight
+  agent, quality, mutation or discrimination build, the host must have its
+  floor **plus 25 GB of headroom** free where the trim is refused. Short of
+  that, other checkouts' target directories are pruned, largest first,
+  skipping any written to in the last 20 minutes and the building checkout's
+  own incremental cache. If the build is still not covered, an in-flight
+  build is parked. A cargo-only milestone tree can still land that cycle
+  without its cargo build: a conflict-free or deterministically resolved merge
+  is pushed unverified. A Deno-only tree and a mixed tree keep their Deno
+  checks and suites and are rolled back when those are red. A conflict that
+  needs the agent on a cargo tree is charged on the next over-budget cycle,
+  so the recovery ladder applies (see
   [HOST_DISK_BUDGET](#host_disk_budget-merges-without-the-build-issue-4326)).
-  Pruning counts as room even where the trim is refused: the
-  guest filesystem reuses the freed blocks, so a build writing into them does
-  not grow the host image again.
+  Pruning counts as room even where the trim is refused: the guest reuses
+  the freed blocks, so a build writing into them does not grow the host image
+  again. It does not return those blocks to the host. When the host is below
+  the floor and the trim was refused, the launch ends so the layer is
+  discarded and the next launch can recreate the volume.
+
 - **A pass releases what it built.** When the milestone sync's pass over a
   repository ends, that clone's target directories are removed rather than
   left to the relaunch.

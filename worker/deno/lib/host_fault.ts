@@ -39,8 +39,36 @@ export function isHostFaultKind(value: string): value is HostFaultKind {
   return (HOST_FAULT_KINDS as readonly string[]).includes(value);
 }
 
-/** `No space left on device` (ENOSPC), however the caller happened to word it. */
-const DISK_FULL_PATTERN = /No space left on device|\bENOSPC\b/i;
+/**
+ * Disk exhaustion, however the caller happened to word it.
+ *
+ * `os error 30` is Rust's `EROFS`: after the host filled, the guest remounted
+ * read-only and later failures quoted that instead of `ENOSPC` (Issue #4360).
+ * The park note is the worker's own words when it stops a build at the floor.
+ * A worker-gate marker is still excluded by {@link detectHostFault} before
+ * this pattern runs, so a gate that quotes the same text stays an issue failure.
+ */
+const DISK_FULL_PATTERN =
+  /No space left on device|\bENOSPC\b|Read-only file system|\bos error 30\b|Parked as infrastructure \(Issue #4360\)/i;
+
+/** Whether `message` is the host running out of disk, including the read-only fallout. */
+export function isHostDiskFaultText(message: string): boolean {
+  return DISK_FULL_PATTERN.test(message);
+}
+
+/**
+ * A phase failure for a host-disk fault, or null when `reason` is not one.
+ *
+ * The category stays `internal_error` so {@link detectHostFault} still reads
+ * the message. Any other declared category, and any worker-gate marker, would
+ * charge the issue (Issue #4360).
+ */
+export function hostDiskInfrastructureFailure(
+  reason: string,
+): { category: "internal_error"; status: "failure"; reason: string } | null {
+  if (!isHostDiskFaultText(reason)) return null;
+  return { category: "internal_error", status: "failure", reason };
+}
 
 /**
  * `Failed to clone <repo>: <stderr>` from `setupRepo()` in

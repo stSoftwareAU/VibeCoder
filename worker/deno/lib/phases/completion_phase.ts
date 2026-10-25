@@ -27,6 +27,7 @@ import {
   PRE_PUSH_LOOKUP_FAILED_MARKER,
   SUMMARY_RULE_GATE_MARKER,
 } from "../failure_diagnosis.ts";
+import { hostDiskInfrastructureFailure } from "../host_fault.ts";
 import { HeadDivergedError } from "../git_branch.ts";
 import {
   type IssueContext,
@@ -2319,6 +2320,13 @@ async function completionBody(
         qualityCredentials: config.repoConfig?.[repo]?.qualityCredentials,
         deps,
       });
+      // A read-only or no-space failure is the host, not a missing
+      // discrimination. Returning here writes no gate verdict and charges
+      // no blocked run (Issue #4360).
+      if (discrimination.kind === "not_checked") {
+        const fault = hostDiskInfrastructureFailure(discrimination.reason);
+        if (fault) return fault;
+      }
     }
 
     const securityGate = evaluateSecurityFixGate({
@@ -2630,6 +2638,10 @@ async function completionBody(
         }
       },
     });
+    if (mutationResult.kind === "error") {
+      const fault = hostDiskInfrastructureFailure(mutationResult.reason);
+      if (fault) return fault;
+    }
     const gate = evaluateMutationGate(mutationResult, prBody);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });
