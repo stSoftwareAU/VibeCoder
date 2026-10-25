@@ -33,6 +33,12 @@ const DEFAULT_GIT_MERGE_TIMEOUT = 120;
 
 /** Exit code returned when a git operation times out. */
 import { noteGitOutputForVolumeFault } from "./work_volume_fault.ts";
+import {
+  clampTimeoutToRunTimeline,
+  formatTimeoutSeconds,
+  subprocessCommandLabel,
+  waitForChildExit,
+} from "./subprocess_timeout.ts";
 
 export const TIMEOUT_EXIT_CODE = 124;
 
@@ -232,7 +238,6 @@ export async function runGitCommand(
   const gitSubcommand = args[0] ?? "";
   const timeoutSeconds = options.timeoutSeconds ??
     getTimeoutForOperation(gitSubcommand);
-  const timeoutMs = timeoutSeconds * 1000;
 
   // Issue #1284: mask secrets in the message arguments before the process
   // starts. A pushed commit message is permanent public history, so this is
@@ -262,6 +267,16 @@ export async function runGitCommand(
     );
   }
 
+  // Issue #4247: the table (or the caller's override) is then clamped to the
+  // run timeline. Read it before any await so a test can set the timeline
+  // for this call only. A budget of 0 or less throws and does not spawn.
+  const commandLabel = subprocessCommandLabel("git", effectiveArgs);
+  const timeoutMs = clampTimeoutToRunTimeline(
+    timeoutSeconds * 1000,
+    commandLabel,
+  );
+  const reportedSeconds = formatTimeoutSeconds(timeoutMs);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -272,18 +287,26 @@ export async function runGitCommand(
       env: options.env,
       stdout: "piped",
       stderr: "piped",
-      signal: controller.signal,
+      stdin: "null",
     });
 
-    const process = await command.output();
+    const child = command.spawn();
+    const outcome = await waitForChildExit(
+      child,
+      controller.signal,
+      commandLabel,
+    );
     clearTimeout(timer);
 
-    // Issue #1378: aborting the signal terminates the child rather than
-    // throwing, so a timed-out call resolves here with git's signal exit code
-    // (143) — reported as a plain failure before this check, which hid every
-    // timeout from `isGitTimeout`. Inspect the controller to tell the two
-    // apart; the `catch` below still covers runtimes that do throw.
-    if (controller.signal.aborted) {
+    // Issue #1378: a timed-out call used to resolve with git's signal exit
+    // code (143) and was reported as a plain failure, which hid every timeout
+    // from `isGitTimeout`. The abort, including a kill that did not finish
+    // inside the grace, is a timeout.
+    if (
+      outcome.kind === "kill-incomplete" ||
+      outcome.kind === "aborted" ||
+      controller.signal.aborted
+    ) {
       incrementCounter("timeouts");
       return {
         ok: true,
@@ -292,10 +315,12 @@ export async function runGitCommand(
           stdout: "",
           stderr: `TIMEOUT: git ${
             args.join(" ")
-          } timed out after ${timeoutSeconds}s (Issue #619)`,
+          } timed out after ${reportedSeconds}s (Issue #619)`,
         },
       };
     }
+
+    const process = outcome.output;
 
     const stdout = new TextDecoder().decode(process.stdout);
     const stderr = new TextDecoder().decode(process.stderr);
@@ -356,7 +381,7 @@ export async function runGitCommand(
           stdout: "",
           stderr: `TIMEOUT: git ${
             effectiveArgs.join(" ")
-          } timed out after ${timeoutSeconds}s (Issue #619)`,
+          } timed out after ${reportedSeconds}s (Issue #619)`,
         },
       };
     }

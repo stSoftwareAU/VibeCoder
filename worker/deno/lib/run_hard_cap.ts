@@ -76,7 +76,7 @@ export interface RunHardCapInput {
 }
 
 /** Read an environment variable, tolerating a denied `--allow-env`. */
-function defaultEnv(name: string): string | undefined {
+export function defaultEnv(name: string): string | undefined {
   try {
     return Deno.env.get(name);
   } catch {
@@ -105,6 +105,27 @@ function parseSeconds(raw: string | undefined): number | undefined {
  */
 const MIN_EPOCH_SECONDS = 1_000_000_000;
 const MAX_EPOCH_SECONDS = 100_000_000_000;
+
+/**
+ * Parse an epoch-**seconds** value a launcher exported.
+ *
+ * @param raw - The raw environment text, if any.
+ * @returns Whole epoch-seconds within the plausible range, or undefined when
+ *   the value is absent, malformed or implausible.
+ */
+export function parsePlausibleEpochSeconds(
+  raw: string | undefined,
+): number | undefined {
+  const seconds = parseSeconds(raw);
+  if (
+    seconds === undefined ||
+    seconds < MIN_EPOCH_SECONDS ||
+    seconds >= MAX_EPOCH_SECONDS
+  ) {
+    return undefined;
+  }
+  return seconds;
+}
 
 /**
  * Resolve the extension ceiling from the supervisor's published cap.
@@ -144,12 +165,8 @@ export function resolveRunHardCap(
     };
   }
 
-  const startedSeconds = parseSeconds(rawStart);
-  if (
-    startedSeconds === undefined ||
-    startedSeconds < MIN_EPOCH_SECONDS ||
-    startedSeconds >= MAX_EPOCH_SECONDS
-  ) {
+  const startedSeconds = parsePlausibleEpochSeconds(rawStart);
+  if (startedSeconds === undefined) {
     return {
       capped: false,
       reason: rawStart === undefined
@@ -204,14 +221,10 @@ export function readRunCapPassthrough(
   env: (name: string) => string | undefined = defaultEnv,
 ): RunCapPassthrough | undefined {
   const maxSeconds = parseSeconds(env(RUN_MAX_SECONDS_ENV));
-  const startedEpochSeconds = parseSeconds(env(RUN_STARTED_EPOCH_ENV));
+  const startedEpochSeconds = parsePlausibleEpochSeconds(
+    env(RUN_STARTED_EPOCH_ENV),
+  );
   if (maxSeconds === undefined || startedEpochSeconds === undefined) {
-    return undefined;
-  }
-  if (
-    startedEpochSeconds < MIN_EPOCH_SECONDS ||
-    startedEpochSeconds >= MAX_EPOCH_SECONDS
-  ) {
     return undefined;
   }
   return { maxSeconds, startedEpochSeconds };

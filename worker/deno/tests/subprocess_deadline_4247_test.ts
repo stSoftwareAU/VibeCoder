@@ -1,0 +1,366 @@
+/**
+ * Subprocess chokepoint budgets (Issue #4247).
+ *
+ * The `gh` table, the run-timeline clamp and the bounded kill are exercised
+ * through the real chokepoints. The timeline is the one from Issue #4242,
+ * installed only for the synchronous prefix of a call and then cleared, so a
+ * parallel test does not inherit it.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import {
+  _resetGhSpawnRunner,
+  _setGhSpawnRunner,
+  spawnGh,
+} from "../lib/gh_spawn.ts";
+import { runGitCommand, TIMEOUT_EXIT_CODE } from "../lib/git_timeout.ts";
+import {
+  resetRunTimelineForTests,
+  type RunTimeline,
+  setRunTimeline,
+} from "../lib/run_timeline.ts";
+import {
+  _resetChokepointNowForTests,
+  _resetKillGraceMsForTests,
+  _setChokepointNowForTests,
+  _setKillGraceMsForTests,
+  HARD_KILL_WRAP_UP_RESERVE_MS,
+  runWithTimeout,
+} from "../lib/subprocess_timeout.ts";
+import {
+  DEFAULT_GH_CLONE_TIMEOUT,
+  DEFAULT_GH_COMMAND_TIMEOUT,
+  DEFAULT_GH_PAGINATED_TIMEOUT,
+} from "../lib/gh_timeout.ts";
+
+const NOW = 1_700_000_000_000;
+
+/** A timeline whose helpers match {@link RunTimeline}. Hard kill may be null. */
+function timeline(input: {
+  finishMs: number;
+  hardKillMs: number | null;
+}): RunTimeline {
+  const targetMs = input.finishMs - 3_600_000;
+  return {
+    targetMs,
+    finishMs: input.finishMs,
+    hardKillMs: input.hardKillMs,
+    pastTarget: (now) => now >= targetMs,
+    pastFinish: (now) => now >= input.finishMs,
+    remainingToFinishMs: (now) => Math.max(0, input.finishMs - now),
+    clampToFinishMs: (requestedMs, now, reserveMs) =>
+      Math.min(requestedMs, Math.max(0, input.finishMs - now - reserveMs)),
+  };
+}
+
+/** Install the clock and timeline for the synchronous prefix of one call. */
+function pin(t: RunTimeline): void {
+  _setChokepointNowForTests(() => NOW);
+  setRunTimeline(t);
+}
+
+function unpin(): void {
+  resetRunTimelineForTests();
+  _resetChokepointNowForTests();
+}
+
+function captureBudget(): { timeoutMs: number | undefined } {
+  const seen: { timeoutMs: number | undefined } = { timeoutMs: undefined };
+  _setGhSpawnRunner((_args, options) => {
+    seen.timeoutMs = options.timeoutMs;
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    });
+  });
+  return seen;
+}
+
+Deno.test("spawnGh - api and issue view take the seconds-class timeout", async () => {
+  resetRunTimelineForTests();
+  const api = captureBudget();
+  try {
+    await spawnGh(["api", "user"]);
+    assertEquals(api.timeoutMs, DEFAULT_GH_COMMAND_TIMEOUT * 1000);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+
+  const issue = captureBudget();
+  try {
+    await spawnGh(["issue", "view", "1"]);
+    assertEquals(issue.timeoutMs, DEFAULT_GH_COMMAND_TIMEOUT * 1000);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("spawnGh - repo clone takes the minutes-class timeout", async () => {
+  resetRunTimelineForTests();
+  const seen = captureBudget();
+  try {
+    await spawnGh(["repo", "clone", "me/repo", "dest"]);
+    assertEquals(seen.timeoutMs, DEFAULT_GH_CLONE_TIMEOUT * 1000);
+    assert(DEFAULT_GH_CLONE_TIMEOUT >= 60);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("spawnGh - a paginated read takes the paginated timeout", async () => {
+  resetRunTimelineForTests();
+  const seen = captureBudget();
+  try {
+    await spawnGh(["api", "--paginate", "/orgs/acme/repos"]);
+    assertEquals(seen.timeoutMs, DEFAULT_GH_PAGINATED_TIMEOUT * 1000);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("spawnGh - an explicit timeout or signal is not replaced by the table", async () => {
+  resetRunTimelineForTests();
+  const explicit = captureBudget();
+  try {
+    await spawnGh(["repo", "clone", "me/repo"], { timeoutMs: 12_000 });
+    assertEquals(explicit.timeoutMs, 12_000);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+
+  const signalled = captureBudget();
+  try {
+    await spawnGh(["api", "user"], { signal: new AbortController().signal });
+    assertEquals(signalled.timeoutMs, undefined);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("spawnGh - a timeline clamps the budget to the finish, then to hard kill minus 300s", async () => {
+  const beforeFinish = captureBudget();
+  pin(timeline({ finishMs: NOW + 5_000, hardKillMs: NOW + 4_000_000 }));
+  const pendingFinish = spawnGh(["api", "user"]);
+  unpin();
+  try {
+    await pendingFinish;
+    assertEquals(beforeFinish.timeoutMs, 5_000);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+
+  const pastFinish = captureBudget();
+  pin(timeline({
+    finishMs: NOW - 1,
+    hardKillMs: NOW + HARD_KILL_WRAP_UP_RESERVE_MS + 4_000,
+  }));
+  const pendingPast = spawnGh(["issue", "view", "1"]);
+  unpin();
+  try {
+    await pendingPast;
+    assertEquals(pastFinish.timeoutMs, 4_000);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("spawnGh - a budget that clamps to nothing is refused and names the command", async () => {
+  let calls = 0;
+  _setGhSpawnRunner(() => {
+    calls++;
+    return Promise.resolve({ code: 0, success: true, stdout: "", stderr: "" });
+  });
+  pin(timeline({
+    finishMs: NOW - 1,
+    hardKillMs: NOW + HARD_KILL_WRAP_UP_RESERVE_MS - 1,
+  }));
+  const pending = spawnGh(["api", "user"]);
+  unpin();
+  try {
+    const error = await assertRejects(() => pending, Error);
+    assertStringIncludes(error.message, "gh api user");
+    assertStringIncludes(error.message, "refusing to spawn");
+    assertEquals(calls, 0);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("runWithTimeout - a timeline clamps to the finish and, past it, to hard kill minus 300s", async () => {
+  pin(timeline({ finishMs: NOW + 200, hardKillMs: NOW + 4_000_000 }));
+  const before = runWithTimeout("sh", ["-c", "sleep 30"], {
+    timeoutMs: 10_000,
+  });
+  unpin();
+  const beforeResult = await before;
+  assert(beforeResult.ok);
+  if (beforeResult.ok) {
+    assertEquals(beforeResult.value.timedOut, true);
+    assertEquals(beforeResult.value.success, false);
+    assertStringIncludes(beforeResult.value.stderr, "Timed out after 200ms");
+  }
+
+  pin(timeline({
+    finishMs: NOW - 1,
+    hardKillMs: NOW + HARD_KILL_WRAP_UP_RESERVE_MS + 180,
+  }));
+  const past = runWithTimeout("sh", ["-c", "sleep 30"], { timeoutMs: 10_000 });
+  unpin();
+  const pastResult = await past;
+  assert(pastResult.ok);
+  if (pastResult.ok) {
+    assertEquals(pastResult.value.timedOut, true);
+    assertStringIncludes(pastResult.value.stderr, "Timed out after 180ms");
+  }
+});
+
+Deno.test("runWithTimeout - a budget that clamps to nothing names the command and does not spawn", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "deadline-4247-" });
+  const marker = `${dir}/ran`;
+  pin(timeline({
+    finishMs: NOW - 1,
+    hardKillMs: NOW + HARD_KILL_WRAP_UP_RESERVE_MS - 1,
+  }));
+  const pending = runWithTimeout("bash", ["-c", `touch ${marker}`], {
+    timeoutMs: 5_000,
+  });
+  unpin();
+  try {
+    const error = await assertRejects(() => pending, Error);
+    assertStringIncludes(error.message, "bash");
+    assertStringIncludes(error.message, "refusing to spawn");
+    let ran = true;
+    try {
+      await Deno.stat(marker);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) ran = false;
+      else throw error;
+    }
+    assertEquals(ran, false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runGitCommand - a timeline clamps to the finish, and past it to hard kill minus 300s", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "git-deadline-" });
+  try {
+    await runGitCommand(["init", "--quiet"], { cwd: dir });
+    const hook = `${dir}/slow-fsmonitor.sh`;
+    await Deno.writeTextFile(hook, "#!/bin/sh\nsleep 30\n");
+    await Deno.chmod(hook, 0o755);
+    await runGitCommand(["config", "core.fsmonitor", hook], { cwd: dir });
+
+    pin(timeline({ finishMs: NOW + 200, hardKillMs: NOW + 4_000_000 }));
+    const before = runGitCommand(["status", "--porcelain"], {
+      cwd: dir,
+      timeoutSeconds: 30,
+    });
+    unpin();
+    const beforeResult = await before;
+    assert(beforeResult.ok);
+    if (beforeResult.ok) {
+      assertEquals(beforeResult.value.code, TIMEOUT_EXIT_CODE);
+      assertStringIncludes(beforeResult.value.stderr, "timed out after 0.2s");
+    }
+
+    pin(timeline({
+      finishMs: NOW - 1,
+      hardKillMs: NOW + HARD_KILL_WRAP_UP_RESERVE_MS + 250,
+    }));
+    const past = runGitCommand(["status", "--porcelain"], {
+      cwd: dir,
+      timeoutSeconds: 30,
+    });
+    unpin();
+    const pastResult = await past;
+    assert(pastResult.ok);
+    if (pastResult.ok) {
+      assertEquals(pastResult.value.code, TIMEOUT_EXIT_CODE);
+      assertStringIncludes(pastResult.value.stderr, "timed out after 0.25s");
+    }
+  } finally {
+    unpin();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runGitCommand - a budget that clamps to nothing names the command", async () => {
+  pin(timeline({
+    finishMs: NOW - 1,
+    hardKillMs: NOW + HARD_KILL_WRAP_UP_RESERVE_MS - 1,
+  }));
+  const pending = runGitCommand(["status", "--porcelain"], {
+    timeoutSeconds: 30,
+  });
+  unpin();
+  const error = await assertRejects(() => pending, Error);
+  assertStringIncludes(error.message, "git status --porcelain");
+  assertStringIncludes(error.message, "refusing to spawn");
+});
+
+Deno.test("chokepoints - with no timeline set the timeout is today's value", async () => {
+  pin(timeline({ finishMs: NOW + 50, hardKillMs: NOW + 4_000_000 }));
+  unpin();
+  const result = await runWithTimeout("sh", ["-c", "sleep 30"], {
+    timeoutMs: 200,
+  });
+  assert(result.ok);
+  if (result.ok) {
+    assertEquals(result.value.timedOut, true);
+    assertEquals(result.value.success, false);
+    assertStringIncludes(result.value.stderr, "Timed out after 200ms");
+  }
+});
+
+Deno.test({
+  name:
+    "runWithTimeout - a child that ignores SIGTERM is given up inside the grace",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    _setKillGraceMsForTests(300);
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map((arg) => String(arg)).join(" "));
+    };
+    const started = Date.now();
+    try {
+      const result = await runWithTimeout(
+        "bash",
+        ["-c", "trap '' TERM; while true; do :; done"],
+        { timeoutMs: 200 },
+      );
+      const elapsed = Date.now() - started;
+      assert(result.ok);
+      if (result.ok) {
+        assertEquals(result.value.timedOut, true);
+        assertEquals(result.value.success, false);
+        assertEquals(result.value.code, 124);
+      }
+      const line = lines.find((entry) =>
+        entry.includes("did not complete within")
+      );
+      assert(line !== undefined, lines.join("\n"));
+      assertStringIncludes(line, "kill of bash");
+      assertEquals(line.includes("WARNING:"), false);
+      assertEquals(line.includes("ERROR:"), false);
+      assert(
+        elapsed < 3_000,
+        `kill outcome took ${elapsed}ms, past the grace cap`,
+      );
+    } finally {
+      console.error = original;
+      _resetKillGraceMsForTests();
+    }
+  },
+});
