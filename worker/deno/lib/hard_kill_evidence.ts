@@ -133,7 +133,11 @@ export interface HardKillEvidence {
   trigger: string;
   reason: string;
   lastLogLine: string;
-  /** Timestamp of the last log line, or "unknown". */
+  /**
+   * Timestamp on the last log line; when that line carries none, the log
+   * file's modified time with a note saying so; "unknown" when no worker log
+   * could be read.
+   */
   lastLogTimestamp: string;
   lastToolCall: string;
   evidence: {
