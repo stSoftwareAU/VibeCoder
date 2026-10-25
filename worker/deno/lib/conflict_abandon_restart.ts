@@ -804,7 +804,18 @@ export type StallRepairTried =
   | "sync-and-lane-rerun"
   | "ladder-rerun"
   | "ci-fix-cap"
-  | "review-retry";
+  | "review-retry"
+  /**
+   * A PR whose base was moved after it was opened: the worker tried to move
+   * it back onto the base it was opened against and could not (Issue #4304).
+   */
+  | "retarget-back"
+  /**
+   * A PR held on a milestone branch whose route to the default branch has
+   * closed: it can never land there, and the fleet never moves it off a
+   * milestone branch (Issue #4304).
+   */
+  | "route-closed-hold";
 
 /**
  * Why a PR is being abandoned (Issue #2802). Omitted means a merge conflict,
@@ -825,7 +836,10 @@ export type AbandonReason =
     tried: StallRepairTried;
   };
 
-/** What was tried before the abandon, as a sentence's subject and verb. */
+/**
+ * What was tried before the abandon, as a whole clause with its own subject
+ * (Issue #4304): not every route here is the stall-repair pass's.
+ */
 function describeStallRepair(tried: StallRepairTried, base: string): string {
   switch (tried) {
     case "ladder-rerun":
@@ -839,6 +853,12 @@ function describeStallRepair(tried: StallRepairTried, base: string): string {
     case "review-retry":
       return "The PR-feedback lane already retried the review in a later " +
         "cycle";
+    case "retarget-back":
+      return "The worker already tried to move it back onto the base it was " +
+        "opened against, and could not";
+    case "route-closed-hold":
+      return `The worker already disarmed its auto-merge on \`${base}\`, ` +
+        "and it never moves a PR off a milestone branch";
   }
 }
 
@@ -1323,7 +1343,11 @@ export function buildStalledAbandonPrComment(args: {
     `This PR is being **closed** — not merged — and issue ` +
     `#${args.issueNumber} is being re-queued ` +
     `(${describeRequeueLabel(args.label)}) so the fleet raises a fresh PR ` +
-    `off \`${base}\`.`,
+    // A closed route's branch is the one place the redo must not go back to
+    // (Issue #4304): the next run picks its base afresh.
+    (args.tried === "route-closed-hold"
+      ? "against whatever base its milestone now routes to."
+      : `off \`${base}\`.`),
     "",
     `The branch \`${branch}\` is **not** deleted and has **not** been ` +
     "force-pushed, so the abandoned work remains readable and linked from here.",
