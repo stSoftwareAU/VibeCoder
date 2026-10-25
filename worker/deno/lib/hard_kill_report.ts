@@ -38,6 +38,11 @@ import {
   HARD_KILL_EVIDENCE_VERSION,
   type HardKillEvidence,
 } from "./hard_kill_evidence.ts";
+import { PHASE_MODEL_TIERS } from "./phase_routing.ts";
+import {
+  DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
+  DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
+} from "./worker_log_cleanup.ts";
 import { redactedTail } from "./redacted_text.ts";
 import type { TerminalIssueRun } from "./run_callbacks.ts";
 import {
@@ -58,8 +63,32 @@ export const HARD_KILL_FILE_PATTERN = /^hard-kill-.+\.json$/;
 const UNKNOWN_RUN_ID = "unknown";
 /** Where a reported evidence file is kept, inside the evidence directory. */
 export const HARD_KILL_ARCHIVE_DIR = "hard-kill-archive";
-/** Budget for a single-line value (reason, …). */
-const LINE_CHARS = 2000;
+/** Only known phases can appear in a public signature. Log text is untrusted. */
+const KNOWN_PHASES = new Set([
+  ...Object.keys(PHASE_MODEL_TIERS),
+  "unknown",
+  "setup",
+  "clarity",
+  "baseline_quality",
+  "execute",
+  "handle_no_changes",
+  "declared_handoff",
+  "bump_deps",
+  "quality_gate",
+  "quality_gate_remediation",
+  "completion",
+  "merged_pr_precheck",
+  "idle_task_guard",
+  "admin_only_repair",
+]);
+
+/** Fixed public explanations; never publish the evidence file's free text. */
+function publicReason(trigger: string): string {
+  return trigger === "watchdog"
+    ? "The launcher's watchdog deadline expired."
+    : "The pre-launch scan reaped a stale container.";
+}
+
 /** Cap on text scanned for an `owner/repo#N` reference (ReDoS guard). */
 const SOURCE_SCAN_CHARS = 4000;
 /** Attribution for the attestation and the filing decision. */
@@ -116,6 +145,8 @@ export interface HardKillSeams {
   readTextFile(path: string): Promise<string>;
   /** Move a reported file into {@link HARD_KILL_ARCHIVE_DIR}. */
   archiveFile(path: string): Promise<void>;
+  /** Remove expired archives and the oldest files above the transcript cap. */
+  pruneArchive(dir: string, nowMs: number): Promise<void>;
 }
 
 /** Production filesystem seams. */
@@ -130,10 +161,44 @@ export const defaultHardKillSeams: HardKillSeams = {
     return names;
   },
   readTextFile: (path: string) => Deno.readTextFile(path),
+  async pruneArchive(dir: string, nowMs: number): Promise<void> {
+    const archive = `${dir}/${HARD_KILL_ARCHIVE_DIR}`;
+    try {
+      if (!(await Deno.lstat(archive)).isDirectory) {
+        throw new Error("hard-kill archive is not a plain directory");
+      }
+    } catch (err) {
+      if (isNotFound(err)) return;
+      throw err;
+    }
+    const entries: { path: string; mtimeMs: number }[] = [];
+    for await (const entry of Deno.readDir(archive)) {
+      if (!entry.isFile || !HARD_KILL_FILE_PATTERN.test(entry.name)) continue;
+      const path = `${archive}/${entry.name}`;
+      const stat = await Deno.lstat(path);
+      if (stat.isFile) {
+        entries.push({ path, mtimeMs: stat.mtime?.getTime() ?? nowMs });
+      }
+    }
+    entries.sort((a, b) =>
+      b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path)
+    );
+    for (const [i, entry] of entries.entries()) {
+      if (
+        nowMs - entry.mtimeMs > DEFAULT_TRANSCRIPT_MAX_AGE_DAYS * 86400_000 ||
+        i >= DEFAULT_TRANSCRIPT_HARD_CAP_COUNT
+      ) {
+        await Deno.remove(entry.path);
+      }
+    }
+  },
   async archiveFile(path: string): Promise<void> {
     const cut = path.lastIndexOf("/");
     const archive = `${path.slice(0, cut)}/${HARD_KILL_ARCHIVE_DIR}`;
     await Deno.mkdir(archive, { recursive: true });
+    if (!(await Deno.lstat(archive)).isDirectory) {
+      throw new Error("hard-kill archive is not a plain directory");
+    }
     await Deno.rename(path, `${archive}/${path.slice(cut + 1)}`);
   },
 };
@@ -220,21 +285,55 @@ export function parseHardKillEvidence(text: string): HardKillEvidence {
   const evidence = obj(raw, "evidence");
   const guest = obj(evidence, "guest");
   const capturedAt = str(raw, "capturedAt");
-  if (Number.isNaN(Date.parse(capturedAt))) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(capturedAt) ||
+    Number.isNaN(Date.parse(capturedAt))
+  ) {
     throw new Error(
       `hard-kill evidence field "capturedAt" is not an ISO-8601 time`,
+    );
+  }
+  const fact = (key: string, pattern: RegExp): string => {
+    const value = str(raw, key);
+    if (!pattern.test(value)) {
+      throw new Error(`hard-kill evidence field "${key}" has an invalid shape`);
+    }
+    return value;
+  };
+  const host = fact("host", /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/);
+  const container = fact("container", /^vibe-coder-[A-Za-z0-9_.-]{1,53}$/);
+  const runId = fact("runId", /^(?:unknown|vibe-[0-9a-z]{1,32}-[0-9a-f]{6})$/);
+  const trigger = fact("trigger", /^(?:watchdog|pre_launch)$/);
+  fact(
+    "reason",
+    trigger === "watchdog"
+      ? /^the launcher's (?:[0-9]{1,10}s )?watchdog deadline expired$/
+      : /^pre-launch scan found (?:no live launcher process for it|it [0-9]{1,10}s old, past the [0-9]{1,10}s deadline)$/,
+  );
+  const lastLogTimestamp = fact(
+    "lastLogTimestamp",
+    /^(?:unknown|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z?(?: \(log file modified time; the last line carries no timestamp\))?)$/,
+  );
+  if (
+    lastLogTimestamp !== "unknown" &&
+    Number.isNaN(
+      Date.parse(lastLogTimestamp.split(" (", 1)[0]!.replace(" ", "T")),
+    )
+  ) {
+    throw new Error(
+      'hard-kill evidence field "lastLogTimestamp" is not a timestamp',
     );
   }
   return {
     version: HARD_KILL_EVIDENCE_VERSION,
     capturedAt,
-    host: str(raw, "host"),
-    container: str(raw, "container"),
-    runId: str(raw, "runId"),
-    trigger: str(raw, "trigger"),
+    host,
+    container,
+    runId,
+    trigger,
     reason: str(raw, "reason"),
     lastLogLine: str(raw, "lastLogLine"),
-    lastLogTimestamp: str(raw, "lastLogTimestamp"),
+    lastLogTimestamp,
     lastToolCall: str(raw, "lastToolCall"),
     evidence: {
       workerLogTail: str(evidence, "workerLogTail"),
@@ -274,7 +373,10 @@ export function hardKillSignature(
   let phase: string | null = null;
   for (const line of candidates) {
     phase = phaseOnLine(line);
-    if (phase !== null) break;
+    if (phase !== null) {
+      if (!KNOWN_PHASES.has(phase)) phase = "unknown";
+      break;
+    }
   }
   const handler = slug(evidence.trigger);
   const phaseSlug = slug(phase ?? "unknown");
@@ -327,7 +429,7 @@ export function formatHardKillBody(
     `**Handler:** \`${sig.handler}\``,
     `**Phase:** \`${sig.phase}\``,
     `**Trigger:** ${inlineText(evidence.trigger, 100)}`,
-    `**Reason:** ${inlineText(evidence.reason, LINE_CHARS)}`,
+    `**Reason:** ${publicReason(evidence.trigger)}`,
     `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
     `**Last log time:** ${inlineText(evidence.lastLogTimestamp, 100)}`,
     "",
@@ -415,6 +517,11 @@ export async function fileHardKillIssue(
   opts: FileHardKillIssueOptions,
 ): Promise<HardKillFilingResult> {
   const log = opts.log ?? (() => {});
+  try {
+    parseHardKillEvidence(JSON.stringify(opts.evidence));
+  } catch (err) {
+    return { action: "failed", cause: firstLineCause(err) };
+  }
   const sig = hardKillSignature(opts.evidence);
   const t = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
   // Built before the try: a refused label is a programming error and must
@@ -526,6 +633,17 @@ export async function reportPendingHardKills(
   const seams = opts.seams ?? defaultHardKillSeams;
   const summary: HardKillReportSummary = { found: 0, reported: 0, kept: 0 };
 
+  const pruneArchive = async () => {
+    try {
+      await seams.pruneArchive(
+        opts.evidenceDir,
+        (opts.nowSeconds ?? Date.now() / 1000) * 1000,
+      );
+    } catch (err) {
+      logWarn(`hard-kill archive cleanup failed: ${errorText(err)}`);
+    }
+  };
+  await pruneArchive();
   let names: string[];
   try {
     names = await seams.listEvidenceFiles(opts.evidenceDir);
@@ -627,5 +745,6 @@ export async function reportPendingHardKills(
       );
     }
   }
+  await pruneArchive();
   return summary;
 }

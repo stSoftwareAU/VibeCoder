@@ -430,11 +430,16 @@ flowchart TD
   `trigger`: `watchdog` for the wedged-container reap, or `pre_launch` for the
   stale-container reap before a launch. The phase is read from the evidence's
   last worker-log lines (`[phase] <name>`, `phase=<name>` or
-  `[agent-progress] <name>:`), and is `unknown` when none is present.
+  `[agent-progress] <name>:`), and is `unknown` when none is present or the
+  name is not a recognised worker phase. Log text cannot invent public signatures.
 - **Filing.** One issue is filed in `stSoftwareAU/VibeCoder` with the label
   `bug`. Its body carries the marker `<!-- VIBE_RUN_FAILURE:<signature> -->`,
   the host, the container, the run id, the handler, the phase, the trigger, the
-  reason and the capture and last-log times. That repository is public and the
+  fixed reason for that trigger and the capture and last-log times. Posted facts
+  must match the launcher shapes: hostname, `vibe-coder-*` container name,
+  `vibe-<base36>-<six-hex>` run id (or `unknown`), `watchdog` or `pre_launch`
+  trigger, and timestamps. Free-text reasons or malformed facts are kept and
+  logged as errors without filing, commenting or attesting. That repository is public and the
   killed run may have been working a private one, so no evidence text, last log
   line, tool call or source repository is posted. They stay in the archived
   file on the host (Issue #4315 review). The marker is the
@@ -474,7 +479,11 @@ flowchart TD
   archived after the
   report, it stays, the failure is logged as a warning, and the next start
   reports the kill again. A malformed or wrong-version file is logged as an
-  error and kept; it is never deleted.
+  error and kept; it is never deleted. On each reporting pass, archived evidence
+  is pruned to the transcript retention window: 30 days and at most 2,000 files,
+  deleting the oldest first. Cleanup also runs after archiving, so the cap
+  applies to newly reported files. Symlink archives are refused; cleanup
+  failures are logged as warnings. Pending malformed evidence is not pruned.
 - **Additive contract.** `hard_kill` is a new value of the existing
   `outcome.failureClass` field, and a new key in the fleet summary's failure
   classes. Nothing is removed and no meaning changes, so `schemaVersion` stays at

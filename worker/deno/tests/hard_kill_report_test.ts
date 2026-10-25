@@ -16,9 +16,11 @@ import {
 import type { HardKillEvidence } from "../lib/hard_kill_evidence.ts";
 import { HARD_KILL_EVIDENCE_VERSION } from "../lib/hard_kill_evidence.ts";
 import {
+  defaultHardKillSeams,
   fileHardKillIssue,
   formatHardKillBody,
   formatHardKillTitle,
+  HARD_KILL_ARCHIVE_DIR,
   HARD_KILL_FAILURE_CLASS,
   type HardKillSeams,
   hardKillSignature,
@@ -73,10 +75,10 @@ function makeEvidence(
     version: HARD_KILL_EVIDENCE_VERSION,
     capturedAt: "2026-10-25T01:30:00.000Z",
     host: "s1",
-    container: "vibe-s1-4254",
-    runId: "run-abc123",
+    container: "vibe-coder-s1-4254",
+    runId: "vibe-mh5abc-abcdef",
     trigger: "watchdog",
-    reason: "container wedged for 10m with no log progress",
+    reason: "the launcher's 8100s watchdog deadline expired",
     lastLogLine: LAST_LOG_LINE,
     lastLogTimestamp: "2026-10-25 01:27:18Z",
     lastToolCall: "Bash: deno task test:unit",
@@ -94,7 +96,14 @@ function makeEvidence(
       },
     },
   };
-  return { ...base, ...over, evidence: { ...base.evidence, ...ev } };
+  return {
+    ...base,
+    ...(over.trigger === "pre_launch"
+      ? { reason: "pre-launch scan found no live launcher process for it" }
+      : {}),
+    ...over,
+    evidence: { ...base.evidence, ...ev },
+  };
 }
 
 function json(evidence: unknown): string {
@@ -235,6 +244,7 @@ function fakeFs(
         ? Promise.reject(new Deno.errors.NotFound(path))
         : Promise.resolve(text);
     },
+    pruneArchive: () => Promise.resolve(),
     archiveFile: (path) => {
       const name = baseName(path);
       if (opts.archiveFails?.includes(name)) {
@@ -293,7 +303,7 @@ async function report(
 
 Deno.test("AC1: one evidence file files exactly one bug issue with the facts and no secret", async () => {
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
   });
   const gh = fakeGh();
   const r = await report(fs, gh);
@@ -308,8 +318,8 @@ Deno.test("AC1: one evidence file files exactly one bug issue with the facts and
   for (
     const needle of [
       "**Host:** `s1`",
-      "**Container:** `vibe-s1-4254`",
-      "**Run id:** `run-abc123`",
+      "**Container:** `vibe-coder-s1-4254`",
+      "**Run id:** `vibe-mh5abc-abcdef`",
       "**Handler:** `watchdog`",
       "**Phase:** `execute`",
       "**Last log time:** 2026-10-25 01:27:18Z",
@@ -321,7 +331,7 @@ Deno.test("AC1: one evidence file files exactly one bug issue with the facts and
   assertFalse(body.includes("a1B2c3D4e5F6"), "the token body must be redacted");
 
   assertEquals(r.runs.length, 1);
-  assertEquals(r.runs[0]!.runId, "run-abc123");
+  assertEquals(r.runs[0]!.runId, "vibe-mh5abc-abcdef");
   assertEquals(
     callbackOutcomeFromRun(r.runs[0]!)?.failureClass,
     HARD_KILL_FAILURE_CLASS,
@@ -339,9 +349,9 @@ Deno.test("AC1: one evidence file files exactly one bug issue with the facts and
 
 Deno.test("AC2: a repeat signature comments on the open issue and never files a second", async () => {
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
-    [evidenceName("vibe-s1-4255", 1761355900)]: json(
-      makeEvidence({ container: "vibe-s1-4255" }),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
+      makeEvidence({ container: "vibe-coder-s1-4255" }),
     ),
   });
   const gh = fakeGh();
@@ -378,9 +388,9 @@ Deno.test("AC1: no evidence text, log line, tool call or source repo reaches the
     },
   );
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(evidence),
-    [evidenceName("vibe-s1-4255", 1761355900)]: json(
-      { ...evidence, container: "vibe-s1-4255" },
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(evidence),
+    [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
+      { ...evidence, container: "vibe-coder-s1-4255" },
     ),
   });
   const gh = fakeGh();
@@ -400,9 +410,9 @@ Deno.test("AC1: no evidence text, log line, tool call or source repo reaches the
 
 Deno.test("AC2: an issue filed earlier in the same pass takes the repeat even when search lags (Issue #4315 review)", async () => {
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
-    [evidenceName("vibe-s1-4255", 1761355900)]: json(
-      makeEvidence({ container: "vibe-s1-4255" }),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
+      makeEvidence({ container: "vibe-coder-s1-4255" }),
     ),
   });
   const gh = fakeGh({ searchLags: true });
@@ -416,12 +426,12 @@ Deno.test("AC2: an issue filed earlier in the same pass takes the repeat even wh
 
 Deno.test("AC2: a further repeat in the window updates the follow-up in place", async () => {
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
-    [evidenceName("vibe-s1-4255", 1761355900)]: json(
-      makeEvidence({ container: "vibe-s1-4255" }),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
+      makeEvidence({ container: "vibe-coder-s1-4255" }),
     ),
-    [evidenceName("vibe-s1-4256", 1761356000)]: json(
-      makeEvidence({ container: "vibe-s1-4256" }),
+    [evidenceName("vibe-coder-s1-4256", 1761356000)]: json(
+      makeEvidence({ container: "vibe-coder-s1-4256" }),
     ),
   });
   const gh = fakeGh();
@@ -439,20 +449,20 @@ Deno.test("AC2: the follow-up window is measured on the injected clock", async (
       [evidenceName(container, epoch)]: json(makeEvidence({ container })),
     });
 
-  await report(single("vibe-s1-4254", 1761355800), gh);
+  await report(single("vibe-coder-s1-4254", 1761355800), gh);
   assertEquals(gh.creates.length, 1, "the first kill files");
 
-  await report(single("vibe-s1-4255", 1761355900), gh, {
+  await report(single("vibe-coder-s1-4255", 1761355900), gh, {
     nowSeconds: NOW + 60,
   });
   assertEquals(gh.commentCalls.length, 1, "a repeat comments");
 
-  await report(single("vibe-s1-4256", 1761356000), gh, {
+  await report(single("vibe-coder-s1-4256", 1761356000), gh, {
     nowSeconds: NOW + 120,
   });
   assertEquals(gh.patches.length, 1, "inside the window it updates in place");
 
-  await report(single("vibe-s1-4257", 1761356100), gh, {
+  await report(single("vibe-coder-s1-4257", 1761356100), gh, {
     nowSeconds: NOW + 60 + RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS,
   });
   assertEquals(gh.patches.length, 1, "a full window later it does not update");
@@ -469,7 +479,7 @@ Deno.test("AC2: a stranger's marker does not absorb the kill (fleet-author filte
     }],
   });
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
   });
   const r = await report(fs, gh);
 
@@ -480,9 +490,9 @@ Deno.test("AC2: a stranger's marker does not absorb the kill (fleet-author filte
 
 Deno.test("AC2: a different signature files a new issue", async () => {
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
-    [evidenceName("vibe-s1-4255", 1761355900)]: json(
-      makeEvidence({ container: "vibe-s1-4255", trigger: "pre_launch" }),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
+      makeEvidence({ container: "vibe-coder-s1-4255", trigger: "pre_launch" }),
     ),
   });
   const gh = fakeGh();
@@ -499,7 +509,7 @@ Deno.test("AC2: a different signature files a new issue", async () => {
 
 Deno.test("AC3: the callback fires once per file, with failureClass hard_kill, and the kill is counted once", async () => {
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
   });
   const gh = fakeGh();
   const r = await report(fs, gh);
@@ -517,7 +527,7 @@ Deno.test("AC3: the real recordOutcome counts the hard kill as one failure", asy
   startFleetTelemetry();
   try {
     const fs = fakeFs({
-      [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
+      [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
     });
     const gh = fakeGh();
     await reportPendingHardKills({
@@ -537,7 +547,7 @@ Deno.test("AC3: the real recordOutcome counts the hard kill as one failure", asy
 });
 
 Deno.test("AC4: a failing search keeps the file, fires nothing, counts nothing, and warns with the gh cause", async () => {
-  const name = evidenceName("vibe-s1-4254", 1761355800);
+  const name = evidenceName("vibe-coder-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: json(makeEvidence()) });
   const gh = fakeGh({
     failVerb: "list",
@@ -559,7 +569,7 @@ Deno.test("AC4: a failing search keeps the file, fires nothing, counts nothing, 
 });
 
 Deno.test("AC4: a failing create keeps the file, fires nothing, and warns with the gh cause", async () => {
-  const name = evidenceName("vibe-s1-4254", 1761355800);
+  const name = evidenceName("vibe-coder-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: json(makeEvidence()) });
   const gh = fakeGh({
     failVerb: "create",
@@ -591,7 +601,7 @@ Deno.test("AC4: the failure cause is the gh first line, not a wrapper boilerplat
 });
 
 Deno.test("AC4: a kept file is reported once a healthy gh follows (retry once)", async () => {
-  const name = evidenceName("vibe-s1-4254", 1761355800);
+  const name = evidenceName("vibe-coder-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: json(makeEvidence()) });
   const broken = await report(
     fs,
@@ -609,7 +619,7 @@ Deno.test("AC4: a kept file is reported once a healthy gh follows (retry once)",
 });
 
 Deno.test("AC4: a malformed file is kept and logged as an error with the failing field", async () => {
-  const name = evidenceName("vibe-s1-4254", 1761355800);
+  const name = evidenceName("vibe-coder-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: "{not json" });
   const gh = fakeGh();
   const r = await report(fs, gh);
@@ -622,7 +632,7 @@ Deno.test("AC4: a malformed file is kept and logged as an error with the failing
 });
 
 Deno.test("AC4: a file missing a field is kept and the log names the field", async () => {
-  const name = evidenceName("vibe-s1-4254", 1761355800);
+  const name = evidenceName("vibe-coder-s1-4254", 1761355800);
   const missing = JSON.parse(json(makeEvidence())) as Record<string, unknown>;
   delete missing.container;
   const fs = fakeFs({ [name]: json(missing) });
@@ -636,7 +646,7 @@ Deno.test("AC4: a file missing a field is kept and the log names the field", asy
 });
 
 Deno.test("AC4: a file with a wrongly typed field is kept and the log names the field", async () => {
-  const name = evidenceName("vibe-s1-4254", 1761355800);
+  const name = evidenceName("vibe-coder-s1-4254", 1761355800);
   const wrong = JSON.parse(json(makeEvidence())) as Record<string, unknown>;
   wrong.lastToolCall = 5;
   const fs = fakeFs({ [name]: json(wrong) });
@@ -647,7 +657,7 @@ Deno.test("AC4: a file with a wrongly typed field is kept and the log names the 
 });
 
 Deno.test("AC4: a removal failure is logged as a warning, the file stays, and the kill still counts", async () => {
-  const name = evidenceName("vibe-s1-4254", 1761355800);
+  const name = evidenceName("vibe-coder-s1-4254", 1761355800);
   const fs = fakeFs({ [name]: json(makeEvidence()) }, { archiveFails: [name] });
   const r = await report(fs, fakeGh());
 
@@ -664,7 +674,7 @@ Deno.test("AC4: a removal failure is logged as a warning, the file stays, and th
 
 Deno.test("AC4: a throwing callback is logged as a warning and the kill still counts", async () => {
   const fs = fakeFs({
-    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
   });
   const r = await report(fs, fakeGh(), {
     runFailureCallback: () => Promise.reject(new Error("callback boom")),
@@ -859,7 +869,7 @@ Deno.test("PHASE_PATTERNS [agent-progress] form returns unknown promptly on a lo
   assertEquals(hardKillSignature(ev).phase, "unknown");
 });
 
-Deno.test("signature parts normalise to a slug, capped at 40, and empty becomes unknown", () => {
+Deno.test("signature permits only known phase names and collapses forged names to unknown", () => {
   const sig = hardKillSignature(
     makeEvidence({
       trigger: "pre_launch",
@@ -867,13 +877,13 @@ Deno.test("signature parts normalise to a slug, capped at 40, and empty becomes 
     }),
   );
   assertEquals(sig.handler, "pre-launch");
-  assertEquals(sig.phase, "set-up-stage");
-  assertEquals(sig.failureClass, "hard-kill-pre-launch-set-up-stage");
+  assertEquals(sig.phase, "unknown");
+  assertEquals(sig.failureClass, "hard-kill-pre-launch-unknown");
 
   const long = hardKillSignature(makeEvidence({
     lastLogLine: `[phase] ${"q".repeat(60)} (x)`,
   }));
-  assertEquals(long.phase.length, 40);
+  assertEquals(long.phase, "unknown");
 
   const blank = hardKillSignature(makeEvidence({ trigger: "" }));
   assertEquals(blank.handler, "unknown");
@@ -960,7 +970,7 @@ Deno.test("a posted fact cannot open a fence, forge a marker, or leak a token in
 Deno.test("hardKillTerminalRun carries the run id, times and the hard_kill class", () => {
   const ev = makeEvidence();
   const run = hardKillTerminalRun(ev, hardKillSignature(ev));
-  assertEquals(run.runId, "run-abc123");
+  assertEquals(run.runId, "vibe-mh5abc-abcdef");
   assertEquals(run.startedAtEpochMs, Date.parse(ev.capturedAt));
   assertEquals(run.finishedAtEpochMs, Date.parse(ev.capturedAt));
   assertEquals(run.repo, "stSoftwareAU/VibeCoder");
@@ -991,3 +1001,110 @@ function assertThrowsWith(fn: () => unknown, fragment: string): void {
     `"${message}" does not mention "${fragment}"`,
   );
 }
+
+for (
+  const over of [
+    { reason: "PRIVATE_SOURCE_SENTINEL" },
+    { host: "host\nPRIVATE_SOURCE_SENTINEL" },
+    { trigger: "PRIVATE_SOURCE_SENTINEL" },
+    { container: "other-container" },
+    { runId: "PRIVATE_SOURCE_SENTINEL" },
+    { capturedAt: "2026-10-25T01:30:00.000Z PRIVATE_SOURCE_SENTINEL" },
+    { lastLogTimestamp: "PRIVATE_SOURCE_SENTINEL" },
+  ]
+) {
+  Deno.test(`forged public facts: ${Object.keys(over)[0]} is kept without external writes`, async () => {
+    const fs = fakeFs({ "hard-kill-forged-1.json": json(makeEvidence(over)) });
+    const gh = fakeGh();
+    const r = await report(fs, gh);
+    assertEquals(r.summary, { found: 1, reported: 0, kept: 1 });
+    assertEquals(gh.calls, []);
+    assertEquals(r.recordings, []);
+    assertEquals(r.runs, []);
+    assertEquals(fs.archived, []);
+    assertEquals(r.errors.length, 1);
+  });
+}
+
+Deno.test("archive retention removes old evidence and caps fresh files", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "hard-kill-retention-" });
+  const archive = `${dir}/${HARD_KILL_ARCHIVE_DIR}`;
+  try {
+    await Deno.mkdir(archive);
+    const nowMs = NOW * 1000;
+    const old = `${archive}/hard-kill-old-1.json`;
+    const fresh = `${archive}/hard-kill-fresh-2.json`;
+    await Deno.writeTextFile(old, "private old evidence");
+    await Deno.writeTextFile(fresh, "fresh evidence");
+    await Deno.utime(
+      old,
+      new Date(nowMs - 31 * 86400_000),
+      new Date(nowMs - 31 * 86400_000),
+    );
+    await Deno.utime(fresh, new Date(nowMs), new Date(nowMs));
+    await defaultHardKillSeams.pruneArchive(dir, nowMs);
+    assertEquals(
+      await Array.fromAsync(Deno.readDir(archive)).then((es) =>
+        es.map((e) => e.name)
+      ),
+      ["hard-kill-fresh-2.json"],
+    );
+    for (let i = 0; i < 2000; i++) {
+      const path = `${archive}/hard-kill-cap-${i}.json`;
+      await Deno.writeTextFile(path, "private evidence");
+      await Deno.utime(
+        path,
+        new Date(nowMs - 1000 - i),
+        new Date(nowMs - 1000 - i),
+      );
+    }
+    const unrelated = `${archive}/keep.txt`;
+    await Deno.writeTextFile(unrelated, "unrelated");
+    await defaultHardKillSeams.pruneArchive(dir, nowMs);
+    assertEquals((await Array.fromAsync(Deno.readDir(archive))).length, 2001);
+    assertEquals(await Deno.readTextFile(fresh), "fresh evidence");
+    assertEquals(await Deno.readTextFile(unrelated), "unrelated");
+    assertFalse(
+      await Deno.stat(`${archive}/hard-kill-cap-1999.json`).then(
+        () => true,
+        (e) => {
+          if (e instanceof Deno.errors.NotFound) {
+            return false;
+          }
+          throw e;
+        },
+      ),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("archive symlinks are refused and cleanup failures are reported", async () => {
+  const root = await Deno.makeTempDir({ prefix: "hard-kill-symlink-" });
+  try {
+    const outside = `${root}/outside`;
+    const logs = `${root}/logs`;
+    await Deno.mkdir(outside);
+    await Deno.mkdir(logs);
+    const file = `${outside}/hard-kill-protected-1.json`;
+    await Deno.writeTextFile(file, "private evidence");
+    await Deno.symlink(outside, `${logs}/${HARD_KILL_ARCHIVE_DIR}`);
+    const warnings: string[] = [];
+    const summary = await reportPendingHardKills({
+      evidenceDir: logs,
+      ghFn: () => {
+        throw new Error("nothing to file");
+      },
+      runFailureCallback: () => Promise.resolve(),
+      countFailure: () => {},
+      nowSeconds: NOW,
+      logWarn: (m) => warnings.push(m),
+    });
+    assertEquals(summary.found, 0);
+    assert(warnings.some((m) => m.includes("not a plain directory")));
+    assertEquals(await Deno.readTextFile(file), "private evidence");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
