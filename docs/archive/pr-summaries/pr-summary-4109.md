@@ -288,7 +288,7 @@ which also fails on the base without this change when the stamp is `claude`.
 `./quality.sh` run on the final head (this container, `< /dev/null`): every
 stage passed (lint, type check, fmt, semgrep, markdownlint, mermaid and the
 chokepoint checks) except the deno-tests parallel pass, which reported
-`FAILED | 30091 passed | 13 failed`. All 13 failures happen only because the
+`FAILED | 29749 passed | 13 failed`. All 13 failures happen only because the
 container sets `VIBE_IMAGE_AGENT_PROVIDERS=claude`: the eight files that hold
 them (`tests/external_orchestration_3642_phase_test.ts`,
 `tests/execute_phase_assignment_3718_test.ts`,
@@ -297,7 +297,7 @@ them (`tests/external_orchestration_3642_phase_test.ts`,
 `tests/run_core_production_deps_test.ts`,
 `tests/codex_model_adaptation_test.ts`,
 `tests/claude_runner_provider_fallback_4034_test.ts`,
-`tests/execute_claude_phase_test.ts`) give `ok | 136 passed | 0 failed` with
+`tests/execute_claude_phase_test.ts`) give `ok | 137 passed | 0 failed` with
 `env -u VIBE_IMAGE_AGENT_PROVIDERS`. The serial pass did not run because the
 parallel pass failed; the config-integration and checkov stages were skipped by
 the gate itself. CI runs the same checks without that variable.
