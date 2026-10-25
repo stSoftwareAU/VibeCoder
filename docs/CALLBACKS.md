@@ -75,7 +75,7 @@ flowchart LR
 - Concurrent issue slots each receive their own context; hooks never share state
   between slots, and each slot's `always` runs for that slot alone.
 - A hard-killed run is a run from an earlier process, reported on the next
-  worker start, once per evidence file (unless the file cannot be removed; see
+  worker start, once per evidence file (unless the file cannot be archived; see
   Lifecycle below), rather than when it terminated (see
   [A hard-killed run](#a-hard-killed-run--failureclass-hard_kill)).
 
@@ -415,7 +415,7 @@ flowchart TD
   Q -- yes --> C["Follow-up comment on that issue<br/>(one per 24 h window)"]
   N --> R["failure callback, once<br/>outcome.failureClass hard_kill"]
   C --> R
-  R --> X["Evidence file removed"]
+  R --> X["Evidence file archived<br/>in ~/logs/hard-kill-archive"]
   N -- filing fails --> K["File kept, error logged<br/>no callback, nothing counted"]
   C -- filing fails --> K
   style E fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
@@ -433,8 +433,11 @@ flowchart TD
   `[agent-progress] <name>:`), and is `unknown` when none is present.
 - **Filing.** One issue is filed in `stSoftwareAU/VibeCoder` with the label
   `bug`. Its body carries the marker `<!-- VIBE_RUN_FAILURE:<signature> -->`,
-  the host, the container, the run id, the handler, the phase, the last log line
-  and its time, the last tool call and the redacted evidence. The marker is the
+  the host, the container, the run id, the handler, the phase, the trigger, the
+  reason and the capture and last-log times. That repository is public and the
+  killed run may have been working a private one, so no evidence text, last log
+  line, tool call or source repository is posted. They stay in the archived
+  file on the host (Issue #4315 review). The marker is the
   dedup key. It is matched only on issues authored by a fleet account, the same
   rule the run-failure issues follow (`worker/deno/lib/run_failure_issue.ts`).
 - **Repeats.** While an issue with the same signature is open, another kill with
@@ -443,7 +446,7 @@ flowchart TD
   to it in place. There is no per-host rate limit.
 - **The callback.** The `failure` run callback fires once for the kill, with
   these fields set. The one exception is an evidence file that cannot be
-  removed after the report: the next start fires the callback again (see
+  archived after the report: the next start fires the callback again (see
   Lifecycle below). The kill is also counted in the next cycle callback's
   `fleetSummary.failures`, and under `hard_kill` in the fleet summary's failure
   classes. The `always` callback then fires, exactly as it does for any failed
@@ -462,10 +465,13 @@ flowchart TD
 | `repository`, `issueNumber` | The last `owner/repo#N` in the evidence's log tail; `unknown` and `0` when none can be read      |
 | `startedAt`, `finishedAt`   | The evidence's capture time, for both, so `durationSeconds` is `0`; the real duration is unknown |
 
-- **Lifecycle.** The evidence file is removed once it is filed and reported. If
-  filing fails, the file is kept for the next launch and the failure is logged
-  as a warning. No callback fires and nothing is counted until filing succeeds,
-  so the retry reports the kill once. If the file cannot be removed after the
+- **Lifecycle.** The evidence file is moved into `~/logs/hard-kill-archive/`
+  once it is filed and reported. If filing fails, the file is kept for the next
+  launch and the failure is logged as a warning. No callback fires and nothing
+  is counted until filing succeeds, so the retry reports the kill once. Within
+  one pass, a repeat of a signature filed moments earlier goes straight to that
+  issue, without waiting for GitHub search to index it. If the file cannot be
+  archived after the
   report, it stays, the failure is logged as a warning, and the next start
   reports the kill again. A malformed or wrong-version file is logged as an
   error and kept; it is never deleted.

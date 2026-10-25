@@ -13,14 +13,20 @@
  *   comment per window on the open one, reusing the run-failure machinery;
  * - fires the `failure` run callback once per file with failureClass
  *   `hard_kill`, and counts the kill as a failure. The one exception is a file
- *   that cannot be removed after the report: it stays, and the next start
+ *   that cannot be archived after the report: it stays, and the next start
  *   reports the kill again;
- * - keeps the file whenever filing fails, so the next start retries it.
+ * - keeps the file whenever filing fails, so the next start retries it;
+ * - archives a reported file under {@link HARD_KILL_ARCHIVE_DIR} on the host.
  *
- * Every free-text value from the evidence is redacted before it is bounded,
- * has comment delimiters neutralised and has its code fences replaced, the
- * same way the run-failure excerpt is. Every GitHub and file call is wrapped:
- * nothing here throws into the worker's start-up path.
+ * The issue lands in a public repository, and the killed run may have been
+ * working a private one. So the issue carries only the facts the worker and
+ * launcher wrote themselves (host, container, run, signature, trigger, reason,
+ * times). The log, transcript, boot and guest text, the last log line, the
+ * last tool call and the source repository stay in the archived file on the
+ * host (Issue #4315 review; SECURITY.md incident response). Every value that
+ * is posted is still redacted, bounded and made safe for an issue body.
+ * Every GitHub and file call is wrapped: nothing here throws into the
+ * worker's start-up path.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -50,11 +56,9 @@ export const HARD_KILL_FAILURE_CLASS = "hard_kill";
 export const HARD_KILL_FILE_PATTERN = /^hard-kill-.+\.json$/;
 /** The `runId` the evidence writes when the run was not known. */
 const UNKNOWN_RUN_ID = "unknown";
-/** Tail budget for each log-like evidence section, in characters. */
-const SECTION_CHARS = 6000;
-/** Tail budget for each guest probe section, in characters. */
-const GUEST_SECTION_CHARS = 4000;
-/** Budget for a single-line value (last log line, reason, …). */
+/** Where a reported evidence file is kept, inside the evidence directory. */
+export const HARD_KILL_ARCHIVE_DIR = "hard-kill-archive";
+/** Budget for a single-line value (reason, …). */
 const LINE_CHARS = 2000;
 /** Cap on text scanned for an `owner/repo#N` reference (ReDoS guard). */
 const SOURCE_SCAN_CHARS = 4000;
@@ -110,7 +114,8 @@ export interface HardKillSeams {
   /** Names (not paths) of the evidence files in `dir`. */
   listEvidenceFiles(dir: string): Promise<string[]>;
   readTextFile(path: string): Promise<string>;
-  removeFile(path: string): Promise<void>;
+  /** Move a reported file into {@link HARD_KILL_ARCHIVE_DIR}. */
+  archiveFile(path: string): Promise<void>;
 }
 
 /** Production filesystem seams. */
@@ -125,7 +130,12 @@ export const defaultHardKillSeams: HardKillSeams = {
     return names;
   },
   readTextFile: (path: string) => Deno.readTextFile(path),
-  removeFile: (path: string) => Deno.remove(path),
+  async archiveFile(path: string): Promise<void> {
+    const cut = path.lastIndexOf("/");
+    const archive = `${path.slice(0, cut)}/${HARD_KILL_ARCHIVE_DIR}`;
+    await Deno.mkdir(archive, { recursive: true });
+    await Deno.rename(path, `${archive}/${path.slice(cut + 1)}`);
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -296,35 +306,17 @@ export function formatHardKillTitle(sig: HardKillSignature): string {
   return `Hard kill: container wedged in ${sig.phase} (${sig.handler})`;
 }
 
-/** One fenced, redacted, bounded evidence section. */
-function fencedSection(
-  title: string,
-  text: string,
-  maxChars: number,
-): string[] {
-  const body = safeText(text, maxChars);
-  return [
-    "",
-    `### ${title}`,
-    "",
-    "```",
-    body === "" ? "(empty)" : body,
-    "```",
-  ];
-}
-
 /**
- * Issue body: marker first, then the labelled facts a human needs, then the
- * redacted evidence. Each section is bounded, so a maximal evidence file
- * stays well under GitHub's body limit.
+ * Issue body: marker first, then the facts the worker and launcher wrote. No
+ * evidence text, last log line, tool call or source repository: the issue is
+ * public and the run may have been working a private repository (see the
+ * module comment). The evidence stays in the archived file on the host.
  */
 export function formatHardKillBody(
   evidence: HardKillEvidence,
   sig: HardKillSignature,
 ): string {
-  const source = hardKillSource(evidence);
-  const e = evidence.evidence;
-  const lines: string[] = [
+  return [
     formatRunFailureMarker(sig.failureClass),
     "",
     "Auto-filed by the Vibe Coder (Issue #4254): a container wedged and the launcher watchdog reaped it, so the run never released its claim. The worker found the evidence file on its next start.",
@@ -337,40 +329,10 @@ export function formatHardKillBody(
     `**Trigger:** ${inlineText(evidence.trigger, 100)}`,
     `**Reason:** ${inlineText(evidence.reason, LINE_CHARS)}`,
     `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
-    `**Last log line:** \`${inlineText(evidence.lastLogLine, LINE_CHARS)}\``,
     `**Last log time:** ${inlineText(evidence.lastLogTimestamp, 100)}`,
-    `**Last tool call:** ${inlineText(evidence.lastToolCall, 500)}`,
-    ...(source.repo !== "unknown"
-      ? [`**Source:** ${inlineText(source.repo, 200)}#${source.issueNumber}`]
-      : []),
     "",
-    "## Evidence (redacted; each section is its tail, bounded)",
-    ...fencedSection("Worker log tail", e.workerLogTail, SECTION_CHARS),
-    ...fencedSection(
-      "Agent transcript tail",
-      e.agentTranscriptTail,
-      SECTION_CHARS,
-    ),
-    ...fencedSection("Boot logs", e.bootLogs, SECTION_CHARS),
-    ...fencedSection("Guest ps", e.guest.ps, GUEST_SECTION_CHARS),
-    ...fencedSection("Guest meminfo", e.guest.meminfo, GUEST_SECTION_CHARS),
-    ...fencedSection(
-      "Guest pressure (cpu)",
-      e.guest.pressureCpu,
-      GUEST_SECTION_CHARS,
-    ),
-    ...fencedSection(
-      "Guest pressure (memory)",
-      e.guest.pressureMemory,
-      GUEST_SECTION_CHARS,
-    ),
-    ...fencedSection(
-      "Guest pressure (io)",
-      e.guest.pressureIo,
-      GUEST_SECTION_CHARS,
-    ),
-  ];
-  return lines.join("\n");
+    `The evidence (worker log, agent transcript, boot logs and guest probes) is kept on that host in \`~/logs/${HARD_KILL_ARCHIVE_DIR}/\`. It is never posted here, because it can hold private repository content.`,
+  ].join("\n");
 }
 
 /** The run-callback record of one hard kill (callback `failureClass` hard_kill). */
@@ -408,15 +370,11 @@ export function hardKillTerminalRun(
 function formatHardKillOccurrenceLine(
   evidence: HardKillEvidence,
 ): string {
-  const source = hardKillSource(evidence);
-  const repoRef = source.repo === "unknown"
-    ? "source unknown"
-    : `${inlineText(source.repo, 200)}#${source.issueNumber}`;
   return `- ${inlineText(evidence.capturedAt, 100)} \`${
     inlineText(evidence.host, 200)
   }\` — container \`${inlineText(evidence.container, 200)}\`, run \`${
     inlineText(evidence.runId, 200)
-  }\`, ${repoRef}`;
+  }\``;
 }
 
 /** The first line of an error, redacted, for the decision's cause. */
@@ -436,6 +394,12 @@ export interface FileHardKillIssueOptions {
   fleetAuthors?: readonly string[];
   /** Records the filing attestation (Issue #1277). Production omits it. */
   recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
+  /**
+   * The open issue this signature already has, when the caller filed or
+   * commented on it earlier in the same pass. The search is skipped: GitHub's
+   * index may not show an issue created moments ago (Issue #4315 review).
+   */
+  knownIssueNumber?: number;
 }
 
 /**
@@ -462,13 +426,15 @@ export async function fileHardKillIssue(
   try {
     // 1. Existing open issue for the signature, matched on the marker AND the
     // author (run_failure_issue.ts step 1, shared).
-    const match = await findOpenRunFailureIssue({
-      ghFn: opts.ghFn,
-      targetRepo: RUN_FAILURE_TARGET_REPO,
-      failureClass: sig.failureClass,
-      fleetAuthors: opts.fleetAuthors,
-      log,
-    });
+    const match = opts.knownIssueNumber !== undefined
+      ? { number: opts.knownIssueNumber }
+      : await findOpenRunFailureIssue({
+        ghFn: opts.ghFn,
+        targetRepo: RUN_FAILURE_TARGET_REPO,
+        failureClass: sig.failureClass,
+        fleetAuthors: opts.fleetAuthors,
+        log,
+      });
 
     // 2. None → file one (run_failure_issue.ts step 2, shared).
     if (!match) {
@@ -546,9 +512,9 @@ function epochOf(name: string): number {
 /**
  * Report every pending hard-kill evidence file, oldest first, one at a time.
  *
- * A file is removed only after it has been filed and its callback has fired.
+ * A file is archived only after it has been filed and its callback has fired.
  * Anything that goes wrong keeps the file, so the next start reports it once.
- * The one exception is a file that cannot be removed after the report: it
+ * The one exception is a file that cannot be archived after the report: it
  * stays, and the next start reports it again. Never throws.
  */
 export async function reportPendingHardKills(
@@ -578,6 +544,8 @@ export async function reportPendingHardKills(
     epochOf(a) - epochOf(b) || (a < b ? -1 : a > b ? 1 : 0)
   );
   summary.found = names.length;
+  // Signature → issue filed or commented on in this pass (Issue #4315 review).
+  const issueBySignature = new Map<string, number>();
 
   for (const name of names) {
     const path = `${opts.evidenceDir}/${name}`;
@@ -595,6 +563,7 @@ export async function reportPendingHardKills(
         continue;
       }
 
+      const signature = hardKillSignature(evidence).failureClass;
       const filing = await fileHardKillIssue({
         evidence,
         ghFn: opts.ghFn,
@@ -602,6 +571,7 @@ export async function reportPendingHardKills(
         log,
         fleetAuthors: opts.fleetAuthors,
         recordFiling: opts.recordFiling,
+        knownIssueNumber: issueBySignature.get(signature),
       });
       if (filing.action === "failed") {
         logWarn(
@@ -610,6 +580,7 @@ export async function reportPendingHardKills(
         summary.kept++;
         continue;
       }
+      issueBySignature.set(signature, filing.issueNumber);
       const where = filing.action === "filed"
         ? `filed #${filing.issueNumber}`
         : `commented on #${filing.issueNumber} (updated=${filing.updated})`;
@@ -638,11 +609,11 @@ export async function reportPendingHardKills(
       summary.reported++;
 
       try {
-        await seams.removeFile(path);
+        await seams.archiveFile(path);
       } catch (err) {
         summary.kept++;
         logWarn(
-          `hard-kill evidence ${name} was reported but could not be removed, so it stays and may be reported again: ${
+          `hard-kill evidence ${name} was reported but could not be archived, so it stays and may be reported again: ${
             errorText(err)
           }`,
         );
