@@ -68,29 +68,29 @@ relative to the repository root.
 | Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
 | Hook settings | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240` | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload. |
 | Guard CLI | `worker/deno/lib/issue_edit_guard_cli.ts:46` | `runIssueEditGuard` is the hook entry point. |
-| Flag delivery | `worker/deno/lib/agent_provider.ts:595` (`buildClaudeCliArgs`), `:617-618`, `:622-623`, `:638-639` | `buildClaudeCliArgs` emits `--agents` JSON (`:617-618`), and `--settings` at two places (`:622-623`, `:638-639`). The `--settings` argument is emitted twice when `settingsJson` is set. This is recorded here and not fixed by this change. |
-| Descriptor | `worker/deno/lib/agent_provider.ts:373` (`agents`), `:412` (`settingsJson`), `:446` (`promptTransport`), `:508` (`buildInvocation`), `:517` (`buildChildEnv`) | The `AgentProviderDescriptor` fields. |
+| Flag delivery | `worker/deno/lib/agent_provider.ts:623` (`buildClaudeCliArgs`), `:646-648`, `:653-655` | `buildClaudeCliArgs` emits `--agents` JSON (`:646-648`) and one `--settings` argument (`:653-655`) when `settingsJson` is set. |
+| Descriptor | `worker/deno/lib/agent_provider.ts:394` (`agents`), `:422` (`settingsJson`), `:456` (`promptTransport`), `:536` (`buildInvocation`), `:545` (`buildChildEnv`) | The `AgentProviderDescriptor` fields. |
 
 Per-provider behaviour, from the same file:
 
-- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:720`). Its
-  `buildInvocation` is at `:748` and `buildChildEnv` at `:761-762`, which calls
-  `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:228`).
-- **Codex:** `promptTransport` is `"stdin"` (`:853`). `buildInvocation` (`:878`)
-  calls `buildCodexArgs` (`:901`, defined at `worker/deno/lib/codex_executor.ts:384`),
-  which carries no `agents` but does pass `settingsJson` through (`:904`) and turns it into per-spawn `hooks.PreToolUse` `-c` arguments (`codex_executor.ts:414-415`). `buildChildEnv` (`:916`) calls
+- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:737`). Its
+  `buildInvocation` is at `:765` and `buildChildEnv` at `:778-780`, which calls
+  `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:229`).
+- **Codex:** `promptTransport` is `"stdin"` (`:861`). `buildInvocation` (`:900`)
+  calls `buildCodexArgs` (`:923`, defined at `worker/deno/lib/codex_executor.ts:540`),
+  which carries no `agents` but does pass `settingsJson` through (`:926`) and turns it into per-spawn `hooks.PreToolUse` `-c` arguments (`codex_executor.ts:525`). `buildChildEnv` (`:948`) calls
   `buildIsolatedCodexChildEnv` (`worker/deno/lib/codex_env.ts:116`), which calls
   `buildCodexChildEnv` (`worker/deno/lib/codex_env.ts:90`).
-- **Gemini:** `promptTransport` is `"argv"` (`:973`). `buildInvocation` (`:988`)
-  calls `buildGeminiArgs` (`:990`, defined at `worker/deno/lib/gemini_executor.ts:251`)
-  and carries no `agents` or `settingsJson`. `buildChildEnv` (`:1006`) uses
-  `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`).
-- **DeepSeek:** `promptTransport` is `"stdin"` (`:1067`). `buildInvocation`
-  (`:1103`) destructures out `agents` and `settingsJson` (`:1120`). `agents`
-  triggers `warnDeepSeekAgentsUnsupported` (`:1121`,
-  `worker/deno/lib/deepseek_executor.ts:253`). `settingsJson` is dropped
-  silently, with `settingsJson: undefined` at `:1132`. `buildChildEnv` (`:1138`)
-  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:157`).
+- **Gemini:** `promptTransport` is `"argv"` (`:1005`). `buildInvocation` (`:1020`)
+  calls `buildGeminiArgs` (`:1022`, defined at `worker/deno/lib/gemini_executor.ts:251`)
+  and carries no `agents` or `settingsJson`. `buildChildEnv` (`:1038`) uses
+  `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:92`).
+- **DeepSeek:** `promptTransport` is `"stdin"` (`:1099`). `buildInvocation`
+  (`:1135`) destructures out `agents` and `settingsJson` (`:1154`). `agents`
+  triggers `warnDeepSeekAgentsUnsupported` (`:1155`,
+  `worker/deno/lib/deepseek_executor.ts:255`). `settingsJson` is dropped
+  silently, with `settingsJson: undefined` at `:1166`. `buildChildEnv` (`:1172`)
+  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:158`).
 
 Prompt templates. The advisor and executor instructions are built in code, and
 the template carries only a placeholder.

@@ -170,12 +170,12 @@ Provenance: the issue numbers this diff cites.
   sub-agents on is refused before spawn with "Refused to start the agent: Codex
   CLI cannot carry the issue run's sub-agent definitions (--agents)…" and
   releases its claim with no PR
-- **status** — `verified` — at HEAD `e6f9187b` (the merge of `origin/main`; re-observed after the merge), with
-  `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` replaced by
-  their `origin/main` versions, `tests/issue_4109_callsite_test.ts` gave
-  `FAILED | 2 passed | 8 failed`: the 8 failing were the execute_phase reroute,
-  assignment and strip tests and the five execute_claude_phase tests, including
-  the regression test and
+- **status** — `verified` — at HEAD `e6f9187b` (the merge of `origin/main`;
+  re-observed after the merge), with `lib/phases/execute_phase.ts` and
+  `lib/execute_claude_phase.ts` replaced by their `origin/main` versions,
+  `tests/issue_4109_callsite_test.ts` gave `FAILED | 2 passed | 8 failed`: the 8
+  failing were the execute_phase reroute, assignment and strip tests and the
+  five execute_claude_phase tests, including the regression test and
   `execute_claude_phase - claude not enabled strips agents and disables the split (Issue #4109)`;
   the 2 passing were
   `execute_phase - a non-external allocation plans the claude provider (Issue #4109)`
@@ -197,21 +197,22 @@ comment re-worded in `worker/deno/tests/manager_worker_contract_3641_test.ts`
 `worker/deno/tests/issue_4109_callsite_test.ts` and
 `worker/deno/tests/issue_run_provider_agents_test.ts` are new files.
 
-Red check (HEAD `e6f9187b` (the merge of `origin/main`; re-observed after the merge)): `lib/phases/execute_phase.ts` and
-`lib/execute_claude_phase.ts` were overwritten with
-`git show origin/main:<path>` and `tests/issue_4109_callsite_test.ts` was run
-with `env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A --no-check`:
+Red check (HEAD `e6f9187b` (the merge of `origin/main`; re-observed after the
+merge)): `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` were
+overwritten with `git show origin/main:<path>` and
+`tests/issue_4109_callsite_test.ts` was run with
+`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A --no-check`:
 `FAILED | 2 passed | 8 failed` (the failing and passing names are in
 Reproduction). Both files were then restored with `git checkout HEAD --` and the
 file re-run with type-checking on: `ok | 10 passed | 0 failed (69ms)`.
 
 Mutation-gate follow-up: the facts flip verifier found no flip of the last
-statement of `claudeUsable` (`return enabled.includes(claude)`), because its only
-mutant, `return undefined`, behaves as `false`. The statement is now
+statement of `claudeUsable` (`return enabled.includes(claude)`), because its
+only mutant, `return undefined`, behaves as `false`. The statement is now
 `if (!resolveEnabledAgentProviderIds(selection).includes(CLAUDE_PROVIDER_ID)) { return false; } return true;`
 (`worker/deno/lib/issue_run_provider_agents.ts:68-71`, behaviour unchanged). Red
-checks, each on the named test with only that edit made:
-removing the `!` at line 68 turns
+checks, each on the named test with only that edit made: removing the `!` at
+line 68 turns
 `issue run provider - Claude not enabled strips sub-agents with no image stamp (Issue #4109)`
 red; returning `false` at line 71 turns
 `issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)`
@@ -253,17 +254,17 @@ beside them):
 - `worker/deno/lib/agent_provider.ts`: comment-only edits next to the
   `AgentInvocationRequest.agents` field and the DeepSeek `buildInvocation`, plus
   one new function, `plannedActiveAgentProvider`, whose only callers are the two
-  new planner call sites. Every `buildInvocation` and `buildClaudeCliArgs` caller
-  is unchanged, because no body or signature changed.
+  new planner call sites. Every `buildInvocation` and `buildClaudeCliArgs`
+  caller is unchanged, because no body or signature changed.
 - `worker/deno/lib/claude_runner.ts`: comment-only edit above the #4010 guard;
   unchanged.
 - `worker/deno/lib/deepseek_executor.ts`: `warnDeepSeekAgentsUnsupported`
   changed its warning text and doc comment only; its one caller in
   `agent_provider.ts` is unchanged.
 - `worker/deno/lib/provider_feasibility.ts`: `probeInvocationCapabilities` now
-  delegates to the new `probeDescriptorInvocationCapabilities`; same return value,
-  same caller behaviour (`tests/provider_feasibility_test.ts` is untouched and
-  covers the callers).
+  delegates to the new `probeDescriptorInvocationCapabilities`; same return
+  value, same caller behaviour (`tests/provider_feasibility_test.ts` is
+  untouched and covers the callers).
 
 The call-site tests are hermetic against the image stamp (the pre-PR verifier
 found 10 of them failing with `VIBE_IMAGE_AGENT_PROVIDERS=claude`, this
