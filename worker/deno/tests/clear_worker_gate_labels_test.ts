@@ -126,9 +126,11 @@ Deno.test("clearWorkerGateLabelsCommand - help text says how to run it", () => {
   assertStringIncludes(description, "Dry-run is the default");
   assertStringIncludes(description, "summary-incomplete");
   assertStringIncludes(description, "quality-failure");
+  assertStringIncludes(description, "left labelled");
   assertStringIncludes(description, "pre-push-gate");
   assertStringIncludes(description, "security-fix-gate");
   assertStringIncludes(description, "criteria-unmet");
+  assertStringIncludes(description, "isWorkerGateCategory");
 });
 
 Deno.test("clearWorkerGateLabelsCommand - refuses to run with no repos", async () => {
@@ -161,8 +163,13 @@ Deno.test("clear - dry-run lists category and planned action and changes nothing
   if (!result.ok) return;
   const report = formatWorkerGateLabelReport(result.value);
   assertStringIncludes(report, "no label was removed");
-  assertStringIncludes(report, "quality-failure is named");
+  assertStringIncludes(
+    report,
+    "quality-failure is the display of quality_check",
+  );
+  assertStringIncludes(report, "left labelled");
   assertStringIncludes(report, "criteria-unmet");
+  assertStringIncludes(report, "isWorkerGateCategory");
   const byNumber = new Map(
     result.value.decisions.map((decision) => [decision.issueNumber, decision]),
   );
@@ -213,6 +220,7 @@ Deno.test("clear - covers a worker-gate category, a non-gate category, a missing
       }],
     },
     {
+      // quality_check's display. Not in WORKER_GATE_MARKERS, so it stays.
       number: 12,
       labels: ["failed"],
       comments: [{
@@ -253,6 +261,7 @@ Deno.test("clear - covers a worker-gate category, a non-gate category, a missing
       }],
     },
     {
+      // Registered worker-gate category. The predicate clears it.
       number: 17,
       labels: ["failed-once"],
       comments: [{
@@ -277,16 +286,21 @@ Deno.test("clear - covers a worker-gate category, a non-gate category, a missing
     result.value.decisions.find((decision) => decision.issueNumber === number)
       ?.reason ?? "";
   assertEquals(action(11), "removed");
-  assertEquals(action(12), "removed");
+  assertEquals(action(12), "keep");
+  assertStringIncludes(reason(12), "not a worker-gate category");
   assertEquals(action(13), "removed");
   assertEquals(action(14), "keep");
   assertEquals(action(15), "keep");
   assertStringIncludes(reason(15), "no failure comment");
   assertEquals(action(16), "keep");
   assertStringIncludes(reason(16), "not fleet-authored");
-  assertEquals(action(17), "keep");
-  assertStringIncludes(reason(17), "criteria-unmet");
-  assertEquals(removedIssues(calls).sort((a, b) => a - b), [11, 12, 13]);
+  assertEquals(action(17), "removed");
+  assertEquals(
+    result.value.decisions.find((decision) => decision.issueNumber === 17)
+      ?.category,
+    "criteria-unmet",
+  );
+  assertEquals(removedIssues(calls).sort((a, b) => a - b), [11, 13, 17]);
   const both = calls.find((args) => args[1] === "edit" && args[2] === "13");
   assertEquals(both?.includes("failed-once"), true);
   assertEquals(both?.includes("failed"), true);

@@ -4,15 +4,15 @@
  * One-off sweep. For each configured repo it lists open issues labelled
  * `failed` or `failed-once`, reads the latest "Automated Processing Failed"
  * comment, and removes those labels when that comment was written by a fleet
- * account and names one of the four categories Issue #4132 names.
+ * account and `isWorkerGateCategory` accepts its category.
  *
- * `isWorkerGateCategory` / `WORKER_GATE_MARKERS` (Issue #4130) is not that
- * set. The markers are summary-incomplete, security-fix-gate, pre-push-gate
- * and criteria-unmet. The issue names summary-incomplete, quality-failure,
- * pre-push-gate and security-fix-gate. This command clears the four named
- * categories: quality-failure is named and is not a marker category, and
- * criteria-unmet is a marker category and is not named, so it is left
- * labelled.
+ * The comment stores a display name. `isWorkerGateCategory` takes the
+ * registry category on `WORKER_GATE_MARKERS`. A display is cleared when an
+ * entry has that display and the predicate accepts the entry's category.
+ * `quality-failure` is the display of `quality_check`, which is not in the
+ * registry, so it stays labelled. Issue #4132's opening list also names
+ * quality-failure; the task bullet says to use this predicate, and the
+ * predicate is the set this command clears.
  *
  * Dry-run is the default, matching the other destructive command that
  * reports unless `--dry-run false` is passed (`pr-manager
@@ -57,17 +57,27 @@ const FAILED_LABEL = DEFAULT_LABEL_CONFIG.failedLabel;
 const FAILED_ONCE_LABEL = DEFAULT_LABEL_CONFIG.failedOnceLabel;
 
 /**
- * Why the predicate and the issue's four names differ, printed on every
- * report so a reader does not have to open `WORKER_GATE_MARKERS`.
+ * Display names of `WORKER_GATE_MARKERS` entries `isWorkerGateCategory`
+ * accepts. The report and the help text are built from this, so a new
+ * registry entry is named without a second list.
  */
-const PREDICATE_NOTE =
-  "The predicate isWorkerGateCategory reads WORKER_GATE_MARKERS: " +
-  "summary-incomplete, security-fix-gate, pre-push-gate and criteria-unmet. " +
-  "Issue #4132 names summary-incomplete, quality-failure, pre-push-gate and " +
-  "security-fix-gate. This command clears those four. quality-failure is " +
-  "named by the issue and is not a WORKER_GATE_MARKERS category, so it is " +
-  "cleared as well. criteria-unmet is a WORKER_GATE_MARKERS category and is " +
-  "not named, so it is left labelled.";
+function workerGateDisplays(): string[] {
+  const displays: string[] = [];
+  for (const entry of WORKER_GATE_MARKERS) {
+    if (!isWorkerGateCategory(entry.category)) continue;
+    displays.push(getFailureCategoryDisplay(entry.category));
+  }
+  return displays;
+}
+
+/** Printed on every report so the cleared set is the predicate's set. */
+function predicateNote(): string {
+  return "A failure category is cleared when isWorkerGateCategory accepts " +
+    "the WORKER_GATE_MARKERS entry with that display name (" +
+    workerGateDisplays().join(", ") +
+    "). quality-failure is the display of quality_check and is not in " +
+    "WORKER_GATE_MARKERS, so it is left labelled.";
+}
 
 /** One issue the sweep considered. */
 export interface WorkerGateLabelDecision {
@@ -103,33 +113,18 @@ export interface ClearWorkerGateLabelsOptions {
 }
 
 /**
- * The four display categories Issue #4132 names. Built from
- * {@link getFailureCategoryDisplay} so a renamed display cannot drift.
- */
-const NAMED_GATE_DISPLAYS = new Set<string>([
-  getFailureCategoryDisplay("summary_incomplete"),
-  getFailureCategoryDisplay("quality_check"),
-  getFailureCategoryDisplay("pre_push_gate"),
-  getFailureCategoryDisplay("security_fix_gate"),
-]);
-
-/**
- * Whether a parsed failure-comment category is one of the four Issue #4132
- * names.
+ * Whether a parsed failure-comment category is cleared.
  *
- * A name that {@link WORKER_GATE_MARKERS} also carries must pass
- * {@link isWorkerGateCategory}. `quality-failure` is named by the issue and
- * is not a marker category, so the predicate cannot accept it.
- * `criteria-unmet` is a marker category and is not in the four, so it is
- * refused here.
+ * True when a {@link WORKER_GATE_MARKERS} entry's display equals `display`
+ * and {@link isWorkerGateCategory} accepts that entry's category. A display
+ * the registry does not carry, including `quality-failure`, is false.
  */
-export function isNamedWorkerGateDisplay(display: string): boolean {
-  if (!NAMED_GATE_DISPLAYS.has(display)) return false;
-  if (display === getFailureCategoryDisplay("quality_check")) return true;
-  return WORKER_GATE_MARKERS.some((entry) =>
-    isWorkerGateCategory(entry.category) &&
-    getFailureCategoryDisplay(entry.category) === display
-  );
+function isWorkerGateDisplay(display: string): boolean {
+  for (const entry of WORKER_GATE_MARKERS) {
+    if (getFailureCategoryDisplay(entry.category) !== display) continue;
+    return isWorkerGateCategory(entry.category);
+  }
+  return false;
 }
 
 /**
@@ -187,25 +182,13 @@ function decideIssue(
       labels: present,
     };
   }
-  if (category === getFailureCategoryDisplay("criteria_unmet")) {
+  if (!isWorkerGateDisplay(category)) {
     return {
       repo,
       issueNumber,
       category,
       action: "keep",
-      reason:
-        "criteria-unmet is a WORKER_GATE_MARKERS category and is outside the four categories Issue #4132 names",
-      labels: present,
-    };
-  }
-  if (!isNamedWorkerGateDisplay(category)) {
-    return {
-      repo,
-      issueNumber,
-      category,
-      action: "keep",
-      reason:
-        `category ${category} is outside the four categories Issue #4132 names`,
+      reason: `category ${category} is not a worker-gate category`,
       labels: present,
     };
   }
@@ -214,8 +197,7 @@ function decideIssue(
     issueNumber,
     category,
     action: "would-remove",
-    reason:
-      "fleet-authored failure comment names a category Issue #4132 clears",
+    reason: "fleet-authored failure comment names a worker-gate category",
     labels: present,
   };
 }
@@ -280,7 +262,7 @@ async function listLabelled(
 /**
  * Survey the repos and, unless `dryRun`, remove `failed` / `failed-once`
  * from issues whose latest fleet-authored failure comment names a category
- * Issue #4132 clears.
+ * `isWorkerGateCategory` accepts.
  *
  * Every issue considered is returned. A failed list or a failed comment
  * read returns an error and removes nothing: the reads all happen before
@@ -419,7 +401,7 @@ export function formatWorkerGateLabelReport(
       : "# Clear worker-gate failure labels",
   );
   lines.push("");
-  lines.push(PREDICATE_NOTE);
+  lines.push(predicateNote());
   lines.push("");
   if (report.dryRun) {
     lines.push("Dry-run: no label was removed.");
@@ -452,10 +434,11 @@ const HELP =
   "Usage: deno run mod.ts clear-worker-gate-labels [--repos owner/repo] [--limit 200]. " +
   "A live run is explicit: deno run mod.ts clear-worker-gate-labels --dry-run false [--repos owner/repo]. " +
   "Repos default to the worker config. " +
-  "Only a fleet-authored Automated Processing Failed comment whose category " +
-  "is summary-incomplete, quality-failure, pre-push-gate or security-fix-gate " +
-  "is cleared. criteria-unmet is on WORKER_GATE_MARKERS and is left labelled. " +
-  "quality-failure is named by the issue and is not a WORKER_GATE_MARKERS category.";
+  "The latest Automated Processing Failed comment is cleared when it is " +
+  "fleet-authored and isWorkerGateCategory accepts its category. The " +
+  "registered display names are " +
+  workerGateDisplays().join(", ") +
+  ". quality-failure is not registered, so it is left labelled.";
 
 /** The clear-worker-gate-labels command implementation. */
 export const clearWorkerGateLabelsCommand: Command = {
