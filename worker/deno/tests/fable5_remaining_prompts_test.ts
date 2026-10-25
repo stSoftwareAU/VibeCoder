@@ -50,8 +50,8 @@ const CASES: PromptCase[] = [
       "{{FAILURE_CLASSIFICATION}}",
       "{{PR_FAILURE_ACTIONS}}",
       ".pr_response_message",
-      "out of scope",
-      "follow-up issue",
+      // Issue #4304: no escape hatch — nothing is handed back.
+      "## No Hand-off",
     ],
   },
   {

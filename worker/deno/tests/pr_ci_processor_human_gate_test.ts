@@ -443,9 +443,16 @@ Deno.test("human gate - a non-gate failure on the same PR still takes the cap-an
   );
 
   assertEquals(state.agentRuns, 1);
-  // The ordinary code-fix escalation still labels the PR — which also proves
-  // the harness sees a label call when one is made.
-  assert(state.labelCalls.length > 0, "expected the ordinary escalation");
+  // Issue #4304: the ordinary code-fix path no longer labels the PR either.
+  assertEquals(state.labelCalls, []);
   assertEquals(state.posted.length >= 2, true);
   assertStringIncludes(state.posted.at(-1)!, "<!-- vibe-ci-fix-attempt ");
+
+  // The harness does see a label call when one is made: a secret already in
+  // the base branch's history still escalates (a kept hard stop).
+  await runPass(
+    state,
+    makeInput("gitleaks", "gitleaks: aws-access-key detected", "555"),
+  );
+  assert(state.labelCalls.length > 0, "expected the history-rewrite escalation");
 });

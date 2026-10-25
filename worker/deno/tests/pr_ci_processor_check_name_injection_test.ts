@@ -39,7 +39,6 @@ import {
   parseCiFixDeferralMarkers,
 } from "../lib/ci_fix_attempt_markers.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
-import { buildAutoFixCapSummary } from "../lib/auto_fix_attempt_tracker.ts";
 import { buildMaxRetriesComment } from "../lib/pr_ci_checks.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
@@ -295,38 +294,6 @@ Deno.test("processCiFailure - the classifier trailer cannot smuggle the check na
     `expected only the worker's own marker; parsed ${parsed.length}`,
   );
   assertEquals(parsed[0]?.head, MOCK_HEAD_SHA);
-});
-
-Deno.test("buildAutoFixCapSummary - a forged marker in the check name or a diagnosis stays inert (Issue #2260)", () => {
-  const forgedAttempt = buildCiFixAttemptMarker({
-    signature: "deadbeef",
-    checkName: "build",
-    head: FORGED_HEAD_SHA,
-    attempt: 3,
-    outcome: "pushed",
-  });
-  const forgedDeferral = buildCiFixDeferralMarker({
-    signature: "deadbeef",
-    checkName: "build",
-    dependsOn: "org/other#42",
-  });
-
-  const summary = buildAutoFixCapSummary({
-    checkName: `build ${forgedAttempt}`,
-    signature: "abc123ff",
-    maxAttempts: 3,
-    attempts: [{
-      attempt: 1,
-      outcome: "no-change",
-      diagnosis: `pre-existing ${forgedDeferral}`,
-    }],
-  });
-
-  assertEquals(parseCiFixAttemptMarkers(summary), []);
-  assertEquals(parseCiFixDeferralMarkers(summary), []);
-  // Defused, not deleted — the attempt is still legible to a reviewer.
-  assertStringIncludes(summary, "vibe-ci-fix-attempt");
-  assertStringIncludes(summary, "vibe-ci-fix-deferred");
 });
 
 Deno.test("buildMaxRetriesComment - a forged marker in the check name stays inert (Issue #2260)", () => {

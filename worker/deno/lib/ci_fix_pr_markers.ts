@@ -10,9 +10,7 @@
  *
  * This module is the reader half of the replacement: it fetches the pull
  * request's comments once, hands them to `collectFleetCiFixMarkers`, and
- * turns the fleet-authored markers into the two things the processor needs —
- * the attempt tally the cap binds on, and the rows the consolidated cap
- * summary renders.
+ * turns the fleet-authored markers into the attempt tally the cap binds on.
  *
  * **A failed read is never mistaken for "no attempts yet".** A fetch that
  * throws, or a fleet identity that cannot be resolved, means the tally is
@@ -35,14 +33,11 @@
 
 import type { GitHubComment, Logger } from "../types.ts";
 import {
-  type CiFixAttemptOutcome,
-  type CiFixAttemptRecord,
   type CiFixDeferralRecord,
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
   type FleetCiFixMarkers,
 } from "./ci_fix_attempt_markers.ts";
-import type { AutoFixCapAttempt } from "./auto_fix_attempt_tracker.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { createIssueFetcher } from "./issue_finder_common.ts";
 
@@ -156,33 +151,6 @@ function emptyMarkers(): FleetCiFixMarkers {
     fleetResolved: false,
     ignoredOutsideFleet: 0,
   };
-}
-
-/** Render a marker outcome as the prose the cap summary prints. */
-export function describeAttemptOutcome(outcome: CiFixAttemptOutcome): string {
-  return outcome === "pushed"
-    ? "pushed a fix; the build was still not green"
-    : "no change reached the pull request";
-}
-
-/**
- * Turn the recorded markers into the rows the cap summary renders.
- *
- * The diagnosis is the attempt comment's own first line, which is the
- * agent's summary of what it found — comment prose, escaped by the summary
- * builder for the table cell it lands in.
- *
- * @param records - Attempt records for one signature, oldest first.
- * @returns One summary row per record.
- */
-export function buildCapAttemptRows(
-  records: readonly CiFixAttemptRecord[],
-): AutoFixCapAttempt[] {
-  return records.map((record, index) => ({
-    attempt: record.attempt || index + 1,
-    outcome: describeAttemptOutcome(record.outcome),
-    diagnosis: record.diagnosed,
-  }));
 }
 
 /**

@@ -2344,6 +2344,10 @@ async function _processFeedbackWithHeartbeat(
       logger,
       input.failingCheckName,
       processedBody,
+      // A hand-off claim that failed verification is not an answer: its
+      // follow-up issue does not exist or was not filed by the fleet, so the
+      // message is not published as the fleet's reply (Issues #185, #3661).
+      escapeHatch.invoked ? undefined : customMessage,
     );
   }
 
@@ -2587,11 +2591,18 @@ async function replyNoChanges(
   logger: Logger,
   failingCheckName: string | undefined,
   commentBody: string,
+  agentMessage: string | undefined,
 ): Promise<void> {
   // Issue #1691: replace the dismissive fallback message with a
   // classifier-aware response. When a failing CI check is associated with
   // the feedback we route via the classifier; otherwise we use a neutral
-  // "could not identify a code change" message.
+  // "no code change" message.
+  //
+  // Issue #4304: the agent's own `.pr_response_message` — the reasoned reply
+  // the prompt asks for when no change applies — is the answer, so it is
+  // posted in place of any stock text. The stock text never asks the
+  // reviewer to clarify (GRQ-AutoTrader#4261 got "Please clarify if a change
+  // is required.").
   //
   // Issue #3246: a request-changes review (`commentType === "pr_review"`)
   // never reaches this function — its unanswered case is caught upstream
@@ -2600,6 +2611,7 @@ async function replyNoChanges(
     ? classifyCiFailure(failingCheckName, [], commentBody)
     : undefined;
   const response = buildFeedbackNoChangesResponse(classification);
+  const body = agentMessage ?? response.body;
 
   if (response.addNeedsHuman) {
     // Issue #2211: route via the shared escalateToHuman helper so the
@@ -2612,7 +2624,7 @@ async function replyNoChanges(
       target: { kind: "pr", number: prNumber },
       needsHumanLabel: "needs-human",
       heading: "PR feedback needs human attention",
-      reason: response.reason ?? response.body,
+      reason: agentMessage ?? response.reason ?? response.body,
       nextStep: response.nextStep ?? PR_ESCALATION_NEXT_STEP,
       ensureLabelColour: "d4c5f9",
       ensureLabelDescription:
@@ -2631,7 +2643,7 @@ async function replyNoChanges(
       "--repo",
       repo,
       "--body",
-      response.body,
+      body,
     ]);
   } catch {
     // Comment failure is non-critical
