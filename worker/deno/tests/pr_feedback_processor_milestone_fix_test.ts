@@ -230,7 +230,7 @@ Deno.test("processPrFeedback - gated head: works on a fix branch and raises a fi
   assertStringIncludes(body, MILESTONE_HEAD);
 });
 
-Deno.test("processPrFeedback - gated head: fix PR creation failure => honest fix-PR-raise-failed reply", async () => {
+Deno.test("processPrFeedback - gated head: fix PR creation failure => claim taken back so the next scan retries it, never asks for a manual PR (Issue #4304)", async () => {
   const captured: CapturedGh = { comments: [], calls: [] };
   const gitCalls: string[][] = [];
 
@@ -258,23 +258,27 @@ Deno.test("processPrFeedback - gated head: fix PR creation failure => honest fix
 
   assertEquals(result.value.changesPushed, false);
 
-  // Issue #2907: the fix branch DID push successfully to origin — only the
-  // follow-on PR into the gated head failed — so the reply must not claim
-  // the work is "still on the worker's local branch" (it isn't).
-  const body = captured.comments.at(-1) ?? "";
-  assertStringIncludes(body, "pushed the fix to");
-  assertStringIncludes(body, "on origin");
-  assertStringIncludes(body, "could not raise");
-  assertStringIncludes(body, MILESTONE_HEAD);
+  // The eyes reaction is taken back, so the comment is rediscovered and the
+  // fix PR is raised again next cycle (`raiseMilestoneFixPr` reuses an open
+  // one, so a retry cannot duplicate it).
+  const tookBack = captured.calls.some((args) =>
+    args[0] === "api" && args[2] === "DELETE" &&
+    String(args[3] ?? "").includes("reactions")
+  );
+  assertEquals(tookBack, true);
+  for (const body of captured.comments) {
+    assertEquals(body.includes("manually"), false);
+    assertEquals(body.includes("Could someone"), false);
+  }
 });
 
-Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => dismisses the review once (Issue #3383)", async () => {
-  // Asking a human to land the pushed fix answers the review, so the run
-  // retires it rather than leaving it to be charged or retried.
+Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => charged so the next cycle retries, never dismissed (Issue #4304)", async () => {
+  // The fix PR was never raised, so nothing answers the review yet: it is
+  // charged as a failed attempt and stays outstanding for the next cycle,
+  // instead of being retired with a request for a human to open the PR.
   const captured: CapturedGh = { comments: [], calls: [] };
   const gitCalls: string[][] = [];
   const markCommentProcessedSpy: string[] = [];
-  const outcomeSpy: string[] = [];
   const handlePrCommentFailureSpy: string[] = [];
 
   const deps = createMockDeps({
@@ -285,20 +289,19 @@ Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => 
     }),
     git: makeSuccessfulPushGit(gitCalls),
     pr: {
-      markCommentProcessed: ((
-        _repo: string,
-        commentType: string,
-        _commentId: string,
-        _prNumber: number | undefined,
-        outcome: string,
-      ) => {
+      markCommentProcessed: ((_repo: string, commentType: string) => {
         markCommentProcessedSpy.push(commentType);
-        outcomeSpy.push(outcome);
         return Promise.resolve({ ok: true, value: undefined });
         // deno-lint-ignore no-explicit-any
       }) as any,
-      handlePrCommentFailure: ((repo: string) => {
-        handlePrCommentFailureSpy.push(repo);
+      handlePrCommentFailure: ((
+        _repo: string,
+        _prNumber: number,
+        _commentType: string,
+        _commentId: string,
+        message: string,
+      ) => {
+        handlePrCommentFailureSpy.push(message);
         return Promise.resolve();
         // deno-lint-ignore no-explicit-any
       }) as any,
@@ -320,62 +323,12 @@ Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => 
   );
   assertEquals(result.ok, true);
 
-  assertStringIncludes(captured.comments.at(-1) ?? "", "could not raise");
-  assertEquals(markCommentProcessedSpy, ["pr_review"]);
-  // Issue #3409: the dismissal must say the fix PR is still to be opened.
-  assertEquals(outcomeSpy, ["fix_pr_pending"]);
-  assertEquals(handlePrCommentFailureSpy.length, 0);
-});
-
-Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure, and the hand-off reply itself fails to post => charges, never dismisses (Issue #3408 review)", async () => {
-  // Nothing landed on the PR at all here: no fix PR, no hand-off comment.
-  // Dismissing the review in this case is exactly the silent loss #3383
-  // exists to stop, so this must charge a failed attempt instead.
-  const captured: CapturedGh = { comments: [], calls: [] };
-  const gitCalls: string[][] = [];
-  const markCommentProcessedSpy: string[] = [];
-  const handlePrCommentFailureSpy: string[] = [];
-
-  const deps = createMockDeps({
-    claude: makeClaudeOk(),
-    github: makeMockGithub(captured, {
-      gated: true,
-      failFixPrCreate: true,
-      failPrComment: true,
-    }),
-    git: makeSuccessfulPushGit(gitCalls),
-    pr: {
-      markCommentProcessed: ((_repo: string, commentType: string) => {
-        markCommentProcessedSpy.push(commentType);
-        return Promise.resolve({ ok: true, value: undefined });
-        // deno-lint-ignore no-explicit-any
-      }) as any,
-      handlePrCommentFailure: ((repo: string) => {
-        handlePrCommentFailureSpy.push(repo);
-        return Promise.resolve();
-        // deno-lint-ignore no-explicit-any
-      }) as any,
-    },
-  });
-
-  const processorDeps: PrFeedbackProcessorDeps = {
-    promptsDir: PROMPTS_DIR,
-    logger: makeSilentLogger(),
-    deps,
-    workDir: "/tmp/test-milestone-fix-pr-fail-review-reply-fail",
-    workRoot: "/tmp/test-milestone-fix-pr-fail-review-reply-fail",
-    verifyPushFn: REMOTE_CONFIRMS_PUSH,
-  };
-
-  const result = await processPrFeedback(
-    makeInput({ commentType: "pr_review" }),
-    processorDeps,
-  );
-  assertEquals(result.ok, true);
-
-  assertEquals(captured.comments.length, 0);
   assertEquals(markCommentProcessedSpy.length, 0);
   assertEquals(handlePrCommentFailureSpy.length, 1);
+  assertStringIncludes(handlePrCommentFailureSpy[0] ?? "", "could not raise");
+  for (const body of captured.comments) {
+    assertEquals(body.includes("manually"), false);
+  }
 });
 
 Deno.test("processPrFeedback - gated head: fix-branch checkout failure => honest gated-checkout-failed reply", async () => {

@@ -17,6 +17,12 @@ import {
   type MergeConflictAgentRequest,
   runMergeConflictAgent,
 } from "../lib/merge_conflict_agent.ts";
+import {
+  endHandlerLandingStep,
+  handlerLandingStep,
+  newAgentRunOwner,
+  runAsAgentRunOwner,
+} from "../lib/handler_watchdog.ts";
 import type { ClaudeRunResult } from "../lib/claude_runner.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -429,6 +435,32 @@ Deno.test("merge conflict agent - the reply reader consumes the file once", asyn
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
+});
+
+Deno.test("merge conflict agent - a finished run marks commit as still landing, and a run that will not commit does not (Issue #4173)", async () => {
+  const owner = newAgentRunOwner("Auto-Merge");
+  await runAsAgentRunOwner(owner, async () => {
+    const finished = await runMergeConflictAgent(
+      makeRequest(makeRunner(makeCaptured())),
+    );
+    assert(finished.ok);
+    assertEquals(finished.value.terminated, false);
+    assertEquals(handlerLandingStep(owner.id), { step: "commit" });
+    endHandlerLandingStep();
+
+    const failed = await runMergeConflictAgent(
+      makeRequest(makeRunner(makeCaptured(), { failure: "boom" })),
+    );
+    assertEquals(failed.ok, false);
+    assertEquals(handlerLandingStep(owner.id), undefined);
+
+    const ended = await runMergeConflictAgent(
+      makeRequest(makeRunner(makeCaptured(), { terminated: true })),
+    );
+    assert(ended.ok);
+    assertEquals(ended.value.terminated, true);
+    assertEquals(handlerLandingStep(owner.id), undefined);
+  });
 });
 
 Deno.test("merge conflict agent - no reply file reads as no reply", async () => {

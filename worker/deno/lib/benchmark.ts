@@ -28,6 +28,10 @@
  */
 
 import { runGitCommand } from "./git_timeout.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+
+/** Non-git benchmark steps (`deno check` and the like) get minutes, not an unbounded wait. */
+const BENCHMARK_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** One measured step. */
 export interface BenchmarkStep {
@@ -105,6 +109,7 @@ export async function runBenchmarkCommand(
   cmd: string,
   args: string[],
   env?: Record<string, string>,
+  timeoutMs: number = BENCHMARK_COMMAND_TIMEOUT_MS,
 ): Promise<{ code: number; stderr: string }> {
   const mergedEnv = env ? { ...Deno.env.toObject(), ...env } : undefined;
 
@@ -118,12 +123,13 @@ export async function runBenchmarkCommand(
   }
 
   try {
-    const out = await new Deno.Command(cmd, {
+    const out = await commandOutputWithTimeout(cmd, {
       args,
       env: mergedEnv,
       stdout: "null",
       stderr: "piped",
-    }).output();
+      timeoutMs,
+    });
     return { code: out.code, stderr: new TextDecoder().decode(out.stderr) };
   } catch (err) {
     return {

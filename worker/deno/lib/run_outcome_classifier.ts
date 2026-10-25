@@ -69,6 +69,7 @@ export const RUN_FAILURE_CLASSES = [
   "disk-full",
   "worker-crash",
   "missing-tools",
+  "tool-runtime",
   "timeout",
   "no-output",
   "agent-outcome",
@@ -76,6 +77,9 @@ export const RUN_FAILURE_CLASSES = [
   "repo-config",
   "prompt-too-long",
   "clone-corrupt",
+  // Filed by `security_fix_gate_retry.ts`, never emitted by the classifier
+  // (Issue #4298): repeated gate blocks on one approved issue are a gate bug.
+  "security-fix-gate-blocked",
   "unknown",
 ] as const;
 
@@ -204,6 +208,142 @@ const AGENT_OUTCOME: RunFailureClassification = {
 };
 
 /**
+ * The agent's tool runtime failed (Issue #4324).
+ *
+ * A code-mode host that is unavailable, or a session whose every tool call
+ * failed to spawn, is the worker's infrastructure. It is code-fixable, so the
+ * run-failure filer raises one deduped issue, and it is not the source
+ * issue's fault.
+ */
+const TOOL_RUNTIME: RunFailureClassification = {
+  fixability: "code_fixable",
+  failureClass: "tool-runtime",
+  rationale:
+    "The agent's tool runtime failed (tools or the code-mode host were unavailable, or every tool call failed to spawn) — infrastructure, not an agent outcome.",
+};
+
+/** Codex item types that are tool calls (the same set the progress tracker counts). */
+const TOOL_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "command_execution",
+  "command",
+  "function_call",
+  "mcp_tool_call",
+  "mcp_tool",
+  "tool",
+  "tool_use",
+]);
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+/** One transcript entry, unwrapping a Codex `item` or `payload` envelope. */
+function unwrapTranscriptItem(entry: unknown): Record<string, unknown> | null {
+  const record = asRecord(entry);
+  if (!record) return null;
+  return asRecord(record.item) ?? asRecord(record.payload) ?? record;
+}
+
+function itemType(item: Record<string, unknown>): string {
+  const raw = item.item_type ?? item.type;
+  return typeof raw === "string" ? raw.toLowerCase() : "";
+}
+
+/** Text a transcript item carries, folded for a case-insensitive check. */
+function itemText(item: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of ["message", "text", "content", "error"]) {
+    const value = item[key];
+    if (typeof value === "string") {
+      parts.push(value);
+      continue;
+    }
+    const nested = asRecord(value);
+    if (nested && typeof nested.message === "string") {
+      parts.push(nested.message);
+    }
+  }
+  return parts.join("\n").toLowerCase();
+}
+
+/**
+ * A provider error item saying tools, or the code-mode host, are unavailable.
+ */
+function isProviderToolRuntimeError(item: Record<string, unknown>): boolean {
+  if (itemType(item) !== "error") return false;
+  const text = itemText(item);
+  return text.includes("code mode is unavailable") ||
+    text.includes("host executable was not found") ||
+    (text.includes("tool") && text.includes("unavailable"));
+}
+
+function isToolItem(item: Record<string, unknown>): boolean {
+  return TOOL_ITEM_TYPES.has(itemType(item));
+}
+
+/** A tool call that never started because the runtime could not spawn it. */
+function toolFailedToSpawn(item: Record<string, unknown>): boolean {
+  const status = typeof item.status === "string"
+    ? item.status.toLowerCase()
+    : "";
+  if (status === "failed_to_spawn" || status === "spawn_failed") return true;
+  const text = itemText(item);
+  return text.includes("failed to spawn") ||
+    text.includes("failure to spawn") ||
+    text.includes("could not spawn");
+}
+
+/**
+ * Whether a Codex transcript shows the tool runtime itself failing
+ * (Issue #4324).
+ *
+ * Two shapes count. A provider error item — `Code Mode is unavailable`, a
+ * missing code-mode host, or tools reported unavailable — when no tool call
+ * then succeeded. Or at least one tool call, every one of which failed to
+ * spawn. A transcript whose tools ran is an ordinary agent outcome: the
+ * model had a runtime and simply did not deliver.
+ */
+/**
+ * Parse a Codex session JSONL into items.
+ *
+ * A line that is not a JSON object is skipped. A torn final line is not a
+ * transcript item, and it does not discard the items already read.
+ */
+export function parseCodexTranscript(text: string): unknown[] {
+  const items: unknown[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      items.push(JSON.parse(trimmed));
+    } catch {
+      continue;
+    }
+  }
+  return items;
+}
+
+function transcriptShowsToolRuntimeFailure(
+  transcript: readonly unknown[] | undefined,
+): boolean {
+  if (!transcript || transcript.length === 0) return false;
+  const items: Record<string, unknown>[] = [];
+  for (const entry of transcript) {
+    const item = unwrapTranscriptItem(entry);
+    if (item) items.push(item);
+  }
+  const tools = items.filter(isToolItem);
+  // A tool that actually ran means the runtime was up. Quoted errors in a
+  // later agent message do not undo that.
+  if (tools.some((tool) => !toolFailedToSpawn(tool))) return false;
+  if (items.some(isProviderToolRuntimeError)) return true;
+  return tools.length > 0 && tools.every(toolFailedToSpawn);
+}
+
+/**
  * Classify a no-PR run failure.
  *
  * ORDER MATTERS and is fixed here, most specific first — exactly as
@@ -235,6 +375,9 @@ const AGENT_OUTCOME: RunFailureClassification = {
  * 8. `quality_check` / `no_changes` /
  *    `evidence_missing` — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
+ *    Exception (Issue #4324): a transcript that shows the tool runtime
+ *    failing is infrastructure (`tool-runtime`, code-fixable). An ordinary
+ *    no-change run, whose tools worked, stays an agent outcome.
  * 9. `workflow_gate` — a pre-PR gate the worker applied refused the change
  *    (Issue #2044): not a worker defect either, and it keeps its own class so
  *    an archive can tell a gate block from an unexplained failure.
@@ -244,6 +387,7 @@ export function classifyRunFailure(
   category: FailureCategory,
   failureMessage: string,
   declaredCategory: boolean,
+  transcript?: readonly unknown[],
 ): RunFailureClassification {
   // A declared source cause cannot be replaced by quoted git, test or agent
   // prose. Kills, account limits and internal-tool errors retain their source-specific
@@ -419,6 +563,10 @@ export function classifyRunFailure(
       // 8. The agent did not deliver — a property of the attempt, not a
       //    worker defect. Stated plainly, never auto-filed: filing an issue
       //    every time the model fails a quality gate would be pure noise.
+      //    A broken tool runtime is not that attempt (Issue #4324): the
+      //    transcript says the tools never came up, so the worker files it
+      //    and the issue is not blamed.
+      if (transcriptShowsToolRuntimeFailure(transcript)) return TOOL_RUNTIME;
       return AGENT_OUTCOME;
     case "workflow_gate":
       // Issue #2044: the changed-workflow gate refused the run over a finding

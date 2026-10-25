@@ -452,7 +452,7 @@ const RESULT_RE =
  * trimEnd) joins onto it, because a command wrapped that way names its files
  * on one line and its "N passed" result on the next.
  *
- * Exported for reuse by `summary_claim_check.ts` (Issue #3257), whose Test
+ * Exported for the Test Plan recount. The Test
  * Plan backstop walks the same logical blocks looking for a quoted
  * behaviour rather than a stale count.
  */

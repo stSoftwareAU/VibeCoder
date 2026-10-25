@@ -4,7 +4,7 @@
  * `claim_pr_comment.ts` no longer dismisses a `pr_review` (CHANGES_REQUESTED
  * review) at claim time — the claim is a lease, renewed from the run's
  * heartbeat. `processPrFeedback` must dismiss the review only once the run
- * RETIRES it (a verified push, a rebuttal, an escalation, or a hand-off),
+ * RETIRES it (a verified push, a rebuttal, or a hand-off),
  * and must CHARGE every other outcome as a failed attempt so the review is
  * retried at most twice rather than looping or wedging forever.
  *
@@ -14,7 +14,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type PrFeedbackInput,
   type PrFeedbackProcessorDeps,
@@ -138,39 +143,6 @@ function makeFailingPrCommentGithub(captured: CapturedGh): Partial<GitHubDeps> {
   };
 }
 
-/**
- * A `gh` stub where the needs-human label add and the escalation comment —
- * both the REST call and its `gh` CLI fallback — all fail. Models a brief
- * GitHub API outage during the no-fix/no-rebuttal escalation (Issue #3408
- * review).
- */
-function makeEscalationBothFailGithub(
-  captured: CapturedGh,
-): Partial<GitHubDeps> {
-  return {
-    runGhCommand: (args: string[]) => {
-      captured.calls.push(args);
-      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-      const isLabelPost = args[0] === "api" && args[2] === "POST" &&
-        String(args[3] ?? "").includes("/labels");
-      const isLabelCli = args[0] === "issue" && args[1] === "edit" &&
-        args.includes("--add-label");
-      const isCommentPost = args[0] === "api" && args[2] === "POST" &&
-        String(args[3] ?? "").includes("/comments");
-      const isCommentCli = args[0] === "issue" && args[1] === "comment";
-      if (isLabelPost || isLabelCli || isCommentPost || isCommentCli) {
-        return Promise.reject(
-          new Error("gh API error: 503 Service Unavailable"),
-        );
-      }
-      if (args[0] === "label" && args[1] === "list") {
-        return Promise.resolve("[]");
-      }
-      return Promise.resolve("");
-    },
-  };
-}
-
 function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
   return {
     repo: "org/repo",
@@ -251,6 +223,7 @@ interface RunOptions {
   captured?: CapturedGh;
   feedbackVerifierFn?: PrFeedbackProcessorDeps["feedbackVerifierFn"];
   finaliseError?: string;
+  unpushedState?: number | "error" | "throw";
 }
 
 async function runScenario(options: RunOptions) {
@@ -335,6 +308,26 @@ async function runScenario(options: RunOptions) {
       workDir,
       workRoot: workDir,
       feedbackVerifierFn: options.feedbackVerifierFn,
+      describeUnpushedFn: async () => {
+        options.events.push("measure-unpushed");
+        if (options.unpushedState === "throw") {
+          throw new Error("remote probe unavailable");
+        }
+        return options.unpushedState === "error"
+          ? { ok: false, error: new Error("remote probe unavailable") }
+          : {
+            ok: true,
+            value: {
+              count: options.unpushedState ?? 1,
+              sha: "head",
+              source: "tracking-ref",
+            },
+          };
+      },
+      syncPrBodyFn: async () => {
+        options.events.push("sync-body");
+        return { ok: true, value: { status: "updated", issueNumber: 42 } };
+      },
       ...(options.verifyPushFn ? { verifyPushFn: options.verifyPushFn } : {}),
     };
 
@@ -566,7 +559,7 @@ Deno.test("pr_review dismissal: a rebuttal that fails to post charges a failed a
   }
 });
 
-Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — escalates and dismisses once", async () => {
+Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — charged for the next cycle, never dismissed or escalated (Issue #4304)", async () => {
   const events: string[] = [];
   const { captured, result } = await runScenario({
     input: makeInput(),
@@ -577,42 +570,13 @@ Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — escal
   assertEquals(result.ok, true);
   assertEquals(
     events.filter((e) => e.startsWith("markCommentProcessed")).length,
-    1,
+    0,
   );
   assertEquals(
     events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
-    0,
+    1,
   );
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
-  assertEquals(dismissalOutcomes(events), ["escalated"]);
-});
-
-Deno.test("pr_review dismissal: no fix, no rebuttal, and the escalation itself fails (label + comment) — charges, never dismisses (Issue #3408 review)", async () => {
-  const events: string[] = [];
-  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
-  const { result } = await runScenario({
-    input: makeInput(),
-    events,
-    runBehaviours: ["nothing", "nothing"],
-    githubOverride: makeEscalationBothFailGithub(captured),
-  });
-
-  assertEquals(result.ok, true);
-  assertEquals(
-    events.filter((e) => e.startsWith("markCommentProcessed")).length,
-    0,
-  );
-  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
-  assertEquals(failures.length, 1);
-  assertStringIncludes(failures[0] ?? "", "escalation");
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
-  if (result.ok) {
-    // The escalation never landed, so the summary must not claim it did.
-    assertEquals(
-      result.value.summary.includes("escalated to needs-human"),
-      false,
-    );
-  }
 });
 
 Deno.test("pr_review dismissal: unsettled outcome (prompt build failure) is charged, never dismissed", async () => {
@@ -1000,7 +964,7 @@ Deno.test(
   },
 );
 
-Deno.test("review-fix verifier - persistent findings hold without push or dismissal after one recovery", async () => {
+Deno.test("review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)", async () => {
   const events: string[] = [];
   let checks = 0;
   const { result, captured } = await runScenario({
@@ -1027,13 +991,15 @@ Deno.test("review-fix verifier - persistent findings hold without push or dismis
     events.filter((e) => e.startsWith("handlePrCommentFailure:")).length,
     1,
   );
+  // Issue #4291: the review stays outstanding and GitHub holds the merge on
+  // it; auto-merge stays armed and no label is added.
   assertEquals(
     captured.calls.some((args) => args.includes("--disable-auto")),
-    true,
+    false,
   );
   assertEquals(
     captured.calls.some((args) => args.includes("standing-violation")),
-    true,
+    false,
   );
 });
 
@@ -1101,3 +1067,50 @@ Deno.test("review-fix verifier - a pre-flight failure cannot turn a rebuttal int
     true,
   );
 });
+
+for (const unpushedState of [0, 2, "error", "throw"] as const) {
+  Deno.test(`review-fix hold - body sync requires measured zero unpushed commits: ${unpushedState}`, async () => {
+    const events: string[] = [];
+    const { result, captured } = await runScenario({
+      input: makeInput(),
+      events,
+      unpushedState,
+      feedbackVerifierFn: (input, deps) => {
+        assertEquals(input.branchName, makeInput().branchName);
+        assertEquals(input.workerName, "");
+        assertEquals(typeof input.githubUser, "string");
+        assertEquals(typeof deps.runGitCommand, "function");
+        return Promise.resolve({
+          ok: false,
+          error: new Error("Still a real defect"),
+        });
+      },
+    });
+    assertEquals(
+      events.filter((e) => e === "sync-body").length,
+      unpushedState === 0 ? 1 : 0,
+    );
+    assertEquals(result.ok && result.value.processed, false);
+    assertEquals(result.ok && result.value.changesPushed, false);
+    assertEquals(
+      events.some((e) => e.startsWith("markCommentProcessed:")),
+      false,
+    );
+    const failures = events.filter((e) =>
+      e.startsWith("handlePrCommentFailure:")
+    );
+    assertEquals(failures.length, 1);
+    if (unpushedState === 0) {
+      assert(events.indexOf("sync-body") < events.indexOf(failures[0]!));
+    }
+    // Issue #4291: never a label or a disarm.
+    assertEquals(
+      captured.calls.some((args) => args.includes("standing-violation")),
+      false,
+    );
+    assertEquals(
+      captured.calls.some((args) => args.includes("--disable-auto")),
+      false,
+    );
+  });
+}

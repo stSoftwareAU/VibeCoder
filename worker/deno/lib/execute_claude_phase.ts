@@ -1,3 +1,4 @@
+import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * Claude execution phase orchestration (Issue #1227).
@@ -20,6 +21,7 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
  */
 
 import { browserGranted } from "./browser_grant.ts";
+import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
@@ -43,6 +45,7 @@ import {
   HAIKU_ISSUE_EXECUTOR_MODEL,
   ISSUE_EXECUTOR_MODEL,
 } from "./issue_executor_agents.ts";
+import { planIssueRunProvider } from "./issue_run_provider_agents.ts";
 import { resolveIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";
 import { resolveVerbosity } from "./verbosity.ts";
@@ -69,9 +72,17 @@ import { setActiveRepoCodexModelEffortOverrides } from "./codex_executor.ts";
 import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
 import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
-import { resolveOrchestrationSettings } from "./orchestration/role_config.ts";
+import {
+  resolveIssueOrchestration,
+  resolveOrchestrationSettings,
+} from "./orchestration/role_config.ts";
 import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
-import { resolveInvocationAgentProvider } from "./agent_provider.ts";
+import {
+  plannedActiveAgentProvider,
+  resolveAgentProvider,
+  resolveInvocationAgentProvider,
+  selectAgentProvider,
+} from "./agent_provider.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import {
   type PrepareCodegraphContextFn,
@@ -133,10 +144,9 @@ import {
 import {
   buildContextBudgetEscalationReason,
   buildContextComponents,
-  CONTEXT_BUDGET_NEXT_STEP,
+  handOffOversizedIssueToPlanning,
 } from "./context_budget_guard.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
+import { createGitHubClient } from "./github.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import {
   readSecurityFixGateBlock,
@@ -144,6 +154,7 @@ import {
 } from "./security_fix_gate_feedback.ts";
 import { buildFetchArgs } from "./git_ref_args.ts";
 import { runGitCommandChecked } from "./git_timeout.ts";
+import { bindLogger, logAt, type LogLevelName } from "./log_sink.ts";
 
 // =============================================================================
 // Types
@@ -396,11 +407,11 @@ export interface ExecuteClaudePhaseOptions {
   contextBudgetErrorPercent?: number;
   /**
    * Hard context-budget ceiling as a percentage (Issue #3713, default: 95).
-   * At or above it the phase stops and escalates; `0` disables the ceiling.
+   * At or above it the phase retries with the CI log and recent activity
+   * trimmed, then hands the issue to planning (Issue #4298); `0` disables
+   * the ceiling.
    */
   contextBudgetBlockPercent?: number;
-  /** Needs-human label name (Issue #3713, default: "needs-human"). */
-  needsHumanLabel?: string;
   /**
    * Coding-agent provider for this phase's invocation only (Issue #4109).
    *
@@ -466,6 +477,12 @@ export interface ExecuteClaudePhaseDeps {
    * spawns `rtk`.
    */
   prepareRtkRun?: typeof prepareRtkRun;
+  /**
+   * Environment lookup the pre-spawn provider planner reads (Issue #4109):
+   * the image stamp and provider settings. Optional so existing doubles need
+   * no change; absent, the process environment is read.
+   */
+  env?: (name: string) => string | undefined;
   /** Build the issue prompt with SHA-based cache integration (Issue #1273). */
   buildCachedIssuePrompt: (
     options: CachedIssuePromptOptions,
@@ -506,7 +523,13 @@ export interface ExecuteClaudePhaseDeps {
   ) => Promise<Result<string, Error>>;
   /** Finalise a PR (auto-merge, etc.). */
   finalisePr: (
-    options: { repo: string; prNumber: number; skipAutoMerge?: boolean },
+    options: {
+      repo: string;
+      prNumber: number;
+      skipAutoMerge?: boolean;
+      /** Fleet logins the gated direct merge needs (Issue #1082). */
+      fleetAuthors?: readonly string[];
+    },
   ) => Promise<Result<string, Error>>;
   /** Ensure an issue is closed when its PR is merged. */
   ensureIssueClosedIfPrMerged: (
@@ -529,29 +552,32 @@ export interface ExecuteClaudePhaseDeps {
    */
   getPromptsCommit: () => Promise<Result<string>>;
   /**
-   * Hand the issue to a human when the context-budget ceiling blocks the
-   * phase (Issue #3713). Optional so existing test doubles need no change —
-   * {@link defaultEscalateContextBudget} (the shared `escalateToHuman`
-   * chokepoint) is used when omitted.
+   * Send the issue to planning when its prompt still does not fit after the
+   * trim (Issue #4298). Resolves `true` when the hand-off applied. Optional
+   * so existing test doubles need no change —
+   * {@link defaultHandOffContextBudget} is used when omitted.
    */
-  escalateContextBudget?: (options: ContextBudgetEscalation) => Promise<void>;
+  handOffContextBudget?: (options: ContextBudgetHandoff) => Promise<boolean>;
   /**
    * Collect the Graft repo-context bundle (Issue #2102). Optional so existing
    * test doubles need no change — {@link collectGraftContext} is used when
    * omitted, and it spawns nothing while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
-  /** Log a message. */
-  log: (message: string) => void;
+  /**
+   * Log a message at the given level. A missing level is info. The level is
+   * the logger's own word, not text inside the message (Issue #4176).
+   */
+  log: (message: string, level?: LogLevelName) => void;
 }
 
-/** Arguments for the context-budget hand-off (Issue #3713). */
-export interface ContextBudgetEscalation {
+/** Arguments for the context-budget planning hand-off (Issue #4298). */
+export interface ContextBudgetHandoff {
   repo: string;
   issueNumber: number;
   githubUser: string;
-  needsHumanLabel: string;
-  /** The `**Why:**` line — why the phase stopped. */
+  issueLabels: readonly string[];
+  /** Why the phase stopped. */
   reason: string;
 }
 
@@ -621,6 +647,25 @@ export function detectScreenshotRequired(
   }
 
   return true;
+}
+
+/**
+ * Why a run without recoverable work cannot be an analysis-only answer.
+ * Shared by the standalone and fleet execute phases (Issue #4147). Process
+ * success alone does not prove the agent completed: the decoded result may
+ * report an error, an unfinished stream, or zero model turns. Providers that
+ * do not expose structured completion metadata retain their exit-code rule.
+ */
+export function emptyRunFailureReason(
+  run: ClaudeRunResult,
+): string | undefined {
+  if (run.exitCode !== 0) return `exited ${run.exitCode}`;
+  if (run.agentOutput?.status === "failed") return "reported a failed result";
+  if (run.agentOutput?.status === "incomplete") {
+    return "stopped before its final result";
+  }
+  if (run.runStats?.numTurns === 0) return "completed zero model turns";
+  return undefined;
 }
 
 // =============================================================================
@@ -829,9 +874,21 @@ export async function attemptPrSelfHealing(
           "(skip_auto_merge, Issue #1650)",
       );
     }
-    await deps.finalisePr({ repo, prNumber, skipAutoMerge }).catch(() => {
-      deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
-    });
+    // Issue #1082: the gated direct merge needs the fleet set to tell a
+    // genuine review. This host's login is the identity the self-heal path
+    // already holds; a sibling set is read from the configured fleet when
+    // that read succeeds.
+    const configuredFleet = await resolveAlertDedupAuthors(
+      {},
+      (message) => deps.log(message),
+    );
+    const fleetAuthors = configuredFleet.length > 0
+      ? configuredFleet
+      : (githubUser.trim() !== "" ? [githubUser] : []);
+    await deps.finalisePr({ repo, prNumber, skipAutoMerge, fleetAuthors })
+      .catch(() => {
+        deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
+      });
 
     // Issue #174: this PR came from `findExistingPrForBranch`, so its head is
     // this run's branch by construction — naming it makes the provenance
@@ -855,35 +912,25 @@ export async function attemptPrSelfHealing(
 // =============================================================================
 
 /**
- * Hand the issue to a human through the shared `escalateToHuman`
- * chokepoint when the context-budget ceiling blocks the phase (Issue #3713).
- *
- * Escalation failures are logged, never swallowed into a silent success —
- * the phase still fails loud with `failureType: "context_budget"`.
+ * Send an issue whose prompt cannot fit the window to planning (Issue
+ * #4298), through the same hand-off the `vibe-needs-planning` marker uses.
+ * Never hands it to a human: when planning cannot take it, the phase fails
+ * and the issue is retried.
  */
-export async function defaultEscalateContextBudget(
-  options: ContextBudgetEscalation,
-): Promise<void> {
+export async function defaultHandOffContextBudget(
+  options: ContextBudgetHandoff,
+): Promise<boolean> {
   const logger = createLogger();
-  const result = await escalateToHuman({
-    ghClient: createGhEscalationClient((args) => runGhOrThrow(args)),
+  const handoff = await handOffOversizedIssueToPlanning({
+    ghClient: createGitHubClient(logger),
     repo: options.repo,
-    target: { kind: "issue", number: options.issueNumber },
-    needsHumanLabel: options.needsHumanLabel,
-    heading: "Context budget ceiling reached",
-    reason: options.reason,
-    nextStep: CONTEXT_BUDGET_NEXT_STEP,
-    dedupKey: `context-budget-${options.issueNumber}`,
+    issueNumber: options.issueNumber,
     githubUser: options.githubUser,
+    issueLabels: options.issueLabels,
+    reason: options.reason,
     logger,
   });
-  if (!result.ok) {
-    logger.error("Context-budget escalation failed", {
-      repo: options.repo,
-      issueNumber: options.issueNumber,
-      error: result.error.message,
-    });
-  }
+  return handoff.applied;
 }
 
 /**
@@ -915,8 +962,12 @@ function readCiProviders(
  * Default production dependencies.
  */
 export function createDefaultDeps(): ExecuteClaudePhaseDeps {
+  // One logger so a warn or error keeps the level the phase asked for
+  // (Issue #4176). The marker is the logger's own level word.
+  const phaseLog = bindLogger(createLogger({ host: "" }));
   return {
-    escalateContextBudget: defaultEscalateContextBudget,
+    handOffContextBudget: defaultHandOffContextBudget,
+    env: (name) => Deno.env.get(name),
     runClaudeWithRetry,
     runExternalOrchestratedIssueRun: (input) =>
       runOrchestratedIssueRun(input, { runClaudeWithRetry }),
@@ -979,7 +1030,9 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
       value: undefined,
     }),
     getPromptsCommit: async () => await getPromptsCommit(),
-    log: (message: string) => console.log(`[execute-claude-phase] ${message}`),
+    log: (message: string, level?: LogLevelName) => {
+      phaseLog(`[execute-claude-phase] ${message}`, level);
+    },
   };
 }
 
@@ -1071,7 +1124,6 @@ async function executeClaudePhaseBody(
       OPERATIONAL_DEFAULTS.contextBudgetWarningPercent,
     contextBudgetErrorPercent = OPERATIONAL_DEFAULTS.contextBudgetErrorPercent,
     contextBudgetBlockPercent = OPERATIONAL_DEFAULTS.contextBudgetBlockPercent,
-    needsHumanLabel = "needs-human",
   } = options;
 
   const startTime = Date.now();
@@ -1213,8 +1265,10 @@ async function executeClaudePhaseBody(
         }... ${mapResult.value.cacheHit ? "(cached)" : "(generated)"}`,
       );
     } else {
-      deps.log(
-        `WARN: codebase map unavailable for ${repoDir} (non-fatal, Issue #4281): ${mapResult.error.message}`,
+      logAt(
+        deps.log,
+        "warn",
+        `codebase map unavailable for ${repoDir} (non-fatal, Issue #4281): ${mapResult.error.message}`,
       );
     }
   }
@@ -1236,6 +1290,62 @@ async function executeClaudePhaseBody(
     deps.log(describeGraftContext(graftContext));
   }
 
+  // --- Issue run provider and sub-agents (Issues #2342, #3402, #3642, #4109) ---
+  // The repository's `repo_config` layers over the host-wide sub-agent tier.
+  const repoConfig = repoConfigs?.[repo];
+  // Issue #3642: with external orchestration on, no native split or `--agents` is built.
+  const { externalOrchestration, effectiveOrchestrationSettings } =
+    resolveIssueOrchestration(
+      (repoConfigs?.[repo]?.externalOrchestration ??
+        options.externalOrchestration) === true,
+      resolveOrchestrationSettings(
+        options.externalOrchestrationSettings ?? {},
+        repoConfigs?.[repo]?.externalOrchestrationSettings,
+      ),
+      selectAgentProvider(invocationAgentProvider, { env: deps.env }).id,
+      isAutomaticProviderRoutingActive(),
+    );
+  const requestedExecutorSplit = !externalOrchestration &&
+    isIssueExecutorSplitEnabled(
+      "issue",
+      repoConfig,
+      { issueExecutorSplit: options.issueExecutorSplit === true },
+    );
+  const issueSubAgentTier = resolveIssueSubAgentTier(
+    { issueSubAgentTier: options.issueSubAgentTier ?? "sonnet" },
+    repoConfig,
+    deps.log,
+  );
+  deps.log(
+    `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
+  );
+  // Issue #4109: settle the run's provider before any step below reads it.
+  const issueRunPlan = externalOrchestration
+    ? undefined
+    : planIssueRunProvider({
+      provider: typeof invocationAgentProvider === "string"
+        ? resolveAgentProvider(invocationAgentProvider)
+        : invocationAgentProvider ?? plannedActiveAgentProvider(),
+      selection: { env: deps.env },
+      executorSplit: requestedExecutorSplit,
+      reviewerAgents: options.issueReviewerAgents === true,
+      subAgentTier: issueSubAgentTier,
+      logger,
+    });
+  const issueExecutorSplit = issueRunPlan
+    ? issueRunPlan.executorSplit
+    : requestedExecutorSplit;
+  const issueRunAgents = issueRunPlan
+    ? buildIssueRunAgents({
+      executorSplit: issueRunPlan.executorSplit,
+      reviewerAgents: issueRunPlan.reviewerAgents,
+      subAgentTier: issueRunPlan.subAgentTier,
+    })
+    : undefined;
+  const effectiveAgentProvider = issueRunPlan?.outcome === "rerouted-to-claude"
+    ? issueRunPlan.provider.id
+    : invocationAgentProvider;
+
   // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
   // The same checkout the codebase map was built from. Off, this spawns
   // nothing and every decision below is the one it always was; on, the run
@@ -1244,8 +1354,8 @@ async function executeClaudePhaseBody(
   const codegraph = await prepareCodegraphRun({
     repoDir,
     enabled: codegraphContextEnabled,
-    ...(invocationAgentProvider
-      ? { agentProvider: invocationAgentProvider }
+    ...(effectiveAgentProvider
+      ? { agentProvider: effectiveAgentProvider }
       : {}),
     logger,
     ...(deps.prepareCodegraphContext
@@ -1261,7 +1371,7 @@ async function executeClaudePhaseBody(
   // prompt line travel together, and losing RTK never fails the run.
   const rtk = await (deps.prepareRtkRun ?? prepareRtkRun)({
     enabled: rtkOutputEnabled,
-    providerId: rtkProviderId(invocationAgentProvider, logger),
+    providerId: rtkProviderId(effectiveAgentProvider, logger),
     logger,
     cwd: repoDir,
   });
@@ -1273,8 +1383,8 @@ async function executeClaudePhaseBody(
   const graft = bindGraftRun({
     result: graftContext,
     repoDir,
-    ...(invocationAgentProvider
-      ? { agentProvider: invocationAgentProvider }
+    ...(effectiveAgentProvider
+      ? { agentProvider: effectiveAgentProvider }
       : {}),
     logger,
   });
@@ -1300,7 +1410,6 @@ async function executeClaudePhaseBody(
   // --- Resolve verbosity level (Issue #1332) ---
   // The verbosity level controls how verbose Claude's response should be.
   // Two tiers since Issue #798: per-repo override > global default.
-  const repoConfig = repoConfigs?.[repo];
   const verbosityLevel = resolveVerbosity(repoConfig);
   if (verbosityLevel !== "standard") {
     deps.log(
@@ -1316,52 +1425,6 @@ async function executeClaudePhaseBody(
     ? new PromptCache({ cacheDir: promptCacheDir })
     : undefined;
 
-  // The issue-executor split (Issue #2342): with the key on, the invocation
-  // carries `--agents` definitions so the advisor delegates mechanical edit
-  // work to executors on the run's sub-agent tier — Haiku by default, Sonnet
-  // under `issue_sub_agent_tier: "sonnet"` (Issue #3402) — and the prompt
-  // carries the advisor/executor block that tells it to (Issue #2343). Off
-  // (`issue_executor_split: false`), no executor definitions are built and the
-  // advisor/executor block renders nothing. `--agents` is still emitted when
-  // reviewer agents are on (`issue_reviewer_agents`, default on), or when the
-  // Haiku sub-agent tier adds the explorer definition (see
-  // `buildIssueRunAgents` in `issue_executor_agents.ts`). Resolved
-  // before the prompt is built so the prompt and the argv cannot disagree.
-  // Issue #3642: with external orchestration on, the native split is never
-  // resolved, so no executor definition reaches the prompt or the argv.
-  const externalOrchestration = (repoConfigs?.[repo]?.externalOrchestration ??
-    options.externalOrchestration) === true;
-  const effectiveOrchestrationSettings = resolveOrchestrationSettings(
-    options.externalOrchestrationSettings ?? {},
-    repoConfigs?.[repo]?.externalOrchestrationSettings,
-  );
-  const issueExecutorSplit = !externalOrchestration &&
-    isIssueExecutorSplitEnabled(
-      "issue",
-      repoConfig,
-      { issueExecutorSplit: options.issueExecutorSplit === true },
-    );
-  // The sub-agent tier (Issue #3402): host-wide `issueSubAgentTier`, with the
-  // repository's own `repo_config` override layered over it here. Resolved
-  // and logged unconditionally, every issue run, before the prompt is built.
-  const issueSubAgentTier = resolveIssueSubAgentTier(
-    { issueSubAgentTier: options.issueSubAgentTier ?? "sonnet" },
-    repoConfig,
-    deps.log,
-  );
-  deps.log(
-    `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
-  );
-  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
-  // #2812); `issue_reviewer_agents: false` opts out.
-  // Issue #3642: no `--agents` is built on the external path (fail closed).
-  const issueRunAgents = externalOrchestration
-    ? undefined
-    : buildIssueRunAgents({
-      executorSplit: issueExecutorSplit,
-      reviewerAgents: options.issueReviewerAgents === true,
-      subAgentTier: issueSubAgentTier,
-    });
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -1372,39 +1435,43 @@ async function executeClaudePhaseBody(
     );
   }
 
-  const promptResult = await deps.buildCachedIssuePrompt({
-    repo,
-    issueNumber: String(issueNumber),
-    issueTitle,
-    issueBody,
-    issueLabels,
-    qualityInstructions,
-    customInstructions,
-    screenshotRequired,
-    skipScreenshotCheck,
-    milestoneBranch: milestoneBranch || undefined,
-    recentActivity,
-    codebaseMap,
-    // Present only on an `ok` collection (Issue #2102); the builder renders
-    // nothing when it is undefined.
-    graftContextBundle: graftContext.bundle,
-    ciFailureContext,
-    ciFailureBoundaryId,
-    securityGateBlock,
-    cache: promptCache,
-    logger,
-    verbosityLevel,
-    // Issue #849: an operator's `work-on` mapping replaces the built-in issue
-    // template here too — this phase is a second entry point into the same
-    // build, and skipping the overrides would silently run the built-in one.
-    ...(promptOverrides ? { promptOverrides } : {}),
-    // Issue #2343: a split run's prompt carries the advisor/executor block.
-    issueExecutorSplit,
-    // Issue #2930: name this host's configured fleet run archive, when any.
-    ...(options.fleetRunArchive
-      ? { fleetRunArchive: options.fleetRunArchive }
-      : {}),
-  });
+  // Issue #4298: built by a closure so the context-budget ceiling below can
+  // rebuild the prompt with the CI log and recent activity trimmed.
+  const buildRunPrompt = (withHistory: boolean) =>
+    deps.buildCachedIssuePrompt({
+      repo,
+      issueNumber: String(issueNumber),
+      issueTitle,
+      issueBody,
+      issueLabels,
+      qualityInstructions,
+      customInstructions,
+      screenshotRequired,
+      skipScreenshotCheck,
+      milestoneBranch: milestoneBranch || undefined,
+      recentActivity: withHistory ? recentActivity : undefined,
+      codebaseMap,
+      // Present only on an `ok` collection (Issue #2102); the builder renders
+      // nothing when it is undefined.
+      graftContextBundle: graftContext.bundle,
+      ciFailureContext: withHistory ? ciFailureContext : undefined,
+      ciFailureBoundaryId: withHistory ? ciFailureBoundaryId : undefined,
+      securityGateBlock,
+      cache: promptCache,
+      logger,
+      verbosityLevel,
+      // Issue #849: an operator's `work-on` mapping replaces the built-in issue
+      // template here too — this phase is a second entry point into the same
+      // build, and skipping the overrides would silently run the built-in one.
+      ...(promptOverrides ? { promptOverrides } : {}),
+      // Issue #2343: a split run's prompt carries the advisor/executor block.
+      issueExecutorSplit,
+      // Issue #2930: name this host's configured fleet run archive, when any.
+      ...(options.fleetRunArchive
+        ? { fleetRunArchive: options.fleetRunArchive }
+        : {}),
+    });
+  let promptResult = await buildRunPrompt(true);
 
   if (!promptResult.ok) {
     return {
@@ -1418,7 +1485,7 @@ async function executeClaudePhaseBody(
   // Extract structured prompt parts with cache metadata (Issue #1273).
   // Static content (coding guidelines) goes into the system prompt,
   // dynamic content (issue details) goes into the user prompt.
-  const {
+  let {
     systemPrompt,
     prompt: builtUserPrompt,
     promptSha,
@@ -1434,40 +1501,69 @@ async function executeClaudePhaseBody(
   // untrusted fence the builder wrote.
   // Issue #2383 appends its recall line the same way, and only on a run whose
   // hook is actually installed — the other half of the indivisible pair.
-  const userPrompt = rtk.applyPrompt(
-    graft.applyPrompt(codegraph.applyPrompt(builtUserPrompt)),
-  );
+  const applyRunLines = (prompt: string): string =>
+    rtk.applyPrompt(graft.applyPrompt(codegraph.applyPrompt(prompt)));
+  let userPrompt = applyRunLines(builtUserPrompt);
 
   // --- Context budget monitoring and hard ceiling (Issues #1327, #3713) ---
   // Estimate token counts for each major prompt component and log the budget
   // breakdown. Warnings and errors are observational; the ceiling is not —
-  // at or above it the phase stops before any billed invocation and the
-  // issue is handed to a human, so a non-converging issue is bounded by
-  // context rather than by wall-clock alone.
+  // at or above it the phase stops before any billed invocation, so a
+  // non-converging issue is bounded by context rather than by wall-clock.
+  //
+  // Issue #4298: the ceiling never hands the issue to a human. The CI log
+  // and the recent-activity summary are the history that grows, so the
+  // prompt is rebuilt without them and checked again; an issue that still
+  // does not fit goes to planning to be split.
   {
-    const components = buildContextComponents({
-      systemPrompt,
-      userPrompt,
-      issueBody,
-      customInstructions,
-      recentActivity,
-      ciFailureContext,
-    });
-
     const model = "opus"; // Phase model resolution happens downstream
-    const budgetResult = checkContextBudget(components, model, {
-      warningThresholdPercent: contextBudgetWarningPercent,
-      errorThresholdPercent: contextBudgetErrorPercent,
-      blockThresholdPercent: contextBudgetBlockPercent,
-    });
-
+    const measure = (withHistory: boolean) =>
+      checkContextBudget(
+        buildContextComponents({
+          systemPrompt,
+          userPrompt,
+          issueBody,
+          customInstructions,
+          ...(withHistory ? { recentActivity, ciFailureContext } : {}),
+        }),
+        model,
+        {
+          warningThresholdPercent: contextBudgetWarningPercent,
+          errorThresholdPercent: contextBudgetErrorPercent,
+          blockThresholdPercent: contextBudgetBlockPercent,
+        },
+      );
+    let budgetResult = measure(true);
     deps.log(formatBudgetBreakdown(budgetResult));
 
+    if (!budgetResult.ok && (ciFailureContext || recentActivity)) {
+      logAt(
+        deps.log,
+        "warn",
+        "Context budget ceiling reached — retrying with the CI log and " +
+          "recent activity trimmed (Issue #4298)",
+      );
+      const trimmed = await buildRunPrompt(false);
+      if (trimmed.ok) {
+        promptResult = trimmed;
+        ({
+          systemPrompt,
+          prompt: builtUserPrompt,
+          promptSha,
+          cacheHit: promptCacheHit,
+          templateSource: promptTemplate,
+        } = trimmed.value);
+        userPrompt = applyRunLines(builtUserPrompt);
+        budgetResult = measure(false);
+        deps.log(formatBudgetBreakdown(budgetResult));
+      }
+    }
+
     if (budgetResult.warning) {
-      deps.log(`WARN: ${budgetResult.warning}`);
+      logAt(deps.log, "warn", `${budgetResult.warning}`);
     }
     if (budgetResult.error) {
-      deps.log(`ERROR: ${budgetResult.error}`);
+      logAt(deps.log, "error", `${budgetResult.error}`);
     }
 
     // Log budget entry for daily summary aggregation (fire-and-forget)
@@ -1491,21 +1587,24 @@ async function executeClaudePhaseBody(
     }
 
     if (!budgetResult.ok) {
-      const failureMessage = buildContextBudgetEscalationReason(budgetResult);
-      deps.log(`BLOCKED: ${failureMessage}`);
-      const escalate = deps.escalateContextBudget ??
-        defaultEscalateContextBudget;
-      await escalate({
+      const reason = buildContextBudgetEscalationReason(budgetResult);
+      deps.log(`BLOCKED: ${reason}`);
+      const handOff = deps.handOffContextBudget ?? defaultHandOffContextBudget;
+      const planned = await handOff({
         repo,
         issueNumber,
         githubUser,
-        needsHumanLabel,
-        reason: failureMessage,
+        issueLabels: issueLabels.split(",").map((l) => l.trim()).filter((l) =>
+          l !== ""
+        ),
+        reason,
       });
       return {
         action: "failure",
         failureType: "context_budget",
-        failureMessage,
+        failureMessage: planned
+          ? `${reason} Handed to planning to split it (Issue #4298).`
+          : `${reason} Planning could not take it, so the issue is retried.`,
         elapsedSeconds: elapsedSince(startTime),
       };
     }
@@ -1517,8 +1616,10 @@ async function executeClaudePhaseBody(
   // rather than recorded as an unknown-but-fine revision.
   const promptsCommitResult = await deps.getPromptsCommit();
   if (!promptsCommitResult.ok) {
-    deps.log(
-      `WARNING: could not resolve the prompts commit — ${promptsCommitResult.error.message}`,
+    logAt(
+      deps.log,
+      "warn",
+      `could not resolve the prompts commit — ${promptsCommitResult.error.message}`,
     );
   } else {
     deps.log(`Using prompts from commit ${promptsCommitResult.value}`);
@@ -1571,13 +1672,15 @@ async function executeClaudePhaseBody(
     if (heartbeatStart.ok) {
       heartbeatHandle = heartbeatStart.value;
     } else {
-      deps.log(
-        `WARNING: Failed to start heartbeat (non-fatal): ${heartbeatStart.error.message}`,
+      logAt(
+        deps.log,
+        "warn",
+        `Failed to start heartbeat (non-fatal): ${heartbeatStart.error.message}`,
       );
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    deps.log(`WARNING: Failed to start heartbeat (non-fatal): ${msg}`);
+    logAt(deps.log, "warn", `Failed to start heartbeat (non-fatal): ${msg}`);
   }
 
   // --- Execute Claude ---
@@ -1607,7 +1710,7 @@ async function executeClaudePhaseBody(
       // Per-invocation provider selection (Issue #4109) with the repo pin
       // layered in (Issue #2048); undefined keeps the active provider,
       // exactly as before.
-      agentProvider: invocationAgentProvider,
+      agentProvider: effectiveAgentProvider,
       // The checkout the agent works in (Issue #2159). Without it the
       // runner's `mcpRequest && cwd` gate writes no MCP configuration at
       // all, so this path would append the CodeGraph prompt line and
@@ -1682,7 +1785,7 @@ async function executeClaudePhaseBody(
     // Always stop heartbeat
     if (heartbeatHandle) {
       await stopHeartbeat(heartbeatHandle).catch(() => {
-        deps.log("WARNING: Failed to stop heartbeat (non-fatal)");
+        logAt(deps.log, "warn", "Failed to stop heartbeat (non-fatal)");
       });
     }
   }
@@ -2024,18 +2127,20 @@ async function executeClaudePhaseBody(
       }
     }
 
-    // An agent that failed (non-zero exit) and changed nothing crashed; it did
+    // An agent that failed or never completed and changed nothing crashed; it did
     // not conclude there was nothing to do. `no_changes` would hand a real
     // implementation issue to a human as analysis-only — 46 on 2026-10-22,
     // every one a run in which no model turn happened (Issue #4147). A
-    // failure keeps the issue on the retry ladder instead.
-    if (exitCode !== 0) {
+    // failure keeps the issue on the retry ladder instead. Keep the live
+    // phases/execute_phase.ts guard in sync; both entry points need this check.
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
       const failureOutput = buildFailureOutputTail(claudeOutput);
       return {
         action: "failure",
         failureType: "execution_error",
         failureMessage:
-          `Claude execution failed: the agent exited ${exitCode} without ` +
+          `Claude execution failed: the agent ${emptyFailure} without ` +
           `making any change. This is a run failure, not an analysis-only ` +
           `answer; the issue stays queued for a retry.` +
           (failureOutput
@@ -2087,8 +2192,8 @@ function elapsedSince(startTime: number): number {
 function buildLoggerFromFn(logFn: (message: string) => void): Logger {
   return {
     info: (msg: string) => logFn(msg),
-    warn: (msg: string) => logFn(`WARN: ${msg}`),
-    error: (msg: string) => logFn(`ERROR: ${msg}`),
+    warn: (msg: string) => logAt(logFn, "warn", `${msg}`),
+    error: (msg: string) => logAt(logFn, "error", `${msg}`),
     debug: () => {},
     security: () => {},
     skipReason: () => {},

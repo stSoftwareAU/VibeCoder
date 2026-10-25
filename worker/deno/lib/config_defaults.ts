@@ -954,9 +954,11 @@ export const DEFAULT_CLAUDE_EFFORT_HEALTH = "low" as const;
  *   `max` bump is reserved for the #3217 pre-flight reroute, which fires only
  *   when a phase has been pinned back to Fable and Fable is unavailable)
  * - issue → high (thorough reasoning for implementation)
- * - ci_fix / pr_feedback / quality_fix → high (reactive tasks, run on Sonnet
- *   since Issue #2812 so they take the deeper effort at half the Opus rate)
- * - spelling_fix / summarise / health → low (trivial, mechanical tasks)
+ * - ci_fix / pr_feedback / quality_fix / merge_conflict → high (reactive
+ *   tasks, run on Sonnet since Issue #2812 so they take the deeper effort at
+ *   half the Opus rate; merge_conflict is the same class, Issue #4174)
+ * - spelling_fix / summarise / health / compaction → low (trivial or
+ *   summarising tasks; compaction is the fast tier, Issue #4174)
  */
 export const PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   planning: DEFAULT_CLAUDE_EFFORT_PLANNING,
@@ -970,12 +972,16 @@ export const PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   ci_fix: DEFAULT_CLAUDE_EFFORT_CI_FIX,
   pr_feedback: DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK,
   quality_fix: DEFAULT_CLAUDE_EFFORT_QUALITY_FIX,
+  // Issue #4174: the merge engineer, same effort as the other reactive phases.
+  merge_conflict: DEFAULT_CLAUDE_EFFORT_QUALITY_FIX,
   refinement: DEFAULT_CLAUDE_EFFORT_REFINEMENT,
   revision: DEFAULT_CLAUDE_EFFORT_REVISION,
   clarification: DEFAULT_CLAUDE_EFFORT_CLARIFICATION,
   spelling_fix: DEFAULT_CLAUDE_EFFORT_SPELLING_FIX,
   summarise: DEFAULT_CLAUDE_EFFORT_SUMMARISE,
   health: DEFAULT_CLAUDE_EFFORT_HEALTH,
+  // Issue #4174: a summarising /compact turn, same effort as summarise.
+  compaction: DEFAULT_CLAUDE_EFFORT_SUMMARISE,
 } as const;
 
 /**
@@ -1333,8 +1339,8 @@ export const CODEX_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
  *
  * Same phase keys and the same tiering as {@link PHASE_EFFORT_DEFAULTS},
  * clamped to the four levels Codex accepts: the planning-shaped phases and
- * `issue` run at `high`, the reactive phases at `medium`, and the trivial trio
- * at `low`.
+ * `issue` run at `high`, the reactive phases (including `merge_conflict`) at
+ * `medium`, and the trivial phases plus `compaction` at `low`.
  */
 export const CODEX_PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   planning: CODEX_EFFORT_LEVELS.high,
@@ -1349,9 +1355,13 @@ export const CODEX_PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   ci_fix: CODEX_EFFORT_LEVELS.medium,
   pr_feedback: CODEX_EFFORT_LEVELS.medium,
   quality_fix: CODEX_EFFORT_LEVELS.medium,
+  // Issue #4174: reactive code, so medium like ci_fix, not the issue manager's high.
+  merge_conflict: CODEX_EFFORT_LEVELS.medium,
   spelling_fix: CODEX_EFFORT_LEVELS.low,
   summarise: CODEX_EFFORT_LEVELS.low,
   health: CODEX_EFFORT_LEVELS.low,
+  // Issue #4174: a summarising turn, low like summarise.
+  compaction: CODEX_EFFORT_LEVELS.low,
 } as const;
 
 // ---------------------------------------------------------------------------

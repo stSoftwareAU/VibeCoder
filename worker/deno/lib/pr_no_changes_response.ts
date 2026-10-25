@@ -26,7 +26,9 @@ import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
  * - `body` — the PR comment body for the non-escalating paths
  *   (timing / infrastructure / unknown). Posted as-is.
  * - `addNeedsHuman` — whether the `needs-human` label should be added to the
- *   PR. Only set for the `code-fix-required` category.
+ *   PR. Only set for the `history-rewrite-required` category: a secret
+ *   already in the base branch's history needs a credential rotation no
+ *   worker performs (Issue #4304 removed every other hand-back).
  * - `reason` / `nextStep` — when `addNeedsHuman` is true, these supply the
  *   `**Why:**` and `**Next step:**` lines for the shared
  *   {@link ../needs_human_escalation.ts | escalateToHuman} helper (Issue
@@ -41,13 +43,23 @@ export interface NoChangesResponse {
 }
 
 /**
- * Standard "what the reviewer should do" sentence appended to escalation
- * comments on PR paths. Centralised so both the CI and feedback no-changes
- * helpers stay aligned.
+ * Standard "what the reviewer should do" sentence for the one escalation
+ * left on PR paths — a secret already in the base branch's history, whose
+ * own arm supplies the rotate-the-credential `nextStep`. Kept as the
+ * callers' fallback when a response carries no `nextStep` of its own.
  */
 export const PR_ESCALATION_NEXT_STEP =
   "Review the failing check and either push a fix or reply with guidance, " +
   "then remove the `needs-human` label so the worker can retry.";
+
+/**
+ * What happens next on every non-escalating no-change reply (Issue #4304).
+ * The worker re-runs the check itself and retries; nobody is asked to act.
+ */
+export const RETRY_SENTENCE =
+  "The worker re-runs the failing check and tries again from this diagnosis; " +
+  "if the automatic fix attempts are spent on this same failure, the PR is " +
+  "closed and its issue redone from the base branch.";
 
 /** Render the matched signals into a short bullet list, truncated for length. */
 function formatSignals(signals: ReadonlyArray<string>): string {
@@ -110,28 +122,20 @@ export function buildCiNoChangesResponse(
   switch (category) {
     // Issue #2726: this path classifies the AGENT's output, not the check's,
     // so a gate line here did not come from the check and must not let the
-    // agent dodge escalation — it gets the code-fix-required response.
+    // agent dodge a retry — it gets the code-fix-required response.
+    //
+    // Issue #4304: no needs-human. The worker re-runs the failing check and
+    // the next attempt starts from this diagnosis; once the attempt cap is
+    // spent the PR is closed and its issue redone (`pr_ci_processor.ts`).
     case "human-gate":
-    case "code-fix-required": {
-      // Issue #2211: route the escalation through the shared helper, so
-      // `body` is no longer posted directly. `reason` and `nextStep` are
-      // what the helper substitutes into the comment. The legacy `body` is
-      // kept (and explicitly mentions `needs-human`) for any caller that
-      // still inspects it.
-      const reason =
-        `I reviewed the CI check failure (**${name}**) but could not produce a code fix. ` +
-        `The classifier indicates this requires a code change.${trailer}`;
+    case "code-fix-required":
       return {
         category: "code-fix-required",
-        addNeedsHuman: true,
-        reason,
-        nextStep: PR_ESCALATION_NEXT_STEP,
+        addNeedsHuman: false,
         body:
-          `I reviewed the CI check failure (**${name}**) but could not produce a code fix. ` +
-          `The classifier indicates this requires a code change, so a human reviewer is required — ` +
-          `I have added the \`needs-human\` label.${trailer}`,
+          `I reviewed the CI check failure (**${name}**) but could not produce a code fix this attempt. ` +
+          `The classifier indicates this requires a code change. ${RETRY_SENTENCE}${trailer}`,
       };
-    }
     case "history-rewrite-required": {
       // Issue #630. Reaching here means the content fix produced no change,
       // so the rebuild never ran — and a secret finding that survives with
@@ -159,7 +163,7 @@ export function buildCiNoChangesResponse(
         addNeedsHuman: false,
         body:
           `I reviewed the CI check failure (**${name}**) and it looks like a timing or timeout issue. ` +
-          `No code change was applied — please re-run the failing check before escalating.${trailer}`,
+          `No code change was applied. ${RETRY_SENTENCE}${trailer}`,
       };
     case "infrastructure":
       return {
@@ -167,16 +171,16 @@ export function buildCiNoChangesResponse(
         addNeedsHuman: false,
         body:
           `I reviewed the CI check failure (**${name}**) and it looks infrastructure-related ` +
-          `(network, runner, or upstream service). No code change was applied — please re-run the ` +
-          `failing check.${trailer}`,
+          `(network, runner, or upstream service). No code change was applied. ` +
+          `${RETRY_SENTENCE}${trailer}`,
       };
     case "unknown":
       return {
         category: "unknown",
         addNeedsHuman: false,
         body:
-          `I investigated the CI check failure (**${name}**) but could not determine a fix — ` +
-          `please review.${trailer}`,
+          `I investigated the CI check failure (**${name}**) but could not determine a fix this ` +
+          `attempt. ${RETRY_SENTENCE}${trailer}`,
       };
     default:
       // Exhaustiveness guard: a new CiFailureCategory must get its own arm
@@ -190,8 +194,10 @@ export function buildCiNoChangesResponse(
  * the worker did not push any code changes.
  *
  * When `classification` is omitted (pure human review feedback with no
- * associated CI check), the message is a neutral acknowledgement that does
- * not assert transience and does not add `needs-human`.
+ * associated CI check), the message is a plain statement that no change was
+ * made. It never asks the reviewer to clarify (Issue #4304): the caller posts
+ * the agent's own reasoned reply instead whenever the agent wrote one, so
+ * this body is only the fallback for a run that wrote nothing.
  */
 export function buildFeedbackNoChangesResponse(
   classification?: CiFailureClassification,
@@ -201,8 +207,9 @@ export function buildFeedbackNoChangesResponse(
       category: "unknown",
       addNeedsHuman: false,
       body:
-        "I reviewed this feedback and could not identify a code change to apply. " +
-        "Please clarify if a change is required.",
+        "I reviewed this feedback and could not identify a code change to " +
+        "apply: as far as I could establish, the code on this branch already " +
+        "does what the feedback describes.",
     };
   }
   // When a failing check is associated with the feedback, route via the

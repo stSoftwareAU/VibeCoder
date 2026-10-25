@@ -2,7 +2,7 @@
 # The scanner builds this with the repository as the build context, then runs
 # its audit offline, so every dependency the worker and its tests need is
 # fetched here. Deno is pinned to .deno-version.
-FROM denoland/deno:debian-2.9.6
+FROM denoland/deno:debian-2.9.8
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \

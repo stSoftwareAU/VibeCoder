@@ -10,6 +10,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import type { MilestoneConflictAgentFn } from "../lib/milestone_conflict_ladder.ts";
@@ -39,31 +41,31 @@ const JUDGEMENT = `Judgement: ${PATH} — kept both designs behind a flag; ` +
 async function conflictedRemote(
   root: string,
 ): Promise<{ clone: string; origin: string }> {
-  const origin = `${root}/origin.git`;
-  const seed = `${root}/seed`;
-  await git(["init", "-q", "--bare", origin], root);
-  await git(["symbolic-ref", "HEAD", "refs/heads/main"], origin);
-  await git(["init", "-q", "--initial-branch=main", seed], root);
-  await git(["config", "user.email", "t@example.com"], seed);
-  await git(["config", "user.name", "Test"], seed);
-  await Deno.mkdir(`${seed}/lib`, { recursive: true });
-  await Deno.writeTextFile(`${seed}/${PATH}`, "const impl = 'seed';\n");
-  await git(["add", "-A"], seed);
-  await git(["commit", "-q", "-m", "Seed"], seed);
-  await git(["checkout", "-q", "-b", BRANCH], seed);
-  await Deno.writeTextFile(`${seed}/${PATH}`, "const impl = 'branch';\n");
-  await git(["commit", "-qam", "The branch's design"], seed);
-  await git(["checkout", "-q", "main"], seed);
-  await Deno.writeTextFile(`${seed}/${PATH}`, "const impl = 'main';\n");
-  await git(["commit", "-qam", "Main's rival design"], seed);
-  await git(["remote", "add", "origin", origin], seed);
-  await git(["push", "-q", "origin", "main", BRANCH], seed);
-
+  const origin = await seedGitRemote(root, "main", [
+    {
+      branch: "main",
+      subject: "Seed",
+      files: { [PATH]: "const impl = 'seed';\n" },
+    },
+    {
+      branch: BRANCH,
+      parent: 1,
+      subject: "The branch's design",
+      files: { [PATH]: "const impl = 'branch';\n" },
+    },
+    {
+      branch: "main",
+      parent: 1,
+      subject: "Main's rival design",
+      files: { [PATH]: "const impl = 'main';\n" },
+    },
+  ]);
   const clone = `${root}/clone`;
-  await git(["clone", "-q", origin, clone], root);
-  await git(["config", "user.email", "c@example.com"], clone);
-  await git(["config", "user.name", "Clone"], clone);
-  await git(["checkout", "-q", BRANCH], clone);
+  await cloneGitFixture(origin, clone, {
+    checkout: BRANCH,
+    name: "Clone",
+    email: "c@example.com",
+  });
   return { clone, origin };
 }
 

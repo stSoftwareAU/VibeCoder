@@ -27,15 +27,17 @@ Deno.test("Issue #3058 - issue prompt blocks the PR for a violation the diff int
 Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished deliverables", async () => {
   const issuePrompt = await readRepoDoc("prompts/issue/prompt.md");
 
-  const escapeHatch = flat(section(issuePrompt, "Escape Hatch"));
+  // Issue #4227: the issue run's escape hatch is gone; an approved issue is
+  // completed, and the only exits are the defined markers.
+  const noHandBack = flat(section(issuePrompt, "No hand-back, no follow-up"));
   for (
     const required of [
-      "hands it to a human only while the branch has no commits",
-      "whether or not the branch already has commits",
-      "Do not file a follow-up and depend on it",
+      "It is never handed to a human, and a follow-up",
+      "Do not file an issue and then depend on it",
+      "A closed, unreadable or self-filed dependency does not defer",
     ]
   ) {
-    assertStringIncludes(escapeHatch, required);
+    assertStringIncludes(noHandBack, required);
   }
 
   const acceptanceCriteriaClosure = flat(
@@ -46,16 +48,12 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "Demonstrate a criterion; do not assert it",
       "must have been run on the final head",
       "one untested branch makes it `partial`",
-      "A missing core deliverable is not a PR",
-      "git log <base>..HEAD",
-      "git diff --stat HEAD",
-      "a planning marker is still read after that commit",
+      "An unmet criterion is not a PR",
+      "The worker raises no PR until every criterion is met",
+      "a planning marker defers or plans and raises no PR",
       "suspicious-image flag is the exception",
-      "Depends on owner/repo#N",
-      "A closed or unreadable dependency does not defer",
-      "A follow-up this run filed is not that dependency",
+      "A closed, unreadable or self-filed dependency does not defer",
       "A bare `## Blocked:` heading does not defer",
-      "The worker defers and raises no PR",
     ]
   ) {
     assertStringIncludes(acceptanceCriteriaClosure, required);
@@ -80,7 +78,7 @@ Deno.test("Issue #3058 - issue prompt holds docs the diff touches to the same ru
   }
 });
 
-Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and keep the escape hatch uncommitted", async () => {
+Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading", async () => {
   const guidelinesPrompt = await readRepoDoc(
     "prompts/coding_guidelines/prompt.md",
   );
@@ -98,23 +96,8 @@ Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and
   ) {
     assertStringIncludes(blockedOnAnotherIssue, required);
   }
-
-  const escapeHatch = flat(
-    section(
-      guidelinesPrompt,
-      "Escape Hatch — Hand Off When Genuinely Out of Scope",
-    ),
-  );
-  for (
-    const required of [
-      "hands the issue to a human (`needs-human`) only while the branch has no commits",
-      "In an issue run, this free-text hand-off is honoured only when the run leaves no commit",
-      "A PR-feedback or CI-fix run keeps using the `.pr_response_message` escape hatch",
-      "Do not file a follow-up and name it on a `Depends on` line",
-    ]
-  ) {
-    assertStringIncludes(escapeHatch, required);
-  }
+  // Issue #4304: the escape hatch is gone from the guidelines — no issue,
+  // PR-feedback or CI-fix run hands work back — so nothing is pinned for it.
 });
 
 Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification rules", async () => {

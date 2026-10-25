@@ -188,21 +188,6 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // The described-code-change path scan returns the right answer on a long
   // hostile line, only quadratically slowly — so only growth can pin it (#2826).
   "tests/described_code_change_test.ts",
-  // The docs-sweep bare-placeholder check scans a `section:` value an agent
-  // (steered by an untrusted issue body) writes; only a growth measurement
-  // separates the capped, linear scan from the quadratic regex it replaced
-  // (Issue #3085 review).
-  "tests/docs_sweep_gate_test.ts",
-  // The docs-sweep re-run reads the `siblings:` label and its `none`
-  // negative from a Docs sweep line an agent (steered by an untrusted issue
-  // body) writes; only a growth measurement separates those linear patterns
-  // from a backtracking one on hostile space and quote runs (Issue #3371).
-  "tests/docs_sweep_hits_test.ts",
-  // The branch-outcomes heading regex scans a PR-summary line an agent
-  // (steered by an untrusted issue body) writes; only a growth measurement
-  // separates the fixed, linear scan from the quadratic `\s*:?\s*$` tail it
-  // replaced (PR #3160 review).
-  "tests/branch_outcomes_gate_test.ts",
   // The paired run-result scan reads a PR-summary line an agent writes; only
   // a growth measurement separates its linear separator scan from a
   // backtracking regex (Issue #3381).
@@ -243,10 +228,6 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // the fixed, linear patterns from the quadratic ones they replaced
   // (Issue #3311).
   "tests/pre_commit_safety_test.ts",
-  // The summary-facts validator and renderer walk untrusted agent-written
-  // strings; only a growth measurement separates linear scans from quadratic
-  // ones (Issue #3396).
-  "tests/summary_facts_3396_test.ts",
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
   // The PR-body tier-marker finder scans an untrusted PR body for an
@@ -254,10 +235,6 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // scan from a backtracking one (Issue #3403).
   "tests/pr_body_test.ts",
   "tests/prompt_leak_redaction_test.ts",
-  // The removed-assertion gate lexes an agent-written test file whole; only a
-  // growth measurement separates its capped, linear scans from a quadratic
-  // walk on hostile nesting and unclosed brackets (#3148 review).
-  "tests/removed_assertion_gate_context_test.ts",
   // The result-placeholder gate's suffix and result-line regexes scan an
   // agent-written PR summary or reply, steered by an untrusted issue body;
   // only a growth measurement separates their linear scans from a quadratic
@@ -276,10 +253,6 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // `repository_url`; only a growth measurement separates its linear scan
   // from a backtracking one (Issue #3319).
   "tests/native_sub_issue_refs_test.ts",
-  // The first-run summary claim check's Test Plan backstop scans an
-  // agent-written summary and a test file with bounded span and declaration
-  // regexes; only a growth measurement pins them (#3257).
-  "tests/summary_claim_check_test.ts",
   // The shared Markdown code-span splitter pairs backtick runs in untrusted
   // issue bodies and PR summaries; only a growth measurement separates its
   // linear pairing from the quadratic forward scan it replaced (Issue
@@ -310,6 +283,17 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // source lines and diffs; only a growth measurement separates their linear
   // patterns from a backtracking one (Issue #3779).
   "tests/caller_checks_3779_test.ts",
+  // A grandchild that holds the output pipes must not hold the call past its
+  // timeout; only the elapsed time against the timeout shows the pipes were
+  // cancelled rather than drained (Issue #4247).
+  "tests/subprocess_timeout_test.ts",
+  // Real SIGTERM-ignoring children exercise bounded kill completion at the
+  // chokepoints; keep their elapsed assertions out of the parallel pass.
+  "tests/subprocess_deadline_4247_test.ts",
+  // The prose-scope lexer scans source a pull request changes. Only a growth
+  // measurement separates its character loop from a super-linear one on a
+  // long line of open brackets and quotes (Issue #4234).
+  "tests/doc_prose_scope_lexer_test.ts",
 ];
 
 /**

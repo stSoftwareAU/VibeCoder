@@ -459,7 +459,6 @@
         "worker/deno/lib/alert_feeds/alert_fingerprint.ts",
         "worker/deno/lib/already_resolved_outcome.ts",
         "worker/deno/lib/analysis_only.ts",
-        "worker/deno/lib/analysis_only_handoff.ts",
         "worker/deno/lib/answer_sanitiser.ts",
         "worker/deno/lib/array_utils.ts",
         "worker/deno/lib/artifact_upload_scanner.ts",
@@ -507,7 +506,6 @@
         "worker/deno/lib/claim_runway_evidence.ts",
         "worker/deno/lib/claimed_issue_guard.ts",
         "worker/deno/lib/clarity_assessment.ts",
-        "worker/deno/lib/clarity_phase.ts",
         "worker/deno/lib/claude_auth.ts",
         "worker/deno/lib/claude_health_message.ts",
         "worker/deno/lib/claude_pool_budget.ts",
@@ -576,7 +574,6 @@
         "worker/deno/lib/docker_image_ref.ts",
         "worker/deno/lib/duplicate_block_scanner.ts",
         "worker/deno/lib/ensure_repo_clone.ts",
-        "worker/deno/lib/escalate_unworkable_work_on.ts",
         "worker/deno/lib/escape_hatch.ts",
         "worker/deno/lib/escape_hatch_label_strip.ts",
         "worker/deno/lib/escape_hatch_trusted_authors.ts",
@@ -1012,10 +1009,10 @@
       "chunk": "top-up-1862",
       "title": "top-up: the re-approved-then-superseded hand-off",
       "ledger": "docs/audits/security-sweep-1862-reapproval-superseded-handoff.md",
-      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: reapproval_superseded_handoff.ts (#1862), renamed reapproval_superseded_close.ts when the hand-off became a close (#4298)",
       "status": "swept",
       "paths": [
-        "worker/deno/lib/reapproval_superseded_handoff.ts"
+        "worker/deno/lib/reapproval_superseded_close.ts"
       ],
       "sweptAt": "53aabd13fba980911d5ed25a892536dfb6e520ba"
     },
@@ -1052,7 +1049,6 @@
         "worker/deno/commands/check_resurrected_files.ts",
         "worker/deno/commands/circuit_breaker.ts",
         "worker/deno/commands/claim_issue.ts",
-        "worker/deno/commands/clarity_phase.ts",
         "worker/deno/commands/claude_auth.ts",
         "worker/deno/commands/claude_runner.ts",
         "worker/deno/commands/claude_tail_cleanup.ts",
@@ -2492,18 +2488,6 @@
       ]
     },
     {
-      "issue": 3073,
-      "chunk": "top-up-3073",
-      "title": "top-up: the docs-sweep manual gate",
-      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3073",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: docs_sweep_gate.ts (#3073)",
-      "status": "claimed",
-      "sweptAt": "d2571a0755334c5a447be97ed673ce15c26b55ba",
-      "paths": [
-        "worker/deno/lib/docs_sweep_gate.ts"
-      ]
-    },
-    {
       "issue": 3088,
       "chunk": "top-up-3088",
       "title": "top-up: declared-outcome hand-off on a commit-producing run",
@@ -2553,30 +2537,6 @@
       ]
     },
     {
-      "issue": 3172,
-      "chunk": "top-up-3172",
-      "title": "top-up: the docs-sweep term re-run at the head",
-      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3172",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: docs_sweep_hits.ts (#3172)",
-      "status": "claimed",
-      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
-      "paths": [
-        "worker/deno/lib/docs_sweep_hits.ts"
-      ]
-    },
-    {
-      "issue": 3147,
-      "chunk": "top-up-3147",
-      "title": "top-up: the branch-outcomes summary gate",
-      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3147",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: branch_outcomes_gate.ts (#3147)",
-      "status": "claimed",
-      "sweptAt": "0310f44ea7c6b41f00b90574e315afa40361b844",
-      "paths": [
-        "worker/deno/lib/branch_outcomes_gate.ts"
-      ]
-    },
-    {
       "issue": 3143,
       "chunk": "top-up-3143",
       "title": "top-up: the review-fix drift and Test Plan recount checks",
@@ -2587,18 +2547,6 @@
       "paths": [
         "worker/deno/lib/pr_feedback_drift_check.ts",
         "worker/deno/lib/test_plan_recount.ts"
-      ]
-    },
-    {
-      "issue": 3131,
-      "chunk": "top-up-3131",
-      "title": "top-up: the removed-test-assertion summary gate",
-      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3131",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: removed_assertion_gate.ts (#3131)",
-      "status": "claimed",
-      "sweptAt": "2559e3bfa65e8cbc65289259ecea5e129a35e028",
-      "paths": [
-        "worker/deno/lib/removed_assertion_gate.ts"
       ]
     },
     {

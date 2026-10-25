@@ -11,7 +11,7 @@
  *   1. Merged PR + open issue        — gh issue close invoked, linkPrToIssue NOT.
  *   2. Open   PR + open issue        — linkPrToIssue invoked,    gh issue close NOT.
  *   3. Merged PR + already-closed    — neither gh issue close nor linkPrToIssue (idempotent).
- *   4. Held PR (Issue #4075)         — gh pr merge --disable-auto runs, no --auto arming, failure non-fatal.
+ *   4. PR with surviving findings (Issue #4291) — findings posted, PR armed, never disarmed.
  *
  * Tests assert on observable behaviour (gh command args, linkPrToIssue
  * call count, phase result status) using injected WorkerDeps doubles —
@@ -33,7 +33,7 @@ import {
 } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
-import { STANDING_VIOLATION_LABEL } from "../lib/standing_violation_routing.ts";
+import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { WorkerConfig } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -215,7 +215,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -265,7 +265,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -307,7 +307,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -348,7 +348,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     const closeCall = gh.calls.find(
@@ -359,159 +359,99 @@ Deno.test(
 );
 
 // ===========================================================================
-// Issue #4075 — a held PR must not keep an auto-merge armed by an earlier pass
+// Issue #4291 — surviving findings are posted, and the PR is armed, never
+// disarmed (this replaced the Issue #4075 disarm)
 // ===========================================================================
 
-const HELD_PR_URL = "https://github.com/org/repo/pull/27";
-const HELD_PR_BODY = "## Summary\n\nCloses #11.\n";
+const FINDINGS_PR_URL = "https://github.com/org/repo/pull/27";
+const FINDINGS_PR_BODY = "## Summary\n\nCloses #11.\n";
 
-/** The `gh pr merge` calls recorded by a makeGh double. */
-function mergeCalls(calls: string[][]): string[][] {
-  return calls.filter((a) => a[0] === "pr" && a[1] === "merge");
+/** Deps that record arming, PR comments and labels over a makeGh double. */
+function recordingDeps(gh: ReturnType<typeof makeGh>) {
+  const armed: number[] = [];
+  const posted: { prNumber: number; body: string }[] = [];
+  const labelCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: gh.runGhCommand,
+      createClient: () => ({
+        ...mockGitHubClient(),
+        postComment: (_repo: string, prNumber: number, body: string) => {
+          posted.push({ prNumber, body });
+          return Promise.resolve(undefined);
+        },
+      }),
+    },
+    pr: {
+      updatePrLabels: (_repo: string, _prNumber: number, labels: string[]) => {
+        labelCalls.push([...labels]);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      finalisePr: (options: { prNumber: number }) => {
+        armed.push(options.prNumber);
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "armed" },
+        });
+      },
+    },
+  });
+  return { deps, armed, posted, labelCalls };
 }
 
 Deno.test(
-  "recoverAndFinaliseExistingPr #4075 - a held open PR is disarmed and never re-armed",
+  "recoverAndFinaliseExistingPr #4291 - surviving findings are posted and the PR is still armed, never disarmed",
   async () => {
     const gh = makeGh({ prState: "OPEN", issueState: "OPEN" });
+    const { deps, armed, posted, labelCalls } = recordingDeps(gh);
 
     const result = await recoverAndFinaliseExistingPr(
-      HELD_PR_URL,
+      FINDINGS_PR_URL,
       makeContext(),
       makeState(),
-      HELD_PR_BODY,
-      createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: true },
-    );
-
-    assertEquals(result, { status: "continue" });
-
-    // The only `gh pr merge` call is the disarm.
-    assertEquals(mergeCalls(gh.calls), [
-      ["pr", "merge", "27", "--repo", "org/repo", "--disable-auto"],
-    ]);
-    // No arming call: no `--auto` flag on any merge call.
-    assertEquals(
-      mergeCalls(gh.calls).some((a) => a.includes("--auto")),
-      false,
-    );
-  },
-);
-
-Deno.test(
-  "recoverAndFinaliseExistingPr #4075 - a held PR with a verifier hold is disarmed and still commented",
-  async () => {
-    const gh = makeGh({ prState: "OPEN", issueState: "OPEN" });
-    const posted: { prNumber: number; body: string }[] = [];
-
-    const deps = createMockDeps({
-      github: {
-        runGhCommand: gh.runGhCommand,
-        createClient: () => ({
-          ...mockGitHubClient(),
-          postComment: (_repo: string, prNumber: number, body: string) => {
-            posted.push({ prNumber, body });
-            return Promise.resolve(undefined);
-          },
-        }),
-      },
-    });
-
-    const result = await recoverAndFinaliseExistingPr(
-      HELD_PR_URL,
-      makeContext(),
-      makeState(),
-      HELD_PR_BODY,
+      FINDINGS_PR_BODY,
       deps,
-      {
-        docsSweepHitsComment: "",
-        holdAutoMerge: true,
-        verifierHoldComment: "- finding: unresolved",
-      },
+      { findingsComment: "- finding: unresolved" },
     );
 
     assertEquals(result, { status: "continue" });
-
-    // The disarm runs even though the verifier hold comment path also runs.
-    assertEquals(mergeCalls(gh.calls), [
-      ["pr", "merge", "27", "--repo", "org/repo", "--disable-auto"],
-    ]);
-    assertEquals(posted.length, 1);
-    assertEquals(posted[0]!.prNumber, 27);
-    assertStringIncludes(posted[0]!.body, "Auto-merge withheld");
-  },
-);
-
-Deno.test(
-  "recoverAndFinaliseExistingPr #4075 - without a hold, auto-merge is not disarmed",
-  async () => {
-    const gh = makeGh({ prState: "OPEN", issueState: "OPEN" });
-
-    const result = await recoverAndFinaliseExistingPr(
-      HELD_PR_URL,
-      makeContext(),
-      makeState(),
-      HELD_PR_BODY,
-      createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: false },
-    );
-
-    assertEquals(result, { status: "continue" });
+    assertEquals(armed, [27], "the CI quality gate is the only merge gate");
     assertEquals(
       gh.calls.some((a) => a.includes("--disable-auto")),
       false,
+      "nothing may disarm the PR",
+    );
+    assertEquals(posted.length, 1);
+    assertEquals(posted[0]!.prNumber, 27);
+    assertStringIncludes(posted[0]!.body, "<!-- vibe-pre-pr-verifier-hold -->");
+    assertStringIncludes(posted[0]!.body, "- finding: unresolved");
+    assertEquals(posted[0]!.body.includes("Auto-merge withheld"), false);
+    assertEquals(
+      labelCalls.some((l) => l.includes("standing-violation")),
+      false,
+      "the standing-violation label is retired",
     );
   },
 );
 
 Deno.test(
-  "recoverAndFinaliseExistingPr #4075 - a failed disarm is non-fatal and the standing-violation label is still applied",
+  "recoverAndFinaliseExistingPr #4291 - without findings the PR is armed and nothing is posted",
   async () => {
     const gh = makeGh({ prState: "OPEN", issueState: "OPEN" });
-    const disarmAttempts: string[][] = [];
-    const labelCalls: { prNumber: number; labels: string[] }[] = [];
-
-    const runGhCommand = (args: string[]): Promise<string> => {
-      if (args.includes("--disable-auto")) {
-        disarmAttempts.push([...args]);
-        return Promise.reject(
-          new Error("auto-merge is not enabled on this pull request"),
-        );
-      }
-      return gh.runGhCommand(args);
-    };
-
-    const deps = createMockDeps({
-      github: { runGhCommand },
-      pr: {
-        updatePrLabels: (
-          _repo: string,
-          prNumber: number,
-          labels: string[],
-        ) => {
-          labelCalls.push({ prNumber, labels: [...labels] });
-          return Promise.resolve({ ok: true, value: undefined });
-        },
-      },
-    });
+    const { deps, armed, posted } = recordingDeps(gh);
 
     const result = await recoverAndFinaliseExistingPr(
-      HELD_PR_URL,
+      FINDINGS_PR_URL,
       makeContext(),
       makeState(),
-      HELD_PR_BODY,
+      FINDINGS_PR_BODY,
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: true },
+      {},
     );
 
-    // The disarm was attempted and its failure did not abort finalisation.
     assertEquals(result, { status: "continue" });
-    assertEquals(disarmAttempts, [
-      ["pr", "merge", "27", "--repo", "org/repo", "--disable-auto"],
-    ]);
-    // The hold label path was not skipped.
-    assertEquals(labelCalls, [
-      { prNumber: 27, labels: [STANDING_VIOLATION_LABEL] },
-    ]);
+    assertEquals(armed, [27]);
+    assertEquals(posted, []);
+    assertEquals(gh.calls.some((a) => a.includes("--disable-auto")), false);
   },
 );

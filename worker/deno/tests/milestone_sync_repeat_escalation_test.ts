@@ -6,9 +6,10 @@
  * second cycle rather than the fourth. The conflict budget, the roll-back and
  * the `merge-fallback` flag replaced that outright: two runs, then a
  * fallback that files one flag issue. What survives here is the ordinary
- * streak escalation for a **non-conflict** failure — a fetch, a push or a
- * plain git error — which is not a conflict outcome and still reaches a
- * human at {@link MILESTONE_SYNC_ESCALATION_THRESHOLD}.
+ * streak record for a **non-conflict** failure — a fetch, a push or a plain
+ * git error — posted once at {@link MILESTONE_SYNC_ESCALATION_THRESHOLD} as a
+ * record, never a request for a human (Issue #4304): the worker keeps
+ * retrying the sync every cycle.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -138,7 +139,7 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - a persistent non-conflict failure still escalates at the threshold (Issue #2311)",
+  "milestone sync - a persistent non-conflict failure is recorded once at the threshold, asking no human (Issues #2311, #4304)",
   async () => {
     const dir = await Deno.makeTempDir({ prefix: "issue-2311-fetch-" });
     try {
@@ -171,7 +172,8 @@ Deno.test(
         "could not read from remote repository",
         "the escalation carries git's own output",
       );
-      assertStringIncludes(body, "needs a human");
+      assertEquals(body.includes("needs a human"), false);
+      assertEquals(/cannot resolve this itself/i.test(body), false);
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

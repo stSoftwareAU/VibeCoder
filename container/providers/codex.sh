@@ -16,7 +16,8 @@
 # Fails loud (Issue #3234): an unknown architecture, a missing pin, a failed
 # download, a checksum mismatch, a missing binary inside the archive, or a
 # binary that will not run aborts the build rather than producing an image
-# whose agent is broken.
+# whose agent is broken. The same holds for the code-mode host the CLI spawns
+# (Issue #4323).
 #
 # Australian English spelling throughout (behaviour, organisation).
 
@@ -90,3 +91,30 @@ case "${installed}" in
 esac
 
 echo "[${PROVIDER_ID}] Installed ${installed}"
+
+# The pinned CLI spawns /usr/local/bin/codex-code-mode-host for every
+# session; without it Code Mode fails closed and the agent has no tools at all
+# (Issue #4323). The host is a separate release asset on the same tag, pinned
+# by its own per-architecture checksum and verified the same way.
+host="codex-code-mode-host"
+host_checksum="$(jq -er --arg id "${PROVIDER_ID}" --arg arch "${manifest_arch}" \
+    '.providers[] | select(.id == $id) | .codeModeHost.sha256[$arch]' "${MANIFEST}")"
+
+host_archive="${workdir}/${host}.tar.gz"
+curl -fsSL -o "${host_archive}" \
+    "${RELEASES}/${TAG_PREFIX}${version}/${host}-${target}.tar.gz"
+echo "${host_checksum}  ${host_archive}" | sha256sum -c -
+
+tar -xzf "${host_archive}" -C "${workdir}"
+host_extracted="${workdir}/${host}-${target}"
+if [[ ! -f "${host_extracted}" ]]; then
+    echo "[${PROVIDER_ID}] Archive does not contain ${host}-${target}" >&2
+    exit 1
+fi
+install -m 0755 "${host_extracted}" "/usr/local/bin/${host}"
+if [[ ! -x "/usr/local/bin/${host}" ]]; then
+    echo "[${PROVIDER_ID}] /usr/local/bin/${host} is not executable" >&2
+    exit 1
+fi
+
+echo "[${PROVIDER_ID}] Installed /usr/local/bin/${host}"

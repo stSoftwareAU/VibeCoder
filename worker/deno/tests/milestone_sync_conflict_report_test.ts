@@ -440,9 +440,11 @@ function fakeGhCommandFn(
 }
 
 /** Sync deps whose merge conflicted and whose landing is confirmed as above. */
+type LoggedLine = { message: string; level: string };
+
 function makeDeps(
   calls: string[][],
-  logs: string[],
+  logs: LoggedLine[],
   streakPath: string,
   opts: {
     tipSha?: string;
@@ -465,7 +467,9 @@ function makeDeps(
           conflict: makeConflict(),
         },
       }),
-    log: (message: string) => logs.push(message),
+    log: (message: string, level = "info") => {
+      logs.push({ message, level });
+    },
     streakPath,
   };
 }
@@ -482,7 +486,7 @@ Deno.test(
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
-      const logs: string[] = [];
+      const logs: LoggedLine[] = [];
 
       const result = await syncMilestoneBranches(
         makeDeps(calls, logs, streakPath, {
@@ -506,7 +510,8 @@ Deno.test(
       );
       assert(
         logs.some((line) =>
-          line.includes(MERGE_SHA) && line.includes(OTHER_TIP_SHA)
+          line.level === "warn" && line.message.includes(MERGE_SHA) &&
+          line.message.includes(OTHER_TIP_SHA)
         ),
         `expected a logged line naming both SHAs, got: ${JSON.stringify(logs)}`,
       );
@@ -526,7 +531,7 @@ Deno.test(
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
-      const logs: string[] = [];
+      const logs: LoggedLine[] = [];
 
       const result = await syncMilestoneBranches(
         makeDeps(calls, logs, streakPath, {
@@ -560,7 +565,7 @@ Deno.test(
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
-      const logs: string[] = [];
+      const logs: LoggedLine[] = [];
 
       const result = await syncMilestoneBranches(
         makeDeps(calls, logs, streakPath, {
@@ -591,7 +596,7 @@ Deno.test(
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
-      const logs: string[] = [];
+      const logs: LoggedLine[] = [];
 
       const result = await syncMilestoneBranches(
         makeDeps(calls, logs, streakPath, {
@@ -622,7 +627,7 @@ Deno.test(
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
-      const logs: string[] = [];
+      const logs: LoggedLine[] = [];
 
       const result = await syncMilestoneBranches(
         makeDeps(calls, logs, streakPath, {
@@ -644,7 +649,9 @@ Deno.test(
 
       assert(
         logs.some((line) =>
-          line.startsWith("WARNING:") && line.includes(MERGE_SHA)
+          line.level === "warn" &&
+          line.message.includes("Milestone sync conflict") &&
+          line.message.includes(MERGE_SHA)
         ),
         `expected a WARNING log naming ${MERGE_SHA}, got: ${
           JSON.stringify(logs)

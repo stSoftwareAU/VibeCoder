@@ -22,10 +22,13 @@
  * since recovered from is ignored, and the new stall gets its own first trip.
  *
  * Only a worker-authored PR is touched; a human-authored one is logged and
- * left alone. A PR carrying `needs-human` is likewise left alone — a human
- * already owns it, whether they applied the label by hand or a lane's own
- * escalation did (PR #2866 review). A PR the merge-conflict ladder owns is
- * left to the ladder. Every repair runs under the maintenance-lane lease on
+ * left alone. A PR carrying a `needs-human` the fleet's own escalation
+ * applied has the label removed and is repaired like any other (Issue
+ * #4304) — nothing is parked for a person — except one held for a credential
+ * rotation (a secret already in the base branch's history), the single
+ * hand-off kept. A label a person applied, with no fleet escalation behind
+ * it, is theirs and still left alone. A PR the merge-conflict
+ * ladder owns is left to the ladder. Every repair runs under the maintenance-lane lease on
  * the PR's repository and is skipped when the lease is held elsewhere.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
@@ -37,6 +40,7 @@ import {
   type BlockingPrStall,
   type BlockingPrStallReason,
   buildBlockingPrStallReason,
+  HISTORY_REWRITE_ESCALATION_MARKER_PREFIX,
   resolveBlockingPrStallThresholdSeconds,
   scanBlockingPrStalls,
   type ScanBlockingPrStallsOptions,
@@ -49,6 +53,8 @@ import {
   type AbandonRestartRequest,
 } from "./conflict_abandon_restart.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
+import { parseCiFixAttemptMarkers } from "./ci_fix_attempt_markers.ts";
+import { buildDedupMarker } from "./needs_human_escalation.ts";
 import { sweepEscalatedLeftovers } from "./escalated_cleanup.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
@@ -58,6 +64,15 @@ import {
 } from "./maintenance_lane.ts";
 
 export { STALL_REPAIR_MARKER_PREFIX };
+
+/**
+ * Every fleet escalation's dedup marker opens with this (Issue #4304) —
+ * derived from the builder so the two cannot drift.
+ */
+const NEEDS_HUMAN_ESCALATION_MARKER_PREFIX = buildDedupMarker("x").slice(
+  0,
+  -"x -->".length,
+);
 
 /** The lane that owns a stall signal and is rerun on the first trip. */
 export type StallLane = "ci-fix" | "pr-feedback";
@@ -102,10 +117,9 @@ export interface StallRepairDeps {
   /** Stall threshold for the repo, in seconds. */
   thresholdSeconds: (repo: string) => number;
   /**
-   * The hand-off label (`config.needsHumanLabel`) that vetoes repair. A PR
-   * carrying it — hand-applied by a reviewer, or by a lane's own escalation
-   * — already has a human owning it, so it is never synced, rerun or closed
-   * (PR #2866 review).
+   * The hand-off label (`config.needsHumanLabel`). Since Issue #4304 it no
+   * longer vetoes repair: it is removed and the PR repaired, unless the PR
+   * is held for a credential rotation.
    */
   needsHumanLabel: string;
   /** Current time, epoch seconds. */
@@ -213,13 +227,28 @@ interface RepairHistory {
   tripAt?: number;
   /** True when the auto-fix cap has already given up on this PR. */
   capped: boolean;
+  /**
+   * True when the CI-fix lane escalated a secret already in the base
+   * branch's history — the one hand-off kept (Issue #4304).
+   */
+  credentialRotation: boolean;
+  /**
+   * True when a fleet lane's own escalation is on the thread — a
+   * `needs-human-escalation` marker or a CI-fix attempt marker — so the
+   * label is the fleet's legacy hand-off rather than a person's call.
+   */
+  fleetEscalated: boolean;
 }
 
 function readRepairHistory(
   comments: readonly unknown[],
   workerAuthors: readonly string[],
 ): RepairHistory {
-  const history: RepairHistory = { capped: false };
+  const history: RepairHistory = {
+    capped: false,
+    credentialRotation: false,
+    fleetEscalated: false,
+  };
   for (const raw of comments) {
     if (typeof raw !== "object" || raw === null) continue;
     const comment = raw as Record<string, unknown>;
@@ -229,6 +258,15 @@ function readRepairHistory(
     if (!login || !isFleetAuthor(login, [...workerAuthors])) continue;
     const body = typeof comment.body === "string" ? comment.body : "";
     if (body.includes(AUTO_FIX_CAP_MARKER_PREFIX)) history.capped = true;
+    if (body.includes(HISTORY_REWRITE_ESCALATION_MARKER_PREFIX)) {
+      history.credentialRotation = true;
+    }
+    if (
+      body.includes(NEEDS_HUMAN_ESCALATION_MARKER_PREFIX) ||
+      parseCiFixAttemptMarkers(body).length > 0
+    ) {
+      history.fleetEscalated = true;
+    }
     if (!body.includes(STALL_REPAIR_MARKER_PREFIX)) continue;
     const created = typeof comment.created_at === "string"
       ? Date.parse(comment.created_at)
@@ -271,24 +309,12 @@ export async function repairStalledPr(
     return "skipped-merge-conflict-lane";
   }
   const needsHumanLabel = deps.needsHumanLabel.trim().toLowerCase();
-  if (
-    needsHumanLabel &&
+  const labelledNeedsHuman = needsHumanLabel !== "" &&
     (stall.labels ?? []).some(
       (label) =>
         typeof label === "string" &&
         label.trim().toLowerCase() === needsHumanLabel,
-    )
-  ) {
-    // A human already owns this PR — hand-applied, or by a lane's own
-    // credential/escalation path that posts no cap marker. Never synced,
-    // rerun or closed (PR #2866 review; DESIGN-PRINCIPLES.md, merge-conflict
-    // watchdog parity).
-    logger.info(
-      "Stall repair: PR carries needs-human — a human already owns it, left alone",
-      where,
     );
-    return "skipped-needs-human";
-  }
   if (!stall.headRefName || !stall.baseRefName) {
     logger.error("Stall repair: PR branches were not observed", where);
     return "failed";
@@ -326,6 +352,51 @@ export async function repairStalledPr(
       return "failed";
     }
     const history = readRepairHistory(comments, deps.workerAuthors);
+    if (labelledNeedsHuman) {
+      // Issue #4304: nothing is parked for a person. The one exception is a
+      // secret already in the base branch's history — a credential must be
+      // rotated, which no repair performs. Every other `needs-human`, legacy
+      // or hand-applied, is lifted and the PR repaired like any other.
+      if (history.credentialRotation) {
+        logger.info(
+          "Stall repair: PR is held for a credential rotation (secret in " +
+            "the base branch's history) — left alone",
+          where,
+        );
+        return "skipped-needs-human";
+      }
+      if (!history.fleetEscalated) {
+        // No fleet escalation behind the label: a person applied it and
+        // owns the PR, so it is theirs, not a hand-back to lift.
+        logger.info(
+          "Stall repair: needs-human was applied by a person — left alone",
+          where,
+        );
+        return "skipped-needs-human";
+      }
+      try {
+        await deps.ghCommandFn([
+          "pr",
+          "edit",
+          String(prNumber),
+          "--repo",
+          repo,
+          "--remove-label",
+          deps.needsHumanLabel,
+        ]);
+        logger.warn(
+          "Stall repair: removed needs-human — the PR is repaired, not " +
+            "parked (Issue #4304)",
+          where,
+        );
+      } catch (err) {
+        logger.error("Stall repair: could not remove needs-human", {
+          ...where,
+          error: errorMessage(err),
+        });
+        return "failed";
+      }
+    }
     const now = deps.nowSeconds();
     const threshold = deps.thresholdSeconds(repo);
     // A marker from an earlier, since-resolved stall is not this stall's

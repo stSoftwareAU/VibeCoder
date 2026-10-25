@@ -155,7 +155,18 @@ function label(spec: BumpedSpecifier): string {
 
 /** Human-readable registry name for messages. */
 function registryLabel(registry: BumpedSpecifier["registry"]): string {
-  return registry === "unknown" ? "npm or JSR" : registry;
+  if (registry === "unknown") return "npm or JSR";
+  if (registry === "crates") return "crates.io";
+  return registry;
+}
+
+/** Crates.io lookups that could not be resolved, so the bump waits. */
+function deferredCrates(
+  verdicts: readonly BumpAgeVerdict[],
+): BumpAgeVerdict[] {
+  return verdicts.filter((v) =>
+    v.indeterminate && v.specifier.registry === "crates"
+  );
 }
 
 /**
@@ -207,7 +218,10 @@ export function evaluateSpecifierAge(
  * Verify every specifier a bump introduced against the window.
  *
  * Internal `@stsoftware/*` packages are skipped outright (no lookup).
- * `ok` is false only when a specifier is definitively too new.
+ * `ok` is false when a specifier is definitively too new, and when a
+ * crates.io publish time could not be resolved (Issue #4325). That second
+ * case defers the bump to the next cycle. It is not a permanent refusal:
+ * the same pin passes once crates.io answers and the version is old enough.
  */
 export async function auditBumpedSpecifiers(
   specifiers: readonly BumpedSpecifier[],
@@ -230,21 +244,23 @@ export async function auditBumpedSpecifiers(
 
   const blocked = verdicts.filter((v) => !v.eligible && !v.indeterminate);
   const indeterminate = verdicts.filter((v) => v.indeterminate);
+  const deferred = deferredCrates(indeterminate);
   return {
     verdicts,
     blocked,
     indeterminate,
     unverifiable: [],
-    ok: blocked.length === 0,
-    reason: buildAuditReason(blocked, [], quarantineHours),
+    ok: blocked.length === 0 && deferred.length === 0,
+    reason: buildAuditReason(blocked, [], quarantineHours, deferred),
   };
 }
 
-/** Compose the rejection reason from both failure modes. */
+/** Compose the rejection reason from the failure modes. */
 function buildAuditReason(
   blocked: readonly BumpAgeVerdict[],
   unverifiable: readonly UnverifiableBumpLine[],
   quarantineHours: number,
+  deferred: readonly BumpAgeVerdict[] = [],
 ): string {
   const parts: string[] = [];
   if (blocked.length > 0) {
@@ -264,6 +280,13 @@ function buildAuditReason(
         `bump is refused rather than passed unchecked: ${
           unverifiable.map((u) => u.reason).join(" ")
         }`,
+    );
+  }
+  if (deferred.length > 0) {
+    parts.push(
+      `The bump is deferred to the next cycle because a crates.io publish ` +
+        `time could not be resolved for ${deferred.length} dependency ` +
+        `version(s): ${deferred.map((v) => v.reason).join(" ")}`,
     );
   }
   return parts.join(" ");
@@ -289,16 +312,62 @@ export async function auditBumpDiff(
     quarantineHours,
     deps,
   );
+  const deferred = deferredCrates(aged.indeterminate);
   return {
     ...aged,
     unverifiable: scan.unverifiable,
-    ok: aged.blocked.length === 0 && scan.unverifiable.length === 0,
+    ok: aged.blocked.length === 0 && scan.unverifiable.length === 0 &&
+      deferred.length === 0,
     reason: buildAuditReason(
       aged.blocked,
       scan.unverifiable,
       quarantineHours,
+      deferred,
     ),
   };
+}
+
+/**
+ * User-Agent crates.io requires. A request without one is rejected.
+ */
+const CRATES_IO_USER_AGENT = "vibecoder (github.com/stSoftwareAU/VibeCoder)";
+
+/**
+ * Publish time (`created_at`) for one crates.io version, or `undefined`
+ * when the registry cannot answer. Never throws: an unreachable API
+ * defers the bump to the next cycle (Issue #4325).
+ */
+export async function fetchCratesPublishTime(
+  name: string,
+  version: string,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<string | undefined> {
+  try {
+    const resp = await fetchFn(
+      `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${
+        encodeURIComponent(version)
+      }`,
+      withRequestTimeout({
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "user-agent": CRATES_IO_USER_AGENT,
+        },
+      }, DEFAULT_FETCH_TIMEOUT_MS),
+    );
+    if (!resp.ok) {
+      await discardBody(resp);
+      return undefined;
+    }
+    const bodyResult = await readTextBounded(resp);
+    if (!bodyResult.ok) return undefined;
+    const body = JSON.parse(bodyResult.value);
+    const created = (body as { version?: { created_at?: unknown } })?.version
+      ?.created_at;
+    return typeof created === "string" ? created : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Publish time from the JSR API, or `undefined`. Never throws. */
@@ -335,6 +404,9 @@ async function fetchJsrPublishTime(
 export function defaultBumpAgeDeps(): BumpAgeDeps {
   return {
     fetchPublishTime: async (spec) => {
+      if (spec.registry === "crates") {
+        return await fetchCratesPublishTime(spec.name, spec.version);
+      }
       // A lockfile entry names a package and version but not always the
       // registry (Issue #3951): try JSR first for scoped names, then npm.
       const tryJsr = spec.registry === "jsr" ||

@@ -1,9 +1,11 @@
+import { isAutomaticProviderRoutingActive } from "../provider_auto_state.ts";
 import {
   AllocationAdmissionError,
   type IssueAllocationSelection,
 } from "../subscription_allocation_runtime.ts";
 import {
   effectiveRoleSelections,
+  resolveIssueOrchestration,
   resolveOrchestrationSettings,
 } from "../orchestration/role_config.ts";
 import { classifyRunFailure } from "../run_outcome_classifier.ts";
@@ -40,7 +42,10 @@ import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { getPromptsCommit } from "../prompt_manager.ts";
 import { promptOverrideMappings } from "../custom_label_prompts_config.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
-import { detectScreenshotRequired } from "../execute_claude_phase.ts";
+import {
+  detectScreenshotRequired,
+  emptyRunFailureReason,
+} from "../execute_claude_phase.ts";
 import {
   describeGraftContext,
   graftContextFacts,
@@ -81,8 +86,15 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
 import { issueRunRoleTreatments } from "../issue_assignment.ts";
-import { agentProviderById, selectAgentProvider } from "../agent_provider.ts";
+import {
+  agentProviderById,
+  type AgentProviderDescriptor,
+  plannedActiveAgentProvider,
+  resolveInvocationAgentProvider,
+  selectAgentProvider,
+} from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
+import { planIssueRunProvider } from "../issue_run_provider_agents.ts";
 import { ensureDraftContinuationPr } from "../draft_continuation_pr.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -131,9 +143,8 @@ import {
 import {
   buildContextBudgetEscalationReason,
   buildContextComponents,
-  CONTEXT_BUDGET_NEXT_STEP,
+  handOffOversizedIssueToPlanning,
 } from "../context_budget_guard.ts";
-import { escalateToHuman } from "../needs_human_escalation.ts";
 import { joinRedacted, redactedTail } from "../redacted_text.ts";
 import { reportRunDeadline } from "../slot_context.ts";
 import { prepareCodegraphRun } from "../codegraph_run.ts";
@@ -515,9 +526,6 @@ async function executeWithFreshSessionFallback(
     logger: deps.logger,
     reason: "agent CLI refused it as Prompt is too long (Issue #2682)",
   });
-  // The window was sized for the discarded transcript; the fresh one starts
-  // at the CLI default.
-  delete state.autocompactTokens;
   state.claudeOutput = "";
   return await executeWithFreshSessionFallback(ctx, state, deps);
 }
@@ -537,6 +545,7 @@ async function recordRunAssignment(
   agents: ReturnType<typeof buildIssueRunAgents>,
   orchestration?: ExternalOrchestrationSettings,
   cohort?: string,
+  runProvider?: AgentProviderDescriptor,
 ): Promise<void> {
   const { repo, issueNumber, config } = ctx;
   try {
@@ -555,7 +564,8 @@ async function recordRunAssignment(
         ...(value.effort ? { effort: value.effort } : {}),
       }))
       : issueRunRoleTreatments({
-        provider: cohort ? agentProviderById("claude")! : selectAgentProvider(),
+        provider: runProvider ??
+          (cohort ? agentProviderById("claude")! : selectAgentProvider()),
         claudeModel: cohort ? "sonnet" : config.claudeModel || undefined,
         agents,
       });
@@ -786,15 +796,24 @@ async function executeClaudeBody(
       `Subscription allocation ${allocation.cohort} selected for ${repo}#${issueNumber}`,
     );
   }
-  const externalOrchestration = allocation?.external ??
-    ((config.repoConfig?.[repo]?.externalOrchestration ??
-      config.externalOrchestration) === true);
-  const effectiveOrchestrationSettings = allocation?.settings ??
+  const routing = resolveIssueOrchestration(
+    (config.repoConfig?.[repo]?.externalOrchestration ??
+      config.externalOrchestration) === true,
     resolveOrchestrationSettings(
       config.externalOrchestrationSettings ?? {},
       config.repoConfig?.[repo]?.externalOrchestrationSettings,
-    );
-  const issueExecutorSplit = !externalOrchestration &&
+    ),
+    selectAgentProvider(
+      resolveInvocationAgentProvider(undefined, config.repoConfig?.[repo]),
+      { env: deps.claude.env },
+    ).id,
+    isAutomaticProviderRoutingActive(),
+  );
+  const externalOrchestration = allocation?.external ??
+    routing.externalOrchestration;
+  const effectiveOrchestrationSettings = allocation?.settings ??
+    routing.effectiveOrchestrationSettings;
+  const requestedExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",
       config.repoConfig?.[repo],
@@ -810,15 +829,41 @@ async function executeClaudeBody(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
       `(Issue #3402)`,
   );
-  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
-  // #2812); `issue_reviewer_agents: false` opts out.
-  const issueRunAgents = externalOrchestration
+  // The run's provider and sub-agent switches, decided before spawn (Issue
+  // #4109): a non-Claude provider that cannot carry `--agents` is rerouted or
+  // stripped here, not refused later by the #4010 guard.
+  const issueRunPlan = externalOrchestration
     ? undefined
-    : buildIssueRunAgents({
-      executorSplit: issueExecutorSplit,
+    : planIssueRunProvider({
+      // Only reached when `allocation` (if any) is non-external.
+      provider: allocation
+        ? agentProviderById("claude")!
+        : plannedActiveAgentProvider(),
+      selection: { env: deps.claude.env },
+      executorSplit: requestedExecutorSplit,
+      // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+      // #2812); `issue_reviewer_agents: false` opts out.
       reviewerAgents: config.issueReviewerAgents === true,
       subAgentTier: issueSubAgentTier,
+      logger,
     });
+  const issueExecutorSplit = issueRunPlan
+    ? issueRunPlan.executorSplit
+    : requestedExecutorSplit;
+  const issueRunAgents = issueRunPlan
+    ? buildIssueRunAgents({
+      executorSplit: issueRunPlan.executorSplit,
+      reviewerAgents: issueRunPlan.reviewerAgents,
+      subAgentTier: issueRunPlan.subAgentTier,
+    })
+    : undefined;
+  // The provider the runner spawns when the planner rerouted the run (Issue
+  // #4109); undefined keeps the active provider. The RTK, CodeGraph and Graft
+  // sinks and the auth classifier are bound to this, not to the original
+  // provider, as `execute_claude_phase.ts` does.
+  const reroutedProviderId = issueRunPlan?.outcome === "rerouted-to-claude"
+    ? issueRunPlan.provider.id
+    : undefined;
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -829,47 +874,54 @@ async function executeClaudeBody(
     );
   }
 
-  const promptResult = await deps.infrastructure.buildPrompt({
-    repo,
-    issueNumber: String(issueNumber),
-    issueTitle,
-    issueBody,
-    issueLabels: ctx.issueLabels.join(","),
-    // Present only on an `ok` collection (Issue #2102).
-    graftContextBundle: graftContext.bundle,
-    codebaseMap,
-    // The issue's comments (Issue #1910). Selected and trust-annotated where
-    // the context was built, fenced by the builder: a maintainer who narrows
-    // scope in a reply is now visible to the agent without the description
-    // being edited.
-    ...(ctx.issueComments ? { issueComments: ctx.issueComments } : {}),
-    ...(ctx.commentBoundaryId
-      ? { commentBoundaryId: ctx.commentBoundaryId }
-      : {}),
-    // Owner direction on the milestone parent (Issue #3205): a design the
-    // owner replaced on the parent after this sub-issue was written.
-    ...(ctx.parentOwnerDirection
-      ? { parentOwnerDirection: ctx.parentOwnerDirection }
-      : {}),
-    qualityInstructions,
-    customInstructions,
-    milestoneBranch: state.milestoneBranch,
-    // An operator's custom prompt replaces the built-in issue template for
-    // this run (Issue #848). Passed through rather than resolved here, so the
-    // dispatch handler stays the single place that decides a run is custom.
-    customPromptPath: ctx.customPromptPath,
-    customPromptLabel: ctx.customPromptLabel,
-    // An operator's `work-on` mapping overrides the built-in issue template
-    // for every implementation run (Issue #849); the per-run custom prompt
-    // above still wins when this run was dispatched by a custom label.
-    promptOverrides: promptOverrideMappings(config),
-    // Issue #2343: a split run's prompt carries the advisor/executor block.
-    issueExecutorSplit,
-    // Issue #2930: name this host's configured fleet run archive, when any.
-    ...(config.fleetRunArchive
-      ? { fleetRunArchive: config.fleetRunArchive }
-      : {}),
-  });
+  // Issue #4298: built by a closure so the context-budget ceiling below can
+  // rebuild the prompt with the comment history trimmed and try again,
+  // rather than asking a human to trim it.
+  const buildRunPrompt = (withComments: boolean) =>
+    deps.infrastructure.buildPrompt({
+      repo,
+      issueNumber: String(issueNumber),
+      issueTitle,
+      issueBody,
+      issueLabels: ctx.issueLabels.join(","),
+      // Present only on an `ok` collection (Issue #2102).
+      graftContextBundle: graftContext.bundle,
+      codebaseMap,
+      // The issue's comments (Issue #1910). Selected and trust-annotated where
+      // the context was built, fenced by the builder: a maintainer who narrows
+      // scope in a reply is now visible to the agent without the description
+      // being edited.
+      ...(withComments && ctx.issueComments
+        ? { issueComments: ctx.issueComments }
+        : {}),
+      ...(withComments && ctx.commentBoundaryId
+        ? { commentBoundaryId: ctx.commentBoundaryId }
+        : {}),
+      // Owner direction on the milestone parent (Issue #3205): a design the
+      // owner replaced on the parent after this sub-issue was written.
+      ...(ctx.parentOwnerDirection
+        ? { parentOwnerDirection: ctx.parentOwnerDirection }
+        : {}),
+      qualityInstructions,
+      customInstructions,
+      milestoneBranch: state.milestoneBranch,
+      // An operator's custom prompt replaces the built-in issue template for
+      // this run (Issue #848). Passed through rather than resolved here, so the
+      // dispatch handler stays the single place that decides a run is custom.
+      customPromptPath: ctx.customPromptPath,
+      customPromptLabel: ctx.customPromptLabel,
+      // An operator's `work-on` mapping overrides the built-in issue template
+      // for every implementation run (Issue #849); the per-run custom prompt
+      // above still wins when this run was dispatched by a custom label.
+      promptOverrides: promptOverrideMappings(config),
+      // Issue #2343: a split run's prompt carries the advisor/executor block.
+      issueExecutorSplit,
+      // Issue #2930: name this host's configured fleet run archive, when any.
+      ...(config.fleetRunArchive
+        ? { fleetRunArchive: config.fleetRunArchive }
+        : {}),
+    });
+  const promptResult = await buildRunPrompt(true);
   if (!promptResult.ok) {
     return {
       category: "internal_error",
@@ -879,7 +931,7 @@ async function executeClaudeBody(
   }
 
   // Destructure PromptParts for prompt caching (Issue #1262)
-  const { systemPrompt, prompt: basePrompt } = promptResult.value;
+  let { systemPrompt, prompt: basePrompt } = promptResult.value;
 
   // Prior progress exists (Issue #4170): setup resumed a checkpointed
   // branch, so tell the agent to review and continue instead of starting
@@ -891,9 +943,10 @@ async function executeClaudeBody(
   // user prompt, so the budget check below measures it like any other prompt
   // input. Independent of `enable_session_resume` and of the provider: the
   // committed file is the contract, a `--resume` transcript is the bonus.
-  const resumedPrompt = state.resumedFromCheckpoint
-    ? basePrompt + buildPriorProgressNote(issueNumber, state.handoverNote)
-    : basePrompt;
+  const withPriorProgress = (prompt: string): string =>
+    state.resumedFromCheckpoint
+      ? prompt + buildPriorProgressNote(issueNumber, state.handoverNote)
+      : prompt;
 
   // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
   // Prepared against the checkout the agent will work in — the same path it
@@ -904,6 +957,7 @@ async function executeClaudeBody(
   const codegraph = await prepareCodegraphRun({
     repoDir: state.repoPath,
     enabled: config.codegraphContext.enabled,
+    ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
     logger,
     prepare: deps.claude.prepareCodegraphContext,
   });
@@ -925,6 +979,7 @@ async function executeClaudeBody(
   const graft = bindGraftRun({
     result: graftContext,
     repoDir: state.repoPath,
+    ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
     logger,
   });
   const syncGraftFacts = (): void => {
@@ -938,7 +993,7 @@ async function executeClaudeBody(
   // run. The hook and its one prompt line travel together or not at all.
   const rtk = await deps.claude.prepareRtkRun({
     enabled: config.rtkOutput.enabled,
-    providerId: deps.claude.rtkProviderId(undefined, logger),
+    providerId: deps.claude.rtkProviderId(reroutedProviderId, logger),
     logger,
     cwd: state.repoPath,
   });
@@ -949,30 +1004,52 @@ async function executeClaudeBody(
   // Appended to the built prompt rather than written into the template, for
   // the same reason as the prior-progress note above: it is run-conditional,
   // and appending leaves the cached prefix untouched.
-  const userPrompt = rtk.applyPrompt(
-    graft.applyPrompt(codegraph.applyPrompt(resumedPrompt)),
-  );
+  const applyRunLines = (prompt: string): string =>
+    rtk.applyPrompt(
+      graft.applyPrompt(codegraph.applyPrompt(withPriorProgress(prompt))),
+    );
+  let userPrompt = applyRunLines(basePrompt);
 
   // --- Context budget hard ceiling (Issue #3713) ---
   // The budget check used to be observational only, so an issue whose prompt
   // kept growing was bounded by wall-clock alone. Stop here — before any
-  // billed invocation — and hand the issue to a human when the assembled
-  // prompt reaches the ceiling.
-  const budgetResult = checkContextBudget(
-    buildContextComponents({
-      systemPrompt,
-      userPrompt,
-      issueBody,
-      customInstructions,
-    }),
-    config.claudeModel || "opus",
-    {
-      warningThresholdPercent: config.contextBudgetWarningPercent,
-      errorThresholdPercent: config.contextBudgetErrorPercent,
-      blockThresholdPercent: config.contextBudgetBlockPercent,
-    },
-  );
+  // billed invocation — when the assembled prompt reaches the ceiling.
+  //
+  // Issue #4298: never by handing the issue to a human. The comment history
+  // is what grows without bound, so the prompt is rebuilt without it and
+  // checked again; one that still does not fit goes to planning to be split.
+  const measureBudget = () =>
+    checkContextBudget(
+      buildContextComponents({
+        systemPrompt,
+        userPrompt,
+        issueBody,
+        customInstructions,
+      }),
+      config.claudeModel || "opus",
+      {
+        warningThresholdPercent: config.contextBudgetWarningPercent,
+        errorThresholdPercent: config.contextBudgetErrorPercent,
+        blockThresholdPercent: config.contextBudgetBlockPercent,
+      },
+    );
+  let budgetResult = measureBudget();
   logger.info(formatBudgetBreakdown(budgetResult));
+  if (!budgetResult.ok && ctx.issueComments) {
+    logger.warn(
+      "Context budget ceiling reached — retrying with the comment history " +
+        "trimmed (Issue #4298)",
+      { repo, issueNumber, usagePercent: budgetResult.usagePercent },
+    );
+    const trimmed = await buildRunPrompt(false);
+    if (trimmed.ok) {
+      systemPrompt = trimmed.value.systemPrompt;
+      basePrompt = trimmed.value.prompt;
+      userPrompt = applyRunLines(basePrompt);
+      budgetResult = measureBudget();
+      logger.info(formatBudgetBreakdown(budgetResult));
+    }
+  }
   if (!budgetResult.ok) {
     const reason = buildContextBudgetEscalationReason(budgetResult);
     logger.error("Context budget ceiling reached — stopping the phase", {
@@ -982,23 +1059,30 @@ async function executeClaudeBody(
       contextWindowSize: budgetResult.contextWindowSize,
       usagePercent: budgetResult.usagePercent,
     });
-    await escalateToHuman({
+    const handoff = await handOffOversizedIssueToPlanning({
       ghClient: deps.github.createClient(logger),
       repo,
-      target: { kind: "issue", number: issueNumber },
-      needsHumanLabel: config.needsHumanLabel,
-      heading: "Context budget ceiling reached",
-      reason,
-      nextStep: CONTEXT_BUDGET_NEXT_STEP,
-      dedupKey: `context-budget-${issueNumber}`,
+      issueNumber,
       githubUser: ctx.githubUser,
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+      issueLabels: ctx.issueLabels,
+      reason,
       logger,
+      ensureLabelExists: deps.github.ensureLabelExists,
     });
+    if (handoff.applied) {
+      return {
+        category: "unknown",
+        status: "early_exit",
+        reason: "context_budget_exceeded",
+        ...(handoff.outcome ? { outcome: handoff.outcome } : {}),
+      };
+    }
+    // Planning could not take it: a failure on the normal `failed-once`
+    // ladder, retried like any other run that could not finish.
     return {
-      category: "unknown",
-      status: "early_exit",
-      reason: "context_budget_exceeded",
+      category: "prompt_too_long",
+      status: "failure",
+      reason: `Context budget ceiling reached: ${reason}`,
     };
   }
 
@@ -1199,6 +1283,8 @@ async function executeClaudeBody(
               enableModelFallback: false,
             }
             : {}),
+          // A run the planner rerouted to Claude (Issue #4109) names it here.
+          ...(reroutedProviderId ? { agentProvider: reroutedProviderId } : {}),
           cwd: state.repoPath,
           // The browser on every run unless `skip_screenshot_check`
           // (Issue #2925). Issue #2159 layers the `codegraph` server beside
@@ -1223,12 +1309,6 @@ async function executeClaudeBody(
           ...settingsJsonOption(undefined, rtk.hookSettings()),
           logger,
           sessionResumeState: state.sessionResumeState,
-          // The stream conversation could not be verifiably compacted before
-          // this issue started (Issue #2337), so every agent run of the issue
-          // asks the CLI to compact at the earliest window it accepts.
-          ...(state.autocompactTokens
-            ? { autocompactTokens: state.autocompactTokens }
-            : {}),
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
           issueNumber,
           // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
@@ -1264,6 +1344,7 @@ async function executeClaudeBody(
     issueRunAgents,
     externalOrchestration ? effectiveOrchestrationSettings : undefined,
     allocation?.cohort,
+    issueRunPlan?.provider,
   );
 
   let claudeResult = await invokeAgent(executeTimeoutSeconds);
@@ -1830,7 +1911,7 @@ async function executeClaudeBody(
   ].join("\n");
   if (
     claudeResult.value.exitCode !== 0 &&
-    deps.claude.isClaudeAuthError(authSurface)
+    deps.claude.isClaudeAuthError(authSurface, reroutedProviderId)
   ) {
     // Cross-check for evidence of success before blaming the credential: a run
     // that left commits ahead of base is a false positive on issue content,
@@ -1961,10 +2042,14 @@ async function executeClaudeBody(
     });
     // Hand the conversation on to the stream's next issue (Issue #2333). A
     // no-op unless setup joined a stream, so an excluded run kind — or one
-    // resuming its own checkpoint — writes no stream record.
+    // resuming its own checkpoint — writes no stream record. A run whose agent
+    // failed hands nothing on (Issue #4116): its conversation is the one that
+    // just broke, and the stream's next issue would resume straight into it.
     await handOnStreamSession({
       workDir: config.workDir,
-      joined: state.streamSession,
+      joined: !emptyRunFailureReason(claudeResult.value)
+        ? state.streamSession
+        : undefined,
       state: state.sessionResumeState,
       ...(claudeResult.value.provider
         ? { runProviderId: claudeResult.value.provider }
@@ -2076,6 +2161,38 @@ async function executeClaudeBody(
     if (existingPr.ok && existingPr.value) {
       logger.info("PR already exists despite no local changes");
       return { status: "continue" };
+    }
+
+    // A failed or unfinished agent with no recoverable work is interrupted,
+    // even when its process exits zero. Both execution entry points share
+    // this completion check (Issues #4116, #4147).
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
+      logger.warn(
+        "Agent did not complete and changed nothing — a failed run, " +
+          "retried, not analysis-only (Issue #4116)",
+        { exitCode: claudeResult.value.exitCode, reason: emptyFailure },
+      );
+      // The session that failed is not resumed by the retry.
+      if (state.sessionResumeState) {
+        state.sessionResumeState = createSessionResumeState();
+      }
+      return {
+        category: "interrupted",
+        status: "failure",
+        reason: formatDetailedFailureMessage(
+          `Run interrupted before completing — the agent ${emptyFailure} without making any change`,
+          {
+            elapsedSeconds: Math.round(
+              (Date.now() - state.executeStartTime) / 1000,
+            ),
+            clarityStatus: state.clarityStatus,
+            outputSize: state.claudeOutput.length,
+            lastOutputSnippet: redactedTail(state.claudeOutput, 500) ||
+              undefined,
+          },
+        ),
+      };
     }
 
     // Issue #106: if the range comparison itself errored and nothing else

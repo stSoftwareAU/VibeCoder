@@ -46,6 +46,12 @@ import {
   WORKER_CONTAINER_PREFIX,
 } from "../lib/container_watchdog.ts";
 import type { SelfHealEvent } from "../lib/self_heal_events.ts";
+import {
+  DEFAULT_TOTAL_CAP_MS,
+  type EvidenceInvocation,
+  type EvidenceSeams,
+  type HardKillEvidence,
+} from "../lib/hard_kill_evidence.ts";
 
 // ---------------------------------------------------------------------------
 // The deadline
@@ -393,6 +399,19 @@ function stubDeps(overrides: Partial<ReapDeps> = {}): {
       return Promise.resolve(true);
     },
     log: (message) => logs.push(message),
+    // Inert unless a test passes an evidence directory (Issue #4253).
+    evidence: {
+      runRuntime: () =>
+        Promise.resolve({ code: 1, stdout: "", stderr: "not used" }),
+      listLogFiles: () => Promise.resolve([]),
+      readTail: () => Promise.resolve(""),
+      writeFile: () => Promise.resolve(),
+      hostname: () => "test-host",
+      timeout: () => ({
+        promise: new Promise<void>(() => {}),
+        cancel: () => {},
+      }),
+    },
     ...overrides,
   };
 
@@ -619,4 +638,329 @@ Deno.test("reapStaleContainers - nothing leaked means no runtime kill and no eve
   assertEquals(await reapStaleContainers(deps, { maxAgeSeconds: 3_600 }), []);
   assertEquals(runtimeCalls.length, 1);
   assertEquals(events, []);
+});
+
+// ---------------------------------------------------------------------------
+// Hard-kill evidence before the kill (Issue #4253)
+// ---------------------------------------------------------------------------
+
+const EVIDENCE_RUN_ID = "vibe-m3k9x2-0a1b2c";
+const EVIDENCE_LOG_TAIL = `[2026-10-24T01:00:00.000Z] step one\n` +
+  `[2026-10-24T01:02:03.456Z] waiting for the VM (run ${EVIDENCE_RUN_ID})\n`;
+const EVIDENCE_TRANSCRIPT = '{"type":"assistant","message":{"content":' +
+  '[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git status"}}]}}\n';
+// Synthetic PAT: assemble it at run time so new diffs contain no token literal.
+const EVIDENCE_TOKEN = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789";
+const EVIDENCE_DIR = "/evidence";
+/** Epoch seconds of the stub clock in {@link stubDeps}. */
+const EVIDENCE_EPOCH = 1_800_000_000;
+
+/** Timers that fire on the next macrotask, except the total cap, left pending. */
+function evidenceTimer(): EvidenceSeams["timeout"] {
+  return (ms) => {
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    const promise = new Promise<void>((resolve) => {
+      if (ms !== DEFAULT_TOTAL_CAP_MS) handle = setTimeout(resolve, 0);
+    });
+    return { promise, cancel: () => clearTimeout(handle) };
+  };
+}
+
+interface EvidenceFake {
+  seams: EvidenceSeams;
+  /** Every seam call in order, so a test can see what was touched. */
+  touched: string[];
+  writes: { path: string; text: string }[];
+}
+
+/** Evidence seams over an in-memory directory, recording every call. */
+function evidenceFake(
+  options: { logTail?: string; hangExec?: boolean; order?: string[] } = {},
+): EvidenceFake {
+  const touched: string[] = [];
+  const writes: { path: string; text: string }[] = [];
+  const seams: EvidenceSeams = {
+    runRuntime: (args) => {
+      touched.push(`runtime ${args.join(" ")}`);
+      if (options.hangExec && args[0] === "exec") {
+        return new Promise<EvidenceInvocation>(() => {});
+      }
+      return Promise.resolve({
+        code: 0,
+        stdout: args[0] === "logs"
+          ? "boot line"
+          : `output of ${args.slice(2).join(" ")}`,
+        stderr: "",
+      });
+    },
+    listLogFiles: () => {
+      touched.push("listLogFiles");
+      return Promise.resolve([
+        { name: "worker.log", mtimeMs: 1 },
+        { name: "agent-vibe-m3k9x2-0a1b2c-2.jsonl", mtimeMs: 1 },
+      ]);
+    },
+    readTail: (path) => {
+      touched.push(`readTail ${path}`);
+      return Promise.resolve(
+        path.endsWith("worker.log")
+          ? (options.logTail ?? EVIDENCE_LOG_TAIL)
+          : EVIDENCE_TRANSCRIPT,
+      );
+    },
+    writeFile: (path, text) => {
+      touched.push(`writeFile ${path}`);
+      writes.push({ path, text });
+      options.order?.push("evidence-write");
+      return Promise.resolve();
+    },
+    hostname: () => {
+      touched.push("hostname");
+      return "test-host";
+    },
+    timeout: evidenceTimer(),
+  };
+  return { seams, touched, writes };
+}
+
+Deno.test("reapWedgedContainer - writes one evidence file with every field, before the kill", async () => {
+  const order: string[] = [];
+  const evidence = evidenceFake({ order });
+  const { deps, runtimeCalls, events } = stubDeps({
+    evidence: evidence.seams,
+    runRuntime: (args) => {
+      runtimeCalls.push([...args]);
+      if (args[0] === "kill") order.push("runtime-kill");
+      return Promise.resolve({ code: 0, stdout: "[]", stderr: "" });
+    },
+  });
+
+  const result = await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-5",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+    evidenceDir: EVIDENCE_DIR,
+  });
+
+  const file = `${EVIDENCE_DIR}/hard-kill-vibe-coder-5-${EVIDENCE_EPOCH}.json`;
+  assertEquals(evidence.writes.map((write) => write.path), [file]);
+  assertEquals(result.evidenceFile, file);
+  assertEquals(result.reaped, true);
+  assert(
+    order.indexOf("evidence-write") < order.indexOf("runtime-kill"),
+    `the evidence must be written before the kill: ${order.join(", ")}`,
+  );
+  assertEquals(runtimeCalls.filter((call) => call[0] === "kill"), [
+    ["kill", "vibe-coder-5"],
+  ]);
+  assertEquals(
+    (events[0]!.details as Record<string, unknown>)["evidenceFile"],
+    file,
+  );
+
+  const record = JSON.parse(evidence.writes[0]!.text) as HardKillEvidence;
+  assertEquals(Object.keys(record).sort(), [
+    "capturedAt",
+    "container",
+    "evidence",
+    "host",
+    "lastLogLine",
+    "lastLogTimestamp",
+    "lastToolCall",
+    "reason",
+    "runId",
+    "trigger",
+    "version",
+  ]);
+  assertEquals(Object.keys(record.evidence).sort(), [
+    "agentTranscriptTail",
+    "bootLogs",
+    "guest",
+    "workerLogTail",
+  ]);
+  assertEquals(record.container, "vibe-coder-5");
+  assertEquals(record.host, "test-host");
+  assertEquals(record.runId, EVIDENCE_RUN_ID);
+  assertEquals(record.trigger, "watchdog");
+  assertEquals(record.reason, "watchdog deadline of 60s expired");
+  assertEquals(
+    record.lastLogLine,
+    `[2026-10-24T01:02:03.456Z] waiting for the VM (run ${EVIDENCE_RUN_ID})`,
+  );
+  assertEquals(record.lastLogTimestamp, "2026-10-24T01:02:03.456Z");
+  assertEquals(record.lastToolCall, 'Bash {"command":"git status"}');
+  assertEquals(record.evidence.workerLogTail, EVIDENCE_LOG_TAIL.trimEnd());
+  assertEquals(
+    record.evidence.agentTranscriptTail,
+    EVIDENCE_TRANSCRIPT.trimEnd(),
+  );
+  assertEquals(record.evidence.bootLogs, "boot line");
+  assertEquals(
+    record.evidence.guest.ps,
+    "output of ps -eo pid,ppid,stat,pcpu,pmem,etime,args",
+  );
+  assertEquals(record.evidence.guest.meminfo, "output of cat /proc/meminfo");
+});
+
+Deno.test("reapWedgedContainer - a hung container exec is abandoned and the reap still happens", async () => {
+  const evidence = evidenceFake({ hangExec: true });
+  const { deps, runtimeCalls } = stubDeps({ evidence: evidence.seams });
+
+  const result = await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-5",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+    evidenceDir: EVIDENCE_DIR,
+  });
+
+  assertEquals(
+    runtimeCalls.filter((call) => call[0] === "kill"),
+    [["kill", "vibe-coder-5"]],
+  );
+  assertEquals(result.reaped, true);
+  assertEquals(result.evidenceFile !== null, true);
+  const record = JSON.parse(evidence.writes[0]!.text) as HardKillEvidence;
+  assert(record.evidence.guest.ps.startsWith("unavailable:"));
+  assertStringIncludes(
+    record.evidence.guest.ps,
+    "container exec did not answer",
+  );
+});
+
+Deno.test("reapWedgedContainer - a capture whose listing throws is recorded and the kill still happens", async () => {
+  const evidence = evidenceFake();
+  const { deps, runtimeCalls } = stubDeps({
+    evidence: {
+      ...evidence.seams,
+      listLogFiles: () => {
+        throw new Error("scandir exploded");
+      },
+    },
+  });
+
+  const result = await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-5",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+    evidenceDir: EVIDENCE_DIR,
+  });
+
+  assertEquals(runtimeCalls[0], ["kill", "vibe-coder-5"]);
+  assertEquals(result.reaped, true);
+  const record = JSON.parse(evidence.writes[0]!.text) as HardKillEvidence;
+  assertEquals(
+    record.evidence.workerLogTail,
+    `unavailable: could not list ${EVIDENCE_DIR}: scandir exploded`,
+  );
+});
+
+Deno.test("reapWedgedContainer - an evidence write that is refused is logged loudly and the kill still happens", async () => {
+  const evidence = evidenceFake();
+  const { deps, runtimeCalls, logs } = stubDeps({
+    evidence: {
+      ...evidence.seams,
+      writeFile: () => Promise.reject(new Error("disk full")),
+    },
+  });
+
+  const result = await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-5",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+    evidenceDir: EVIDENCE_DIR,
+  });
+
+  assertEquals(runtimeCalls[0], ["kill", "vibe-coder-5"]);
+  assertEquals(result.evidenceFile, null);
+  assertEquals(result.reaped, true);
+  assert(
+    logs.some((line) =>
+      line.includes("NOT captured") && line.includes("disk full") &&
+      line.includes("reaping anyway")
+    ),
+    `the refused write must be logged: ${logs.join("\n")}`,
+  );
+});
+
+Deno.test("reapWedgedContainer - a capture that throws outright is logged and the kill still happens", async () => {
+  const evidence = evidenceFake();
+  const { deps, runtimeCalls, logs } = stubDeps({
+    // An invalid clock makes the capture throw before it reads anything.
+    now: () => Number.NaN,
+    evidence: evidence.seams,
+  });
+
+  const result = await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-5",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+    evidenceDir: EVIDENCE_DIR,
+  });
+
+  assertEquals(runtimeCalls[0], ["kill", "vibe-coder-5"]);
+  assertEquals(result.evidenceFile, null);
+  assertEquals(result.reaped, true);
+  assert(
+    logs.some((line) =>
+      line.includes("hard-kill evidence for vibe-coder-5 failed") &&
+      line.includes("reaping anyway")
+    ),
+    `the thrown capture must be logged: ${logs.join("\n")}`,
+  );
+});
+
+Deno.test("reapWedgedContainer - without an evidence directory no evidence seam is touched", async () => {
+  const evidence = evidenceFake();
+  const { deps, runtimeCalls } = stubDeps({ evidence: evidence.seams });
+
+  const result = await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-5",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+  });
+
+  assertEquals(evidence.touched, []);
+  assertEquals(result.evidenceFile, null);
+  assertEquals(runtimeCalls[0], ["kill", "vibe-coder-5"]);
+});
+
+Deno.test("reapStaleContainers - a pre-launch reap captures no evidence", async () => {
+  const evidence = evidenceFake();
+  const { deps } = stubDeps({
+    evidence: evidence.seams,
+    runRuntime: (args) =>
+      Promise.resolve(
+        args[0] === "kill" ? { code: 0, stdout: "", stderr: "" } : {
+          code: 0,
+          stdout: JSON.stringify([{ Names: "vibe-coder-11" }]),
+          stderr: "",
+        },
+      ),
+  });
+
+  const results = await reapStaleContainers(deps, { maxAgeSeconds: 3_600 });
+
+  assertEquals(results.map((result) => result.containerName), [
+    "vibe-coder-11",
+  ]);
+  assertEquals(results[0]!.evidenceFile, null);
+  assertEquals(evidence.touched, []);
+});
+
+Deno.test("reapWedgedContainer - a token in the log tail is redacted in the evidence file", async () => {
+  const evidence = evidenceFake({
+    logTail: `[2026-10-24T01:02:03.456Z] cloning with ${EVIDENCE_TOKEN}\n`,
+  });
+  const { deps } = stubDeps({ evidence: evidence.seams });
+
+  await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-5",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+    evidenceDir: EVIDENCE_DIR,
+  });
+
+  const text = evidence.writes[0]!.text;
+  assert(!text.includes(EVIDENCE_TOKEN), "the raw token must not be written");
+  assertStringIncludes(text, "***REDACTED***");
 });

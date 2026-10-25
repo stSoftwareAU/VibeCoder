@@ -7,6 +7,7 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import {
   type ClosedPR,
@@ -77,14 +78,11 @@ Deno.test("issue_query - parseIssueListJson handles null milestone", () => {
   assertEquals(result[0]?.milestone, "");
 });
 
-Deno.test("issue_query - parseIssueListJson returns empty for invalid JSON", () => {
-  assertEquals(parseIssueListJson("not json"), []);
-  assertEquals(parseIssueListJson(""), []);
-});
-
-// -----------------------------------------------------------------------
-// Malformed rows are skipped, not fatal (Issue #4110)
-// -----------------------------------------------------------------------
+for (const input of ["not json", "", "{}", "null", "42"]) {
+  Deno.test(`parseIssueListJson rejects invalid list ${JSON.stringify(input)}`, () => {
+    assertThrows(() => parseIssueListJson(input), Error);
+  });
+}
 
 const GOOD_ROW_4110 = {
   number: 1,
@@ -105,75 +103,37 @@ function listWithBadRow4110(patch: Record<string, unknown>): string {
   ]);
 }
 
-function assertOnlyGoodRow4110(
-  result: ReturnType<typeof parseIssueListJson>,
-): void {
-  assertEquals(result.length, 1);
-  assertEquals(result[0]?.number, 1);
-  assertEquals(result[0]?.title, "Good row");
-  assertEquals(result[0]?.assignees, ["user1"]);
-  assertEquals(result[0]?.labels, ["bug"]);
-  assertEquals(result[0]?.author, "alice");
-  assertEquals(result[0]?.milestone, "v1.0");
+for (
+  const [field, value] of [
+    ["assignees", [null]],
+    ["assignees", {}],
+    ["labels", "bug"],
+    ["labels", [{ name: 5 }]],
+    ["milestone", "v1"],
+    ["milestone", { title: 42 }],
+    ["author", "alice"],
+    ["author", {}],
+    ["number", "2"],
+    ["title", null],
+  ] as const
+) {
+  Deno.test(`parseIssueListJson rejects malformed ${field}: ${JSON.stringify(value)}`, () => {
+    assertThrows(
+      () => parseIssueListJson(listWithBadRow4110({ [field]: value })),
+      Error,
+      field,
+    );
+  });
 }
 
-Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a null assignee (Issue #4110)", () => {
-  assertOnlyGoodRow4110(
-    parseIssueListJson(listWithBadRow4110({ assignees: [null] })),
-  );
-});
-
-Deno.test("issue_query - parseIssueListJson keeps the good row when another row has non-array labels (Issue #4110)", () => {
-  assertOnlyGoodRow4110(
-    parseIssueListJson(listWithBadRow4110({ labels: "bug" })),
-  );
-});
-
-Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a non-string label name (Issue #4110)", () => {
-  assertOnlyGoodRow4110(
-    parseIssueListJson(listWithBadRow4110({ labels: [{ name: 5 }] })),
-  );
-});
-
-Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a string milestone (Issue #4110)", () => {
-  assertOnlyGoodRow4110(
-    parseIssueListJson(listWithBadRow4110({ milestone: "v1" })),
-  );
-});
-
-Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a string author (Issue #4110)", () => {
-  assertOnlyGoodRow4110(
-    parseIssueListJson(listWithBadRow4110({ author: "alice" })),
-  );
-});
-
-Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a milestone with a non-string title (Issue #4110)", () => {
-  assertOnlyGoodRow4110(
-    parseIssueListJson(listWithBadRow4110({ milestone: { title: 42 } })),
-  );
-});
-
-Deno.test("issue_query - parseIssueListJson logs each skipped row by number and field (Issue #4110)", () => {
-  const logged: string[] = [];
-  const result = parseIssueListJson(
-    listWithBadRow4110({ assignees: [null] }),
-    (message) => logged.push(message),
-  );
-  assertEquals(result.length, 1);
-  assertEquals(logged.length, 1);
-  assertStringIncludes(logged[0] ?? "", "#2");
-  assertStringIncludes(logged[0] ?? "", "assignees");
-});
-
-Deno.test("issue_query - parseIssueListJson does not log when every row is valid (Issue #4110)", () => {
-  const logged: string[] = [];
-  const json = JSON.stringify([
-    { number: 1, title: "Bare row", milestone: null },
-    GOOD_ROW_4110,
-  ]);
-  const result = parseIssueListJson(json, (message) => logged.push(message));
-  assertEquals(result.length, 2);
-  assertEquals(logged, []);
+Deno.test("parseIssueListJson rejects non-object rows", () => {
+  for (const row of [null, [], 4, "bad"]) {
+    assertThrows(
+      () => parseIssueListJson(JSON.stringify([GOOD_ROW_4110, row])),
+      Error,
+      "row",
+    );
+  }
 });
 
 Deno.test("issue_query - parseIssueListJson defaults absent author, assignees, labels and null milestone (Issue #4110)", () => {
@@ -1720,53 +1680,59 @@ Deno.test("issue_query - fetchAllIssues rejects a non-array JSON root without ca
   }
 });
 
-Deno.test("issue_query - fetchAllIssues keeps and caches the good row when another row is malformed (Issue #4110)", async () => {
+Deno.test("issue lists reject malformed rows without caching and retry successfully (Issue #4124)", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {
-    const json = JSON.stringify([
-      GOOD_ROW_4110,
-      { ...GOOD_ROW_4110, number: 2, assignees: [null] },
-    ]);
-    const issues = await fetchAllIssues(
-      "org/repo",
-      cache,
-      100,
-      () => Promise.resolve(json),
+    for (
+      const [fetcher, key] of [[fetchAllIssues, "issues_all"], [
+        fetchAllClosedIssues,
+        "issues_closed_all",
+      ]] as const
+    ) {
+      await assertRejects(
+        () =>
+          fetcher(
+            "org/repo",
+            cache,
+            100,
+            () =>
+              Promise.resolve(listWithBadRow4110({ milestone: { title: 42 } })),
+          ),
+        Error,
+        "milestone",
+      );
+      assertEquals(await cache.read("org/repo", key), null);
+      const issues = await fetcher(
+        "org/repo",
+        cache,
+        100,
+        () => Promise.resolve(JSON.stringify([GOOD_ROW_4110])),
+      );
+      assertEquals(issues.map((issue) => issue.number), [1]);
+    }
+    await assertRejects(
+      () =>
+        fetchOpenIssuesByMilestone(
+          "org/milestone",
+          "v1",
+          cache,
+          () => Promise.resolve(listWithBadRow4110({ assignees: [null] })),
+        ),
+      Error,
+      "assignees",
     );
-    assertEquals(issues.length, 1);
-    assertEquals(issues[0]?.number, 1);
-    const cached = await cache.read<{ issues: unknown[] }>(
-      "org/repo",
-      "issues_all",
+    await assertRejects(
+      () =>
+        fetchIssuesByLabel(
+          "org/label",
+          "bug",
+          cache,
+          50,
+          () => Promise.resolve(listWithBadRow4110({ labels: "bug" })),
+        ),
+      Error,
+      "labels",
     );
-    assertEquals(cached?.issues.length, 1);
-  } finally {
-    await cleanup();
-  }
-});
-
-Deno.test("issue_query - fetchOpenIssuesByMilestone and fetchIssuesByLabel keep the good row beside a malformed one (Issue #4110)", async () => {
-  const { cache, cleanup } = await makeTempCache();
-  try {
-    // Separate repos so the second fetch cannot be served from the first's cache.
-    const milestoneJson = listWithBadRow4110({ assignees: [null] });
-    const byMilestone = await fetchOpenIssuesByMilestone(
-      "org/repo-milestone",
-      "v1.0",
-      cache,
-      () => Promise.resolve(milestoneJson),
-    );
-    assertEquals(byMilestone.map((issue) => issue.number), [1]);
-
-    const labelJson = listWithBadRow4110({ labels: "bug" });
-    const byLabel = await fetchIssuesByLabel(
-      "org/repo-label",
-      "bug",
-      cache,
-      50,
-      () => Promise.resolve(labelJson),
-    );
-    assertEquals(byLabel.map((issue) => issue.number), [1]);
   } finally {
     await cleanup();
   }
@@ -1921,21 +1887,24 @@ Deno.test("issue_query - a 100-limit cache entry does not serve a 200-limit call
   }
 });
 
-Deno.test("issue_query - a truncated listing with a dropped row is refetched (Issue #1486)", async () => {
+Deno.test("issue_query - a malformed truncated listing is rejected and refetched (Issue #4124)", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {
-    // 100 rows returned at limit 100 - the listing may be truncated - but one
-    // row is malformed and never reaches the parsed array. Judging exhaustion
-    // on the parsed length would call this 99-of-100 listing "complete".
+    // A malformed row must not produce a cached 99-of-100 snapshot.
     const rows: Record<string, unknown>[] = [{ title: "no number" }];
     for (let i = 1; i < 100; i++) rows.push({ number: i, title: `Issue ${i}` });
-    const first = await fetchAllIssues(
-      "org/repo",
-      cache,
-      100,
-      () => Promise.resolve(JSON.stringify(rows)),
+    await assertRejects(
+      () =>
+        fetchAllIssues(
+          "org/repo",
+          cache,
+          100,
+          () => Promise.resolve(JSON.stringify(rows)),
+        ),
+      Error,
+      "number",
     );
-    assertEquals(first.length, 99);
+    assertEquals(await cache.read("org/repo", "issues_all"), null);
 
     let widerCall = 0;
     const second = await fetchAllIssues("org/repo", cache, 200, () => {
@@ -2085,23 +2054,44 @@ Deno.test("issue_query - fetchAllOpenPRs rejects empty gh output instead of cach
   }
 });
 
-Deno.test("issue_query - fetchAllClosedIssues returns [] uncached on empty gh output (Issue #4257)", async () => {
+Deno.test("fetchAllClosedIssues rejects failures without caching (Issue #4124)", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {
-    // This fetcher's contract swallows gh failures (returns []); the
-    // #4257 requirement is only that the failure is never *cached*.
-    const issues = await fetchAllClosedIssues(
-      "org/repo",
-      cache,
-      500,
-      () => Promise.resolve(""),
+    for (const output of ["", "not json", "{}", "null"]) {
+      await assertRejects(
+        () =>
+          fetchAllClosedIssues(
+            "org/repo",
+            cache,
+            500,
+            () => Promise.resolve(output),
+          ),
+        Error,
+      );
+      assertEquals(await cache.read("org/repo", "issues_closed_all"), null);
+    }
+    await assertRejects(
+      () =>
+        fetchAllClosedIssues(
+          "org/repo",
+          cache,
+          500,
+          () => Promise.reject(new Error("network failure")),
+        ),
+      Error,
+      "network failure",
     );
-    assertEquals(issues, []);
+    assertEquals(await cache.read("org/repo", "issues_closed_all"), null);
     assertEquals(
-      await cache.read("org/repo", "issues_closed_all"),
-      null,
-      "a failed closed-issues call must not poison issues_closed_all",
+      await fetchAllClosedIssues(
+        "org/repo",
+        cache,
+        500,
+        () => Promise.resolve("[]"),
+      ),
+      [],
     );
+    assertEquals(await cache.read("org/repo", "issues_closed_all"), []);
   } finally {
     await cleanup();
   }

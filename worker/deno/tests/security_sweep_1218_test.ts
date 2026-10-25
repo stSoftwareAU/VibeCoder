@@ -92,6 +92,7 @@ Deno.test("prManagerCommand - finalise-pr refuses an ungated direct merge onto t
         operation: "finalise-pr",
         repo: "owner/repo",
         "pr-number": 42,
+        "github-user": "testuser",
       },
       testConfig(),
     );

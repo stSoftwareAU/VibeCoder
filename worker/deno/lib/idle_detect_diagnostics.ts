@@ -26,6 +26,10 @@
  *   2. Carries no blocking label (`failed`, `needs-revision`,
  *      `refine-issue`, `planning`, `question`, `needs-human`).
  *   3. Has no assignees (`filterByAssignee` in `issue_filter.ts`).
+ *   3a. Its priority label was added by a trusted author (Issue #4212).
+ *      Issues named by `untrustedLabelIssues` are excluded as
+ *      `label_author_not_allowed`, matching the claim scan's
+ *      `label-author-not-allowed` skip. Absent, the gate is skipped.
  *   3b. Is not a milestone-tracking issue — `filterAndSort` drops those
  *      in the same pass (Issue #1134, gate added by Issue #1050).
  *   4. Its work stream — the milestone title, or `""` for default
@@ -173,6 +177,8 @@ export type ClaimableSkipReason =
   | "no_open"
   | "label_filter"
   | "assignee_filter"
+  /** Priority label added by an author the claim scan does not trust (#4212). */
+  | "label_author_not_allowed"
   | "blocking_label"
   /** Every candidate is a milestone-tracking issue (Issue #1050). */
   | "milestone_tracker"
@@ -389,6 +395,8 @@ function isMergedPrBlocked(
 export type IssueExclusionReason =
   | "label_filter"
   | "assignee_filter"
+  /** Priority label added by an author the claim scan does not trust (#4212). */
+  | "label_author_not_allowed"
   | "blocking_label"
   /** A milestone-tracking issue `filterAndSort` drops (Issue #1050). */
   | "milestone_tracker"
@@ -552,6 +560,16 @@ export interface ClassifyOptions {
    * the same fail-safe as `openPRs`.
    */
   openMilestones?: ReadonlySet<string>;
+  /**
+   * Issue numbers whose priority label an untrusted author added (Issue
+   * #4212). The claim scan refuses those as `label-author-not-allowed`.
+   *
+   * Omitted or empty means "no data" and no issue is excluded by this gate,
+   * the same fail-safe as `openPRs`: under-counting the refusal merely
+   * alerts on work that will not be claimed, whereas inventing it would
+   * hide the mis-classification this audit exists to catch.
+   */
+  untrustedLabelIssues?: ReadonlySet<number>;
 }
 
 /**
@@ -643,6 +661,7 @@ export function classifyIssues(
   const paceExemptSet = new Set(PACE_EXEMPT_LABELS);
   const weekPaceEngaged = opts.weekPaceEngaged === true;
   const quotaIdleDeferred = opts.quotaIdleDeferred === true;
+  const untrustedLabelIssues = opts.untrustedLabelIssues ?? new Set<number>();
   const openPRs = opts.openPRs ?? [];
   const mergedPRs = opts.mergedPRs ?? [];
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
@@ -728,6 +747,18 @@ export function classifyIssues(
         number: issue.number,
         claimable: false,
         excludedBy: "assignee_filter",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
+    // Issue #4212: the scan's `label-author-not-allowed` skip, applied
+    // straight after the assignee gate and before the tracker drop. Absent
+    // `untrustedLabelIssues`, nothing is excluded here.
+    if (untrustedLabelIssues.has(issue.number)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "label_author_not_allowed",
         milestone: issue.milestone,
       });
       continue;
@@ -921,7 +952,8 @@ export function classifyIssues(
  * Specificity order (most → least specific):
  *   merged_pr_blocked > pr_blocked > pace_suppressed > run_local_hold >
  *   dependency_blocked > time_deferred > stream_occupied >
- *   milestone_tracker > assignee_filter > blocking_label > label_filter.
+ *   milestone_tracker > label_author_not_allowed > assignee_filter >
+ *   blocking_label > label_filter.
  * The two PR gates rank first because they describe fleet state that may
  * need a human to resolve. Below them, each later gate in `classifyIssues`
  * ranks above the ones it follows, because a later gate only ever refuses
@@ -973,6 +1005,11 @@ export function pickDominantReason(
   // after the label, blocking-label and assignee gates have passed it, but
   // "the stream is busy" is the more actionable answer when both apply.
   if (seen.has("milestone_tracker")) return "milestone_tracker";
+  // Issue #4212: below the tracker drop and above the assignee filter. The
+  // scan applies the label-author skip after assignees have passed and
+  // before the tracker, so an untrusted label is the more specific answer
+  // when the only other exclusion is an assignment.
+  if (seen.has("label_author_not_allowed")) return "label_author_not_allowed";
   if (seen.has("assignee_filter")) return "assignee_filter";
   if (seen.has("blocking_label")) return "blocking_label";
   if (seen.has("label_filter")) return "label_filter";
@@ -1182,6 +1219,20 @@ export interface AuditClaimableStateOptions {
    * work the scan could actually claim. Omitted → off.
    */
   quotaIdleDeferred?: boolean;
+  /**
+   * Issues in `repo` whose priority label an untrusted author added (Issue
+   * #4212). The result is passed to {@link ClassifyOptions.untrustedLabelIssues}.
+   *
+   * Best-effort: a rejection is logged as
+   * `action=warn reason=untrusted_label_lookup_failed`, naming the repo and
+   * the error, and the audit falls back to an empty set. That restores the
+   * old over-count rather than reporting a lookup fault as zero claimable
+   * work. Omitted → the gate is skipped.
+   */
+  untrustedLabelIssuesFn?: (
+    repo: string,
+    issues: readonly { number: number; labels: readonly string[] }[],
+  ) => Promise<ReadonlySet<number>>;
   /** Progress log sink. Defaults to `console.log`. */
   log?: (line: string) => void;
   /** Hostname source — exposed for tests. Defaults to `Deno.hostname()`. */
@@ -1355,6 +1406,23 @@ export async function auditClaimableState(
     // fail-safe direction every other gate takes.
     const openIssueNumbers = new Set(issues.map((i) => i.number));
 
+    // Issue #4212: the claim scan's label-author gate. A rejected lookup
+    // falls back to an empty set — the old over-count — and the warning
+    // names the fault. Treating the failure as nothing claimable would
+    // hide it.
+    let untrustedLabelIssues: ReadonlySet<number> = new Set<number>();
+    if (opts.untrustedLabelIssuesFn) {
+      try {
+        untrustedLabelIssues = await opts.untrustedLabelIssuesFn(repo, issues);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(
+          `[idle-detect] tick=${opts.tick} host=${host} repo=${repo} action=warn reason=untrusted_label_lookup_failed message=${message}`,
+        );
+        untrustedLabelIssues = new Set<number>();
+      }
+    }
+
     const verdicts = classifyIssues(issues, {
       workerUser: opts.workerUser,
       pushCapableAuthors: opts.pushCapableAuthors,
@@ -1377,6 +1445,7 @@ export async function auditClaimableState(
       // Issue #3628: the quota gate's idle-tier deferral is the same shape —
       // a modelled refusal, not a misclassification.
       quotaIdleDeferred: opts.quotaIdleDeferred,
+      untrustedLabelIssues,
     });
     const claimableCount = verdicts.filter((v) => v.claimable).length;
     const reason: ClaimableSkipReason = claimableCount > 0

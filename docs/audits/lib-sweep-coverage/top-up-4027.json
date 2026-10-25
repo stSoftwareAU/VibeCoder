@@ -1,0 +1,14 @@
+{
+  "issue": 4027,
+  "chunk": "top-up-4027",
+  "title": "top-up: report-only SIMPLE-ON-PURPOSE debt ledger",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4027",
+  "definition": "modules added after 12a-12af recorded their coverage: worker/deno/lib/simple_on_purpose_scanner.ts and idle_task_templates/ponytail_debt_template.ts, plus prompts/ponytail_debt/prompt.md (a report-only idle task that lists every SIMPLE-ON-PURPOSE marker) (#4027)",
+  "status": "claimed",
+  "paths": [
+    "prompts/ponytail_debt/prompt.md",
+    "worker/deno/lib/idle_task_templates/ponytail_debt_template.ts",
+    "worker/deno/lib/simple_on_purpose_scanner.ts"
+  ],
+  "sweptAt": "8795277ca6606470f9bb65af1e216fcdfa2b80cd"
+}

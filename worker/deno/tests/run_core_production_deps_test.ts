@@ -30,6 +30,8 @@ import { isHeartbeatRunning } from "../lib/heartbeat.ts";
 import { captureContentSnapshot } from "../lib/content_approval_tracker.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { setRunProviderOverride } from "../lib/agent_provider.ts";
+import { healthCacheFilePath } from "../lib/health_check_cache.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
@@ -448,6 +450,78 @@ Deno.test("checkClaudeHealth - an unhealthy probe carries its message to the loo
       },
     });
   } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+function healthCachePresent(dir: string, checkType: string): boolean {
+  try {
+    Deno.statSync(healthCacheFilePath(dir, checkType));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test("recheckAgentAuth - an auth failure clears the active provider cache (Issue #4267)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "health_cache_codex_" });
+  setRunProviderOverride("codex");
+  let probes = 0;
+  const probedIds: Array<string | undefined> = [];
+  try {
+    const options = createTestOptions({
+      workDir: tmpDir,
+      agentHealthCheck: (_timeout, _logger, provider) => {
+        probes++;
+        probedIds.push(
+          provider === undefined
+            ? undefined
+            : typeof provider === "string"
+            ? provider
+            : provider.id,
+        );
+        if (probes === 1) {
+          return Promise.resolve({
+            healthy: true,
+            exitCode: 0,
+            message: "ok",
+          });
+        }
+        return Promise.resolve({
+          healthy: false,
+          exitCode: 2,
+          message: "codex requires login",
+        });
+      },
+    });
+    const { deps } = await createProductionRunCoreDeps(options);
+
+    const first = await deps.checkClaudeHealth();
+    assertEquals(first.ok, true);
+    if (first.ok) assertEquals(first.value.healthy, true);
+    assertEquals(healthCachePresent(tmpDir, "codex"), true);
+    assertEquals(probes, 1);
+
+    const recheck = await deps.recheckAgentAuth!();
+    assertEquals(recheck.authFailed, true);
+    assertEquals(probedIds[1], "codex");
+    assertEquals(
+      healthCachePresent(tmpDir, "codex"),
+      false,
+      "clearing the claude key leaves the codex entry that the next cycle trusts",
+    );
+
+    const beforeNextGate = probes;
+    const second = await deps.checkClaudeHealth();
+    assertEquals(
+      probes,
+      beforeNextGate + 1,
+      "the next health gate must probe again",
+    );
+    assertEquals(second.ok, true);
+    if (second.ok) assertEquals(second.value.healthy, false);
+  } finally {
+    setRunProviderOverride(undefined);
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
@@ -877,11 +951,16 @@ Deno.test("production coding dispatch defers actual heartbeat publication throug
       const result = observation[0]!.value;
       assertEquals(result.ok, true);
       if (!result.ok) throw result.error;
-      assertEquals(executions, 1);
+      // A non-zero exit that committed nothing is a crashed run, retried once
+      // in-process on a fresh session (Issue #4116). Change detection reads
+      // tracked changes and commits, so an untracked file does not count.
+      assertEquals(executions, 2);
       assertEquals(result.value.success, false);
       assertEquals(result.value.skipped, !dirty);
       assertEquals(result.value.outcome?.kind === "claim_stale", !dirty);
-      assertEquals(charges, dirty ? 1 : 0);
+      // A crashed run is an infrastructure failure: released for a retry,
+      // never charged to the issue's failure ladder (Issue #4116).
+      assertEquals(charges, 0);
       assertEquals(
         clears,
         0,

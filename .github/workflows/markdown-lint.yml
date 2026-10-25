@@ -58,7 +58,7 @@ jobs:
       # keeps install-time lifecycle scripts from the dependency tree off
       # the runner.
       - name: Install markdownlint-cli2
-        run: npm install -g --ignore-scripts markdownlint-cli2@0.23.2
+        run: npm install -g --ignore-scripts markdownlint-cli2@0.24.0
       - name: Run markdownlint-cli2
         run: markdownlint-cli2
       # Optional: mirror the local check-mermaid quality gate when Deno

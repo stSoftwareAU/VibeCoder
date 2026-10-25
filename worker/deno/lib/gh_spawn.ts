@@ -73,6 +73,17 @@ import {
   isQuotaExemptGhCall,
   primaryQuotaSkipMessage,
 } from "./primary_quota_latch.ts";
+import {
+  getGhTimeoutForOperation,
+  GH_TIMEOUT_EXIT_CODE,
+} from "./gh_timeout.ts";
+import {
+  clampTimeoutToRunTimeline,
+  formatTimeoutSeconds,
+  subprocessCommandLabel,
+  waitForChildExit,
+} from "./subprocess_timeout.ts";
+import { getRunTimeline } from "./run_timeline.ts";
 
 /** Options for a single `gh` invocation. */
 export interface GhSpawnOptions {
@@ -88,6 +99,12 @@ export interface GhSpawnOptions {
   env?: Record<string, string>;
   /** Abort signal — used by the timeout wrapper in `gh_wrapper.ts`. */
   signal?: AbortSignal;
+  /**
+   * Budget in milliseconds. When omitted, and {@link signal} is also omitted,
+   * the chokepoint applies {@link getGhTimeoutForOperation}. Either way the
+   * budget is clamped to the run timeline (Issue #4247).
+   */
+  timeoutMs?: number;
   /**
    * Host roots the credential re-stage reads (Issue #967) — `GH_CONFIG_DIR`,
    * `HOME`, `VIBE_STATE_DIR`, `VIBE_SCRATCH_DIR` and `TMPDIR`. Defaults to the
@@ -301,31 +318,128 @@ function decodeOutput(
   };
 }
 
+/**
+ * The budget `spawnGh` will enforce, or undefined when the caller owns the
+ * abort via `signal` and no timeline is set.
+ *
+ * Synchronous: the timeline is read here, before `spawnGh` awaits, so a test
+ * can install a timeline for this call and clear it before the first yield.
+ */
+export function resolveGhSpawnBudget(
+  args: readonly string[],
+  options: GhSpawnOptions,
+): number | undefined {
+  const command = subprocessCommandLabel("gh", args);
+  if (options.timeoutMs !== undefined) {
+    return clampTimeoutToRunTimeline(options.timeoutMs, command);
+  }
+  if (options.signal) {
+    if (getRunTimeline() === undefined) return undefined;
+    // No numeric budget of our own. A finite clamp is the timeline's cap;
+    // a non-finite result means no hard kill is known past the finish, so
+    // the caller's signal stays the only abort and wrap-up still runs.
+    const clamped = clampTimeoutToRunTimeline(
+      Number.POSITIVE_INFINITY,
+      command,
+    );
+    return Number.isFinite(clamped) ? clamped : undefined;
+  }
+  return clampTimeoutToRunTimeline(
+    getGhTimeoutForOperation(args) * 1000,
+    command,
+  );
+}
+
+/** A timed-out `gh` call, as exit 124. A timeout is a failure. */
+function ghTimedOut(command: string, timeoutMs: number): GhSpawnResult {
+  return {
+    code: GH_TIMEOUT_EXIT_CODE,
+    success: false,
+    stdout: "",
+    stderr: `TIMEOUT: ${command} timed out after ${
+      formatTimeoutSeconds(timeoutMs)
+    }s`,
+  };
+}
+
 /** Production runner — the only `gh` spawn in the worker process. */
 const productionRunner: GhSpawnRunner = async (args, options) => {
   const baseEnv = await buildGhEnv();
   const env = options.env
     ? { ...(baseEnv ?? Deno.env.toObject()), ...options.env }
     : baseEnv;
-  const command = new Deno.Command("gh", {
-    args: [...args],
-    stdin: options.stdin !== undefined ? "piped" : "null",
-    stdout: options.stdout ?? "piped",
-    stderr: options.stderr ?? "piped",
-    ...(options.cwd ? { cwd: options.cwd } : {}),
-    ...(env ? { env } : {}),
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
-
-  if (options.stdin === undefined) {
-    return decodeOutput(await command.output(), options);
+  const commandLabel = subprocessCommandLabel("gh", args);
+  const controller = new AbortController();
+  let timedOut = false;
+  let callerAborted = false;
+  const onCallerAbort = () => {
+    callerAborted = true;
+    controller.abort();
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (options.signal) {
+    if (options.signal.aborted) onCallerAbort();
+    else {
+      options.signal.addEventListener("abort", onCallerAbort, { once: true });
+    }
   }
 
-  const child = command.spawn();
-  const writer = child.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(options.stdin));
-  await writer.close();
-  return decodeOutput(await child.output(), options);
+  try {
+    if (callerAborted) {
+      throw new DOMException("The operation was aborted", "AbortError");
+    }
+    if (options.timeoutMs !== undefined && !(options.timeoutMs > 0)) {
+      return ghTimedOut(commandLabel, options.timeoutMs);
+    }
+    if (options.timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, options.timeoutMs);
+    }
+    const command = new Deno.Command("gh", {
+      args: [...args],
+      stdin: options.stdin !== undefined ? "piped" : "null",
+      stdout: options.stdout ?? "piped",
+      stderr: options.stderr ?? "piped",
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      ...(env ? { env } : {}),
+    });
+    const child = command.spawn();
+    if (options.stdin !== undefined) {
+      const writer = child.stdin.getWriter();
+      await writer.write(new TextEncoder().encode(options.stdin));
+      await writer.close();
+    }
+    const outcome = await waitForChildExit(
+      child,
+      controller.signal,
+      commandLabel,
+    );
+    if (timer !== undefined) clearTimeout(timer);
+    if (outcome.kind === "kill-incomplete") {
+      return ghTimedOut(commandLabel, options.timeoutMs ?? 0);
+    }
+    if (timedOut || outcome.kind === "aborted") {
+      if (callerAborted && !timedOut) {
+        throw new DOMException("The operation was aborted", "AbortError");
+      }
+      return ghTimedOut(commandLabel, options.timeoutMs ?? 0);
+    }
+    if (controller.signal.aborted) {
+      if (callerAborted && !timedOut) {
+        throw new DOMException("The operation was aborted", "AbortError");
+      }
+      return ghTimedOut(commandLabel, options.timeoutMs ?? 0);
+    }
+    if (outcome.kind !== "output") {
+      return ghTimedOut(commandLabel, options.timeoutMs ?? 0);
+    }
+    return decodeOutput(outcome.output, options);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onCallerAbort);
+  }
 };
 
 let runner: GhSpawnRunner = productionRunner;
@@ -410,6 +524,11 @@ export async function spawnGh(
   args: readonly string[],
   options: GhSpawnOptions = {},
 ): Promise<GhSpawnResult> {
+  // Before the first await, so the timeline read is synchronous (Issue #4247).
+  const budgetMs = resolveGhSpawnBudget(args, options);
+  const timedOptions = budgetMs === undefined
+    ? options
+    : { ...options, timeoutMs: budgetMs };
   await enforceGhWriteAllowlist(args);
   // Issue #3433: a base change must not move a milestone PR off its milestone
   // branch. The lookup is a `pr view` read, so it cannot recurse into the guard.
@@ -472,9 +591,12 @@ export async function spawnGh(
   // that was true of the argv route only. Latent rather than live today (no
   // production caller supplies stdin), which is exactly why it should be
   // closed now rather than when one appears.
-  const spawnOptions = options.stdin === undefined
-    ? options
-    : { ...options, stdin: redactGhBodyText(options.stdin) };
+  const withStdin = options.stdin === undefined
+    ? timedOptions
+    : { ...timedOptions, stdin: redactGhBodyText(options.stdin) };
+  const spawnOptions = budgetMs === undefined
+    ? withStdin
+    : { ...withStdin, timeoutMs: budgetMs };
   try {
     let result = await runner(redacted, spawnOptions);
     // Issue #564: a call that failed for want of authentication did nothing,

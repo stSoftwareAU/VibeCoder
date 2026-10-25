@@ -2727,3 +2727,35 @@ Deno.test("outcomeSkipNotes - a private repo's hardenRepo outcome includes the P
     ),
   );
 });
+
+Deno.test("hardenRepo - onlyKinds writes the named step and nothing else (Issue #4298)", async () => {
+  // The issue lane fixes one repository-admin finding at a time, so a
+  // read-write token and an allow-all actions policy on the same repository
+  // must leave the allow-list alone when only the token was asked for.
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/actions/permissions/workflow`] = {
+    default_workflow_permissions: "write",
+    can_approve_pull_request_reviews: false,
+  };
+  routes[`repos/${repo}/actions/permissions`] = {
+    enabled: true,
+    allowed_actions: "all",
+    sha_pinning_required: true,
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+    onlyKinds: ["workflow-token"],
+  });
+  assertEquals(
+    writes.map((w) => w.endpoint),
+    [`repos/${repo}/actions/permissions/workflow`],
+  );
+  assertEquals(
+    report.results.map((r) => [r.step.kind, r.status]),
+    [["workflow-token", "applied"]],
+  );
+});

@@ -399,7 +399,7 @@ flowchart LR
     T["workflow_definitions.ts<br/>templates"] --> R["Provisioned repo<br/>.github/workflows/"]
     R --> A["GitHub Actions audit<br/>native pre-filers"]
     T --> C["workflow_template_audit<br/>_conformance_test.ts"]
-    C --> K["WORKFLOW_FILE_CHECKS<br/>(11 file-scoped checks)"]
+    C --> K["WORKFLOW_FILE_CHECKS<br/>(12 file-scoped checks)"]
     K -. "adapts the same<br/>pure scanners" .-> A
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
@@ -409,17 +409,18 @@ every template and runs `WORKFLOW_FILE_CHECKS`
 (`worker/deno/lib/workflow_file_checks.ts`) over the result, on both
 `Develop` and `main`. That table is the single ordered list of the audit
 checks a **template** can be held to — every check decidable from the
-workflow file alone, without a repository around it: nine native pre-filers
+workflow file alone, without a repository around it: ten native pre-filers
 (`action_pin_scanner`, `workflow_permissions_scanner`,
 `workflow_trigger_scanner`, `checkout_persist_credentials_scanner`,
 `milestone_branch_filter_scanner`, `ci_install_pin_scanner`,
 `run_injection_scanner`, `artifact_upload_scanner`,
-`gitleaks_drift_scanner`) plus the two workflow-hygiene rules `quality.sh`
-applies to this repository's own workflows — multi-line `run:` opens with
+`gitleaks_drift_scanner`, `semgrep_token_drift_scanner`) plus the two
+workflow-hygiene rules `quality.sh` applies to this repository's own
+workflows — multi-line `run:` opens with
 `set -euo pipefail`, and one pinned SHA carries one version comment
 (`workflow_hygiene_check.ts`). Each entry is a thin adapter over the pure
 scanner the audit template already calls, so no scanner logic is
-duplicated, and a table test asserts the exact eleven ids so a check cannot
+duplicated, and a table test asserts the exact twelve ids so a check cannot
 be dropped by accident. Any finding fails the test — and `quality.sh` — so
 a scanner change and the templates cannot drift apart unnoticed.
 
@@ -729,16 +730,47 @@ Deno.test("module - behaviour description", async () => {
 });
 ```
 
+### Prompt fence coverage (Milestone #130)
+
+Every exported `build*Prompt` function under `worker/deno/lib` needs a row in
+the matching `tests/fence_coverage_*_test.ts` suite: verifier, prompt builder,
+processors or repair. These suites run through the existing `deno task test`.
+The completeness test also runs through `deno task check:manifests`; it rejects
+missing builders, stale entries, empty scans and row/allowlist overlap.
+
+Use `makeCanary(field)` from `tests/support/untrusted_fence.ts` to put a distinct,
+scrub-safe value in each reachable untrusted input. Render the real builder and
+register its literal exported name with `runFenceCoverageRows`. The shared
+assertion requires every canary to occur and every occurrence to sit inside
+matched whole-line untrusted markers with the same valid boundary id. It rejects
+unclosed, stray and mismatched markers too. This catches both duplicated text
+outside an otherwise valid fence and inputs silently dropped during rendering.
+
+If a builder already leaks, first find or file an open bug for that root cause,
+then use `knownLeakRow` with its issue number. This records existing behaviour;
+it does not repair the production prompt. A known-leak row must retain every
+canary and fail the strict assertion; after the repair it fails until promoted
+to a normal row. Assert currently protected canaries separately inside `render`
+so an existing leak cannot conceal a regression in those fields. A builder
+with no untrusted inputs instead needs a reasoned `NO_UNTRUSTED_INPUT` entry in
+the completeness test.
+
+Prove a new row by temporarily moving an input outside its fence, observing the
+row fail, then restoring the production code before commit. Keep marker-parser
+negative controls in `tests/untrusted_fence_helper_test.ts`.
+
 ### Stubbing the environment (Issue #378)
 
 The suite runs both on a developer host and inside the worker container, and
 the container exports its own runtime configuration — `WORK_DIR`,
 `VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` — into
-every `deno test` invocation. A test that saves and restores only *some* of the
-variables its code path reads inherits the rest from the machine running it, so
-it passes on a host and fails in the container (or worse, hides a genuine
-regression). Never hand-roll a per-variable save/restore; use
-`tests/support/env.ts`:
+every `deno test` invocation run inside it. The quality gate's test stage is
+the exception: it builds an allowlisted environment and withholds all three
+(Issues #1281, #4328), so its suite sees a host run. A test that saves and
+restores only *some* of the variables its code path reads inherits the rest
+from the machine running it, so it passes on a host and fails in the container
+(or worse, hides a genuine regression). Never hand-roll a per-variable
+save/restore; use `tests/support/env.ts`:
 
 - `withEnv(values, body)` — snapshot, replace and restore the named variables
   (`undefined` deletes one for the duration).

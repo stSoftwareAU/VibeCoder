@@ -132,10 +132,11 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   // Issue #505: the in-flight cap frees on a later cycle.
   "self-schedule-refused": "self",
   // Already in front of a human on the issue itself.
-  "dependency-cycle-escalated": "human",
-  "dead-label-tracker-escalated": "human",
   "human-pr-blocked-escalated": "human",
-  "self-schedule-escalated": "human",
+  // Issue #4298: the worker strips a tracker's dead label and closes a
+  // diagnostic a merged PR resolved; neither issue is work again.
+  "dead-label-tracker-stripped": "permanent",
+  "self-schedule-resolved": "permanent",
   // Issue #1475: only an operator granting the `workflow` scope lifts it.
   "workflow-scope-missing": "permanent",
 };

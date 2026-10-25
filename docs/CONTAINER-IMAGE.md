@@ -64,15 +64,15 @@ does not honour `DO_NOT_TRACK`, so telemetry needs its own switch, and the
 binary honours that one. The second asks for RTK's daily missing-hook warning
 to stay off stderr — noise in a container where the hook reaches the agent CLI
 through an explicit `--settings` path rather than the CLI's own user settings
-file — but v0.49.0 reads no such variable: the warning is throttled by a stamp
-file under RTK's data dir, so the setting is declared and inert until a release
-honours it. Setting both before the install keeps the fragment's own
+file. v0.49.0 read no such variable (it throttled the warning by a stamp file
+under RTK's data dir); the 1.0.1 binary the image now pins does reference
+it. Setting both before the install keeps the fragment's own
 `rtk --version` probe quiet too.
 
 `floci` is the one fragment whose binary is copied out of a container image
 rather than downloaded (Issue #3367, parent #3346): floci publishes no
 standalone release binary, so the Containerfile declares `ARG
-FLOCI_IMAGE=docker.io/floci/floci:2.2.0@sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520`,
+FLOCI_IMAGE=docker.io/floci/floci:2.3.0@sha256:e0b292df4dc9559b7b1bf4f51bdda4bb8e269276236438cd03cae661260ea8a9`,
 adds a `FROM ${FLOCI_IMAGE}
 AS floci` stage, and `COPY --from=floci /app/application
 /tmp/floci-application` pulls that image's native Quarkus binary — which links
@@ -81,7 +81,7 @@ sha256 recorded in `container/tools.json`, installs it to
 `/usr/local/lib/floci/application`, and writes a `/usr/local/bin/floci`
 wrapper, because the native binary has no `--version` flag of its own —
 passing one would start the server instead of reporting a version — so the
-wrapper answers `--version` with `floci 2.2.0` itself and execs straight
+wrapper answers `--version` with `floci 2.3.0` itself and execs straight
 through for every other invocation. The build then runs a bounded smoke
 check: start floci in the background bound to `127.0.0.1`, `curl --retry …
 --retry-connrefused` against `http://127.0.0.1:4566/`, log the HTTP status,

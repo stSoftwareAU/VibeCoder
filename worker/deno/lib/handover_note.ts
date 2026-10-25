@@ -184,16 +184,80 @@ function buildAttemptLine(
 }
 
 /**
- * Every attempt line a note records, newest first, in the order written.
+ * Every attempt a note records, newest first, in the order written.
  *
  * The line format is the note's only parsed structure, so a later claim can
  * see that earlier runs were interrupted without re-reading the whole file.
+ * `deno fmt` wraps a long item onto indented continuations (Issue #4129);
+ * those continuations belong to the same attempt.
  */
 export function extractAttemptLines(note: string): string[] {
-  return note.split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^- \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z — /.test(line))
-    .map((line) => line.slice(2).trim());
+  const lines = note.split("\n");
+  const attempts: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (!/^- \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z — /.test(line)) continue;
+    let text = line.slice(2).trim();
+    while (/^ {2}\S/.test(lines[i + 1] ?? "")) {
+      i++;
+      text += ` ${lines[i]!.trim()}`;
+    }
+    attempts.push(text);
+  }
+  return attempts;
+}
+
+/**
+ * Width `deno fmt` wraps prose and list items to. The note is committed under
+ * `docs/archive/handover/`, and a repository whose gate runs `deno fmt
+ * --check` rejects a wider line (Issue #4129). Wrapping here means the file
+ * is already clean when it is written.
+ */
+const HANDOVER_LINE_WIDTH = 80;
+
+/**
+ * Greedy word wrap, matching `deno fmt`'s prose width.
+ *
+ * The first line takes `firstPrefix` and each continuation takes
+ * `nextPrefix`. A single word longer than the width stays intact: the
+ * formatter does not split a path or a code span.
+ */
+function wrapPrefixed(
+  text: string,
+  firstPrefix: string,
+  nextPrefix: string,
+): string[] {
+  // A code span is one word even when it contains spaces: `deno fmt` will not
+  // break inside the backticks.
+  const words = [...text.matchAll(/`[^`]*`|\S+/g)].map((match) => match[0]);
+  if (words.length === 0) return [];
+  const lines: string[] = [];
+  let current = firstPrefix;
+  let prefix = firstPrefix;
+  for (const word of words) {
+    const next = current === prefix
+      ? `${current}${word}`
+      : `${current} ${word}`;
+    if (current !== prefix && next.length > HANDOVER_LINE_WIDTH) {
+      lines.push(current);
+      prefix = nextPrefix;
+      current = `${nextPrefix}${word}`;
+      continue;
+    }
+    current = next;
+  }
+  lines.push(current);
+  return lines;
+}
+
+/** A paragraph, wrapped, with no trailing blank line. */
+function wrapProse(text: string): string[] {
+  return wrapPrefixed(text, "", "");
+}
+
+/** One Markdown list item. Continuations are indented two spaces. */
+function wrapListItem(text: string): string[] {
+  return wrapPrefixed(text, "- ", "  ");
 }
 
 /** Render the note a later claim (or a human) reads. */
@@ -209,121 +273,118 @@ export function buildHandoverNote(facts: HandoverFacts): string {
     MAX_PRIOR_ATTEMPTS,
   );
 
-  const lines: string[] = [
+  const lines: string[] = [];
+  const pushProse = (text: string) => {
+    lines.push(...wrapProse(text), "");
+  };
+  const pushItem = (text: string) => {
+    lines.push(...wrapListItem(text));
+  };
+
+  lines.push(
     `# Handover — issue #${facts.issueNumber}`,
     "",
     HANDOVER_MARKER,
     "",
-    "An earlier run working this issue was interrupted before it finished.",
-    "The worker wrote this note — not the agent — so any host and any tooling",
-    "can pick the work up from this branch. It carries nothing tied to one",
-    "host, one conversation or one agent provider.",
-    "",
-    "## This attempt",
-    "",
-    `- ${buildAttemptLine(facts, facts.dirtyFiles === null ? null : files)}`,
-    `- Branch: \`${defuseLiquid(facts.branch)}\``,
-    `- Wind-down notice: ${
+  );
+  pushProse(
+    "An earlier run working this issue was interrupted before it finished. " +
+      "The worker wrote this note — not the agent — so any host and any " +
+      "tooling can pick the work up from this branch. It carries nothing " +
+      "tied to one host, one conversation or one agent provider.",
+  );
+  lines.push("## This attempt", "");
+  pushItem(buildAttemptLine(facts, facts.dirtyFiles === null ? null : files));
+  pushItem(`Branch: \`${defuseLiquid(facts.branch)}\``);
+  pushItem(
+    `Wind-down notice: ${
       facts.windDownNoticeDelivered
         ? "delivered — the run was warned it was running out of budget"
         : "not delivered — the interruption arrived without warning"
     }`,
-    "",
-    "## What was done",
-    "",
-  ];
+  );
+  lines.push("", "## What was done", "");
 
   if (commits.length > 0) {
-    lines.push("Commits this run added to the branch, newest first:", "");
+    pushProse("Commits this run added to the branch, newest first:");
     for (const subject of commits) {
-      lines.push(`- ${defuseLiquid(stripNonPortable(subject))}`);
+      pushItem(defuseLiquid(stripNonPortable(subject)));
     }
     lines.push("");
   } else if (facts.wipCommitSubjects === null) {
     // Never write "no commits" from a failed `git log` — an unreadable log is
     // not a fact about the run, and this note is a permanent record.
-    lines.push(
-      "The commit log could not be read at the interruption, so what this run",
-      "committed is unknown here — read `git log` on this branch.",
-      "",
+    pushProse(
+      "The commit log could not be read at the interruption, so what this " +
+        "run committed is unknown here — read `git log` on this branch.",
     );
   } else {
-    lines.push(
+    pushProse(
       "No commit was recorded for this run beyond the preservation below.",
-      "",
     );
   }
 
   if (listed.length > 0) {
-    lines.push(
-      "Files the run left uncommitted, preserved onto this branch by the",
-      "same interruption:",
-      "",
+    pushProse(
+      "Files the run left uncommitted, preserved onto this branch by the " +
+        "same interruption:",
     );
-    for (const file of listed) lines.push(`- \`${defuseLiquid(file)}\``);
+    for (const file of listed) pushItem(`\`${defuseLiquid(file)}\``);
     const unlisted = files.length - listed.length;
-    if (unlisted > 0) lines.push(`- …and ${unlisted} more file(s)`);
+    if (unlisted > 0) pushItem(`…and ${unlisted} more file(s)`);
     lines.push("");
   } else if (facts.dirtyFiles === null) {
-    lines.push(
-      "The working tree could not be inspected at the interruption, so",
-      "whether anything was left uncommitted is unknown here — run",
-      "`git status` on this branch.",
-      "",
+    pushProse(
+      "The working tree could not be inspected at the interruption, so " +
+        "whether anything was left uncommitted is unknown here — run " +
+        "`git status` on this branch.",
     );
   } else {
-    lines.push(
-      "The working tree was clean at the interruption — the work above is",
-      "already committed on this branch.",
-      "",
+    pushProse(
+      "The working tree was clean at the interruption — the work above is " +
+        "already committed on this branch.",
     );
   }
   if (dropped > 0) {
-    lines.push(
+    pushProse(
       `${dropped} path(s) were omitted because they were not repo-relative.`,
-      "",
     );
   }
 
-  lines.push(
-    "## What remains",
-    "",
+  lines.push("## What remains", "");
+  pushProse(
     `The run was interrupted after ${facts.elapsedSeconds}s, so it never ` +
       "reported completion: whatever the issue still asks for beyond the " +
       "changes above is outstanding.",
-    "",
+  );
+  pushProse(
     `Diff \`${defuseLiquid(facts.branch)}\` against its base branch to see ` +
       `the ${countOrUnknown(facts.wipCommitSubjects)} commit(s) and ${
         countOrUnknown(facts.dirtyFiles === null ? null : files)
-      } preserved ` +
-      "file(s) named above, continue from them, and do not revert them " +
-      "unless they are wrong.",
-    "",
-    // Issue #2142: a resumed run continued the diff, finished, passed the
-    // quality gate and was permanently failed at completion for a summary it
-    // never wrote — nothing had told it the code is not the whole deliverable.
+      } preserved file(s) named above, continue from them, and do not ` +
+      "revert them unless they are wrong.",
+  );
+  // Issue #2142: a resumed run continued the diff, finished, passed the
+  // quality gate and was permanently failed at completion for a summary it
+  // never wrote — nothing had told it the code is not the whole deliverable.
+  pushProse(
     "The closing deliverables are outstanding too unless the list above " +
       "names them: completion reads " +
       `\`docs/archive/pr-summaries/pr-summary-${facts.issueNumber}.md\` — ` +
       "with its `## Acceptance Criteria` closure block when the issue " +
       "states criteria — and a run that finishes without it fails at the " +
       "gate however complete the code is.",
-    "",
-    "## Known blockers",
-    "",
-    "None were recorded. The run was stopped by the interruption named above,",
-    "not by a blocker it reported.",
-    "",
+  );
+  lines.push("## Known blockers", "");
+  pushProse(
+    "None were recorded. The run was stopped by the interruption named " +
+      "above, not by a blocker it reported.",
   );
 
   if (priorAttempts.length > 0) {
-    lines.push(
-      "## Previous attempts",
-      "",
-      "Earlier runs on this issue were interrupted too:",
-      "",
-    );
-    for (const attempt of priorAttempts) lines.push(`- ${attempt}`);
+    lines.push("## Previous attempts", "");
+    pushProse("Earlier runs on this issue were interrupted too:");
+    for (const attempt of priorAttempts) pushItem(attempt);
     lines.push("");
   }
 

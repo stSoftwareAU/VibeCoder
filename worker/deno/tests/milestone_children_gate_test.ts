@@ -6,15 +6,19 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  abandonOrphanBoundPr,
   decideSummaryPrMerge,
+  describeClosedRoute,
   fetchOpenMilestoneChildren,
-  holdOrphanBoundPr,
   isMilestoneBranch,
   OPEN_CHILDREN_BLOCK_MARKER,
   postOpenChildrenBlockComment,
   renderOpenChildrenBlockComment,
-  renderRouteClosedHoldComment,
 } from "../lib/milestone_children_gate.ts";
+import type {
+  AbandonRestartOutcome,
+  AbandonRestartRequest,
+} from "../lib/conflict_abandon_restart.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
 
 /**
@@ -879,17 +883,89 @@ Deno.test("decideMilestoneBaseMerge - an ordinary child resolves its own head wh
   if (d.decision === "defer") assertEquals(d.reason, "milestone-behind");
 });
 
-Deno.test("holdOrphanBoundPr - a failed hold comment is logged, does not throw, and the disarm is still issued (Issue #3433)", async () => {
+Deno.test("abandonOrphanBoundPr - disarms, then closes the PR and redoes its issue with the closed route as the reason (Issue #4304)", async () => {
+  const calls: string[][] = [];
+  const requests: AbandonRestartRequest[] = [];
+  await abandonOrphanBoundPr({
+    repo: "o/r",
+    prNumber: 9,
+    headRefName: "issue-5-x",
+    gate: {
+      decision: "block",
+      reason: "rollup-merged",
+      milestoneBranch: "milestone/x",
+      rollupPrNumber: 41,
+      detail: "rollup merged",
+    },
+    ghCommandFn: (args) => {
+      calls.push(args);
+      return Promise.resolve(args[0] === "api" ? "[]" : "");
+    },
+    log: () => {},
+    authorOptions: { fleetAuthors: ["bot"] },
+    abandon: (request) => {
+      requests.push(request);
+      const outcome: AbandonRestartOutcome = {
+        outcome: "abandoned",
+        issueNumber: 5,
+        label: { kept: "work-on" },
+      };
+      return Promise.resolve(outcome);
+    },
+  });
+  assertEquals(
+    calls.filter((c) => c.includes("--disable-auto")).length,
+    1,
+  );
+  // Never moved to the default branch, and no hold comment of its own: the
+  // abandon carries the explanation.
+  assertEquals(calls.filter((c) => c[0] === "pr" && c[1] === "edit"), []);
+  assertEquals(calls.filter((c) => c[0] === "pr" && c[1] === "comment"), []);
+  assertEquals(requests.length, 1);
+  assertEquals(requests[0]!.branchName, "issue-5-x");
+  assertEquals(requests[0]!.baseBranch, "milestone/x");
+  const reason = requests[0]!.reason;
+  assertEquals(reason?.kind, "stalled");
+  if (reason?.kind === "stalled") {
+    assertEquals(reason.tried, "route-closed-hold");
+    assertStringIncludes(reason.detail, "rollup PR #41");
+  }
+});
+
+Deno.test("abandonOrphanBoundPr - a failed abandon is logged, does not throw, and the disarm is still issued (Issue #4304)", async () => {
   const calls: string[][] = [];
   const logs: string[] = [];
-  const ghCommandFn = (args: string[]): Promise<string> => {
-    calls.push(args);
-    if (args[0] === "pr" && args[1] === "comment") {
-      return Promise.reject(new Error("comment refused"));
-    }
-    return Promise.resolve(args[0] === "api" ? "[]" : "");
-  };
-  await holdOrphanBoundPr({
+  await abandonOrphanBoundPr({
+    repo: "o/r",
+    prNumber: 9,
+    headRefName: "issue-5-x",
+    gate: {
+      decision: "block",
+      reason: "milestone-closed",
+      milestoneBranch: "milestone/x",
+      detail: "milestone closed",
+    } as never,
+    ghCommandFn: (args) => {
+      calls.push(args);
+      return Promise.resolve(args[0] === "api" ? "[]" : "");
+    },
+    log: (m) => logs.push(m),
+    authorOptions: { fleetAuthors: ["bot"] },
+    abandon: () => Promise.reject(new Error("abandon refused")),
+  });
+  assertEquals(
+    calls.filter((c) => c.includes("--disable-auto")).length,
+    1,
+  );
+  assertEquals(
+    logs.some((l) => l.includes("o/r#9") && l.includes("abandon refused")),
+    true,
+  );
+});
+
+Deno.test("abandonOrphanBoundPr - reads the head branch when the caller has none (Issue #4304)", async () => {
+  const requests: AbandonRestartRequest[] = [];
+  await abandonOrphanBoundPr({
     repo: "o/r",
     prNumber: 9,
     gate: {
@@ -898,33 +974,28 @@ Deno.test("holdOrphanBoundPr - a failed hold comment is logged, does not throw, 
       milestoneBranch: "milestone/x",
       detail: "milestone closed",
     } as never,
-    ghCommandFn,
-    log: (m) => logs.push(m),
+    ghCommandFn: (args) =>
+      Promise.resolve(
+        args[0] === "pr" && args[1] === "view" ? "issue-7-y\n" : "",
+      ),
+    log: () => {},
     authorOptions: { fleetAuthors: ["bot"] },
+    abandon: (request) => {
+      requests.push(request);
+      return Promise.resolve(
+        { outcome: "closed-without-issue", reason: "no-match" } as never,
+      );
+    },
   });
-  assertEquals(
-    calls.filter((c) => c.includes("--disable-auto")).length,
-    1,
-  );
-  assertEquals(
-    calls.filter((c) => c[0] === "pr" && c[1] === "comment").length,
-    1,
-  );
-  assertEquals(
-    logs.some((l) =>
-      l.includes("could not post the hold comment on o/r#9") &&
-      l.includes("comment refused")
-    ),
-    true,
-  );
+  assertEquals(requests.map((r) => r.branchName), ["issue-7-y"]);
 });
 
-Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the rollup PR or milestone it names (Issue #3501)", () => {
-  // The comment is posted in the target repo, where GitHub autolinks a bare
+Deno.test("describeClosedRoute - carries no bare #N apart from the rollup PR or milestone it names (Issue #3501)", () => {
+  // The reason is posted in the target repo, where GitHub autolinks a bare
   // `#N` to that repo's own issue — a VibeCoder issue number would point at
   // an unrelated one.
   const cases: Array<{
-    gate: Parameters<typeof renderRouteClosedHoldComment>[0];
+    gate: Parameters<typeof describeClosedRoute>[0];
     expected: string[];
   }> = [
     {
@@ -959,16 +1030,16 @@ Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the roll
   ];
   for (const { gate, expected } of cases) {
     assertEquals(
-      renderRouteClosedHoldComment(gate, "o/r").match(/#\d+/g) ?? [],
+      describeClosedRoute(gate, "o/r").match(/#\d+/g) ?? [],
       expected,
     );
   }
 });
 
-Deno.test("renderRouteClosedHoldComment - names a closed milestone by title and links its page, never as #N (Issue #3673)", () => {
+Deno.test("describeClosedRoute - names a closed milestone by title and links its page, never as #N (Issue #3673)", () => {
   // inertCodeSpan pads the title inside its fence, so the span reads
   // `` ` Clean up ` `` in the rendered Markdown.
-  const linked = renderRouteClosedHoldComment({
+  const linked = describeClosedRoute({
     decision: "block",
     reason: "milestone-closed",
     milestoneBranch: "milestone/clean-up",
@@ -982,7 +1053,7 @@ Deno.test("renderRouteClosedHoldComment - names a closed milestone by title and 
   );
   assertEquals(linked.includes("#7"), false);
 
-  const titleOnly = renderRouteClosedHoldComment({
+  const titleOnly = describeClosedRoute({
     decision: "block",
     reason: "milestone-closed",
     milestoneBranch: "milestone/clean-up",
@@ -995,7 +1066,7 @@ Deno.test("renderRouteClosedHoldComment - names a closed milestone by title and 
   );
   assertEquals(titleOnly.includes("](https://"), false);
 
-  const hostile = renderRouteClosedHoldComment({
+  const hostile = describeClosedRoute({
     decision: "block",
     reason: "milestone-closed",
     milestoneBranch: "milestone/release",
@@ -1008,7 +1079,7 @@ Deno.test("renderRouteClosedHoldComment - names a closed milestone by title and 
     "[` Release #5 `](https://github.com/o/r/milestone/7)",
   );
 
-  const untitled = renderRouteClosedHoldComment({
+  const untitled = describeClosedRoute({
     decision: "block",
     reason: "milestone-closed",
     milestoneBranch: "milestone/clean-up",
@@ -1020,15 +1091,12 @@ Deno.test("renderRouteClosedHoldComment - names a closed milestone by title and 
   assertEquals(untitled.includes("](https://"), false);
 });
 
-Deno.test("holdOrphanBoundPr - the posted hold comment links the closed milestone in the PR's own repo (Issue #3673)", async () => {
-  const calls: string[][] = [];
-  const ghCommandFn = (args: string[]): Promise<string> => {
-    calls.push(args);
-    return Promise.resolve(args[0] === "api" ? "[]" : "");
-  };
-  await holdOrphanBoundPr({
+Deno.test("abandonOrphanBoundPr - the abandon reason links the closed milestone in the PR's own repo (Issue #3673)", async () => {
+  const requests: AbandonRestartRequest[] = [];
+  await abandonOrphanBoundPr({
     repo: "o/r",
     prNumber: 9,
+    headRefName: "issue-5-x",
     gate: {
       decision: "block",
       reason: "milestone-closed",
@@ -1037,12 +1105,19 @@ Deno.test("holdOrphanBoundPr - the posted hold comment links the closed mileston
       milestoneTitle: "Clean up",
       detail: 'milestone "Clean up" is closed',
     },
-    ghCommandFn,
+    ghCommandFn: (args) => Promise.resolve(args[0] === "api" ? "[]" : ""),
     log: () => {},
     authorOptions: { fleetAuthors: ["bot"] },
+    abandon: (request) => {
+      requests.push(request);
+      return Promise.resolve(
+        { outcome: "closed-without-issue", reason: "no-match" } as never,
+      );
+    },
   });
-  const comment = calls.find((c) => c[0] === "pr" && c[1] === "comment") ?? [];
-  assertEquals(comment.length > 0, true);
-  const body = comment[comment.indexOf("--body") + 1] ?? "";
-  assertStringIncludes(body, "(https://github.com/o/r/milestone/7)");
+  const reason = requests[0]?.reason;
+  assertEquals(reason?.kind, "stalled");
+  if (reason?.kind === "stalled") {
+    assertStringIncludes(reason.detail, "(https://github.com/o/r/milestone/7)");
+  }
 });

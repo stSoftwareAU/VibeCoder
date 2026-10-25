@@ -14,8 +14,9 @@
  * security-fix gate (#1575) and the PR-summary rule gates (#2189): the first
  * block in a run gets one extra agent turn — resuming the same session with
  * the gate's own failure message as the prompt — then one re-run of
- * completion. A second block in the same run fails exactly as before, with
- * the label and comment now applied.
+ * completion. If the evidence is still missing, or the turn does not finish,
+ * the pull request is still raised and the miss is left for the reviewer.
+ * No needs-screenshot label is added (Issue #4234).
  *
  * Australian English throughout.
  */
@@ -27,7 +28,7 @@ import {
   recordClaudeRunStats,
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { LABEL_DEFAULTS, OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 
 /** The screenshot gate's verdict for this run — its failure message. */
@@ -39,40 +40,6 @@ export interface ScreenshotGateBlock {
 /** The phase-failure reason the screenshot gate reports (unchanged text). */
 export const SCREENSHOT_EVIDENCE_MISSING_REASON =
   "Screenshot evidence missing for UI-related change";
-
-/**
- * Apply the screenshot gate's failure path: label, comment, fail.
- *
- * This is what the gate did unconditionally before Issue #2960; now it is
- * reached only after the one extra agent turn has already been tried (or
- * could not be).
- */
-export async function applyScreenshotGateFailure(
-  ctx: IssueContext,
-  deps: WorkerDeps,
-  failureMessage: string,
-): Promise<PhaseResult> {
-  const { repo, issueNumber } = ctx;
-  const logger = deps.logger;
-  const needsScreenshotLabel = LABEL_DEFAULTS.needsScreenshotLabel;
-
-  await deps.github.ensureLabelExists(
-    repo,
-    needsScreenshotLabel,
-    "d93f0b",
-    "Previous attempt was blocked for missing screenshot evidence",
-  );
-
-  const client = deps.github.createClient(logger);
-  await client.addLabel(repo, issueNumber, needsScreenshotLabel);
-  await client.postComment(repo, issueNumber, failureMessage);
-
-  return {
-    category: "evidence_missing",
-    status: "failure",
-    reason: SCREENSHOT_EVIDENCE_MISSING_REASON,
-  };
-}
 
 /**
  * Recover from a screenshot gate block inside the run (Issue #2960).
@@ -149,40 +116,40 @@ export async function recoverFromScreenshotGateBlock(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
         `help — ${
           err instanceof Error ? err.message : String(err)
-        }; failing as before (Issue #2960)`,
+        }; the pull request is still raised (Issue #4234)`,
       { repo, issueNumber },
     );
-    return await applyScreenshotGateFailure(ctx, deps, block.failureMessage);
+    return await rerunCompletion();
   }
 
   if (!retryResult.ok) {
     logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
-        `help — ${retryResult.error.message}; failing as before ` +
-        `(Issue #2960)`,
+        `help — ${retryResult.error.message}; the pull request is still raised ` +
+        `(Issue #4234)`,
       { repo, issueNumber },
     );
-    return await applyScreenshotGateFailure(ctx, deps, block.failureMessage);
+    return await rerunCompletion();
   }
 
   const { value } = retryResult;
   if (value.timedOut === true) {
     logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
-        `help — timed out after ${timeoutSeconds}s; failing as before ` +
-        `(Issue #2960)`,
+        `help — timed out after ${timeoutSeconds}s; the pull request is still raised ` +
+        `(Issue #4234)`,
       { repo, issueNumber },
     );
-    return await applyScreenshotGateFailure(ctx, deps, block.failureMessage);
+    return await rerunCompletion();
   }
   if (value.exitCode !== 0) {
     logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
-        `help — exited with code ${value.exitCode}; failing as before ` +
-        `(Issue #2960)`,
+        `help — exited with code ${value.exitCode}; the pull request is still raised ` +
+        `(Issue #4234)`,
       { repo, issueNumber },
     );
-    return await applyScreenshotGateFailure(ctx, deps, block.failureMessage);
+    return await rerunCompletion();
   }
 
   recordClaudeRunStats(state, value);

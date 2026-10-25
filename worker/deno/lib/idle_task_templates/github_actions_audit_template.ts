@@ -79,6 +79,11 @@
  *     `gitleaks_drift_scanner.ts`. It runs straight after the
  *     milestone-branch-filter pre-filer so the branch gap is never filed
  *     twice.
+ *   - **Native semgrep-token drift pre-filer (Issue #4341).** A per-repo
+ *     `semgrep` copy from the old template passes `SEMGREP_APP_TOKEN` to
+ *     `semgrep ci --config`, which exits fatally; the presence-only spec
+ *     never notices. Each such file becomes a `severity:medium` issue via
+ *     `semgrep_token_drift_scanner.ts`.
  *   - **Observed gitleaks coverage (Issue #601, part of #566).** Presence
  *     is not execution: a committed workflow never runs when Actions are
  *     disabled, the workflow is disabled in the UI, its branch filter
@@ -185,6 +190,10 @@ import {
   type GitleaksDriftFinding,
   scanGitleaksDrift,
 } from "../gitleaks_drift_scanner.ts";
+import {
+  scanSemgrepTokenDrift,
+  type SemgrepTokenDriftFinding,
+} from "../semgrep_token_drift_scanner.ts";
 import {
   type GitleaksPrCoverageFinding,
   scanGitleaksPrCoverage,
@@ -1317,6 +1326,36 @@ export function createGitHubActionsAuditTemplate(
           { knownOpenFindingIds: seenIds },
         );
         for (const finding of gitleaksFindings) {
+          if (seenIds.has(finding.findingId)) continue;
+          const filed = await fileWorkflowFinding({
+            repo: opts.repo,
+            findingId: finding.findingId,
+            severity: finding.severity,
+            title: finding.title,
+            file: finding.file,
+            lines: finding.lines,
+            whyItMatters: finding.whyItMatters,
+            suggestedFix: finding.suggestedFix,
+            evidence: finding.evidence,
+            template: NAME,
+            runId,
+            ghCommandFn,
+          });
+          if (filed !== null) {
+            preFiled.push(filed.findingId);
+            seenIds.add(filed.findingId);
+          }
+        }
+
+        // 5h2b. Native semgrep-token drift pre-filer (Issue #4341). The
+        //      `semgrep` spec detects presence only, so a copy pushed from
+        //      the old template — which passed `SEMGREP_APP_TOKEN` to
+        //      `semgrep ci --config` — stays "covered" while failing on
+        //      every PR once the owner sets the secret. Report each such
+        //      copy; the fix rides a normal per-repo worker PR (#3239).
+        const semgrepFindings: SemgrepTokenDriftFinding[] =
+          scanSemgrepTokenDrift(files, { knownOpenFindingIds: seenIds });
+        for (const finding of semgrepFindings) {
           if (seenIds.has(finding.findingId)) continue;
           const filed = await fileWorkflowFinding({
             repo: opts.repo,

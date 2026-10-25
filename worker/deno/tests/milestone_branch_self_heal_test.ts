@@ -67,9 +67,12 @@ interface StubHarness {
   calls: string[][];
   ensureCalls: { repo: string; branch: string; defaultBranch: string }[];
   comments: { pr: number; body: string }[];
-  logs: string[];
+  logs: LoggedLine[];
   deps: MilestoneSelfHealDeps;
 }
+
+/** A log line and the level the call site passed (Issue #4176). */
+type LoggedLine = { message: string; level: string };
 
 const REPO = "owner/repo";
 /** The fleet login the harness writes its own marker comments as. */
@@ -86,7 +89,7 @@ function makeHarness(
   const ensureCalls: { repo: string; branch: string; defaultBranch: string }[] =
     [];
   const comments: { pr: number; body: string }[] = [];
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const ghCommandFn = (args: string[]): Promise<string> => {
     calls.push([...args]);
@@ -219,7 +222,9 @@ function makeHarness(
       return Promise.resolve(result);
     },
     dedupAuthors: { fleetAuthors: [FLEET_LOGIN] },
-    log: (message: string) => logs.push(message),
+    log: (message: string, level?: string) => {
+      logs.push({ message, level: level ?? "info" });
+    },
   };
 
   return { ghCommandFn, calls, ensureCalls, comments, logs, deps };
@@ -374,9 +379,9 @@ Deno.test("selfHealMilestoneBranches - counts a failed branch recreation and doe
   assertEquals(result.value.failures, 1);
   assert(
     harness.logs.some((l) =>
-      l.includes("WARNING") && l.includes("branch protection")
+      l.level === "warn" && l.message.includes("branch protection")
     ),
-    `expected a loud warning, got: ${harness.logs.join(" | ")}`,
+    `expected a warn, got: ${harness.logs.map((l) => l.message).join(" | ")}`,
   );
 });
 
@@ -394,7 +399,11 @@ Deno.test("selfHealMilestoneBranches - fails loud when the open-children count c
   assert(result.ok);
   assertEquals(result.value.branchesRecreated, 0);
   assertEquals(result.value.failures, 1);
-  assert(harness.logs.some((l) => l.includes("WARNING")));
+  assert(
+    harness.logs.some((l) =>
+      l.level === "warn" && l.message.includes("(Issue #3912)")
+    ),
+  );
 });
 
 Deno.test("selfHealMilestoneBranches - skips a repo with no local clone", async () => {
@@ -410,7 +419,7 @@ Deno.test("selfHealMilestoneBranches - skips a repo with no local clone", async 
 
   assert(result.ok);
   assertEquals(harness.ensureCalls.length, 0);
-  assert(harness.logs.some((l) => l.includes("no local clone")));
+  assert(harness.logs.some((l) => l.message.includes("no local clone")));
 });
 
 // ---------------------------------------------------------------------------
@@ -548,7 +557,11 @@ Deno.test("selfHealMilestoneBranches - does not retarget when existing comments 
   assert(result.ok);
   assertEquals(result.value.prsRetargeted, 0);
   assertEquals(world.prs[0]!.baseRefName, "main");
-  assert(harness.logs.some((l) => l.includes("WARNING")));
+  assert(
+    harness.logs.some((l) =>
+      l.level === "warn" && l.message.includes("could not read comments")
+    ),
+  );
 });
 
 Deno.test("selfHealMilestoneBranches - retargets a PR onto a branch it has just recreated", async () => {
@@ -628,8 +641,10 @@ Deno.test("selfHealMilestoneBranches - never retargets the milestone's own deliv
   assertEquals(world.prs[1]!.baseRefName, MILESTONE_53_BRANCH);
   assertEquals(harness.comments.filter((c) => c.pr === 4354).length, 0);
   assert(
-    !harness.logs.some((l) => l.includes("Failed to retarget PR #4354")),
-    harness.logs.join("\n"),
+    !harness.logs.some((l) =>
+      l.message.includes("Failed to retarget PR #4354")
+    ),
+    harness.logs.map((l) => l.message).join("\n"),
   );
 });
 
@@ -709,12 +724,15 @@ Deno.test("selfHealMilestoneBranches - a repository-level refusal files one diag
     assertEquals(api.filings[0]?.issueNumber, 77);
     assertEquals(api.filings[0]?.familyId, "milestone-branch-refused");
     assertEquals(
-      harness.logs.filter((l) => l.includes("Filing one diagnostic")).length,
+      harness.logs.filter((l) => l.message.includes("Filing one diagnostic"))
+        .length,
       1,
       "the remedy is said once",
     );
     assertEquals(
-      harness.logs.filter((l) => l.includes("Not retrying milestone branch"))
+      harness.logs.filter((l) =>
+        l.message.includes("Not retrying milestone branch")
+      )
         .length,
       1,
       "the second cycle says why it did not push",
@@ -748,8 +766,8 @@ Deno.test("selfHealMilestoneBranches - an existing fleet-authored diagnostic is 
     assertEquals(api.creates.length, 0, "no second diagnostic");
     assertEquals(api.filings.length, 0);
     assert(
-      harness.logs.some((l) => l.includes("filing: exists:#12")),
-      harness.logs.join(" | "),
+      harness.logs.some((l) => l.message.includes("filing: exists:#12")),
+      harness.logs.map((l) => l.message).join(" | "),
     );
   } finally {
     resetRepoLevelRejectionsForTest();
@@ -839,8 +857,9 @@ Deno.test("selfHealMilestoneBranches - never retargets a PR a human raised, even
   );
   assert(
     harness.logs.some((l) =>
-      l.includes("#4000") && l.includes("not raised by the fleet") &&
-      l.includes("maintainer")
+      l.message.includes("#4000") &&
+      l.message.includes("not raised by the fleet") &&
+      l.message.includes("maintainer")
     ),
     "the decision is logged once",
   );
@@ -899,7 +918,7 @@ Deno.test("selfHealMilestoneBranches - an unresolved fleet identity retargets no
   assertEquals(result.value.prsRetargeted, 0);
   assertEquals(world.prs[0]!.baseRefName, "main");
   assert(
-    harness.logs.some((l) => l.includes("Fleet identity unresolved")),
+    harness.logs.some((l) => l.message.includes("Fleet identity unresolved")),
     "the refusal names its cause",
   );
 });
@@ -924,7 +943,7 @@ Deno.test("selfHealMilestoneBranches - a merge dry run that would conflict refus
   assertEquals(world.prs[0]!.baseRefName, "main");
   assertEquals(harness.comments.length, 0);
   assertEquals(asked, [`${MILESTONE_53_BRANCH}<-issue-4004-x`]);
-  assert(harness.logs.some((l) => l.includes("would conflict")));
+  assert(harness.logs.some((l) => l.message.includes("would conflict")));
 });
 
 Deno.test("selfHealMilestoneBranches - a merge dry run that cannot answer allows the retarget, and says so (Issue #2022)", async () => {
@@ -940,7 +959,7 @@ Deno.test("selfHealMilestoneBranches - a merge dry run that cannot answer allows
   assert(result.ok);
   assertEquals(result.value.prsRetargeted, 1);
   assertEquals(world.prs[0]!.baseRefName, MILESTONE_53_BRANCH);
-  assert(harness.logs.some((l) => l.includes("could not be read")));
+  assert(harness.logs.some((l) => l.message.includes("could not be read")));
 });
 
 Deno.test("isFleetRaisedPr - both signals required, head must be a safe positional (Issue #2022)", () => {

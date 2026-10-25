@@ -12,7 +12,6 @@
 import type { RunFailureClassification } from "./run_outcome_classifier.ts";
 import type { FailureCategory } from "./failure_diagnosis.ts";
 import type { RunOutcome, RunTermination } from "./run_outcome.ts";
-import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
 import type { SessionResumeState } from "./session_resume.ts";
@@ -28,6 +27,7 @@ import type { RtkOutputResult } from "./rtk_output.ts";
 import type { AgentRefusalOutcome } from "./haiku_refusal_retry.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
+import type { PreprReviewFinding } from "./prepr_review_record.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
 // Lost in the 1f2c10e merge into this milestone branch, leaving `deno check`
 // red on a type this file still uses (added by Issue #806).
@@ -38,9 +38,8 @@ import type {
 import type { ImageReference } from "./untrusted_image_signal.ts";
 import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 import type { SummaryRuleRunVerdict } from "./summary_rule_gate_retry.ts";
-import type { SummaryClaimCorrection } from "./summary_claim_correction.ts";
 import type { ScreenshotGateBlock } from "./screenshot_gate_retry.ts";
-import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
+import type { PostMergeReapproval } from "./reapproval_superseded_close.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -58,21 +57,6 @@ export interface IssueContext {
    * sanitiser pass, so a forged header stays distinguishable.
    */
   commentBoundaryId?: string;
-  /**
-   * The same comments with their authors attached (Issue #1263).
-   *
-   * `issueComments` above is a blob assembled for the model: every comment
-   * concatenated, untrusted ones included, with no authorship a decision can
-   * turn on. The clarity gate's round limit used to be counted out of it by
-   * substring-matching a heading, so a heading anyone could write retired a
-   * human-in-the-loop check. These rows come from the same fetch — no extra
-   * API call — and carry the one part of a comment GitHub authenticates.
-   *
-   * Absent for the label-route producers, which build no comment blob and do
-   * not run the clarity phase; a phase that needs authorship must treat that
-   * as "nothing attributable", never as "nothing to check".
-   */
-  issueCommentRows?: readonly IssueComment[];
   /**
    * Image references an **untrusted** author put in the issue body
    * (Issue #1385), observed in TypeScript before the agent saw any of it.
@@ -230,16 +214,6 @@ export interface PhaseState {
    */
   streamSession?: JoinedStream;
   /**
-   * The `--autocompact` window every agent run of this issue must carry
-   * (Issue #2337), set by the setup phase when the stream's conversation could
-   * not be verifiably compacted before the issue started.
-   *
-   * Absent — the compaction was verified, the stream session is new, or the
-   * provider exposes no such lever — no flag is passed and the CLI's default
-   * window stands.
-   */
-  autocompactTokens?: number;
-  /**
    * True when setup resumed the issue branch from a prior attempt's WIP
    * checkpoint (Issue #4170). The execute phase tells the agent prior
    * progress exists so it continues rather than restarting.
@@ -377,29 +351,32 @@ export interface PhaseState {
    * finalises it instead. The first entry triggers the in-run recovery — one
    * agent invocation carrying the gate's own remediation comment, then the
    * quality gate and the completion gates again — so a documentation
-   * shortfall no longer costs a whole run. A second entry whose block came
-   * from the claim check alone first gets the one summary-only correction
-   * turn (`summary_claim_correction.ts`, Issue #3324) rather than ending the
-   * run immediately — see `summaryClaimCorrection` below. Any other second
-   * entry on a no-PR run ends the run in `failure`, with the comment already
-   * on the thread.
+   * shortfall no longer costs a whole run. A later report does not fail the
+   * run: the pull request is raised and the findings that remain are one
+   * comment for the reviewer (Issue #4234).
    */
   summaryRuleBlocks?: SummaryRuleRunVerdict[];
   /**
-   * State for the one summary-only claim correction turn within THIS run
-   * (Issue #3324).
-   *
-   * `pending` is set when a completion attempt deferred a claim-check-only
-   * later block to the correction turn rather than reporting it immediately
-   * — the recovery turn has already been spent, so a still-blocked run would
-   * otherwise fail (or finalise an existing PR as `summary_incomplete`) over
-   * a claim the claim check only raised on this re-run. `used` means the
-   * correction turn has already been spent this run, and its findings
-   * (`findings`) are carried forward into the next claim-check result so a
-   * flaky re-run model pass cannot wave through a sentence the gate already
-   * confirmed wrong.
+   * Completion-gate findings still present after the one in-session note
+   * (Issue #4234). Posted once on the pull request for the reviewer, joined
+   * with {@link screenshotAdvisoryComment}. It never fails the run, adds a
+   * label, or disarms auto-merge.
    */
-  summaryClaimCorrection?: SummaryClaimCorrection;
+  completionAdvisoryComment?: string;
+  /**
+   * Screenshot evidence still missing after the one extra turn (Issue #4234).
+   * Recorded once, apart from the summary-gate findings, and joined with
+   * {@link completionAdvisoryComment} into the one reviewer comment.
+   */
+  screenshotAdvisoryComment?: string;
+  /**
+   * Review-style findings from the pre-PR verifier that
+   * survived the in-run recovery (Issue #4236). The summary claim check
+   * was removed (Issue #4234). The completion phase raises
+   * the pull request and posts these as a change-request record instead of
+   * failing the run. Absent when this run is not on that path.
+   */
+  preprReviewFindings?: PreprReviewFinding[];
   /**
    * The screenshot gate's verdict for THIS run (Issue #2960), when it has
    * blocked. Set by the completion phase on the first block; the in-run
@@ -409,8 +386,8 @@ export interface PhaseState {
   screenshotGateBlock?: ScreenshotGateBlock;
   /**
    * The screenshot gate's one extra agent turn (Issue #2960) has already been
-   * tried this run. Caps the recovery at once per run: a second block fails
-   * exactly as the gate reported before this issue.
+   * tried this run. A later miss is recorded once on
+   * {@link screenshotAdvisoryComment} and does not fail the run (Issue #4234).
    */
   screenshotRetryAttempted?: boolean;
   /**

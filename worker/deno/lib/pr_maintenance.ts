@@ -22,6 +22,10 @@ import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
+import {
+  commentCarriesOpenPreprReview,
+  preprReviewIsOpen,
+} from "./prepr_review_record.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
@@ -80,6 +84,7 @@ import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import {
   classifyRedChecks,
   RED_CHECK_CONCLUSIONS,
+  rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "./ci_infrastructure_rerun.ts";
 import {
@@ -285,14 +290,13 @@ export interface AutoMergeOptions extends PrScanOptions {
   ) => Promise<MergeAttemptOutcome>;
   /**
    * Handler for a merge attempt's outcome (Issue #3584). Defaults to
-   * {@link handleMergeAttempt}, which updates a stale branch and escalates
-   * a PR that cannot be landed. Injectable for testing.
+   * {@link handleMergeAttempt}, which updates a stale branch and retries
+   * a PR that cannot be landed next cycle (Issue #4304). Injectable for
+   * testing.
    */
   handleMergeAttemptFn?: (
     options: HandleMergeAttemptOptions,
   ) => Promise<MergeAttemptHandling>;
-  /** Label applied when a merge is escalated. Defaults to `needs-human`. */
-  needsHumanLabel?: string;
   /** Needs-screenshot label name. */
   needsScreenshotLabel?: string;
   /**
@@ -624,18 +628,45 @@ export async function fetchPrComments(
     : `repos/${repo}/issues/${prNumber}/comments`;
 
   try {
+    // `--paginate` is required. A busy pull request's change-request record
+    // sits past the first page of thirty, and the feedback pass must still
+    // see it (Issue #4236).
     const output = await ghCommandFn([
       "api",
+      "--paginate",
       apiPath,
       "--jq",
       '[.[] | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), eyes: (.reactions.eyes // 0), created_at: .created_at}]',
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as CommentEntry[];
+    const parsed = parseCommentPages(output);
+    return parsed ?? [];
   } catch {
     return [];
   }
+}
+
+/**
+ * Flatten what `gh api --paginate --jq` prints: one JSON array per line.
+ * A single page is one array. A page that is not JSON is unreadable, and
+ * the caller treats that as no comments for this scan.
+ */
+function parseCommentPages(output: string): CommentEntry[] | null {
+  const comments: CommentEntry[] = [];
+  const trimmed = output.trim();
+  if (trimmed === "") return [];
+  for (const line of trimmed.split("\n")) {
+    const piece = line.trim();
+    if (piece === "") continue;
+    let page: unknown;
+    try {
+      page = JSON.parse(piece);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(page)) return null;
+    comments.push(...(page as CommentEntry[]));
+  }
+  return comments;
 }
 
 /**
@@ -1190,7 +1221,20 @@ async function findActionableComment(
     const isVerifierHold = commentType === "issue" &&
       isFleetAuthor(comment.login, [...fleetAuthors]) &&
       comment.body.split(/\r?\n/, 1)[0] === PRE_PR_VERIFIER_HOLD_MARKER;
-    if (comment.login === githubUser && !isVerifierHold) continue;
+    // Issue #4236: the worker's own change-request record is the one other
+    // own-comment the scan answers. A later resolved marker on the thread
+    // means it has already been answered, so it is not actionable.
+    const isPreprReview = commentType === "issue" &&
+      isFleetAuthor(comment.login, [...fleetAuthors]) &&
+      commentCarriesOpenPreprReview(comment.body) &&
+      preprReviewIsOpen(
+        comments
+          .filter((entry) => isFleetAuthor(entry.login, [...fleetAuthors]))
+          .map((entry) => entry.body),
+      );
+    if (comment.login === githubUser && !isVerifierHold && !isPreprReview) {
+      continue;
+    }
 
     const isAuthorised = isAuthorisedCommenter(comment.login);
     const isTrustedReviewBot = commentType === "review" &&
@@ -1204,6 +1248,7 @@ async function findActionableComment(
     let hasAuthorisedThumbsUp = false;
     if (
       !isAuthorised && !isTrustedReviewBot && !isVerifierHold &&
+      !isPreprReview &&
       (comment.thumbs_up ?? 0) > 0
     ) {
       const reactors = await fetchCommentThumbsUpReactors(
@@ -1219,7 +1264,7 @@ async function findActionableComment(
 
     if (
       isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot ||
-      isVerifierHold
+      isVerifierHold || isPreprReview
     ) {
       // The comment is actionable — unless the fleet has already processed
       // it. The `eyes` marker is the worker's own, so a count is not the
@@ -1261,7 +1306,9 @@ async function findActionableComment(
         });
       }
 
-      const trustReason = isVerifierHold
+      const trustReason = isPreprReview
+        ? "worker-prepr-review"
+        : isVerifierHold
         ? "worker-verifier-hold"
         : isAuthorised
         ? "authorised"
@@ -1281,7 +1328,7 @@ async function findActionableComment(
       return {
         repo,
         prNumber,
-        commentType: commentType as CommentType,
+        commentType: (isPreprReview ? "pr_review" : commentType) as CommentType,
         commentId: String(comment.id),
         encodedBody,
         commentAuthor: comment.login,
@@ -1736,12 +1783,21 @@ export async function findFailedCiChecks(
           String(check.id),
         );
         if (retryCount >= maxRetries) {
-          logger.warn("CI check exceeded max retries — skipping", {
+          // Issue #4304: a spent check run is re-run rather than left red
+          // for a person. The fresh run has a fresh retry budget and is
+          // picked up next scan; the fleet-wide auto-fix cap bounds it.
+          logger.warn("CI check exceeded max retries — re-running it", {
             repo,
             prNumber,
             checkName: check.name,
             retries: retryCount,
             maxRetries,
+          });
+          await rerunFailedJobsOfCheck({
+            repo,
+            checkId: String(check.id),
+            ghCommandFn,
+            logger,
           });
           continue;
         }
@@ -1814,7 +1870,8 @@ export async function findFailedCiChecks(
  *
  * Every outcome is then handled loudly by {@link handleMergeAttempt}: a
  * stale branch is updated so its checks re-run, and a PR that cannot be
- * landed gets an explanatory comment plus `needs-human`.
+ * landed is logged and retried next cycle — never handed to a human
+ * (Issue #4304).
  *
  * The scan lists PRs the fleet itself authored (host login + `prAuthors`
  * — Issue #4076), so a PR from outside the fleet, including a trusted
@@ -1836,7 +1893,6 @@ export async function ensureAutoMergeOnOpenPrs(
     enableAutoMergeFn,
     directMergeFn,
     needsScreenshotLabel = "needs-screenshot",
-    needsHumanLabel = "needs-human",
     handleMergeAttemptFn = handleMergeAttempt,
     cache,
     prAuthors,
@@ -1945,20 +2001,19 @@ export async function ensureAutoMergeOnOpenPrs(
       );
 
       // Issue #3584: act on the outcome loudly — a stale branch is updated
-      // so its checks re-run, and a PR that cannot be landed gets an
-      // explanatory comment plus `needs-human`. Nothing is swallowed.
+      // so its checks re-run, and a PR that cannot be landed is logged and
+      // retried next cycle (Issue #4304). Nothing is swallowed.
       const handling = await handleMergeAttemptFn({
         repo,
         prNumber,
         outcome,
         logger,
         ghFn: ghCommandFn,
-        needsHumanLabel,
       });
 
       if (handling.disposition === "landed") {
         enabledCount++;
-      } else if (handling.disposition === "escalate") {
+      } else if (handling.disposition === "retry") {
         failedCount++;
       } else {
         skippedCount++;
@@ -2052,9 +2107,10 @@ async function closeIssueForMergedPr(
  * Try to arrange for a PR to merge, and report what happened (Issue #3584).
  *
  * Precedence: native auto-merge first; direct merge only when native
- * auto-merge is refused because the target branch is unprotected. Any
- * other result — including a thrown gh error — is a merge error, so the
- * caller escalates instead of counting a silent failure.
+ * auto-merge is refused because the target branch is unprotected, or because
+ * the repository has auto-merge switched off (Issue #4304). Any other
+ * result — including a thrown gh error — is a merge error, so the caller
+ * retries it instead of counting a silent success.
  */
 async function attemptMerge(
   repo: string,
@@ -2120,7 +2176,13 @@ async function attemptMerge(
       return { kind: "landed", merged: true };
     }
 
-    if (result.result === "not_allowed" && directMergeFn) {
+    // Issue #4304: a repository with auto-merge switched off takes the same
+    // gated direct merge as an unprotected base — it lands once it is
+    // approved and green, and nobody is asked to merge it by hand.
+    if (
+      (result.result === "not_allowed" ||
+        result.result === "not_enabled_on_repo") && directMergeFn
+    ) {
       // Issue #553: say WHY. GitHub's refusal was dropped here, so a PR that
       // merged directly looked like one where auto-merge had "randomly" not
       // been set. It is deterministic — GitHub refuses to arm auto-merge on a
