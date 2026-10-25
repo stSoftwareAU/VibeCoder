@@ -6,7 +6,7 @@
  *   - Treats the run as a successful resolution (`processed: true`).
  *   - Posts Claude's own message as the PR reply rather than the neutral
  *     "no changes" classifier message.
- *   - Surfaces `needs-human` in the run summary when requested.
+ *   - Never echoes a `needs-human` mention as a request (Issue #4304).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -285,20 +285,15 @@ Deno.test("processPrFeedback - escape hatch with same-repo follow-up posts Claud
   assertEquals(escapeLog?.context?.issueRef, "stSoftwareAU/foo#101");
 });
 
-Deno.test("processPrFeedback - escape hatch surfaces needs-human in summary log", async () => {
+Deno.test("processPrFeedback - a needs-human mention in a hand-off is never echoed as a request (Issue #4304)", async () => {
   const message = "This change is out of scope — opened follow-up issue " +
     "stSoftwareAU/foo#202. Adding `needs-human` so a person can triage.";
 
-  const { logs, result } = await runWithResponseMessage(message);
+  const { result } = await runWithResponseMessage(message);
 
   assertEquals(result.ok, true);
   if (!result.ok) return;
-  assertStringIncludes(result.value.summary, "needs-human");
-
-  const escapeLog = logs.find((l) =>
-    l.message === "PR feedback escape hatch invoked"
-  );
-  assertEquals(escapeLog?.context?.needsHuman, true);
+  assertEquals(result.value.summary.includes("needs-human"), false);
 });
 
 Deno.test("processPrFeedback - escape hatch strips a reserved label from the follow-up (Issue #2824)", async () => {
@@ -370,9 +365,9 @@ Deno.test("processPrFeedback - escape hatch strips an allowlisted cross-repo fol
   ]);
 });
 
-Deno.test("processPrFeedback - non-escape-hatch no-changes still uses neutral reply", async () => {
-  // A regular .pr_response_message that just acknowledges the comment but
-  // doesn't open a follow-up — must still go through the no-changes path.
+Deno.test("processPrFeedback - non-escape-hatch no-changes posts the agent's own reply (Issue #4304)", async () => {
+  // A regular .pr_response_message that explains why the code is already
+  // correct — that reasoned reply is the answer, not the stock text.
   const message = "I reviewed the comment and the existing code is correct.";
 
   const { captured, result } = await runWithResponseMessage(message);
@@ -381,12 +376,7 @@ Deno.test("processPrFeedback - non-escape-hatch no-changes still uses neutral re
   if (!result.ok) return;
   // Summary should NOT mention escape hatch.
   assertEquals(result.value.summary.includes("escape hatch"), false);
-  // Reply should be the neutral "could not identify a code change" message.
-  assertEquals(captured.comments.length, 1);
-  assertStringIncludes(
-    captured.comments[0]!,
-    "could not identify a code change",
-  );
+  assertEquals(captured.comments, [message]);
 });
 
 // ---------------------------------------------------------------------------

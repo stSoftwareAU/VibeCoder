@@ -31,8 +31,15 @@ import type { Result } from "../types.ts";
 import {
   type AlertDedupAuthorOptions,
   parseAuthoredCommentRows,
+  resolveAlertDedupAuthors,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import {
+  abandonAndRestart,
+  type AbandonRestartDeps,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneBranch } from "./milestone_branch_names.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
@@ -1357,37 +1364,36 @@ export async function decideMilestoneBaseMerge(
 }
 
 // ---------------------------------------------------------------------------
-// Hold an orphan-bound PR where it is (Issue #4396 gate, Issue #3433 hold)
+// Close an orphan-bound PR and redo its work (Issue #4396 gate, Issue #4304)
 // ---------------------------------------------------------------------------
 
-/**
- * Marker so the hold comment is posted once per PR. A new marker on purpose:
- * the retired retarget comment claimed the PR had been moved to the default
- * branch, which the fleet no longer does (Issue #3433).
- */
-export const ROUTE_CLOSED_HOLD_MARKER = "<!-- milestone-route-closed-hold -->";
-
-/** Options for {@link holdOrphanBoundPr}. */
-export interface HoldOrphanBoundPrOptions {
+/** Options for {@link abandonOrphanBoundPr}. */
+export interface AbandonOrphanBoundPrOptions {
   repo: string;
   prNumber: number;
+  /** The PR's head branch; read from GitHub when the caller has none. */
+  headRefName?: string;
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>;
   ghCommandFn: GhCommandFn;
   log: (message: string) => void;
-  /** Fleet identity inputs for the marker author check (Issue #1249). */
+  /** Fleet identity the abandon reads restart claims against (Issue #1247). */
   authorOptions?: AlertDedupAuthorOptions;
+  /** Abandon override (tests); defaults to {@link abandonAndRestart}. */
+  abandon?: (
+    request: AbandonRestartRequest,
+    deps: AbandonRestartDeps,
+  ) => Promise<AbandonRestartOutcome>;
 }
 
 /**
- * The comment left on the PR when it is held. It is posted in the target
- * repo, so it carries no VibeCoder issue reference — GitHub would autolink a
- * bare `#N` to an unrelated issue there (Issue #3501). The design history
- * (Issue #4396, Issue #3433) stays in these comments and the local log line.
+ * Why the PR cannot land where it is, as a clause completing "This PR …". It
+ * is posted in the target repo, so it carries no VibeCoder issue reference —
+ * GitHub would autolink a bare `#N` to an unrelated issue there (Issue #3501).
  *
  * A closed milestone is named by title and linked by URL, never as `#N`:
  * GitHub would autolink that to an unrelated issue or PR (Issue #3673).
  */
-export function renderRouteClosedHoldComment(
+export function describeClosedRoute(
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>,
   repo: string,
 ): string {
@@ -1403,65 +1409,80 @@ export function renderRouteClosedHoldComment(
     : gate.reason === "milestone-closed"
     ? `its milestone${milestoneName ? ` ${milestoneName}` : ""} is closed`
     : `its state could not be verified (${gate.detail})`;
-  return [
-    ROUTE_CLOSED_HOLD_MARKER,
-    `⚠️ **Not merged into \`${gate.milestoneBranch}\`** — ${why}, so that branch has no route to the default branch any more. ` +
-    "Merging there would orphan this work while the issue closed as completed.",
-    "",
-    "The fleet does not move this PR to the default branch: a PR off a milestone branch carries the milestone's work onto the default branch without the milestone's final review. " +
-    "Auto-merge has been disarmed. The fleet leaves this pull request on its branch. An open milestone that still has open work is given a fresh rollup instead of this hold.",
-  ].join("\n");
+  return `targets \`${gate.milestoneBranch}\`, which has no route to the ` +
+    `default branch any more — ${why} — so merging there would orphan the work`;
 }
 
 /**
- * Refuse the milestone-branch merge loudly and leave the PR on its base:
- * log, disarm auto-merge (best effort), and comment once
- * (marker-deduplicated). Never retargets and never throws. Only a gate
- * carrying positive evidence — a merged rollup, or a closed milestone —
- * reaches here. An unreadable route defers instead (Issue #477).
+ * A PR whose milestone branch has no route to the default branch is never
+ * merged there and never moved to the default branch (a PR off a milestone
+ * branch would carry the milestone's work there without its final review).
+ * Nor is it left on hold for a human (Issue #4304): auto-merge is disarmed,
+ * then the PR is closed and its originating issue redone through
+ * `abandonAndRestart`, so the work comes back against the current base. Only
+ * a gate carrying positive evidence — a merged rollup, or a closed milestone —
+ * reaches here; an unreadable route defers instead (Issue #477). Never throws:
+ * an abandon that does not happen is logged and tried again next scan.
  */
-export async function holdOrphanBoundPr(
-  options: HoldOrphanBoundPrOptions,
+export async function abandonOrphanBoundPr(
+  options: AbandonOrphanBoundPrOptions,
 ): Promise<void> {
   const { repo, prNumber, gate, ghCommandFn, log } = options;
   logAt(
     log,
     "warn",
     `refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
-      "(Issue #3433) — holding it on its base, not retargeting; auto-merge disarmed",
+      "— auto-merge disarmed; closing it and redoing its issue (Issue #4304)",
   );
   await disarmAutoMerge(repo, prNumber, ghCommandFn, log);
-  let alreadyExplained = false;
   try {
-    alreadyExplained = await hasFleetAuthoredMarker(
-      repo,
-      prNumber,
-      ROUTE_CLOSED_HOLD_MARKER,
-      ghCommandFn,
+    const branchName = options.headRefName ||
+      (await ghCommandFn([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefName",
+        "--jq",
+        ".headRefName",
+      ])).trim();
+    if (!branchName) throw new Error("its head branch could not be read");
+    const trustedAuthors = await resolveAlertDedupAuthors(
       options.authorOptions ?? {},
       log,
     );
-  } catch {
-    alreadyExplained = false;
-  }
-  if (alreadyExplained) return;
-  try {
-    await ghCommandFn([
-      "pr",
-      "comment",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--body",
-      renderRouteClosedHoldComment(gate, repo),
-    ]);
+    const outcome = await (options.abandon ?? abandonAndRestart)(
+      {
+        repo,
+        prNumber,
+        branchName,
+        baseBranch: gate.milestoneBranch,
+        reason: {
+          kind: "stalled",
+          detail: describeClosedRoute(gate, repo),
+          tried: "route-closed-hold",
+        },
+      },
+      { gh: ghCommandFn, trustedAuthors },
+    );
+    if (outcome.outcome === "declined" || outcome.outcome === "failed") {
+      logAt(
+        log,
+        "warn",
+        `could not abandon ${repo}#${prNumber} (${
+          outcome.outcome === "declined" ? outcome.reason.kind : outcome.step
+        }) — retried next scan (Issue #4304)`,
+      );
+    }
   } catch (err) {
     logAt(
       log,
       "warn",
-      `could not post the hold comment on ${repo}#${prNumber}: ${
+      `could not abandon ${repo}#${prNumber}: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      } — retried next scan (Issue #4304)`,
     );
   }
 }

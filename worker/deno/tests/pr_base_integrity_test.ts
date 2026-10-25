@@ -7,15 +7,19 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   checkPrBaseIntegrity,
+  type CheckPrBaseIntegrityOptions,
   decidePrBaseIntegrity,
   MILESTONE_FIX_RETARGETED_MARKER,
-  milestoneFixRetargetedFinalPrMarker,
   MOVED_ONTO_DEFAULT_MARKER,
   type PrBaseIntegrityReading,
   readPrBaseIntegrity,
 } from "../lib/pr_base_integrity.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
+import type {
+  AbandonRestartOutcome,
+  AbandonRestartRequest,
+} from "../lib/conflict_abandon_restart.ts";
 
 const FIX_HEAD = "milestone-fix/m1/pr-77-abc";
 const AUTHORS = { fleetAuthors: ["bot"] };
@@ -61,10 +65,14 @@ function payload(r: PrBaseIntegrityReading): string {
 function fakeGh(
   r: PrBaseIntegrityReading | Error,
   markersPresent: string[] = [],
+  retargetFails = false,
 ) {
   const calls: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
+    if (retargetFails && args[0] === "pr" && args[1] === "edit") {
+      return Promise.reject(new Error("HTTP 422: base branch not found"));
+    }
     if (args[0] === "api" && args[1] === "graphql") {
       return r instanceof Error
         ? Promise.reject(r)
@@ -87,6 +95,35 @@ const disarms = (calls: string[][]) =>
   calls.filter((c) => c.includes("--disable-auto"));
 const comments = (calls: string[][]) =>
   calls.filter((c) => c[0] === "pr" && c[1] === "comment");
+/** The bases every `gh pr edit --base` call asked for. */
+const retargetBases = (calls: string[][]) =>
+  calls
+    .filter((c) => c[0] === "pr" && c[1] === "edit" && c.includes("--base"))
+    .map((c) => c[c.indexOf("--base") + 1]);
+
+/** An abandon seam that records the request and reports it abandoned. */
+function recordAbandon(): {
+  requests: AbandonRestartRequest[];
+  fn: NonNullable<CheckPrBaseIntegrityOptions["abandon"]>;
+} {
+  const requests: AbandonRestartRequest[] = [];
+  return {
+    requests,
+    fn: (request) => {
+      requests.push(request);
+      const outcome: AbandonRestartOutcome = {
+        outcome: "abandoned",
+        issueNumber: 5,
+        label: { kept: "work-on" },
+      };
+      return Promise.resolve(outcome);
+    },
+  };
+}
+
+/** A hand-back is any posted text asking a person to act. */
+const asksAHuman = (calls: string[][]) =>
+  comments(calls).some((c) => /a human|by hand|manually/i.test(c[6] ?? ""));
 
 Deno.test("decide: milestone-fix head off a milestone branch is mistargeted", () => {
   assertEquals(
@@ -173,8 +210,19 @@ Deno.test("read: malformed payloads and bad repos throw", async () => {
   );
 });
 
-Deno.test("check: a retargeted milestone-fix PR is disarmed, commented twice and held", async () => {
-  const { gh, calls } = fakeGh(reading({ headRefName: FIX_HEAD }));
+/** A PR moved off `from` onto `main`. */
+const movedFrom = (from: string) => ({
+  at: "2026-01-01T00:00:00Z",
+  from,
+  to: "main",
+});
+
+Deno.test("check: a retargeted milestone-fix PR is moved back onto its milestone branch, not handed to a human (Issue #4304)", async () => {
+  const { gh, calls } = fakeGh(reading({
+    headRefName: FIX_HEAD,
+    lastBaseChange: movedFrom("milestone/m1"),
+  }));
+  const abandon = recordAbandon();
   const logs: string[] = [];
   const out = await checkPrBaseIntegrity({
     repo: "o/r",
@@ -183,25 +231,29 @@ Deno.test("check: a retargeted milestone-fix PR is disarmed, commented twice and
     gh,
     log: (m) => logs.push(m),
     authorOptions: AUTHORS,
+    abandon: abandon.fn,
   });
-  assertEquals(out.action, "hold");
   assert(
-    out.action === "hold" &&
-      out.outcome.result === AutoMergeResult.HeldBaseRetargeted,
+    out.action === "hold" && out.outcome.result === AutoMergeResult.Deferred,
   );
   assertEquals(disarms(calls).length, 1);
+  assertEquals(retargetBases(calls), ["milestone/m1"]);
+  assertEquals(abandon.requests, []);
   const posted = comments(calls);
-  assertEquals(posted.map((c) => c[2]), ["9", "77"]);
+  assertEquals(posted.map((c) => c[2]), ["9"]);
   assert(posted[0]![6]!.includes(MILESTONE_FIX_RETARGETED_MARKER));
-  assert(posted[1]![6]!.includes(milestoneFixRetargetedFinalPrMarker(9)));
+  assertEquals(asksAHuman(calls), false);
   assert(logs.some((l) => l.includes("[MILESTONE_FIX_RETARGETED]")));
 });
 
-Deno.test("check: existing fleet markers suppress both comments", async () => {
-  const { gh, calls } = fakeGh(reading({ headRefName: FIX_HEAD }), [
-    MILESTONE_FIX_RETARGETED_MARKER,
-    milestoneFixRetargetedFinalPrMarker(9),
-  ]);
+Deno.test("check: an existing fleet marker suppresses the moved-back comment", async () => {
+  const { gh, calls } = fakeGh(
+    reading({
+      headRefName: FIX_HEAD,
+      lastBaseChange: movedFrom("milestone/m1"),
+    }),
+    [MILESTONE_FIX_RETARGETED_MARKER],
+  );
   const out = await checkPrBaseIntegrity({
     repo: "o/r",
     pr: { number: 9, headRefName: FIX_HEAD, baseRefName: "main" },
@@ -209,20 +261,42 @@ Deno.test("check: existing fleet markers suppress both comments", async () => {
     gh,
     log: () => {},
     authorOptions: AUTHORS,
+    abandon: recordAbandon().fn,
   });
   assertEquals(out.action, "hold");
   assertEquals(comments(calls), []);
-  assertEquals(disarms(calls).length, 1);
+  assertEquals(retargetBases(calls), ["milestone/m1"]);
 });
 
-Deno.test("check: a PR moved onto the default branch is disarmed, commented once and held", async () => {
+Deno.test("check: a milestone-fix PR with no milestone base to go back to is abandoned and its work redone (Issue #4304)", async () => {
+  const { gh, calls } = fakeGh(reading({ headRefName: FIX_HEAD }));
+  const abandon = recordAbandon();
+  const out = await checkPrBaseIntegrity({
+    repo: "o/r",
+    pr: { number: 9, headRefName: FIX_HEAD, baseRefName: "main" },
+    armed: true,
+    gh,
+    log: () => {},
+    authorOptions: AUTHORS,
+    abandon: abandon.fn,
+  });
+  assert(
+    out.action === "hold" &&
+      out.outcome.result === AutoMergeResult.HeldBaseRetargeted,
+  );
+  assertEquals(retargetBases(calls), []);
+  assertEquals(abandon.requests.length, 1);
+  assertEquals(abandon.requests[0]!.prNumber, 9);
+  assertEquals(abandon.requests[0]!.branchName, FIX_HEAD);
+  assertEquals(abandon.requests[0]!.reason?.kind, "stalled");
+  assertEquals(asksAHuman(calls), false);
+});
+
+Deno.test("check: a PR moved onto the default branch is moved back onto the base it was opened against (Issue #4304)", async () => {
   const { gh, calls } = fakeGh(reading({
-    lastBaseChange: {
-      at: "2026-01-01T00:00:00Z",
-      from: "milestone/x",
-      to: "main",
-    },
+    lastBaseChange: movedFrom("milestone/x"),
   }));
+  const abandon = recordAbandon();
   const out = await checkPrBaseIntegrity({
     repo: "o/r",
     pr: { number: 9, headRefName: "issue-5-x", baseRefName: "main" },
@@ -230,56 +304,68 @@ Deno.test("check: a PR moved onto the default branch is disarmed, commented once
     gh,
     log: () => {},
     authorOptions: AUTHORS,
+    abandon: abandon.fn,
+  });
+  assert(
+    out.action === "hold" && out.outcome.result === AutoMergeResult.Deferred,
+  );
+  assertEquals(disarms(calls).length, 1);
+  assertEquals(retargetBases(calls), ["milestone/x"]);
+  assertEquals(abandon.requests, []);
+  const posted = comments(calls);
+  assertEquals(posted.length, 1);
+  assert(posted[0]![6]!.includes(MOVED_ONTO_DEFAULT_MARKER));
+  assertEquals(asksAHuman(calls), false);
+});
+
+Deno.test("check: a PR moved onto the default branch whose old base is gone is abandoned and redone (Issue #4304)", async () => {
+  const { gh, calls } = fakeGh(
+    reading({ lastBaseChange: movedFrom("milestone/x") }),
+    [],
+    true,
+  );
+  const abandon = recordAbandon();
+  const out = await checkPrBaseIntegrity({
+    repo: "o/r",
+    pr: { number: 9, headRefName: "issue-5-x", baseRefName: "main" },
+    armed: true,
+    gh,
+    log: () => {},
+    authorOptions: AUTHORS,
+    abandon: abandon.fn,
   });
   assert(
     out.action === "hold" &&
       out.outcome.result === AutoMergeResult.HeldBaseRetargeted,
   );
-  assertEquals(disarms(calls).length, 1);
-  const posted = comments(calls);
-  assertEquals(posted.length, 1);
-  assert(posted[0]![6]!.includes(MOVED_ONTO_DEFAULT_MARKER));
+  assertEquals(retargetBases(calls), ["milestone/x"]);
+  assertEquals(abandon.requests.length, 1);
+  assertEquals(abandon.requests[0]!.baseBranch, "main");
+  assertEquals(asksAHuman(calls), false);
 });
 
 // These comments are posted into the target repo, which autolinks a bare `#N`
 // to that repo's own issue or PR, so they must not cite VibeCoder issue numbers.
-Deno.test("check: the retargeted milestone-fix comments cite no bare #N beyond the target repo's own PR (Issue #3674)", async () => {
-  const { gh, calls } = fakeGh(reading({ headRefName: FIX_HEAD }));
-  await checkPrBaseIntegrity({
-    repo: "o/r",
-    pr: { number: 9, headRefName: FIX_HEAD, baseRefName: "main" },
-    armed: true,
-    gh,
-    log: () => {},
-    authorOptions: AUTHORS,
-  });
-  const posted = comments(calls);
-  assertEquals(posted.length, 2);
-  assertEquals(posted[0]![6]!.match(/#\d+/g), null);
-  // #9 is the fix PR itself, a target-repo number, so it is allowed.
-  assertEquals(posted[1]![6]!.match(/#\d+/g), ["#9"]);
-});
-
-// Posted in the target repo, which autolinks a bare `#N` to its own issue or PR.
-Deno.test("check: the moved-onto-default comment cites no bare #N (Issue #3674)", async () => {
-  const { gh, calls } = fakeGh(reading({
-    lastBaseChange: {
-      at: "2026-01-01T00:00:00Z",
-      from: "milestone/x",
-      to: "main",
-    },
-  }));
-  await checkPrBaseIntegrity({
-    repo: "o/r",
-    pr: { number: 9, headRefName: "issue-5-x", baseRefName: "main" },
-    armed: true,
-    gh,
-    log: () => {},
-    authorOptions: AUTHORS,
-  });
-  const posted = comments(calls);
-  assertEquals(posted.length, 1);
-  assertEquals(posted[0]![6]!.match(/#\d+/g), null);
+Deno.test("check: the moved-back comments cite no bare #N (Issue #3674)", async () => {
+  for (const head of [FIX_HEAD, "issue-5-x"]) {
+    const from = head === FIX_HEAD ? "milestone/m1" : "milestone/x";
+    const { gh, calls } = fakeGh(reading({
+      headRefName: head,
+      lastBaseChange: movedFrom(from),
+    }));
+    await checkPrBaseIntegrity({
+      repo: "o/r",
+      pr: { number: 9, headRefName: head, baseRefName: "main" },
+      armed: true,
+      gh,
+      log: () => {},
+      authorOptions: AUTHORS,
+      abandon: recordAbandon().fn,
+    });
+    const posted = comments(calls);
+    assertEquals(posted.length, 1);
+    assertEquals(posted[0]![6]!.match(/#\d+/g), null);
+  }
 });
 
 Deno.test("check: a base change since arming disarms and proceeds as disarmed", async () => {
@@ -366,8 +452,11 @@ Deno.test("check: a base change since arming holds as deferred when the disarm f
   assert(out.outcome.message.includes("#3433"));
 });
 
-Deno.test("check: a failed comment is logged and the PR is still held", async () => {
-  const inner = fakeGh(reading({ headRefName: FIX_HEAD }));
+Deno.test("check: a failed comment is logged and the PR is still moved back", async () => {
+  const inner = fakeGh(reading({
+    headRefName: FIX_HEAD,
+    lastBaseChange: movedFrom("milestone/m1"),
+  }));
   const logs: string[] = [];
   const gh = (args: string[]): Promise<string> =>
     args[0] === "pr" && args[1] === "comment"
@@ -380,12 +469,13 @@ Deno.test("check: a failed comment is logged and the PR is still held", async ()
     gh,
     log: (m) => logs.push(m),
     authorOptions: AUTHORS,
+    abandon: recordAbandon().fn,
   });
   assert(
-    out.action === "hold" &&
-      out.outcome.result === AutoMergeResult.HeldBaseRetargeted,
+    out.action === "hold" && out.outcome.result === AutoMergeResult.Deferred,
   );
   assertEquals(disarms(inner.calls).length, 1);
+  assertEquals(retargetBases(inner.calls), ["milestone/m1"]);
   assert(
     logs.some((l) =>
       l.includes("could not comment on o/r#9") &&
@@ -394,9 +484,13 @@ Deno.test("check: a failed comment is logged and the PR is still held", async ()
   );
 });
 
-Deno.test("check: an unparsable milestone-fix head is held on its own PR and comments nowhere else", async () => {
+Deno.test("check: an unparsable milestone-fix head is never moved back, it is abandoned and redone (Issue #4304)", async () => {
   const head = "milestone-fix/oops";
-  const { gh, calls } = fakeGh(reading({ headRefName: head }));
+  const { gh, calls } = fakeGh(reading({
+    headRefName: head,
+    lastBaseChange: movedFrom("milestone/m1"),
+  }));
+  const abandon = recordAbandon();
   const out = await checkPrBaseIntegrity({
     repo: "o/r",
     pr: { number: 9, headRefName: head, baseRefName: "main" },
@@ -404,11 +498,13 @@ Deno.test("check: an unparsable milestone-fix head is held on its own PR and com
     gh,
     log: () => {},
     authorOptions: AUTHORS,
+    abandon: abandon.fn,
   });
   assert(
     out.action === "hold" &&
       out.outcome.result === AutoMergeResult.HeldBaseRetargeted,
   );
   assertEquals(disarms(calls).length, 1);
-  assertEquals(comments(calls).map((c) => c[2]), ["9"]);
+  assertEquals(retargetBases(calls), []);
+  assertEquals(abandon.requests.length, 1);
 });

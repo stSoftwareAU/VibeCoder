@@ -13,6 +13,11 @@ import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { fetchMarkerComments } from "./marker_comment_pages.ts";
+import {
+  abandonAndRestart,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 
 /** Comment type for API routing. */
 export type CommentType = "review" | "issue" | "pr_review";
@@ -95,9 +100,7 @@ export type ReviewDismissalOutcome =
   | "addressed"
   | "permanently_failed"
   | "rebuttal"
-  | "escalated"
-  | "handed_off"
-  | "fix_pr_pending";
+  | "handed_off";
 
 /** The dismissal message for each {@link ReviewDismissalOutcome}. */
 export const REVIEW_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> =
@@ -107,11 +110,8 @@ export const REVIEW_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> =
       "Not addressed after two automated attempts — see the PR thread.",
     rebuttal:
       "Answered with a rebuttal — no code change was made. See the PR thread.",
-    escalated: "Not addressed — escalated to needs-human. See the PR thread.",
     handed_off:
       "Not addressed — handed off to a follow-up issue. See the PR thread.",
-    fix_pr_pending:
-      "A fix was pushed to a branch, but the fix PR still needs to be opened — see the PR thread.",
   };
 
 /**
@@ -120,7 +120,7 @@ export const REVIEW_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> =
  *
  * A dismissed `pr_review` carries the {@link REVIEW_DISMISSAL_MESSAGES} entry
  * for `outcome`; only `"addressed"` claims the change was made, so a review
- * that was rebutted, escalated, handed off or permanently failed is never
+ * that was rebutted, handed off or permanently failed is never
  * reported as addressed (Issue #3409).
  *
  * @param repo - Repository in "owner/repo" format
@@ -459,6 +459,8 @@ export async function fetchCommentReactors(
  * @param prNumber - PR number whose thread carries the `pr_review` marker.
  *   Required to resolve the marker for `pr_review`; ignored otherwise.
  * @returns true if the fleet has marked the comment as failed once
+ * @param restart - Abandon-and-restart override (tests); defaults to
+ *   `abandonAndRestart` over `ghCommandFn` (Issue #4304).
  */
 export async function checkPrCommentHasFailedOnce(
   repo: string,
@@ -570,10 +572,12 @@ export async function markPrCommentAsFailedOnce(
     ? `- This attempt has been recorded on this PR, and the review is left ` +
       `undismissed — it still requests changes\n` +
       `- The worker will attempt to process it again on the next scan\n` +
-      `- If it fails again, manual intervention will be required`
+      `- If it fails again, this PR is closed and its issue redone from ` +
+      `the base branch (Issue #4304)`
     : `- This comment has been marked for retry (confused reaction added)\n` +
       `- The worker will attempt to process it again on the next scan\n` +
-      `- If it fails again, manual intervention will be required`;
+      `- If it fails again, this PR is closed and its issue redone from ` +
+      `the base branch (Issue #4304)`;
   const body = `${markerLine}## Automated Processing Failed (First Attempt)
 
 The automated worker encountered an issue while processing this comment and will retry.
@@ -588,25 +592,94 @@ ${whatHappensNext}`;
 }
 
 /**
- * Mark a PR comment as permanently failed (eyes reaction + reply).
+ * Settle a comment that failed twice by redoing the work (Issue #4304).
  *
- * @param repo - Repository in "owner/repo" format
- * @param prNumber - PR number
- * @param commentType - Type of comment
- * @param commentId - The comment ID
- * @param failureMessage - Description of the failure
- * @param ghCommandFn - Function to run gh commands (injectable for testing)
+ * It used to be marked "permanently failed" with a reply asking the reviewer
+ * to post a clarified comment — a hand-back. Instead the PR is closed and its
+ * originating issue re-queued through the stall ladder's rung
+ * (`abandonAndRestart`), and only then is the comment marked processed, so
+ * the closed PR's comment is not picked up again. A restart that is declined
+ * or fails leaves the comment unmarked: the next cycle retries it.
+ *
+ * @returns `true` when the PR was closed and the comment marked processed.
  */
-export async function markPrCommentAsFailed(
+async function restartAfterRepeatedFailure(
   repo: string,
   prNumber: number,
   commentType: CommentType,
   commentId: string,
-  failureMessage: string,
-  ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
-): Promise<void> {
-  // Mark as processed to prevent further retries: an eyes reaction, or for a
-  // pr_review a dismissal that says it was not addressed (Issue #3409).
+  ghCommandFn: (args: string[]) => Promise<string>,
+  trustedAuthors: readonly string[],
+  restart?: (request: AbandonRestartRequest) => Promise<AbandonRestartOutcome>,
+): Promise<boolean> {
+  let refs: { headRefName?: unknown; baseRefName?: unknown };
+  try {
+    refs = JSON.parse(
+      await ghCommandFn([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefName,baseRefName",
+      ]),
+    );
+  } catch (err) {
+    console.warn(
+      `[pr-comments] ${repo}#${prNumber}: could not read the PR's branches ` +
+        `to restart it after a repeated failure — retried next cycle ` +
+        `(Issue #4304): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+  if (
+    typeof refs.headRefName !== "string" || refs.headRefName === "" ||
+    typeof refs.baseRefName !== "string" || refs.baseRefName === ""
+  ) {
+    console.warn(
+      `[pr-comments] ${repo}#${prNumber}: the PR named no branches — ` +
+        `retried next cycle (Issue #4304)`,
+    );
+    return false;
+  }
+  const rung = restart ??
+    ((request: AbandonRestartRequest) =>
+      abandonAndRestart(request, { gh: ghCommandFn, trustedAuthors }));
+  let outcome: AbandonRestartOutcome;
+  try {
+    outcome = await rung({
+      repo,
+      prNumber,
+      branchName: refs.headRefName,
+      baseBranch: refs.baseRefName,
+      reason: {
+        kind: "stalled",
+        detail: "has feedback the worker failed to process in two automated " +
+          "attempts",
+        tried: "review-retry",
+      },
+    });
+  } catch (err) {
+    console.warn(
+      `[pr-comments] ${repo}#${prNumber}: restart after a repeated failure ` +
+        `threw — retried next cycle (Issue #4304): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
+    return false;
+  }
+  if (
+    outcome.outcome !== "abandoned" &&
+    outcome.outcome !== "closed-without-issue"
+  ) {
+    console.warn(
+      `[pr-comments] ${repo}#${prNumber}: restart after a repeated failure ` +
+        `did not complete (${outcome.outcome}) — retried next cycle ` +
+        `(Issue #4304)`,
+    );
+    return false;
+  }
   await markCommentProcessed(
     repo,
     commentType,
@@ -615,34 +688,14 @@ export async function markPrCommentAsFailed(
     "permanently_failed",
     ghCommandFn,
   );
-
-  // Public sink — same reasoning as the first-attempt reply (Issue #3707).
-  const body =
-    `## Automated Processing Failed (Second Attempt - Permanently Failed)
-
-The automated worker has failed to process this comment twice and will not retry automatically.
-
-### Failure Details
-${redactSecrets(failureMessage)}
-
-### Why this might be happening
-- The requested change may be too complex for automated processing
-- The comment may need more detail or clarification
-- There may be dependencies or context that Claude doesn't have
-
-### To retry this comment
-1. Address the underlying issue described above
-2. Post a new comment with clarified requirements
-3. The worker will pick up the new comment on the next scan`;
-
-  await replyToComment(repo, prNumber, body, ghCommandFn);
+  return true;
 }
 
 /**
  * Unified failure handler for PR comment processing.
  *
- * Checks if this is the first or second failure and calls the appropriate
- * mark function.
+ * A first failure is marked for retry. A second closes the PR and redoes its
+ * issue (Issue #4304) — it is never left "permanently failed" for a person.
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - PR number
@@ -664,6 +717,7 @@ export async function handlePrCommentFailure(
   failureMessage: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
   trustedReactors?: readonly string[],
+  restart?: (request: AbandonRestartRequest) => Promise<AbandonRestartOutcome>,
 ): Promise<void> {
   const trusted = trustedReactors ??
     await resolveAlertDedupAuthors({}, (m) => console.warn(m));
@@ -677,13 +731,14 @@ export async function handlePrCommentFailure(
   );
 
   if (hasFailedOnce) {
-    await markPrCommentAsFailed(
+    await restartAfterRepeatedFailure(
       repo,
       prNumber,
       commentType,
       commentId,
-      failureMessage,
       ghCommandFn,
+      trusted,
+      restart,
     );
   } else {
     await markPrCommentAsFailedOnce(

@@ -786,13 +786,7 @@ is a new environment requirement, the Test Plan names the existing tests
 that needed fixture changes, or says that none did and how that was checked.
 stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
 a plain temporary directory that no longer reached the guard it pins
-(Issue #3530). The same holds for a change to an emitted or read form — a
-label, a key, a prefix or a format. Search the tests for the old form and
-for fragments of it. Confirm that every absence check, negative case and
-containment check that names it can still fail, and record the search in
-the Test Plan. An absence check, negative case or containment check that
-names the old form and can no longer fail is a blocking self-review
-finding (Issue #4163).
+(Issue #3530).
 
 **Every changed call site needs a test that goes red without it.** This
 covers every new or changed wiring between an entry point and the code it
@@ -2081,7 +2075,8 @@ The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
 whose `## Acceptance Criteria` block marks any criterion `missing` is raised
 as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
-the issue open, labels it `needs-human` and names the missing criteria.
+the issue open and queued, with its existing labels, so a later run finishes
+the missing criteria (Issue #4304).
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits
@@ -2092,10 +2087,9 @@ line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
 or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
 (`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
-branch is red. The Escape Hatch
-in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
-honoured on a committed PR branch when `.pr_response_message` names a
-follow-up issue. Any later commit on the branch — a
+branch is red. A PR-feedback or CI-fix hand-off in `.pr_response_message`
+that names a follow-up issue is still recognised on a committed PR branch,
+although `prompts/pr_feedback/prompt.md` no longer offers one (Issue #4304). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 

@@ -11,6 +11,7 @@ import {
   type BlockingPrStall,
   type BlockingPrStallReason,
   detectBlockingPrStall,
+  HISTORY_REWRITE_ESCALATION_MARKER_PREFIX,
 } from "../lib/blocking_pr_stall_detector.ts";
 import {
   repairStalledPr,
@@ -21,6 +22,7 @@ import {
 import { CONFLICT_RESTART_MARKER } from "../lib/conflict_abandon_restart.ts";
 import type { ConflictIssueContext } from "../lib/conflict_issue_context.ts";
 import type { Logger } from "../types.ts";
+import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 
 const REPO = "owner/repo";
 const PR = 103;
@@ -359,17 +361,76 @@ Deno.test("a PR the merge-conflict ladder owns is left to the ladder", async () 
   assertEquals(state.calls, []);
 });
 
-Deno.test("a PR carrying needs-human is never synced, rerun or closed — the human veto is never overridden", async () => {
-  const { state, deps } = harness();
+Deno.test("a PR carrying a legacy needs-human has the label removed and is repaired like any other (Issue #4304)", async () => {
+  // The fleet's own escalation applied the label: its marker is on the thread.
+  const { state, deps } = harness({
+    prComments: [{
+      body: `${buildDedupMarker("auto-fix-cap-legacy")}\nHanding over.`,
+      user: { login: FLEET },
+      created_at: iso(NOW - 3600),
+    }],
+  });
+  const stall = stallFor("red-ci", { labels: ["needs-human"] });
+
+  assertEquals(await repairStalledPr(stall, deps), "first-trip");
+  assertEquals(
+    state.calls.filter((a) => a.includes("--remove-label")),
+    [[
+      "pr",
+      "edit",
+      String(PR),
+      "--repo",
+      REPO,
+      "--remove-label",
+      "needs-human",
+    ]],
+  );
+  assertEquals(state.syncs, 1);
+  assertEquals(state.lanes, ["ci-fix"]);
+  assertEquals(state.writesOutsideLease, []);
+
+  state.now += THRESHOLD;
+  assertEquals(await repairStalledPr(stall, deps), "abandoned");
+  assertEquals(state.prClosed, true);
+});
+
+Deno.test("a PR held for a credential rotation (secret in the base history) is left alone (Issue #4304)", async () => {
+  // The one kept hard stop: no repair can clear a secret that is already in
+  // the base branch's history, so its needs-human is never lifted.
+  const { state, deps } = harness({
+    prComments: [{
+      body: `${buildDedupMarker("history-rewrite:abc123")}\nRotate it.`,
+      user: { login: FLEET },
+      created_at: iso(NOW - 3600),
+    }],
+  });
   const stall = stallFor("red-ci", { labels: ["needs-human"] });
 
   assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
   state.now += THRESHOLD * 10;
   assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
-  assertEquals(state.calls, []);
+  assertEquals(state.calls.filter((a) => a[0] !== "api"), []);
   assertEquals(state.prClosed, false);
   assertEquals(state.syncs, 0);
   assertEquals(state.lanes, []);
+});
+
+Deno.test("a needs-human a person applied, with no fleet escalation behind it, is still left alone", async () => {
+  const { state, deps } = harness();
+  const stall = stallFor("red-ci", { labels: ["needs-human"] });
+
+  assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
+  assertEquals(state.calls.filter((a) => a[0] !== "api"), []);
+  assertEquals(state.syncs, 0);
+  assertEquals(state.prClosed, false);
+});
+
+Deno.test("the credential-rotation marker prefix matches the escalation's own dedup marker (Issue #4304)", () => {
+  assert(
+    buildDedupMarker("history-rewrite:abc").startsWith(
+      HISTORY_REWRITE_ESCALATION_MARKER_PREFIX,
+    ),
+  );
 });
 
 Deno.test("a stalled PR with no originating issue is closed and no issue is filed", async () => {

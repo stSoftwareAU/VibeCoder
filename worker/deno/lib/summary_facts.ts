@@ -391,26 +391,7 @@ function plainText(text: string): string {
   return sanitise(text).replaceAll("`", "'").replaceAll("<", "&lt;").trim();
 }
 
-/**
- * Machine verdict shown beside `flipWentRed`. Not stored in the facts file.
- * An unrecognised kind is rendered as not checked, never as verified.
- */
-function renderFlip(
-  mark: { kind: string; reason?: string } | undefined,
-): string {
-  if (mark === undefined) return "";
-  if (mark.kind === "verified") return " — verified";
-  if (mark.kind === "refused") return " — refused";
-  const reason = mark.kind === "not_checked"
-    ? (mark.reason ?? "")
-    : `unrecognised verdict ${mark.kind}`;
-  return ` — not checked: ${plainText(reason)}`;
-}
-
-function renderEntry(
-  entry: BranchOutcomeEntry,
-  mark?: { kind: string; reason?: string },
-): string {
+function renderEntry(entry: BranchOutcomeEntry): string {
   const range = entry.endLine === undefined
     ? `${entry.line}`
     : `${entry.line}-${entry.endLine}`;
@@ -425,33 +406,17 @@ function renderEntry(
   return `${head}test ${codeSpan(entry.test)} (${
     codeSpan(entry.testName)
   }) — ` +
-    `flip: ${codeSpan(entry.flipWentRed)}` + renderFlip(mark);
+    `flip: ${codeSpan(entry.flipWentRed)}`;
 }
 
 /**
  * Render the Branch outcomes block. Deterministic; no trailing newline.
  * `noneAdded` renders exactly `Branch outcomes: none added`.
  */
-export function renderBranchOutcomes(
-  facts: SummaryFacts,
-  /**
-   * Verdicts keyed by entry index. Omitted, the line is unchanged, so a
-   * caller that has not run the verifier does not invent a pass.
-   */
-  flips?: readonly {
-    index: number;
-    verdict: { kind: string; reason?: string };
-  }[],
-): string {
+export function renderBranchOutcomes(facts: SummaryFacts): string {
   const { noneAdded, entries } = facts.branchOutcomes;
   if (noneAdded) return "Branch outcomes: none added";
-  return "**Branch outcomes:**\n\n" +
-    entries.map((entry, index) =>
-      renderEntry(
-        entry,
-        flips?.find((flip) => flip.index === index)?.verdict,
-      )
-    ).join("\n");
+  return "**Branch outcomes:**\n\n" + entries.map(renderEntry).join("\n");
 }
 
 /**

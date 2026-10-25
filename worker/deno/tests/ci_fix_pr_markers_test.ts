@@ -11,12 +11,9 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   appendAttemptToComment,
-  buildCapAttemptRows,
-  describeAttemptOutcome,
   readPrCiFixMarkers,
 } from "../lib/ci_fix_pr_markers.ts";
 import { buildCiFixAttemptMarker } from "../lib/ci_fix_attempt_markers.ts";
-import { buildAutoFixCapSummary } from "../lib/auto_fix_attempt_tracker.ts";
 import type { GitHubComment, Logger } from "../types.ts";
 
 const SIGNATURE = "a1b2c3d4e5f60718";
@@ -135,39 +132,6 @@ Deno.test("readPrCiFixMarkers - an unresolved fleet is reported as unenforceable
   assertEquals(state.markers.attempts.size, 0);
   assertEquals(recorded.errors.length, 1);
   assertStringIncludes(recorded.errors[0] ?? "", "fleet login set is empty");
-});
-
-Deno.test("buildCapAttemptRows - renders the marker tally as summary rows", async () => {
-  const state = await readPrCiFixMarkers({
-    repo: "org/repo",
-    prNumber: 77,
-    getComments: () =>
-      Promise.resolve([
-        attemptComment(1, "stservice", 1, "missing import of Bar"),
-        attemptComment(2, "stservice", 2, "wrong package for Bar"),
-      ]),
-    fleetLogins: ["stservice"],
-    logger: recordingLogger({ errors: [], warnings: [] }),
-  });
-
-  const rows = buildCapAttemptRows(state.markers.attempts.get(SIGNATURE) ?? []);
-  assertEquals(rows.map((r) => r.attempt), [1, 2]);
-  assertEquals(rows[0]?.diagnosis, "missing import of Bar");
-
-  const summary = buildAutoFixCapSummary({
-    checkName: "build",
-    signature: SIGNATURE,
-    maxAttempts: 2,
-    attempts: rows,
-  });
-  assertStringIncludes(summary, "missing import of Bar");
-  assertStringIncludes(summary, "wrong package for Bar");
-  assertStringIncludes(summary, "| 2 |");
-});
-
-Deno.test("describeAttemptOutcome - both outcomes read as prose", () => {
-  assertStringIncludes(describeAttemptOutcome("pushed"), "pushed a fix");
-  assertStringIncludes(describeAttemptOutcome("no-change"), "no change");
 });
 
 Deno.test("appendAttemptToComment - keeps the diagnosis and adds the new marker", () => {

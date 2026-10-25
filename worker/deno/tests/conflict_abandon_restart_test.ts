@@ -34,6 +34,8 @@ import {
   buildAbandonPrComment,
   buildNoIssueAbandonPrComment,
   buildRestartIssueComment,
+  buildStalledAbandonPrComment,
+  buildStalledRestartIssueComment,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
   describeConcludedAttempts,
@@ -582,6 +584,39 @@ Deno.test("abandonAndRestart - a stalled request with no failures is not decline
 
   assertEquals(outcome.outcome, "abandoned");
   assertEquals(callsMatching(fake, "pr", "close").length, 1);
+});
+
+Deno.test("abandonAndRestart - a spent CI-fix cap abandons and says the CI-fix lane tried, not the stall pass (Issue #4304)", async () => {
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({
+      prComments: [],
+      reason: {
+        kind: "stalled",
+        detail: "has a failing `build` check that 3 automatic fix attempts " +
+          "did not clear",
+        tried: "ci-fix-cap",
+      },
+    }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assertEquals(outcome.outcome, "abandoned");
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+  for (
+    const body of [
+      bodyOfCall(fake, "pr", "comment"),
+      bodyOfCall(fake, "issue", "comment"),
+    ]
+  ) {
+    assertStringIncludes(
+      body,
+      "The CI-fix lane already spent every automatic fix attempt",
+    );
+    assertEquals(body.includes("stall-repair pass"), false, body);
+    assertEquals(body.includes("needs-human"), false, body);
+  }
 });
 
 Deno.test("renderAttemptTable - rows, unknown time, and a zero-attempt PR", () => {
@@ -2437,3 +2472,47 @@ Deno.test(
     assertEquals(gitFake.calls.length, 0);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #4304: the base-integrity and closed-route abandons say what was tried
+// ---------------------------------------------------------------------------
+
+Deno.test("stalled comments - a moved-base and a closed-route abandon name what the worker tried, not the stall-repair pass (Issue #4304)", () => {
+  const request: AbandonRestartRequest = {
+    repo: "o/r",
+    prNumber: 9,
+    branchName: "issue-5-x",
+    baseBranch: "milestone/x",
+  };
+  const label = planRequeueLabel(["work-on"]);
+  const moved = buildStalledAbandonPrComment({
+    request,
+    detail: "was moved onto the default branch `main` after it was opened",
+    tried: "retarget-back",
+    issueNumber: 5,
+    label,
+  });
+  assertStringIncludes(moved, "the base it was opened against");
+  assertEquals(moved.includes("stall-repair pass"), false);
+
+  const closed = buildStalledAbandonPrComment({
+    request,
+    detail: "targets `milestone/x`, which has no route to the default branch",
+    tried: "route-closed-hold",
+    issueNumber: 5,
+    label,
+  });
+  assertEquals(closed.includes("stall-repair pass"), false);
+  // The redo must not be sent back to the closed route's branch.
+  assertEquals(closed.includes("off `milestone/x`"), false);
+  assert(!/a human|by hand|manually/i.test(closed));
+
+  const issue = buildStalledRestartIssueComment({
+    request,
+    detail: "targets `milestone/x`, which has no route to the default branch",
+    tried: "route-closed-hold",
+    label,
+    restartNumber: 1,
+  });
+  assertEquals(issue.includes("stall-repair pass"), false);
+});

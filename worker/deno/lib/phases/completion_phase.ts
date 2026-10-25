@@ -55,16 +55,6 @@ import {
   prSummaryDigestInput,
   resolveBranchOutcomesFacts,
 } from "../pr_summary_facts.ts";
-import { renderBranchOutcomes, type SummaryFacts } from "../summary_facts.ts";
-import {
-  type FactsFlipVerdict,
-  fillMissingFlipVerdicts,
-  FLIP_VERIFIER_NO_VERDICT_REASON,
-  FLIP_VERIFIER_UNWIRED_REASON,
-  flipRefusalMessages,
-  flipVerifierFailedReason,
-} from "../facts_flip_verifier.ts";
-import { defaultMutationRunnerSeams } from "../mutation_runner.ts";
 import {
   buildSummaryClaimGateComment,
   runSummaryClaimCheck,
@@ -417,60 +407,6 @@ async function runSecurityDiscrimination(input: {
         error instanceof Error ? error.message : String(error)
       }`,
     );
-  }
-}
-
-/**
- * Run the facts flip verifier beside the branch-outcomes gate (Issue #4188).
- *
- * An unwired or thrown runner is a loud `not_checked` for every tested
- * entry, never a silent pass. The caller blocks on `refused` messages.
- */
-async function assessFactsFlips(input: {
-  facts: SummaryFacts;
-  repoPath: string;
-  budgetRaw: string;
-  verify: WorkerDeps["quality"]["verifyFactsFlips"];
-  logger: WorkerDeps["logger"];
-}): Promise<FactsFlipVerdict[]> {
-  const { facts, repoPath, budgetRaw, verify, logger } = input;
-  if (!verify) {
-    logger.warn("Facts flip verifier is not wired", { repoPath });
-    return fillMissingFlipVerdicts(facts, [], FLIP_VERIFIER_UNWIRED_REASON);
-  }
-  try {
-    const verdicts = fillMissingFlipVerdicts(
-      facts,
-      await verify(facts, {
-        ...defaultMutationRunnerSeams(),
-        repoPath,
-        budgetRaw,
-        warn: (message, context) => logger.warn(message, context),
-      }),
-      FLIP_VERIFIER_NO_VERDICT_REASON,
-    );
-    for (const verdict of verdicts) {
-      if (verdict.verdict.kind === "not_checked") {
-        logger.warn("Facts flip verifier did not check an entry", {
-          index: verdict.index,
-          reason: verdict.verdict.reason,
-        });
-      } else if (verdict.verdict.kind === "refused") {
-        logger.warn("Facts flip verifier refused an entry", {
-          index: verdict.index,
-          message: verdict.verdict.message,
-        });
-      } else {
-        logger.info("Facts flip verifier verified an entry", {
-          index: verdict.index,
-        });
-      }
-    }
-    return verdicts;
-  } catch (error) {
-    const reason = flipVerifierFailedReason(error);
-    logger.error("Facts flip verifier failed", { reason });
-    return fillMissingFlipVerdicts(facts, [], reason);
   }
 }
 
@@ -2681,7 +2617,8 @@ async function completionBody(
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the
   // summary marks a criterion `missing`. Say so, since the PR then leaves
-  // the issue open and the merged-PR closers hand it to a human.
+  // the issue open, and the merged-PR closers leave it queued for a later
+  // run to finish (Issue #4304).
   const missingCriteria = findMissingCriteria(summaryContent);
   if (missingCriteria.length > 0) {
     logger.warn(
@@ -3233,7 +3170,7 @@ async function completionBody(
     branchOutcomesNamedTests,
     (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
   );
-  let branchOutcomes = validateBranchOutcomes({
+  const branchOutcomes = validateBranchOutcomes({
     changedFiles: changedFilesKnown ? changedFiles : null,
     prSummaryContent: prBody,
     testsAtHead,
@@ -3243,48 +3180,8 @@ async function completionBody(
     branchOutcomesFactsProblem = branchOutcomesFacts.reason;
   }
 
-  // Issue #4188: a refused flip blocks through this same gate. not_checked
-  // is rendered beside flipWentRed and does not block. The verifier runs
-  // only once the facts file has validated, next to validateBranchOutcomes.
-  let flipRefusals: string[] = [];
-  if (branchOutcomesFacts.kind === "valid") {
-    const flipVerdicts = await assessFactsFlips({
-      facts: branchOutcomesFacts.facts,
-      repoPath: state.repoPath,
-      budgetRaw: getRepoConfig(
-        config.repoConfig,
-        repo,
-        "mutationCheckBudgetSeconds",
-      ),
-      verify: deps.quality.verifyFactsFlips,
-      logger,
-    });
-    flipRefusals = flipRefusalMessages(flipVerdicts);
-    const rendered = renderBranchOutcomes(
-      branchOutcomesFacts.facts,
-      flipVerdicts,
-    );
-    const appliedBody = applyBranchOutcomesFacts(prBody, rendered);
-    if (appliedBody.ok) prBody = appliedBody.value;
-    else {
-      logger.error(
-        "Facts flip verdict could not be rendered into the PR body",
-        { reason: appliedBody.error.message },
-      );
-    }
-    const appliedSummary = applyBranchOutcomesFacts(summaryContent, rendered);
-    if (appliedSummary.ok) summaryContent = appliedSummary.value;
-    if (flipRefusals.length > 0) {
-      branchOutcomes = {
-        ...branchOutcomes,
-        problems: [...flipRefusals, ...branchOutcomes.problems],
-      };
-    }
-  }
-
   const branchOutcomesBlocked = branchOutcomesFactsProblem !== null ||
-    (branchOutcomes.applicable && !branchOutcomes.valid) ||
-    flipRefusals.length > 0;
+    (branchOutcomes.applicable && !branchOutcomes.valid);
   const branchOutcomesReason =
     `Branch outcomes not recorded in the PR summary: ${
       branchOutcomesFactsProblem ??

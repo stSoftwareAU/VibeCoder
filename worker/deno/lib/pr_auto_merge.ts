@@ -19,9 +19,10 @@ import {
   milestoneFixMergeMethod,
 } from "./milestone_fix_pr.ts";
 import {
+  abandonOrphanBoundPr,
+  type AbandonOrphanBoundPrOptions,
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,
-  holdOrphanBoundPr,
   invalidateMilestoneBehindMemoForBranch,
   isMilestoneBranch,
   postOpenChildrenBlockComment,
@@ -56,7 +57,11 @@ import { logAt } from "./log_sink.ts";
 export enum AutoMergeResult {
   /** Auto-merge enabled successfully */
   Enabled = "enabled",
-  /** Auto-merge not enabled on the repository (not an error) */
+  /**
+   * Auto-merge not enabled on the repository (not an error). The gated direct
+   * merge takes over and this is what it returns while it defers
+   * (Issue #4304).
+   */
   NotEnabledOnRepo = "not_enabled_on_repo",
   /** Auto-merge not allowed for this PR (branch not protected) — needs fallback */
   NotAllowed = "not_allowed",
@@ -98,17 +103,20 @@ export enum AutoMergeResult {
   MergedDirectly = "merged_directly",
   /**
    * Refused to merge into a milestone branch whose route closed (rollup PR
-   * merged and the milestone is closed or has no open work). The PR is left
-   * on its base, auto-merge is disarmed, and a comment is posted. It is not
-   * retargeted (Issue #4396 gate, Issue #3433 hold). An open milestone with
-   * open work is given a fresh rollup instead (Issue #4175).
+   * merged and the milestone is closed or has no open work). Auto-merge is
+   * disarmed and the PR is never retargeted (Issue #4396 gate, Issue #3433);
+   * it is closed and its originating issue redone, never left on hold for a
+   * human (Issue #4304). An open milestone with open work is given a fresh
+   * rollup instead (Issue #4175).
    */
   HeldRouteClosed = "held_route_closed",
   /**
    * The PR's base no longer matches where the fleet opened it — a
    * `milestone-fix/**` head on a non-milestone base, or a PR moved onto the
    * default branch after it was opened — so it is never armed or merged
-   * there and its auto-merge is disarmed; a human decides (Issue #3433).
+   * there and its auto-merge is disarmed (Issue #3433). It is moved back onto
+   * the base it was opened against, or closed and its issue redone
+   * (Issue #4304).
    */
   HeldBaseRetargeted = "held_base_retargeted",
   /**
@@ -184,6 +192,11 @@ export interface EnableAutoMergeOptions {
    * what every production caller does.
    */
   authorOptions?: AlertDedupAuthorOptions;
+  /**
+   * Abandon override for a PR whose milestone route has closed (tests);
+   * defaults to `abandonAndRestart` (Issue #4304).
+   */
+  abandonFn?: AbandonOrphanBoundPrOptions["abandon"];
   /** Repository in "owner/repo" format */
   repo: string;
   /** PR number */
@@ -331,7 +344,8 @@ async function postBehindSyncReason(
  * `Deferred` that nothing else has already explained. Everything else is
  * either the worker doing what it set out to do (`Enabled`, `Skipped`,
  * `MergedDirectly`) or already explained on the PR by the path that produced
- * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
+ * it — `Draft` (author's choice), `NotEnabledOnRepo` (the gated direct
+ * merge retries it next scan, Issue #4304),
  * `BlockedOpenChildren` (#3909), `HeldRouteClosed` and `HeldBaseRetargeted`
  * (#3433, each posts its own hold comment), `BlockedPendingDependencies` (#3014), a
  * `milestone-behind` outcome (the #2005 `postBehindSyncReason` already
@@ -1119,20 +1133,22 @@ export async function enableAutoMerge(
     };
   }
   if (routeGate.decision === "block") {
-    await holdOrphanBoundPr({
+    await abandonOrphanBoundPr({
       repo,
       prNumber,
+      ...(options.headRefName ? { headRefName: options.headRefName } : {}),
       gate: routeGate,
       ghCommandFn,
       log,
       ...(options.authorOptions
         ? { authorOptions: options.authorOptions }
         : {}),
+      ...(options.abandonFn ? { abandon: options.abandonFn } : {}),
     });
     return {
       result: AutoMergeResult.HeldRouteClosed,
       message:
-        `PR #${prNumber} held on ${routeGate.milestoneBranch}: ${routeGate.detail} — not merged, not retargeted, auto-merge disarmed (Issue #3433)`,
+        `PR #${prNumber} not merged into ${routeGate.milestoneBranch}: ${routeGate.detail} — not retargeted, auto-merge disarmed, closed and its issue redone (Issue #4304)`,
     };
   }
 
@@ -1520,19 +1536,35 @@ export async function enableAutoMerge(
       }
 
       if (classification === AutoMergeResult.NotEnabledOnRepo) {
-        try {
-          await commentFn(
-            repo,
-            prNumber,
-            "**Note:** Auto-merge is not enabled on this repository. This PR will need to be merged manually after review.",
-          );
-        } catch {
-          // Comment failure is not fatal
+        // Issue #4304: a repository with auto-merge switched off is merged by
+        // the worker itself, through the same gated, SHA-pinned direct merge
+        // an unprotected base takes — once the PR is approved and green. It
+        // is never handed to a human to "merge manually"; a gate that defers
+        // is retried on the next scan.
+        const merge = await (options.directMergeFn ?? directMergePr)(
+          repo,
+          prNumber,
+          ghCommandFn,
+          undefined,
+          options.fleetAuthors && options.fleetAuthors.length > 0
+            ? { approvedDefaultBranch: { fleetAuthors: options.fleetAuthors } }
+            : {},
+        );
+        if (merge.ok && merge.value.merged) {
+          return {
+            result: AutoMergeResult.MergedDirectly,
+            message:
+              `PR #${prNumber} merged directly: auto-merge is not enabled on ${repo}, so the gated direct merge landed it (Issue #4304)`,
+          };
         }
         return {
           result: AutoMergeResult.NotEnabledOnRepo,
           message:
-            `Auto-merge is not enabled on this repository — PR #${prNumber} needs manual merge`,
+            `Auto-merge is not enabled on ${repo} — PR #${prNumber} takes the gated direct merge, which did not merge it yet (${
+              merge.ok
+                ? merge.value.blocked ?? "gate deferred"
+                : merge.error.message
+            }); retried next scan (Issue #4304)`,
         };
       }
 

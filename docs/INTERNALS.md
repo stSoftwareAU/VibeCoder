@@ -642,7 +642,7 @@ work that raises PRs, so it can never see a PR its own cycle created; the
 post-scan pass does, and lists live rather than from the cache 1.65 filled.
 It is skipped, with a logged reason, on a cycle that did no work — see
 [Merge Enforcement — hands-off landing](MERGE.md#hands-off-landing--precedence-and-loud-failure)
-(Issue #1136). Every swept PR passes the base check before any arming or branch update (the GraphQL read is skipped only for an unarmed, non-fix PR on a milestone base), and a mistargeted or retargeted PR is disarmed and held ([Milestones](workflows/milestones.md), Issue #3433).
+(Issue #1136). Every swept PR passes the base check before any arming or branch update (the GraphQL read is skipped only for an unarmed, non-fix PR on a milestone base), and a mistargeted or retargeted PR is disarmed, then moved back onto the base it was opened against, or closed and its issue redone — never held for a human ([Milestones](workflows/milestones.md), Issues #3433, #4304).
 
 #### 🚦 Primary GraphQL quota exhaustion
 
@@ -2408,7 +2408,7 @@ attempt.
 The **scan** and the **processor** must resolve the same directory: the scan
 reads the retry counters the processor writes, and while it kept a relative
 default it addressed a different store, so the cap was never observed and the
-lane escalated red checks to a human rather than fixing them.
+lane gave up on red checks rather than fixing them.
 
 **The auto-fix attempt cap is not in that directory** (Issue #1879). It is
 counted from fleet-authored `<!-- vibe-ci-fix-attempt … -->` markers in the
@@ -2417,8 +2417,9 @@ pull request's own comments
 read by [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)), so
 every host in the fleet shares one budget of three attempts per failure
 signature and posts one comment per signature. Nothing reads or writes
-`*.autofix.json` any more; a repeat "no change required" on a new head is
-appended to the existing comment via `GitHubClient.updateComment`.
+`*.autofix.json` any more; a repeat "no change required" is appended to the
+existing comment via `GitHubClient.updateComment`. A spent budget closes the
+PR and redoes its issue (Issue #4304).
 
 Because those comment bodies carry the agent's own `.pr_response_message`
 verbatim, marker syntax in agent-authored text is neutralised at the
@@ -2864,8 +2865,11 @@ PR comment processing uses a two-attempt system:
 
 1. **First failure** — adds a "confused" reaction; posts "will retry on next
    scan".
-2. **Second failure** — marks as processed (eyes reaction); posts "Permanently
-   Failed". No further retries.
+2. **Second failure** — closes the PR and re-queues its originating issue
+   through the stall ladder's rung (`abandonAndRestart`), then marks the
+   comment processed (eyes reaction). Nothing is left "permanently failed"
+   for a person (Issue #4304); a restart that is declined or fails leaves the
+   comment unmarked, so the next cycle retries it.
 
 Both reactions are **read back by reactor, never by count** (Issue #1249). Any
 account can react on any comment with no repository permission, so a count
@@ -2883,9 +2887,9 @@ the run retires the review (Issue #3383):
 1. **First failure** — posts a "First Attempt" reply carrying a hidden
    `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker; the review is left
    undismissed, so it is retried once its claim lease lapses.
-2. **Second failure** (the marker found, fleet-authored) — dismisses the
-   review (with a "Not addressed after two automated attempts" message, not
-   "addressed"); posts "Permanently Failed". No further retries.
+2. **Second failure** (the marker found, fleet-authored) — closes the PR and
+   re-queues its issue the same way, then dismisses the review (with a "Not
+   addressed after two automated attempts" message, not "addressed").
 
 No reaction is ever posted for a review — the old code reacted on
 `issues/comments/<reviewId>`, the wrong resource for a review id. Any other
@@ -4793,8 +4797,10 @@ consequences are worth naming:
   repairing count; when it repairs a ref, the fetch is run again before the
   branch is counted, and when it repairs nothing the fetch failure stands.
 - **Only a charged failure spends the budget.** A conflict every granted rung
-  left undecided is charged; a ruleset-refused push, a merge-gate refusal or
-  any other `not-charged` verdict is not — charging the branch for a fault that
+  left undecided is charged, and so is a merge-gate refusal of a clean merge
+  (Issue #4304: it is a conflict git could not see, answered by the same
+  roll-back and `merge-fallback` flag); a ruleset-refused push or any other
+  `not-charged` verdict is not — charging the branch for a fault that
   is not its own is what Issues #1772 and #1778 removed. Those deferrals are
   bounded by the per-issue expected-skip cooldown instead: one bounce per
   issue, then the issue is in cooldown.
@@ -5455,11 +5461,14 @@ as `claude-haiku-4-5`):
 - **Hard ceiling** — at or above `contextBudgetBlockPercent` (default 95%, `0`
   disables) `checkContextBudget()` returns `ok: false` with a `blockReason`.
   Both execution phases honour it: the phase stops **before** the billed Claude
-  invocation, applies `needs-human` through the shared `escalateToHuman`
-  chokepoint, and posts an explanation. Without it a non-converging issue was
-  bounded only by wall-clock while `loop.sh` restarted the worker forever.
-  `context_budget_guard.ts` holds the shared component breakdown and escalation
-  wording used by both phases.
+  invocation. Without it a non-converging issue was bounded only by wall-clock
+  while `loop.sh` restarted the worker forever. It never hands the issue to a
+  human (Issue #4298): the phase rebuilds the prompt with the comment and
+  CI-log history trimmed and checks again, and a prompt that still does not
+  fit goes to planning through `handOffOversizedIssueToPlanning`, the
+  `vibe-needs-planning` hand-off. When planning cannot take it, the run fails
+  and the issue is retried. `context_budget_guard.ts` holds the shared
+  component breakdown and the planning hand-off used by both phases.
 - **Human-readable breakdown** — `formatBudgetBreakdown()` produces a summary
   such as
   `"Context budget: system=12,450 dynamic=3,200 issue=1,800 total=17,450/200,000 (8.7%)"`,
@@ -5695,7 +5704,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [prompt_hash.ts](../worker/deno/lib/prompt_hash.ts)                                                               | SHA-256 prompt content hashing                                                                                                                                                                                                  |
 |                             | [batch_api.ts](../worker/deno/lib/batch_api.ts)                                                                   | Offline Batch API estimation helpers only — live submission never wired in, removed as dead code                                                                                                                                |
 |                             | [context_budget.ts](../worker/deno/lib/context_budget.ts)                                                         | Context window budget estimation, monitoring, and hard ceiling                                                                                                                                                                  |
-|                             | [context_budget_guard.ts](../worker/deno/lib/context_budget_guard.ts)                                             | Shared prompt component breakdown and needs-human copy for the context ceiling                                                                                                                                                  |
+|                             | [context_budget_guard.ts](../worker/deno/lib/context_budget_guard.ts)                                             | Shared prompt component breakdown and planning hand-off for the context ceiling                                                                                                                                                 |
 |                             | [verbosity.ts](../worker/deno/lib/verbosity.ts)                                                                   | Verbosity level resolution and prompt injection                                                                                                                                                                                 |
 |                             | [session_resume.ts](../worker/deno/lib/session_resume.ts)                                                         | CLI session continuity with `--session-id` / `--resume`                                                                                                                                                                         |
 |                             | [session_compaction.ts](../worker/deno/lib/session_compaction.ts)                                                 | Progressive three-tier session compaction                                                                                                                                                                                       |
@@ -5813,7 +5822,6 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [merge_conflict_stages.ts](../worker/deno/lib/merge_conflict_stages.ts)                                           | Reads a conflicted path's merge stages, so a modify/delete resolves as a delete instead of reviving removed code                                                                                                                |
 | **Issue processing phases** |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [clarity_assessment.ts](../worker/deno/lib/clarity_assessment.ts)                                                 | Issue clarity assessment logic                                                                                                                                                                                                  |
-|                             | [clarity_phase.ts](../worker/deno/lib/clarity_phase.ts)                                                           | Clarity assessment phase                                                                                                                                                                                                        |
 |                             | [execute_claude_phase.ts](../worker/deno/lib/execute_claude_phase.ts)                                             | Claude execution phase                                                                                                                                                                                                          |
 |                             | [quality_gate_phase.ts](../worker/deno/lib/quality_gate_phase.ts)                                                 | Quality gate phase                                                                                                                                                                                                              |
 |                             | [phases/completion_phase.ts](../worker/deno/lib/phases/completion_phase.ts)                                       | PR completion phase — push, PR creation, screenshot and security-fix gates                                                                                                                                                      |

@@ -77,55 +77,6 @@ export interface FactsFlipVerdict {
   verdict: FlipStatus;
 }
 
-/** Shown when the completion phase or a review-fix run has no verifier wired. */
-export const FLIP_VERIFIER_UNWIRED_REASON = "the flip verifier is not wired";
-
-/** Shown when a tested entry comes back without a verdict. Never a silent pass. */
-export const FLIP_VERIFIER_NO_VERDICT_REASON =
-  "the flip verifier returned no verdict for this entry";
-
-/** A thrown verifier, named in the not-checked reason. */
-export function flipVerifierFailedReason(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return `the flip verifier failed: ${message}`;
-}
-
-/**
- * One verdict per tested entry. An index the verifier omitted is
- * `not_checked` with `missingReason`, never treated as verified.
- */
-export function fillMissingFlipVerdicts(
-  facts: SummaryFacts,
-  verdicts: readonly FactsFlipVerdict[],
-  missingReason: string,
-): FactsFlipVerdict[] {
-  const byIndex = new Map(verdicts.map((verdict) => [verdict.index, verdict]));
-  const out: FactsFlipVerdict[] = [];
-  for (const [index, entry] of facts.branchOutcomes.entries.entries()) {
-    if (!isTested(entry)) continue;
-    out.push(
-      byIndex.get(index) ?? {
-        index,
-        verdict: { kind: "not_checked", reason: missingReason },
-      },
-    );
-  }
-  return out;
-}
-
-/** Refusal messages in entry order. */
-export function flipRefusalMessages(
-  verdicts: readonly FactsFlipVerdict[],
-): string[] {
-  const messages: string[] = [];
-  for (const verdict of verdicts) {
-    if (verdict.verdict.kind === "refused") {
-      messages.push(verdict.verdict.message);
-    }
-  }
-  return messages;
-}
-
 const SPLIT_REASON =
   "two-sided outcome: cannot confirm both forcings; split the entry";
 

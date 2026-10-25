@@ -18,8 +18,14 @@
  *                     longer reflects the merged state. Update the branch
  *                     and let the checks re-run rather than merging stale
  *                     or giving up.
- * - `escalate`      — the PR is green but will not merge. Post an
- *                     explanatory PR comment and apply `needs-human`.
+ * - `retry`         — the PR is green but will not merge, or nothing has
+ *                     verified its head. Ask GitHub to update the branch
+ *                     (fresh checks against the current base; a conflict
+ *                     surfaces for the merge-conflict ladder), log a warning
+ *                     and try again next cycle. Never a `needs-human` label
+ *                     or a "merge it manually" comment (Issue #4304): every
+ *                     PR merges once it is approved and green, and the
+ *                     worker keeps working it until it does.
  *
  * Only the worker's own PRs reach here: the auto-merge scan lists PRs by
  * the worker's login, so human-authored PRs are untouched.
@@ -28,8 +34,6 @@
  */
 
 import type { Logger, Result } from "../types.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /** Injectable gh command runner. */
@@ -121,7 +125,7 @@ export type MergeDisposition =
   | "landed"
   | "await_checks"
   | "update_branch"
-  | "escalate";
+  | "retry";
 
 /** What {@link handleMergeAttempt} actually did. */
 export interface MergeAttemptHandling {
@@ -129,8 +133,6 @@ export interface MergeAttemptHandling {
   disposition: MergeDisposition;
   /** True when a branch update was successfully requested. */
   branchUpdateRequested: boolean;
-  /** True when the PR was commented on and labelled `needs-human`. */
-  escalated: boolean;
 }
 
 /** Options for {@link handleMergeAttempt}. */
@@ -143,26 +145,14 @@ export interface HandleMergeAttemptOptions {
   outcome: MergeAttemptOutcome;
   /** Logger for diagnostic output. */
   logger: Logger;
-  /** gh command runner used for the comment/label/update-branch calls. */
+  /** gh command runner used for the update-branch call. */
   ghFn: GhFn;
-  /** Label applied on escalation. Defaults to `needs-human`. */
-  needsHumanLabel?: string;
-  /** GitHub login used in the comment footer. */
-  githubUser?: string;
   /** Injectable branch updater (defaults to {@link requestBranchUpdate}). */
   updateBranchFn?: (repo: string, prNumber: number) => Promise<Result<void>>;
-  /** Injectable escalation helper (enables testing). */
-  escalateFn?: typeof escalateToHuman;
 }
 
 /** Repo must be exactly `owner/repo` before it reaches an API path. */
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-
-/** What a human should do once a fix PR has been escalated. */
-const MERGE_ESCALATION_NEXT_STEP =
-  "Review this PR and either merge it manually or fix what is blocking the " +
-  "merge (branch protection rule, merge conflict, or required approval). " +
-  "The worker will not retry the merge while `needs-human` is applied.";
 
 /**
  * Classify a merge outcome into the action the worker should take.
@@ -224,11 +214,14 @@ export function classifyMergeAttempt(
     case "behind_target":
       return "update_branch";
     case "no_checks":
-      // Nothing verified this head, and waiting will not produce a check.
-      // A human decides whether to merge it (Issue #3705).
-      return "escalate";
+      // Nothing verified this head, so it is never merged as it stands
+      // (Issue #3705). A branch update gives the checks a fresh head to run
+      // on, and the next cycle tries again (Issue #4304).
+      return "retry";
     case "merge_error":
-      return "escalate";
+      // Green but refused. Retried every cycle, never handed to a human
+      // (Issue #4304).
+      return "retry";
   }
 }
 
@@ -285,9 +278,9 @@ export async function requestBranchUpdate(
  * Act on a merge attempt's outcome — the loud half of the merge path.
  *
  * Never returns quietly on a fault: a green PR that will not merge, or a
- * stale-base PR whose branch update fails, always produces an explanatory
- * PR comment plus the `needs-human` label. A failure to escalate is itself
- * logged at error level rather than swallowed.
+ * stale-base PR whose branch update fails, is logged as a warning, its branch
+ * update is requested, and the next cycle tries the merge again. Nothing is
+ * handed to a human — no comment, no `needs-human` label (Issue #4304).
  *
  * @param options - Merge attempt context
  * @returns What was done for this PR
@@ -299,7 +292,7 @@ export async function handleMergeAttempt(
   const disposition = classifyMergeAttempt(outcome);
 
   if (disposition === "landed") {
-    return { disposition, branchUpdateRequested: false, escalated: false };
+    return { disposition, branchUpdateRequested: false };
   }
 
   if (disposition === "await_checks") {
@@ -313,32 +306,31 @@ export async function handleMergeAttempt(
         : "Merge deferred — PR is not green",
       { repo, prNumber, reason: outcome.kind },
     );
-    return { disposition, branchUpdateRequested: false, escalated: false };
+    return { disposition, branchUpdateRequested: false };
   }
 
+  const updateBranchFn = options.updateBranchFn ??
+    ((r: string, n: number) => requestBranchUpdate(r, n, ghFn));
+
   if (disposition === "update_branch") {
-    const updateBranchFn = options.updateBranchFn ??
-      ((r: string, n: number) => requestBranchUpdate(r, n, ghFn));
     const update = await updateBranchFn(repo, prNumber);
     if (update.ok) {
       logger.info(
         "PR is behind its base — branch updated, checks will re-run",
         { repo, prNumber },
       );
-      return { disposition, branchUpdateRequested: true, escalated: false };
+      return { disposition, branchUpdateRequested: true };
     }
-    // The branch cannot be brought up to date automatically — this is the
-    // silent-stall case, so escalate rather than leaving the PR open.
-    const escalated = await escalate(
-      options,
-      `the PR is behind its base branch and the branch update failed: ` +
-        `${redactSecrets(update.error.message)}`,
+    // The branch cannot be brought up to date automatically. Loud, and
+    // retried next cycle; a conflict is the merge-conflict ladder's, which
+    // finds the PR by its mergeable state (Issue #4304).
+    logger.warn(
+      `PR #${prNumber} is behind its base and the branch update failed: ` +
+        `${redactSecrets(update.error.message)} — retrying next cycle ` +
+        `(Issue #4304)`,
+      { repo, prNumber },
     );
-    return {
-      disposition: "escalate",
-      branchUpdateRequested: false,
-      escalated,
-    };
+    return { disposition: "retry", branchUpdateRequested: false };
   }
 
   const detail = outcome.kind === "merge_error"
@@ -347,50 +339,15 @@ export async function handleMergeAttempt(
     ? "this PR has no check runs and no commit statuses, so nothing has " +
       "verified its head commit (Issue #3705)"
     : outcome.kind;
-  const escalated = await escalate(
-    options,
-    `the worker could not arrange for this PR to merge automatically: ` +
-      detail,
+  // Self-heal before the next try: bring the branch level with its base so
+  // its checks run again on the merged state. An up-to-date branch refuses
+  // the update, which costs nothing (Issue #4304).
+  const update = await updateBranchFn(repo, prNumber);
+  logger.warn(
+    `PR #${prNumber} did not merge: ${detail} — ` +
+      (update.ok ? "branch update requested; " : "") +
+      "retrying next cycle (Issue #4304)",
+    { repo, prNumber, reason: outcome.kind },
   );
-  return { disposition, branchUpdateRequested: false, escalated };
-}
-
-/**
- * Post the explanatory comment and apply `needs-human`.
- *
- * One consolidated escalation per PR (the dedup key is the PR itself), so
- * a repeating maintenance scan does not spam the thread.
- */
-async function escalate(
-  options: HandleMergeAttemptOptions,
-  reason: string,
-): Promise<boolean> {
-  const { repo, prNumber, logger, ghFn } = options;
-  const escalateFn = options.escalateFn ?? escalateToHuman;
-
-  const result = await escalateFn({
-    ghClient: createGhEscalationClient(ghFn),
-    repo,
-    target: { kind: "pr", number: prNumber },
-    needsHumanLabel: options.needsHumanLabel ?? "needs-human",
-    heading: "Fix PR cannot be merged",
-    reason,
-    nextStep: MERGE_ESCALATION_NEXT_STEP,
-    dedupKey: `merge-blocked:${repo}#${prNumber}`,
-    ensureLabelColour: "d4c5f9",
-    ensureLabelDescription:
-      "Worker could not land this PR; human review required",
-    githubUser: options.githubUser,
-    logger,
-  });
-
-  if (!result.ok) {
-    logger.error("Failed to escalate a blocked merge", {
-      repo,
-      prNumber,
-      error: result.error.message,
-    });
-    return false;
-  }
-  return true;
+  return { disposition, branchUpdateRequested: update.ok };
 }

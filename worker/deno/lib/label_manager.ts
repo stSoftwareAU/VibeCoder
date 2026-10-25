@@ -7,7 +7,7 @@
  *   - `label_operations.ts`          — add label / ensure label exists
  *   - `label_failure.ts`             — failed-once / failed marking + handler
  *   - `label_question_failure.ts`    — question answering failure path
- *   - `label_clarification.ts`       — clarification workflow
+ *   - `label_clarification.ts`       — clarifying-question validation
  *   - `label_planning_escalation.ts` — planning escalation detection + post
  *
  * External callers may continue to import from this file; new code should
@@ -24,7 +24,6 @@ export type { ClarityStatus, FailureCategory } from "./failure_diagnosis.ts";
 
 // Shared label manager types and default configuration.
 export type {
-  ClarificationOptions,
   EscalationOptions,
   FailureOptions,
   HandleFailureOptions,
@@ -63,12 +62,8 @@ export {
   handleQuestionFailure,
 } from "./label_question_failure.ts";
 
-// Clarification workflow (Issue #107, Issue #190).
-export {
-  countClarificationRounds,
-  postClarifyingQuestions,
-  validateClarifyingQuestions,
-} from "./label_clarification.ts";
+// Clarifying-question validation (Issue #190).
+export { validateClarifyingQuestions } from "./label_clarification.ts";
 
 // Planning escalation (Issues #557, #977, #1476).
 export {

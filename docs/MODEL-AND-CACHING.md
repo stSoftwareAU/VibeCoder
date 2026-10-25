@@ -1731,9 +1731,7 @@ the phase.
   (`reportPhaseDegradation`, `buildPhaseInvocations`), wired into
   [`refinement_processor.ts`](../worker/deno/lib/refinement_processor.ts),
   [`revision_processor.ts`](../worker/deno/lib/revision_processor.ts),
-  [`question_processor.ts`](../worker/deno/lib/question_processor.ts), and the
-  clarification dispatch in
-  [`clarity_phase.ts`](../worker/deno/lib/clarity_phase.ts) /
+  [`question_processor.ts`](../worker/deno/lib/question_processor.ts), and
   [`clarity_assessment.ts`](../worker/deno/lib/clarity_assessment.ts). The
   explicit pre-flight signal originates in
   [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) and is carried

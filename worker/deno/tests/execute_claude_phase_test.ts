@@ -550,19 +550,76 @@ Deno.test("runExecuteClaudePhase - failure when prompt building fails", async ()
 // Context budget hard ceiling (Issue #3713)
 // -----------------------------------------------------------------------
 
-Deno.test("runExecuteClaudePhase - context budget ceiling blocks the phase and escalates (Issue #3713)", async () => {
-  const escalations: Array<{ issueNumber: number; reason: string }> = [];
+/** A cached-prompt builder oversized only while the CI log is in it. */
+function ciLogHeavyBuilder(seen: Array<string | undefined>) {
+  return async (opts: { ciFailureContext?: string }) => {
+    seen.push(opts.ciFailureContext);
+    return {
+      ok: true as const,
+      value: {
+        systemPrompt: "Mock system",
+        prompt: opts.ciFailureContext ? "L".repeat(400_000) : "Mock prompt",
+        promptSha: "a".repeat(64),
+        cacheHit: false,
+      },
+    };
+  };
+}
+
+const CI_FAILURE_REPO_CONFIG = {
+  "owner/repo": { ciFailureLabels: ["ci-failure"] },
+} as unknown as Record<string, import("../types.ts").RepoConfig>;
+
+Deno.test("runExecuteClaudePhase - an oversized CI log is trimmed and the run proceeds (Issue #4298)", async () => {
+  const seen: Array<string | undefined> = [];
+  const handoffs: number[] = [];
+  let claudeCalls = 0;
+
+  const result = await runExecuteClaudePhase(
+    createTestOptions({
+      contextBudgetBlockPercent: 5,
+      issueLabels: "work-on,ci-failure",
+      repoConfigs: CI_FAILURE_REPO_CONFIG,
+      includeRecentActivity: false,
+    }),
+    createMockDeps({
+      buildCiFailureContext: async () => "a very long build log",
+      buildCachedIssuePrompt: ciLogHeavyBuilder(seen) as never,
+      handOffContextBudget: async (opts) => {
+        handoffs.push(opts.issueNumber);
+        return true;
+      },
+      runClaudeWithRetry: async () => {
+        claudeCalls++;
+        return {
+          ok: true,
+          value: { exitCode: 0, output: "", timedOut: false },
+        };
+      },
+    }),
+  );
+
+  assertEquals(result.action, "success");
+  assertEquals(seen, ["a very long build log", undefined]);
+  assertEquals(claudeCalls, 1, "the trimmed prompt is sent");
+  assertEquals(handoffs, [], "nothing is handed off");
+});
+
+Deno.test("runExecuteClaudePhase - a prompt still over the ceiling goes to planning, never to a human (Issue #4298)", async () => {
+  const handoffs: Array<{ issueNumber: number; labels: readonly string[] }> =
+    [];
   let claudeCalls = 0;
 
   const result = await runExecuteClaudePhase(
     // A 0.001% ceiling on a 1M window blocks any realistic prompt.
     createTestOptions({ contextBudgetBlockPercent: 0.001 }),
     createMockDeps({
-      escalateContextBudget: async (opts) => {
-        escalations.push({
+      handOffContextBudget: async (opts) => {
+        handoffs.push({
           issueNumber: opts.issueNumber,
-          reason: opts.reason,
+          labels: opts.issueLabels,
         });
+        return true;
       },
       runClaudeWithRetry: async () => {
         claudeCalls++;
@@ -577,25 +634,29 @@ Deno.test("runExecuteClaudePhase - context budget ceiling blocks the phase and e
   assertEquals(result.action, "failure");
   assertEquals(result.failureType, "context_budget");
   assertStringIncludes(result.failureMessage!, "hard ceiling");
+  assertStringIncludes(result.failureMessage!, "planning");
   assertEquals(claudeCalls, 0, "no billed invocation past the ceiling");
-  assertEquals(escalations.length, 1, "issue handed to a human");
-  assertEquals(escalations[0]!.issueNumber, 42);
+  assertEquals(handoffs, [{
+    issueNumber: 42,
+    labels: ["enhancement", "work-on"],
+  }]);
 });
 
 Deno.test("runExecuteClaudePhase - a zero ceiling keeps the budget check observational (Issue #3713)", async () => {
-  const escalations: string[] = [];
+  const handoffs: number[] = [];
 
   const result = await runExecuteClaudePhase(
     createTestOptions({ contextBudgetBlockPercent: 0 }),
     createMockDeps({
-      escalateContextBudget: async (opts) => {
-        escalations.push(opts.reason);
+      handOffContextBudget: async (opts) => {
+        handoffs.push(opts.issueNumber);
+        return true;
       },
     }),
   );
 
   assertEquals(result.action, "success");
-  assertEquals(escalations.length, 0);
+  assertEquals(handoffs.length, 0);
 });
 
 Deno.test("runExecuteClaudePhase - timeout failure with no self-healing", async () => {

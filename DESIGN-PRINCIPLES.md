@@ -996,12 +996,12 @@ late: the deploy/publish workflows have already fired. Enforcement is
 - **No post-merge re-run of required checks** on the default branch.
 - **Hands-off landing, loud when blocked.** Merge-path precedence is
   fixed — native auto-merge first, direct merge only when native auto-merge is
-  refused on an unprotected branch — so the worker never races a repo's own
-  `auto-merge.yml`. `handleMergeAttempt()` in
+  refused on an unprotected branch or switched off on the repository — so the
+  worker never races a repo's own `auto-merge.yml`. `handleMergeAttempt()` in
   `worker/deno/lib/merge_block_escalation.ts` then acts on the outcome: a
   behind branch is updated so its checks re-run, and a PR that cannot be landed
-  gets an explanatory comment plus `needs-human`. A merge failure is never
-  swallowed. Review requests stay informational; only branch protection can
+  is logged and retried next cycle — never handed to a human with a comment or
+  `needs-human` (Issue #4304). A merge failure is never swallowed. Review requests stay informational; only branch protection can
   require an approval.
 - **One approval before the default branch.** Setup's `repo-settings-harden`
   makes every monitored repository's default branch require one approving
@@ -1484,30 +1484,29 @@ worker defer internal-dependency fixes by filing follow-up issues.
   open a PR against; if unreachable, treat it as external (defer is then
   legitimate). The rule is general to every internal dependency and **recurses to
   transitive internal deps** — fix wherever the root cause actually lives.
-- **Defer via a follow-up issue + `needs-human` only** for: external
-  (non-`stSoftwareAU/*`) deps, genuine human-only decisions, or a cross-repo fix
-  genuinely too big for one run — and even then the worker must at minimum open a
-  **draft/WIP PR in the dependency repo**, never punt the whole fix to an issue.
-  "Too big for one run" is almost never a valid reason to *fully* defer.
+- **External (non-`stSoftwareAU/*`) dependency → work around it in the repo
+  being worked on** — pin the last good version, replace the package, or vendor
+  and patch it — and record the upstream defect in the PR summary. A cross-repo
+  fix genuinely too big for one run still opens at minimum a **draft/WIP PR in
+  the dependency repo**. No run defers to `needs-human` or a follow-up issue
+  (Issue #4304).
 
-The behaviour lives in the `prompts/issue/` and `prompts/coding_guidelines/`
-escape-hatch sections. The actual cross-repo PR plumbing, the one-follow-up
+The behaviour lives in the `prompts/coding_guidelines/` internal-dependency
+section. The actual cross-repo PR plumbing, the one-follow-up
 dedup cap, and the release-gating boundary are sibling issues under parent.
 
 ### Escape hatch for out-of-scope work
 
-When a Claude run is genuinely too large or out of scope — a PR comment
-requesting a multi-day refactor, a CI failure caused by missing infrastructure,
-an issue whose scope exploded after refinement — the prompts
-(`prompts/coding_guidelines/`, `prompts/pr_feedback/`, `prompts/ci_fix/`,
-`prompts/issue/`) instruct Claude to hand off cleanly instead of looping to the
-timeout:
-
-1. Open a follow-up issue capturing the analysis.
-2. Post **one** message naming the follow-up issue (e.g.
-   `stSoftwareAU/foo#NNN`), explaining briefly why the original cannot be
-   resolved in-line, and mentioning `needs-human` if a person should triage.
-3. Exit cleanly — do not retry the original change.
+The escape hatch was a hand-off: a run that judged its task out of scope
+filed a follow-up issue, posted one message naming it (mentioning
+`needs-human` if a person should triage) and exited. The shared
+`prompts/coding_guidelines/` and `prompts/pr_feedback/` no longer offer it
+(Issue #4304): the owner's rule (25 October 2026) is that the Vibe Coder never
+passes work back to a person and files no follow-up issues for leftover work.
+A PR-feedback run decides a product choice itself with the assumption stated,
+or rebuts a request with reasons; the issue run lost its hatch earlier
+(Issue #4227). The worker-side detection below stays as a defence, because a
+model can still write a hand-off message and file the issue it names.
 
 **Worker-side detection.** `worker/deno/lib/escape_hatch.ts` provides
 `detectEscapeHatch()`, which inspects the message body for a same-repo issue
@@ -1516,8 +1515,8 @@ issue`,
 `escape hatch`, etc.). When the escape hatch is detected,
 `pr_feedback_processor.ts` treats the run as a successful resolution: it posts
 Claude's own message as the PR reply (rather than the neutral "could not
-identify a code change" fallback), records the follow-up issue reference and
-`needs-human` flag in the run summary log, and returns a summary of the form
+identify a code change" fallback), records the follow-up issue reference in
+the run summary log, and returns a summary of the form
 `PR #N feedback handed off via escape
 hatch (org/repo#NNN)`.
 
@@ -2835,7 +2834,6 @@ backstop) pick the issue up immediately and keeps the recovery scan quiet.
 copy-paste a bespoke unassign block into a new processor. The helper centralises
 the try/log/return-boolean shape; every self-assigning processor
 ([`grill_me_processor.ts`](worker/deno/lib/grill_me_processor.ts) —,
-[`clarity_phase.ts`](worker/deno/lib/clarity_phase.ts),
 [`planning_processor.ts`](worker/deno/lib/planning_processor.ts),
 [`refinement_processor.ts`](worker/deno/lib/refinement_processor.ts),
 [`question_processor.ts`](worker/deno/lib/question_processor.ts),
