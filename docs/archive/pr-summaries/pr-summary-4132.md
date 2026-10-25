@@ -1,6 +1,6 @@
 ## Summary
 
-`clear-worker-gate-labels` lists open issues labelled `failed` or `failed-once` and removes those labels when the latest "Automated Processing Failed" comment is fleet-authored and `isWorkerGateCategory` accepts the registry category for its display name. That predicate reads `WORKER_GATE_MARKERS`: summary-incomplete, security-fix-gate, pre-push-gate and criteria-unmet. quality-failure is the display of `quality_check` and is left labelled. Dry-run is the default, so omitting the flag removes nothing. A failed `gh issue list` is an error. The command was not run against live GitHub. Closes #4132.
+`clear-worker-gate-labels` lists open issues labelled `failed` or `failed-once` and selects the latest failure record across all worker paths. It removes labels only when that record is a fleet-authored "Automated Processing Failed" comment naming summary-incomplete, quality-failure, pre-push-gate or security-fix-gate, as #4132 requires. Criteria failures and newer records from other worker paths retain their labels. Dry-run is the default. The command was not run against live GitHub. Closes #4132.
 
 The three-dot diff also merges `origin/main` into the milestone. A pre-push verdict block still gets one in-run turn. An unwritable mutation temp directory still sets `workerFault`. That block is reported on the advisory completion-gate path, which does not stop the pull request.
 
@@ -8,15 +8,15 @@ The three-dot diff also merges `origin/main` into the milestone. A pre-push verd
 
 ### Intent and Rationale
 
-- After the worker-gate fixes deploy, issues parked by a worker gate should be queued again. A timeout, a crash, a quality-failure, and a comment a non-fleet account wrote stay labelled.
-- The issue's opening list names quality-failure. The task bullet says to use the worker-gate predicate. `isWorkerGateCategory` is that predicate. It does not accept `quality_check`, and it does accept `criteria_unmet`. The command follows the predicate.
+- After the worker-gate fixes deploy, issues parked by one of the four named worker gates can be queued again. Timeouts, crashes, unmet criteria and non-fleet records stay labelled.
+- `WORKER_GATE_LABEL_CLEANUP_CATEGORIES` and `isWorkerGateLabelCleanupDisplay` define the one-off release scope separately from ongoing failure classification. The marker registry and failure ladder retain their current behaviour.
 - The sweep is a one-off command, run by a person, next to `analyse-failed-once`. It is not part of the worker loop.
 
 ### Essential Design Decisions
 
 - Dry-run is the default (`coerceBooleanFlag` fallback `true`), the same choice `pr-manager close-duplicate-prs` makes for a destructive action. A live run is `deno run mod.ts clear-worker-gate-labels --dry-run false`. A value that is not `true` or `false` is refused.
-- The category text is `parseCategoryFromComment` from `analyse_failed_once.ts`. The author check is `isFleetAuthor`. A display is cleared when a `WORKER_GATE_MARKERS` entry has that display and `isWorkerGateCategory` accepts the entry's category. The report and the help text name those displays from the registry.
-- The latest `## Automated Processing Failed` comment is the one that counts. Its author is checked after that choice, so a newer forged comment does not give way to an older fleet comment, and an older gate comment does not clear a newer timeout.
+- Reuse `parseCategoryFromComment` for category text, `isFleetAuthor` for author checks, and the scoped shared cleanup predicate for the four categories. Reports and help derive their category list from the same source.
+- Select the latest record with the shared `FAILURE_RECORD_HEADING_PATTERN`, then check its heading, author and category. A newer question failure, paused run, milestone refusal, claim churn or planning escalation prevents an old gate failure from clearing labels.
 - Each label is listed with `--limit` (default 200). Every `gh issue list` and comment read finishes before any `gh issue edit`. A failed list, an unreadable payload, or a failed comment read is a non-zero result. An empty JSON array is an empty sweep. An unresolved fleet author set removes nothing.
 
 ### Undiscoverable Facts
@@ -47,9 +47,9 @@ Issue numbers this diff cites as the reason the change exists:
 - Reused `parseCategoryFromComment` (`worker/deno/commands/analyse_failed_once.ts`) for the `**Category:**` line.
 - Reused `isFleetAuthor` (`worker/deno/lib/fleet_authors.ts`), with the fleet set from `resolveAlertDedupAuthors` and `resolveFleetMaintenanceAuthorSet`.
 - Reused `parseLabelledIssues` and `parseCommentRows` (`worker/deno/lib/issue_sweep_parse.ts`).
-- The cleared set is `isWorkerGateCategory` over `WORKER_GATE_MARKERS` (`worker/deno/lib/failure_diagnosis.ts`). No second list of category names was added. The no-config allow-list in `worker/deno/mod.ts` already exists in two places; both register `clear-worker-gate-labels`.
+- The exact four-category cleanup scope is shared in `failure_diagnosis.ts`; ongoing failure classification is unchanged. Both no-config allow-lists in `worker/deno/mod.ts` register the command.
 - Dry-run lists `#3860` as `pre-push-gate` / `would-remove` and `#4046` as `timeout` / `keep`, and the recorded `gh` calls include no `--remove-label`.
-- A live run on that pair edits `#3860` and leaves `#4046`. A fleet-authored `quality-failure` stays labelled. A fleet-authored `criteria-unmet` is removed. A non-fleet author is left labelled. A failed list removes nothing.
+- The injected live-run seam clears #3860 and retains #4046. It clears fleet-authored quality-failure and retains criteria-unmet. Newer records from other worker paths, non-fleet records and failed reads never remove labels.
 - The command was not run against live GitHub.
 
 ## Acceptance Criteria
@@ -67,9 +67,13 @@ Issue numbers this diff cites as the reason the change exists:
 
 - **clean** — Australian English in the new command and its tests (`labelled`, `behaviour`). — evidence: `worker/deno/commands/clear_worker_gate_labels.ts`
 - **clean** — Fail loud: a failed `gh` list, an unreadable payload, a dry-run value that is not true or false, and an unresolved fleet author set are errors, and none of them removes a label. — evidence: `worker/deno/commands/clear_worker_gate_labels.ts`
-- **clean** — DRY: the cleared set is `isWorkerGateCategory` over `WORKER_GATE_MARKERS`, and the category text is `parseCategoryFromComment`. — evidence: `worker/deno/commands/clear_worker_gate_labels.ts`
+- **clean** — DRY: cleanup, reports and help use the shared four-category cleanup scope; comment parsing and failure-heading detection reuse existing helpers. — evidence: `worker/deno/commands/clear_worker_gate_labels.ts`
 - **clean** — Twinned copies: the category set is not copied. Both no-config allow-lists in `mod.ts` register `clear-worker-gate-labels`. — evidence: `worker/deno/mod.ts`
 
 ## Milestone merge validation
 
 Reconciled the milestone with current main for PR #4380. Kept the milestone's one-turn pre-push recovery, mutation temp-directory handling, prompt canary and security-sweep cleanups. Kept main's typed disk admissions, nested Deno discovery and later-session infrastructure-fault classification. The conflict resolutions passed 254 focused tests, all 857 manifest checks (one ignored), formatting and lint.
+
+## PR #4380 review repairs
+
+Addressed all three independent review findings. Recovery reconciliation and non-sentinel commit failures now return an unsuccessful recovery, so completion cannot validate uncommitted contents and push the old commit. The real-Git regression installs a rejecting commit hook, leaves a corrected working-tree file, and verifies zero pushes and an unchanged origin. The label sweep now selects the latest record across all worker failure paths and clears exactly the four categories named by #4132. The regressions failed before these fixes; 66 focused tests pass after them.

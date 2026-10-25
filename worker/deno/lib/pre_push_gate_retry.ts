@@ -44,9 +44,9 @@ const PRE_PUSH_GATE_OUTPUT_BLOCK = "the pre-push gate output";
 /**
  * Outcome of the pre-push gate's one extra agent turn.
  *
- * `ran: true` means the turn finished cleanly and a commit of whatever it left
- * was attempted (a reconcile or commit failure is logged, never thrown, and
- * does not change this). `ran: false` names the cause in `detail`; the caller then reports
+ * `ran: true` means the turn finished cleanly and its changes were committed
+ * on the intended branch. Reconciliation or commit failures stop recovery.
+ * `ran: false` names the cause in `detail`; the caller then reports
  * the gate's latest output as the block.
  */
 export type PrePushRecoveryTurn =
@@ -118,8 +118,8 @@ ${buildBoundaryIntegrityInstruction(id, [PRE_PUSH_GATE_OUTPUT_BLOCK])}`;
  * extra turn per run, across every gate call in the completion phase.
  *
  * The turn resumes the same session with the gate's output. On a clean finish
- * the worker tries to commit whatever it left on the issue branch; a failed
- * reconcile or commit is logged and the turn still counts as run. The commit
+ * the worker commits whatever it left on the issue branch; a failed
+ * reconcile or commit stops recovery and keeps the push blocked. The commit
  * never pushes: a `beforePush` refusal leaves the push to the completion
  * phase, which re-runs the formatters and the same whole-branch gate and
  * pushes only if it passes. The caller re-runs the gate and decides.
@@ -208,9 +208,16 @@ export async function runPrePushGateRecoveryTurn(
 
   recordClaudeRunStats(state, value);
 
-  await commitPrePushFindings(ctx, state, deps);
-
-  return { ran: true };
+  try {
+    return await commitPrePushFindings(ctx, state, deps);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.error(`Could not commit pre-push gate findings: ${detail}`, {
+      repo,
+      issueNumber,
+    });
+    return { ran: false, detail };
+  }
 }
 
 /**
@@ -238,14 +245,14 @@ export class PrePushRecoveryPushDeferred extends Error {
  * `beforePush` refusal stops `commitAndPushPending` after Step 1's commit and
  * before Step 2's push. The completion phase's gate (the formatters and the
  * whole-branch gate) then decides the push. The refusal is logged at info
- * level. Any other failure is logged at error level and never thrown — the
- * caller re-runs the gate and reports its latest output, which decides the run.
+ * level. Any other failure is logged and returned to the caller, which
+ * keeps the push blocked without checking uncommitted working-tree contents.
  */
 async function commitPrePushFindings(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
-): Promise<void> {
+): Promise<PrePushRecoveryTurn> {
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
 
@@ -255,11 +262,10 @@ async function commitPrePushFindings(
   if (!reconcile.ok) {
     logger.error(
       `Could not put HEAD back on '${state.branchName}' to commit the ` +
-        `pre-push gate findings — they stay UNTRACKED and the gate re-run ` +
-        `will not see them: ${reconcile.error.message}`,
+        `pre-push gate findings; the push remains blocked: ${reconcile.error.message}`,
       { repo, issueNumber },
     );
-    return;
+    return { ran: false, detail: reconcile.error.message };
   }
 
   // Step 1 of commitAndPushPending commits the leftovers; the `beforePush`
@@ -286,15 +292,17 @@ async function commitPrePushFindings(
         `the completion phase's gate decides the push (Issue #4128)`,
       { repo, issueNumber },
     );
-    return;
+    return { ran: true };
   }
   if (!commit.ok) {
     logger.error(
       `Could not finish committing the pre-push gate findings on ` +
         `'${state.branchName}' — they may be uncommitted or committed locally, ` +
-        `depending on the step that failed; the gate re-run decides the run: ` +
+        `depending on the step that failed; the push remains blocked: ` +
         `${commit.error.message}`,
       { repo, issueNumber },
     );
+    return { ran: false, detail: commit.error.message };
   }
+  return { ran: true };
 }

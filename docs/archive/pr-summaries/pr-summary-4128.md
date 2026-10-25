@@ -2,7 +2,7 @@
 
 A pre-push gate block in the completion phase now gets one in-run agent recovery turn, as the screenshot and PR-summary gates already do. Closes #4128.
 
-The first verdict block of a run resumes the agent session once, with the gate output fenced in the prompt (`worker/deno/lib/pre_push_gate_retry.ts`). The worker then re-runs the formatters and the same whole-branch gate and pushes only if it passes. If it still blocks, the run fails as category `pre-push-gate` quoting the latest gate output. If the turn errors, throws, times out or exits non-zero, the run fails with the original gate output and the gate is not re-run. Version bump: `VERSION` updated for this change; the merged commit records the final version.
+The first verdict block of a run resumes the agent session once, with the gate output fenced in the prompt (`worker/deno/lib/pre_push_gate_retry.ts`). The worker then re-runs the formatters and the same whole-branch gate and pushes only if it passes. If it still blocks, the run fails as category `pre-push-gate` quoting the latest gate output. If the turn errors, throws, times out, exits non-zero, or its reconciliation or commit fails, the run fails with the original gate output and the gate is not re-run. Version bump: `VERSION` updated for this change; the merged commit records the final version.
 
 ```mermaid
 flowchart TD
@@ -84,3 +84,7 @@ Backend only; no UI files changed. Tests: `worker/deno/tests/pre_push_gate_retry
 - Twinned rules: the screenshot and summary-rule retries are siblings, not copies of a rule changed here; no twin found. Related existing rules checked: none in prompts/coding standards changed.
 
 <!-- vibe-branch-outcomes -->
+
+## PR #4380 review repair
+
+Reconciliation and commit failures now stop recovery. A real-Git completion regression proves that a corrected working-tree file cannot permit a push when the recovery commit hook rejects the fix. Both unit failure cases now require an unsuccessful recovery while preserving the one-turn cap and error diagnostics.

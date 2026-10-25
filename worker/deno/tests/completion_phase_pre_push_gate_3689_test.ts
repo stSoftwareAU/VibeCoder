@@ -30,7 +30,10 @@ import {
   PRE_PUSH_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
-import { PrePushGateBlockedError } from "../lib/git_push.ts";
+import {
+  commitAndPushPending,
+  PrePushGateBlockedError,
+} from "../lib/git_push.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type {
   IssueContext,
@@ -79,6 +82,8 @@ function stubClient(): GitHubClient {
 type GitResult = Result<{ code: number; stdout: string; stderr: string }>;
 
 interface Scenario {
+  /** A real git hook rejects the uncommitted recovery fix. */
+  recoveryCommitFailure?: boolean;
   landedWhen?: "before-recovery" | "during-push" | "before-bookkeeping";
   partialMerged?: boolean;
   unrelatedMerged?: boolean;
@@ -112,6 +117,9 @@ interface Scenario {
 }
 
 interface Outcome {
+  originBefore?: string;
+  originAfter?: string;
+  recoveryContents?: string;
   outcome?: RunOutcome;
   attempts: number;
   prCreates: number;
@@ -193,16 +201,62 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repoPath,
   } as PhaseState;
   if (scenario.landedTarget) state.milestoneBranch = scenario.landedTarget;
+  let originPath: string | undefined;
+  let originBefore: string | undefined;
+  const realGit = async (args: string[], cwd = repoPath): Promise<string> => {
+    const output = await new Deno.Command("git", {
+      args,
+      cwd,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
+    return new TextDecoder().decode(output.stdout).trim();
+  };
+  if (scenario.recoveryCommitFailure) {
+    originPath = await Deno.makeTempDir({ prefix: "pre-push-origin-" });
+    await realGit(["init", "--bare", "-b", "main"], originPath);
+    await realGit(["init", "-b", "main"]);
+    await realGit(["config", "user.name", "Fixture"]);
+    await realGit(["config", "user.email", "fixture@example.com"]);
+    await realGit(["config", "commit.gpgsign", "false"]);
+    await realGit(["config", "core.hooksPath", `${repoPath}/.git/hooks`]);
+    await realGit(["remote", "add", "origin", originPath]);
+    await Deno.writeTextFile(`${repoPath}/guide.md`, "correct spelling\n");
+    await realGit(["add", "."]);
+    await realGit(["commit", "-m", "seed"]);
+    await realGit(["checkout", "-b", state.branchName]);
+    await realGit(["push", "-u", "origin", state.branchName]);
+    originBefore = await realGit([
+      "rev-parse",
+      `refs/heads/${state.branchName}`,
+    ], originPath);
+    await Deno.writeTextFile(`${repoPath}/guide.md`, "incorrect spellling\n");
+    await realGit(["add", "guide.md"]);
+    await realGit(["commit", "-m", "introduce spelling error"]);
+    await Deno.writeTextFile(
+      `${repoPath}/.git/hooks/pre-commit`,
+      "#!/bin/sh\nexit 1\n",
+      { mode: 0o755 },
+    );
+  }
   const deps = createMockDeps({
     logger: {
       info: (message: string) => infos.push(message),
       warn: (message: string) => warnings.push(message),
     },
     claude: {
-      runClaudeWithRetry: (
+      runClaudeWithRetry: async (
         runOptions: RunClaudeOptions,
       ): ReturnType<WorkerDeps["claude"]["runClaudeWithRetry"]> => {
         agentCalls++;
+        if (scenario.recoveryCommitFailure) {
+          await Deno.writeTextFile(
+            `${repoPath}/guide.md`,
+            "correct spelling\n",
+          );
+        }
         agentPrompts.push(runOptions.prompt);
         if (scenario.agent === "throw") {
           throw new Error("agent invocation threw");
@@ -356,8 +410,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             : new PrePushGateBlockedError(answer),
         });
       },
-      pushUnpushedCommits: () => {
+      pushUnpushedCommits: async () => {
         pushes++;
+        if (scenario.recoveryCommitFailure) {
+          await realGit(["push", "origin", state.branchName]);
+        }
         if (scenario.landedWhen === "during-push") merged = true;
         return scenario.pushRefused && pushes === 1
           ? Promise.resolve({
@@ -380,6 +437,18 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         beforePush,
       ) => {
         recoveryCommits++;
+        if (scenario.recoveryCommitFailure) {
+          return await commitAndPushPending(
+            _branchName,
+            _message,
+            _opts,
+            _allowDefault,
+            _preFlight,
+            _runId,
+            _formatBeforeGate,
+            beforePush,
+          );
+        }
         if (beforePush) {
           const verified = await beforePush();
           if (!verified.ok) {
@@ -497,6 +566,16 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       terminal = await runPhase();
     }
     return {
+      ...(originPath
+        ? {
+          originBefore,
+          originAfter: await realGit([
+            "rev-parse",
+            `refs/heads/${state.branchName}`,
+          ], originPath),
+          recoveryContents: await Deno.readTextFile(`${repoPath}/guide.md`),
+        }
+        : {}),
       category: "category" in result ? result.category : undefined,
       outcome: terminal.outcome,
       attempts,
@@ -522,6 +601,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     };
   } finally {
     await Deno.remove(repoPath, { recursive: true });
+    if (originPath) await Deno.remove(originPath, { recursive: true });
   }
 }
 
@@ -1220,4 +1300,28 @@ Deno.test("completion retains the milestone target and repeated completion produ
     assertEquals(o.outcome.baseBranch, "milestone/implementation");
     assertEquals(o.outcome.defaultBranch, "main");
   }
+});
+
+Deno.test("completion - an uncommitted recovery fix cannot pass the gate and advance origin", async () => {
+  const o = await runCompletion({
+    ...base,
+    pushRefused: false,
+    gateAnswers: [BLOCK, "pass"],
+    recoveryCommitFailure: true,
+  });
+  assertEquals(
+    o.recoveryContents,
+    "correct spelling\n",
+    "the working tree contains a fix that would pass the second gate",
+  );
+  assertEquals(o.status, "failure");
+  assertEquals(o.agentCalls, 1);
+  assertEquals(o.recoveryCommits, 1);
+  assertEquals(o.gateCalls, 1, "do not gate uncommitted recovery contents");
+  assertEquals(o.pushes, 0);
+  assertEquals(
+    o.originAfter,
+    o.originBefore,
+    "origin must retain its original commit",
+  );
 });

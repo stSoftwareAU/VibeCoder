@@ -130,7 +130,7 @@ Deno.test("clearWorkerGateLabelsCommand - help text says how to run it", () => {
   assertStringIncludes(description, "pre-push-gate");
   assertStringIncludes(description, "security-fix-gate");
   assertStringIncludes(description, "criteria-unmet");
-  assertStringIncludes(description, "isWorkerGateCategory");
+  assertStringIncludes(description, "isWorkerGateLabelCleanupDisplay");
 });
 
 Deno.test("clearWorkerGateLabelsCommand - refuses to run with no repos", async () => {
@@ -165,11 +165,11 @@ Deno.test("clear - dry-run lists category and planned action and changes nothing
   assertStringIncludes(report, "no label was removed");
   assertStringIncludes(
     report,
-    "quality-failure is the display of quality_check",
+    "quality-failure",
   );
   assertStringIncludes(report, "left labelled");
   assertStringIncludes(report, "criteria-unmet");
-  assertStringIncludes(report, "isWorkerGateCategory");
+  assertStringIncludes(report, "isWorkerGateLabelCleanupDisplay");
   const byNumber = new Map(
     result.value.decisions.map((decision) => [decision.issueNumber, decision]),
   );
@@ -220,7 +220,7 @@ Deno.test("clear - covers a worker-gate category, a non-gate category, a missing
       }],
     },
     {
-      // quality_check's display. Not in WORKER_GATE_MARKERS, so it stays.
+      // Issue #4132 explicitly includes quality failures.
       number: 12,
       labels: ["failed"],
       comments: [{
@@ -261,7 +261,7 @@ Deno.test("clear - covers a worker-gate category, a non-gate category, a missing
       }],
     },
     {
-      // Registered worker-gate category. The predicate clears it.
+      // Criteria failures are outside the four-category cleanup scope.
       number: 17,
       labels: ["failed-once"],
       comments: [{
@@ -286,21 +286,21 @@ Deno.test("clear - covers a worker-gate category, a non-gate category, a missing
     result.value.decisions.find((decision) => decision.issueNumber === number)
       ?.reason ?? "";
   assertEquals(action(11), "removed");
-  assertEquals(action(12), "keep");
-  assertStringIncludes(reason(12), "not a worker-gate category");
+  assertEquals(action(12), "removed");
   assertEquals(action(13), "removed");
   assertEquals(action(14), "keep");
   assertEquals(action(15), "keep");
   assertStringIncludes(reason(15), "no failure comment");
   assertEquals(action(16), "keep");
   assertStringIncludes(reason(16), "not fleet-authored");
-  assertEquals(action(17), "removed");
+  assertEquals(action(17), "keep");
+  assertStringIncludes(reason(17), "not a worker-gate category");
   assertEquals(
     result.value.decisions.find((decision) => decision.issueNumber === 17)
       ?.category,
     "criteria-unmet",
   );
-  assertEquals(removedIssues(calls).sort((a, b) => a - b), [11, 13, 17]);
+  assertEquals(removedIssues(calls).sort((a, b) => a - b), [11, 12, 13]);
   const both = calls.find((args) => args[1] === "edit" && args[2] === "13");
   assertEquals(both?.includes("failed-once"), true);
   assertEquals(both?.includes("failed"), true);
@@ -399,4 +399,72 @@ Deno.test("clear - an unresolved fleet author set removes nothing", async () => 
   if (result.ok) return;
   assertStringIncludes(result.error.message, "fleet");
   assertEquals(calls, []);
+});
+
+for (
+  const heading of [
+    "Question Answering Failed",
+    "Automated Processing Paused",
+    "Milestone branch unavailable",
+    "Claim Churn Detected",
+    "Automatic Escalation to Planning Mode",
+  ]
+) {
+  Deno.test(`clear - a newer ${heading} record retains the failure label`, async () => {
+    const { calls, gh } = ghFor([{
+      number: 31,
+      labels: ["failed-once"],
+      comments: [
+        { author: "vibe-coder", body: failure("pre-push-gate") },
+        {
+          author: "vibe-coder",
+          body: failure("timeout").replace(
+            "Automated Processing Failed",
+            heading,
+          ),
+        },
+      ],
+    }]);
+    const result = await clearWorkerGateLabels({
+      repos: [REPO],
+      dryRun: false,
+      fleetAuthors: FLEET,
+      ghCommandFn: gh,
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.decisions[0]?.action, "keep");
+    assertEquals(removedIssues(calls), []);
+  });
+}
+
+Deno.test("clear - a newer question record cannot authorise cleanup by quoting a gate category", async () => {
+  const { calls, gh } = ghFor([{
+    number: 32,
+    labels: ["failed-once"],
+    comments: [
+      { author: "vibe-coder", body: failure("pre-push-gate") },
+      {
+        author: "vibe-coder",
+        body: failure("pre-push-gate").replace(
+          "Automated Processing Failed",
+          "Question Answering Failed",
+        ),
+      },
+    ],
+  }]);
+  const result = await clearWorkerGateLabels({
+    repos: [REPO],
+    dryRun: false,
+    fleetAuthors: FLEET,
+    ghCommandFn: gh,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.decisions[0]?.action, "keep");
+  assertStringIncludes(
+    result.value.decisions[0]?.reason ?? "",
+    "another worker path",
+  );
+  assertEquals(removedIssues(calls), []);
 });

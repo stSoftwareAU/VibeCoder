@@ -1,18 +1,10 @@
 /**
  * clear-worker-gate-labels command (Issue #4132).
  *
- * One-off sweep. For each configured repo it lists open issues labelled
- * `failed` or `failed-once`, reads the latest "Automated Processing Failed"
- * comment, and removes those labels when that comment was written by a fleet
- * account and `isWorkerGateCategory` accepts its category.
- *
- * The comment stores a display name. `isWorkerGateCategory` takes the
- * registry category on `WORKER_GATE_MARKERS`. A display is cleared when an
- * entry has that display and the predicate accepts the entry's category.
- * `quality-failure` is the display of `quality_check`, which is not in the
- * registry, so it stays labelled. Issue #4132's opening list also names
- * quality-failure; the task bullet says to use this predicate, and the
- * predicate is the set this command clears.
+ * One-off sweep. It selects the latest failure record, and removes failure
+ * labels only for a fleet-authored Automated Processing Failed record in
+ * Issue #4132's four-category cleanup scope. Later records from other worker
+ * paths retain their labels, even when an older gate failure qualified.
  *
  * Dry-run is the default, matching the other destructive command that
  * reports unless `--dry-run false` is passed (`pr-manager
@@ -31,8 +23,8 @@ import { runGhCommand } from "../lib/github.ts";
 import { parseCategoryFromComment } from "./analyse_failed_once.ts";
 import {
   getFailureCategoryDisplay,
-  isWorkerGateCategory,
-  WORKER_GATE_MARKERS,
+  isWorkerGateLabelCleanupDisplay,
+  WORKER_GATE_LABEL_CLEANUP_CATEGORIES,
 } from "../lib/failure_diagnosis.ts";
 import { resolveAlertDedupAuthors } from "../lib/alert_dedup_authors.ts";
 import {
@@ -40,6 +32,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "../lib/fleet_authors.ts";
 import {
+  FAILURE_RECORD_HEADING_PATTERN,
   parseCommentRows,
   parseLabelledIssues,
 } from "../lib/issue_sweep_parse.ts";
@@ -52,31 +45,21 @@ import { processEnvLookup } from "../lib/env_lookup.ts";
 
 /** Heading `label_failure.ts` writes on a failure record. */
 const FAILURE_HEADING_RE = /^##\s+Automated Processing Failed\b/;
+const FAILURE_RECORD_RE = new RegExp(FAILURE_RECORD_HEADING_PATTERN);
 
 const FAILED_LABEL = DEFAULT_LABEL_CONFIG.failedLabel;
 const FAILED_ONCE_LABEL = DEFAULT_LABEL_CONFIG.failedOnceLabel;
 
-/**
- * Display names of `WORKER_GATE_MARKERS` entries `isWorkerGateCategory`
- * accepts. The report and the help text are built from this, so a new
- * registry entry is named without a second list.
- */
+/** Displays shared by cleanup, reports and help. */
 function workerGateDisplays(): string[] {
-  const displays: string[] = [];
-  for (const entry of WORKER_GATE_MARKERS) {
-    if (!isWorkerGateCategory(entry.category)) continue;
-    displays.push(getFailureCategoryDisplay(entry.category));
-  }
-  return displays;
+  return WORKER_GATE_LABEL_CLEANUP_CATEGORIES.map(getFailureCategoryDisplay);
 }
 
-/** Printed on every report so the cleared set is the predicate's set. */
+/** Printed on every report so operators can inspect the exact cleanup scope. */
 function predicateNote(): string {
-  return "A failure category is cleared when isWorkerGateCategory accepts " +
-    "the WORKER_GATE_MARKERS entry with that display name (" +
+  return "isWorkerGateLabelCleanupDisplay accepts exactly " +
     workerGateDisplays().join(", ") +
-    "). quality-failure is the display of quality_check and is not in " +
-    "WORKER_GATE_MARKERS, so it is left labelled.";
+    ". criteria-unmet and every other category are left labelled.";
 }
 
 /** One issue the sweep considered. */
@@ -113,21 +96,6 @@ export interface ClearWorkerGateLabelsOptions {
 }
 
 /**
- * Whether a parsed failure-comment category is cleared.
- *
- * True when a {@link WORKER_GATE_MARKERS} entry's display equals `display`
- * and {@link isWorkerGateCategory} accepts that entry's category. A display
- * the registry does not carry, including `quality-failure`, is false.
- */
-function isWorkerGateDisplay(display: string): boolean {
-  for (const entry of WORKER_GATE_MARKERS) {
-    if (getFailureCategoryDisplay(entry.category) !== display) continue;
-    return isWorkerGateCategory(entry.category);
-  }
-  return false;
-}
-
-/**
  * Read `--dry-run`. Absent means dry-run. A live run is `--dry-run false`.
  * A value that is not true or false is refused, so a typo cannot select
  * either default.
@@ -141,7 +109,7 @@ function asError(err: unknown): Error {
 }
 
 function isFailureComment(body: string): boolean {
-  return FAILURE_HEADING_RE.test(body.trimStart());
+  return FAILURE_RECORD_RE.test(body.trimStart());
 }
 
 /**
@@ -182,7 +150,17 @@ function decideIssue(
       labels: present,
     };
   }
-  if (!isWorkerGateDisplay(category)) {
+  if (!FAILURE_HEADING_RE.test(latest.body.trimStart())) {
+    return {
+      repo,
+      issueNumber,
+      category,
+      action: "keep",
+      reason: "latest failure record belongs to another worker path",
+      labels: present,
+    };
+  }
+  if (!isWorkerGateLabelCleanupDisplay(category)) {
     return {
       repo,
       issueNumber,
@@ -262,7 +240,7 @@ async function listLabelled(
 /**
  * Survey the repos and, unless `dryRun`, remove `failed` / `failed-once`
  * from issues whose latest fleet-authored failure comment names a category
- * `isWorkerGateCategory` accepts.
+ * `isWorkerGateLabelCleanupDisplay` accepts.
  *
  * Every issue considered is returned. A failed list or a failed comment
  * read returns an error and removes nothing: the reads all happen before
@@ -434,11 +412,10 @@ const HELP =
   "Usage: deno run mod.ts clear-worker-gate-labels [--repos owner/repo] [--limit 200]. " +
   "A live run is explicit: deno run mod.ts clear-worker-gate-labels --dry-run false [--repos owner/repo]. " +
   "Repos default to the worker config. " +
-  "The latest Automated Processing Failed comment is cleared when it is " +
-  "fleet-authored and isWorkerGateCategory accepts its category. The " +
-  "registered display names are " +
+  "The latest failure record must be Automated Processing Failed and " +
+  "fleet-authored. isWorkerGateLabelCleanupDisplay accepts exactly " +
   workerGateDisplays().join(", ") +
-  ". quality-failure is not registered, so it is left labelled.";
+  ". criteria-unmet and every other category are left labelled.";
 
 /** The clear-worker-gate-labels command implementation. */
 export const clearWorkerGateLabelsCommand: Command = {

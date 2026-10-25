@@ -338,6 +338,26 @@ export function isWorkerGateCategory(
 }
 
 /**
+ * The four categories authorised for the one-off label cleanup (Issue #4132).
+ * This historical release scope is distinct from current failure classification:
+ * quality checks are included, while unmet acceptance criteria stay labelled.
+ */
+export const WORKER_GATE_LABEL_CLEANUP_CATEGORIES: readonly FailureCategory[] =
+  [
+    "summary_incomplete",
+    "quality_check",
+    "pre_push_gate",
+    "security_fix_gate",
+  ];
+
+/** Whether a posted display category is within Issue #4132's cleanup scope. */
+export function isWorkerGateLabelCleanupDisplay(display: string): boolean {
+  return WORKER_GATE_LABEL_CLEANUP_CATEGORIES.some(
+    (category) => getFailureCategoryDisplay(category) === display,
+  );
+}
+
+/**
  * The worker-written prefix of the completion phase's reason when the pre-push
  * gate could not read the branch state (a failed or timed-out git or remote
  * lookup, PR #3716 review). The branch was not judged, so it is a

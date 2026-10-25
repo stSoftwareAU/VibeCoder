@@ -355,7 +355,7 @@ Deno.test("pre-push gate retry - timed out: not run, detail names the timeout, n
   assertEquals(h.commits.length, 0);
 });
 
-Deno.test("pre-push gate retry - reconcile fails: the turn still counts as run, no commit, error log names the cause (Issue #4128)", async () => {
+Deno.test("pre-push gate retry - reconcile fails: recovery stops, no commit, error log names the cause (Issue #4128)", async () => {
   const h = makeHarness({
     reconcileError: new Error("HEAD is detached at 0123abc"),
   });
@@ -367,7 +367,8 @@ Deno.test("pre-push gate retry - reconcile fails: the turn still counts as run, 
     GATE_OUTPUT,
   );
 
-  assertEquals(result, { ran: true });
+  assertEquals(result.ran, false);
+  assertStringIncludes(detailOf(result), "HEAD is detached at 0123abc");
   assertEquals(h.agentCalls.length, 1);
   assertEquals(
     h.commits.length,
@@ -386,7 +387,7 @@ Deno.test("pre-push gate retry - reconcile fails: the turn still counts as run, 
   assertStringIncludes(h.errors[0]!, "HEAD is detached at 0123abc");
 });
 
-Deno.test("pre-push gate retry - commit fails with a non-sentinel error: the turn still counts as run, error log names the message (Issue #4128)", async () => {
+Deno.test("pre-push gate retry - commit fails with a non-sentinel error: recovery stops, error log names the message (Issue #4128)", async () => {
   const h = makeHarness({
     commitError: new Error(
       "pre-flight gate blocked: cspell unknown word 'sweptAtt'",
@@ -400,7 +401,11 @@ Deno.test("pre-push gate retry - commit fails with a non-sentinel error: the tur
     GATE_OUTPUT,
   );
 
-  assertEquals(result, { ran: true });
+  assertEquals(result.ran, false);
+  assertStringIncludes(
+    detailOf(result),
+    "pre-flight gate blocked: cspell unknown word 'sweptAtt'",
+  );
   assertEquals(h.agentCalls.length, 1);
   assertEquals(h.commits.length, 1);
   assertEquals(
@@ -822,3 +827,22 @@ Deno.test("pre-push gate retry - real git: the fix is committed locally and neve
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+for (
+  const operation of ["reconcileHeadToBranch", "commitAndPushPending"] as const
+) {
+  Deno.test(`pre-push gate retry - a thrown ${operation} failure stops recovery`, async () => {
+    const h = makeHarness({});
+    h.deps.git[operation] = (): Promise<never> =>
+      Promise.reject(new Error("git operation failed"));
+    const result = await runPrePushGateRecoveryTurn(
+      h.ctx,
+      h.state,
+      h.deps,
+      GATE_OUTPUT,
+    );
+    assertEquals(result.ran, false);
+    assertStringIncludes(detailOf(result), "git operation failed");
+    assertEquals(h.state.prePushRetryAttempted, true);
+  });
+}
