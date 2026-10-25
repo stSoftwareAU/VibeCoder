@@ -1,4 +1,4 @@
-import { agentTranscriptDir } from "./agent_transcript.ts";
+import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
  * Production dependency wiring for the run-core main event loop.
@@ -417,6 +417,7 @@ import {
   buildIssueRunCallbackContext,
 } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
+import { parseCodexTranscript } from "./run_outcome_classifier.ts";
 import {
   type FleetAuthorSetInput,
   isFleetAuthor,
@@ -583,6 +584,40 @@ const RESERVED_SUFFIX =
  */
 function homeDirectory(env: EnvLookup): string | undefined {
   return env("HOME") ?? env("USERPROFILE");
+}
+
+/**
+ * Codex session items for this run, when the transcript tee wrote one
+ * (Issue #4324).
+ *
+ * A missing file is the tee being off, not a fault. Any other read failure
+ * is logged and treated as no transcript, so claim release still finishes.
+ */
+async function readCodexTranscriptItems(
+  issueNumber: number,
+  env: EnvLookup,
+  log: (message: string) => void,
+): Promise<readonly unknown[] | undefined> {
+  const home = homeDirectory(env);
+  if (!home) return undefined;
+  const path = agentTranscriptPath(
+    agentTranscriptDir(home),
+    getRunId(),
+    issueNumber,
+  );
+  try {
+    const text = await Deno.readTextFile(path);
+    const items = parseCodexTranscript(text);
+    return items.length > 0 ? items : undefined;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return undefined;
+    log(
+      `Codex transcript for #${issueNumber} could not be read: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4914,12 +4949,18 @@ export async function createProductionRunCoreDeps(
       // A setup fault (Issue #2954) is released unlabelled and consumes no
       // attempt — the fault is the host's or the repository's, not the
       // issue's.
+      const transcript = await readCodexTranscriptItems(
+        issue.issueNumber,
+        env,
+        (message) => logger.info(message),
+      );
       const plan = planCodingFailure({
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
         category: result.category,
         classification: result.classification,
+        ...(transcript ? { transcript } : {}),
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
         ...(result.phase ? { phase: result.phase } : {}),
       });
@@ -4932,6 +4973,7 @@ export async function createProductionRunCoreDeps(
           failureReason: result.reason,
           category: result.category,
           classification: result.classification,
+          ...(transcript ? { transcript } : {}),
           ...(result.phase ? { failurePhase: result.phase } : {}),
           labels: {
             failedLabel: config.failedLabel,
@@ -5310,12 +5352,18 @@ export async function createProductionRunCoreDeps(
         // #4329), best-effort so this cannot stop claim release.
         try {
           const marker = await readMarkerState(workDir, repo, issueNumber);
+          const transcript = await readCodexTranscriptItems(
+            issueNumber,
+            env,
+            (message) => logger.info(message),
+          );
           const decision = await fileRunFailureIssue({
             report: {
               sourceRepo: repo,
               sourceIssueNumber: issueNumber,
               outcome,
               machineId,
+              ...(transcript ? { transcript } : {}),
               ...(marker?.commentId
                 ? {
                   releaseCommentUrl:

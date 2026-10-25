@@ -306,6 +306,26 @@ function toolFailedToSpawn(item: Record<string, unknown>): boolean {
  * spawn. A transcript whose tools ran is an ordinary agent outcome: the
  * model had a runtime and simply did not deliver.
  */
+/**
+ * Parse a Codex session JSONL into items.
+ *
+ * A line that is not a JSON object is skipped. A torn final line is not a
+ * transcript item, and it does not discard the items already read.
+ */
+export function parseCodexTranscript(text: string): unknown[] {
+  const items: unknown[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      items.push(JSON.parse(trimmed));
+    } catch {
+      continue;
+    }
+  }
+  return items;
+}
+
 function transcriptShowsToolRuntimeFailure(
   transcript: readonly unknown[] | undefined,
 ): boolean {

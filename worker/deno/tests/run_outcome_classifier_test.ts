@@ -9,6 +9,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   classifyRunFailure,
+  parseCodexTranscript,
   RUN_FAILURE_CLASSES,
   type RunFailureClassification,
   splitAgentNarration,
@@ -236,6 +237,27 @@ Deno.test("classifyRunFailure - a Code Mode unavailable transcript is code-fixab
   assertEquals(decision.failureClass, "tool-runtime");
   assertEquals(decision.disposition, "transient");
   assertEquals(decision.cooldownKind, undefined);
+});
+
+Deno.test("classifyRunFailure - a Codex JSONL session whose first item is the code-mode error is tool-runtime (Issue #4324)", () => {
+  const text = [
+    JSON.stringify({
+      type: "error",
+      message: "Code Mode is unavailable: host executable was not found",
+    }),
+    JSON.stringify({
+      type: "agent_message",
+      message: "I cannot use tools in this session.",
+    }),
+  ].join("\n");
+  const got = classifyRunFailure(
+    "no_changes",
+    NO_CHANGE_REASON,
+    true,
+    parseCodexTranscript(text),
+  );
+  assertEquals(got.failureClass, "tool-runtime");
+  assertEquals(got.fixability, "code_fixable");
 });
 
 Deno.test("classifyRunFailure - every tool call failing to spawn is tool-runtime (Issue #4324)", () => {
