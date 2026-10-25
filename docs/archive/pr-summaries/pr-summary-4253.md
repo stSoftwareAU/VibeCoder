@@ -175,3 +175,15 @@ because they mention the watchdog without listing reaper flags.
   `evidenceDir`.
 
 <!-- vibe-branch-outcomes -->
+
+
+## CI maintenance
+
+The Gitleaks failure was caused by the alphabet-and-digits synthetic PAT
+used by the two evidence-redaction suites. Both now assemble it at run time.
+The scanner configuration exempts only the two exact historical constant
+declarations, because the PR range still includes their original commit; it
+does not exempt either test file. Gitleaks 8.24.3 scanned the same 11-commit
+range as CI with zero findings. A separate scanner check confirmed both
+fixture declarations are exempt while a different PAT in the same test file
+is still detected. No redaction assertions were removed or changed.

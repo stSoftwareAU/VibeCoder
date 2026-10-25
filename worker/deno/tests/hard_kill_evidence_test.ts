@@ -36,7 +36,8 @@ const NOW = Date.parse("2026-10-24T01:02:03.000Z");
 const EPOCH = Math.floor(NOW / 1000);
 const FILE = `${DIR}/hard-kill-${CONTAINER}-${EPOCH}.json`;
 const RUN_ID = "vibe-m3k9x2-0a1b2c";
-const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+// Synthetic PAT: assemble it at run time so new diffs contain no token literal.
+const TOKEN = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789";
 
 const BASE: EvidenceOptions = {
   containerName: CONTAINER,

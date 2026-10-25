@@ -649,7 +649,8 @@ const EVIDENCE_LOG_TAIL = `[2026-10-24T01:00:00.000Z] step one\n` +
   `[2026-10-24T01:02:03.456Z] waiting for the VM (run ${EVIDENCE_RUN_ID})\n`;
 const EVIDENCE_TRANSCRIPT = '{"type":"assistant","message":{"content":' +
   '[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git status"}}]}}\n';
-const EVIDENCE_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+// Synthetic PAT: assemble it at run time so new diffs contain no token literal.
+const EVIDENCE_TOKEN = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789";
 const EVIDENCE_DIR = "/evidence";
 /** Epoch seconds of the stub clock in {@link stubDeps}. */
 const EVIDENCE_EPOCH = 1_800_000_000;

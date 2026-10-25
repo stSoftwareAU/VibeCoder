@@ -64,6 +64,11 @@ description = "Synthetic secret fixtures in redaction and scrub-gate unit tests,
 regexTarget = "line"
 regexes = [
   '''self-diagnostic-unschedulable-\d+''',
+  # Issue #4253: the two hard-kill redaction tests originally committed this
+  # alphabet-and-digits synthetic PAT as a literal. Range scans still see
+  # that commit. Exempt only those exact fixture declarations; other values
+  # in the same test files remain scanned. gh[p] avoids a token literal here.
+  '''^\s*const (EVIDENCE_)?TOKEN = "gh[p]_abcdefghijklmnopqrstuvwxyz0123456789";\s*$''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
