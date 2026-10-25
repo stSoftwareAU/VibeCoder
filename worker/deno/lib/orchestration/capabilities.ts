@@ -145,8 +145,10 @@ export function assertRoleSupported(
     };
   }
   if (provider === "codex") {
-    // These bounded, fresh calls use read-only/workspace-write sandboxes and
-    // features.multi_agent=false; generic named tool denials remain unsupported.
+    // Codex cannot deny named tools. A role call turns delegation off with
+    // features.multi_agent=false, and the issue-run gate puts back anything
+    // a read-only role changes (Issue #4356), so the edit and shell denials
+    // below hold; any other named denial is unsupported.
     const supported = [
       "Edit",
       "MultiEdit",
@@ -168,14 +170,10 @@ export function assertRoleSupported(
       prompt: "probe",
       orchestrationRole: role === "executor" ? "executor" : "reviewer",
     });
-    if (
-      argv.includes("--sandbox") &&
-      argv.includes("features.multi_agent=false") &&
-      !argv.includes("--dangerously-bypass-approvals-and-sandbox")
-    ) return undefined;
+    if (argv.includes("features.multi_agent=false")) return undefined;
     return {
       kind: "missing_tool_support",
-      message: "codex CLI role sandbox unavailable",
+      message: "codex CLI cannot turn delegation off for a role call",
     };
   }
   const capabilities = providerCapabilities(provider);
