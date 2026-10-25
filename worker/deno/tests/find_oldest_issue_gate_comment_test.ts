@@ -64,6 +64,10 @@ interface RepoFixture {
   milestones?: Record<string, unknown>[];
   /** Comments that exist when reading. */
   comments?: Record<string, unknown>[];
+  /** Open PRs returned for this repo's fleet author (`bot`). */
+  openPrs?: Record<string, unknown>[];
+  /** Closed PRs returned for this repo's fleet author (`bot`). */
+  closedPrs?: Record<string, unknown>[];
 }
 
 interface GhCall {
@@ -124,8 +128,20 @@ function createGateCommentMockGh(
         });
       }
 
-      // PR list
+      // PR list. Only the fleet login `bot` carries fixtures; other
+      // authors (allowed humans) must not be stamped onto the same PR.
       if (command.includes("pr list")) {
+        const authorIdx = args.indexOf("--author");
+        const author = authorIdx >= 0 ? args[authorIdx + 1] : "";
+        const stateIdx = args.indexOf("--state");
+        const state = stateIdx >= 0 ? args[stateIdx + 1] : "open";
+        if (author !== "bot") return "[]";
+        if (state === "closed") {
+          return JSON.stringify(fixture?.closedPrs ?? []);
+        }
+        if (state === "open") {
+          return JSON.stringify(fixture?.openPrs ?? []);
+        }
         return "[]";
       }
 
@@ -529,6 +545,89 @@ Deno.test(
       result.found,
       true,
       "Scan should continue despite gate-comment failure",
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a merged blocking PR clears the pr-open hold comment (Issue #4362)",
+  async () => {
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const held = heldIssue(100, ["top-priority"], "2024-01-01T00:00:00Z");
+    const openPr = {
+      number: 77,
+      title: "Fleet work (#100)",
+      baseRefName: "main",
+      headRefName: "issue-100-finish",
+      isDraft: false,
+    };
+    const cache = createTestCache();
+    const { calls: calls1, ghFn: ghFn1 } = createGateCommentMockGh({
+      "owner/repo-a": {
+        issues: [held],
+        timeline: HELD_ISSUE_TIMELINE,
+        openPrs: [openPr],
+      },
+    });
+
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn1,
+      cache,
+      diagnostics: captureDiagnostics().diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    const posted = calls1.filter((c) => c.method === "POST");
+    assertEquals(posted.length, 1, "the open PR posts the hold comment");
+    assertStringIncludes(
+      posted[0]?.args.join(" ") ?? "",
+      "PR #77 is open on this stream",
+    );
+
+    const hold = buildHeldIssueGateComment({ kind: "pr-open", prNumber: 77 });
+    const { calls: calls2, ghFn: ghFn2 } = createGateCommentMockGh({
+      "owner/repo-a": {
+        issues: [held],
+        timeline: HELD_ISSUE_TIMELINE,
+        openPrs: [],
+        closedPrs: [{
+          number: 77,
+          title: "Fleet work (#100)",
+          mergedAt: "2026-10-25T01:58:08Z",
+          closedAt: "2026-10-25T01:58:08Z",
+        }],
+        comments: [{
+          id: 880,
+          body: hold.body,
+          created_at: "2026-10-25T01:53:51Z",
+          author: "bot",
+        }],
+      },
+    });
+    // The open-PR listing from the first scan must not hide the merge.
+    await cache.invalidate("owner/repo-a", "prs_bot");
+
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn2,
+      cache,
+      diagnostics: captureDiagnostics().diag,
+      isIssueInCooldown: () => true,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    const deleted = calls2.filter((c) => c.method === "DELETE");
+    const rewritten = calls2.filter((c) =>
+      c.method === "PATCH" &&
+      !(c.args.join(" ").includes("PR #77 is open on this stream"))
+    );
+    assertEquals(
+      deleted.length + rewritten.length > 0,
+      true,
+      `the merged PR must clear or rewrite the hold comment, got ${
+        calls2.map((c) => c.method).join(",")
+      }`,
     );
   },
 );

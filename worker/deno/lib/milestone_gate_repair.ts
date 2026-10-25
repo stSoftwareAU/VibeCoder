@@ -104,13 +104,16 @@ export function isGateRepairBudgetExhausted(err: unknown): boolean {
  * offering it the cycle's grant spends the budget to arrive at the same
  * refusal (Issue #1965).
  *
+ * The one exception is a merge-only gate (Issue #4326), which marks its
+ * `skipped` verdict `landUnverified` because the host cannot afford the build.
+ *
  * @param outcome - The gate's own verdict
  * @returns The verdict to report; `skipped` becomes a named refusal
  */
 export function judgeResolutionVerdict(
   outcome: MergeGateOutcome,
 ): MergeGateOutcome {
-  return outcome.status === "skipped"
+  return outcome.status === "skipped" && outcome.landUnverified !== true
     ? {
       ...outcome,
       status: "failed" as const,
@@ -454,7 +457,14 @@ export async function repairGatedResolution(
     rounds.push({ round, files: folded.value });
 
     const verdict = await gate();
-    lastGate = judgeResolutionVerdict(verdict);
+    // Issue #4326: only the first verdict may land unverified. A tree whose
+    // real verification failed and was then repaired must not be pushed on a
+    // later gate that did not run.
+    lastGate = judgeResolutionVerdict(
+      verdict.status === "skipped"
+        ? { ...verdict, landUnverified: false }
+        : verdict,
+    );
     if (verdict.status === "skipped") {
       // Nothing ran, so there is nothing a further repair could answer.
       return stop(

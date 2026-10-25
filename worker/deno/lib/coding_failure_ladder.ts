@@ -194,7 +194,11 @@ export function classifyCodingFailure(
   // raw check output), so no free-text check below may read it: a quoted "at
   // the cycle deadline", "rate limit" or "timeout" must neither make it
   // transient nor a timeout-class failure. It earns a normal attempt.
-  if (isWorkerGateCategory(category)) {
+  //
+  // Exception (Issue #4362): a transcript that shows the verifier or the
+  // agent had no working tools is infrastructure. The recorded category may
+  // still be `criteria_unmet`. That fault does not cool the issue.
+  if (isWorkerGateCategory(category) && failureClass !== "tool-runtime") {
     return {
       disposition: "ladder",
       category,

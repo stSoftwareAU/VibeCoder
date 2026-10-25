@@ -462,6 +462,39 @@ Deno.test("repairGatedResolution - a verification that does not run buys no furt
   }
 });
 
+Deno.test("repairGatedResolution - a later verification marked landUnverified is still a refusal, not a pass (Issue #4326)", async () => {
+  // The first verification really failed and the agent repaired the tree; a
+  // later gate that did not run must not let the repaired tree land unchecked.
+  const fx = await repo();
+  try {
+    const outcome = await repairGatedResolution({
+      firstFailure: FAILURE,
+      gate: () =>
+        Promise.resolve({
+          status: "skipped" as const,
+          detail: "left to the repository's CI",
+          output: "",
+          landUnverified: true,
+        }),
+      agentFn: async (request) => {
+        await Deno.writeTextFile(`${request.workDir}/fix.ts`, "export {};\n");
+        return { ok: true, value: { terminated: false } };
+      },
+      options: { cwd: fx.dir },
+      milestoneBranch: "milestone/4326",
+      defaultBranch: "main",
+      mergeSha: fx.mergeSha,
+      mergedCommitSubjects: [],
+    });
+
+    assertEquals(outcome.status, "failed");
+    assertEquals(outcome.gate.status, "failed");
+    assertEquals(outcome.gate.landUnverified, false);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 Deno.test("readMergedCommitSubjects - reads the other side's commits, bounded by the limit (Issue #1965)", async () => {
   const fx = await repo();
   try {

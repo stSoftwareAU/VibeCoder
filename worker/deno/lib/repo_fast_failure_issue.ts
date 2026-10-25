@@ -496,7 +496,12 @@ export async function recordRepoFastFailureTally(
         comments?: unknown;
       };
       body = parsed.body ?? "";
-      const rows = parseIssueViewCommentRows(parsed.comments);
+      // The marker predicate runs before the author check, so the discard
+      // log names a forged tally marker and not an ordinary comment
+      // (Issue #4357).
+      const rows = parseIssueViewCommentRows(parsed.comments).filter((row) =>
+        parseFastFailureCommentMarker(row.body) !== undefined
+      );
       const verifiedRows = await selectFleetAuthoredComments(
         rows,
         `repo-fast-failure tally ${repo}`,

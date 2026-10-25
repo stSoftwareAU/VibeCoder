@@ -69,3 +69,7 @@ Issue numbers this diff cites as the reason the change exists:
 - **clean** — Fail loud: a failed `gh` list, an unreadable payload, a dry-run value that is not true or false, and an unresolved fleet author set are errors, and none of them removes a label. — evidence: `worker/deno/commands/clear_worker_gate_labels.ts`
 - **clean** — DRY: the cleared set is `isWorkerGateCategory` over `WORKER_GATE_MARKERS`, and the category text is `parseCategoryFromComment`. — evidence: `worker/deno/commands/clear_worker_gate_labels.ts`
 - **clean** — Twinned copies: the category set is not copied. Both no-config allow-lists in `mod.ts` register `clear-worker-gate-labels`. — evidence: `worker/deno/mod.ts`
+
+## Milestone merge validation
+
+Reconciled the milestone with current main for PR #4380. Kept the milestone's one-turn pre-push recovery, mutation temp-directory handling, prompt canary and security-sweep cleanups. Kept main's typed disk admissions, nested Deno discovery and later-session infrastructure-fault classification. The conflict resolutions passed 254 focused tests, all 857 manifest checks (one ignored), formatting and lint.

@@ -173,6 +173,23 @@ function defaultWriter(
 const CONFLICT_DETAIL_CHARS = 500;
 
 /**
+ * Git's own words when `git show :1:<path>` finds no stage 1.
+ *
+ * An add/add conflict has stages 2 and 3 only. Observed from git 2.54:
+ * `fatal: path '…' is in the index, but not at stage 1`.
+ */
+const ABSENT_STAGE_ONE = "not at stage 1";
+
+/** Named outcome for that absence. Logged once per sync, never with git's text. */
+const ADDED_ON_BOTH_SIDES = "added on both sides, no merge base";
+
+/** Whether git refused `:1:<path>` because the merge base stage is absent. */
+function stageOneAbsent(shown: ConflictGitOutcome): boolean {
+  return shown.stderr.includes(ABSENT_STAGE_ONE) ||
+    shown.stdout.includes(ABSENT_STAGE_ONE);
+}
+
+/**
  * Bound git output so one runaway command cannot flood a PR comment.
  *
  * Redacted in full before the cut (Issue #1257): the detail is quoted into a
@@ -215,6 +232,8 @@ export async function applyDependencyConflictRules(
   const resolved: ResolvedConflictFile[] = [];
   const deferred: DeferredConflictFile[] = [];
   const manifestOutcomes = new Map<string, ManifestStatus>();
+  /** Add/add paths, logged once after the pass rather than once per file. */
+  const addedOnBothSides: string[] = [];
 
   const defer = (path: string, reason: string): void => {
     logger?.warn(`Conflicted file left for the AI fallback: ${reason}`, {
@@ -280,14 +299,21 @@ export async function applyDependencyConflictRules(
 
     // A rule that has to know what the merge base said reads it from the
     // conflicted index, because the PR merge runs without `diff3` markers
-    // (Issue #1768). A base git would not give up — an absent stage 1, a
-    // timeout, a spawn failure — defers the file with git's own words, rather
-    // than being read as "the base was empty".
+    // (Issue #1768). An absent stage 1 is an add/add: there is no merge base,
+    // so those files are named once for the sync and handed to the AI rung
+    // (Issue #4361). Any other failure — a timeout, a spawn failure, a path
+    // git cannot show — still defers with git's own words, rather than being
+    // read as "the base was empty".
     let base: string | null = null;
     if (rule.needsBase) {
       const shown = await git(["show", `:1:${path}`]);
       if (shown.code !== 0) {
         manifestOutcomes.set(path, "unresolved");
+        if (stageOneAbsent(shown)) {
+          addedOnBothSides.push(path);
+          deferred.push({ path, reason: ADDED_ON_BOTH_SIDES });
+          continue;
+        }
         defer(
           path,
           `the merge base of ${path} could not be read from the conflicted ` +
@@ -349,6 +375,15 @@ export async function applyDependencyConflictRules(
       rule: rule.name,
       decisions: (decisions ?? []).length,
     });
+  }
+
+  if (addedOnBothSides.length > 0) {
+    const count = addedOnBothSides.length;
+    const noun = count === 1 ? "file" : "files";
+    logger?.info?.(
+      `${count} conflicted ${noun} ${ADDED_ON_BOTH_SIDES}`,
+      { count, paths: addedOnBothSides },
+    );
   }
 
   if (lockFiles.length > 0) {
