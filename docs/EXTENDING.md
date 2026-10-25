@@ -399,7 +399,7 @@ flowchart LR
     T["workflow_definitions.ts<br/>templates"] --> R["Provisioned repo<br/>.github/workflows/"]
     R --> A["GitHub Actions audit<br/>native pre-filers"]
     T --> C["workflow_template_audit<br/>_conformance_test.ts"]
-    C --> K["WORKFLOW_FILE_CHECKS<br/>(11 file-scoped checks)"]
+    C --> K["WORKFLOW_FILE_CHECKS<br/>(12 file-scoped checks)"]
     K -. "adapts the same<br/>pure scanners" .-> A
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```

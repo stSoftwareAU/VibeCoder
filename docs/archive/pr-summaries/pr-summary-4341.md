@@ -69,8 +69,8 @@ Changed:
 
 Backend/CI-config change, no UI. Evidence is the new test and the full gate.
 
-- `env -u VIBE_IMAGE_AGENT_PROVIDERS ./quality.sh < /dev/null` on the final
-  tree: `Result: PASSED (with skipped checks)`. `config integration` and
+- `env -u VIBE_IMAGE_AGENT_PROVIDERS ./quality.sh < /dev/null` on the tree
+  before the PR #4348 review fixes (not the final tree): `Result: PASSED (with skipped checks)`. `config integration` and
   `checkov` were skipped by the gate. `semgrep`, `workflow hygiene`,
   `deno tests`, `deno lint`, `deno type check` and `deno fmt` passed.
 - Targeted run of the two semgrep test files plus the workflow-file-check,
@@ -104,12 +104,18 @@ Backend/CI-config change, no UI. Evidence is the new test and the full gate.
 - Table wiring: `semgrep-token-config` added to `EXPECTED_CHECK_IDS`
   (conformance test), `VIOLATIONS` (`workflow_file_checks_test.ts`) and `SEEDED`
   (`changed_workflow_gate_test.ts`). Red checks: making the entry return `[]`
-  failed its `VIOLATIONS` test and the gate-seeded test (`57 passed | 2 failed`);
+  failed its `VIOLATIONS` test and the gate-seeded test
+  (`workflow_file_checks_test.ts` 26 tests and `changed_workflow_gate_test.ts`
+  33 tests at head; 57 passed, 2 failed);
   deleting the entry failed the conformance id-list test.
-- Red check: with `semgrep  ci --config p/default` (two spaces) and the token
+- Red check in `worker/deno/tests/semgrep_token_config_4341_test.ts` (3 tests
+  at head): with `semgrep  ci --config p/default` (two spaces) and the token
   env restored in `semgrep.yml`, the repo-workflows and `semgrep.yml` tests
-  failed (`FAILED | 1 passed | 2 failed`); restored.
-- No existing test was edited, so no assertion was removed.
+  failed (1 passed, 2 failed); restored.
+- Existing tests edited: `workflow_template_audit_conformance_test.ts`
+  (`EXPECTED_CHECK_IDS` gained `semgrep-token-config`; title now "twelve"),
+  `changed_workflow_gate_test.ts` (`SEEDED`) and `workflow_file_checks_test.ts`
+  (`VIOLATIONS`). Each edit only adds the new id; no assertion was removed.
 - Twinned copies: the template and `.github/workflows/semgrep.yml` are the two
   copies of the rule; the new test checks both. `quality.yml` was the third
   place, also checked. The audit-check lists are the other twin:
