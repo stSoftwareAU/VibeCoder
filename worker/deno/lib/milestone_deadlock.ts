@@ -40,6 +40,12 @@ export interface MilestoneDependencyGraph {
   closedDependencies: readonly DeadlockClosedDependency[];
   /** Titles of the repository's open milestones. */
   openMilestones: ReadonlySet<string>;
+  /**
+   * Same-repo dependencies resolved as a merged or closed pull request.
+   * They have landed, so they do not hold a dependant even when a milestone
+   * is still open. Absent on graphs built before that lookup.
+   */
+  landedDependencies?: readonly number[];
 }
 
 /** One deadlocked milestone. */
@@ -97,9 +103,12 @@ function findHeldPairs(graph: MilestoneDependencyGraph): HeldPair[] {
   const closedMilestone = new Map<number, string | null>(
     graph.closedDependencies.map((dep) => [dep.number, dep.milestone]),
   );
+  const landed = new Set(graph.landedDependencies ?? []);
   const pairs: HeldPair[] = [];
   for (const issue of graph.openIssues) {
     for (const dep of new Set(issue.dependsOn)) {
+      // A merged or closed pull request has landed; it does not hold.
+      if (landed.has(dep)) continue;
       const milestone = closedMilestone.get(dep);
       if (
         milestone && milestone !== (issue.milestone ?? "") &&
