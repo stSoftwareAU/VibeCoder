@@ -1171,7 +1171,9 @@ function defaultRebuildFn(
           ghCommandFn,
           log,
         });
-        if (target.kind === "none" || target.kind === "already-escalated") {
+        // No `alreadyEscalated` check is passed above, so the only target
+        // without a destination is `none`.
+        if (target.kind === "none") {
           log(
             `No open issue to carry a milestone rebuild for ` +
               `'${request.milestoneBranch}' in ${request.repo}: nowhere to ` +

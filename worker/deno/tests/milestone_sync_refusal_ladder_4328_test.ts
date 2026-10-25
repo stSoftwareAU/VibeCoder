@@ -888,3 +888,293 @@ Deno.test("resetConflictLedgerOnSuccess - a landed sync drops the refusal streak
   assertEquals(reset.refusedCycles, undefined);
   assertEquals(reset.conflictAttempts, 0);
 });
+
+// ---------------------------------------------------------------------------
+// 10. The open-head-PR climb (Issue #4328)
+// ---------------------------------------------------------------------------
+
+const HEAD_PR_NUMBER = 55;
+
+/** A sweep with an open milestone PR whose shared tally is empty. */
+function withOpenHeadPr(
+  deps: MilestoneBranchSyncDeps,
+): MilestoneBranchSyncDeps {
+  const base = deps.ghCommandFn!;
+  deps.ghCommandFn = (args) => {
+    const key = args.join(" ");
+    if (key.startsWith("pr list") && key.includes("--head")) {
+      return Promise.resolve(
+        JSON.stringify([{
+          number: HEAD_PR_NUMBER,
+          headRefOid: "f".repeat(40),
+        }]),
+      );
+    }
+    return base(args);
+  };
+  return deps;
+}
+
+Deno.test("syncMilestoneBranches - a refusal climbs to the roll-back on a branch with an open head PR (Issue #4328)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    const syncCalls: string[] = [];
+    const rollbacks: string[] = [];
+    for (let cycle = 1; cycle <= MILESTONE_REFUSAL_CEILING + 1; cycle++) {
+      await syncMilestoneBranches(withOpenHeadPr(sweepDeps({
+        streakPath,
+        defaultSha: tip(cycle),
+        syncError: () => refusalError("agent"),
+        syncCalls,
+        rollbacks,
+      })));
+      // Positive control: the PR's own tally (empty) never spends the budget,
+      // so only the refusal ceiling can end the streak.
+      assertEquals(syncCalls.length, cycle, `cycle ${cycle} ran the sync`);
+      assertEquals(
+        rollbacks.length,
+        cycle > MILESTONE_REFUSAL_CEILING ? 1 : 0,
+        `cycle ${cycle}`,
+      );
+    }
+    assertEquals(rollbacks, [`${REPO}|${BRANCH}|1`]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 11. The default rebuild, wired in production (Issue #4328)
+// ---------------------------------------------------------------------------
+
+const SUB_PR_SHA = "d".repeat(40);
+const MERGED_SUB_PRS = JSON.stringify([{
+  number: 7,
+  headRefName: "issue-7-sub",
+  body: "",
+  mergedAt: "2026-10-01T00:00:00Z",
+  mergeCommit: { oid: SUB_PR_SHA },
+}]);
+
+/** Git whose every call succeeds; `checkout -B` can be made to refuse. */
+function rebuildGit(refuseCheckout?: string) {
+  const calls: string[][] = [];
+  const gitFn: RollbackGitFn = (_repo, args) => {
+    calls.push([...args]);
+    const ok = (stdout = "") =>
+      Promise.resolve({ code: 0, stdout, stderr: "" });
+    if (args[0] === "checkout" && args[1] === "-B" && refuseCheckout) {
+      return Promise.resolve({ code: 1, stdout: "", stderr: refuseCheckout });
+    }
+    if (args[0] === "rev-parse" && args[1] === "--verify") {
+      return ok("a".repeat(40));
+    }
+    if (args[0] === "rev-parse") return ok("b".repeat(40));
+    if (args[0] === "rev-list") return ok(SUB_PR_SHA);
+    return ok();
+  };
+  return { gitFn, calls };
+}
+
+interface DefaultRebuildRun {
+  ghCalls: string[][];
+  logs: string[];
+  rollbacks: string[];
+  entry: SyncStreakEntry | undefined;
+}
+
+/**
+ * One sweep over a branch whose roll-back is already spent, with no
+ * `rebuildFn` injected, so the production default runs.
+ */
+async function runDefaultRebuild(options: {
+  title?: string;
+  gitFn?: RollbackGitFn;
+  /** Answers a gh call before the stub's own answer; may throw. */
+  answer?: (args: string[]) => string | undefined;
+}): Promise<DefaultRebuildRun> {
+  const title = options.title ?? TITLE;
+  const key = syncStreakKey(REPO, createMilestoneBranchName(title));
+  const { dir, streakPath } = await workDir();
+  try {
+    await saveSyncStreaks(streakPath, {
+      [key]: spentLedger({ rollbacks: 1 }),
+    });
+    const ghCalls: string[][] = [];
+    const rollbacks: string[] = [];
+    const logs: string[] = [];
+    const deps = sweepDeps({
+      streakPath,
+      defaultSha: tip(1),
+      syncError: () => refusalError("agent"),
+      syncCalls: [],
+      rollbacks,
+      ...(options.gitFn ? { rollbackGitFn: options.gitFn } : {}),
+    });
+    const base = deps.ghCommandFn!;
+    deps.ghCommandFn = (args) => {
+      ghCalls.push([...args]);
+      const key = args.join(" ");
+      if (key.includes(`repos/${REPO}/milestones`)) {
+        return Promise.resolve(JSON.stringify([{ title, number: 1 }]));
+      }
+      if (key.startsWith("pr list") && key.includes("--state merged")) {
+        return Promise.resolve(MERGED_SUB_PRS);
+      }
+      const answered = options.answer?.(args);
+      return answered !== undefined ? Promise.resolve(answered) : base(args);
+    };
+    deps.log = (message) => logs.push(message);
+    await syncMilestoneBranches(deps);
+    return {
+      ghCalls,
+      logs,
+      rollbacks,
+      entry: (await loadSyncStreaks(streakPath))[key],
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const issueComments = (calls: string[][]): string[][] =>
+  calls.filter((c) => c[0] === "issue" && c[1] === "comment");
+
+Deno.test("syncMilestoneBranches - the default rebuild runs in the clone and announces on the escalation target (Issue #4328)", async () => {
+  const git = rebuildGit();
+  const run = await runDefaultRebuild({ gitFn: git.gitFn });
+  assert(
+    git.calls.some((c) =>
+      c.join(" ") === `checkout -B ${BRANCH} origin/${BRANCH}`
+    ),
+    "the clone is prepared on the milestone branch first",
+  );
+  assertEquals(run.entry?.rebuilds, 1);
+  assertEquals(run.rollbacks, [], "a rebuilt branch is not rolled back");
+  const comments = issueComments(run.ghCalls);
+  assertEquals(comments.length, 1);
+  const comment = comments[0]!;
+  assertEquals(comment.slice(0, 5), [
+    "issue",
+    "comment",
+    "4328",
+    "--repo",
+    REPO,
+  ]);
+  assertEquals(comment[5], "--body");
+  assertStringIncludes(comment[6]!, BRANCH);
+  assertEquals(
+    run.ghCalls.some((c) => c[0] === "pr" && c[1] === "comment"),
+    false,
+    "the notice is not posted on a milestone PR",
+  );
+});
+
+Deno.test("syncMilestoneBranches - the default rebuild finds a tracker-less milestone's oldest child by its number (Issue #4328)", async () => {
+  const title = "Refusal Ladder Plain";
+  const run = await runDefaultRebuild({
+    title,
+    gitFn: rebuildGit().gitFn,
+    answer: (args) =>
+      args.join(" ").includes("issues?milestone=1")
+        ? JSON.stringify([
+          { number: 12, title: "later", body: "" },
+          { number: 9, title: "oldest", body: "" },
+        ])
+        : undefined,
+  });
+  assertEquals(run.entry?.rebuilds, 1);
+  const comments = issueComments(run.ghCalls);
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]![2], "9");
+});
+
+Deno.test("syncMilestoneBranches - a rebuild with nowhere to post stands in the log and posts nothing (Issue #4328)", async () => {
+  const run = await runDefaultRebuild({
+    title: "Refusal Ladder Plain",
+    gitFn: rebuildGit().gitFn,
+    answer: (args) => {
+      if (args.join(" ").includes("issues?milestone=1")) {
+        throw new Error("children are unreadable");
+      }
+      return undefined;
+    },
+  });
+  assertEquals(run.entry?.rebuilds, 1, "the rebuild itself still stands");
+  assertEquals(issueComments(run.ghCalls), []);
+  assert(
+    run.logs.some((l) =>
+      l.includes("No open issue to carry a milestone rebuild")
+    ),
+    JSON.stringify(run.logs),
+  );
+  assert(
+    run.logs.some((l) =>
+      l.includes("Could not read the open children of milestone")
+    ),
+    "the lookup's own degraded-read line reaches the sweep log",
+  );
+});
+
+Deno.test("syncMilestoneBranches - a default rebuild that cannot prepare the clone falls through to the roll-back (Issue #4328)", async () => {
+  const git = rebuildGit("fatal: the clone is wedged");
+  const run = await runDefaultRebuild({ gitFn: git.gitFn });
+  assertEquals(run.rollbacks.length, 1);
+  assertEquals(run.entry?.rebuilds, undefined);
+  assertEquals(
+    git.calls.some((c) => c[0] === "cherry-pick"),
+    false,
+    "nothing is replayed onto an unprepared clone",
+  );
+  assert(
+    run.logs.some((l) =>
+      l.includes(
+        `failed at step milestone-rebuild: Could not check out '${BRANCH}' ` +
+          `for roll-back: fatal: the clone is wedged`,
+      )
+    ),
+    JSON.stringify(run.logs),
+  );
+});
+
+Deno.test("syncMilestoneBranches - with no git runner the default rebuild says so and the roll-back runs (Issue #4328)", async () => {
+  const run = await runDefaultRebuild({});
+  assertEquals(run.rollbacks.length, 1);
+  assertEquals(run.entry?.rebuilds, undefined);
+  assert(
+    run.logs.some((l) =>
+      l.includes("rebuild not available — no git runner is wired")
+    ),
+    JSON.stringify(run.logs),
+  );
+});
+
+Deno.test("prepareRollbackWorktree - a checkout that succeeded is not reset even if its output names the index (Issue #4328)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    await saveSyncStreaks(streakPath, { [KEY]: spentLedger() });
+    const calls: string[][] = [];
+    const gitFn: RollbackGitFn = (_repo, args) => {
+      calls.push([...args]);
+      return Promise.resolve({
+        code: args[0] === "merge" ? 128 : 0,
+        stdout: "",
+        stderr: args[0] === "checkout" ? INDEX_STDERR : "",
+      });
+    };
+    await syncMilestoneBranches(sweepDeps({
+      streakPath,
+      defaultSha: tip(1),
+      syncError: () => refusalError("agent"),
+      syncCalls: [],
+      rollbackGitFn: gitFn,
+    }));
+    assertEquals(
+      calls.filter((c) => c[0] === "checkout" && c[1] === "-B").length,
+      1,
+    );
+    assertEquals(calls.some((c) => c[0] === "reset"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

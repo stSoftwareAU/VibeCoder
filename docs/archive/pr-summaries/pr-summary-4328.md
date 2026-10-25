@@ -116,7 +116,7 @@ there unchanged.
 
 ## Test Plan
 
-- Added `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (25
+- Added `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (32
   tests): `judgeSyncFailure` refusal flags (set on the two, not set on
   disrupted, ruleset, non-conflict and merge-gate verdicts);
   `escalateRepeatedRefusal` below/at ceiling and non-refusals; the sweep
@@ -126,6 +126,37 @@ there unchanged.
   through, `rollbackFailures` counted; `prepareRollbackWorktree` retry and its
   failure cause; old-shape ledger and save/load round trip;
   `concludeConflictAttempt` and `resetConflictLedgerOnSuccess` rules.
+- Same file, added for the pre-PR verifier and the mutation check:
+  - `a refusal climbs to the roll-back on a branch with an open head PR`: gh
+    returns an open milestone PR with an empty tally; the roll-back is not
+    called on cycles 1..ceiling and is called once on ceiling+1, so only the
+    `verdict.exhaust === true ||` operand can end it. Red-checked: that operand
+    replaced by `false ||` → red.
+  - Five tests that run `syncMilestoneBranches` with no `rebuildFn`, so the
+    production `defaultRebuildFn` runs: a stub git and a ledger with
+    `rollbacks: 1` → one `issue comment <parent> --repo --body <notice>` and no
+    `pr comment`, `rebuilds` is 1; a tracker-less milestone finds its oldest
+    child through the milestone number; a failed child lookup posts nothing and
+    logs both lines (and the lookup's own line reaches the sweep log); a refused
+    checkout logs `failed at step milestone-rebuild: Could not check
+    out …`
+    and falls through to the roll-back; no git runner logs
+    `rebuild not
+    available` and falls through to the roll-back.
+  - `a checkout that succeeded is not reset even if its output names the index`
+    pins the `checkout.code !== 0` operand of the retry.
+  - Red-checked: `checkout.code !== 0` dropped → red; `milestoneNumber` removed
+    from the escalation lookup → red; the lookup's `log` dropped → red; the
+    announce `--body` argument changed → red.
+  - `milestone_branch_sync.ts` `defaultRebuildFn`: the
+    `|| target.kind === "already-escalated"` operand was dead (no
+    `alreadyEscalated` is passed to the lookup, so that target never occurs); it
+    is removed, leaving `target.kind === "none"`.
+  - exempt (untestable): `worker/deno/lib/milestone_branch_sync.ts:546` and
+    `:551` — `refusal?: true` and `exhaust?: true` are TypeScript type
+    annotations on `ConflictConclusion`; they are erased at runtime, so swapping
+    `true` for `false` changes no behaviour. The runtime fields are pinned by
+    the `refusal` and `exhaust` tests above.
 - Added `worker/deno/tests/conflict_abandon_restart_test.ts` test for `announce`
   (posts through it, no `pr comment`).
 - Added `worker/deno/tests/unit_test_passes_test.ts` "the container image stamp
