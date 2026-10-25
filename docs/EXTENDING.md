@@ -409,17 +409,18 @@ every template and runs `WORKFLOW_FILE_CHECKS`
 (`worker/deno/lib/workflow_file_checks.ts`) over the result, on both
 `Develop` and `main`. That table is the single ordered list of the audit
 checks a **template** can be held to — every check decidable from the
-workflow file alone, without a repository around it: nine native pre-filers
+workflow file alone, without a repository around it: ten native pre-filers
 (`action_pin_scanner`, `workflow_permissions_scanner`,
 `workflow_trigger_scanner`, `checkout_persist_credentials_scanner`,
 `milestone_branch_filter_scanner`, `ci_install_pin_scanner`,
 `run_injection_scanner`, `artifact_upload_scanner`,
-`gitleaks_drift_scanner`) plus the two workflow-hygiene rules `quality.sh`
-applies to this repository's own workflows — multi-line `run:` opens with
+`gitleaks_drift_scanner`, `semgrep_token_drift_scanner`) plus the two
+workflow-hygiene rules `quality.sh` applies to this repository's own
+workflows — multi-line `run:` opens with
 `set -euo pipefail`, and one pinned SHA carries one version comment
 (`workflow_hygiene_check.ts`). Each entry is a thin adapter over the pure
 scanner the audit template already calls, so no scanner logic is
-duplicated, and a table test asserts the exact eleven ids so a check cannot
+duplicated, and a table test asserts the exact twelve ids so a check cannot
 be dropped by accident. Any finding fails the test — and `quality.sh` — so
 a scanner change and the templates cannot drift apart unnoticed.
 

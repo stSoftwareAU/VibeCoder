@@ -1,17 +1,21 @@
 /**
  * Regression tests for Issue #4341: `semgrep ci --config p/default` exits
  * fatally when SEMGREP_APP_TOKEN is set, so no Semgrep scan may pass it.
- *   a. The detector reports token + `--config` at step, job or top level.
- *   b. The `semgrep` workflow template is token-free and still scans.
- *   c. Every workflow in `.github/workflows` is token-free; semgrep.yml scans.
- *   d. quality.yml passes no secrets to Semgrep; semgrep.yml has no environment.
+ *   a. The `semgrep` workflow template is token-free and still scans.
+ *   b. Every workflow in `.github/workflows` is token-free; semgrep.yml scans.
+ *   c. quality.yml passes no secrets to Semgrep; semgrep.yml has no environment.
+ *
+ * Token-free is decided by the production scanner `scanSemgrepTokenDrift`;
+ * its own detection cases live in `semgrep_token_drift_scanner_test.ts`.
  *
  * Australian English throughout (behaviour, organisation, authorised).
  */
 
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
+import { scanSemgrepTokenDrift } from "../lib/semgrep_token_drift_scanner.ts";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
+import type { WorkflowFile } from "../lib/workflow_scan_common.ts";
 
 const TOKEN = "SEMGREP_APP_TOKEN";
 const SCAN_RUN = "semgrep ci --config p/default";
@@ -22,30 +26,9 @@ function isRecord(value: unknown): value is Mapping {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-const hasToken = (env: unknown): boolean => isRecord(env) && TOKEN in env;
-
-/**
- * Return `"<job>#<stepIndex>"` for every step whose `run` invokes
- * `semgrep ci` with `--config` while SEMGREP_APP_TOKEN is in scope: the
- * step's `env`, its job's `env`, or the workflow's top-level `env`.
- */
-function semgrepTokenWithConfigSteps(yamlText: string): string[] {
-  const workflow = parseMapping(yamlText);
-  const jobs = isRecord(workflow.jobs) ? workflow.jobs : {};
-  const hits: string[] = [];
-  for (const [jobName, job] of Object.entries(jobs)) {
-    if (!isRecord(job)) continue;
-    const steps = Array.isArray(job.steps) ? job.steps : [];
-    steps.forEach((step: unknown, index: number) => {
-      if (!isRecord(step) || typeof step.run !== "string") return;
-      const configScan = step.run.includes("semgrep ci") &&
-        step.run.includes("--config");
-      const inScope = hasToken(step.env) || hasToken(job.env) ||
-        hasToken(workflow.env);
-      if (configScan && inScope) hits.push(`${jobName}#${index}`);
-    });
-  }
-  return hits;
+/** Build the scanner's input for one workflow file. */
+function workflowFile(path: string, rawText: string): WorkflowFile {
+  return { path, rawText, parsed: parseYaml(rawText), kind: "workflow" };
 }
 
 function parseMapping(text: string): Mapping {
@@ -71,60 +54,16 @@ function workflowsDir(): URL {
   return new URL("../../../.github/workflows/", import.meta.url);
 }
 
-const STEP_ENV = `jobs:
-  semgrep:
-    steps:
-      - run: semgrep ci --config p/default
-        env:
-          SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
-`;
-
-const JOB_ENV = `jobs:
-  semgrep:
-    env:
-      SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
-    steps:
-      - run: semgrep ci --config p/default
-`;
-
-const TOP_ENV = `env:
-  SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
-jobs:
-  semgrep:
-    steps:
-      - run: semgrep ci --config p/default
-`;
-
-const NO_CONFIG_WITH_TOKEN = `jobs:
-  semgrep:
-    steps:
-      - run: semgrep ci
-        env:
-          SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
-`;
-
-const TOKEN_FREE = `jobs:
-  semgrep:
-    steps:
-      - run: semgrep ci --config p/default
-`;
-
-Deno.test("detector reports a token with --config at step, job and top level (Issue #4341)", () => {
-  assertEquals(semgrepTokenWithConfigSteps(STEP_ENV), ["semgrep#0"]);
-  assertEquals(semgrepTokenWithConfigSteps(JOB_ENV), ["semgrep#0"]);
-  assertEquals(semgrepTokenWithConfigSteps(TOP_ENV), ["semgrep#0"]);
-});
-
-Deno.test("detector ignores token-free runs and the --config-less alternative mode", () => {
-  assertEquals(semgrepTokenWithConfigSteps(NO_CONFIG_WITH_TOKEN), []);
-  assertEquals(semgrepTokenWithConfigSteps(TOKEN_FREE), []);
-});
-
 Deno.test("semgrep spec template runs the scan with no token (Issue #4341)", () => {
   const spec = WORKFLOW_SPECS.find((s) => s.id === "semgrep");
   assert(spec !== undefined, "semgrep spec missing");
   const template = spec.template;
-  assertEquals(semgrepTokenWithConfigSteps(template), []);
+  assertEquals(
+    scanSemgrepTokenDrift([
+      workflowFile(".github/workflows/semgrep.yml", template),
+    ]),
+    [],
+  );
   const job = jobNamed(parseMapping(template), "semgrep");
   assert(runsOf(job).includes(SCAN_RUN), "template no longer runs the scan");
   const code = template.split("\n").filter((line) =>
@@ -146,7 +85,7 @@ Deno.test("no workflow in .github/workflows passes a token to semgrep ci --confi
   for (const name of names) {
     const text = await Deno.readTextFile(new URL(name, dir));
     assertEquals(
-      semgrepTokenWithConfigSteps(text),
+      scanSemgrepTokenDrift([workflowFile(`.github/workflows/${name}`, text)]),
       [],
       `${name} passes SEMGREP_APP_TOKEN to semgrep ci --config`,
     );
