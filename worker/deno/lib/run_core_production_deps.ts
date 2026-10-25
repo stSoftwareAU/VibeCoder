@@ -3730,7 +3730,9 @@ export async function createProductionRunCoreDeps(
             // reopened. Only the fleet's own roll-back marker suppresses the
             // close, so the maintenance author set is what is trusted here.
             fleetAuthors: maintenanceAuthors,
-            logFn: (message: string) => logger.info(message),
+            // Issue #4175: a level-aware sink, so a rollup that cannot be
+            // created reaches logger.warn.
+            logFn: bindLogger(logger),
             // Issue #2831: a failed fetch or state save is logged, not lost.
             logger,
           },

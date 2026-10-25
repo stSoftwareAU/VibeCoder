@@ -18,6 +18,7 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
+import { readBranchCompare } from "./milestone_route_restore.ts";
 import {
   evaluateWorkerIdentity,
   IdentityGuardError,
@@ -531,6 +532,10 @@ async function closedByRollback(
  * @param ignorePrNumbers - Closed final PRs a roll-back superseded (Issue
  *   #3474): they must not count as existing, or the fresh final PR is never
  *   raised
+ * @param defaultBranch - When set, a merged rollup does not count if the
+ *   milestone branch still has a file diff against this branch (Issue
+ *   #4175). An unreadable compare is not that proof, so the merged rollup
+ *   still counts and the next scan tries again.
  * @returns Result with the existing PR number, or null if not found
  */
 export async function hasExistingMilestoneSummaryPr(
@@ -540,6 +545,7 @@ export async function hasExistingMilestoneSummaryPr(
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
   ignorePrNumbers: readonly number[] = [],
+  defaultBranch?: string,
 ): Promise<Result<number | null>> {
   try {
     const prs = await fetchAllStatePRsByBranch(
@@ -555,6 +561,26 @@ export async function hasExistingMilestoneSummaryPr(
       pr.headRefName === milestoneBranch && !ignorePrNumbers.includes(pr.number)
     );
     const first = matching[0];
+    const branch = defaultBranch?.trim() ?? "";
+    const everyMatchMerged = matching.length > 0 &&
+      matching.every((pr) => pr.state === "MERGED");
+    if (first !== undefined && everyMatchMerged && branch !== "") {
+      const compare = await readBranchCompare(
+        repo,
+        branch,
+        milestoneBranch,
+        ghCommandFn,
+      );
+      // A file diff means the merged rollup did not carry the branch tip.
+      // No diff, or a compare that cannot be read, keeps the merged PR so
+      // a second summary is not raised on a guess.
+      if (
+        compare.ok && compare.value.aheadBy > 0 &&
+        compare.value.fileCount !== 0
+      ) {
+        return { ok: true, value: null };
+      }
+    }
     return { ok: true, value: first !== undefined ? first.number : null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1473,6 +1499,7 @@ async function createMilestoneSummaryPr(
     ghCommandFn,
     cache,
     supersededPrNumbers,
+    defaultBranch,
   );
   const existingPrNumber = existingResult.ok && existingResult.value !== null
     ? existingResult.value
@@ -2575,6 +2602,7 @@ async function processRepoMilestones(
       ghCommandFn,
       cache,
       supersededPrNumbers,
+      defaultBranch,
     );
     if (existingSummary.ok && existingSummary.value === null) {
       await retireMilestoneSyncPrs({
