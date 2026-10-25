@@ -19,7 +19,8 @@ import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
 const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-4359.md";
 
 Deno.test("degradePrBodyToGitHubLimit - leaves a short body unchanged (Issue #4359)", () => {
-  const body = `## Summary\n\nFits.\n\n---\n\n🤖 Processed by: worker\n${WORKER_PR_MARKER_PREFIX}4359 -->`;
+  const body =
+    `## Summary\n\nFits.\n\n---\n\n🤖 Processed by: worker\n${WORKER_PR_MARKER_PREFIX}4359 -->`;
   const result = degradePrBodyToGitHubLimit(body, {
     summaryPath: SUMMARY_PATH,
     issueNumber: 4359,
@@ -69,7 +70,8 @@ Deno.test("degradePrBodyToGitHubLimit - keeps gate blocks, the worker marker and
 
 Deno.test("assessPrBodyLength - asks before it cuts, and the prompt does not carry the summary (Issue #4359)", () => {
   const filler = "LENGTH-FILLER-4359\n".repeat(4000);
-  const body = `${filler}\n\n---\n\n🤖 Processed by: worker\n${WORKER_PR_MARKER_PREFIX}4359 -->`;
+  const body =
+    `${filler}\n\n---\n\n🤖 Processed by: worker\n${WORKER_PR_MARKER_PREFIX}4359 -->`;
   const asked = assessPrBodyLength({
     body,
     summaryLength: filler.length,

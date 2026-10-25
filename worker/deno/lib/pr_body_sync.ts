@@ -747,7 +747,11 @@ export async function syncPrBodyFromSummary(
       logger.warn(
         "GitHub rejected the pull request body as too long — retrying the " +
           "edit with a shortened body (Issue #4359)",
-        { repo: input.repo, prNumber: input.prNumber, publishedLength: body.length },
+        {
+          repo: input.repo,
+          prNumber: input.prNumber,
+          publishedLength: body.length,
+        },
       );
       await Deno.writeTextFile(tmpPath, body);
       await deps.runGhCommand([

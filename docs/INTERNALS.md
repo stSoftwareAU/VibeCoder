@@ -1918,7 +1918,10 @@ it up. The blocked-candidate counter is **unchanged** by promotion:
 `configured-label-blocked=N` on the `selection-reasoning` line still counts every
 blocked candidate recorded that scan — the label *and* work-on collectors both
 feed `allBlockedDetails` — whether or not a chain yielded a promotion, so the two
-lines stay independently readable. That counter rides `logSelectionReasoning`,
+lines stay independently readable. The `blocked=` field lists configured-label
+skips first and drops other entries first once it would pass 1024 characters, so
+a truncated log line still names why a top-priority issue was skipped
+(Issue #4362). The counter itself stays the full count. That counter rides `logSelectionReasoning`,
 which only fires when an issue was selected and its source was not
 `configured-label`, so a scan that selected nothing prints no counter at all.
 
@@ -3423,6 +3426,10 @@ left out; the issue is still told which dependency it waits on.
   stand-alone, never-edited comment (`vibe-chain-root-unworkable`) that went
   stale when the chain moved. Once the gate comment is posted or edited, the
   fleet-authored ones on that thread are deleted.
+- **A merged `pr-open` hold is cleared in that scan.** When the closed-PR
+  listing shows the remembered PR merged, and this scan did not replace the
+  hold with a new gate, the fleet-authored `vibe-held-issue-gate` comment is
+  deleted (Issue #4362). Absence from the capped open-PR list is not enough.
 - **Best effort.** A failure logs `findOldestIssue: gate comment failed` and
   discovery carries on; a missing comment never costs the fleet its selection.
 - `low-priority`, `idle-task` and self-diagnostic refusals are never commented.
@@ -5139,10 +5146,12 @@ Two changes close that:
   filtered out of label discovery and can never claim their way into setup.
   Only a comment a **fleet** account wrote counts as a failure record: a
   record is plain Markdown anyone able to comment could forge, and here a
-  forged one would strip a genuine `failed` label, so every comment is
-  filtered through `selectFleetAuthoredComments` (`alert_dedup_authors.ts`)
-  first. An unresolvable fleet identity discards every comment, which keeps
-  the label. The sweep runs once per branch per process, releases that claim
+  forged one would strip a genuine `failed` label. A comment is put to
+  `selectFleetAuthoredComments` (`alert_dedup_authors.ts`) only after it
+  matches a failure-record heading, so an ordinary comment is not logged as
+  a forged marker (Issue #4357). An unresolvable fleet identity discards
+  every record, which keeps the label. The sweep runs once per branch per
+  process, releases that claim
   if a `gh` fault stopped it finishing, and returns every fault to the caller,
   which logs it — a half-run sweep is never reported as a clean one.
 
@@ -5388,8 +5397,9 @@ repository's own test output, not host output (Issue #3445):
 `releaseMilestoneBranchRefusalLabels`: it runs once per repository per worker
 process, triggered after the setup phase successfully creates a feature branch in
 that repository — proof the clone is healthy again — and lists the repository's
-open `failed-once` / `failed` issues. It reads only fleet-authored comments (the
-same `selectFleetAuthoredComments` filter, for the same forgery reason) and
+open `failed-once` / `failed` issues. It reads only fleet-authored failure
+records: the failure-record heading is applied first, then the same
+`selectFleetAuthoredComments` filter, for the same forgery reason (Issue #4357), and
 releases an issue only when **every** fleet failure record on it is a host fault.
 A failure record is any comment headed by a fleet path that applies `failed-once`
 or `failed`: "Automated Processing Failed" or "Paused", "Milestone branch

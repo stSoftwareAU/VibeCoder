@@ -172,7 +172,10 @@ Deno.test(
           "the summarise prompt must not paste the over-long summary",
         );
         assertStringIncludes(options.prompt, SUMMARY_PATH);
-        assertStringIncludes(options.prompt, String(GITHUB_ISSUE_BODY_MAX_CHARS));
+        assertStringIncludes(
+          options.prompt,
+          String(GITHUB_ISSUE_BODY_MAX_CHARS),
+        );
         assertStringIncludes(options.prompt, "vibe-spec-review");
         assertStringIncludes(options.prompt, "Condense");
         await rewriteShort(repoPath);
@@ -231,7 +234,11 @@ Deno.test(
       const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
       assertEquals(result.status, "continue", JSON.stringify(result));
       assertEquals(h.agentCalls.length, 1);
-      assertEquals(createdBody(h.ghCalls), undefined, "gh pr create must not run");
+      assertEquals(
+        createdBody(h.ghCalls),
+        undefined,
+        "gh pr create must not run",
+      );
       assertEquals(h.recoveredBodies.length, 1);
       const body = h.recoveredBodies[0]!;
       assert(body.length <= GITHUB_ISSUE_BODY_MAX_CHARS);

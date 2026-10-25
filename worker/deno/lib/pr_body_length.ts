@@ -107,7 +107,7 @@ export function buildPrBodyLengthPrompt(input: {
     `Keep the summary at or under ${budget} characters.`,
     "",
     "Do this:",
-    "- Keep the worker-owned blocks the gates read: the `## Acceptance Criteria` closure, including `<!-- vibe-spec-review inputs=\"diff+issue-body\" -->`, the `## Standards Review`, including `<!-- vibe-standards-review inputs=\"diff+CODING-STANDARDS.md\" -->`, and `## Reproduction` when the summary has one.",
+    '- Keep the worker-owned blocks the gates read: the `## Acceptance Criteria` closure, including `<!-- vibe-spec-review inputs="diff+issue-body" -->`, the `## Standards Review`, including `<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->`, and `## Reproduction` when the summary has one.',
     "- Condense the prose. Drop repeated evidence, long logs and quoted command output.",
     `- Link the full summary file on the branch: \`${summaryPath}\`.`,
     "- Do not change code. Leave the rewritten summary in that file.",
@@ -205,12 +205,13 @@ export function degradePrBodyToGitHubLimit(
   }
   if (render("").length > maxChars) keptSections = "";
   if (render("").length > maxChars) {
-    keptNotice =
-      `Full summary: [\`${opts.summaryPath}\`](${opts.summaryPath})`;
+    keptNotice = `Full summary: [\`${opts.summaryPath}\`](${opts.summaryPath})`;
   }
   if (render("").length > maxChars) {
     const room = Math.max(0, maxChars - keptNotice.length - 2);
-    keptTail = room > 0 ? keptTail.slice(Math.max(0, keptTail.length - room)) : "";
+    keptTail = room > 0
+      ? keptTail.slice(Math.max(0, keptTail.length - room))
+      : "";
     keptSections = "";
   }
 
@@ -400,8 +401,10 @@ export async function recoverFromPrBodyLength(
     return await rerunCompletion();
   }
 
-  if (!retryResult.ok || retryResult.value.timedOut === true ||
-    retryResult.value.exitCode !== 0) {
+  if (
+    !retryResult.ok || retryResult.value.timedOut === true ||
+    retryResult.value.exitCode !== 0
+  ) {
     const detail = !retryResult.ok
       ? retryResult.error.message
       : retryResult.value.timedOut === true

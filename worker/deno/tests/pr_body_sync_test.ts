@@ -1807,7 +1807,9 @@ Deno.test("sync - an over-long summary is published shortened and the edit still
     const deps: SyncPrBodyDeps = {
       runGhCommand: (args) => {
         if (args[0] === "pr" && args[1] === "view") {
-          return Promise.resolve(viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]));
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]),
+          );
         }
         return stubGh(ghCalls)(args);
       },
@@ -1850,7 +1852,9 @@ Deno.test("sync - a non-length gh failure on a long summary is still an error (I
     const deps: SyncPrBodyDeps = {
       runGhCommand: (args) => {
         if (args[0] === "pr" && args[1] === "view") {
-          return Promise.resolve(viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]));
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]),
+          );
         }
         if (args[0] === "pr" && args[1] === "edit") {
           return Promise.reject(new Error("authentication failed"));

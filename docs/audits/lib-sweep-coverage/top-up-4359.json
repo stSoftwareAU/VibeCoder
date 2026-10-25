@@ -1,0 +1,12 @@
+{
+  "issue": 4359,
+  "chunk": "top-up-4359",
+  "title": "top-up: pull request body length recovery",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4359",
+  "definition": "Reviewed body-length recovery: the summarise prompt contains worker-authored instructions and numeric lengths, not the untrusted summary body. Text cutting and section selection are in-memory operations. The generated summary path uses the issue number; committing delegates to the existing branch reconciliation, pre-flight and push controls. No direct shell execution or filesystem writes are added by this module.",
+  "status": "claimed",
+  "sweptAt": "fa0b5206fcaab990fdb479423a6362655d500b64",
+  "paths": [
+    "worker/deno/lib/pr_body_length.ts"
+  ]
+}

@@ -46,6 +46,8 @@ The completion case uses an injected `runClaudeWithRetry` and `runGhCommand`. It
 
 ## Test Plan
 
+CI repair: applied Deno formatting to the five files reported by CI, registered the new module in the security coverage ledger, and registered the numeric-only prompt builder with an explicit no-untrusted-input reason. The builder receives no summary body or other free-form text. Merged the latest main branch without dropping either side. Local validation: 90 body-length, completion, sync and ledger tests; five prompt-coverage tests; and all 857 manifest checks passed (one ignored). Formatting and lint checks pass for the repaired TypeScript files.
+
 - [x] An over-long summary triggers exactly one summarise turn, and `gh pr create --body` publishes the shorter body
 - [x] An existing pull request is updated with that shorter body and `gh pr create` is not called
 - [x] A thrown summarise turn is not retried, and the pull request is still created with a shortened body that links the summary file
