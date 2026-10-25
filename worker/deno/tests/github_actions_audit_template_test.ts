@@ -2136,6 +2136,111 @@ Deno.test(
   },
 );
 
+/** A semgrep workflow shaped by the old template: token beside `--config`. */
+function semgrepTokenFixture() {
+  const rawText = [
+    "name: Semgrep",
+    "on:",
+    "  pull_request:",
+    "    branches: [Develop, main, milestone/*]",
+    "permissions:",
+    "  contents: read",
+    "jobs:",
+    "  semgrep:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: semgrep ci --config p/default",
+    "        env:",
+    "          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}",
+  ].join("\n");
+  return {
+    path: ".github/workflows/semgrep.yml",
+    rawText,
+    parsed: parseYaml(rawText),
+    kind: "workflow" as const,
+  };
+}
+
+Deno.test(
+  "runTask - semgrep-token pre-filer files an old-template copy and joins seenIds (Issue #4341)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [973],
+      knownOpen: [],
+      issueCreateNumbers: [973],
+    });
+    let scanReceived: { knownOpen: string[] } | undefined;
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([semgrepTokenFixture()]),
+      runScanFn: (opts) => {
+        scanReceived = { knownOpen: [...opts.knownOpenFindingIds] };
+        return Promise.resolve({ ok: true, value: true });
+      },
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    const c = creates[0]!;
+    assertStringIncludes(
+      c.body,
+      "<!-- finding-id: BP-SEMGREP-TOKEN-CONFIG-semgrep -->",
+    );
+    assert(c.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
+    assert(c.labels.includes("severity:medium"));
+    // The pre-filed id is in the LLM pass's known-open list so it is not
+    // filed a second time.
+    assert(scanReceived !== undefined);
+    assert(scanReceived!.knownOpen.includes("BP-SEMGREP-TOKEN-CONFIG-semgrep"));
+  },
+);
+
+Deno.test(
+  "runTask - semgrep-token pre-filer skips a finding already open",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+      knownOpen: [{
+        number: 7,
+        body: "<!-- finding-id: BP-SEMGREP-TOKEN-CONFIG-semgrep -->",
+      }],
+      issueCreateNumbers: [],
+    });
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([semgrepTokenFixture()]),
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+  },
+);
+
 Deno.test(
   "runTask - gitleaks branch gap is not double-filed beside the milestone finding",
   async () => {

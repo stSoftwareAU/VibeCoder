@@ -212,6 +212,23 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
 `,
   )],
+  "semgrep-token-config": [workflowFile(
+    "semgrep.yml",
+    `name: Semgrep
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - run: semgrep ci --config p/default
+        env:
+          SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
+`,
+  )],
   "strict-mode": [workflowFile(
     "strict.yml",
     `name: Test
