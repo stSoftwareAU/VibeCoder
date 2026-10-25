@@ -2475,7 +2475,10 @@ Deno.test(
       );
       assertEquals(leftOut.length, exclude.length);
       if (exclude.length > 0) {
-        assertStringIncludes(leftOut[0].message, "leaves out 1 sub-PR(s)");
+        assertStringIncludes(
+          leftOut[0]?.message ?? "",
+          "leaves out 1 sub-PR(s)",
+        );
       }
     }
   },
