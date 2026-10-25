@@ -4,7 +4,9 @@ A refused milestone sync can no longer stall for ever: a branch refused a
 conflict resolution on `MILESTONE_REFUSAL_CEILING` (3) consecutive cycles climbs
 to the roll-back on the next cycle; a spent budget is handed off from one place
 whoever spent it; and a new rebuild rung follows a spent roll-back. The merge
-gate also stops failing on the worker host's image stamp. Closes #4328.
+gate also stops failing on the worker host's image stamp. Both successful
+rebuild routes now clear the refusal streak and conflict ledger, record recovery
+and increment the rebuild count, so the next cycle resumes normal syncing. Closes #4328.
 
 Version bump: `VERSION` is not edited by this change; the merged commit records
 the final version.
@@ -132,6 +134,16 @@ reason: the base-branch run is not claimed; the acceptance test imports
 there unchanged.
 
 ## Test Plan
+
+- Review-fix push: both landed rebuild routes now share bookkeeping that resets
+  the refusal count and conflict ledger, increments `rebuilds`, and records a
+  non-climbing recovery reason. Two-cycle tests cover both routes: after a
+  successful rebuild, the next cycle syncs without another rebuild or close.
+- 115 focused refusal-ladder and branch-sync tests pass. Removing hand-off
+  bookkeeping makes the next-cycle regression fail; production code restored.
+  Changed TypeScript type checks, lint and formatting pass. Manifests: 854 passed,
+  1 ignored. GitHub CI is rerunning after this summary refresh.
+- Earlier implementation validation follows.
 
 - `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (35 tests at
   head, run on the head: 117 passed with `conflict_abandon_restart_test.ts`):
