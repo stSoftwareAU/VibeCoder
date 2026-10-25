@@ -51,7 +51,7 @@ function optionsWith(
   };
 }
 
-const CONTAINER = "vibe-4254-test";
+const CONTAINER = "vibe-coder-4254-test";
 const RUN_ID = "vibe-abc123-0f0f0f";
 const CAPTURED_AT = "2026-10-25T01:02:03.000Z";
 const LOG_LINE =
@@ -66,7 +66,7 @@ function evidenceRecord(): HardKillEvidence {
     container: CONTAINER,
     runId: RUN_ID,
     trigger: "watchdog",
-    reason: "no progress for 30 minutes",
+    reason: "the launcher's 8100s watchdog deadline expired",
     lastLogLine: LOG_LINE,
     lastLogTimestamp: "2026-10-25T01:00:00Z",
     lastToolCall: "none",
