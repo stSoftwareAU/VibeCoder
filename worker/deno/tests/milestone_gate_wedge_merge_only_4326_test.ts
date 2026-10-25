@@ -190,3 +190,32 @@ Deno.test("gate wedge - a real refusal already on the entry is kept untouched by
   assertEquals(repeat.entry.gateRefusal?.count, 2);
   assertEquals(repeat.wedged, true);
 });
+
+Deno.test("gate wedge - a merge-only refusal on an entry already wedged by a real refusal still reports it wedged (Issue #4326)", async () => {
+  const failure = await mergeOnlyGateFailure();
+  const gh = ghStub();
+  let entry: SyncStreakEntry = EMPTY;
+  for (let i = 0; i < GATE_REFUSAL_WEDGE_THRESHOLD + 1; i++) {
+    const concluded = await concludeGateRefusal(
+      entry,
+      BRANCH,
+      refusal(ORDINARY_GATE_FAILURE),
+      DEFAULT_SHA,
+      NOW,
+      depsWith(gh.fn),
+    );
+    entry = concluded.entry;
+  }
+  assert(isGateWedged(entry), "the ordinary refusals wedge the branch");
+
+  const merged = await concludeGateRefusal(
+    entry,
+    BRANCH,
+    refusal(failure),
+    DEFAULT_SHA,
+    NOW,
+    depsWith(gh.fn),
+  );
+  assertEquals(merged.entry, entry, "the entry is returned unchanged");
+  assertEquals(merged.wedged, true, "the branch is still wedged");
+});

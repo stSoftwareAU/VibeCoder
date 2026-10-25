@@ -356,7 +356,7 @@ export async function presyncMilestoneBranch(
       deps.log(
         `[HOST_DISK_BUDGET] Milestone sync for '${milestoneBranch}' in ${repo} ` +
           `lands without the repository's build this cycle: ` +
-          `${admission.reason} (Issue #4326)`,
+          `${admission.reason}`,
       );
     }
   }

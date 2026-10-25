@@ -27,11 +27,20 @@
  *   floor **plus** {@link EPHEMERAL_CARGO_HEADROOM_BYTES} free — room for one
  *   build of the size that took GRQ-23 down. Short of that, idle checkouts'
  *   target directories are pruned (largest first). A build still not covered
- *   after pruning is not run, but the sync is not deferred either: a
- *   conflict-free merge lands without the repository's build, which its CI
- *   builds on the milestone's PR, and a conflicted one waits for a cycle with
- *   budget ({@link heavyBuildAdmission}, Issue #4326). So the floor is never
- *   approached, and a milestone never waits on disk budget alone.
+ *   after pruning is not run, and the sync is not deferred. Merge-only mode
+ *   ({@link heavyBuildAdmission}, Issue #4326) applies to a tree that holds a
+ *   cargo project, because only a cargo build writes to the ephemeral cargo
+ *   root; a repository with no cargo project keeps its own type check and the
+ *   normal agent. In a cargo tree a conflict-free merge is pushed unverified
+ *   with the `UNGATED:` note, and the milestone PR's own CI builds it. A merge
+ *   that conflicts is not landed in that cycle: a conflict the deterministic
+ *   rules settle is refused by the resolution gate (concluded not-charged), and
+ *   a conflict that needs the agent is not offered to it (concluded disrupted,
+ *   nothing charged). Neither writes the gate-wedge ledger, so the branch is
+ *   retried every cycle and lands in the first cycle whose budget admits a
+ *   build. Only a merge that conflicts can still wait on disk budget, because
+ *   verifying a resolved merge needs the build. So the floor is never
+ *   approached.
  *
  *   No further reclaim step exists. On a runtime that refuses the trim,
  *   deleting artefacts inside the guest returns nothing to the host

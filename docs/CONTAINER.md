@@ -1324,21 +1324,32 @@ budget (described under *The root has a budget* below), on a runtime that
 refuses the trim. Before Issue #4326 that refusal kept the milestone
 behind indefinitely: the over-budget build was refused every cycle (GRQ-23,
 2026-10-24: about 150 refusals, 27 issues held). Now the sync still lands that
-cycle, in **merge-only** mode, without the repository's cargo type-check,
-unless its merge conflicts:
+cycle, in **merge-only** mode, unless its merge conflicts. Merge-only applies
+to a tree that holds a cargo project, because only a cargo build writes to the
+ephemeral cargo root. A repository with no cargo project keeps its own check
+(the repository's own type check) and the normal agent. In a cargo tree the
+repository's cargo type-check is skipped:
 
 - **A conflict-free merge is pushed unverified.** The sync outcome carries the
   existing `UNGATED:` note (Issue #974), and the milestone PR's own CI builds
   the merged tree.
-- **A merge that conflicts waits.** Verifying a worker-resolved merge needs the
-  build, so the resolution gate refuses it as `not-charged`, the agent rung is
-  not run, and the attempt is concluded `disrupted`. Nothing is charged, and a
-  later cycle with budget tries again.
+- **A merge that conflicts is not landed in that cycle.** There are two
+  outcomes, and both charge nothing:
+  - A conflict the deterministic rules settle is refused by the resolution
+    gate, which concludes it `not-charged`, because verifying a resolved merge
+    needs the build.
+  - A conflict that needs the agent is not offered to it, so the attempt is
+    concluded `disrupted`.
+
+  In both, the gate-wedge ledger is deliberately not written
+  (`MERGE_ONLY_NO_BUILD` in `concludeGateRefusal`), so the branch is retried
+  every cycle and lands in the first cycle whose budget admits a build. Only a
+  merge that conflicts can still wait on disk budget.
 
 The log names the reason:
 
 ```text
-[HOST_DISK_BUDGET] Milestone sync for '2285 …' in stSoftwareAU/GRQ-AutoTrader lands without the repository's build this cycle: ephemeral cargo root over budget (…) — pruned … of idle target dirs and … is still short … (Issue #4326)
+[HOST_DISK_BUDGET] Milestone sync for '2285 …' in stSoftwareAU/GRQ-AutoTrader lands without the repository's build this cycle: ephemeral cargo root over budget (…) — pruned … of idle target dirs and … is still short …; the merge lands without the repository's build and the repository's CI builds it (Issue #4326)
 ```
 
 The host's free space never drops below the floor in this mode, because no

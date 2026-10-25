@@ -259,8 +259,9 @@ export interface GateRefusalConclusion {
  * @param defaultSha - The default tip the refused merge was made from
  * @param nowMs - Conclusion time in epoch milliseconds
  * @param deps - The `gh` runner, log sink and fleet identity
- * @returns The entry, and `wedged: false` for a merge-only refusal, which is
- *   never counted
+ * @returns The entry, returned unchanged, and `wedged` reporting whether it
+ *   was already wedged by earlier real refusals; a merge-only refusal is never
+ *   counted
  */
 export async function concludeGateRefusal(
   entry: SyncStreakEntry,
@@ -271,7 +272,7 @@ export async function concludeGateRefusal(
   deps: GateWedgeDiagnosticDeps,
 ): Promise<GateRefusalConclusion> {
   if (conflict.gateFailure.includes(MERGE_ONLY_NO_BUILD)) {
-    return { entry, wedged: false };
+    return { entry, wedged: isGateWedged(entry) };
   }
   const conflictKey = conflictEscalationKey({
     milestoneBranch: branch.milestoneBranch,

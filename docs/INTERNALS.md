@@ -3074,8 +3074,9 @@ open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
 A build refused by the ephemeral cargo root's budget is a different case: with
-the host above its floor, the sync lands its merge without the build instead
-(Issue #4326, see
+the host above its floor, a conflict-free merge in a cargo tree lands without
+the build; a merge that conflicts waits for a cycle with budget (Issue #4326,
+see
 [HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
 in CONTAINER.md.
@@ -4427,8 +4428,8 @@ Three properties matter:
 - **Nothing unverified is published.** A check that cannot be run — a spawn
   failure, a timeout past `MERGE_GATE_TIMEOUT_MS`, a working tree that cannot be
   read — counts as a failure, not a pass: absence of a failure is not success.
-  The one deliberate exception is the merge-only cycle of Issue #4326, described
-  after this list.
+  The one deliberate exception is the merge-only cycle of Issue #4326 on a tree
+  that holds a cargo project, described after this list.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
@@ -4448,10 +4449,18 @@ A repository with no Deno project is still synced, but the outcome says
 `UNGATED` so an unchecked push never reads like a checked one.
 
 When the ephemeral cargo root is over its budget (Issue #4326), the sync runs
-in merge-only mode for that cycle and skips the type-check. A conflict-free
-merge is pushed with the same `UNGATED` note, and the milestone PR's own CI
-builds it. A merge that conflicts is left for a later cycle, uncharged, because
-resolving it needs the check. See
+in merge-only mode for that cycle, but only on a tree that holds a cargo
+project, because only a cargo build writes to the ephemeral cargo root. A
+repository with no cargo project keeps its own check and the normal agent. In a
+cargo tree the repository's cargo type-check is skipped: a conflict-free merge
+is pushed with the same `UNGATED` note, and the milestone PR's own CI builds it.
+A merge that conflicts is not landed in that cycle. A conflict the deterministic
+rules settle is refused by the resolution gate (concluded `not-charged`), and a
+conflict that needs the agent is not offered to it (concluded `disrupted`, with
+nothing charged). Neither writes the gate-wedge ledger (`MERGE_ONLY_NO_BUILD` in
+`concludeGateRefusal`), so the branch is retried every cycle and lands in the
+first cycle whose budget admits a build. Only a merge that conflicts can still
+wait on disk budget, because verifying a resolved merge needs the build. See
 [HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
 
 #### 🪦 The sync never resurrects a deleted file
