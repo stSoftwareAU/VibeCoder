@@ -2648,9 +2648,10 @@ export async function syncMilestoneBranches(
               streaksDirty = true;
               if (verdict.outcome === "failed") {
                 const priorRefusals = entry.count - 1;
-                const recoveryNow = verdict.reason === CONFLICT_RESOLVER_DECLINED
-                  ? nextResolverRecoveryRung(priorRefusals)
-                  : "resolve";
+                const recoveryNow =
+                  verdict.reason === CONFLICT_RESOLVER_DECLINED
+                    ? nextResolverRecoveryRung(priorRefusals)
+                    : "resolve";
                 if (recoveryNow !== "resolve") {
                   // Already refused for more than one budget. This cycle
                   // takes the rung those refusals have earned, so a branch
@@ -2689,79 +2690,79 @@ export async function syncMilestoneBranches(
                         `takes the roll-back (Issue #4328)`,
                     );
                   } else if (exhausted) {
-                  // Every automatic rung has been spent, so the branch is
-                  // rolled back rather than reported to anyone (Issue #1781).
-                  const outcome = await rollbackFn({
-                    repo,
-                    milestoneBranch: milestone.milestoneBranch,
-                    defaultBranch: milestone.defaultBranch,
-                    attempts,
-                    reason: verdict.reason,
-                    milestoneTitle: milestone.milestoneTitle,
-                    milestoneNumber: milestone.milestoneNumber,
-                    ...(conflictError
-                      ? {
-                        conflictingPaths: [
+                    // Every automatic rung has been spent, so the branch is
+                    // rolled back rather than reported to anyone (Issue #1781).
+                    const outcome = await rollbackFn({
+                      repo,
+                      milestoneBranch: milestone.milestoneBranch,
+                      defaultBranch: milestone.defaultBranch,
+                      attempts,
+                      reason: verdict.reason,
+                      milestoneTitle: milestone.milestoneTitle,
+                      milestoneNumber: milestone.milestoneNumber,
+                      ...(conflictError
+                        ? {
+                          conflictingPaths: [
+                            ...conflictError.analyses.map((a) => a.path),
+                            ...conflictError.resolved.map((d) => d.path),
+                          ],
+                        }
+                        : {}),
+                      ...(entry.revertedPrs !== undefined
+                        ? { alreadyReverted: entry.revertedPrs }
+                        : {}),
+                    });
+                    if (isRollbackOutcome(outcome)) {
+                      const conflictedFiles = conflictError
+                        ? [
                           ...conflictError.analyses.map((a) => a.path),
                           ...conflictError.resolved.map((d) => d.path),
-                        ],
-                      }
-                      : {}),
-                    ...(entry.revertedPrs !== undefined
-                      ? { alreadyReverted: entry.revertedPrs }
-                      : {}),
-                  });
-                  if (isRollbackOutcome(outcome)) {
-                    const conflictedFiles = conflictError
-                      ? [
-                        ...conflictError.analyses.map((a) => a.path),
-                        ...conflictError.resolved.map((d) => d.path),
-                      ]
-                      : [];
-                    entry = await applyRollbackOutcome({
-                      repo,
-                      milestone,
-                      entry,
-                      outcome,
-                      attempts,
-                      fallback: {
-                        ...(conflictedFiles.length > 0
-                          ? { conflictedFiles }
-                          : {}),
-                        ...(behindBy !== undefined ? { behindBy } : {}),
-                        ...(await readBehindSince(
-                          repo,
-                          entry.lastSyncedDefaultSha,
-                          milestone.defaultBranch,
-                          ghCommandFn,
-                          log,
-                        )),
-                      },
-                      ...(defaultSha !== undefined ? { defaultSha } : {}),
-                      fileMergeFallbackFn,
-                      ghCommandFn,
+                        ]
+                        : [];
+                      entry = await applyRollbackOutcome({
+                        repo,
+                        milestone,
+                        entry,
+                        outcome,
+                        attempts,
+                        fallback: {
+                          ...(conflictedFiles.length > 0
+                            ? { conflictedFiles }
+                            : {}),
+                          ...(behindBy !== undefined ? { behindBy } : {}),
+                          ...(await readBehindSince(
+                            repo,
+                            entry.lastSyncedDefaultSha,
+                            milestone.defaultBranch,
+                            ghCommandFn,
+                            log,
+                          )),
+                        },
+                        ...(defaultSha !== undefined ? { defaultSha } : {}),
+                        fileMergeFallbackFn,
+                        ghCommandFn,
+                        log,
+                        emitSelfHealEvent: deps.emitSelfHealEvent,
+                      });
+                      streaks[streakKey] = entry;
+                      streaksDirty = true;
+                    }
+                  } else {
+                    // One line, and nothing posted: an automatic attempt still
+                    // remains, so no human is asked about it yet.
+                    logAt(
                       log,
-                      emitSelfHealEvent: deps.emitSelfHealEvent,
-                    });
-                    streaks[streakKey] = entry;
-                    streaksDirty = true;
+                      "warn",
+                      `Milestone branch '${milestone.milestoneBranch}' ` +
+                        `in ${repo}: conflict attempt ${attempts} of ` +
+                        `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed ` +
+                        // A merge-gate refusal has no rung (Issue #4304).
+                        (verdict.rung
+                          ? `at rung ${verdict.rung}`
+                          : `(${verdict.reason})`) +
+                        ` (Issue #1778)`,
+                    );
                   }
-                } else {
-                  // One line, and nothing posted: an automatic attempt still
-                  // remains, so no human is asked about it yet.
-                  logAt(
-                    log,
-                    "warn",
-                    `Milestone branch '${milestone.milestoneBranch}' ` +
-                      `in ${repo}: conflict attempt ${attempts} of ` +
-                      `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed ` +
-                      // A merge-gate refusal has no rung (Issue #4304).
-                      (verdict.rung
-                        ? `at rung ${verdict.rung}`
-                        : `(${verdict.reason})`) +
-                      ` (Issue #1778)`,
-                  );
-                }
                 }
               }
             }
