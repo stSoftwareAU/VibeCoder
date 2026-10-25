@@ -202,77 +202,214 @@ Deno.test("a closed-route milestone with an open child gets a restored route and
   );
 });
 
-Deno.test("a not-ahead child is merged onto its milestone and a rollup is opened in the same pass (Issue #4175)", async () => {
+const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+function notAheadRouteGh(
+  calls: string[][],
+  ci: "pending" | "green",
+  childMerged: { value: boolean },
+  onCreate: (args: string[]) => Promise<string>,
+): (args: string[]) => Promise<string> {
+  return (args) => {
+    calls.push(args);
+    const key = args.join(" ");
+    if (key.includes("pr list") && key.includes("--head")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 4077,
+          state: "MERGED",
+          baseRefName: DEFAULT,
+          mergedAt: "2026-10-13T13:58:25Z",
+        },
+      ]));
+    }
+    if (key.includes("pr list") && key.includes("--base")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 4109, title: "Ship the widget" },
+      ]));
+    }
+    if (key.includes("/milestones?state=all")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 7, title: "Clean up", state: "open" },
+      ]));
+    }
+    if (key.includes("/issues?milestone=")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 3905, title: "Ship the widget" },
+      ]));
+    }
+    if (key.includes("/compare/") && key.includes("ahead_by")) {
+      return Promise.resolve(JSON.stringify(
+        childMerged.value
+          ? { ahead_by: 1, files: [{ filename: "widget.txt" }] }
+          : { ahead_by: 0, files: [] },
+      ));
+    }
+    if (args[0] === "pr" && args[1] === "view" && key.includes("headRefOid")) {
+      return Promise.resolve(JSON.stringify({
+        headSha: HEAD_SHA,
+        committedDate: "2020-01-01T00:00:00Z",
+      }));
+    }
+    if (
+      args[0] === "pr" && args[1] === "view" &&
+      key.includes("isCrossRepository")
+    ) {
+      return Promise.resolve(JSON.stringify({
+        baseRefName: BRANCH,
+        headRefName: "issue-3905-widget",
+        isCrossRepository: false,
+      }));
+    }
+    if (args[0] === "pr" && args[1] === "view" && key.includes("baseRefName")) {
+      return Promise.resolve(BRANCH);
+    }
+    if (key.includes("default_branch")) {
+      return Promise.resolve(DEFAULT);
+    }
+    if (
+      args[0] === "api" && args[1] === "graphql" &&
+      key.includes("statusCheckRollup")
+    ) {
+      const green = ci === "green";
+      return Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            n0: {
+              commits: {
+                nodes: [{
+                  commit: {
+                    oid: HEAD_SHA,
+                    statusCheckRollup: {
+                      state: green ? "SUCCESS" : "PENDING",
+                      contexts: {
+                        nodes: [{
+                          __typename: "CheckRun",
+                          databaseId: 11,
+                          name: "validate",
+                          status: green ? "COMPLETED" : "IN_PROGRESS",
+                          conclusion: green ? "SUCCESS" : null,
+                        }],
+                      },
+                    },
+                  },
+                }],
+              },
+            },
+          },
+        },
+      }));
+    }
+    if (
+      args[0] === "api" && args[1] === "graphql" && key.includes("behindBy")
+    ) {
+      return Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            p0: {
+              mergeable: "MERGEABLE",
+              reviewDecision: "",
+              baseRef: { compare: { aheadBy: 1, behindBy: 0 } },
+            },
+          },
+        },
+      }));
+    }
+    if (args[0] === "pr" && args[1] === "merge") {
+      if (args.includes("--merge")) {
+        return Promise.reject(
+          new Error("Merge commits are not allowed for this repository"),
+        );
+      }
+      childMerged.value = true;
+      return Promise.resolve("Merged\n");
+    }
+    if (args[0] === "pr" && args[1] === "create") {
+      return onCreate(args);
+    }
+    if (args[0] === "issue" && args[1] === "reopen") {
+      return Promise.resolve("reopened\n");
+    }
+    return Promise.resolve("");
+  };
+}
+
+Deno.test("a not-ahead child on an unprotected base stays unmerged while CI is still running (Issue #4175)", async () => {
   _resetMilestoneBehindMemo();
   _resetBaseProtectionMemo();
   const calls: string[][] = [];
-  let childMerged = false;
   const result = await enableAutoMerge({
     repo: REPO,
     prNumber: 4109,
     headRefName: "issue-3905-widget",
     baseRefName: BRANCH,
+    fleetAuthors: ["vibe-bot"],
     getDefaultBranchFn: () => Promise.resolve({ ok: true, value: DEFAULT }),
-    isBaseProtectedFn: () => Promise.resolve(true),
-    ghCommandFn: (args) => {
-      calls.push(args);
-      const key = args.join(" ");
-      if (key.includes("pr list") && key.includes("--head")) {
-        return Promise.resolve(JSON.stringify([
-          {
-            number: 4077,
-            state: "MERGED",
-            baseRefName: DEFAULT,
-            mergedAt: "2026-10-13T13:58:25Z",
-          },
-        ]));
-      }
-      if (key.includes("pr list") && key.includes("--base")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 4109, title: "Ship the widget" },
-        ]));
-      }
-      if (key.includes("/milestones?state=all")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 7, title: "Clean up", state: "open" },
-        ]));
-      }
-      if (key.includes("/issues?milestone=")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 3905, title: "Ship the widget" },
-        ]));
-      }
-      if (key.includes("/compare/") && key.includes("ahead_by")) {
-        return Promise.resolve(JSON.stringify(
-          childMerged
-            ? { ahead_by: 1, files: [{ filename: "widget.txt" }] }
-            : { ahead_by: 0, files: [] },
-        ));
-      }
-      if (args[0] === "pr" && args[1] === "merge") {
-        childMerged = true;
-        return Promise.resolve("Merged\n");
-      }
-      if (args[0] === "pr" && args[1] === "create") {
-        return Promise.resolve("https://github.com/owner/repo/pull/4200\n");
-      }
-      return Promise.resolve("");
-    },
+    isBaseProtectedFn: () => Promise.resolve(false),
+    ghCommandFn: notAheadRouteGh(
+      calls,
+      "pending",
+      { value: false },
+      () => Promise.resolve("https://github.com/owner/repo/pull/4200\n"),
+    ),
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertStringIncludes(result.message, "checks_pending");
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "merge"),
+    "CI that is still running does not merge the child",
+  );
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "create"),
+    "no rollup is opened before the child lands",
+  );
+  assert(
+    !calls.some((args) => args[0] === "issue" && args[1] === "reopen"),
+    "a deferred gate leaves the issue untouched",
+  );
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "edit"),
+    "the child is not retargeted onto the default branch",
+  );
+});
+
+Deno.test("a not-ahead child on an unprotected base is squash-merged once CI is green and a rollup is opened (Issue #4175)", async () => {
+  _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  const childMerged = { value: false };
+  const result = await enableAutoMerge({
+    repo: REPO,
+    prNumber: 4109,
+    headRefName: "issue-3905-widget",
+    baseRefName: BRANCH,
+    fleetAuthors: ["vibe-bot"],
+    getDefaultBranchFn: () => Promise.resolve({ ok: true, value: DEFAULT }),
+    isBaseProtectedFn: () => Promise.resolve(false),
+    ghCommandFn: notAheadRouteGh(
+      calls,
+      "green",
+      childMerged,
+      () => Promise.resolve("https://github.com/owner/repo/pull/4200\n"),
+    ),
   });
   assertEquals(result.result, AutoMergeResult.MergedDirectly);
-  const mergeAt = calls.findIndex((args) =>
+  const merges = calls.filter((args) =>
     args[0] === "pr" && args[1] === "merge"
   );
+  assertEquals(merges.length, 1, "a refused merge commit is not retried");
+  const merge = merges[0]!;
+  assert(merge.includes("--squash"));
+  assert(merge.includes("--match-head-commit"));
+  assertEquals(merge[merge.indexOf("--match-head-commit") + 1], HEAD_SHA);
+  assert(!merge.includes("--merge"));
+  assert(!merge.includes("--auto"));
+  assert(!merge.includes("--base"));
+  const mergeAt = calls.indexOf(merge);
   const createAt = calls.findIndex((args) =>
     args[0] === "pr" && args[1] === "create"
   );
-  assert(mergeAt >= 0, "the child pull request is merged by this pass");
   assert(createAt > mergeAt, "the rollup is opened after the child merges");
-  const merge = calls[mergeAt]!;
-  assert(merge.includes("4109"));
-  assert(merge.includes("--merge"));
-  assert(!merge.includes("--auto"));
-  assert(!merge.includes("--base"));
   const created = calls[createAt]!;
   assertEquals(created[created.indexOf("--head") + 1], BRANCH);
   assertEquals(created[created.indexOf("--base") + 1], DEFAULT);
@@ -280,72 +417,112 @@ Deno.test("a not-ahead child is merged onto its milestone and a rollup is opened
     !calls.some((args) => args[0] === "pr" && args[1] === "edit"),
     "the child is not retargeted onto the default branch",
   );
-  assert(
-    !calls.some((args) => args.includes("--disable-auto")),
-    "the pass does not hold the child",
-  );
+});
 
+Deno.test("a not-ahead child on a protected base is armed with a squash when merge commits are refused (Issue #4175)", async () => {
+  _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
+  const arm = async () => {
+    const calls: string[][] = [];
+    const result = await enableAutoMerge({
+      repo: REPO,
+      prNumber: 4109,
+      headRefName: "issue-3905-widget",
+      baseRefName: BRANCH,
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: DEFAULT }),
+      isBaseProtectedFn: () => Promise.resolve(true),
+      ghCommandFn: (args) => {
+        calls.push(args);
+        const key = args.join(" ");
+        if (key.includes("pr list") && key.includes("--head")) {
+          return Promise.resolve(JSON.stringify([
+            {
+              number: 4077,
+              state: "MERGED",
+              baseRefName: DEFAULT,
+              mergedAt: "2026-10-13T13:58:25Z",
+            },
+          ]));
+        }
+        if (key.includes("pr list") && key.includes("--base")) {
+          return Promise.resolve(JSON.stringify([
+            { number: 4109, title: "Ship the widget" },
+          ]));
+        }
+        if (key.includes("/milestones?state=all")) {
+          return Promise.resolve(JSON.stringify([
+            { number: 7, title: "Clean up", state: "open" },
+          ]));
+        }
+        if (key.includes("/issues?milestone=")) {
+          return Promise.resolve(JSON.stringify([
+            { number: 3905, title: "Ship the widget" },
+          ]));
+        }
+        if (key.includes("/compare/") && key.includes("ahead_by")) {
+          return Promise.resolve(JSON.stringify({ ahead_by: 0, files: [] }));
+        }
+        if (args[0] === "pr" && args[1] === "merge") {
+          if (args.includes("--merge")) {
+            return Promise.reject(
+              new Error("Merge commits are not allowed for this repository"),
+            );
+          }
+          return Promise.resolve("Enabled auto-merge\n");
+        }
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve("OPEN");
+        }
+        return Promise.resolve("");
+      },
+    });
+    return { calls, result };
+  };
+
+  const first = await arm();
+  const second = await arm();
+  for (const pass of [first, second]) {
+    assertEquals(pass.result.result, AutoMergeResult.Enabled);
+    const merges = pass.calls.filter((args) =>
+      args[0] === "pr" && args[1] === "merge"
+    );
+    assertEquals(merges.length, 1, "a refused merge commit is not retried");
+    assert(merges[0]!.includes("--auto"));
+    assert(merges[0]!.includes("--squash"));
+    assert(!merges[0]!.includes("--merge"));
+    assert(
+      !pass.calls.some((args) => args[0] === "pr" && args[1] === "create"),
+      "the rollup waits until the armed merge has landed",
+    );
+    assert(
+      !pass.calls.some((args) => args[0] === "issue" && args[1] === "reopen"),
+      "arming leaves the issue untouched",
+    );
+    assert(
+      !pass.calls.some((args) => args[0] === "pr" && args[1] === "edit"),
+      "the child is not retargeted onto the default branch",
+    );
+  }
 });
 
 Deno.test("a not-ahead child whose rollup cannot be opened does not leave its issue closed (Issue #4175)", async () => {
   _resetMilestoneBehindMemo();
   _resetBaseProtectionMemo();
   const calls: string[][] = [];
-  let childMerged = false;
   const result = await enableAutoMerge({
     repo: REPO,
     prNumber: 4109,
     headRefName: "issue-3905-widget",
     baseRefName: BRANCH,
+    fleetAuthors: ["vibe-bot"],
     getDefaultBranchFn: () => Promise.resolve({ ok: true, value: DEFAULT }),
-    isBaseProtectedFn: () => Promise.resolve(true),
-    ghCommandFn: (args) => {
-      calls.push(args);
-      const key = args.join(" ");
-      if (key.includes("pr list") && key.includes("--head")) {
-        return Promise.resolve(JSON.stringify([
-          {
-            number: 4077,
-            state: "MERGED",
-            baseRefName: DEFAULT,
-            mergedAt: "2026-10-13T13:58:25Z",
-          },
-        ]));
-      }
-      if (key.includes("pr list") && key.includes("--base")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 4109, title: "Ship the widget" },
-        ]));
-      }
-      if (key.includes("/milestones?state=all")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 7, title: "Clean up", state: "open" },
-        ]));
-      }
-      if (key.includes("/issues?milestone=")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 3905, title: "Ship the widget" },
-        ]));
-      }
-      if (key.includes("/compare/") && key.includes("ahead_by")) {
-        return Promise.resolve(JSON.stringify(
-          childMerged
-            ? { ahead_by: 1, files: [{ filename: "widget.txt" }] }
-            : { ahead_by: 0, files: [] },
-        ));
-      }
-      if (args[0] === "pr" && args[1] === "merge") {
-        childMerged = true;
-        return Promise.resolve("Merged\n");
-      }
-      if (args[0] === "pr" && args[1] === "create") {
-        return Promise.reject(new Error("rollup refused"));
-      }
-      if (args[0] === "issue" && args[1] === "reopen") {
-        return Promise.resolve("reopened\n");
-      }
-      return Promise.resolve("");
-    },
+    isBaseProtectedFn: () => Promise.resolve(false),
+    ghCommandFn: notAheadRouteGh(
+      calls,
+      "green",
+      { value: false },
+      () => Promise.reject(new Error("rollup refused")),
+    ),
   });
   assertEquals(result.result, AutoMergeResult.Failed);
   assertStringIncludes(result.message, "rollup refused");

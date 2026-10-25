@@ -845,10 +845,10 @@ export type MilestoneBaseMergeDecision =
   | {
     /**
      * A rollup has merged and no open rollup has replaced it, but the
-     * milestone still has open work (Issue #4175). The child stays unarmed
-     * — merging it would close the issue on a branch with no route. Not a
-     * hold: nothing is disarmed or retargeted, and the next scan reads the
-     * route again.
+     * milestone still has open work (Issue #4175). This gate does not merge
+     * the child. The arming path lands it through the ordinary merge checks
+     * and opens the rollup only once that merge has landed. Not a hold:
+     * nothing is disarmed or retargeted.
      */
     decision: "defer";
     reason: "route-waiting";

@@ -21,7 +21,6 @@ import { logAt, type LogSink } from "./log_sink.ts";
 import {
   fetchOpenMilestoneChildren,
   isMilestoneBranch,
-  type OpenMilestoneChild,
 } from "./milestone_children_gate.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 
@@ -126,6 +125,18 @@ export type RouteRestoreOutcome =
      */
     landedChildPr?: number;
   }
+  /**
+   * The branch is not ahead, and the open work is the child itself. The
+   * caller merges that child through the ordinary path (gated direct merge
+   * or auto-merge) and opens the rollup only once the merge has landed.
+   */
+  | {
+    action: "merge-via-gate";
+    milestoneBranch: string;
+    defaultBranch: string;
+    /** Milestone issues to reopen if the merge lands and the rollup does not. */
+    issueNumbers: readonly number[];
+  }
   /** An open rollup from this branch already exists. */
   | { action: "exists"; prNumber: number; milestoneBranch: string }
   /** No merged rollup — the route was not closed. */
@@ -160,9 +171,9 @@ export interface RouteRestoreOptions {
   /** Sink for progress and failure lines. */
   log?: LogSink;
   /**
-   * When the branch is not ahead, merge this child into the milestone
-   * branch and open the rollup in the same pass (Issue #4175). Omitted by
-   * the sync path, which must not open a pull request into a waiting route.
+   * When the branch is not ahead, ask the caller to merge this child
+   * through the ordinary merge path (Issue #4175). Omitted by the sync
+   * path, which must not open a pull request into a waiting route.
    */
   landChildPrNumber?: number;
 }
@@ -354,16 +365,16 @@ async function reopenClosedIssues(
 }
 
 /**
- * Merge the child into the milestone branch, then open the rollup.
- * A rollup that cannot be created does not leave the issue closed.
+ * Open the rollup after the child has already landed on the milestone
+ * branch. A rollup that cannot be created does not leave the issue closed.
  */
-async function landChildAndOpenRollup(
+export async function openRollupForLandedChild(
   options: {
     repo: string;
     milestoneBranch: string;
     defaultBranch: string;
     childPrNumber: number;
-    children: readonly OpenMilestoneChild[];
+    issueNumbers: readonly number[];
     ghCommandFn: GhCommandFn;
     log?: LogSink;
   },
@@ -373,7 +384,7 @@ async function landChildAndOpenRollup(
     milestoneBranch,
     defaultBranch,
     childPrNumber,
-    children,
+    issueNumbers,
     ghCommandFn,
     log,
   } = options;
@@ -381,27 +392,6 @@ async function landChildAndOpenRollup(
     return {
       action: "failed",
       reason: `child PR number ${childPrNumber} is not a positive integer`,
-    };
-  }
-  const issueNumbers = children
-    .filter((child) => child.kind === "issue")
-    .map((child) => child.number);
-  try {
-    await ghCommandFn([
-      "pr",
-      "merge",
-      String(childPrNumber),
-      "--repo",
-      repo,
-      "--merge",
-    ]);
-  } catch (err) {
-    return {
-      action: "failed",
-      reason:
-        `child PR #${childPrNumber} was not merged onto ${milestoneBranch} (${
-          errorText(err)
-        }), so its issue was not closed`,
     };
   }
   const compare = await readBranchCompare(
@@ -580,15 +570,14 @@ export async function restoreClosedMilestoneRoute(
       };
     }
     if (options.landChildPrNumber !== undefined) {
-      return await landChildAndOpenRollup({
-        repo,
+      return {
+        action: "merge-via-gate",
         milestoneBranch,
         defaultBranch,
-        childPrNumber: options.landChildPrNumber,
-        children: children.value,
-        ghCommandFn,
-        log,
-      });
+        issueNumbers: children.value
+          .filter((child) => child.kind === "issue")
+          .map((child) => child.number),
+      };
     }
     return {
       action: "waiting",

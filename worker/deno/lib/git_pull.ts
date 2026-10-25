@@ -290,6 +290,13 @@ async function pushSyncedMilestoneBranch(
   // `waiting` has no open rollup either: the branch is not ahead, so a
   // sync PR would sit on a closed route (the #4100 case). Skip it until a
   // rollup is open.
+  if (restored.action === "merge-via-gate") {
+    return {
+      ok: true,
+      value:
+        `sync PR not opened into '${milestoneBranch}': the branch is not ahead of ${defaultBranch}, so no rollup is open yet (Issue #4175) — `,
+    };
+  }
   if (restored.action === "left-closed" || restored.action === "waiting") {
     return {
       ok: true,
