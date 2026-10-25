@@ -76,8 +76,9 @@ Deno.test("summary-rule retry - no existing PR says the worker will raise one", 
 });
 
 Deno.test("summary-rule retry - an existing PR says the worker will not finalise it yet", () => {
+  const existingPrUrl = "https://github.com/org/repo/pull/42";
   const prompt = buildSummaryRuleRetryPrompt(
-    { ...VERDICT, existingPrUrl: "https://github.com/org/repo/pull/42" },
+    { ...VERDICT, existingPrUrl },
     "org/repo",
     7,
   );
@@ -88,16 +89,8 @@ Deno.test("summary-rule retry - an existing PR says the worker will not finalise
     "update that pull request and arm auto-merge",
   );
   assertStringIncludes(prompt, "Do not create the PR yourself");
-  // The URL itself is never interpolated into the prompt. A regex literal
-  // match (rather than String#includes) avoids CodeQL's
-  // incomplete-url-substring-sanitization heuristic, which treats any raw
-  // substring check against a URL-shaped literal as a would-be trust
-  // decision — this is a leak-absence assertion on generated text, not a
-  // URL validation.
-  assertEquals(
-    /https:\/\/github\.com\/org\/repo\/pull\/42/.test(prompt),
-    false,
-  );
+  // Removing the URL must leave the prompt unchanged: no occurrence leaked.
+  assertEquals(prompt.replaceAll(existingPrUrl, ""), prompt);
 });
 
 Deno.test("summary-rule retry - an unusable issue number fails loud", () => {

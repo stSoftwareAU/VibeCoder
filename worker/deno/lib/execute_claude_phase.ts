@@ -1471,7 +1471,7 @@ async function executeClaudePhaseBody(
         ? { fleetRunArchive: options.fleetRunArchive }
         : {}),
     });
-  let promptResult = await buildRunPrompt(true);
+  const promptResult = await buildRunPrompt(true);
 
   if (!promptResult.ok) {
     return {
@@ -1545,7 +1545,6 @@ async function executeClaudePhaseBody(
       );
       const trimmed = await buildRunPrompt(false);
       if (trimmed.ok) {
-        promptResult = trimmed;
         ({
           systemPrompt,
           prompt: builtUserPrompt,
