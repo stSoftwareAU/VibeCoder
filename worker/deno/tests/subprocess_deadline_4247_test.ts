@@ -323,24 +323,79 @@ Deno.test("chokepoints - with no timeline set the timeout is today's value", asy
   }
 });
 
+/**
+ * Budget before the chokepoint timer fires on a child that ignores SIGTERM.
+ *
+ * The timer is armed before `spawn()`, so a 200 ms budget can elapse while
+ * bash is still starting and has not reached `trap`. Two seconds is enough
+ * for a cold start; the test still refuses to send SIGTERM until the stub
+ * has recorded that the trap is installed.
+ */
+const TRAP_TIMEOUT_MS = 2_000;
+
+/** Shortened post-SIGTERM grace. The production grace stays 5 s. */
+const TRAP_GRACE_MS = 300;
+
+/**
+ * A child that ignores SIGTERM. It records the trap before looping, so the
+ * caller can see that SIGTERM will meet a process that has the trap in place.
+ */
+const IGNORE_SIGTERM_SCRIPT =
+  "trap '' TERM; : > \"$TRAP_READY\"; while true; do :; done";
+
+/**
+ * Resolve once the stub has installed its SIGTERM trap.
+ *
+ * `deadlineMs` is shorter than {@link TRAP_TIMEOUT_MS}, so a successful
+ * return means the chokepoint timer has not fired yet.
+ */
+async function waitForTrapReady(
+  path: string,
+  deadlineMs: number,
+): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < deadlineMs) {
+    try {
+      await Deno.stat(path);
+      return;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `SIGTERM trap was not installed within ${deadlineMs}ms (${path})`,
+  );
+}
+
 Deno.test({
   name:
     "runWithTimeout - a child that ignores SIGTERM is given up inside the grace",
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    _setKillGraceMsForTests(300);
+    const readyDir = await Deno.makeTempDir({ prefix: "trap-ready-" });
+    const ready = `${readyDir}/ready`;
+    _setKillGraceMsForTests(TRAP_GRACE_MS);
     const lines: string[] = [];
     const original = console.error;
     console.error = (...args: unknown[]) => {
       lines.push(args.map((arg) => String(arg)).join(" "));
     };
     const started = Date.now();
+    const pending = runWithTimeout(
+      "bash",
+      ["-c", IGNORE_SIGTERM_SCRIPT],
+      {
+        timeoutMs: TRAP_TIMEOUT_MS,
+        env: {
+          PATH: Deno.env.get("PATH") ?? "",
+          TRAP_READY: ready,
+        },
+      },
+    );
     try {
-      const result = await runWithTimeout(
-        "bash",
-        ["-c", "trap '' TERM; while true; do :; done"],
-        { timeoutMs: 200 },
-      );
+      await waitForTrapReady(ready, TRAP_TIMEOUT_MS - 500);
+      const result = await pending;
       const elapsed = Date.now() - started;
       assert(result.ok);
       if (result.ok) {
@@ -356,12 +411,14 @@ Deno.test({
       assertEquals(line.includes("WARNING:"), false);
       assertEquals(line.includes("ERROR:"), false);
       assert(
-        elapsed < 3_000,
-        `kill outcome took ${elapsed}ms, past the grace cap`,
+        elapsed < TRAP_TIMEOUT_MS + TRAP_GRACE_MS + 2_000,
+        `kill outcome took ${elapsed}ms, past the timeout plus the grace`,
       );
     } finally {
+      await pending.then(() => {}, () => {});
       console.error = original;
       _resetKillGraceMsForTests();
+      await Deno.remove(readyDir, { recursive: true });
     }
   },
 });
@@ -481,21 +538,24 @@ Deno.test({
     "spawnGh production runner - a gh that ignores SIGTERM is given up inside the grace",
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    const stub = await stubGh("trap '' TERM\nwhile true; do :; done");
+    const stub = await stubGh(IGNORE_SIGTERM_SCRIPT);
+    const ready = `${stub.dir}/trap-ready`;
     _resetGhSpawnRunner();
     resetRunTimelineForTests();
-    _setKillGraceMsForTests(300);
+    _setKillGraceMsForTests(TRAP_GRACE_MS);
     const lines: string[] = [];
     const original = console.error;
     console.error = (...args: unknown[]) => {
       lines.push(args.map((arg) => String(arg)).join(" "));
     };
     const started = Date.now();
+    const pending = spawnGh(["api", "user"], {
+      timeoutMs: TRAP_TIMEOUT_MS,
+      env: { ...stub.env, TRAP_READY: ready },
+    });
     try {
-      const result = await spawnGh(["api", "user"], {
-        timeoutMs: 200,
-        env: stub.env,
-      });
+      await waitForTrapReady(ready, TRAP_TIMEOUT_MS - 500);
+      const result = await pending;
       const elapsed = Date.now() - started;
       assertEquals(result.code, GH_TIMEOUT_EXIT_CODE);
       assertEquals(result.success, false);
@@ -504,16 +564,19 @@ Deno.test({
       );
       assert(
         line !== undefined,
-        `missing kill log (stderr: ${result.stderr}; lines: ${lines.join(" | ")})`,
+        `missing kill log (stderr: ${result.stderr}; lines: ${
+          lines.join(" | ")
+        })`,
       );
       assertStringIncludes(line, "kill of gh");
       assertEquals(line.includes("WARNING:"), false);
       assertEquals(line.includes("ERROR:"), false);
       assert(
-        elapsed < 3_000,
-        `kill outcome took ${elapsed}ms, past the grace cap`,
+        elapsed < TRAP_TIMEOUT_MS + TRAP_GRACE_MS + 2_000,
+        `kill outcome took ${elapsed}ms, past the timeout plus the grace`,
       );
     } finally {
+      await pending.then(() => {}, () => {});
       console.error = original;
       _resetKillGraceMsForTests();
       _resetGhSpawnRunner();
