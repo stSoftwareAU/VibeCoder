@@ -379,6 +379,40 @@ Deno.test(
 );
 
 Deno.test(
+  "issue_finder_logger - selection-reasoning names a top-priority skip ahead of a truncated blocked list (Issue #4362)",
+  () => {
+    const { diag, output } = createTestDiagnostics(false);
+    const filler = Array.from({ length: 40 }, (_, i) => ({
+      repo: "owner/work-on-repo",
+      issueNumber: 2000 + i,
+      milestone: "",
+      reason: "pr-blocked" as const,
+      tier: "work-on" as const,
+    }));
+    diag.logSelectionReasoning(
+      { repo: "owner/other", number: 9, source: "work-on" },
+      41,
+      [
+        ...filler,
+        {
+          repo: "owner/fleet",
+          issueNumber: 4139,
+          milestone: "",
+          reason: "cooldown",
+          tier: "configured-label",
+        },
+      ],
+    );
+    const line = output[0]!;
+    assertStringIncludes(line, "owner/fleet#4139(cooldown)");
+    const top = line.indexOf("owner/fleet#4139(cooldown)");
+    const later = line.indexOf("owner/work-on-repo#2000(pr-blocked)");
+    assert(top >= 0 && (later === -1 || top < later), line);
+    assertStringIncludes(line, "configured-label-blocked=41");
+  },
+);
+
+Deno.test(
   "issue_finder_logger - logSelectionReasoning omits blocked field when no entries",
   () => {
     const { diag, output } = createTestDiagnostics();

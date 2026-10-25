@@ -1046,10 +1046,18 @@ export async function ensureDefaultBranchCurrent(
     options,
   );
 
+  // Issue #4358: git's stderr, a timeout, or a spawn error. Same wording as
+  // the fetch failure in git_branch_sync.ts — dropping the detail left the
+  // milestone tip log with no reason.
   if (!fetchResult.ok) {
+    const detail = fetchResult.error.message.trim();
     return {
       ok: false,
-      error: new Error(`Failed to fetch origin/${defaultBranch}`),
+      error: new Error(
+        `Failed to fetch origin/${defaultBranch}: ${
+          detail || "git reported no output"
+        }`,
+      ),
     };
   }
 

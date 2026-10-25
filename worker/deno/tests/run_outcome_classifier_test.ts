@@ -273,6 +273,59 @@ Deno.test("classifyRunFailure - every tool call failing to spawn is tool-runtime
   assertEquals(got.failureClass, "tool-runtime");
 });
 
+Deno.test("classifyRunFailure - a criteria-unmet run whose later session has no tools is tool-runtime (Issue #4362)", () => {
+  // The implementing agent used tools, then the pre-PR verifier's session
+  // opened with the code-mode host missing. That later fault is
+  // infrastructure even though the recorded category is a worker gate.
+  const transcript = [
+    { type: "function_call", name: "shell", status: "completed" },
+    {
+      type: "error",
+      message:
+        "Code Mode is unavailable because failed to spawn code-mode host /usr/local/bin/codex-code-mode-host: host executable was not found.",
+    },
+    {
+      type: "agent_message",
+      message: "I cannot use tools, so I could not check the criteria.",
+    },
+  ];
+  const got = classifyRunFailure(
+    "criteria_unmet",
+    "the run did not meet every acceptance criterion",
+    true,
+    transcript,
+  );
+  assertEquals(got.failureClass, "tool-runtime");
+  assertEquals(got.fixability, "code_fixable");
+  const decision = classifyCodingFailure(
+    "the run did not meet every acceptance criterion",
+    "criteria_unmet",
+    undefined,
+    transcript,
+  );
+  assertEquals(decision.failureClass, "tool-runtime");
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.cooldownKind, undefined);
+});
+
+Deno.test("classifyRunFailure - a criteria-unmet run whose tools worked stays on the ladder (Issue #4362)", () => {
+  const got = classifyRunFailure(
+    "criteria_unmet",
+    "the run did not meet every acceptance criterion",
+    true,
+    WORKING_TOOLS_TRANSCRIPT,
+  );
+  assertEquals(got.failureClass, "agent-outcome");
+  const decision = classifyCodingFailure(
+    "the run did not meet every acceptance criterion",
+    "criteria_unmet",
+    undefined,
+    WORKING_TOOLS_TRANSCRIPT,
+  );
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.cooldownKind, "non_transient");
+});
+
 Deno.test("classifyRunFailure - an ordinary no-change run whose tools worked stays an agent outcome (Issue #4324)", () => {
   const withTools = classifyRunFailure(
     "no_changes",

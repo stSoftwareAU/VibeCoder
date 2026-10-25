@@ -307,3 +307,33 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "ensureDefaultBranchCurrent - a failing fetch keeps git's stderr (Issue #4358)",
+  async () => {
+    const tmp = await Deno.makeTempDir({ prefix: "issue-4358-fetch-" });
+    const missing = `${tmp}/missing-origin-4358`;
+    const clonePath = `${tmp}/clone`;
+    try {
+      assertEquals(await runGit(["init", "-b", "main", clonePath], tmp), 0);
+      assertEquals(
+        await runGit(["remote", "add", "origin", missing], clonePath),
+        0,
+      );
+      const result = await ensureDefaultBranchCurrent("main", {
+        cwd: clonePath,
+      });
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertStringIncludes(
+          result.error.message,
+          "Failed to fetch origin/main",
+        );
+        // The path exists only in git's stderr. The old wrapper dropped it.
+        assertStringIncludes(result.error.message, "missing-origin-4358");
+      }
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);

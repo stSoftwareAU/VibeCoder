@@ -442,6 +442,37 @@ Deno.test("applyDependencyConflictRules - keeps both appended entries and stages
   );
 });
 
+Deno.test("applyDependencyConflictRules - a merge-base failure that is not an absent stage 1 stays a warning (Issue #4361)", async () => {
+  const workingDir = await makeWorkingDir({
+    "CHANGELOG.md": CHANGELOG_CONFLICT,
+  });
+  const { lines, logger } = makeLevelLogger();
+
+  const report = await applyDependencyConflictRules({
+    workingDir,
+    conflictedFiles: ["CHANGELOG.md"],
+    git: makeGitWithBase({ args: [] }, null),
+    logger,
+  });
+
+  const handOffs = lines.filter((line) =>
+    line.message.startsWith("Conflicted file left for the AI fallback")
+  );
+  assertEquals(
+    handOffs.map((line) => line.level),
+    ["warn"],
+    JSON.stringify(lines),
+  );
+  assertStringIncludes(
+    handOffs[0]?.message ?? "",
+    "fatal: path does not exist",
+  );
+  assertStringIncludes(
+    report.deferred[0]?.reason ?? "",
+    "fatal: path does not exist",
+  );
+});
+
 Deno.test("applyDependencyConflictRules - a ledger whose merge base cannot be read is deferred untouched", async () => {
   const workingDir = await makeWorkingDir({
     "CHANGELOG.md": CHANGELOG_CONFLICT,
@@ -563,6 +594,81 @@ Deno.test("applyDependencyConflictRules - resolves a real git CHANGELOG conflict
       (await realGit(["diff", "--name-only", "--diff-filter=U"], dir)).stdout,
       "",
       "the resolved ledger is staged, so no unmerged path is left",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("applyDependencyConflictRules - add/add files with no stage 1 are one info line (Issue #4361)", async () => {
+  // A real add/add merge: `git show :1:<path>` answers
+  // "fatal: path '…' is in the index, but not at stage 1" plus a hint.
+  // That absence is the designed hand-off, so it must not be logged per file
+  // and must not quote git's fatal or hint text.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-4361-" });
+  const ok = async (args: string[]) => {
+    const result = await realGit(args, dir);
+    if (result.code !== 0) {
+      throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+    }
+  };
+  try {
+    await ok(["init", "--initial-branch=main", "."]);
+    await Deno.writeTextFile(`${dir}/README.md`, "base\n");
+    await ok(["add", "-A"]);
+    await ok(["commit", "-m", "Seed"]);
+
+    await ok(["checkout", "-b", "feature"]);
+    await Deno.writeTextFile(`${dir}/NOTES.md`, "feature notes\n");
+    await Deno.writeTextFile(`${dir}/CHANGELOG.md`, "feature log\n");
+    await ok(["add", "-A"]);
+    await ok(["commit", "-m", "Feature adds both files"]);
+
+    await ok(["checkout", "main"]);
+    await Deno.writeTextFile(`${dir}/NOTES.md`, "main notes\n");
+    await Deno.writeTextFile(`${dir}/CHANGELOG.md`, "main log\n");
+    await ok(["add", "-A"]);
+    await ok(["commit", "-m", "Main adds both files"]);
+
+    const merge = await realGit(["merge", "feature", "--no-edit"], dir);
+    assertEquals(merge.code === 0, false, "the add/add merge must conflict");
+
+    const { lines, logger } = makeLevelLogger();
+    const report = await applyDependencyConflictRules({
+      workingDir: dir,
+      conflictedFiles: ["NOTES.md", "CHANGELOG.md"],
+      git: (args) => realGit([...args], dir),
+      logger,
+    });
+
+    assertEquals(report.resolved, []);
+    assertEquals(
+      report.deferred.map((file) => file.path).sort(),
+      ["CHANGELOG.md", "NOTES.md"],
+    );
+    for (const file of report.deferred) {
+      assertEquals(file.reason, "added on both sides, no merge base");
+      assertEquals(file.reason.includes("fatal:"), false);
+      assertEquals(file.reason.includes("hint:"), false);
+    }
+    const named = lines.filter((line) =>
+      line.message.includes("added on both sides, no merge base")
+    );
+    assertEquals(named.length, 1, JSON.stringify(lines));
+    assertEquals(named[0]?.level, "info");
+    assertStringIncludes(named[0]?.message ?? "", "2");
+    assertEquals(
+      lines.some((line) =>
+        line.message.includes("fatal:") || line.message.includes("hint:")
+      ),
+      false,
+      JSON.stringify(lines),
+    );
+    assertEquals(lines.filter((line) => line.level === "warn"), []);
+    assertStringIncludes(await Deno.readTextFile(`${dir}/NOTES.md`), "<<<<<<<");
+    assertStringIncludes(
+      await Deno.readTextFile(`${dir}/CHANGELOG.md`),
+      "<<<<<<<",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
