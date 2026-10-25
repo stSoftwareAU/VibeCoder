@@ -648,3 +648,59 @@ Deno.test("orchestration gate - a priced runner result counts toward max_cost_us
     });
   });
 });
+
+/** A git checkout under `dir` with one committed file. */
+async function gitCheckout(dir: string): Promise<string> {
+  const repo = `${dir}/repo`;
+  await Deno.mkdir(repo);
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", { args, cwd: repo }).output();
+    assertEquals(out.success, true, `git ${args.join(" ")}`);
+  };
+  await git("init", "-q");
+  // CI runners have no global git identity; set one for this fixture.
+  await git("config", "user.name", "Test");
+  await git("config", "user.email", "test@example.com");
+  await Deno.writeTextFile(`${repo}/code.ts`, "base\n");
+  await git("add", "-A");
+  await git("commit", "-q", "-m", "base");
+  return repo;
+}
+
+Deno.test("orchestration gate - a Codex manager or reviewer cannot change the checkout; the executor can (Issue #4356)", async () => {
+  await withWorkDir(async (dir) => {
+    const repo = await gitCheckout(dir);
+    const codex = { provider: "codex" } as const;
+    const warnings: string[] = [];
+    const fake = fakeRunner((options) => {
+      if (options.orchestrationRole === "executor") {
+        Deno.writeTextFileSync(`${repo}/code.ts`, "executor\n");
+      } else {
+        Deno.writeTextFileSync(`${repo}/code.ts`, "read-only role\n");
+        Deno.writeTextFileSync(`${repo}/stray.ts`, "stray\n");
+      }
+      return answerByPhase(options);
+    });
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(repo, { manager: codex, executor: codex, reviewer: codex }),
+      {
+        ...depsFor(dir, fake.runClaudeWithRetry),
+        log: () => {},
+        warn: (msg) => warnings.push(msg),
+      },
+    );
+    assertEquals(outcome.ok, true);
+    assertEquals(
+      [...new Set(fake.calls.map((o) => String(o.orchestrationRole)))].sort(),
+      ["executor", "manager", "reviewer"],
+    );
+    // The last call is a read-only one, and the executor's work survived it.
+    assertEquals(await Deno.readTextFile(`${repo}/code.ts`), "executor\n");
+    assertEquals(
+      await Deno.stat(`${repo}/stray.ts`).then(() => true, () => false),
+      false,
+    );
+    assertEquals(warnings.length > 0, true);
+    assertStringIncludes(warnings.join("\n"), "reverted");
+  });
+});

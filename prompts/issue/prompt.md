@@ -671,6 +671,10 @@ reviewer.
   all checks pass BEFORE creating a Pull Request: the targeted ones (formatter,
   linter, type check, the tests covering your change) always, and the full gate
   once at the end when the remaining run budget covers it.
+- Run one test suite at a time, in the foreground, never with
+  `run_in_background`, and only for the crates or packages the change touched.
+  The repository's quality-gate command, when the remaining budget covers it,
+  is that one foreground command — do not start a second suite beside it.
 - All checks must pass before PR creation: lint, type checks, unit tests, and
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`
