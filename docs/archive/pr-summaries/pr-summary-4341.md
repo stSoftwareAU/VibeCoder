@@ -18,9 +18,9 @@ Changed:
   through.
 - `worker/deno/lib/pinned_actions.ts`: the `SEMGREP_IMAGE_DIGEST` doc comment no
   longer claims a secret is in scope.
-- `worker/deno/tests/semgrep_token_config_4341_test.ts`: new regression test;
-  it decides token-free by calling `scanSemgrepTokenDrift`, with no detector of
-  its own.
+- `worker/deno/tests/semgrep_token_config_4341_test.ts`: new regression test; it
+  decides token-free by calling `scanSemgrepTokenDrift`, with no detector of its
+  own.
 - `worker/deno/lib/workflow_file_checks.ts`: new `semgrep-token-config` entry in
   `WORKFLOW_FILE_CHECKS` (after `gitleaks-drift`), so the pre-PR
   changed-workflow gate, the workflow-sync issue bodies and the template
@@ -35,8 +35,8 @@ Changed:
   runs `semgrep ci --config` with `SEMGREP_APP_TOKEN` in step, job or top-level
   `env`. Documented in `docs/GITHUB-ACTIONS-AUDIT-SCAN.md`.
 - `worker/deno/tests/semgrep_token_drift_scanner_test.ts`: tests for it.
-- `worker/deno/tests/github_actions_audit_template_test.ts`: two `runTask`
-  tests for step 5h2b (files the finding; skips one already open).
+- `worker/deno/tests/github_actions_audit_template_test.ts`: two `runTask` tests
+  for step 5h2b (files the finding; skips one already open).
 
 ## Spec
 
@@ -55,9 +55,9 @@ Changed:
 - Existing fleet repos that hold the old template are handled by a drift
   scanner, modelled on `gitleaks_drift_scanner.ts`, not by workflow-sync: the
   `semgrep` spec only detects presence, so the audit reports the copy and the
-  fix rides a normal per-repo worker PR (Issue #3239 isolation). I did not run the audit end to end
-  against a live fleet repo; `runTask` tests drive step 5h2b through the `gh`
-  stub.
+  fix rides a normal per-repo worker PR (Issue #3239 isolation). I did not run
+  the audit end to end against a live fleet repo; `runTask` tests drive step
+  5h2b through the `gh` stub.
 
 ### Undiscoverable Facts
 
@@ -70,13 +70,15 @@ Changed:
 Backend/CI-config change, no UI. Evidence is the new test and the full gate.
 
 - `env -u VIBE_IMAGE_AGENT_PROVIDERS ./quality.sh < /dev/null` on the tree
-  before the PR #4348 review fixes (not the final tree): `Result: PASSED (with skipped checks)`. `config integration` and
-  `checkov` were skipped by the gate. `semgrep`, `workflow hygiene`,
-  `deno tests`, `deno lint`, `deno type check` and `deno fmt` passed.
+  before the PR #4348 review fixes (not the final tree):
+  `Result: PASSED (with skipped checks)`. `config integration` and `checkov`
+  were skipped by the gate. `semgrep`, `workflow hygiene`, `deno tests`,
+  `deno lint`, `deno type check` and `deno fmt` passed.
 - Targeted run of the two semgrep test files plus the workflow-file-check,
   conformance, changed-workflow-gate, issue-prompt, workflow-sync and
-  audit-template tests (head after PR #4348 review): `ok | 203 passed | 0 failed`.
-  The full gate was not re-run after the review fixes.
+  audit-template tests (head after PR #4348 review):
+  `ok | 203 passed | 0 failed`. The full gate was not re-run after the review
+  fixes.
 
 ## Test Plan
 
@@ -93,25 +95,25 @@ Backend/CI-config change, no UI. Evidence is the new test and the full gate.
   unparseable files yield nothing; suppressed and known-open ids are skipped.
   Red check: dropping the top-level `env` branch failed the step/job/top-level
   test; restored.
-- Added to `worker/deno/tests/github_actions_audit_template_test.ts` (2 `runTask`
-  tests): an old-template copy yields exactly one created issue with
+- Added to `worker/deno/tests/github_actions_audit_template_test.ts` (2
+  `runTask` tests): an old-template copy yields exactly one created issue with
   `<!-- finding-id: BP-SEMGREP-TOKEN-CONFIG-semgrep -->`, the audit and
   `severity:medium` labels, and the id in `runScanFn`'s known-open list; a
-  finding already open files nothing. Red check: passing `[]` instead of
-  `files` to `scanSemgrepTokenDrift` in step 5h2b failed the first test.
-  Dropping `seenIds.add` there stays green: the known-open list handed to
-  `runScanFn` is built from `preFiled`, and no later pre-filer reads the id.
+  finding already open files nothing. Red check: passing `[]` instead of `files`
+  to `scanSemgrepTokenDrift` in step 5h2b failed the first test. Dropping
+  `seenIds.add` there stays green: the known-open list handed to `runScanFn` is
+  built from `preFiled`, and no later pre-filer reads the id.
 - Table wiring: `semgrep-token-config` added to `EXPECTED_CHECK_IDS`
   (conformance test), `VIOLATIONS` (`workflow_file_checks_test.ts`) and `SEEDED`
   (`changed_workflow_gate_test.ts`). Red checks: making the entry return `[]`
   failed its `VIOLATIONS` test and the gate-seeded test
   (`workflow_file_checks_test.ts` 26 tests and `changed_workflow_gate_test.ts`
-  33 tests at head; 57 passed, 2 failed);
-  deleting the entry failed the conformance id-list test.
-- Red check in `worker/deno/tests/semgrep_token_config_4341_test.ts` (3 tests
-  at head): with `semgrep  ci --config p/default` (two spaces) and the token
-  env restored in `semgrep.yml`, the repo-workflows and `semgrep.yml` tests
-  failed (1 passed, 2 failed); restored.
+  33 tests at head; 57 passed, 2 failed); deleting the entry failed the
+  conformance id-list test.
+- Red check in `worker/deno/tests/semgrep_token_config_4341_test.ts` (3 tests at
+  head): with `semgrep  ci --config p/default` (two spaces) and the token env
+  restored in `semgrep.yml`, the repo-workflows and `semgrep.yml` tests failed
+  (1 passed, 2 failed); restored.
 - Existing tests edited: `workflow_template_audit_conformance_test.ts`
   (`EXPECTED_CHECK_IDS` gained `semgrep-token-config`; title now "twelve"),
   `changed_workflow_gate_test.ts` (`SEEDED`) and `workflow_file_checks_test.ts`
