@@ -35,6 +35,12 @@ import type { Logger } from "../types.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
+/**
+ * The run target the injected clock must stay before (Issue #4243). These
+ * tests start the clock at 0, so the target is the default run duration.
+ */
+const RUN_TARGET_MS = createDefaultRunCoreConfig().runDurationSeconds * 1000;
+
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
     log: () => {},
@@ -159,10 +165,11 @@ Deno.test(
         if (signal === "SIGTERM") shutdownHandler = handler;
       },
       now: () => now,
-      // Injected timer fires immediately and advances the clock past the
-      // hard timeout — no real sleep.
+      // Injected timer fires immediately and advances the clock by the hard
+      // timeout — no real sleep. Issue #4243: never past the run target, so
+      // the handlers after the wedged one are still dispatched.
       watchdogDelay: (ms) => {
-        now += ms;
+        now = Math.min(now + ms, RUN_TARGET_MS - 1);
         return Promise.resolve();
       },
       // Priority 1 (PR feedback) wedges forever.
@@ -384,9 +391,10 @@ Deno.test({
           },
           now: () => now,
           // The watchdog fires once the ladder is asleep in its backoff.
+          // Issue #4243: never past the run target, so the next priority runs.
           watchdogDelay: async (ms) => {
             await within(sleeping.promise, "the ladder's first backoff");
-            now += ms;
+            now = Math.min(now + ms, RUN_TARGET_MS - 1);
           },
           terminateActiveAgentRuns: async (reason, options) => {
             await terminateActiveAgentRuns(reason, undefined, options);

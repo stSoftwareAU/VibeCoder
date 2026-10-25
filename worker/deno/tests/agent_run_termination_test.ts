@@ -26,8 +26,32 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { currentPriorityContext } from "../lib/gh_call_metrics.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+
+/**
+ * The run target the injected clock must stay before (Issue #4243). These
+ * tests start the clock at 0, so the target is the default run duration.
+ */
+const RUN_TARGET_MS = createDefaultRunCoreConfig().runDurationSeconds * 1000;
+
+/** The priority context Planning Mode runs under (names are normalised). */
+const PLANNING_CONTEXT = "planning-mode";
+
+/**
+ * Where the injected watchdog timer leaves the clock (Issue #4243).
+ *
+ * The fake timer fires at once, so an armed timer used to carry the clock
+ * forward by its whole budget, and one agent-backed handler then pushed the
+ * clock past the run target, deferring every handler after it. A timer that is
+ * not the test's subject stops one millisecond short of the target. The
+ * subject, an agent that outlives the cycle, may run the clock past it.
+ */
+function watchdogClockAfter(now: number, ms: number, subject: boolean): number {
+  if (subject) return now + ms;
+  return Math.max(now, Math.min(now + ms, RUN_TARGET_MS - 1));
+}
 
 /**
  * Run `fn` with a stub agent that records spawns and runs `body`.
@@ -304,11 +328,12 @@ Deno.test("run_core watchdog - an agent-backed handler (CI Fix) running past 600
     addSignalListener: (signal, handler) => {
       if (signal === "SIGTERM") shutdown = handler;
     },
-    // The injected watchdog timer advances the clock by exactly the wait,
-    // so a handler that "runs" 1500 s is modelled by resolving after the
-    // timer would have fired at 600 s but before one at 3600 s + grace.
+    // The injected watchdog timer advances the clock by the wait, but not to
+    // the run target (Issue #4243), so the handlers after CI Fix still run. A
+    // handler that "runs" 1500 s is modelled by resolving once the clock reads
+    // 1500 s or more, which it does by the time CI Fix starts.
     watchdogDelay: (ms) => {
-      now += ms;
+      now = watchdogClockAfter(now, ms, false);
       return Promise.resolve();
     },
     terminateActiveAgentRuns: (reason) => {
@@ -373,8 +398,13 @@ Deno.test("run_core watchdog - an agent-backed handler that outlives the cycle d
     addSignalListener: (signal, handler) => {
       if (signal === "SIGTERM") shutdown = handler;
     },
+    // The wedged Planning Mode timer is the subject, so it may pass the target.
     watchdogDelay: (ms) => {
-      now += ms;
+      now = watchdogClockAfter(
+        now,
+        ms,
+        currentPriorityContext() === PLANNING_CONTEXT,
+      );
       return Promise.resolve();
     },
     terminateActiveAgentRuns: (reason) => {
@@ -589,7 +619,7 @@ Deno.test("run_core dispatch - Planning Mode declares an agent floor of planning
   );
 });
 
-Deno.test("run_core watchdog - a wedged Planning Mode past the cycle deadline is abandoned at the planning floor, not the flat 600 s, and its agent is still terminated (Issue #62)", async () => {
+Deno.test("run_core watchdog - a wedged Planning Mode at the cycle deadline is abandoned at the planning floor, not the flat 600 s, and its agent is still terminated (Issue #62)", async () => {
   const errors: string[] = [];
   const terminations: string[] = [];
   let now = 0;
@@ -603,8 +633,13 @@ Deno.test("run_core watchdog - a wedged Planning Mode past the cycle deadline is
     addSignalListener: (signal, handler) => {
       if (signal === "SIGTERM") shutdown = handler;
     },
+    // The wedged Planning Mode timer is the subject, so it may pass the target.
     watchdogDelay: (ms) => {
-      now += ms;
+      now = watchdogClockAfter(
+        now,
+        ms,
+        currentPriorityContext() === PLANNING_CONTEXT,
+      );
       return Promise.resolve();
     },
     terminateActiveAgentRuns: (reason) => {
@@ -622,8 +657,9 @@ Deno.test("run_core watchdog - a wedged Planning Mode past the cycle deadline is
     e.includes("(Planning Mode)") && e.includes("hard timeout")
   );
   assert(line, `planning abandoned: ${errors.join(" | ")}`);
-  // The earlier handlers have already pushed the clock past the cycle
-  // deadline, so the budget is the floor — 1800 s planning agent + 600 s tail.
+  // The earlier handlers have brought the clock to the cycle deadline (one
+  // millisecond short of the run target, Issue #4243), so the budget is the
+  // floor — 1800 s planning agent + 600 s tail.
   assert(
     line.includes("2400s"),
     `planning bounded by the floor, not the flat 600 s: ${line}`,
@@ -655,8 +691,13 @@ Deno.test("run_core watchdog - a Planning Mode run whose post-publish repair tai
     addSignalListener: (signal, handler) => {
       if (signal === "SIGTERM") shutdown = handler;
     },
+    // The Planning Mode timer is the subject, so it may pass the target.
     watchdogDelay: (ms) => {
-      now += ms;
+      now = watchdogClockAfter(
+        now,
+        ms,
+        currentPriorityContext() === PLANNING_CONTEXT,
+      );
       return Promise.resolve();
     },
     terminateActiveAgentRuns: () => Promise.resolve(),

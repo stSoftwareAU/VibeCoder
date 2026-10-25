@@ -1278,7 +1278,7 @@ each carries the operands that make the decision checkable afterwards:
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
 | `repo-leased` | `deferralStreak` | An issue slot holds the repository's shared clone. The streak is the consecutive passes that have now deferred this PR without attempting it. |
 | `deferred-bound` | `bound`, `deferralStreak` | The deadline or the cap left this due PR in the queue before any attempt started. |
-| `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. |
+| `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. The run-target start gate (Issue #4243) also ends a pass as `deadline`. |
 
 Two properties are worth knowing when reading these:
 
@@ -1319,7 +1319,7 @@ The pass takes **every** conflicting PR that is due, not one per cycle
 holds new issue claims behind open PRs, so draining conflicts one per cycle —
 most of an hour once issue work is running — throttled issue throughput too.
 
-Three bounds keep the drain from becoming a monopoly:
+Three bounds keep the drain from becoming a monopoly (the run's one-hour target, Issue #4243, is a start gate on top of them: once it has passed, no further resolution starts and the pass ends as a `deadline` stop):
 
 | Bound | Value | Why |
 | --- | --- | --- |

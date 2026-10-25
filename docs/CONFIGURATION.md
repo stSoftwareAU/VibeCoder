@@ -2660,6 +2660,29 @@ The finish and the hard kill are logged and published through
 `lib/run_timeline.ts`, but no claim or agent deadline reads them yet: the cycle
 deadline and the run hard cap above still govern.
 
+The one-hour target is a start gate (Issue #4243). Once it has passed, nothing
+new starts. The Priority ladder defers the handler it reached, and every one
+after it, to the next cycle, logging one
+`stop reason=deadline — <handler> and any after it defer to the next cycle.`
+line; that covers milestone branch sync and the merge-conflict pass, which are
+ladder handlers. Past the target, the per-item loops take nothing new either,
+in those two handlers and in the Auto-Merge sweep: the merge-conflict drain
+starts no further resolution (one `Merge-conflict drain stopping: the run
+target has passed...` line, reported as a deadline stop), the milestone branch
+sync starts no further repository or milestone (one `Milestone sync stopped
+before ... the run target has passed...` line, and the sync cursor resumes
+there next cycle), and the Auto-Merge sweep's in-cycle milestone sync is
+deferred (one `In-cycle milestone sync deferred for <repo>#<n>: the run target
+has passed...` line; the PR is still armed). An issue run that completes a PR it
+has already claimed still syncs its milestone past the target, because that
+claim is already active. The issue scan takes no new claim,
+on its first pass as on later ones, and the Priority 2 slot pool and the
+maintenance lane refuse a new claim or pass past the target too. The idle-task
+filer is refused as well, logging one line for each refused observation (each
+slot plus the outer-cycle observer), with no permit spent and no transcript,
+audit or census call made. A handler already
+running is not interrupted; it keeps its own budget.
+
 #### The agent is told to wind down before the cap (Issue #508)
 
 An agent cannot be interrupted mid-session — its stdin carries the prompt and

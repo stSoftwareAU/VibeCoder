@@ -3,9 +3,11 @@
  * launcher's watchdog will kill it regardless (Issue #4242).
  *
  * The target is the run's one-hour mark and the finish its two-hour mark;
- * both are instants measured from the run's start, and nothing reads either
- * of them yet: no agent is asked to wrap up at the target, and the run's
- * claim deadline (`runDurationSeconds`) is separate. The hard kill is the
+ * both are instants measured from the run's start. The target is read as the
+ * start gate: nothing new starts after it (Issue #4243). The finish and the
+ * hard kill are still not read by any claim or agent deadline: no agent is
+ * asked to wrap up at the finish, and the run's claim deadline
+ * (`runDurationSeconds`) is separate. The hard kill is the
  * epoch-ms at which the launcher's watchdog ends the run whatever the worker
  * is doing. The finish is held back so the WIP checkpoint (commit and push)
  * lands before that kill: if the configured finish would leave less than the
@@ -204,6 +206,18 @@ export function setRunTimeline(t: RunTimeline): void {
  */
 export function getRunTimeline(): RunTimeline | undefined {
   return current;
+}
+
+/**
+ * Whether the run's target mark has passed. Start-gates ("nothing new starts
+ * after the target", Issue #4243) call this with their own clock reading.
+ *
+ * @param now - Current epoch-ms (the caller's injected clock).
+ * @returns True once the process-wide timeline's target has been reached;
+ *   false when no timeline is set (nothing refuses).
+ */
+export function pastRunTarget(now: number): boolean {
+  return current?.pastTarget(now) ?? false;
 }
 
 /** Forget the process-wide timeline. For tests only. */
