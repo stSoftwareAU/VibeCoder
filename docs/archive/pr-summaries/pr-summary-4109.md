@@ -102,14 +102,19 @@ feature rows, split, reviewers and tier, each re-read); updated:
 `docs/PROVIDER-FEASIBILITY.md`, `docs/CONFIGURATION.md`; remaining `#4010` hits
 re-read and kept (they describe the runner refusal as the backstop, for a caller
 that bypasses the planner and for the retry ladder's fallback provider); also
-corrected the `file:line` cites in `docs/MANAGER-WORKER-CONTRACT.md` for the
-external-orchestration test (`execute_claude_phase.ts:1279-1289`,
+re-pointed the `file:line` cites in `docs/MANAGER-WORKER-CONTRACT.md` and
+`docs/PROVIDER-FEASIBILITY.md` after the merge of `origin/main` moved the code:
+the external-orchestration test (`execute_claude_phase.ts:1309-1319`,
 `execute_phase.ts:800-815`), the `isIssueExecutorSplitEnabled` calls
-(`execute_claude_phase.ts:1290-1295`, `execute_phase.ts:817-822`), the planner's
-`executorSplit` and `buildPrompt` inputs (`execute_claude_phase.ts:1317-1319`,
-`:1447`; `execute_phase.ts:851-853`, `:906`) and the "Phase wiring" row and its
-mermaid label (`execute_claude_phase.ts:1275-1325`: split `:1290-1295`, tier
-`:1296-1301`, planner `:1307`, `buildIssueRunAgents` `:1321`), which the branch
+(`execute_claude_phase.ts:1320-1325`, `execute_phase.ts:817-822`), the planner's
+`executorSplit` and `buildPrompt` inputs (`execute_claude_phase.ts:1347-1349`,
+`:1477`; `execute_phase.ts:851-853`, `:906`), the planner and its strip return
+(`issue_run_provider_agents.ts:75-125`, `:118-124`), the retry ladder
+(`claude_runner.ts:2887`, `:3450-3470`), the provider-table cites
+(`agent_provider.ts:646-648`, `:653-655`, `:737`, `:861`, `:900`, `:926`,
+`:1005`, `:1099`, `:1154-1155`, `:1166`) and the "Phase wiring" row and its
+mermaid label (`execute_claude_phase.ts:1305-1355`: split `:1320-1325`, tier
+`:1326-1330`, planner `:1335`, `buildIssueRunAgents` `:1351`), which the branch
 moved; also corrected three sentences in `docs/CONTAINER.md` (per-invocation
 selection: the `agentProvider` forwarding and `selectAgentProvider` as the only
 resolution point) and `docs/MANAGER-WORKER-CONTRACT.md` ("No default change": a
@@ -165,7 +170,7 @@ Provenance: the issue numbers this diff cites.
   sub-agents on is refused before spawn with "Refused to start the agent: Codex
   CLI cannot carry the issue run's sub-agent definitions (--agents)…" and
   releases its claim with no PR
-- **status** — `verified` — at HEAD `c8e7954c`, with
+- **status** — `verified` — at HEAD `e6f9187b` (the merge of `origin/main`; re-observed after the merge), with
   `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` replaced by
   their `origin/main` versions, `tests/issue_4109_callsite_test.ts` gave
   `FAILED | 2 passed | 8 failed`: the 8 failing were the execute_phase reroute,
@@ -192,13 +197,25 @@ comment re-worded in `worker/deno/tests/manager_worker_contract_3641_test.ts`
 `worker/deno/tests/issue_4109_callsite_test.ts` and
 `worker/deno/tests/issue_run_provider_agents_test.ts` are new files.
 
-Red check (HEAD `c8e7954c`): `lib/phases/execute_phase.ts` and
+Red check (HEAD `e6f9187b` (the merge of `origin/main`; re-observed after the merge)): `lib/phases/execute_phase.ts` and
 `lib/execute_claude_phase.ts` were overwritten with
 `git show origin/main:<path>` and `tests/issue_4109_callsite_test.ts` was run
 with `env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A --no-check`:
 `FAILED | 2 passed | 8 failed` (the failing and passing names are in
 Reproduction). Both files were then restored with `git checkout HEAD --` and the
 file re-run with type-checking on: `ok | 10 passed | 0 failed (69ms)`.
+
+Mutation-gate follow-up: the facts flip verifier found no flip of the last
+statement of `claudeUsable` (`return enabled.includes(claude)`), because its only
+mutant, `return undefined`, behaves as `false`. The statement is now
+`if (!resolveEnabledAgentProviderIds(selection).includes(CLAUDE_PROVIDER_ID)) { return false; } return true;`
+(`worker/deno/lib/issue_run_provider_agents.ts:68-71`, behaviour unchanged). Red
+checks, each on the named test with only that edit made:
+removing the `!` at line 68 turns
+`issue run provider - Claude not enabled strips sub-agents with no image stamp (Issue #4109)`
+red; returning `false` at line 71 turns
+`issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)`
+red.
 
 Tests added on this branch, all passing at the head:
 
@@ -228,6 +245,25 @@ Tests added on this branch, all passing at the head:
   - `issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)`
 - `worker/deno/tests/agent_provider_test.ts` (1 new test):
   - `agent provider - pre-spawn planning reads an uninstalled provider without the install assert (Issue #4109)`
+
+Callers of changed functions (the pre-PR verifier lists the 46-56 callers of
+`buildInvocation` and `buildClaudeCliArgs` because the diff touches comments
+beside them):
+
+- `worker/deno/lib/agent_provider.ts`: comment-only edits next to the
+  `AgentInvocationRequest.agents` field and the DeepSeek `buildInvocation`, plus
+  one new function, `plannedActiveAgentProvider`, whose only callers are the two
+  new planner call sites. Every `buildInvocation` and `buildClaudeCliArgs` caller
+  is unchanged, because no body or signature changed.
+- `worker/deno/lib/claude_runner.ts`: comment-only edit above the #4010 guard;
+  unchanged.
+- `worker/deno/lib/deepseek_executor.ts`: `warnDeepSeekAgentsUnsupported`
+  changed its warning text and doc comment only; its one caller in
+  `agent_provider.ts` is unchanged.
+- `worker/deno/lib/provider_feasibility.ts`: `probeInvocationCapabilities` now
+  delegates to the new `probeDescriptorInvocationCapabilities`; same return value,
+  same caller behaviour (`tests/provider_feasibility_test.ts` is untouched and
+  covers the callers).
 
 The call-site tests are hermetic against the image stamp (the pre-PR verifier
 found 10 of them failing with `VIBE_IMAGE_AGENT_PROVIDERS=claude`, this

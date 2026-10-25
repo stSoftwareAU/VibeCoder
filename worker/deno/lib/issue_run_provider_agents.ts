@@ -65,7 +65,10 @@ function claudeUsable(selection: EnabledAgentProviderSelection): boolean {
   if (installed !== undefined && !installed.includes(CLAUDE_PROVIDER_ID)) {
     return false;
   }
-  return resolveEnabledAgentProviderIds(selection).includes(CLAUDE_PROVIDER_ID);
+  if (!resolveEnabledAgentProviderIds(selection).includes(CLAUDE_PROVIDER_ID)) {
+    return false;
+  }
+  return true;
 }
 
 /** Decide the provider and sub-agent switches for one issue run before spawn. */

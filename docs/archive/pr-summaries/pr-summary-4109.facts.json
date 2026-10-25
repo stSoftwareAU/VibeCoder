@@ -3,7 +3,7 @@
     "entries": [
       {
         "flipWentRed": "flipped guard off, test went red",
-        "line": 88,
+        "line": 91,
         "outcome": "absent: a run that asks for no sub-agents is left unchanged",
         "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
@@ -11,7 +11,7 @@
       },
       {
         "flipWentRed": "forced to not-carrying, test went red",
-        "line": 91,
+        "line": 94,
         "outcome": "success: the provider carries --agents, so the run is left unchanged",
         "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
@@ -19,7 +19,7 @@
       },
       {
         "flipWentRed": "inverted condition, 8 tests went red",
-        "line": 98,
+        "line": 101,
         "outcome": "reroute: Claude is usable, so the non-Claude run is rerouted to Claude",
         "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
@@ -27,7 +27,7 @@
       },
       {
         "flipWentRed": "inverted condition, 8 tests went red",
-        "line": 98,
+        "line": 101,
         "outcome": "strip: Claude is not usable, so the non-Claude run has its sub-agents stripped",
         "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
@@ -42,12 +42,20 @@
         "testName": "issue run provider - Claude enabled but the image stamp lacks Claude strips the run (Issue #4109)"
       },
       {
-        "flipWentRed": "forced to true, test went red",
+        "flipWentRed": "removing the `!` at line 68 turned it red: the run was no longer stripped",
         "line": 68,
         "outcome": "error/absent: Claude is not in the enabled set, so the run is stripped",
         "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
         "testName": "issue run provider - Claude not enabled strips sub-agents with no image stamp (Issue #4109)"
+      },
+      {
+        "flipWentRed": "returning false at line 71 turned it red: the run was stripped instead of rerouted",
+        "line": 71,
+        "outcome": "success: Claude is in the enabled set and installed, so the run is rerouted",
+        "path": "worker/deno/lib/issue_run_provider_agents.ts",
+        "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
+        "testName": "issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)"
       },
       {
         "flipWentRed": "ignored quiet, test went red",
