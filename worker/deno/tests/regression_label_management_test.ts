@@ -11,100 +11,12 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   buildQuestionFailureComment,
-  countClarificationRounds,
   detectPlanningEscalationInComments,
   getQuestionFailureReason,
   labelCacheFilePath,
   PLANNING_ESCALATION_HEADINGS,
   validateClarifyingQuestions,
 } from "../lib/label_manager.ts";
-
-// ============================================================================
-// countClarificationRounds — edge cases
-// ============================================================================
-//
-// Issue #1263: a round is a comment the fleet wrote, not a heading in a blob.
-// `FLEET` is the counting worker's own login, which is worker configuration.
-
-const FLEET = "vibe-worker";
-
-/** Count rounds on issue 42 as the `vibe-worker` host would. */
-function countRounds(
-  comments: { author: string; body: string }[],
-): Promise<number> {
-  return countClarificationRounds(comments, {
-    issueNumber: 42,
-    githubUser: FLEET,
-    log: () => {},
-  });
-}
-
-Deno.test("regression label_manager - countClarificationRounds with no headings", async () => {
-  assertEquals(
-    await countRounds([{ author: FLEET, body: "Some comment text" }]),
-    0,
-  );
-});
-
-Deno.test("regression label_manager - countClarificationRounds with no comments", async () => {
-  assertEquals(await countRounds([]), 0);
-});
-
-Deno.test("regression label_manager - countClarificationRounds counts multiple rounds", async () => {
-  assertEquals(
-    await countRounds([
-      { author: FLEET, body: "## Clarification Needed\nFirst question" },
-      { author: "reporter", body: "Answer to first" },
-      { author: FLEET, body: "## Clarification Needed\nSecond question" },
-    ]),
-    2,
-  );
-});
-
-Deno.test("regression label_manager - countClarificationRounds with single round", async () => {
-  assertEquals(
-    await countRounds([
-      { author: FLEET, body: "## Clarification Needed\nWhat is X?" },
-    ]),
-    1,
-  );
-});
-
-Deno.test("regression label_manager - countClarificationRounds is case-sensitive", async () => {
-  // The heading must match exactly "## Clarification Needed"
-  assertEquals(
-    await countRounds([{ author: FLEET, body: "## clarification needed" }]),
-    0,
-  );
-  assertEquals(
-    await countRounds([{ author: FLEET, body: "## CLARIFICATION NEEDED" }]),
-    0,
-  );
-});
-
-Deno.test("regression label_manager - countClarificationRounds ignores an outsider's heading (Issue #1263)", async () => {
-  assertEquals(
-    await countRounds([
-      { author: "outsider", body: "## Clarification Needed\nOne" },
-      { author: "outsider", body: "## Clarification Needed\nTwo" },
-      { author: "outsider", body: "## Clarification Needed\nThree" },
-    ]),
-    0,
-  );
-});
-
-Deno.test("regression label_manager - countClarificationRounds counts the escalation marker (Issue #1263)", async () => {
-  assertEquals(
-    await countRounds([
-      {
-        author: FLEET,
-        body: "Rephrased questions\n\n" +
-          "<!-- needs-human-escalation: clarification-42 -->",
-      },
-    ]),
-    1,
-  );
-});
 
 // ============================================================================
 // validateClarifyingQuestions — edge cases

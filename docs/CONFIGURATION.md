@@ -1856,7 +1856,7 @@ unless explicitly overridden.
 | Question kill-after            | `question_kill_after`            | `10`       | Grace period after question timeout                                                                                                                                                                  |
 | Clarification timeout          | `clarification_timeout`          | `120`      | Timeout for clarification requests (2 minutes)                                                                                                                                                       |
 | Clarification kill-after       | `clarification_kill_after`       | `10`       | Grace period after clarification timeout                                                                                                                                                             |
-| Max clarification rounds       | `max_clarification_rounds`       | `3`        | Maximum clarification rounds before auto-proceeding                                                                                                                                                  |
+| Max clarification rounds       | `max_clarification_rounds`       | `3`        | Retired (Issue #4298): the worker no longer asks clarifying questions on an approved issue, so the value is accepted and ignored                                                                       |
 | Grill-me timeout | `grill_me_timeout` | `3600` | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md). |
 | Grill-me kill-after            | `grill_me_kill_after`            | `10`       | Grace period after `grill_me_timeout` before force-kill                                                                                                                                              |
 | Max grill-me rounds | `max_grill_me_rounds` | `20` | Runaway ceiling on grill-me rounds since the latest Ready comment ([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)). The stall guard normally stops grilling first; the ceiling-th round is itself the forced final round |
@@ -1910,7 +1910,7 @@ unless explicitly overridden.
 | Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction).                                                                                             |
 | Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                            |
 | Context budget error %         | `context_budget_error_percent`   | `80`       | Usage percentage that triggers a budget error. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                              |
-| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — the execution phase stops and escalates at or above this usage (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring).                               |
+| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — at or above this usage the execution phase trims the comment and CI-log history and retries, then hands the issue to planning (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring). |
 | Max total comment chars | `max_total_comment_chars` | `20000` | Maximum total characters across all comments included in the prompt |
 | Max untrusted comment chars | `max_untrusted_comment_chars` | `2000` | Maximum characters per untrusted comment before truncation |
 | Max untrusted comment count | `max_untrusted_comment_count` | `5` | Maximum number of untrusted comments to include in the prompt |
@@ -4030,7 +4030,7 @@ performance, or failures.
 | ------------------ | -------------------------------- | ------- | ------------------------------------------------------------------------------------------ |
 | Warning threshold  | `context_budget_warning_percent` | `50`    | Usage percentage that triggers a warning in the budget log                                 |
 | Error threshold    | `context_budget_error_percent`   | `80`    | Usage percentage that triggers an error in the budget log                                  |
-| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase stops and escalates at or above this usage |
+| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase trims history, retries, then hands the issue to planning |
 
 ```json
 {
@@ -4050,11 +4050,15 @@ performance, or failures.
    id such as `claude-haiku-4-5`).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
-4. If usage reaches `context_budget_block_percent`, the check fails closed
-  : the execution phase stops **before** the billed Claude
-   invocation, applies `needs-human`, and posts an explanation comment. Warning
-   and error thresholds remain observational — only the blocking threshold
-   stops work.
+4. If usage reaches `context_budget_block_percent`, the check fails closed:
+   the execution phase stops **before** the billed Claude invocation. It never
+   hands the issue to a human (Issue #4298). It rebuilds the prompt with the
+   comment history (and, on the CLI path, the CI log and recent activity)
+   trimmed and checks again. A prompt that still does not fit goes to planning
+   through the `vibe-needs-planning` hand-off, which splits the issue into
+   sub-issues; when planning cannot take it, the run fails and the issue is
+   retried on the normal `failed-once` ladder. Warning and error thresholds
+   remain observational — only the blocking threshold stops work.
 5. Budget entries are written to a daily JSON log file for operational
    visibility.
 
@@ -4075,9 +4079,9 @@ The budget log records each invocation's token breakdown, enabling operators to:
 - **Raise `context_budget_error_percent`** (e.g., to `90`) if you are
   comfortable operating closer to the context limit.
 - **Set `context_budget_block_percent` to `0`** to disable the hard ceiling and
-  restore warn-only behaviour. Raising it instead of splitting the issue only
-  defers the truncation — an issue that reaches 95% of the window will not
-  converge by retrying.
+  restore warn-only behaviour. Raising it only defers the truncation — an
+  issue that reaches 95% of the window will not converge by retrying, which
+  is why the worker sends it to planning.
 - The monitoring is lightweight (< 10 ms overhead). The warning and error
   thresholds are observational; the blocking threshold is the only one that
   stops a phase.

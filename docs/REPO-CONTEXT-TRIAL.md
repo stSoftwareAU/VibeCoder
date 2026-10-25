@@ -70,8 +70,7 @@ processors, the reactive PR paths: PR feedback
 (`worker/deno/lib/pr_feedback_processor.ts`) and CI fix
 (`worker/deno/lib/pr_ci_processor.ts`), the grill-me rounds
 (`worker/deno/lib/grill_me_processor.ts`, Issue #2561), and the
-clarification-family runs — clarity assessment
-(`worker/deno/lib/clarity_phase.ts`), refinement
+clarification-family runs — refinement
 (`worker/deno/lib/refinement_processor.ts`), revision
 (`worker/deno/lib/revision_processor.ts`) and quorum
 (`worker/deno/lib/quorum_processor.ts`), all through

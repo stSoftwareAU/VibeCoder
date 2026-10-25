@@ -1,7 +1,7 @@
 /**
  * Label manager command for the Vibe Coder worker.
  *
- * Provides label management, failure handling, clarification workflows,
+ * Provides label management, failure handling, question validation,
  * and planning escalation. Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
@@ -10,9 +10,7 @@
  *   - mark-failed-once: Mark an issue as having failed once
  *   - handle-failure: Unified failure handler
  *   - handle-question-failure: Handle question answering failure
- *   - count-clarification-rounds: Count the fleet-authored clarification rounds
  *   - validate-clarifying-questions: Validate questions text
- *   - post-clarifying-questions: Post clarifying questions
  *   - escalate-to-planning: Escalate to planning mode
  *
  * Migrated from worker/shared/label_manager.sh and
@@ -30,13 +28,7 @@ import {
   markIssueAsFailedOnce,
 } from "../lib/label_failure.ts";
 import { handleQuestionFailure } from "../lib/label_question_failure.ts";
-import {
-  countClarificationRounds,
-  ghClientFromCommandFn,
-  postClarifyingQuestions,
-  validateClarifyingQuestions,
-} from "../lib/label_clarification.ts";
-import { runGhCommand } from "../lib/github.ts";
+import { validateClarifyingQuestions } from "../lib/label_clarification.ts";
 import { escalateToPlanning } from "../lib/label_planning_escalation.ts";
 
 export const labelManagerCommand: Command = {
@@ -228,35 +220,6 @@ export const labelManagerCommand: Command = {
         return { success: true, message: "OK" };
       }
 
-      case "count-clarification-rounds": {
-        // Issue #1263: counted from the issue's own comment list, whose
-        // authors GitHub authenticates — never from a `--issue-comments`
-        // blob, which is text any commenter can write and which used to be
-        // enough to retire the clarity gate.
-        const repo = String(args["repo"] ?? "");
-        const issueNumber = toNumber(args["issue-number"], 0);
-
-        if (!repo || !issueNumber) {
-          return {
-            success: false,
-            message: "Missing required arguments: --repo, --issue-number",
-          };
-        }
-
-        const comments = await ghClientFromCommandFn(runGhCommand)
-          .getIssueComments(repo, issueNumber);
-        const count = await countClarificationRounds(comments, {
-          repo,
-          issueNumber,
-          githubUser,
-        });
-        return {
-          success: true,
-          message: String(count),
-          data: { count },
-        };
-      }
-
       case "validate-clarifying-questions": {
         const questions = String(args["questions"] ?? "");
         const result = validateClarifyingQuestions(questions);
@@ -264,34 +227,6 @@ export const labelManagerCommand: Command = {
           return { success: false, message: result.error.message };
         }
         return { success: true, message: "VALID" };
-      }
-
-      case "post-clarifying-questions": {
-        const repo = String(args["repo"] ?? "");
-        const issueNumber = toNumber(args["issue-number"], 0);
-        const questions = String(args["questions"] ?? "");
-
-        if (!repo || !issueNumber || !githubUser || !questions) {
-          return {
-            success: false,
-            message:
-              "Missing required arguments: --repo, --issue-number, --github-user, --questions",
-          };
-        }
-
-        const result = await postClarifyingQuestions({
-          repo,
-          issueNumber,
-          githubUser,
-          clarifyingQuestions: questions,
-          labels,
-          workerFooter,
-        });
-
-        if (!result.ok) {
-          return { success: false, message: result.error.message };
-        }
-        return { success: true, message: "OK" };
       }
 
       case "escalate-to-planning": {

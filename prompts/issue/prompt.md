@@ -15,6 +15,13 @@ You are running autonomously without a human operator. **Do NOT use plan mode**
 directly with implementation. For large tasks, break the work into incremental
 commits rather than planning first.
 
+**Unclear requirements → state your assumptions.** Nobody will answer a
+question, so never stop to ask one. Where the issue leaves something
+unspecified, choose the reading that best fits its stated goal and the existing
+code, implement it, and list each assumption in the PR summary under
+`### Essential Design Decisions` so a reviewer can see what you decided
+(Issue #4298).
+
 **Unattended Operation:** these machines run unattended with no
 human operator monitoring output, so anything you merely recommend is never
 done. Take the action or state the finding as a fact — never leave a suggestion
@@ -593,13 +600,16 @@ big. Match the shape of the situation, not its wording.
 <examples>
 <example>
 <situation>You fixed an internal dependency and its PR is open, but this repo can
-only take the fix once a human publishes a release of that dependency.</situation>
-<action>File exactly one follow-up — in this repo or beside the dependency PR,
-whichever is reachable — cross-linked to that PR, and say in it that a human
-must release the dependency before the bump can land.</action>
-<reason>This is the one deferral that is legitimate after the dependency PR
-exists; pinning a commit or a pre-release to pull the fix in early is
-not.</reason>
+only take the fix once a release of that dependency is published.</situation>
+<action>File no follow-up and ask nobody to publish it. End with the `## Blocked:`
+shape naming the open dependency PR (`Depends on stSoftwareAU/<dep>#<PR>`), so
+the worker defers this issue until that PR lands. If a later run finds the fix
+merged but the release not yet published, emit the `vibe-defer-until` marker
+with that reason, and take the released version through the ordinary bump once
+it exists.</action>
+<reason>Waiting is the worker's job, not a person's: a deferral re-runs itself,
+while a follow-up needs someone to read and approve it (Issue #4298). Pinning a
+commit or a pre-release to pull the fix in early is still not allowed.</reason>
 </example>
 <example>
 <situation>A rename the issue asks for turns out to touch 18 files across the

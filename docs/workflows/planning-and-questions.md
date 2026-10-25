@@ -39,7 +39,7 @@ flowchart TD
   Ref["✅ Update issue from comments"]
   Impl["Implementation path"]
   Clar{"Information missing?"}
-  Ask["❌ Post questions, needs-human, unassign"]
+  Ask["✅ Implement, stating assumptions"]
   Label --> Q
   Q -->|Yes| Quest
   Q -->|No| G
@@ -1061,91 +1061,17 @@ If the refinement fails (e.g. Claude times out, API errors), the worker:
 
 ### 💡 Clarification
 
-The fleet clarification phase runs **before** implementation. If information is
-missing, it posts questions, adds `needs-human`, unassigns and exits. You respond
-on the issue and remove the label; the next run re-assesses.
+The fleet clarification phase runs **before** implementation. It routes an
+issue whose labels name another handler, then runs a quick clarity check. It
+never hands an approved issue back to a human (Issue #4298). A vague or
+missing-information result used to post questions, add `needs-human` and
+unassign; the round cap then proceeded anyway after three rounds. The first
+round now does what the cap did: the run proceeds, and the agent states each
+assumption it made under `### Essential Design Decisions` in the PR summary.
 
-A scope-only `too_complex` result does not identify missing information.
-Numbered requirements without code paths used to trigger a question asking
-whether to split the issue manually, parking a fully specified assignment.
-The fleet now proceeds without a comment or label change. The implementing
-agent decides whether decomposition is needed and can use the existing
-`vibe-needs-planning` path; the clarity heuristic does not force it.
-
-Explicit vague or missing-information results still request clarification.
-The maximum-round limit and special-label routing are unchanged.
-
-### 🔄 Automatic complexity-to-planning escalation (target behaviour)
-
-> **📌 Scope:** The standalone clarity command retains its complexity-to-planning
-> pre-check. The fleet clarification phase described above does not use this
-> pre-check or turn `too_complex` into a human question. The proposal below is
-> not the fleet's current routing contract.
-
-When the clarification phase determines an issue is **clear but too complex**
-for a single implementation attempt, it should automatically escalate the issue
-to planning mode rather than proceeding with implementation. This avoids failed
-implementation attempts on issues that are inherently multi-PR tasks.
-
-#### How it works
-
-1. **Complexity assessment** — After the clarity check passes, a complexity
-   assessment evaluates whether the issue can be implemented in a single PR.
-2. **If simple enough** — Proceed to implementation as normal.
-3. **If too complex** — The worker automatically:
-   - Posts a comment explaining why the issue was escalated (e.g. "This issue
-     spans multiple directories and has several independent acceptance criteria
-     — breaking into sub-issues for incremental implementation.") and asking a
-     trusted human to add the `planning` label.
-   - Unassigns itself from the issue.
-   - Once a trusted human adds the `planning` label, the issue is picked up in a
-     subsequent run via the normal **planning** workflow (create sub-issues,
-     comment, close parent). The worker does **not** add the `planning` label
-     itself — it is operational and reserved for trusted humans (see
-     [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels);,).
-
-#### Criteria for automatic escalation
-
-The following indicators suggest an issue is too complex for a single PR and
-should be escalated to planning:
-
-| Indicator                                           | Example                                                                                        |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| 🗂️ **Multiple directories in scope**                | Changes required in `worker/`, `tests/`, `docs/`, and `prompts/` with independent concerns     |
-| 📄 **Many files referenced**                        | Issue explicitly names 5+ files that need non-trivial modifications                            |
-| 🔍 **Audit/review spanning large scope**            | "Review all shell scripts for X" or "Update every workflow to include Y"                       |
-| ✅ **Multiple independent acceptance criteria**     | Several acceptance criteria that could each be a standalone PR                                 |
-| 🔀 **Cross-cutting concerns**                       | Changes that touch multiple subsystems with no shared implementation path                      |
-| 📏 **Estimated scope exceeds single-PR guidelines** | The combined changes would produce an unreviewable PR (e.g. 500+ lines across unrelated files) |
-
-These criteria are not exhaustive — the complexity assessment should use
-judgement based on the overall scope and structure of the issue.
-
-#### Flow: clarification with complexity escalation
-
-```mermaid
-flowchart TD
-  Assess["Assess clarity"]
-  Clear{"Clear?"}
-  AskQ["❌ Post questions, needs-human, unassign"]
-  Complex{"Too complex\nfor single PR?"}
-  Escalate["🔄 Comment asking human to add planning label, unassign"]
-  PlanFlow["Planning workflow picks up issue"]
-  Implement["✅ Proceed to implementation"]
-  Assess --> Clear
-  Clear -->|No| AskQ
-  Clear -->|Yes| Complex
-  Complex -->|Yes| Escalate
-  Escalate --> PlanFlow
-  Complex -->|No| Implement
-  style Assess fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
-  style Clear fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style AskQ fill:#c45858,stroke:#6b2020,color:#fff
-  style Complex fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-  style Escalate fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style PlanFlow fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style Implement fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-```
+A scope-only `too_complex` result proceeds the same way (Issue #4147). The
+implementing agent decides whether decomposition is needed and uses the
+existing `vibe-needs-planning` path when it is.
 
 ## 📊 Diagram: workflow type routing
 
@@ -1156,7 +1082,7 @@ flowchart TD
   Planning{"planning label?"}
   Refine{"refine-issue label?"}
   Impl["Implementation path"]
-  Clar{"Clarification needed?"}
+  Clar{"Unclear?"}
   QWork["✅ Post answer, remove question, add needs-human"]
   PlanWork["✅ Create sub-issues, comment, close parent"]
   RefWork["✅ Update issue from feedback"]
@@ -1171,7 +1097,7 @@ flowchart TD
   Refine -->|No| Impl
   Impl --> Clar
   Clar -->|Yes| Ask
-  Clar -->|No or scope only| Code
+  Clar -->|No| Code
   style Issue fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style Question fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style Planning fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -1181,7 +1107,7 @@ flowchart TD
   style QWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style PlanWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style RefWork fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style Ask fill:#c45858,stroke:#6b2020,color:#fff
+  style Ask fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Code fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
