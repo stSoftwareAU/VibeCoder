@@ -197,7 +197,7 @@ Deno.test("a file-extension signal is rejected", () => {
 Deno.test("selectCapabilityGuidance cites signal ids, not the task text", async () => {
   const loaded = await Deno.readTextFile(
     new URL(
-      "../../../prompts/capability_security/bundle.json",
+      "../../../prompts/coding_guidelines/capability-security.json",
       import.meta.url,
     ),
   );

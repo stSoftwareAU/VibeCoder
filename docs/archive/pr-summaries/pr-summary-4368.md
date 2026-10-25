@@ -20,3 +20,7 @@ Part of #4368
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **clean** — The harness is a local command. It does not add a fleet scheduler, import SecurityEval, or record a cost of zero.
+
+## CI repair
+
+Evaluation subprocesses now use the shared timeout helper with a 60-second per-command bound. The empty TypeScript fixture contains only a comment and still fails functional and security acceptance. The evaluation and timeout regression tests pass.

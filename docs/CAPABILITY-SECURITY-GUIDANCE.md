@@ -5,7 +5,7 @@ It is selected from the task, the entry points, the imports, the callers
 and the sinks. A file extension does not select it. It is not pasted into
 the always-loaded coding guidelines.
 
-The bundle is [`prompts/capability_security/bundle.json`](../prompts/capability_security/bundle.json).
+The bundle is [`prompts/coding_guidelines/capability-security.json`](../prompts/coding_guidelines/capability-security.json).
 Each entry has a stable id, the evidence that makes it applicable, concrete
 advice, and a validation the change can actually meet. The first five are
 resource and tenant authorisation with a writable-field allowlist, safe

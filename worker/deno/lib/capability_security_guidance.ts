@@ -18,12 +18,13 @@
 import type { ChecklistState } from "./review_checklists.ts";
 
 /** Repo-relative path of the guidance bundle. */
-export const CAPABILITY_BUNDLE_PATH = "prompts/capability_security/bundle.json";
+export const CAPABILITY_BUNDLE_PATH =
+  "prompts/coding_guidelines/capability-security.json";
 
 /** URL of the bundle next to this module's repository tree. */
 export function capabilityBundleUrl(): URL {
   return new URL(
-    "../../../prompts/capability_security/bundle.json",
+    "../../../prompts/coding_guidelines/capability-security.json",
     import.meta.url,
   );
 }

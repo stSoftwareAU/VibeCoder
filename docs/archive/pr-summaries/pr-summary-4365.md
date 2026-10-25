@@ -1,6 +1,6 @@
 # PR summary — #4365
 
-Capability-scoped security guidance now lives in `prompts/capability_security/bundle.json` (revision `2026-10-26.1`). Five capabilities: resource and tenant authorisation with a writable-field allowlist, safe process and query execution, outbound URL and TLS, file boundaries and resource limits, and secret-safe logging. Selection uses the task, entry points, imports, callers and sinks. A file extension does not select a capability. `buildIssuePrompt` renders the selected sections into `prompts/issue/prompt.md` for every provider fragment under `container/providers/`. The run record is one line of revision and signal ids. An unreadable bundle is reported as not applied. The behavioural fixture is `updateResource` in `worker/deno/lib/capability_security_fixtures/resource_update.ts`.
+Capability-scoped security guidance now lives in `prompts/coding_guidelines/capability-security.json` (revision `2026-10-26.1`). Five capabilities: resource and tenant authorisation with a writable-field allowlist, safe process and query execution, outbound URL and TLS, file boundaries and resource limits, and secret-safe logging. Selection uses the task, entry points, imports, callers and sinks. A file extension does not select a capability. `buildIssuePrompt` renders the selected sections into `prompts/issue/prompt.md` for every provider fragment under `container/providers/`. The run record is one line of revision and signal ids. An unreadable bundle is reported as not applied. The behavioural fixture is `updateResource` in `worker/deno/lib/capability_security_fixtures/resource_update.ts`.
 
 Closes #4365
 
@@ -20,3 +20,9 @@ Closes #4365
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **clean** — Australian English, tests through the real prompt path, no version bump in `worker/deno/deno.json`, and no secrets in the guidance record.
+
+## CI repair
+
+The intentionally empty TypeScript fixture now contains only a comment. It still exports no implementation, while satisfying the repository's zero-length-file check.
+
+The bundle is shared data under the existing coding-guidelines directory, so prompt discovery no longer mistakes it for a standalone prompt type. Callers, fixtures and documentation use the same new path. The five new modules were reviewed and registered in a sweep slice anchored to main. Evaluation subprocesses use the shared timeout helper with a 60-second bound. Validation: 40 focused capability, evaluation and timeout checks and all 866 manifest checks passed (one ignored); formatting, lint and the sweep-ancestry gate pass. The local evaluation records 14 fixture outcomes; only the secure implementations pass both dimensions, and live model comparison remains partial.

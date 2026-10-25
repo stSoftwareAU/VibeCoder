@@ -17,6 +17,7 @@
  */
 
 import { loadTrustedCapabilityBundle } from "./capability_security_guidance.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
 
 export const EVAL_FIXTURE_REVISION = "2026-10-26.1";
 
@@ -171,14 +172,14 @@ export const defaultCommandRunner: CommandRunner = async (
   env,
 ) => {
   try {
-    const proc = new Deno.Command(command, {
+    const out = await commandOutputWithTimeout(command, {
+      timeoutMs: 60_000,
       args,
       cwd,
       env: { ...Deno.env.toObject(), ...env },
       stdout: "piped",
       stderr: "piped",
     });
-    const out = await proc.output();
     return {
       code: out.code,
       stdout: new TextDecoder().decode(out.stdout),

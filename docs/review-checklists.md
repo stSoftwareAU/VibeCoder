@@ -178,7 +178,7 @@ appears; then open one touching no listed path and confirm it does not.
 ## Capability security checks
 
 The same brief also carries the capability checks from
-[`prompts/capability_security/bundle.json`](../prompts/capability_security/bundle.json)
+[`prompts/coding_guidelines/capability-security.json`](../prompts/coding_guidelines/capability-security.json)
 when the change's task, entry points, imports, callers or sinks match one.
 They are rendered into `{{REVIEW_CHECKLISTS}}` and use the same `checklist`
 verdict contract. The fleet reviewer and the pre-PR verifier render the same

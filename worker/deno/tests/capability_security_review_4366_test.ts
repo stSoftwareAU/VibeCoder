@@ -29,7 +29,10 @@ const TEMPLATE = await Deno.readTextFile(
   new URL("../../../prompts/pr_review_brief/prompt.md", import.meta.url),
 );
 const BUNDLE_TEXT = await Deno.readTextFile(
-  new URL("../../../prompts/capability_security/bundle.json", import.meta.url),
+  new URL(
+    "../../../prompts/coding_guidelines/capability-security.json",
+    import.meta.url,
+  ),
 );
 const RESOURCE_CHECK =
   parseCapabilityBundle(BUNDLE_TEXT).entries.find((e) =>
@@ -308,9 +311,9 @@ async function repoWithBundle(headText: string) {
   await g(["config", "user.email", "t@example.com"]);
   await g(["config", "user.name", "T"]);
   await g(["config", "commit.gpgsign", "false"]);
-  await Deno.mkdir(`${repo}/prompts/capability_security`, { recursive: true });
+  await Deno.mkdir(`${repo}/prompts/coding_guidelines`, { recursive: true });
   await Deno.writeTextFile(
-    `${repo}/prompts/capability_security/bundle.json`,
+    `${repo}/prompts/coding_guidelines/capability-security.json`,
     BUNDLE_TEXT,
   );
   await Deno.writeTextFile(`${repo}/a.ts`, "export const a = 1;\n");
@@ -319,7 +322,7 @@ async function repoWithBundle(headText: string) {
   const baseSha = (await g(["rev-parse", "HEAD"])).trim();
   await g(["checkout", "--quiet", "-b", "feature"]);
   await Deno.writeTextFile(
-    `${repo}/prompts/capability_security/bundle.json`,
+    `${repo}/prompts/coding_guidelines/capability-security.json`,
     headText,
   );
   await g(["commit", "--quiet", "-am", "head"]);
