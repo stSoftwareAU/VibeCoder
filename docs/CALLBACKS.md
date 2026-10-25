@@ -74,6 +74,10 @@ flowchart LR
   drain share one guard, so a hook is never invoked twice for the same claim.
 - Concurrent issue slots each receive their own context; hooks never share state
   between slots, and each slot's `always` runs for that slot alone.
+- A hard-killed run is a run from an earlier process, reported on the next
+  worker start, once per evidence file (unless the file cannot be removed; see
+  Lifecycle below), rather than when it terminated (see
+  [A hard-killed run](#a-hard-killed-run--failureclass-hard_kill)).
 
 ## Host-level failures — `callbacks.host_failure`
 
@@ -393,6 +397,86 @@ its own failures:
   what it dropped when the cap is reached. An unbounded backlog makes each run
   more expensive than the last.
 
+## A hard-killed run — `failureClass` `hard_kill`
+
+When the launcher reaps a wedged container, it first writes a bounded,
+redacted evidence file, `hard-kill-<container>-<epoch>.json`, into the host log
+directory (`~/logs`). See
+[Resilience and concurrency — wedged container watchdog](workflows/resilience-and-concurrency.md#-wedged-container-watchdog).
+On the next worker start, inside the first scan cycle, the worker reports each
+such file, oldest first (Issue #4254).
+
+```mermaid
+flowchart TD
+  E["hard-kill-&lt;container&gt;-&lt;epoch&gt;.json<br/>in ~/logs"] --> S["Next worker start:<br/>first scan cycle, oldest first"]
+  S --> G["Signature hard-kill-&lt;handler&gt;-&lt;phase&gt;"]
+  G --> Q{"Open issue with this<br/>VIBE_RUN_FAILURE marker?"}
+  Q -- no --> N["File one bug issue<br/>in stSoftwareAU/VibeCoder"]
+  Q -- yes --> C["Follow-up comment on that issue<br/>(one per 24 h window)"]
+  N --> R["failure callback, once<br/>outcome.failureClass hard_kill"]
+  C --> R
+  R --> X["Evidence file removed"]
+  N -- filing fails --> K["File kept, error logged<br/>no callback, nothing counted"]
+  C -- filing fails --> K
+  style E fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style R fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style X fill:#2d6a4f,stroke:#1b4332,color:#fff
+  style K fill:#c45858,stroke:#6b2020,color:#fff
+```
+
+- **Signature.** `hard-kill-<handler>-<phase>`. The handler is the evidence's
+  `trigger`: `watchdog` for the wedged-container reap, or `pre_launch` for the
+  stale-container reap before a launch. The phase is read from the evidence's
+  last worker-log lines (`[phase] <name>`, `phase=<name>` or
+  `[agent-progress] <name>:`), and is `unknown` when none is present.
+- **Filing.** One issue is filed in `stSoftwareAU/VibeCoder` with the label
+  `bug`. Its body carries the marker `<!-- VIBE_RUN_FAILURE:<signature> -->`,
+  the host, the container, the run id, the handler, the phase, the last log line
+  and its time, the last tool call and the redacted evidence. The marker is the
+  dedup key. It is matched only on issues authored by a fleet account, the same
+  rule the run-failure issues follow (`worker/deno/lib/run_failure_issue.ts`).
+- **Repeats.** While an issue with the same signature is open, another kill with
+  that signature adds a follow-up comment and files no new issue. The first
+  repeat in a 24 h window posts one comment; later repeats in that window append
+  to it in place. There is no per-host rate limit.
+- **The callback.** The `failure` run callback fires once for the kill, with
+  these fields set. The one exception is an evidence file that cannot be
+  removed after the report: the next start fires the callback again (see
+  Lifecycle below). The kill is also counted in the next cycle callback's
+  `fleetSummary.failures`, and under `hard_kill` in the fleet summary's failure
+  classes. The `always` callback then fires, exactly as it does for any failed
+  run: `invokeRunCallbacks` in `worker/deno/lib/run_callbacks.ts` runs `failure`
+  and then `always`.
+
+| Field                       | Value for a hard kill                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| `event`                     | `failure`                                                                                        |
+| `result`, `exitCode`        | `failure` and `1`                                                                                |
+| `outcome.kind`              | `no_pr`                                                                                          |
+| `outcome.category`          | `unknown`                                                                                        |
+| `outcome.failureClass`      | `hard_kill`                                                                                      |
+| `outcome.phase`             | The phase derived from the evidence (see the signature above)                                    |
+| `runId`                     | The killed run's id from the evidence; the current process's run id when the evidence has none   |
+| `repository`, `issueNumber` | The last `owner/repo#N` in the evidence's log tail; `unknown` and `0` when none can be read      |
+| `startedAt`, `finishedAt`   | The evidence's capture time, for both, so `durationSeconds` is `0`; the real duration is unknown |
+
+- **Lifecycle.** The evidence file is removed once it is filed and reported. If
+  filing fails, the file is kept for the next launch and the failure is logged
+  as a warning. No callback fires and nothing is counted until filing succeeds,
+  so the retry reports the kill once. If the file cannot be removed after the
+  report, it stays, the failure is logged as a warning, and the next start
+  reports the kill again. A malformed or wrong-version file is logged as an
+  error and kept; it is never deleted.
+- **Additive contract.** `hard_kill` is a new value of the existing
+  `outcome.failureClass` field, and a new key in the fleet summary's failure
+  classes. Nothing is removed and no meaning changes, so `schemaVersion` stays at
+  2, and a hook written before this change keeps parsing the payload. The hooks in
+  `stSoftwareAU/GRQ-VibeCoder` (`callbacks/failure.sh`) and the health board in
+  `stSoftwareAU/GRQ-health` are outside this repository. They consume the
+  `hard_kill` reason; this page does not describe what they do with it.
+
 ## What a hook receives
 
 The environment is **cleared** before it is populated: only `PATH`, `HOME`,
@@ -498,7 +582,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
 | `VIBECODER_OUTCOME_CATEGORY`             | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                |
 | `VIBECODER_OUTCOME_PHASE`                | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
-| `VIBECODER_OUTCOME_FAILURE_CLASS`        | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked                                                    |
+| `VIBECODER_OUTCOME_FAILURE_CLASS`        | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked; `hard_kill` for a hard-killed run                 |
 | `VIBECODER_PR_NUMBER`                    | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
 | `VIBECODER_GRAFT_ENABLED`                | `graft.enabled`                 | yes            | Whether the Graft repo-context switch was on for this run (`true`/`false`)                                           |
 | `VIBECODER_GRAFT_STATUS`                 | `graft.status`                  | yes            | `ok`, `failed` or `off`                                                                                              |
@@ -934,14 +1018,15 @@ Two differences to plan for:
 
 ## Reference
 
-| Concern                             | Implementation                                 |
-| ----------------------------------- | ---------------------------------------------- |
-| `callbacks` block and validation    | `worker/deno/lib/run_callbacks_config.ts`      |
-| The runner, environment, capture    | `worker/deno/lib/run_callbacks.ts`             |
-| Host-failure payload and invoker    | `worker/deno/lib/host_failure_hook.ts`         |
-| Context assembly and transcript     | `worker/deno/lib/run_callback_context.ts`      |
-| CodeGraph figures the block carries | `worker/deno/lib/codegraph_context.ts`         |
-| RTK outcome the block carries       | `worker/deno/lib/rtk_output.ts`                |
-| Exactly-once guard                  | `worker/deno/lib/issue_callback_guard.ts`      |
-| Conformance fixture                 | `worker/deno/lib/callback_conformance.ts`      |
-| `callback-conformance` command      | `worker/deno/commands/callback_conformance.ts` |
+| Concern                                   | Implementation                                 |
+| ----------------------------------------- | ---------------------------------------------- |
+| `callbacks` block and validation          | `worker/deno/lib/run_callbacks_config.ts`      |
+| The runner, environment, capture          | `worker/deno/lib/run_callbacks.ts`             |
+| Host-failure payload and invoker          | `worker/deno/lib/host_failure_hook.ts`         |
+| Context assembly and transcript           | `worker/deno/lib/run_callback_context.ts`      |
+| CodeGraph figures the block carries       | `worker/deno/lib/codegraph_context.ts`         |
+| RTK outcome the block carries             | `worker/deno/lib/rtk_output.ts`                |
+| Exactly-once guard                        | `worker/deno/lib/issue_callback_guard.ts`      |
+| Conformance fixture                       | `worker/deno/lib/callback_conformance.ts`      |
+| `callback-conformance` command            | `worker/deno/commands/callback_conformance.ts` |
+| Hard-kill report (issue, callback, count) | `worker/deno/lib/hard_kill_report.ts`          |
