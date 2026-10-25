@@ -50,11 +50,26 @@ export type FakeCheckContext =
   }
   | { kind: "statusContext"; context: string; state: string };
 
+/**
+ * One check suite on a pull request's head commit (Issue #4347). Enum values
+ * are uppercase as GitHub's GraphQL returns them, e.g. `COMPLETED`,
+ * `STARTUP_FAILURE`.
+ */
+export interface FakeCheckSuite {
+  /** The app's slug, e.g. "github-actions"; null for an unknown app. */
+  appSlug: string | null;
+  status: string;
+  /** Null while the suite has not finished. */
+  conclusion: string | null;
+}
+
 /** Server-side state for one pull request. */
 export interface FakePullRequest {
   headOid: string;
   rollupState: string;
   contexts: FakeCheckContext[];
+  /** The head commit's check suites; defaults to none. */
+  checkSuites?: FakeCheckSuite[];
 }
 
 /** Everything the fake knows about one repository. */
@@ -213,11 +228,27 @@ function pullRequestNode(
   const sliced = contexts
     ? applySlice(pr.contexts, parseSlice(contexts.args))
     : [];
+  // The suites are emitted only when the query selects them, as GitHub does.
+  const suites = selection(commits.body, "checkSuites");
+  const checkSuites = suites
+    ? {
+      checkSuites: {
+        nodes: applySlice(pr.checkSuites ?? [], parseSlice(suites.args)).map(
+          (s) => ({
+            app: s.appSlug === null ? null : { slug: s.appSlug },
+            status: s.status,
+            conclusion: s.conclusion,
+          }),
+        ),
+      },
+    }
+    : {};
   return {
     commits: {
       nodes: [{
         commit: {
           oid: pr.headOid,
+          ...checkSuites,
           statusCheckRollup: {
             state: pr.rollupState,
             contexts: {

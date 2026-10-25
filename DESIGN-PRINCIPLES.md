@@ -971,11 +971,20 @@ late: the deploy/publish workflows have already fired. Enforcement is
   `stale`, or a value GitHub adds in future — fails closed instead of falling
   through to `passed`.
 - **Zero checks is not green.** A head commit with no check runs
-  and no commit statuses reports `no_checks`, not `passed`; the gate blocks and
+  and no commit statuses reports `no_checks`, not `passed`, unless a failed
+  GitHub Actions suite applies (next bullet); the gate blocks and
   the automated path escalates to a human. Only the explicit
   `--allow-no-checks` operator override on `merge-if-checks-passed` relaxes it,
   and that command is itself gated on the monitored-repo allowlist and PR
   authorship.
+- **A failed Actions suite is red even with no check run.** A completed
+  `github-actions` check suite whose conclusion is off the passing allowlist
+  (typically `startup_failure`, which creates no check run) makes
+  `determineCiStatus` return `failed`. This is checked before the `no_checks`
+  return, so the `--allow-no-checks` override never relaxes it. Suites from
+  other apps and unfinished suites are ignored. The suites come from GraphQL
+  `checkSuites` (REST fallback `commits/{sha}/check-suites`), and the review
+  gate skips such a PR as `ci-failed`.
 - **The merge is pinned to the checked commit.** The gate reports
   the head SHA it read the checks for, and `directMergePr()` merges with
   `gh pr merge --squash --match-head-commit <sha>`, or with `--merge` for a

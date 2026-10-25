@@ -86,6 +86,116 @@ Deno.test("check_runs_batch - a PR the API cannot resolve carries no state, not 
 });
 
 // ---------------------------------------------------------------------------
+// Check suites (Issue #4347)
+// ---------------------------------------------------------------------------
+
+Deno.test("check_runs_batch - fetchCheckRunsBatch reads the head commit's check suites, lowercased (Issue #4347)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      10: {
+        headOid: "aaa111",
+        rollupState: "SUCCESS",
+        contexts: [],
+        checkSuites: [
+          {
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "STARTUP_FAILURE",
+          },
+          { appSlug: "review-bot", status: "QUEUED", conclusion: null },
+        ],
+      },
+      20: { headOid: "bbb222", rollupState: "SUCCESS", contexts: [] },
+    },
+  });
+
+  const result = await fetchCheckRunsBatch("acme/tools", [10, 20], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(10)?.checkSuites, [
+    {
+      appSlug: "github-actions",
+      status: "completed",
+      conclusion: "startup_failure",
+    },
+    { appSlug: "review-bot", status: "queued", conclusion: null },
+  ]);
+  // A PR whose head carries no suites reads as none, not as malformed.
+  assertEquals(result.rollups.get(20)?.checkSuites, []);
+});
+
+/** A batch response whose only commit is `commit`, for PR #42. */
+function rollupResponseWithCommit(commit: Record<string, unknown>): string {
+  return JSON.stringify({
+    data: {
+      repository: {
+        n0: {
+          commits: {
+            nodes: [{
+              commit: {
+                oid: "aaa111",
+                statusCheckRollup: {
+                  state: "SUCCESS",
+                  contexts: { nodes: [] },
+                },
+                ...commit,
+              },
+            }],
+          },
+        },
+      },
+    },
+  });
+}
+
+Deno.test("check_runs_batch - a commit lacking checkSuites is malformed, not an empty list (Issue #4347)", async () => {
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(rollupResponseWithCommit({}));
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(!result.ok);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "checkSuites");
+  assertStringIncludes(result.error.message, "#42");
+});
+
+Deno.test("check_runs_batch - checkSuites without nodes is malformed (Issue #4347)", async () => {
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(rollupResponseWithCommit({ checkSuites: {} }));
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(!result.ok);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "checkSuites");
+});
+
+Deno.test("check_runs_batch - checkSuites with an empty nodes array is the documented empty state (Issue #4347)", async () => {
+  // Control for the malformed cases above: the same response, well formed.
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(
+      rollupResponseWithCommit({ checkSuites: { nodes: [] } }),
+    );
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(42)?.checkSuites, []);
+});
+
+Deno.test("check_runs_batch - no commit node means no check suites (Issue #4347)", async () => {
+  const gh = (_args: string[]): Promise<string> =>
+    Promise.resolve(
+      JSON.stringify({
+        data: { repository: { n0: { commits: { nodes: [] } } } },
+      }),
+    );
+  const result = await fetchCheckRunsBatch("acme/tools", [42], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(42)?.checkSuites, []);
+  assertEquals(result.rollups.get(42)?.headSha, null);
+});
+
+// ---------------------------------------------------------------------------
 // Test fixtures
 // ---------------------------------------------------------------------------
 
@@ -112,6 +222,7 @@ function fakeRollupResponse(
         nodes: [
           {
             commit: {
+              checkSuites: { nodes: [] },
               statusCheckRollup: spec.rollupState === null ? null : {
                 state: spec.rollupState,
                 contexts: {
@@ -322,6 +433,7 @@ Deno.test("check_runs_batch - rollupToCheckRunsResponse converts shape", () => {
   const rollup: PrRollup = {
     rollupState: "FAILURE",
     headSha: null,
+    checkSuites: [],
     checkRuns: [
       {
         databaseId: 7,
@@ -344,10 +456,35 @@ Deno.test("check_runs_batch - rollupToCheckRunsResponse converts shape", () => {
   assertEquals(out.check_runs[1]?.conclusion, "failure");
 });
 
+Deno.test("check_runs_batch - rollupToCheckRunsResponse carries the check suites in REST shape (Issue #4347)", () => {
+  const rollup: PrRollup = {
+    rollupState: "SUCCESS",
+    headSha: "aaa111",
+    checkRuns: [],
+    statusContexts: [],
+    checkSuites: [
+      {
+        appSlug: "github-actions",
+        status: "completed",
+        conclusion: "startup_failure",
+      },
+    ],
+  };
+  const out = rollupToCheckRunsResponse(rollup);
+  assertEquals(out.check_suites, [
+    {
+      app_slug: "github-actions",
+      status: "completed",
+      conclusion: "startup_failure",
+    },
+  ]);
+});
+
 Deno.test("check_runs_batch - rollupToCombinedStatusResponse: all success â†’ success", () => {
   const rollup: PrRollup = {
     rollupState: "SUCCESS",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [
       { context: "deploy", state: "success" },
@@ -363,6 +500,7 @@ Deno.test("check_runs_batch - rollupToCombinedStatusResponse: failure context â†
   const rollup: PrRollup = {
     rollupState: "FAILURE",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [
       { context: "deploy", state: "failure" },
@@ -376,6 +514,7 @@ Deno.test("check_runs_batch - rollupToCombinedStatusResponse: pending context â†
   const rollup: PrRollup = {
     rollupState: "PENDING",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [
       { context: "deploy", state: "pending" },
@@ -389,6 +528,7 @@ Deno.test("check_runs_batch - rollupToCombinedStatusResponse: no statuses â†’ pe
   const rollup: PrRollup = {
     rollupState: "SUCCESS",
     headSha: null,
+    checkSuites: [],
     checkRuns: [],
     statusContexts: [],
   };
@@ -402,6 +542,7 @@ Deno.test("check_runs_batch - rollupToFailedCheckRuns filters failures only", ()
   const rollup: PrRollup = {
     rollupState: "FAILURE",
     headSha: null,
+    checkSuites: [],
     checkRuns: [
       {
         databaseId: 1,

@@ -251,11 +251,32 @@ export interface CheckRun {
   conclusion: string | null;
 }
 
+/** GitHub check suite on a commit (REST `commits/{sha}/check-suites` shape). */
+export interface CheckSuite {
+  /** The app's slug, e.g. "github-actions"; null when the app is unknown. */
+  app_slug: string | null;
+  status: string;
+  conclusion: string | null;
+}
+
 /** GitHub check-runs API response shape. */
 export interface CheckRunsResponse {
   total_count: number;
   check_runs: CheckRun[];
+  /**
+   * The head commit's check suites (REST `commits/{sha}/check-suites`). Every
+   * production producer sets it — the GraphQL adapter and the REST fallback.
+   * Absent means "not read", not "no suites": the suite rule in
+   * {@link determineCiStatus} then has nothing to act on (Issue #4347).
+   */
+  check_suites?: CheckSuite[];
 }
+
+/**
+ * The app slug of GitHub Actions. A workflow that fails at startup is recorded
+ * as a completed suite from this app, which may carry no check run (Issue #4347).
+ */
+export const ACTIONS_APP_SLUG = "github-actions";
 
 /** GitHub commit status entry. */
 export interface CommitStatus {
@@ -279,7 +300,8 @@ export type GhCommandFn = (args: string[]) => Promise<string>;
 // =============================================================================
 
 /**
- * Query the GitHub API for the PR's check runs and commit statuses.
+ * Query the GitHub API for the PR's check runs, commit statuses and check
+ * suites (Issue #4347).
  *
  * Returns a Result indicating whether all checks have passed, are still
  * pending, or have failed.
@@ -316,7 +338,7 @@ export async function checkCiStatus(
     }
   }
 
-  // Fallback: REST check-runs + status pair, keyed by head SHA.
+  // Fallback: REST check-runs, status and check-suites, keyed by head SHA.
   let prJson: string;
   try {
     prJson = await ghCommandFn([
@@ -354,6 +376,7 @@ export async function checkCiStatus(
 
   let checkRunsJson: string;
   let combinedStatusJson: string;
+  let checkSuitesJson: string;
   try {
     checkRunsJson = await ghCommandFn([
       "api",
@@ -386,6 +409,23 @@ export async function checkCiStatus(
     };
   }
 
+  try {
+    checkSuitesJson = await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${headSha}/check-suites?per_page=100`,
+      "--jq",
+      "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion}]}",
+    ]);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to fetch check suites for PR #${prNumber}: ${message}`,
+      ),
+    };
+  }
+
   let checkRuns: CheckRunsResponse;
   let combinedStatus: CombinedStatusResponse;
   try {
@@ -398,12 +438,29 @@ export async function checkCiStatus(
     };
   }
 
+  // A suite that created no check run is seen only here, so an unreadable
+  // suite list is an error — never read as "no suites" (Issue #4347).
+  let checkSuites: unknown;
+  try {
+    checkSuites = (JSON.parse(checkSuitesJson) as { check_suites?: unknown })
+      .check_suites;
+  } catch {
+    checkSuites = undefined;
+  }
+  if (!Array.isArray(checkSuites)) {
+    return {
+      ok: false,
+      error: new Error(`Failed to parse check suites for PR #${prNumber}`),
+    };
+  }
+  checkRuns.check_suites = checkSuites as CheckSuite[];
+
   const status = determineCiStatus(checkRuns, combinedStatus);
   return { ok: true, value: { status, headSha } };
 }
 
 /**
- * Check-run conclusions that count as passing (Issue #3945).
+ * Check-run and check-suite conclusions that count as passing (Issue #3945).
  *
  * This is an **allowlist**: only these conclusions let a merge through.
  * `skipped` and `neutral` are included by explicit policy — a check that
@@ -413,6 +470,20 @@ export async function checkCiStatus(
  * closed.
  */
 const PASSING_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
+
+/**
+ * Whether a check suite is a completed GitHub Actions suite whose conclusion
+ * is not on the passing allowlist (Issue #4347). Such a suite fails the commit
+ * even when it created no check run: a workflow that fails at startup, such as
+ * one whose `uses:` action the Actions policy rejects, is recorded that way.
+ * Suites from other apps, and suites that have not finished, do not count.
+ */
+function isFailedActionsSuite(suite: CheckSuite): boolean {
+  return suite.app_slug === ACTIONS_APP_SLUG &&
+    suite.status === "completed" &&
+    suite.conclusion !== null &&
+    !PASSING_CONCLUSIONS.has(suite.conclusion);
+}
 
 /** Commit-status states that count as passing (Issue #3945). */
 const PASSING_STATUS_STATES = new Set(["success"]);
@@ -447,6 +518,8 @@ function rollupStateToCiStatus(
  * Determine the aggregate CI status from check runs and combined status.
  *
  * Logic:
+ * - If a completed GitHub Actions check suite has a conclusion off the passing
+ *   allowlist → failed, even with no check runs (Issue #4347).
  * - If no checks exist at all → no_checks (unverified, not green — #3705).
  * - If any check run's conclusion is not on the passing allowlist → failed.
  * - If the combined status state is not `success`/`pending` → failed.
@@ -468,6 +541,12 @@ export function determineCiStatus(
 ): CiStatus {
   const hasCheckRuns = checkRuns.total_count > 0;
   const hasCommitStatuses = combinedStatus.statuses.length > 0;
+
+  // A failed GitHub Actions suite fails the commit whatever else is present,
+  // including when it created no check run at all (Issue #4347).
+  if ((checkRuns.check_suites ?? []).some(isFailedActionsSuite)) {
+    return "failed";
+  }
 
   // No checks at all — nothing verified this commit, so it is not "passed"
   // (Issue #3705). The caller decides whether an operator override applies.

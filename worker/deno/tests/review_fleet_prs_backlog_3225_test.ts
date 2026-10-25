@@ -37,10 +37,20 @@ const review = (
 ): Review => ({ author: { login }, state, body, commit: { oid } });
 
 const green = {
-  nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }],
+  nodes: [{
+    commit: {
+      statusCheckRollup: { state: "SUCCESS" },
+      checkSuites: { nodes: [] },
+    },
+  }],
 };
 const red = {
-  nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }],
+  nodes: [{
+    commit: {
+      statusCheckRollup: { state: "FAILURE" },
+      checkSuites: { nodes: [] },
+    },
+  }],
 };
 
 function fleetPr(

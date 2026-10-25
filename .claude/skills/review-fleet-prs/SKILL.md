@@ -34,7 +34,10 @@ reviewing as a GitHub App, and persistent failure escalation.
    checks, merge conflicts and drafts belong to the fleet, so leave them
    alone and post nothing. A PR whose only red checks are cancelled runs is
    infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
-   once per head, and it is left alone exactly like `ci-failed`. **One
+   once per head, and it is left alone exactly like `ci-failed`. A completed
+   GitHub Actions check suite that failed counts as `ci-failed` too, even with
+   no check run: a workflow that fails at startup (`startup_failure`) creates
+   one, and the rollup does not show it (Issue #4347). **One
    exception:** a red dependency-audit check (`audit` in its name) that
    CI-fix has already replied to at the current head, with a fleet
    `vibe-ci-fix-attempt` marker for that check, is sent back once with a

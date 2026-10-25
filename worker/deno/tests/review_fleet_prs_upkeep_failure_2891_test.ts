@@ -10,7 +10,12 @@ import { pass } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 const REVIEWER = "nleck";
 
 const commits = {
-  nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }],
+  nodes: [{
+    commit: {
+      statusCheckRollup: { state: "SUCCESS" },
+      checkSuites: { nodes: [] },
+    },
+  }],
 };
 
 function dependabotPr(headRefOid = "dep-head") {
