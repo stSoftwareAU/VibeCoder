@@ -87,9 +87,14 @@ export const CONTAINER_MARKER_VAR = CONTAINER_IMAGE_STAMP_ENV;
  * - `DENO_JOBS` — an operator debugging a race pins the worker count, and the
  *   container bound below is only a default. Dropped, that override would be
  *   silently replaced by the bound.
- * - `VIBE_IMAGE_AGENT_PROVIDERS` — the image stamp that tells container from
- *   host (#4269). A provider list, not a secret, and the suite should see the
- *   same host it runs on.
+ * - `VIBE_IMAGE_AGENT_PROVIDERS` is deliberately NOT here (Issue #4328). The
+ *   image stamp tells container from host (#4269), and the suite is written to
+ *   run as a host run, as CI does. Forwarded from the worker's container, it
+ *   makes provider-availability checks throw for providers the test never
+ *   asked about ("did not install the codex coding-agent provider"). The
+ *   container bound on `DENO_JOBS` is decided from the parent environment
+ *   `unitTestPasses` is given, not from this child environment, so withholding
+ *   the stamp here does not lift that bound.
  * - The opt-in switches (`RUN_INTEGRATION_TESTS`, `VIBE_PWSH`,
  *   `VIBE_CONTAINMENT_REQUIRED`, `VIBE_CONTAINMENT_IMAGE`,
  *   `VIBE_GHOSTCOMMIT_LIVE_VISION`, `VIBE_GHOSTCOMMIT_VISION_DRIVER`) —
@@ -104,7 +109,6 @@ export const CONTAINER_MARKER_VAR = CONTAINER_IMAGE_STAMP_ENV;
  */
 export const TEST_STAGE_EXTRA_ENV_NAMES: readonly string[] = [
   "DENO_JOBS",
-  CONTAINER_MARKER_VAR,
   "RUN_INTEGRATION_TESTS",
   "VIBE_PWSH",
   "VIBE_CONTAINMENT_REQUIRED",

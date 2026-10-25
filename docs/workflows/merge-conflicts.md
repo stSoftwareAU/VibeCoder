@@ -952,7 +952,7 @@ removed the last `needs-human` from the milestone conflict path:
   `needs-human` label, no second issue, no request of anyone. It records the
   default-branch tip it answered for
   (`fallbackDefaultSha` in `milestone_sync_failures.json`), and when the
-  default branch moves past that tip the branch is offered its two runs again
+  default branch moves past that tip the branch is offered its three runs again
   — the same flag collecting whatever they find. Without that re-arm a branch
   whose roll-back failed would sit out every remaining cycle for ever, which
   is only acceptable if somebody was asked to look, and nobody is.
@@ -968,6 +968,18 @@ removed the last `needs-human` from the milestone conflict path:
   number, beside the `sync_failed` and `rolled_back` events. A `sync_failed`
   with a roll-back and no `fallback_flagged` beside it is the alert that the
   record was not written.
+- Once a roll-back has been spent on a milestone branch, a spent budget is
+  offered a **rebuild** before the next roll-back (Issue #4328): the branch is
+  rebuilt from its base tip with its merged sub-PRs replayed (less those the
+  roll-back reverted, below), delivered as a
+  fast-forward (a plain push, or a sync PR when a ruleset refuses it), and never
+  force-pushed. The sub-PRs that roll-back reverted (the ledger's
+  `revertedPrs`) are left out of the replay, since their issues are re-queued
+  for a redo, and the rebuilt tree must pass the sync's own merge gate
+  (`checkMergedTree`) before it is delivered; a refused tree is a failed rebuild
+  at step `milestone-gate`, pushing and re-queuing nothing. A rebuild files no
+  `merge-fallback` flag. It emits `rebuilt` on success, or `rebuild_failed` when
+  it fails and the roll-back then follows with its own flag.
 
 ### 💥 When the attempt itself is disrupted
 
