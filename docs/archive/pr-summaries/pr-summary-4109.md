@@ -11,12 +11,13 @@ through a new planner, `planIssueRunProvider`
 
 - the provider's own argv decides whether it carries sub-agents
   (`probeDescriptorInvocationCapabilities`), so no provider-id table;
-- **rerouted-to-claude** — Claude is enabled and installed, and the health gate has not moved the run to a fallback provider: the run itself uses
-  Claude in both call sites (each passes the rerouted provider to the runner).
-  Only `lib/phases/execute_phase.ts` records a run assignment, and it records
-  the planned provider (`recordRunAssignment` takes `issueRunPlan?.provider`).
-  Both call sites hand the rerouted provider to their CodeGraph / RTK / graft
-  sinks: `lib/execute_claude_phase.ts` through `effectiveAgentProvider`, and
+- **rerouted-to-claude** — Claude is enabled and installed, and the health gate
+  has not moved the run to a fallback provider: the run itself uses Claude in
+  both call sites (each passes the rerouted provider to the runner). Only
+  `lib/phases/execute_phase.ts` records a run assignment, and it records the
+  planned provider (`recordRunAssignment` takes `issueRunPlan?.provider`). Both
+  call sites hand the rerouted provider to their CodeGraph / RTK / graft sinks:
+  `lib/execute_claude_phase.ts` through `effectiveAgentProvider`, and
   `lib/phases/execute_phase.ts` through `reroutedProviderId`
   (`prepareCodegraphRun`, `bindGraftRun` and `rtkProviderId` all receive it). A
   Gemini host therefore keeps Graft and RTK on its rerouted Claude run.
@@ -25,8 +26,9 @@ through a new planner, `planIssueRunProvider`
   an optional provider id, and `createDefaultDeps` resolves it with
   `agentProviderById`, falling back to the active provider when none is named,
   so the one other caller shape (no id) keeps its old result;
-- **agents-stripped** — Claude is not usable, or the health gate has moved the run to a non-Claude fallback provider: the run starts on its own provider
-  with the split and reviewers off and the sub-agent tier set to `sonnet`, and a
+- **agents-stripped** — Claude is not usable, or the health gate has moved the
+  run to a non-Claude fallback provider: the run starts on its own provider with
+  the split and reviewers off and the sub-agent tier set to `sonnet`, and a
   warning says so;
 - **unchanged** — no sub-agents wanted, or the provider carries them.
 
@@ -62,12 +64,13 @@ final version.
 
 - Carriage is decided by probing the descriptor's argv quietly
   (`probeDescriptorInvocationCapabilities`), not by a provider-id table.
-- Reroute to Claude only when Claude is both enabled and installed in the image and no non-Claude health-gate override is set (`runProviderOverrideId()`).
-  The image stamp is checked first: when it lacks Claude, the run is stripped.
-  When the stamp lists Claude, `claudeUsable` calls
-  `resolveEnabledAgentProviderIds`, which asserts every enabled id is installed
-  in the image (`assertImageInstalledProvider`) and throws if the enabled set
-  names an uninstalled provider (`lib/issue_run_provider_agents.ts`).
+- Reroute to Claude only when Claude is both enabled and installed in the image
+  and no non-Claude health-gate override is set (`runProviderOverrideId()`). The
+  image stamp is checked first: when it lacks Claude, the run is stripped. When
+  the stamp lists Claude, `claudeUsable` calls `resolveEnabledAgentProviderIds`,
+  which asserts every enabled id is installed in the image
+  (`assertImageInstalledProvider`) and throws if the enabled set names an
+  uninstalled provider (`lib/issue_run_provider_agents.ts`).
 - External orchestration is decided first (`resolveIssueOrchestration`) and is
   never planned; automatic Codex routing forces it.
 - The #4010 guard in `runClaudeWithTimeoutBody` stays as a backstop and is not
@@ -234,9 +237,9 @@ Red check for the `execute_phase.ts` sink and auth fixes (verifier finding on
 `isClaudeAuthError(authSurface, reroutedProviderId)` argument reverted to the
 earlier shape (no provider), the graft, rtk-and-codegraph and
 auth-classification `execute_phase` tests above in
-`worker/deno/tests/issue_4109_callsite_test.ts` (16 tests at head) went red;
-the same three also fail against the `origin/main` production files (the base
-run above), and they pass on the head (`ok | 16 passed | 0 failed`).
+`worker/deno/tests/issue_4109_callsite_test.ts` (16 tests at head) went red; the
+same three also fail against the `origin/main` production files (the base run
+above), and they pass on the head (`ok | 16 passed | 0 failed`).
 
 Tests added on this branch, all passing at the head:
 
@@ -308,8 +311,9 @@ Head run, with the five named files
 (`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A` from `worker/deno`,
 `< /dev/null`):
 `worker/deno/tests/issue_4109_callsite_test.ts worker/deno/tests/issue_run_provider_agents_test.ts worker/deno/tests/agent_provider_test.ts worker/deno/tests/external_orchestration_3642_phase_test.ts worker/deno/tests/manager_worker_contract_3641_test.ts`
-gives `ok | 85 passed | 0 failed` (16 + 15 + 37 + 7 + 10 tests at head; the last three files are unchanged existing tests, run as regression checks). With
-the stamp set to `claude`, the same five files give one failure, the existing
+gives `ok | 85 passed | 0 failed` (16 + 15 + 37 + 7 + 10 tests at head; the last
+three files are unchanged existing tests, run as regression checks). With the
+stamp set to `claude`, the same five files give one failure, the existing
 `automatic Codex issue phase keeps all roles on Codex without native sub-agent definitions`,
 which also fails on the base without this change when the stamp is `claude`.
 
@@ -333,14 +337,15 @@ the gate itself. CI runs the same checks without that variable.
 Health-gate fallback (PR #4345 review): `planIssueRunProvider` no longer
 reroutes to Claude when `runProviderOverrideId()` names a provider other than
 Claude, because the gate sets that override only after every Claude credential
-is exhausted (`lib/run_core.ts:6629`). The run takes the `agents-stripped`
-path and runs on the fallback. Red check: dropping the
-`!onHealthGateFallback &&` operand turned three tests red (the planner test in
+is exhausted (`lib/run_core.ts:6629`). The run takes the `agents-stripped` path
+and runs on the fallback. Red check: dropping the `!onHealthGateFallback &&`
+operand turned three tests red (the planner test in
 `worker/deno/tests/issue_run_provider_agents_test.ts` and the two call-site
 tests named `a health-gate fallback run ...` in
 `worker/deno/tests/issue_4109_callsite_test.ts`). Mutation follow-up: the
-`fallbackOverride !== CLAUDE_PROVIDER_ID` operand (`issue_run_provider_agents.ts:108`)
-survived, so `issue run provider - an override that names Claude is not a fallback, so the run reroutes (Issue #4109)`
+`fallbackOverride !== CLAUDE_PROVIDER_ID` operand
+(`issue_run_provider_agents.ts:108`) survived, so
+`issue run provider - an override that names Claude is not a fallback, so the run reroutes (Issue #4109)`
 (`worker/deno/tests/issue_run_provider_agents_test.ts`, 15 tests at head) sets
 the override to `claude` and asserts `rerouted-to-claude`; replacing that
 operand with `true` turned it red (`14 passed | 1 failed`), restored
