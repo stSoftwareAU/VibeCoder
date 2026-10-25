@@ -126,6 +126,10 @@ Deno.test("merge_conflict - the rendered prompt withholds the gate from the agen
   assertStringIncludes(flat, "CI on the pushed merge");
   assertStringIncludes(flat, "Resolve carefully enough that those checks pass");
   assertStringIncludes(flat, "type-check gate");
+  assertStringIncludes(
+    flat,
+    "run one test suite at a time, in the foreground, never with `run_in_background`, and only for the crates or packages the change touched",
+  );
 });
 
 Deno.test("merge_conflict - the rendered prompt never tells the agent to abort the merge", async () => {
