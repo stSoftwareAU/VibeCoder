@@ -3,7 +3,8 @@
  *
  * A non-Claude provider cannot carry `--agents`, so an issue run that asks
  * for sub-agents must be rerouted to Claude when Claude is enabled, or start
- * with the sub-agent switches stripped when it is not.
+ * with the sub-agent switches stripped when it is not. A repository pin is
+ * stripped and kept even when Claude is enabled (Issue #4346).
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -51,6 +52,39 @@ Deno.test("issue run provider - Claude with sub-agents is left unchanged (Issue 
   assertEquals(plan.executorSplit, true);
   assertEquals(plan.subAgentTier, "haiku");
   assertEquals(lines.length, 0, "an unchanged run logs nothing");
+});
+
+Deno.test("issue run provider - a pinned non-Claude provider is stripped even when Claude is usable (Issue #4346)", () => {
+  for (const id of NON_CLAUDE_PROVIDERS) {
+    const lines: string[] = [];
+    const plan = planIssueRunProvider({
+      provider: resolveAgentProvider(id),
+      executorSplit: true,
+      reviewerAgents: true,
+      subAgentTier: "haiku",
+      pinned: true,
+      selection: selectionFor(id, [id, "claude"]),
+      logger: createLogger({ write: (line) => lines.push(line) }),
+    });
+
+    assertEquals(plan.outcome, "agents-stripped", id);
+    assertEquals(plan.provider.id, id, id);
+    assertEquals(plan.executorSplit, false, id);
+    assertEquals(plan.reviewerAgents, false, id);
+    assertEquals(plan.subAgentTier, "sonnet", id);
+    assertEquals(
+      buildIssueRunAgents({
+        executorSplit: plan.executorSplit,
+        reviewerAgents: plan.reviewerAgents,
+        subAgentTier: plan.subAgentTier,
+      }),
+      undefined,
+      `${id} carries no --agents definitions`,
+    );
+    assertEquals(lines.length, 1, `${id} logs one strip warning`);
+    assert(lines[0]!.includes("pinned"), `${id} warning names the pin`);
+    assert(lines[0]!.includes("#4346"), `${id} warning cites #4346`);
+  }
 });
 
 Deno.test("issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)", () => {
