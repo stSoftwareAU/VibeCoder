@@ -262,6 +262,7 @@ export async function verifyResolvedTree(
       status: "skipped",
       detail: `${typed.detail} — the Issue #974 type check did not run`,
       output: typed.output,
+      ...(typed.cargoSkipped ? { cargoSkipped: true } : {}),
     };
   }
 
@@ -408,12 +409,15 @@ export async function verifyResolvedTree(
     };
   }
 
-  const cargoNote = skippedCargoSuite
+  const cargoLeftToCi = skippedCargoSuite || typed.cargoSkipped === true;
+  const cargoNote = cargoLeftToCi &&
+      !typed.detail.includes(CARGO_BUILD_SKIPPED_FOR_MERGE)
     ? `; ${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`
     : "";
   return {
     status: "passed",
     detail: `${ran.join("; ")} passed${cargoNote}`,
     output: "",
+    ...(cargoLeftToCi ? { cargoSkipped: true } : {}),
   };
 }

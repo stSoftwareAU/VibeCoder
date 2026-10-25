@@ -437,6 +437,57 @@ Deno.test("checkMergedTree - cargo is not run when the disk budget skips it, and
     );
     assertEquals(ran, 0, "the ephemeral cargo build must not start");
     assertEquals(outcome.status, "skipped");
+    assertEquals(outcome.cargoSkipped, true);
     assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
   });
+});
+
+Deno.test("checkMergedTree - a mixed tree passes its Deno check and does not claim cargo passed (Issue #4326)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/deno.json`, "{}\n");
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[package]\nname = "demo"\nversion = "0.1.0"\n',
+    );
+    const kinds: string[] = [];
+    const outcome = await checkMergedTree(
+      dir,
+      (project) => {
+        kinds.push(project.kind);
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      () => Promise.resolve(true),
+    );
+    assertEquals(kinds, ["deno"]);
+    assertEquals(outcome.status, "passed");
+    assertEquals(outcome.cargoSkipped, true);
+    assertEquals(outcome.detail.includes("cargo check"), false);
+    assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
+  });
+});
+
+Deno.test("findTypeCheckProjects - toolchain coverage cannot hide a nested project of the other kind (PR #4343)", async () => {
+  for (const rootKind of ["cargo", "deno"]) {
+    await withTempDir(async (dir) => {
+      const cargoDir = rootKind === "cargo" ? dir : `${dir}/engine`;
+      const denoDir = rootKind === "deno" ? dir : `${dir}/web`;
+      await writeFile(
+        `${cargoDir}/Cargo.toml`,
+        '[workspace]\nmembers = ["member"]\n',
+      );
+      await writeFile(
+        `${cargoDir}/member/Cargo.toml`,
+        '[package]\nname = "member"\n',
+      );
+      await writeFile(`${denoDir}/deno.json`, "{}");
+      await writeFile(`${denoDir}/member/deno.json`, "{}");
+      const projects = await findTypeCheckProjects(dir);
+      assertEquals(
+        projects.map((p) => ({ kind: p.kind, dir: p.dir })),
+        rootKind === "cargo"
+          ? [{ kind: "cargo", dir }, { kind: "deno", dir: denoDir }]
+          : [{ kind: "deno", dir }, { kind: "cargo", dir: cargoDir }],
+      );
+    });
+  }
 });
