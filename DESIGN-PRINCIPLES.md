@@ -2835,7 +2835,6 @@ backstop) pick the issue up immediately and keeps the recovery scan quiet.
 copy-paste a bespoke unassign block into a new processor. The helper centralises
 the try/log/return-boolean shape; every self-assigning processor
 ([`grill_me_processor.ts`](worker/deno/lib/grill_me_processor.ts) —,
-[`clarity_phase.ts`](worker/deno/lib/clarity_phase.ts),
 [`planning_processor.ts`](worker/deno/lib/planning_processor.ts),
 [`refinement_processor.ts`](worker/deno/lib/refinement_processor.ts),
 [`question_processor.ts`](worker/deno/lib/question_processor.ts),

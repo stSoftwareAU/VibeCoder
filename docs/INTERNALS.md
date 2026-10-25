@@ -5453,11 +5453,14 @@ as `claude-haiku-4-5`):
 - **Hard ceiling** — at or above `contextBudgetBlockPercent` (default 95%, `0`
   disables) `checkContextBudget()` returns `ok: false` with a `blockReason`.
   Both execution phases honour it: the phase stops **before** the billed Claude
-  invocation, applies `needs-human` through the shared `escalateToHuman`
-  chokepoint, and posts an explanation. Without it a non-converging issue was
-  bounded only by wall-clock while `loop.sh` restarted the worker forever.
-  `context_budget_guard.ts` holds the shared component breakdown and escalation
-  wording used by both phases.
+  invocation. Without it a non-converging issue was bounded only by wall-clock
+  while `loop.sh` restarted the worker forever. It never hands the issue to a
+  human (Issue #4298): the phase rebuilds the prompt with the comment and
+  CI-log history trimmed and checks again, and a prompt that still does not
+  fit goes to planning through `handOffOversizedIssueToPlanning`, the
+  `vibe-needs-planning` hand-off. When planning cannot take it, the run fails
+  and the issue is retried. `context_budget_guard.ts` holds the shared
+  component breakdown and the planning hand-off used by both phases.
 - **Human-readable breakdown** — `formatBudgetBreakdown()` produces a summary
   such as
   `"Context budget: system=12,450 dynamic=3,200 issue=1,800 total=17,450/200,000 (8.7%)"`,
@@ -5693,7 +5696,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [prompt_hash.ts](../worker/deno/lib/prompt_hash.ts)                                                               | SHA-256 prompt content hashing                                                                                                                                                                                                  |
 |                             | [batch_api.ts](../worker/deno/lib/batch_api.ts)                                                                   | Offline Batch API estimation helpers only — live submission never wired in, removed as dead code                                                                                                                                |
 |                             | [context_budget.ts](../worker/deno/lib/context_budget.ts)                                                         | Context window budget estimation, monitoring, and hard ceiling                                                                                                                                                                  |
-|                             | [context_budget_guard.ts](../worker/deno/lib/context_budget_guard.ts)                                             | Shared prompt component breakdown and needs-human copy for the context ceiling                                                                                                                                                  |
+|                             | [context_budget_guard.ts](../worker/deno/lib/context_budget_guard.ts)                                             | Shared prompt component breakdown and planning hand-off for the context ceiling                                                                                                                                                 |
 |                             | [verbosity.ts](../worker/deno/lib/verbosity.ts)                                                                   | Verbosity level resolution and prompt injection                                                                                                                                                                                 |
 |                             | [session_resume.ts](../worker/deno/lib/session_resume.ts)                                                         | CLI session continuity with `--session-id` / `--resume`                                                                                                                                                                         |
 |                             | [session_compaction.ts](../worker/deno/lib/session_compaction.ts)                                                 | Progressive three-tier session compaction                                                                                                                                                                                       |
@@ -5811,7 +5814,6 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [merge_conflict_stages.ts](../worker/deno/lib/merge_conflict_stages.ts)                                           | Reads a conflicted path's merge stages, so a modify/delete resolves as a delete instead of reviving removed code                                                                                                                |
 | **Issue processing phases** |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [clarity_assessment.ts](../worker/deno/lib/clarity_assessment.ts)                                                 | Issue clarity assessment logic                                                                                                                                                                                                  |
-|                             | [clarity_phase.ts](../worker/deno/lib/clarity_phase.ts)                                                           | Clarity assessment phase                                                                                                                                                                                                        |
 |                             | [execute_claude_phase.ts](../worker/deno/lib/execute_claude_phase.ts)                                             | Claude execution phase                                                                                                                                                                                                          |
 |                             | [quality_gate_phase.ts](../worker/deno/lib/quality_gate_phase.ts)                                                 | Quality gate phase                                                                                                                                                                                                              |
 |                             | [phases/completion_phase.ts](../worker/deno/lib/phases/completion_phase.ts)                                       | PR completion phase — push, PR creation, screenshot and security-fix gates                                                                                                                                                      |

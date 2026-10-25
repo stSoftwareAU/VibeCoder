@@ -215,43 +215,13 @@ label overrides this for specific issues.
 
 ## ❓ Clarification Phase (Handling Unclear or Complex Issues)
 
-The **clarification phase** runs before implementation and is important for
-getting good results. It does three things:
-
-1. **Is the issue clear?** If not, the worker posts questions on the issue and
-   adds the `needs-human` label (the standalone
-   `needs-clarification` label was retired in favour of the consolidated
-   worker-to-human handoff signal). You reply on the issue and remove the label;
-   the worker will re-assess on the next run.
-2. **Is it small enough for a single PR / one run?** If the issue is too large,
-   the worker posts an escalation comment asking a trusted human to add the
-   `planning` label so the issue can be broken into smaller sub-issues. The
-   worker does not add `planning` itself — see
-   [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
-3. **Is it too large for a single PR?** If the issue is clear but too complex
-   for one implementation, the worker posts an escalation comment asking a
-   trusted human to add the `planning` label — once added, the planning workflow
-   breaks it into smaller sub-issues. No code is written until the issue is
-   appropriately scoped.
-
-To skip clarification, add the `documentation` label. The worker limits
-clarification to 3 rounds (configurable) before proceeding with reasonable
-assumptions.
-
-**A masked instruction is always asked about (Issue #2390).** The worker masks
-anything secret-shaped before it publishes text, and a mask can land on the one
-value an instruction needs — `Add persist-credentials: ***REDACTED***` tells
-nobody what to set. When an issue's instructions carry a mask placeholder as
-the value of a setting, the worker does not guess and does not invoke the
-agent: it posts a `## Clarification Needed` comment naming each line and waits.
-Edit the issue to restore the value (or reply, if you would rather not edit) —
-and if the value really is a secret, describe the change without it. The
-`documentation` label does not skip this check. A secret masked in a quoted
-log, an `## Evidence` section or running prose is left alone: that is the mask
-doing its job. When the worker itself files an issue whose instructions were
-masked, the issue carries a visible notice saying so and the log carries a
-`[MASKED_INSTRUCTION_FILED]` line, so a false positive in the filter gets
-fixed at its source.
+The **clarification phase** runs before implementation. It routes an issue
+whose labels name another handler (`refine-issue`, `question`) and then runs a
+quick clarity check. An approved issue is never handed back to a human
+(Issue #4298): when the check finds it vague, the run proceeds and the agent
+states the assumptions it made in the PR summary. An issue too large for one PR
+goes to planning through the agent's `vibe-needs-planning` marker. The
+`documentation` label skips the check.
 
 For the full clarification workflow, including decision diagrams and
 configuration, see

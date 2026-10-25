@@ -108,16 +108,6 @@ export interface QuestionFailureOptions {
   workerFooter?: string;
 }
 
-/** Options for posting clarifying questions. */
-export interface ClarificationOptions {
-  repo: string;
-  issueNumber: number;
-  githubUser: string;
-  clarifyingQuestions: string;
-  labels?: LabelConfig;
-  workerFooter?: string;
-}
-
 /** Options for escalating to planning. */
 export interface EscalationOptions {
   repo: string;

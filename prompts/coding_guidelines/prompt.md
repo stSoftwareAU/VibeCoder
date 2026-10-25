@@ -540,9 +540,12 @@ so a page that must be rendered is rendered headlessly here.
 
 **Never ask the operator to participate in normal operation.** Do not ask a
 human to open a browser, click a UI, complete an interactive browser login,
-inspect the desktop, or read something off a screen. A step that depends on one
-of those is not a step you can take — find an in-container path (a CLI, a `gh`
-call, an HTTP request) or escalate with `needs-human` and stop.
+inspect the desktop, or read something off a screen. Take the in-container
+path instead: the headless browser for anything a page shows, or a CLI, a `gh`
+call or an HTTP request. A step that genuinely only the owner can take, such as
+signing in to a third-party account, is recorded as an owner step in the PR
+summary, and the rest of the work carries on. It never stops the run or hands
+the issue to a human (Issue #4298).
 
 **Browser profiles and state are disposable.** The profile is written to a
 throwaway directory that does not survive the run. Never assume a cookie, a
@@ -850,8 +853,9 @@ improvement is demonstrated.**
      should not be re-attempted. **Do not run `gh issue close` yourself** — the
      `gh` guard refuses issue-lifecycle verbs on the issue you are working
      (see **Issue Lifecycle Is Not Yours To Change** below). The comment plus
-     the `negative-result` label is the record; a human closes the issue. A
-     negative result is still valuable learning — record it clearly.
+     the `negative-result` label is the record, and the worker closes the
+     issue when the run ends (Issue #4298). A negative result is still
+     valuable learning — record it clearly.
 
 **Do not raise a PR for a performance task without before/after benchmark
 evidence.** A PR with no demonstrated improvement wastes reviewer time and will

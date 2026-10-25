@@ -1,11 +1,11 @@
 /**
  * Phase 2 — Clarity Assessment.
  *
- * Routes issues with special labels, enforces the clarification round
- * limit, runs the clarity heuristic, and posts clarifying questions
- * (with claim release) when the issue is too vague to implement.
- * Single responsibility: decide whether the issue is ready for Claude
- * to work on.
+ * Routes issues with special labels and runs the clarity heuristic. An
+ * approved issue is never handed back to a human (Issue #4298): when the
+ * heuristic finds it vague, the run proceeds and the agent states the
+ * assumptions it made, as the issue prompt instructs. Single responsibility:
+ * route the issue to the handler its labels name, or let Claude work on it.
  *
  * Extracted from worker/deno/lib/issue_worker.ts (Issue #1527).
  *
@@ -20,26 +20,6 @@ import type {
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { analyseIssueClarity } from "../../commands/assess_clarity.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
-import {
-  CLARIFICATION_HEADING,
-  clarificationDedupKey,
-  countClarificationRounds,
-  validateClarifyingQuestions,
-} from "../label_clarification.ts";
-import {
-  buildDedupMarker,
-  escalateToHuman,
-} from "../needs_human_escalation.ts";
-
-/**
- * The "what to do next" text shown when the worker asks for clarification
- * (Issue #2210). Embedded in the clarification comment and re-used as the
- * `escalateToHuman` next step.
- */
-export const CLARIFICATION_NEXT_STEP =
-  "Answer the questions above (reply to this comment or edit the issue), then " +
-  "remove the `needs-human` label so the worker can continue. The worker will " +
-  "otherwise resume after the maximum clarification rounds.";
 
 /**
  * Release the worker's claim on an issue so a different priority handler
@@ -79,7 +59,6 @@ export async function workOnIssueClarityPhase(
     issueLabels,
     issueBody,
     issueTitle,
-    githubUser,
     config,
   } = ctx;
   const logger = deps.logger;
@@ -140,42 +119,6 @@ export async function workOnIssueClarityPhase(
     return { status: "continue" };
   }
 
-  // Check clarification round limit.
-  //
-  // Issue #1263: counted from the comment rows the issue fetch already
-  // returned, which carry their authors, and never from `issueComments` —
-  // that blob is assembled for the model out of every comment, untrusted ones
-  // included, so a heading in it is a claim rather than evidence. Reaching
-  // the limit retires the clarity gate outright, so an unattributable comment
-  // must not raise the count.
-  if (ctx.issueCommentRows === undefined) {
-    logger.warn(
-      "No authored comment rows for the clarification round count — the " +
-        "clarity gate stays on",
-      { repo, issueNumber },
-    );
-  }
-  const clarificationRounds = await countClarificationRounds(
-    ctx.issueCommentRows ?? [],
-    {
-      issueNumber,
-      repo,
-      githubUser,
-      log: (message: string) => logger.warn(message),
-    },
-  );
-  if (clarificationRounds >= config.maxClarificationRounds) {
-    logger.info(
-      "Max clarification rounds reached, proceeding with implementation",
-      {
-        rounds: clarificationRounds,
-        max: config.maxClarificationRounds,
-      },
-    );
-    state.clarityStatus = "skipped";
-    return { status: "continue" };
-  }
-
   // Scope alone does not identify missing information (Issue #4147). The
   // heuristic also counts clear numbered requirements as "too_complex";
   // leave decomposition to implementation instead of asking a human whether
@@ -187,90 +130,15 @@ export async function workOnIssueClarityPhase(
     return { status: "continue" };
   }
 
-  // Issue is unclear — validate and post clarifying questions
-  if (clarity.questions.length > 0) {
-    const questionsText = clarity.questions.map((q) => `- ${q}`).join("\n");
-    const validation = validateClarifyingQuestions(questionsText);
-    if (!validation.ok) {
-      // Defence-in-depth (Issue #410): if questions invalid, treat as clear
-      logger.warn("Clarifying questions failed validation, treating as clear", {
-        reason: validation.error.message,
-      });
-      state.clarityStatus = "assessed_clear";
-      return { status: "continue" };
-    }
-
-    // Post clarifying questions, label the issue, and unassign so the
-    // worker releases its claim while waiting on a human response.
-    // Otherwise the issue would loop through priority 2 until the 30-min
-    // heartbeat-recovery sweep unassigns it.
-    //
-    // Issue #1215: Each operation is independent — a label-add failure must
-    // not prevent the unassign, matching the bash version's resilience.
-    const ghClient = deps.github.createClient(logger);
-    // The clarification comment states the questions AND the next step, and
-    // carries a dedup marker so the shared escalation helper recognises it
-    // and skips posting a duplicate (Issue #2210).
-    const dedupKey = clarificationDedupKey(issueNumber);
-    const commentBody = `${CLARIFICATION_HEADING}\n\n${questionsText}\n\n` +
-      `**Next step:** ${CLARIFICATION_NEXT_STEP}\n\n${
-        buildDedupMarker(dedupKey)
-      }`;
-    try {
-      await ghClient.postComment(repo, issueNumber, commentBody);
-    } catch (err) {
-      // If the comment fails, we cannot communicate the questions — fall
-      // back to proceeding with implementation.
-      logger.warn(
-        "Failed to post clarifying questions, proceeding with implementation",
-        {
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
-      state.clarityStatus = "assessed_clear";
-      return { status: "continue" };
-    }
-    // Issue #2031: clarification handoff signal is needs-human.
-    // Issue #2210: route the label add through the shared helper. The
-    // `dedupKey` matches the marker above, so the helper recognises the
-    // just-posted clarification comment and adds the label without
-    // duplicating the comment.
-    await escalateToHuman({
-      ghClient,
-      repo,
-      target: { kind: "issue", number: issueNumber },
-      needsHumanLabel: config.needsHumanLabel,
-      heading: "Clarification Needed",
-      reason: "The issue is too vague to implement without more information.",
-      nextStep: CLARIFICATION_NEXT_STEP,
-      dedupKey,
-      githubUser,
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-      logger,
-    });
-    try {
-      await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
-    } catch (err) {
-      logger.warn(
-        "Failed to unassign worker during clarification (non-fatal)",
-        {
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
-    }
-    logger.info("Posted clarification request and released claim", {
-      repo,
-      issueNumber,
-    });
-
-    return {
-      category: "unknown",
-      status: "early_exit",
-      reason: "waiting_for_clarification",
-    };
-  }
-
-  // No questions generated but unclear — proceed anyway
-  state.clarityStatus = "assessed_clear";
+  // Issue #4298: an approved issue is never handed back to a human. The
+  // clarifying questions used to be posted with `needs-human` and the claim
+  // released; the round cap then proceeded anyway after three rounds. The
+  // first round now does what the cap did: proceed, with the agent stating
+  // the assumptions it made in its PR summary (`prompts/issue/prompt.md`).
+  logger.info(
+    "Issue looks unclear — proceeding with stated assumptions (Issue #4298)",
+    { repo, issueNumber, reason: clarity.reason, questions: clarity.questions },
+  );
+  state.clarityStatus = "skipped";
   return { status: "continue" };
 }
