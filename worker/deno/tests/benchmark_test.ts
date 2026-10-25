@@ -170,7 +170,7 @@ Deno.test("perf workload runner - a non-git binary still spawns directly (Issue 
   assertEquals(missing.code, -1);
 });
 
-Deno.test("runBenchmarkCommand - a timeout is not a successful measurement (Issue #4249)", async () => {
+Deno.test("perf workload command - a timeout is not a successful measurement (Issue #4249)", async () => {
   const result = await runBenchmarkCommand("sleep", ["30"], undefined, 0);
   assertNotEquals(result.code, 0);
   assertStringIncludes(result.stderr, "timed out");
