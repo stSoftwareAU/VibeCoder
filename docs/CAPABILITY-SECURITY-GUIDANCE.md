@@ -16,7 +16,7 @@ substitute, or a wrapper nothing calls.
 
 ## Where it is applied
 
-- Issue runs render the selected sections through `buildIssuePrompt` into
+- Issue runs render compact selected advice through `buildIssuePrompt` into
   `prompts/issue/prompt.md`. Every supported provider uses that path. The
   run log records the revision and the signal ids that selected each
   section. It does not copy the issue body. Guidance that cannot be read
@@ -33,6 +33,23 @@ already carry the bundle is reviewed against that copy. A pull request that
 edits the bundle is reviewed against the base revision, so it cannot weaken
 the rules used to review it. A broken copy is a blocking finding on the
 bundle. A fetch failure is retried and is not charged to the issue.
+
+## Evaluation and adoption
+
+Issue #4368 adds a bounded subscription comparison, executable TypeScript/Rust
+acceptance, and review/coverage confusion counts. The command, isolation contract
+and result interpretation are in [the evaluation manual](../evals/capability_security/README.md).
+The expanded candidate remains reproducible through the evaluator; it is not the
+production generation prompt.
+
+Generation guidance is simplified to the selected advice and the scope-change
+reminder. The repeated validation paragraphs and the index of unselected
+capabilities have been removed from that path. This preserves the applicable
+platform controls and the existing authorisation behaviour contract without
+claiming that the longer candidate improves outcomes. Selection, attribution,
+review checklists, semantic checks, coverage checks and quality gates remain.
+The small comparison does not establish a general winner or justify changing
+production model allocation.
 
 ## Attribution
 

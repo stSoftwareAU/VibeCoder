@@ -4,9 +4,10 @@
     "fixtures": "2026-10-26.1",
     "scanner": "2026-10-26.1"
   },
+  "executionMode": "trusted-fixtures-on-host",
   "liveComparison": "partial",
-  "liveBlocker": "No live model invocation is configured for this command. Fixture arms were executed; model arms were not.",
-  "retryPath": "Re-run this command when a subscription-backed provider is available. Do not record a winner until a matched comparison finishes.",
+  "liveBlocker": "Trusted-fixtures mode does not call a model or provision a container. Use --live for isolated matched model execution.",
+  "retryPath": "Re-run with --live --model <id> --samples 2. The live provider retries a transient failure once; unavailable execution stays partial. Never infer a winner from trusted fixtures.",
   "winner": null,
   "cost": {
     "status": "unknown",
@@ -227,15 +228,15 @@
   "skips": [
     {
       "arm": "current-guidance",
-      "reason": "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available."
+      "reason": "Live model arm skipped in trusted-fixtures mode. Use --live --model <id> --samples 2 with a subscription and disposable runtime."
     },
     {
       "arm": "generic-secure-coding",
-      "reason": "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available."
+      "reason": "Live model arm skipped in trusted-fixtures mode. Use --live --model <id> --samples 2 with a subscription and disposable runtime."
     },
     {
       "arm": "codeguard-derived",
-      "reason": "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available."
+      "reason": "Live model arm skipped in trusted-fixtures mode. Use --live --model <id> --samples 2 with a subscription and disposable runtime."
     }
   ]
 }

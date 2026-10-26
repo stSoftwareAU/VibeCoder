@@ -486,6 +486,7 @@ export function formatCapabilityEvidence(
 export function renderCapabilityGuidanceForIssue(
   load: CapabilityLoad,
   context: CapabilityContext,
+  detail: "compact" | "candidate" = "compact",
 ): { section: string; evidence: CapabilitySecurityEvidence } {
   if (load.kind !== "loaded") {
     const reason = load.kind === "absent"
@@ -510,7 +511,17 @@ export function renderCapabilityGuidanceForIssue(
     };
   }
   return {
-    section: renderAppliedWithIndex(load.bundle, selection),
+    // #4368: retain the short applicable advice, not an unproven index and
+    // repeated validation prose. The expanded candidate remains reproducible
+    // through the bounded comparison; review contracts are unchanged.
+    section: detail === "candidate"
+      ? renderAppliedWithIndex(load.bundle, selection)
+      : [
+        "## Capability-scoped security guidance",
+        `Revision ${selection.revision}; compact generation advice.`,
+        ...selection.matches.map(({ entry }) => `${entry.id}: ${entry.advice}`),
+        REEVALUATE_WHEN_SCOPE_CHANGES,
+      ].join("\n\n"),
     evidence: evidenceFromSelection(selection),
   };
 }

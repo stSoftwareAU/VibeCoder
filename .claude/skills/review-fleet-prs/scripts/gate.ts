@@ -5,7 +5,8 @@
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
 // head commit (by this reviewer, by anyone's approval, or by another host's
 // marker-carrying review), and not sent back awaiting a fix whose only new
-// commits are base-branch merges. At most --limit (default 5) PRs are
+// commits leave their own diff unchanged apart from a strict version re-bump.
+// At most --limit (default 5) PRs are
 // reported per pass, counted after every other skip, so a red or approved PR
 // never takes a slot and the rest come back next pass (Issue #3225). It never
 // posts anything itself; a red dependency audit CI-fix could not clear is
@@ -387,19 +388,42 @@ function normalisePatch(patch: string): string {
   return patch.replace(/^@@ [^@]* @@.*$/gm, "@@");
 }
 
-// A complete single-line replacement, not a truncated/context-bearing hunk.
+// One complete hunk replacing only a bare version or a JSON/TOML version key.
+// Context counts towards both ranges; truncated or additional edits fail closed.
 // Compare two-to-four numeric components exactly, without Number rounding.
 // Suffix-only changes stay reviewable: no prerelease/build ordering is guessed.
 function isVersionIncrement(patch: string): boolean {
+  const [header, ...lines] = patch.split("\n");
   const hunk =
-    /^@@ -[1-9]\d*(?:,1)? \+[1-9]\d*(?:,1)? @@[^\n]*\n-([^\n]+)\n\+([^\n]+)$/
-      .exec(patch);
+    /^@@ -[1-9]\d*(?:,([1-9]\d*))? \+[1-9]\d*(?:,([1-9]\d*))? @@[^\n]*$/
+      .exec(header!);
   if (!hunk) return false;
+  const removed = lines.filter((line) => line.startsWith("-"));
+  const added = lines.filter((line) => line.startsWith("+"));
+  if (
+    removed.length !== 1 || added.length !== 1 ||
+    lines.indexOf(added[0]!) !== lines.indexOf(removed[0]!) + 1 ||
+    lines.some((line) => !/^[ +\-]/.test(line)) ||
+    BigInt(hunk[1] ?? "1") !== BigInt(lines.length - 1) ||
+    BigInt(hunk[2] ?? "1") !== BigInt(lines.length - 1)
+  ) return false;
+
   const version =
-    /^\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
-  if (!version.test(hunk[1]!) || !version.test(hunk[2]!)) return false;
-  const from = hunk[1]!.split(/[-+]/)[0]!.split(".").map(BigInt);
-  const to = hunk[2]!.split(/[-+]/)[0]!.split(".").map(BigInt);
+    "\\d+(?:\\.\\d+){1,3}(?:[-+][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?";
+  const shapes = [
+    new RegExp(`^()(${version})()$`),
+    new RegExp(
+      `^([ \t]*"version"[ \t]*:[ \t]*")(${version})("[ \t]*,?[ \t]*)$`,
+    ),
+    new RegExp(`^([ \t]*version[ \t]*=[ \t]*")(${version})("[ \t]*)$`),
+  ];
+  const pair = shapes.map((shape) => [
+    shape.exec(removed[0]!.slice(1)),
+    shape.exec(added[0]!.slice(1)),
+  ]).find(([from, to]) => from && to && from[1] === to[1] && from[3] === to[3]);
+  if (!pair) return false;
+  const from = pair[0]![2]!.split(/[-+]/)[0]!.split(".").map(BigInt);
+  const to = pair[1]![2]!.split(/[-+]/)[0]!.split(".").map(BigInt);
   if (from.length !== to.length) return false;
   for (let i = 0; i < from.length; i++) {
     if (to[i] !== from[i]) return to[i]! > from[i]!;
