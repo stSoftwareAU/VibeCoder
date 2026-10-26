@@ -286,9 +286,18 @@ function Start-EgressSidecar {
             "Error: could not pack the egress proxy source - refusing to launch")
         Exit-Launcher 1
     }
+    # The client's own output goes to files, never the launcher's handles. A
+    # client that inherited them would hold the launcher's stdout open after
+    # the launcher was terminated, and whoever reads it (loop.ps1, Task
+    # Scheduler, the launcher tests) would wait out the proxy's lifetime. The
+    # proxy's log is read with `<runtime> logs`, not from these files.
+    $script:EgressProxyClientOut = "$($script:EgressProxyBundleFile).out"
+    $script:EgressProxyClientErr = "$($script:EgressProxyBundleFile).err"
     $script:EgressProxyProcess = Start-Process -FilePath $Runtime `
         -ArgumentList ([string[]]$ProxyRunArgs.ToArray()) `
         -RedirectStandardInput $script:EgressProxyBundleFile `
+        -RedirectStandardOutput $script:EgressProxyClientOut `
+        -RedirectStandardError $script:EgressProxyClientErr `
         -PassThru -NoNewWindow
     $script:EgressProxyStarted = $true
     $ready = $false
@@ -333,6 +342,8 @@ function Remove-EgressSidecar {
     $created = Get-VibeVar EgressNetworkCreated
     $process = Get-VibeVar EgressProxyProcess
     $bundle = Get-VibeVar EgressProxyBundleFile
+    $clientOut = Get-VibeVar EgressProxyClientOut
+    $clientErr = Get-VibeVar EgressProxyClientErr
     if ($started -and $runtime -and $proxyName) {
         if ($logDir) {
             try {
@@ -353,8 +364,10 @@ function Remove-EgressSidecar {
     if ($created -and $runtime -and $networkRemove -and $networkRemove.Count -gt 0) {
         & $runtime @($networkRemove) *> $null
     }
-    if ($bundle) {
-        Remove-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
+    foreach ($leftover in @($bundle, $clientOut, $clientErr)) {
+        if ($leftover) {
+            Remove-Item -LiteralPath $leftover -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -744,6 +757,8 @@ $script:EgressNetworkCreated = $false
 $script:EgressProxyStarted = $false
 $script:EgressProxyProcess = $null
 $script:EgressProxyBundleFile = ""
+$script:EgressProxyClientOut = ""
+$script:EgressProxyClientErr = ""
 
 try {
     # The plan resolves and validates the container runtime, computes the

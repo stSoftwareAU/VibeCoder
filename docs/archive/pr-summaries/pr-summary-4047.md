@@ -49,6 +49,14 @@ No version file is changed.
   On macOS an incomplete-plan refusal left its reader blocked in `open`;
   the exit trap's TERM and wait did not finish. Starting the sidecar before
   opening the worker FIFO avoids that reader on every sidecar refusal.
+- `run.ps1` starts the proxy client with `Start-Process -NoNewWindow`. With
+  no output redirect the client inherits the launcher's stdout and stderr,
+  so on Linux, where the plan enforces egress, a terminated launcher left
+  its reader waiting out the proxy's lifetime: `run.ps1 - waits for the
+  container and reports a termination as failure` hung until the
+  `validate (container)` and `validate (no-runtime)` jobs were cancelled.
+  The client's output now goes to files beside the packed source, removed
+  on exit; the proxy log still comes from `<runtime> logs`.
 - The proxy client is not `--rm`. The exit path appends `<runtime> logs
   <proxy>` to `egress-proxy.log` before removing the container.
 - Docker is not installed on the local host. CI executes the containment
@@ -171,4 +179,7 @@ reproduced the failure before the repair and passed afterwards.
 - CI run `40268960461`, job `121397472900`: Docker image build passed,
   335 in-image checks passed, and 15 live containment tests (47 steps)
   passed with `VIBE_CONTAINMENT_REQUIRED=1`.
+- `run_ps1_launcher_test.ts --filter "waits for the container and reports a
+  termination"` on Linux with PowerShell 7.6.0: hung past five minutes
+  before the redirect, 1 passed in 9s afterwards.
 - Not run locally: `./quality.sh` and Docker (unavailable on this host).
