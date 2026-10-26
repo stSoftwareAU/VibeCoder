@@ -486,10 +486,9 @@ function proxyAllowlistByIdentity(
  * The CONNECT allowlist reading.
  *
  * With a `proxyCheck`, the answers are matched by host identity. Without one,
- * the probe sends two CONNECTs, one to an allowed host and one to a denied
- * host. The allowlist is shown to hold when one host tunnels (200) and a
- * different host is refused with reason `not-allowlisted`. If two distinct
- * hosts both tunnel, the denied one got through.
+ * the answers cannot be attributed to the allowed and denied hosts, so the
+ * allowlist is untested, never enforced. Two distinct hosts both tunnelling
+ * (200) is still not-enforced, because the denied one got through.
  */
 function proxyAllowlistOf(
   internal: ProbeRun,
@@ -521,31 +520,10 @@ function proxyAllowlistOf(
         "so a host the allowlist should refuse was tunnelled",
     };
   }
-  const allowed = tunnelled[0];
-  if (allowed === undefined) {
-    return untested(
-      `no CONNECT was answered 200 (${
-        answers.map(describeAnswer).join("; ")
-      }), so the allowed reading is missing`,
-    );
-  }
-  const refusal = answers.find((answer) =>
-    answer.host !== allowed.host && answer.status === 403 &&
-    answer.reason === "not-allowlisted"
-  );
-  if (refusal !== undefined) {
-    return {
-      state: "enforced",
-      detail:
-        `allowed host ${allowed.host} tunnelled (200) and ${refusal.host} ` +
-        "was refused (403 not-allowlisted)",
-    };
-  }
-  const other = answers.find((answer) => answer.host !== allowed.host);
   return untested(
-    `${
-      other === undefined ? "no second host answered" : describeAnswer(other)
-    }, so the denied reading is not confirmed as a not-allowlisted refusal`,
+    `no proxyCheck was recorded, so the CONNECT answers (${
+      answers.map(describeAnswer).join("; ")
+    }) cannot be matched to the allowed and denied hosts by identity`,
   );
 }
 

@@ -417,9 +417,9 @@ Deno.test("dns is untested when no lookup was recorded", () => {
 
 // ----- proxyAllowlist -----
 
-Deno.test("proxyAllowlist is enforced on a 200 and a different host's not-allowlisted 403", () => {
+Deno.test("proxyAllowlist without proxyCheck is untested, not enforced, on a 200 and a 403", () => {
   const controls = deriveEgressControls(goodInternal(), provenControl());
-  assertEquals(controls.proxyAllowlist.state, "enforced");
+  assertEquals(controls.proxyAllowlist.state, "untested");
 });
 
 Deno.test("proxyAllowlist requires the 403 to carry reason not-allowlisted", () => {
@@ -480,7 +480,7 @@ Deno.test("proxyAllowlist is untested when no CONNECT was answered 200", () => {
   assertEquals(controls.proxyAllowlist.state, "untested");
   assertStringIncludes(
     controls.proxyAllowlist.detail,
-    "allowed reading is missing",
+    "allowed.example gave no answer",
   );
 });
 
@@ -517,13 +517,38 @@ Deno.test("proxyCheck: swapped answers are not-enforced, judged by identity", ()
   assertStringIncludes(proxy.detail, "denied.example");
 });
 
-Deno.test("without proxyCheck, the same swapped answers keep the old order-based reading", () => {
-  // The old reading takes the first 200 as the allowed host, so it reads enforced.
-  // This is the weakness proxyCheck closes; keeping it here pins the fallback.
+Deno.test("without proxyCheck, the swapped answers are untested, never enforced", () => {
+  // Without identity the answers cannot be attributed to the allowed and denied
+  // hosts, so the order-based reading that once said enforced is gone (fail closed).
   const internal = run({ observations: swappedAnswers() });
+  const proxy = deriveEgressControls(internal, provenControl()).proxyAllowlist;
+  assertEquals(proxy.state, "untested");
+  assertStringIncludes(proxy.detail, "proxyCheck");
+});
+
+Deno.test("without proxyCheck, a correct allowed 200 and denied 403 is still untested, not enforced", () => {
+  const internal = run({
+    observations: [
+      connect("allowed.example", 200, null),
+      connect("denied.example", 403, "not-allowlisted"),
+    ],
+  });
   assertEquals(
     deriveEgressControls(internal, provenControl()).proxyAllowlist.state,
-    "enforced",
+    "untested",
+  );
+});
+
+Deno.test("without proxyCheck, both hosts tunnelled is still not-enforced", () => {
+  const internal = run({
+    observations: [
+      connect("allowed.example", 200, null),
+      connect("denied.example", 200, null),
+    ],
+  });
+  assertEquals(
+    deriveEgressControls(internal, provenControl()).proxyAllowlist.state,
+    "not-enforced",
   );
 });
 
