@@ -48,7 +48,7 @@ export interface CapabilityProviderDeps {
 
 // Keep the argv prompt below Linux's per-argument 128 KiB bound. The
 // evaluation supplies fixture text, never repository or hold-out contents.
-const MAX_PROMPT_BYTES = 96 * 1024;
+const MAX_PROMPT_BYTES = 120 * 1024;
 const MAX_TIMEOUT_MS = 5 * 60_000;
 const MODEL_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/;
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
