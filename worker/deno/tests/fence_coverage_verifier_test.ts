@@ -4,6 +4,7 @@ import { buildPrePrVerifierPrompt } from "../lib/pre_pr_verifier.ts";
 import { buildClosureVerdictPrompt } from "../lib/closure_verdict_recovery.ts";
 import { buildSummaryRuleRetryPrompt } from "../lib/summary_rule_gate_retry.ts";
 import { buildSecurityFixGateRetryPrompt } from "../lib/security_fix_gate_retry.ts";
+import { buildPrePushGateRetryPrompt } from "../lib/pre_push_gate_retry.ts";
 import {
   buildReplyPlaceholderRetryPrompt,
   findResultPlaceholders,
@@ -62,8 +63,14 @@ const security = {
 const placeholder = makeCanary("replyPlaceholder").toUpperCase() +
   "_PLACEHOLDER";
 const quality = makeCanary("qualityOutput");
+const prePush = makeCanary("prePushGateOutput");
 
 runFenceCoverageRows([
+  {
+    name: "buildPrePushGateRetryPrompt",
+    canaries: [prePush],
+    render: () => buildPrePushGateRetryPrompt(prePush, REPO, 4128),
+  },
   knownLeakRow({
     // Pending dedicated follow-up: prepr_paths (draft scaffold; replace before marking ready).
     knownLeak: "#3896",

@@ -392,6 +392,12 @@ export interface PhaseState {
    */
   screenshotRetryAttempted?: boolean;
   /**
+   * The pre-push gate's one extra agent turn (Issue #4128) has already been
+   * tried this run. Caps it at once per run across every gate call in the
+   * completion phase — the first push and the retry push after push recovery.
+   */
+  prePushRetryAttempted?: boolean;
+  /**
    * The pull request body was over GitHub's limit (Issue #4359). Set on the
    * first observation; the summarise turn reads the prompt, then clears it
    * before the agent runs, so the re-run cannot ask a second time.
