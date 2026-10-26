@@ -59,6 +59,7 @@ import {
   type CachedIssuePromptOptions,
   type CachedPromptParts,
 } from "./prompt_builder_cache.ts";
+import { inspectIssueCapabilityScope } from "./capability_security_guidance.ts";
 import { PromptCache } from "./prompt_cache.ts";
 import { getPromptsCommit } from "./prompt_manager.ts";
 import {
@@ -1442,6 +1443,14 @@ async function executeClaudePhaseBody(
     );
   }
 
+  // Issue #4365: selection uses the named entry points, their imports and
+  // config, and neighbouring callers. A task that names no path adds nothing,
+  // so a docs-only change stays on the title, body and labels.
+  const capabilityInspection = await inspectIssueCapabilityScope({
+    repoDir,
+    task: [issueTitle, issueBody, issueLabels].join("\n"),
+  });
+
   // Issue #4298: built by a closure so the context-budget ceiling below can
   // rebuild the prompt with the CI log and recent activity trimmed.
   const buildRunPrompt = (withHistory: boolean) =>
@@ -1477,6 +1486,7 @@ async function executeClaudePhaseBody(
       ...(options.fleetRunArchive
         ? { fleetRunArchive: options.fleetRunArchive }
         : {}),
+      capabilityInspection,
     });
   const promptResult = await buildRunPrompt(true);
 

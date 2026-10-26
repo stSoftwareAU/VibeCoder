@@ -21,6 +21,10 @@ Closes #4365
 
 - **clean** — Australian English, tests through the real prompt path, no version bump in `worker/deno/deno.json`, and no secrets in the guidance record.
 
+## Review follow-up
+
+An issue run inspects the paths named in the task: the files themselves, config beside a named code file, and neighbouring callers. That set is passed into `buildIssuePrompt`, and the next run selects again when the set changes. A later import or sink renders that capability's advice. A docs-only task that names no path still receives no capability advice. The re-evaluate instruction stays when nothing matches, because a later entry point, import, caller, config or sink can make a capability apply.
+
 ## CI repair
 
 The intentionally empty TypeScript fixture now contains only a comment. It still exports no implementation, while satisfying the repository's zero-length-file check.

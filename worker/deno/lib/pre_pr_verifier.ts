@@ -89,11 +89,13 @@ import {
   parseEarlierVerdicts,
 } from "./earlier_findings.ts";
 import {
+  applyCapabilityJudgement,
   CAPABILITY_BUNDLE_PATH,
   capabilityContextFromChange,
   type CapabilityLoad,
   capabilityLoadFromGitShow,
   effectiveCapabilityLoad,
+  judgeCapabilityFixtures,
   loadTrustedCapabilityBundle,
   mergeCapabilityReview,
   renderCapabilityReview,
@@ -858,6 +860,7 @@ async function verifyInCheckout(
       }`,
     );
   }
+  const capabilityJudgement = judgeCapabilityFixtures(diffResult.stdout);
   const capabilityReview = renderCapabilityReview(
     capabilityLoad,
     capabilityContextFromChange({
@@ -950,11 +953,12 @@ async function verifyInCheckout(
       ),
       ...callerGapFindings(callers.state, callerVerdicts),
     ];
+    const withGaps = gaps.length === 0
+      ? parsed
+      : { ...parsed, findings: [...parsed.findings, ...gaps] };
     return {
       status: "checked",
-      review: gaps.length === 0
-        ? parsed
-        : { ...parsed, findings: [...parsed.findings, ...gaps] },
+      review: applyCapabilityJudgement(withGaps, capabilityJudgement),
       run,
     };
   } catch (error) {

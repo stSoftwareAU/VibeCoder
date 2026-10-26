@@ -7,6 +7,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CommandRunner,
+  defaultCommandRunner,
   EVAL_ARMS,
   runCapabilitySecurityEval,
   scoreTestOutput,
@@ -87,6 +88,102 @@ Deno.test("an edited acceptance test is an error, not a pass", async () => {
   assertStringIncludes(secure.detail, "acceptance tests were modified");
   assertEquals(secure.joint, false);
   assertEquals(secure.security.pass, false);
+});
+
+Deno.test("the fixture runner does not inherit a worker credential", async () => {
+  const previous = Deno.env.get("GH_TOKEN");
+  Deno.env.set("GH_TOKEN", "super-secret-token");
+  try {
+    const result = await defaultCommandRunner(
+      "printenv",
+      ["GH_TOKEN"],
+      Deno.cwd(),
+    );
+    assertEquals(result.stdout.includes("super-secret-token"), false);
+    assertEquals(result.stderr.includes("super-secret-token"), false);
+  } finally {
+    if (previous === undefined) Deno.env.delete("GH_TOKEN");
+    else Deno.env.set("GH_TOKEN", previous);
+  }
+});
+
+Deno.test("a failed isolation provision is recorded and the fixture is not executed", async () => {
+  let ran = false;
+  const runner: CommandRunner = () => {
+    ran = true;
+    return Promise.resolve({ code: 0, stdout: "ok", stderr: "" });
+  };
+  const artefact = await runCapabilitySecurityEval(
+    {
+      root: ROOT,
+      runner,
+      isolationAvailable: () => false,
+    } as Parameters<typeof runCapabilitySecurityEval>[0],
+  );
+  assertEquals(ran, false);
+  const blocked = artefact.outcomes.filter((item) =>
+    item.detail.toLowerCase().includes("isolation")
+  );
+  assertEquals(blocked.length, artefact.outcomes.length);
+  for (const outcome of artefact.outcomes) {
+    assertEquals(outcome.functional.executed, false);
+    assertEquals(outcome.security.executed, false);
+    assertEquals(outcome.joint, false);
+  }
+});
+
+Deno.test("the fixture child does not receive the worker environment or network", async () => {
+  const seen: {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+  }[] = [];
+  const runner: CommandRunner = (command, args, _cwd, env) => {
+    seen.push({ command, args, ...(env ? { env } : {}) });
+    return Promise.resolve({
+      code: 0,
+      stdout: [
+        "functional: authorised update persists ... ok",
+        "security: cross-tenant rejected ... ok",
+        "security: privileged field rejected ... ok",
+      ].join("\n"),
+      stderr: "",
+    });
+  };
+  await runCapabilitySecurityEval(
+    {
+      root: ROOT,
+      runner,
+      envSource: {
+        PATH: "/usr/bin",
+        HOME: "/tmp/capsec-home",
+        GH_TOKEN: "super-secret-token",
+        CLAUDE_CODE_OAUTH_TOKEN: "oauth-secret",
+      },
+    } as Parameters<typeof runCapabilitySecurityEval>[0],
+  );
+  assert(seen.length > 0);
+  for (const call of seen) {
+    const env = call.env ?? {};
+    assertEquals(env.GH_TOKEN, undefined);
+    assertEquals(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+    assertEquals(JSON.stringify(env).includes("super-secret-token"), false);
+    assertEquals(JSON.stringify(env).includes("oauth-secret"), false);
+    assertEquals(call.args.includes("--allow-net"), false);
+    if (call.command === "deno") {
+      assert(call.args.some((arg) => arg.includes("deny-net")));
+      assert(call.args.some((arg) => arg.includes("max-old-space-size")));
+      assertEquals(
+        call.args.includes("--allow-env"),
+        false,
+        "the fixture must not be granted the whole environment",
+      );
+    }
+    if (call.command === "cargo") {
+      assert(call.args.includes("--offline"));
+      assertEquals(env.CARGO_BUILD_JOBS, "1");
+    }
+  }
 });
 
 Deno.test("fixture arms score as specified and the live comparison stays partial", async () => {

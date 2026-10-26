@@ -101,6 +101,10 @@ export interface CapabilityReview {
 
 const EMPTY_STATE: ChecklistState = { problem: null, expected: [] };
 
+/** Shown when nothing matched, and again inside a selected section. */
+const REEVALUATE_WHEN_SCOPE_CHANGES =
+  "Re-evaluate applicability when the implementation scope changes. A new entry point, import, caller, config or sink that matches a capability was not applied, and must not be recorded as applied.";
+
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -498,7 +502,12 @@ export function renderCapabilityGuidanceForIssue(
   }
   const selection = selectCapabilityGuidance(load.bundle, context);
   if (selection.status === "none") {
-    return { section: "", evidence: evidenceFromSelection(selection) };
+    // No capability advice. The re-evaluate instruction stays, because a
+    // later entry point, import, caller, config or sink can make one apply.
+    return {
+      section: REEVALUATE_WHEN_SCOPE_CHANGES,
+      evidence: evidenceFromSelection(selection),
+    };
   }
   return {
     section: renderAppliedWithIndex(load.bundle, selection),
@@ -513,7 +522,7 @@ function renderAppliedWithIndex(
   const lines = [
     "## Capability-scoped security guidance",
     "",
-    `Revision ${selection.revision}. Apply every section below. Re-evaluate when the implementation scope changes: a new entry point, import, caller or sink that matches a capability not listed as selected was not applied, and must not be recorded as applied.`,
+    `Revision ${selection.revision}. Apply every section below. ${REEVALUATE_WHEN_SCOPE_CHANGES}`,
     "",
     "Selected:",
   ];
@@ -668,4 +677,436 @@ export function mergeCapabilityReview(
       ...(problemFile ? { problemFile } : {}),
     },
   };
+}
+
+const NAMED_PATH =
+  /(?:^|[\s`'"(=])((?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+|[A-Za-z0-9._-]+\.(?:ts|tsx|js|mjs|cjs|rs|toml|json|yml|yaml|md))/g;
+const CODE_FILE = /\.(ts|tsx|js|mjs|cjs|rs)$/;
+const CONFIG_FILE = /(?:^|\/)(?:deno\.json|package\.json|Cargo\.toml)$/;
+const CONFIG_NAMES = ["deno.json", "package.json", "Cargo.toml"];
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+/** Paths named in the task. A URL is not a repository path. */
+export function pathsNamedInTask(task: string): string[] {
+  const found: string[] = [];
+  for (const match of task.matchAll(NAMED_PATH)) {
+    const path = match[1];
+    if (!path) continue;
+    const at = match.index ?? 0;
+    const around = task.slice(Math.max(0, at - 8), at + path.length + 1);
+    if (around.includes("://")) continue;
+    const cleaned = path.replace(/^\.\//, "").replace(/\.+$/, "");
+    if (cleaned !== "") found.push(cleaned);
+  }
+  return unique(found).slice(0, 16);
+}
+
+function signalsFromText(text: string): { imports: string[]; sinks: string[] } {
+  const bounded = text.length > 32_000 ? text.slice(0, 32_000) : text;
+  return signalsFromDiff(
+    bounded.split("\n").map((line) => `+${line}`).join("\n"),
+  );
+}
+
+function quotedSpecifiers(text: string): string[] {
+  const out: string[] = [];
+  for (const match of text.matchAll(/["']([^"']+)["']/g)) {
+    const value = match[1];
+    if (!value) continue;
+    if (
+      value.includes(":") || value.includes("/") || value.startsWith("node")
+    ) {
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+function referencesModule(text: string, base: string): boolean {
+  return [
+    `./${base}.ts`,
+    `./${base}.js`,
+    `./${base}.rs`,
+    `./${base}"`,
+    `./${base}'`,
+  ].some((needle) => text.includes(needle));
+}
+
+async function readRepoText(path: string): Promise<string | null> {
+  try {
+    const info = await Deno.stat(path);
+    if (!info.isFile || info.size > 32_000) return null;
+    return await Deno.readTextFile(path);
+  } catch {
+    return null;
+  }
+}
+
+async function listFileNames(directory: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const entry of Deno.readDir(directory)) {
+    if (!entry.isFile) continue;
+    names.push(entry.name);
+    if (names.length >= 20) break;
+  }
+  return names;
+}
+
+/**
+ * Inspect the paths the task names: their imports and sinks, config beside
+ * a code file, and neighbouring callers. A task that names no path inspects
+ * nothing, so a docs-only change stays free of the bundle.
+ */
+export async function inspectIssueCapabilityScope(input: {
+  repoDir: string;
+  task: string;
+  readText?: (path: string) => Promise<string | null>;
+  listNames?: (directory: string) => Promise<string[]>;
+}): Promise<
+  Pick<CapabilityContext, "entryPoints" | "imports" | "callers" | "sinks">
+> {
+  const readText = input.readText ?? readRepoText;
+  const listNames = input.listNames ?? listFileNames;
+  const entryPoints: string[] = [];
+  const imports: string[] = [];
+  const callers: string[] = [];
+  const sinks: string[] = [];
+  const seenCallers = new Set<string>();
+  for (const path of pathsNamedInTask(input.task)) {
+    const absolute = `${input.repoDir}/${path}`;
+    const text = await readText(absolute);
+    if (text === null) continue;
+    entryPoints.push(path);
+    const signals = signalsFromText(text);
+    imports.push(...signals.imports);
+    sinks.push(...signals.sinks);
+    if (CONFIG_FILE.test(path)) imports.push(...quotedSpecifiers(text));
+    if (!CODE_FILE.test(path)) continue;
+    const slash = path.lastIndexOf("/");
+    const dir = slash < 0 ? "" : path.slice(0, slash);
+    const base = path.slice(slash + 1).replace(/\.[^.]+$/, "");
+    const dirAbs = dir === "" ? input.repoDir : `${input.repoDir}/${dir}`;
+    for (const configName of CONFIG_NAMES) {
+      const configText = await readText(`${dirAbs}/${configName}`);
+      if (configText === null) continue;
+      imports.push(...quotedSpecifiers(configText));
+      entryPoints.push(dir === "" ? configName : `${dir}/${configName}`);
+    }
+    let names: string[] = [];
+    try {
+      names = await listNames(dirAbs);
+    } catch {
+      names = [];
+    }
+    for (const name of names) {
+      if (!CODE_FILE.test(name)) continue;
+      const rel = dir === "" ? name : `${dir}/${name}`;
+      if (rel === path || seenCallers.has(rel)) continue;
+      const sibling = await readText(`${dirAbs}/${name}`);
+      if (sibling === null || !referencesModule(sibling, base)) continue;
+      seenCallers.add(rel);
+      callers.push(rel);
+      const siblingSignals = signalsFromText(sibling);
+      imports.push(...siblingSignals.imports);
+      sinks.push(...siblingSignals.sinks);
+    }
+  }
+  return {
+    entryPoints: unique(entryPoints),
+    imports: unique(imports),
+    callers: unique(callers),
+    sinks: unique(sinks).slice(0, 40),
+  };
+}
+
+export interface CapabilityFixtureFinding {
+  file: string;
+  line: number;
+  problem: string;
+}
+
+export interface CapabilityPreExisting {
+  title: string;
+  body: string;
+  file: string;
+  line: number;
+}
+
+export interface CapabilityFixtureJudgement {
+  resourceAuth: "not-applicable" | "satisfied" | "missing" | "pre-existing";
+  findings: CapabilityFixtureFinding[];
+  preExisting: CapabilityPreExisting[];
+}
+
+interface HunkLine {
+  file: string;
+  kind: "add" | "del" | "ctx";
+  text: string;
+  line: number;
+}
+
+function parseUnifiedDiff(diff: string): HunkLine[] {
+  const out: HunkLine[] = [];
+  let file = "";
+  let inHunk = false;
+  let newLine = 0;
+  let oldLine = 0;
+  for (const raw of diff.split("\n")) {
+    if (
+      raw.startsWith("diff --git ") || raw.startsWith("--- ") ||
+      raw.startsWith("+++ ")
+    ) {
+      inHunk = false;
+      if (raw.startsWith("+++ ")) {
+        const path = raw.slice(4).trim();
+        file = path === "/dev/null" ? "" : path.replace(/^b\//, "");
+      }
+      continue;
+    }
+    if (raw.startsWith("@@")) {
+      const marker = raw.match(/@@ -(\d+)(?:,\d+)? \+(\d+)/);
+      oldLine = marker ? Number(marker[1]) : 0;
+      newLine = marker ? Number(marker[2]) : 0;
+      inHunk = file !== "";
+      continue;
+    }
+    if (!inHunk || raw.startsWith("\\")) continue;
+    if (raw.startsWith("+")) {
+      out.push({ file, kind: "add", text: raw.slice(1), line: newLine });
+      newLine++;
+    } else if (raw.startsWith("-")) {
+      out.push({ file, kind: "del", text: raw.slice(1), line: oldLine });
+      oldLine++;
+    } else if (raw.startsWith(" ")) {
+      out.push({ file, kind: "ctx", text: raw.slice(1), line: newLine });
+      newLine++;
+      oldLine++;
+    }
+  }
+  return out;
+}
+
+function joined(
+  lines: readonly HunkLine[],
+  kinds: readonly HunkLine["kind"][],
+): string {
+  return lines.filter((line) => kinds.includes(line.kind)).map((line) =>
+    line.text
+  ).join("\n");
+}
+
+function hasTenantGuard(text: string): boolean {
+  return /tenant/.test(text) &&
+    (/unauthorised|unauthorized/.test(text) || /!==|!=/.test(text));
+}
+
+function hasFieldGuard(text: string): boolean {
+  return /forbidden-field|WRITABLE/.test(text) ||
+    (/patch\.role/.test(text) && /undefined|forbidden/.test(text) &&
+      !/role:\s*patch\.role/.test(text));
+}
+
+function hasSuccess(text: string): boolean {
+  return /ok:\s*true|\bOk\(/.test(text);
+}
+
+function copiesPrivilegedField(text: string): boolean {
+  return /role:\s*patch\.role/.test(text) || /patch\.role\s*\?\?/.test(text);
+}
+
+function isStub(text: string): boolean {
+  return /TODO|todo!\(|unimplemented!\(/.test(text) && !hasSuccess(text);
+}
+
+function isDenyAll(text: string): boolean {
+  return /unauthorised|unauthorized/.test(text) && /ok:\s*false/.test(text) &&
+    !hasSuccess(text);
+}
+
+function isCall(text: string): boolean {
+  return text.includes("updateResource(") &&
+    !/(?:function|fn)\s+updateResource\b/.test(text);
+}
+
+function firstWhere(
+  lines: readonly HunkLine[],
+  kinds: readonly HunkLine["kind"][],
+  pred: (text: string) => boolean,
+): HunkLine | undefined {
+  return lines.find((line) => kinds.includes(line.kind) && pred(line.text));
+}
+
+function judgeResourceFile(
+  file: string,
+  lines: readonly HunkLine[],
+): {
+  kind: "satisfied" | "missing" | "pre-existing" | "skip";
+  finding?: CapabilityFixtureFinding;
+  preExisting?: CapabilityPreExisting;
+} {
+  const added = joined(lines, ["add"]);
+  const removed = joined(lines, ["del"]);
+  const context = joined(lines, ["ctx"]);
+  const next = joined(lines, ["ctx", "add"]);
+  const secure = hasTenantGuard(next) && hasFieldGuard(next) &&
+    hasSuccess(next) && !copiesPrivilegedField(next);
+  const removedGuard = hasTenantGuard(removed) || hasFieldGuard(removed);
+  const flawInAdded =
+    (copiesPrivilegedField(added) && !hasTenantGuard(added)) ||
+    isDenyAll(added) || isStub(added);
+  const flawInContext = copiesPrivilegedField(context) &&
+    !hasTenantGuard(context);
+  const call = firstWhere(lines, ["add"], isCall);
+  if (secure && !flawInAdded && !removedGuard) return { kind: "satisfied" };
+  if (flawInAdded) {
+    const line = firstWhere(
+      lines,
+      ["add"],
+      (text) =>
+        copiesPrivilegedField(text) || /unauthorised|unauthorized/.test(text) ||
+        /TODO|todo!\(|unimplemented!\(/.test(text),
+    ) ?? firstWhere(lines, ["add"], () => true);
+    return {
+      kind: "missing",
+      finding: {
+        file,
+        line: line?.line && line.line > 0 ? line.line : 1,
+        problem: problemFor(added),
+      },
+    };
+  }
+  if (
+    (call && flawInContext) || (removedGuard && !secure && hasSuccess(next))
+  ) {
+    const line = call ??
+      firstWhere(lines, ["add", "ctx"], copiesPrivilegedField) ??
+      firstWhere(lines, ["add"], () => true);
+    return {
+      kind: "missing",
+      finding: {
+        file,
+        line: line?.line && line.line > 0 ? line.line : 1,
+        problem:
+          "This change newly exposes a resource update that copies role from the patch without rejecting a different tenant. An unauthorised caller must fail at the authorisation control.",
+      },
+    };
+  }
+  if (flawInContext) {
+    const line = firstWhere(lines, ["ctx"], copiesPrivilegedField);
+    return {
+      kind: "pre-existing",
+      preExisting: {
+        title: "Pre-existing resource update copies a privileged field",
+        body:
+          "updateResource copies role from the patch without a tenant check. This change does not introduce or newly expose that flaw.",
+        file,
+        line: line?.line && line.line > 0 ? line.line : 1,
+      },
+    };
+  }
+  if (secure) return { kind: "satisfied" };
+  return { kind: "skip" };
+}
+
+function problemFor(added: string): string {
+  if (isStub(added)) {
+    return "The resource update is a stub and does not perform the operation. A stub does not satisfy the check.";
+  }
+  if (isDenyAll(added)) {
+    return "The resource update rejects every caller, so a legitimate authorised update does not succeed. Unconditional rejection does not satisfy the check.";
+  }
+  return "The resource update succeeds and copies role from the patch without rejecting a different tenant. An unauthorised caller must fail at the authorisation control.";
+}
+
+/** Judge the resource-update fixtures present in a pull request diff. */
+export function judgeCapabilityFixtures(
+  diff: string,
+): CapabilityFixtureJudgement {
+  const findings: CapabilityFixtureFinding[] = [];
+  const preExisting: CapabilityPreExisting[] = [];
+  let sawSatisfied = false;
+  let sawPreExisting = false;
+  const byFile = new Map<string, HunkLine[]>();
+  for (const line of parseUnifiedDiff(diff)) {
+    if (!CODE_FILE.test(line.file)) continue;
+    const list = byFile.get(line.file) ?? [];
+    list.push(line);
+    byFile.set(line.file, list);
+  }
+  for (const [file, lines] of byFile) {
+    if (
+      !lines.some((line) =>
+        line.text.includes("updateResource") || copiesPrivilegedField(line.text)
+      )
+    ) continue;
+    const verdict = judgeResourceFile(file, lines);
+    if (verdict.kind === "satisfied") sawSatisfied = true;
+    if (verdict.kind === "missing" && verdict.finding) {
+      findings.push(verdict.finding);
+    }
+    if (verdict.kind === "pre-existing" && verdict.preExisting) {
+      sawPreExisting = true;
+      preExisting.push(verdict.preExisting);
+    }
+  }
+  if (findings.length > 0) {
+    return { resourceAuth: "missing", findings, preExisting: [] };
+  }
+  if (sawSatisfied) {
+    return { resourceAuth: "satisfied", findings: [], preExisting: [] };
+  }
+  if (sawPreExisting) {
+    return { resourceAuth: "pre-existing", findings: [], preExisting };
+  }
+  return { resourceAuth: "not-applicable", findings: [], preExisting: [] };
+}
+
+/**
+ * Add deterministic fixture findings to a review. A pre-existing flaw uses
+ * the unrelated-issue route and is not a blocking finding. The cap matches
+ * the review's existing unrelated-issue limit.
+ */
+export function applyCapabilityJudgement<
+  T extends {
+    findings: { file: string; line: number; problem: string; fix?: string }[];
+    unrelatedIssues: {
+      title: string;
+      body: string;
+      file?: string;
+      line?: number;
+    }[];
+  },
+>(
+  review: T,
+  judgement: CapabilityFixtureJudgement,
+): T {
+  const findings = [...review.findings];
+  for (const finding of judgement.findings) {
+    if (
+      findings.some((item) =>
+        item.file === finding.file && item.line === finding.line
+      )
+    ) continue;
+    findings.push({
+      file: finding.file,
+      line: finding.line,
+      problem: finding.problem,
+      fix:
+        "Authorise the caller at the real entry point and allow only the writable fields. A legitimate authorised update must still succeed.",
+    });
+  }
+  const unrelatedIssues = [...review.unrelatedIssues];
+  for (const item of judgement.preExisting) {
+    if (
+      unrelatedIssues.some((issue) =>
+        issue.file === item.file && issue.line === item.line
+      )
+    ) continue;
+    if (unrelatedIssues.length >= 3) break;
+    unrelatedIssues.push(item);
+  }
+  return { ...review, findings, unrelatedIssues };
 }

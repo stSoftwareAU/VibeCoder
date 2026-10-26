@@ -18,8 +18,75 @@
 
 import { loadTrustedCapabilityBundle } from "./capability_security_guidance.ts";
 import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+import {
+  buildUntrustedCommandEnv,
+  isCredentialVariableName,
+} from "./untrusted_command_env.ts";
 
 export const EVAL_FIXTURE_REVISION = "2026-10-26.1";
+
+/** Time bound for one fixture command. */
+export const EVAL_ISOLATION_TIMEOUT_MS = 60_000;
+
+/** V8 heap bound for the TypeScript fixture, in megabytes. */
+export const EVAL_MEMORY_MB = 512;
+
+/** Cargo job cap. One core for a fixture, not the worker's whole machine. */
+export const EVAL_CPU_JOBS = "1";
+
+export type EvalIsolation =
+  | {
+    ok: true;
+    env: Record<string, string>;
+    timeoutMs: number;
+    memoryMb: number;
+    cpus: string;
+    network: "isolated";
+  }
+  | { ok: false; reason: string };
+
+/**
+ * Disposable containment for a fixture child (Issue #4368).
+ *
+ * The environment is the untrusted-command allowlist, never the worker's
+ * process environment. A credential name in that set refuses the lease.
+ * CPU, memory, time and network are bounded. A failed lease does not run.
+ */
+export function provisionEvalIsolation(options?: {
+  source?: Record<string, string>;
+  available?: () => boolean;
+  extra?: Record<string, string>;
+}): EvalIsolation {
+  if (options?.available && !options.available()) {
+    return {
+      ok: false,
+      reason: "disposable containment is not available",
+    };
+  }
+  const env = buildUntrustedCommandEnv({
+    ...(options?.source ? { source: options.source } : {}),
+    overrides: {
+      CARGO_BUILD_JOBS: EVAL_CPU_JOBS,
+      ...(options?.extra ?? {}),
+    },
+  });
+  for (const name of Object.keys(env)) {
+    if (isCredentialVariableName(name)) {
+      return {
+        ok: false,
+        reason: `isolation would expose credential ${name}`,
+      };
+    }
+  }
+  return {
+    ok: true,
+    env,
+    timeoutMs: EVAL_ISOLATION_TIMEOUT_MS,
+    memoryMb: EVAL_MEMORY_MB,
+    cpus: EVAL_CPU_JOBS,
+    network: "isolated",
+  };
+}
 
 export const EVAL_ARMS = [
   "empty",
@@ -171,12 +238,27 @@ export const defaultCommandRunner: CommandRunner = async (
   cwd,
   env,
 ) => {
+  const isolation = provisionEvalIsolation();
+  if (!isolation.ok) {
+    return { code: null, stdout: "", stderr: isolation.reason };
+  }
+  const childEnv = { ...isolation.env, ...(env ?? {}) };
+  for (const name of Object.keys(childEnv)) {
+    if (isCredentialVariableName(name)) {
+      return {
+        code: null,
+        stdout: "",
+        stderr: `isolation would expose credential ${name}`,
+      };
+    }
+  }
   try {
     const out = await commandOutputWithTimeout(command, {
-      timeoutMs: 60_000,
+      timeoutMs: isolation.timeoutMs,
       args,
       cwd,
-      env: { ...Deno.env.toObject(), ...env },
+      env: childEnv,
+      clearEnv: true,
       stdout: "piped",
       stderr: "piped",
     });
@@ -216,9 +298,19 @@ export async function runCapabilitySecurityEval(options: {
   root?: string;
   runner?: CommandRunner;
   outPath?: string;
+  /** When this returns false, no fixture command is started. */
+  isolationAvailable?: () => boolean;
+  /** Environment the allowlist is applied to. Tests plant credentials here. */
+  envSource?: Record<string, string>;
 } = {}): Promise<EvalArtefact> {
   const root = options.root ?? repoRootFromModule();
   const runner = options.runner ?? defaultCommandRunner;
+  const isolation = provisionEvalIsolation({
+    ...(options.envSource ? { source: options.envSource } : {}),
+    ...(options.isolationAvailable
+      ? { available: options.isolationAvailable }
+      : {}),
+  });
   const guidance = await loadTrustedCapabilityBundle();
   const guidanceRevision = guidance.kind === "loaded"
     ? guidance.bundle.revision
@@ -243,8 +335,14 @@ export async function runCapabilitySecurityEval(options: {
   ];
 
   for (const arm of EVAL_ARMS) {
-    outcomes.push(await scoreTypescriptArm(root, arm, runner));
-    outcomes.push(await scoreRustArm(root, arm, runner, skips));
+    if (!isolation.ok) {
+      const reason = `isolation was not provisioned: ${isolation.reason}`;
+      outcomes.push(blocked("ts-resource-update", arm, reason, 0));
+      outcomes.push(blocked("rust-resource-update", arm, reason, 0));
+      continue;
+    }
+    outcomes.push(await scoreTypescriptArm(root, arm, runner, isolation));
+    outcomes.push(await scoreRustArm(root, arm, runner, skips, isolation));
   }
 
   const artefact: EvalArtefact = {
@@ -286,6 +384,7 @@ async function scoreTypescriptArm(
   root: string,
   arm: EvalArm,
   runner: CommandRunner,
+  isolation: Extract<EvalIsolation, { ok: true }>,
 ): Promise<ArmOutcome> {
   const task = "ts-resource-update";
   const accept =
@@ -301,9 +400,16 @@ async function scoreTypescriptArm(
     const { result, retries } = await runOnceWithRetry(
       runner,
       "deno",
-      ["test", "--allow-env", "--allow-read", acceptCopy],
+      [
+        "test",
+        "--deny-net",
+        `--allow-read=${tmp}`,
+        "--allow-env=CAPSEC_IMPL",
+        `--v8-flags=--max-old-space-size=${isolation.memoryMb}`,
+        acceptCopy,
+      ],
       tmp,
-      { CAPSEC_IMPL: implCopy },
+      { ...isolation.env, CAPSEC_IMPL: implCopy },
     );
     const after = await hashTree([acceptCopy]);
     if (before !== after) {
@@ -335,6 +441,7 @@ async function scoreRustArm(
   arm: EvalArm,
   runner: CommandRunner,
   skips: { arm: string; reason: string }[],
+  isolation: Extract<EvalIsolation, { ok: true }>,
 ): Promise<ArmOutcome> {
   const task = "rust-resource-update";
   const acceptDir = `${root}/evals/capability_security/accept/rust`;
@@ -356,6 +463,7 @@ async function scoreRustArm(
       "cargo",
       ["test", "--offline", "--color", "never"],
       tmp,
+      isolation.env,
     );
     const after = await hashTree([`${tmp}/tests/accept.rs`]);
     if (before !== after) {

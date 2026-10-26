@@ -8,6 +8,7 @@ import {
   pass,
   type SearchPr,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+import { reviewForPost } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 import { withChecklistGaps } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 import { parseFableReview } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 import {
@@ -81,6 +82,8 @@ async function runGate(options: {
   files: string[];
   contentsFor: (url: string) => string | Promise<never>;
   bundle?: Awaited<ReturnType<typeof loadTrustedCapabilityBundle>>;
+  /** Unified diff returned when the gate asks for the pull request diff. */
+  diff?: string;
 }) {
   const gh = (args: string[]): Promise<string> => {
     if (args[1] === "graphql") {
@@ -109,6 +112,9 @@ async function runGate(options: {
       } catch (error) {
         return Promise.reject(error);
       }
+    }
+    if (args.some((arg) => arg.includes("application/vnd.github.diff"))) {
+      return Promise.resolve(options.diff ?? "");
     }
     return Promise.resolve("");
   };
@@ -439,4 +445,398 @@ Deno.test("a malformed head bundle is a finding on the bundle path", async () =>
     state,
   );
   assertEquals(review.findings[0]?.file, CAPABILITY_BUNDLE_PATH);
+});
+
+const IMPLS = new URL(
+  "../../../evals/capability_security/impls/ts/",
+  import.meta.url,
+);
+const SECURE_TEXT = await Deno.readTextFile(new URL("secure.ts", IMPLS));
+const INSECURE_TEXT = await Deno.readTextFile(new URL("insecure.ts", IMPLS));
+const DENY_TEXT = await Deno.readTextFile(new URL("deny_all.ts", IMPLS));
+
+function lineOf(text: string, needle: string): number {
+  const line = text.split("\n").findIndex((item) => item.includes(needle));
+  if (line < 0) throw new Error(`missing ${needle}`);
+  return line + 1;
+}
+
+interface FixtureJudgement {
+  resourceAuth?: string;
+  findings?: { file: string; line: number; problem: string }[];
+  preExisting?: { file?: string; line?: number; title: string; body: string }[];
+}
+
+function judgementOf(ready: unknown): FixtureJudgement {
+  return (ready as { capabilityJudgement?: FixtureJudgement })
+    .capabilityJudgement ?? {};
+}
+
+async function repoAt(
+  base: Record<string, string>,
+  head: Record<string, string>,
+): Promise<{ repo: string; baseSha: string; diff: string }> {
+  const repo = await Deno.makeTempDir({ prefix: "capsec-pair-" });
+  const g = (args: string[]) => gitOk(args, repo);
+  await g(["init", "--quiet", "-b", "main"]);
+  await g(["config", "user.email", "t@example.com"]);
+  await g(["config", "user.name", "T"]);
+  await g(["config", "commit.gpgsign", "false"]);
+  const write = async (files: Record<string, string>) => {
+    for (const [path, text] of Object.entries(files)) {
+      const full = `${repo}/${path}`;
+      await Deno.mkdir(full.slice(0, full.lastIndexOf("/")), {
+        recursive: true,
+      });
+      await Deno.writeTextFile(full, text);
+    }
+    await g(["add", "-A"]);
+  };
+  await write(base);
+  await g(["commit", "--quiet", "-m", "base"]);
+  const baseSha = (await g(["rev-parse", "HEAD"])).trim();
+  await g(["checkout", "--quiet", "-b", "feature"]);
+  await write(head);
+  await g(["commit", "--quiet", "-m", "head"]);
+  const diff = await g(["diff", `${baseSha}...HEAD`]);
+  return { repo, baseSha, diff };
+}
+
+function authReply(): string {
+  return JSON.stringify({
+    summary: "fine",
+    findings: [],
+    testChanges: "none",
+    checklist: [{
+      checklist: "capsec-resource-auth",
+      item: RESOURCE_CHECK,
+      verdict: "met",
+      note: "",
+    }],
+  });
+}
+
+async function verifyChange(input: {
+  repo: string;
+  baseSha: string;
+  title: string;
+  body: string;
+  files: string[];
+  reply: string;
+}): Promise<
+  { prompt: string; result: Awaited<ReturnType<typeof runPrePrVerifier>> }
+> {
+  const tmps: string[] = [];
+  let prompt = "";
+  const deps: PrePrVerifierDeps = {
+    ...defaultPrePrVerifierDeps,
+    loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
+    makeTempDir: async () => {
+      const d = await defaultPrePrVerifierDeps.makeTempDir();
+      tmps.push(d);
+      return d;
+    },
+    ask: (o) => {
+      prompt = o.prompt;
+      return Promise.resolve({
+        ok: true,
+        value: {
+          exitCode: 0,
+          output: input.reply,
+          timedOut: false,
+        } as ClaudeRunResult,
+      });
+    },
+  };
+  try {
+    const result = await runPrePrVerifier({
+      repo: "owner/repo",
+      issueNumber: 4366,
+      issueTitle: input.title,
+      issueBody: input.body,
+      repoPath: input.repo,
+      baseRef: input.baseSha,
+      summaryPath: "docs/archive/pr-summaries/pr-summary-4366.md",
+      summaryContent: "# Summary\n",
+      changedFiles: input.files,
+      timeoutSeconds: 60,
+      logger: makeRecordingLogger().logger,
+    }, deps);
+    return { prompt, result };
+  } finally {
+    for (const tmp of tmps) await removeIfPresent(tmp);
+  }
+}
+
+Deno.test("an added import is the only signal and both consumers keep the check", async () => {
+  const tree = await repoAt(
+    { "src/lib.ts": "export const value = 1;\n" },
+    {
+      "src/lib.ts":
+        'import { spawn } from "node:child_process";\nexport const value = spawn;\n',
+    },
+  );
+  try {
+    const gate = await runGate({
+      title: "Rename a helper",
+      files: ["src/lib.ts"],
+      contentsFor: notFound,
+      diff: tree.diff,
+    });
+    assertEquals(gate.ready.length, 1);
+    assertStringIncludes(
+      gate.ready[0]!.reviewChecklists,
+      "capsec-safe-execution",
+    );
+    const checked = await verifyChange({
+      repo: tree.repo,
+      baseSha: tree.baseSha,
+      title: "Rename a helper",
+      body: "Rename the helper.",
+      files: ["src/lib.ts"],
+      reply: JSON.stringify({
+        summary: "fine",
+        findings: [],
+        testChanges: "none",
+        checklist: [],
+      }),
+    });
+    assertStringIncludes(checked.prompt, "capsec-safe-execution");
+    assertEquals(checked.result.status, "checked");
+    if (checked.result.status === "checked") {
+      assert(
+        checked.result.review.findings.some((finding) =>
+          finding.problem.includes("capsec-safe-execution")
+        ),
+      );
+    }
+  } finally {
+    await removeIfPresent(tree.repo);
+  }
+});
+
+Deno.test("paired fixtures are judged by the gate and the pre-PR verifier", async () => {
+  const flaw = [
+    "export function updateResource(",
+    "  _actor: { tenant: string },",
+    "  resource: { tenant: string; name: string; role: string },",
+    "  patch: { name?: string; role?: string },",
+    ") {",
+    "  return { ok: true as const, resource: { ...resource, role: patch.role ?? resource.role } };",
+    "  // keep",
+    "}",
+    "",
+  ].join("\n");
+  const flawComment = flaw.replace("// keep", "// spelling");
+  const exposed = flaw.replace(
+    "  // keep\n",
+    '  // keep\nexport function route(resource: { tenant: string; name: string; role: string }) {\n  return updateResource({ tenant: "a" }, resource, { role: "admin" });\n}\n',
+  );
+  const cases: {
+    name: string;
+    title: string;
+    files: string[];
+    base: Record<string, string>;
+    head: Record<string, string>;
+    reply: string;
+    resourceAuth: string;
+    findingLine: number;
+    preExisting: boolean;
+  }[] = [
+    {
+      name: "secure",
+      title: "Update a tenant resource",
+      files: ["src/http/update_user.ts"],
+      base: { "README.md": "base\n" },
+      head: { "README.md": "base\n", "src/http/update_user.ts": SECURE_TEXT },
+      reply: authReply(),
+      resourceAuth: "satisfied",
+      findingLine: 0,
+      preExisting: false,
+    },
+    {
+      name: "insecure",
+      title: "Update a tenant resource",
+      files: ["src/http/update_user.ts"],
+      base: { "README.md": "base\n" },
+      head: { "README.md": "base\n", "src/http/update_user.ts": INSECURE_TEXT },
+      reply: authReply(),
+      resourceAuth: "missing",
+      findingLine: lineOf(INSECURE_TEXT, "patch.role"),
+      preExisting: false,
+    },
+    {
+      name: "deny-all",
+      title: "Update a tenant resource",
+      files: ["src/http/update_user.ts"],
+      base: { "README.md": "base\n" },
+      head: { "README.md": "base\n", "src/http/update_user.ts": DENY_TEXT },
+      reply: authReply(),
+      resourceAuth: "missing",
+      findingLine: lineOf(DENY_TEXT, "unauthorised"),
+      preExisting: false,
+    },
+    {
+      name: "docs",
+      title: "Correct a spelling in the readme",
+      files: ["README.md"],
+      base: { "README.md": "The word colour was misspelled.\n" },
+      head: { "README.md": "The word colour is spelled correctly.\n" },
+      reply: JSON.stringify({
+        summary: "fine",
+        findings: [],
+        testChanges: "none",
+        checklist: [],
+      }),
+      resourceAuth: "not-applicable",
+      findingLine: 0,
+      preExisting: false,
+    },
+    {
+      name: "pre-existing",
+      title: "Correct a comment",
+      files: ["src/http/update_user.ts"],
+      base: { "src/http/update_user.ts": flaw },
+      head: { "src/http/update_user.ts": flawComment },
+      reply: authReply(),
+      resourceAuth: "pre-existing",
+      findingLine: lineOf(flawComment, "patch.role"),
+      preExisting: true,
+    },
+    {
+      name: "newly-exposed",
+      title: "Correct a comment",
+      files: ["src/http/update_user.ts"],
+      base: { "src/http/update_user.ts": flaw },
+      head: { "src/http/update_user.ts": exposed },
+      reply: authReply(),
+      resourceAuth: "missing",
+      findingLine: lineOf(exposed, "return updateResource"),
+      preExisting: false,
+    },
+  ];
+
+  for (const item of cases) {
+    const tree = await repoAt(item.base, item.head);
+    try {
+      const gate = await runGate({
+        title: item.title,
+        files: item.files,
+        contentsFor: notFound,
+        diff: tree.diff,
+      });
+      assertEquals(gate.ready.length, 1, item.name);
+      const judged = judgementOf(gate.ready[0]);
+      assertEquals(judged.resourceAuth, item.resourceAuth, item.name);
+      if (item.name === "docs") {
+        assertEquals(
+          gate.ready[0]!.reviewChecklists.includes("capsec-"),
+          false,
+          item.name,
+        );
+      }
+      if (item.resourceAuth === "missing") {
+        assertEquals(judged.findings?.[0]?.file, item.files[0], item.name);
+        assertEquals(judged.findings?.[0]?.line, item.findingLine, item.name);
+        assertEquals(judged.preExisting?.length ?? 0, 0, item.name);
+      }
+      if (item.resourceAuth === "satisfied") {
+        assertEquals(judged.findings?.length ?? 0, 0, item.name);
+      }
+      if (item.preExisting) {
+        assertEquals(judged.findings?.length ?? 0, 0, item.name);
+        assertEquals(judged.preExisting?.[0]?.file, item.files[0], item.name);
+        assertEquals(
+          judged.preExisting?.[0]?.line,
+          item.findingLine,
+          item.name,
+        );
+      }
+
+      const checked = await verifyChange({
+        repo: tree.repo,
+        baseSha: tree.baseSha,
+        title: item.title,
+        body: "Body",
+        files: item.files,
+        reply: item.reply,
+      });
+      assertEquals(checked.result.status, "checked", item.name);
+      if (checked.result.status !== "checked") continue;
+      if (item.name === "docs") {
+        assertEquals(checked.prompt.includes("capsec-"), false, item.name);
+        assertEquals(prePrVerifierBlocked(checked.result), false, item.name);
+      }
+      if (item.resourceAuth === "missing") {
+        const finding = checked.result.review.findings.find((entry) =>
+          entry.file === item.files[0] && entry.line === item.findingLine
+        );
+        assert(finding, `${item.name} verifier finding`);
+        assertEquals(prePrVerifierBlocked(checked.result), true, item.name);
+        const posted = reviewForPost(
+          item.reply,
+          {
+            checklistState: gate.ready[0]!.checklistState,
+            previousFindings: [],
+            capabilityJudgement: judged,
+          } as Parameters<typeof reviewForPost>[1],
+        );
+        assert(
+          posted.findings.some((entry) =>
+            entry.file === item.files[0] && entry.line === item.findingLine
+          ),
+          `${item.name} post`,
+        );
+      }
+      if (item.resourceAuth === "satisfied") {
+        assertEquals(
+          checked.result.review.findings.some((entry) =>
+            entry.file === "src/http/update_user.ts"
+          ),
+          false,
+          item.name,
+        );
+        assertEquals(prePrVerifierBlocked(checked.result), false, item.name);
+      }
+      if (item.preExisting) {
+        assertEquals(
+          checked.result.review.findings.some((entry) =>
+            entry.file === "src/http/update_user.ts"
+          ),
+          false,
+          item.name,
+        );
+        assert(
+          checked.result.review.unrelatedIssues.some((entry) =>
+            entry.file === "src/http/update_user.ts" &&
+            entry.line === item.findingLine
+          ),
+          `${item.name} stays on the pre-existing route`,
+        );
+        const posted = reviewForPost(
+          item.reply,
+          {
+            checklistState: gate.ready[0]!.checklistState,
+            previousFindings: [],
+            capabilityJudgement: judged,
+          } as Parameters<typeof reviewForPost>[1],
+        );
+        assertEquals(
+          posted.findings.some((entry) =>
+            entry.file === "src/http/update_user.ts"
+          ),
+          false,
+          item.name,
+        );
+        assert(
+          posted.unrelatedIssues.some((entry) =>
+            entry.file === "src/http/update_user.ts"
+          ),
+          `${item.name} post route`,
+        );
+      }
+    } finally {
+      await removeIfPresent(tree.repo);
+    }
+  }
 });

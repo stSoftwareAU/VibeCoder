@@ -15,6 +15,10 @@ Closes #4366
 - **met** — No blanket findings for missing enterprise infrastructure, deliberate negative-test certificates, or unrelated capabilities. Do not classify every security topic as applicable. — evidence: `prompts/coding_guidelines/capability-security.json` — reviewer: met
 - **met** — Update the canonical review documentation and attribution; run existing shared-brief/checklist/verifier tests plus relevant quality checks. — evidence: `docs/review-checklists.md` — reviewer: met
 
+## Review follow-up
+
+The fleet gate reads the pull request diff and passes it into capability selection, as the pre-PR verifier already did. An added `node:child_process` import is enough for both consumers to keep the safe-execution check. The review path judges six fixtures from the diff: secure code satisfies the check, insecure code and deny-all do not, a docs change selects nothing, a pre-existing flaw stays on the unrelated-issue route, and a flaw newly exposed by the change is a blocking finding with file and line.
+
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
