@@ -19,7 +19,8 @@
  *     --name vibe-coder-<pid> [--proxy-log <file>]
  *
  * Exit statuses:
- *   0   up: containment is up and the args file is written. down: always.
+ *   0   up: containment is up and the args file is written. down: after its
+ *       teardown, even when a deletion failed (each failure is a warning).
  *   1   up: containment could not be brought up, or the args file was not
  *       written.
  *   2   bad arguments or egress settings.

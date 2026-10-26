@@ -325,15 +325,14 @@ const EGRESS_DENIAL_MARKER = (() => {
   return sample.slice(0, sample.indexOf("docs.example"));
 })();
 
-Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 will extend", async () => {
+Deno.test("CONTAINMENT.md documents the egress proxy as the single outbound proxy the worker ships", async () => {
   const body = docSection(
     await readRepoDoc("docs/CONTAINMENT.md"),
     "Egress proxy",
   );
   for (
     const phrase of [
-      "#3699",
-      "no second outbound proxy",
+      "is the single outbound proxy the worker",
       EGRESS_DENIAL_MARKER,
       EGRESS_ALLOW_HOSTS_ENV,
       EGRESS_PROXY_DOC_PATH,
@@ -392,20 +391,18 @@ Deno.test("CONTAINMENT.md's egress proxy section names a module that exists", as
   assert(info.isFile, `"${EGRESS_PROXY_DOC_PATH}" must be a file`);
 });
 
-Deno.test("CONTAINMENT.md describes #3699 as planned, not delivered", async () => {
+Deno.test("CONTAINMENT.md says no credential broker is delivered and the routes seam is unused", async () => {
   const body = docSection(
     await readRepoDoc("docs/CONTAINMENT.md"),
     "Egress proxy",
   );
   assertPins(body, [
-    "#3699 will extend this proxy through this seam",
-    "not yet delivered",
-    "no second outbound proxy",
-    "seam #3699's credential broker will attach to",
+    "A credential\nbroker could attach through this seam, but none is delivered",
+    "the `egress-proxy` command registers no routes",
   ]);
   assert(
-    !flat(body).includes("#3699 extends this proxy"),
-    "the egress-proxy section must not present #3699 as having extended the proxy",
+    !body.includes("#3699"),
+    "the egress-proxy section must not cite #3699 at all: it is closed, and no broker is delivered",
   );
 });
 

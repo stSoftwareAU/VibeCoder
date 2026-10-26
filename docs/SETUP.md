@@ -995,8 +995,8 @@ selected or not — recorded as residual risk R9 in
 [the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks), where it is an open
 gap: on Docker and Podman the container's outbound network is not restricted, so
 a token read there can leave the container until #4047 routes it through the
-egress proxy. On Apple `container` outbound is partly restricted, as measured for
-each launch (Issue #4051; see
+egress proxy. On Apple `container` in `internal-network` mode outbound is partly
+restricted, as measured for each launch (Issue #4051; see
 [CONTAINMENT.md](CONTAINMENT.md#apple-container-partial-egress-containment)), and a
 token can still leave through any route that is open or unmeasured. Add a second
 subscription knowing that every token file in `claude/` carries that exposure,

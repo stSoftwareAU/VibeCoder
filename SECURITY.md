@@ -1113,9 +1113,11 @@ The worker machine should be secured as it has significant privileges:
 - **Container network, by runtime.** On Docker and Podman the worker container
   sits on the runtime's bridge network, and nothing restricts which hosts it
   reaches until #4047 (open) routes it through the egress proxy. On Apple
-  `container` (macOS) the worker runs on a per-launch internal network and
-  reaches the internet through the allowlist proxy, with direct egress measured
-  on every launch (Issue #4051). That is partial containment, not default-deny.
+  `container` (macOS) in `internal-network` mode the worker runs on a per-launch
+  internal network and reaches the internet through the allowlist proxy, with
+  direct egress measured on every launch (Issue #4051). That is partial
+  containment, not default-deny. In `advisory-proxy` mode direct egress is not
+  blocked. Only `run.sh` applies this; `run.ps1` does not.
   See [CONTAINMENT.md](docs/CONTAINMENT.md#apple-container-partial-egress-containment).
 
 ### ⚙️ Running as a Service

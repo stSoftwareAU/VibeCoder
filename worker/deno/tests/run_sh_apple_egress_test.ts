@@ -161,7 +161,7 @@ Deno.test("run.sh - apple-egress exit 0 splices its arguments after run, ahead o
   }
 });
 
-Deno.test("run.sh - apple-egress up is handed the worker's own workdir, the host config and this run's temporaries (Issue #4051)", async () => {
+Deno.test("run.sh - apple-egress up is handed the worker's own workdir, the host config, a temporary argument file and a report directory under the log directory (Issue #4051)", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_APPLE_EGRESS_UP_EXIT: "0",
@@ -195,16 +195,17 @@ Deno.test("run.sh - apple-egress up is handed the worker's own workdir, the host
       `the argument file must be a temporary of this run: ${outFile}`,
     );
     const reportDir = up[up.indexOf("--report-dir") + 1] ?? "";
-    assert(
-      reportDir.startsWith(`${tmp}/`),
-      `the report directory must be a temporary of this run: ${reportDir}`,
+    assertEquals(
+      reportDir,
+      `${harness.logDir}/apple-egress`,
+      "the report directory is kept under the log directory, so its per-control results persist",
     );
   } finally {
     await harness.cleanup();
   }
 });
 
-Deno.test("run.sh - apple-egress down runs on a normal exit, keeps the proxy log, and removes its temporaries (Issue #4051)", async () => {
+Deno.test("run.sh - apple-egress down runs on a normal exit, keeps the proxy log and the report directory, and removes the argument file (Issue #4051)", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_APPLE_EGRESS_UP_EXIT: "0",
@@ -242,7 +243,19 @@ Deno.test("run.sh - apple-egress down runs on a normal exit, keeps the proxy log
     assertEquals(
       await containmentLeftovers(tmp),
       [],
-      "the argument file and the report directory are removed on exit",
+      "the argument file is removed on exit",
+    );
+    const up = await recorded(harness, "apple-egress-up");
+    const reportDir = up?.[up.indexOf("--report-dir") + 1] ?? "";
+    assertEquals(
+      reportDir,
+      `${harness.logDir}/apple-egress`,
+      "the report directory is under the log directory",
+    );
+    const reportStat = await Deno.stat(reportDir);
+    assert(
+      reportStat.isDirectory,
+      `the report directory must still exist after exit: ${reportDir}`,
     );
   } finally {
     await harness.cleanup();

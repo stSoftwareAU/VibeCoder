@@ -1056,9 +1056,11 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 ### 🍎 Apple egress
 
 On macOS with Apple's `container` runtime, `run.sh` runs the `apple-egress`
-command before the worker starts. The variables below tune that launch. They are
-environment variables read per launch, and there is no `.config.json` key for
-them. See [CONTAINMENT.md — Apple container: partial egress containment](CONTAINMENT.md#apple-container-partial-egress-containment)
+command before the worker starts. Only the bash launcher enforces this, and
+`run.ps1` does not. The variables below tune that launch. They are environment
+variables read per launch by `apple-egress`, and there is no `.config.json` key
+for them. A malformed value refuses the launch. See
+[CONTAINMENT.md — Apple container: partial egress containment](CONTAINMENT.md#apple-container-partial-egress-containment)
 for what each mode promises.
 
 | Variable | Default | Meaning |

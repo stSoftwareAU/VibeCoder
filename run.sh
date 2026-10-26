@@ -156,8 +156,9 @@ RUN_ERR_FIFO=""
 EVIDENCE_LOG=""
 # Apple container egress containment (Issue #4051). APPLE_EGRESS_UP is set only
 # once `apple-egress up` has succeeded, so the EXIT trap tears down exactly what
-# this run brought up. The argument file and the report directory are this
-# run's own temporary files, removed by the trap.
+# this run brought up. The argument file is this run's own temporary file,
+# removed by the trap; the report directory lives under the log directory and is
+# kept, so the per-control results survive the launch (Issue #4051).
 APPLE_EGRESS_UP=""
 APPLE_EGRESS_ARGS_FILE=""
 APPLE_EGRESS_REPORT_DIR=""
@@ -302,8 +303,9 @@ record_outcome() {
   fi
 }
 
-# Take Apple container egress containment down (Issue #4051). Best-effort: `down`
-# always exits 0, and its own output goes to this launcher's stderr. Called from
+# Take Apple container egress containment down (Issue #4051). Best-effort: the
+# exit status of `down` is ignored, and its own output goes to this launcher's
+# stderr. Called from
 # the EXIT trap when `up` succeeded, and once from the launch when `up` failed.
 apple_egress_down() {
   bounded 120 "${DENO_CMD}" run \
@@ -330,17 +332,14 @@ on_exit() {
   fi
   # Containment comes down first, on every exit path - a normal finish, a
   # failure and a signal alike (Issue #4051). Only when `up` succeeded, so this
-  # run tears down only what it brought up. `down` always exits 0; its own
-  # output goes to this launcher's stderr.
+  # run tears down only what it brought up. The exit status of `down` is
+  # ignored; its own output goes to this launcher's stderr.
   if [[ -n "${APPLE_EGRESS_UP}" ]]; then
     APPLE_EGRESS_UP=""
     apple_egress_down
   fi
   if [[ -n "${APPLE_EGRESS_ARGS_FILE}" ]]; then
     rm -f "${APPLE_EGRESS_ARGS_FILE}"
-  fi
-  if [[ -n "${APPLE_EGRESS_REPORT_DIR}" ]]; then
-    rm -rf "${APPLE_EGRESS_REPORT_DIR}"
   fi
   if [[ -n "${PLAN_FILE}" ]]; then
     rm -f "${PLAN_FILE}" "${PLAN_FILE}.Containerfile"
@@ -1935,11 +1934,18 @@ watchdog_reap_on_deadline() {
 # fails closed rather than falling back to unrestricted networking.
 #
 # The argument file it writes is NUL-delimited `arg=<value>` tokens, spliced
-# into the worker's run command straight after `run`. Both the file and the
-# report directory are created under this run's temporary area, and removed by
-# the EXIT trap.
+# into the worker's run command straight after `run`. The argument file is
+# created under this run's temporary area and removed by the EXIT trap. The
+# report directory is under the log directory and is kept after the launch, so
+# `egress-controls.json` persists; the next launch on this host overwrites it
+# (Issue #4051).
 APPLE_EGRESS_ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vibe-apple-egress-args.XXXXXX")"
-APPLE_EGRESS_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vibe-apple-egress-report.XXXXXX")"
+APPLE_EGRESS_REPORT_DIR="${RUN_CORE_LOG_DIR}/apple-egress"
+if ! mkdir -p "${APPLE_EGRESS_REPORT_DIR}"; then
+  echo "Error: cannot create ${APPLE_EGRESS_REPORT_DIR} - refusing to launch" >&2
+  exit 1
+fi
+chmod 700 "${APPLE_EGRESS_REPORT_DIR}" 2>/dev/null || true
 APPLE_EGRESS_PROXY_LOG="${RUN_CORE_LOG_DIR}/apple-egress-proxy.log"
 
 # The in-container checkout path. The launch plan gave the worker its own
