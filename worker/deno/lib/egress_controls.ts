@@ -554,6 +554,7 @@ export function deriveEgressControls(
     directInternetV4: directIpv4Of(internal, negativeControl),
     directInternetV6: directIpv6Of(internal, control, negativeControl),
     hostAccess: hostAccessOf(internal, negativeControl),
+    // SIMPLE-ON-PURPOSE: LAN reachability is never probed, always reported untested — upgrade when a controlled LAN test endpoint exists to tell a firewall from a closed port
     lanAccess: {
       state: "untested",
       detail:
