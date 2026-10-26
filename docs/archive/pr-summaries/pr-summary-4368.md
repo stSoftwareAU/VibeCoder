@@ -30,3 +30,5 @@ A fixture command receives the untrusted-command allowlist under `clearEnv`, wit
 Evaluation subprocesses now use the shared timeout helper with a 60-second per-command bound. The empty TypeScript fixture contains only a comment and still fails functional and security acceptance. The evaluation and timeout regression tests pass.
 
 CI: the operator-template test keeps the capability placeholder, the fixture credential is planted through envSource rather than Deno.env, and the version-exception gate stub returns an empty pull request diff.
+
+The follow-up lint repair removes the unused `defaultCommandRunner` import left after the credential test moved to the injected environment fixture.

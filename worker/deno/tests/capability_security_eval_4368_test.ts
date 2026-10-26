@@ -7,7 +7,6 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CommandRunner,
-  defaultCommandRunner,
   EVAL_ARMS,
   runCapabilitySecurityEval,
   scoreTestOutput,
