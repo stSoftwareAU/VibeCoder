@@ -7,8 +7,8 @@
  * helper fail functional acceptance. A working insecure implementation fails
  * security. A secure implementation passes both.
  *
- * This is not a fleet scheduler and it does not import SecurityEval. A live
- * model comparison is recorded as partial when no model run is configured.
+ * This is not a fleet scheduler and it does not import SecurityEval. Live
+ * model comparisons use capability_security_comparison and the strict container runner.
  * A missing cost is unknown, never zero.
  *
  * Australian English throughout (authorise, behaviour).
@@ -23,16 +23,22 @@ import {
   isCredentialVariableName,
 } from "./untrusted_command_env.ts";
 
+import {
+  CAPSEC_CONTAINER_CPUS,
+  CAPSEC_CONTAINER_MEMORY_MB,
+  CAPSEC_CONTAINER_TIMEOUT_MS,
+} from "./capability_security_eval_container.ts";
+
 export const EVAL_FIXTURE_REVISION = "2026-10-26.1";
 
 /** Time bound for one fixture command. */
-export const EVAL_ISOLATION_TIMEOUT_MS = 60_000;
+export const EVAL_ISOLATION_TIMEOUT_MS = CAPSEC_CONTAINER_TIMEOUT_MS;
 
 /** V8 heap bound for the TypeScript fixture, in megabytes. */
-export const EVAL_MEMORY_MB = 512;
+export const EVAL_MEMORY_MB = CAPSEC_CONTAINER_MEMORY_MB;
 
 /** Cargo job cap. One core for a fixture, not the worker's whole machine. */
-export const EVAL_CPU_JOBS = "1";
+export const EVAL_CPU_JOBS = String(CAPSEC_CONTAINER_CPUS);
 
 export type EvalIsolation =
   | {
@@ -41,16 +47,19 @@ export type EvalIsolation =
     timeoutMs: number;
     memoryMb: number;
     cpus: string;
-    network: "isolated";
+    network: "not-enforced";
   }
   | { ok: false; reason: string };
 
 /**
- * Disposable containment for a fixture child (Issue #4368).
+ * Sanitised host environment for trusted fixture self-tests only (Issue #4368).
  *
  * The environment is the untrusted-command allowlist, never the worker's
  * process environment. A credential name in that set refuses the lease.
- * CPU, memory, time and network are bounded. A failed lease does not run.
+ * This is NOT a security boundary for generated code: Cargo offline mode does
+ * not deny native networking, a job count is not a CPU quota, and the V8 heap
+ * limit is not a container memory bound. Live code uses the isolated runner.
+ * A failed environment provision does not run.
  */
 export function provisionEvalIsolation(options?: {
   source?: Record<string, string>;
@@ -84,7 +93,7 @@ export function provisionEvalIsolation(options?: {
     timeoutMs: EVAL_ISOLATION_TIMEOUT_MS,
     memoryMb: EVAL_MEMORY_MB,
     cpus: EVAL_CPU_JOBS,
-    network: "isolated",
+    network: "not-enforced",
   };
 }
 
@@ -134,6 +143,7 @@ export interface EvalArtefact {
     fixtures: string;
     scanner: string;
   };
+  executionMode: "trusted-fixtures-on-host";
   liveComparison: "partial";
   liveBlocker: string;
   retryPath: string;
@@ -320,17 +330,17 @@ export async function runCapabilitySecurityEval(options: {
     {
       arm: "current-guidance",
       reason:
-        "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available.",
+        "Live model arm skipped in trusted-fixtures mode. Use --live --model <id> --samples 2 with a subscription and disposable runtime.",
     },
     {
       arm: "generic-secure-coding",
       reason:
-        "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available.",
+        "Live model arm skipped in trusted-fixtures mode. Use --live --model <id> --samples 2 with a subscription and disposable runtime.",
     },
     {
       arm: "codeguard-derived",
       reason:
-        "Live model arm skipped: no model invocation is configured. Retry the same command when a subscription-backed provider is available.",
+        "Live model arm skipped in trusted-fixtures mode. Use --live --model <id> --samples 2 with a subscription and disposable runtime.",
     },
   ];
 
@@ -351,11 +361,12 @@ export async function runCapabilitySecurityEval(options: {
       fixtures: EVAL_FIXTURE_REVISION,
       scanner: EVAL_FIXTURE_REVISION,
     },
+    executionMode: "trusted-fixtures-on-host",
     liveComparison: "partial",
     liveBlocker:
-      "No live model invocation is configured for this command. Fixture arms were executed; model arms were not.",
+      "Trusted-fixtures mode does not call a model or provision a container. Use --live for isolated matched model execution.",
     retryPath:
-      "Re-run this command when a subscription-backed provider is available. Do not record a winner until a matched comparison finishes.",
+      "Re-run with --live --model <id> --samples 2. The live provider retries a transient failure once; unavailable execution stays partial. Never infer a winner from trusted fixtures.",
     winner: null,
     cost: {
       status: "unknown",

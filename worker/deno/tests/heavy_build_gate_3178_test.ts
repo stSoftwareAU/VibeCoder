@@ -102,7 +102,7 @@ function fakeRoot(dirs: EphemeralTargetDir[]) {
   };
 }
 
-Deno.test("in-flight gate parks both deferred and merge-only builds after admission changes (Issues #4326, #4360)", async () => {
+Deno.test("build-step admission parks both deferred and merge-only builds (Issues #4326, #4360)", async () => {
   enableInFlightHostDiskGate(true);
   try {
     for (

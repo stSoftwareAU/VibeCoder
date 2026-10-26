@@ -22,6 +22,7 @@ import {
   type FailureCategory,
   isInfrastructureFailure,
 } from "./failure_diagnosis.ts";
+import { detectHostFault } from "./host_fault.ts";
 import { primaryQuotaLatchedUntil } from "./primary_quota_latch.ts";
 
 /** Default backoff before an in-process infra retry. */
@@ -107,6 +108,8 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
  *   - that category is not `token_scope` — a missing OAuth scope is the
  *     host's credential, not a transient blip, so no backoff can fix it
  *     (Issue #1952), AND
+ *   - it is not a recognised host-disk refusal: retrying without recovery
+ *     meets the same floor or budget (Issue #4390), AND
  *   - the phase has not already been retried in this workOnIssue invocation
  *     (tracked via `state.infraRetryCounts[phase]`).
  *
@@ -139,6 +142,18 @@ export async function shouldRetryInfrastructureFailure(
   // attempt, with the operator fix already in its message.
   if (category === "token_scope") {
     logger.warn("Not retrying: a missing OAuth scope is not transient", {
+      phase,
+      category,
+    });
+    return false;
+  }
+
+  // A disk refusal cannot be repaired by repeating the same agent call.
+  // Preserve its original outcome; the next scheduled cycle re-probes the
+  // host. The shared adapter respects declared categories and gate markers,
+  // so a check merely quoting ENOSPC is never treated as a disk fault.
+  if (detectHostFault(failureReason, category) === "disk-full") {
+    logger.warn("Not retrying: the host disk must recover before new work", {
       phase,
       category,
     });

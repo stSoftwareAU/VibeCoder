@@ -92,8 +92,9 @@ learning round, and persistent failure escalation.
    fixed, and approves once they are. When a PR was sent back and the only
    commits since leave its own diff unchanged, the gate skips it as
    `awaiting-fix` until the fleet pushes its fix. A strict one-line numeric
-   version increment may differ between the old and current own diffs,
-   including a separate workflow bump after a base merge. Every other patch
+   version increment, bare or on a JSON/TOML `version` key, may differ between
+   the old and current own diffs, including a separate workflow bump after a
+   base merge. Unchanged hunk context is allowed. Every other patch
    must still match, and an earlier finding on that version file, or missing
    findings for the exact sent-back head, requires a fresh review (see
    [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).

@@ -12,6 +12,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { SUMMARY_RULE_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import {
   MAX_INFRA_RETRIES_PER_PHASE,
   RATE_LIMIT_RESET_MARGIN_MS,
@@ -890,5 +891,65 @@ Deno.test("qualityGate reconciles an exact merge immediately before charging fai
       assertEquals(result.expectedSkip, true);
       assertEquals(result.outcome?.kind, "claim_stale");
     }
+  }
+});
+
+Deno.test("infra retry - a known host-disk stop preserves the first failure without another attempt (Issue #4390)", async () => {
+  for (
+    const reason of [
+      "manager call failed: ephemeral cargo root over budget (66.4 GB free, floor 46.0 GB + headroom 25.0 GB) Parked as infrastructure (Issue #4360).",
+      "host disk below its floor — 45 GB free, floor 46 GB",
+      "write failed: ENOSPC",
+      "Read-only file system (os error 30)",
+    ]
+  ) {
+    const state = makeState();
+    let sleeps = 0;
+    const logs: CapturedLog[] = [];
+    assertEquals(
+      await shouldRetryInfrastructureFailure(
+        "execute",
+        reason,
+        state,
+        makeCapturingLogger(logs),
+        {
+          category: "internal_error",
+          sleepFn: () => {
+            sleeps++;
+            return Promise.resolve();
+          },
+        },
+      ),
+      false,
+      reason,
+    );
+    assertEquals(sleeps, 0);
+    assertEquals(state.infraRetryCounts, undefined);
+    assertEquals(logs.some((entry) => entry.msg.includes("host disk")), true);
+  }
+});
+
+Deno.test("infra retry - quoted ENOSPC does not override the supplied category or gate provenance (Issue #4390)", async () => {
+  for (
+    const [category, reason, expected] of [
+      ["push_failure", "push wrapper quoting ENOSPC", true],
+      [
+        "summary_incomplete",
+        `${SUMMARY_RULE_GATE_MARKER}: quoted ENOSPC`,
+        false,
+      ],
+      ["internal_error", `${SUMMARY_RULE_GATE_MARKER}: quoted ENOSPC`, true],
+    ] as const
+  ) {
+    const logs: CapturedLog[] = [];
+    const retry = await shouldRetryInfrastructureFailure(
+      "completion",
+      reason,
+      makeState(),
+      makeCapturingLogger(logs),
+      { category, sleepFn: instantSleep },
+    );
+    assertEquals(retry, expected);
+    assertEquals(logs.some((entry) => entry.msg.includes("host disk")), false);
   }
 });

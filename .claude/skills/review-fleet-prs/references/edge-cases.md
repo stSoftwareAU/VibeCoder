@@ -50,15 +50,22 @@ PRs continue. A persistence failure after an API request still fails loud.
 The own-diff comparison skips a sent-back PR as `awaiting-fix` when its
 patches still match after hunk-position normalisation. It also accepts a
 differing modified-file patch when both versions of that patch are one
-complete hunk replacing one bare version line with a higher version. This
-covers a workflow bump committed separately or in a base-merge resolution.
-Every other file must still match under the existing comparison rules.
+complete hunk replacing one version line with a higher version. The line may
+be a bare version, a JSON `"version": "..."` key (with an optional trailing
+comma), or a TOML `version = "..."` key. The hunk may include unchanged context,
+but its declared line counts must match and it must contain exactly one removed
+line immediately followed by one added line. The two lines must be identical
+apart from the version token, including spacing and punctuation. This covers a
+workflow bump committed separately or in a base-merge resolution. Every other
+file must still match under the existing comparison rules.
 
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or
 build suffix may accompany a numeric increase. Suffix-only changes, equal or
-decreasing versions, extra lines or hunks, newline markers, renames and missing
-or malformed patches get a fresh review. No prerelease precedence is inferred.
+decreasing versions, extra changed lines or hunks, newline markers, renames and
+missing or malformed patches get a fresh review. A dependency pin or a value on
+any key other than `version` is still reviewed. No prerelease precedence is
+inferred.
 
 The exception also needs the logged findings from this PR's exact sent-back
 head. A finding naming the version file (including a qualified path) forces a

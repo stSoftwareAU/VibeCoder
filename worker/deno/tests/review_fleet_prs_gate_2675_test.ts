@@ -443,6 +443,203 @@ Deno.test("own-diff version-only increments await the existing fix, including a 
   }
 });
 
+// Shape observed with git diff --no-index over JSON and TOML manifests:
+// unchanged context is prefixed with a space and counts towards both ranges.
+const manifestPatch = (from: string, to: string, kind = "json") =>
+  kind === "json"
+    ? `@@ -1,5 +1,5 @@
+ {
+-  "version": "${from}",
++  "version": "${to}",
+   "license": "MIT",
+   "imports": {}
+ }`
+    : `@@ -1,3 +1,3 @@
+ [package]
+-version = "${from}"
++version = "${to}"
+ license = "MIT"`;
+
+Deno.test("manifest-only version re-bumps await the existing fix (Issue #4391)", async () => {
+  for (const kind of ["json", "toml"]) {
+    for (
+      const versions of [["1.2.3", "1.2.4", "1.2.5"], [
+        "1.2.9007199254740992",
+        "1.2.9007199254740993",
+        "1.2.9007199254740994",
+      ]]
+    ) {
+      const filename = kind === "json" ? "deno.json" : "Cargo.toml";
+      const { gh } = fakeGh({
+        "repos/o/r/compare/X...head": compareResponse("ahead", [
+          { sha: "merge", parents: 2 },
+          { sha: "bump", parents: 1 },
+        ]),
+        "repos/o/r/compare/main...X": compareFiles([
+          { filename, patch: manifestPatch(versions[0]!, versions[1]!, kind) },
+          { filename: "a.ts", patch: "@@ -1 +1 @@\n-old\n+unfixed" },
+        ]),
+        "repos/o/r/compare/main...head": compareFiles([
+          { filename, patch: manifestPatch(versions[1]!, versions[2]!, kind) },
+          { filename: "a.ts", patch: "@@ -3 +3 @@\n-old\n+unfixed" },
+        ]),
+      });
+      assertEquals(
+        await skipReason(
+          searchPr({ reviews: { nodes: [review("CHANGES_REQUESTED", "X")] } }),
+          "nleck",
+          (since) =>
+            ownDiffUnchanged(gh, "o/r", "main", since, "head", [{
+              file: "a.ts",
+            }]),
+        ),
+        "awaiting-fix",
+        `${kind}: ${versions.join(" -> ")}`,
+      );
+    }
+  }
+});
+
+Deno.test("manifest version exception still reviews other edits and malformed patches (Issue #4391)", async () => {
+  const prior = manifestPatch("1.2.3", "1.2.4");
+  const next = manifestPatch("1.2.4", "1.2.5");
+  const dependency = (patch: string) =>
+    patch.replaceAll('"version"', '"dependency"');
+  const cases: {
+    name: string;
+    oldPatch?: string;
+    newPatch: string;
+    findings?: { file: string }[];
+    otherPatch?: string;
+    findingsMissing?: boolean;
+  }[] = [
+    { name: "another file changed", newPatch: next, otherPatch: "+fixed" },
+    {
+      name: "another key",
+      oldPatch: dependency(prior),
+      newPatch: dependency(next),
+    },
+    {
+      name: "dependency pin",
+      oldPatch: dependency(prior).replaceAll('"1.', '"@1.'),
+      newPatch: dependency(next).replaceAll('"1.', '"@1.'),
+    },
+    {
+      name: "adjacent edit",
+      newPatch: next.replace(
+        '   "license": "MIT",',
+        '-  "license": "MIT",\n+  "license": "Apache-2.0",',
+      ),
+    },
+    {
+      name: "finding on manifest",
+      newPatch: next,
+      findings: [{ file: "deno.json" }],
+    },
+    {
+      name: "qualified finding on manifest",
+      newPatch: next,
+      findings: [{ file: "./deno.json" }],
+    },
+    { name: "findings unavailable", newPatch: next, findingsMissing: true },
+    {
+      name: "changed indentation",
+      newPatch: next.replace('+  "version"', '+    "version"'),
+    },
+    {
+      name: "changed separator",
+      newPatch: next.replace('+  "version":', '+  "version" :'),
+    },
+    {
+      name: "changed trailing comma",
+      newPatch: next.replace('+  "version": "1.2.5",', '+  "version": "1.2.5"'),
+    },
+    { name: "truncated context", newPatch: next.slice(0, -2) },
+    { name: "wrong old count", newPatch: next.replace("-1,5", "-1,6") },
+    { name: "wrong new count", newPatch: next.replace("+1,5", "+1,6") },
+    { name: "second hunk", newPatch: next + "\n@@ -20 +20 @@\n-old\n+new" },
+    {
+      name: "newline marker",
+      newPatch: next + "\n\\ No newline at end of file",
+    },
+    { name: "version downgrade", newPatch: manifestPatch("1.2.5", "1.2.4") },
+    {
+      name: "prior downgrade",
+      oldPatch: manifestPatch("1.2.4", "1.2.3"),
+      newPatch: next,
+    },
+    { name: "equal version", newPatch: manifestPatch("1.2.5", "1.2.5") },
+    {
+      name: "suffix-only change",
+      newPatch: manifestPatch("1.2.5-beta.1", "1.2.5-beta.2"),
+    },
+    {
+      name: "component count change",
+      newPatch: manifestPatch("1.2.4", "1.2.5.0"),
+    },
+    { name: "prefixed version", newPatch: manifestPatch("v1.2.4", "v1.2.5") },
+    {
+      name: "commented JSON key",
+      newPatch: next.replaceAll('  "version"', '  // "version"'),
+    },
+    {
+      name: "escaped JSON key",
+      newPatch: next.replaceAll('"version"', '"ver\\u0073ion"'),
+    },
+    {
+      name: "TOML other key",
+      oldPatch: manifestPatch("1.2.3", "1.2.4", "toml").replaceAll(
+        "version =",
+        "dependency =",
+      ),
+      newPatch: manifestPatch("1.2.4", "1.2.5", "toml").replaceAll(
+        "version =",
+        "dependency =",
+      ),
+    },
+    {
+      name: "TOML trailing comma",
+      newPatch: manifestPatch("1.2.4", "1.2.5", "toml").replaceAll(
+        '"\n',
+        '",\n',
+      ),
+    },
+  ];
+  for (const c of cases) {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [{
+        sha: "bump",
+        parents: 1,
+      }]),
+      "repos/o/r/compare/main...X": compareFiles([
+        { filename: "deno.json", patch: c.oldPatch ?? prior },
+        { filename: "a.ts", patch: "+unfixed" },
+      ]),
+      "repos/o/r/compare/main...head": compareFiles([
+        { filename: "deno.json", patch: c.newPatch },
+        { filename: "a.ts", patch: c.otherPatch ?? "+unfixed" },
+      ]),
+    });
+    assertEquals(
+      await skipReason(
+        searchPr({ reviews: { nodes: [review("CHANGES_REQUESTED", "X")] } }),
+        "nleck",
+        (since) =>
+          ownDiffUnchanged(
+            gh,
+            "o/r",
+            "main",
+            since,
+            "head",
+            c.findingsMissing ? undefined : c.findings ?? [{ file: "a.ts" }],
+          ),
+      ),
+      null,
+      c.name,
+    );
+  }
+});
+
 Deno.test("own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)", async () => {
   const prior = versionPatch("1.32.4", "1.32.5");
   const next = versionPatch("1.32.5", "1.32.6");
