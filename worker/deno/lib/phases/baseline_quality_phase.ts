@@ -26,6 +26,7 @@ import {
 } from "../quality_helpers.ts";
 import { failedChecks } from "../baseline_gate.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
+import { buildCheckoutArgs } from "../git_ref_args.ts";
 
 /**
  * Run a baseline quality check on the clean repository before Claude starts.
@@ -44,6 +45,111 @@ export async function workOnIssueBaselineQuality(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  // A resumed branch already carries an earlier attempt's commits, so its
+  // checkout is not the untouched tree: a check those commits broke would be
+  // recorded as red on the default branch, and the post-change gate would
+  // file a tracker against a default branch that is green (Issue #4412).
+  // Gate the commit the branch forked from instead.
+  if (!state.resumedFromCheckpoint) {
+    await gateBaseline(ctx, state, deps);
+    return { status: "continue" };
+  }
+  const forkPoint = await checkOutForkPoint(state, deps);
+  if (!forkPoint.ok) {
+    // Left unmeasured, the post-change gate attributes nothing to the
+    // default branch, which is the safe way to be wrong.
+    deps.logger.warn(
+      "Baseline quality check skipped — the resumed branch's fork point " +
+        "could not be checked out, so no failure is attributed to the " +
+        "default branch (Issue #4412)",
+      { error: forkPoint.error.message },
+    );
+    return { status: "continue" };
+  }
+  // Never throws: every gate fault is logged and left non-fatal inside.
+  await gateBaseline(ctx, state, deps);
+  // Forced: the tree was clean before the fork point was checked out, so
+  // anything the gate left in tracked files is the gate's, not the run's.
+  const restoreArgs = buildCheckoutArgs(state.branchName);
+  restoreArgs.splice(1, 0, "-q", "-f");
+  const back = await deps.git.runGitCommand(
+    restoreArgs,
+    { cwd: state.repoPath },
+  );
+  if (!back.ok || back.value.code !== 0) {
+    const detail = back.ok ? back.value.stderr.trim() : back.error.message;
+    return {
+      status: "failure",
+      category: "unknown",
+      reason: `baseline quality: could not check ${state.branchName} out ` +
+        `again after gating its fork point: ${detail}`,
+    };
+  }
+  return { status: "continue" };
+}
+
+/**
+ * Check out, detached, the commit the resumed branch forked from: its
+ * merge-base with the remote base branch, or with the local one when the
+ * remote ref is missing. Refuse a dirty or unverifiable checkout so setup
+ * output is neither measured as the baseline nor discarded on return.
+ */
+async function checkOutForkPoint(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<{ ok: true } | { ok: false; error: Error }> {
+  const git = async (args: string[]): Promise<string> => {
+    const run = await deps.git.runGitCommand(args, { cwd: state.repoPath });
+    if (!run.ok) throw run.error;
+    if (run.value.code !== 0) {
+      throw new Error(
+        `git ${args[0]} exited ${run.value.code}: ` +
+          (run.value.stderr.trim() || "(no output)"),
+      );
+    }
+    return run.value.stdout.trim();
+  };
+  try {
+    // Pre-setup commands run before this phase and may prepare tracked or
+    // untracked files. Git can carry those edits into the fork point, then
+    // a forced return would discard tracked edits (Issue #4412).
+    if (await git(["status", "--porcelain=v1", "--untracked-files=normal"])) {
+      throw new Error(
+        "working tree has uncommitted changes; preserving setup state",
+      );
+    }
+    let forkPoint: string;
+    try {
+      forkPoint = await git([
+        "merge-base",
+        "--end-of-options",
+        "HEAD",
+        `origin/${state.baseBranch}`,
+      ]);
+    } catch {
+      forkPoint = await git([
+        "merge-base",
+        "--end-of-options",
+        "HEAD",
+        state.baseBranch,
+      ]);
+    }
+    await git(["checkout", "-q", "--detach", forkPoint]);
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
+/** Gate the checkout as it stands and record the outcome on `state`. */
+async function gateBaseline(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<void> {
   const logger = deps.logger;
   const wantFindings = isBaselineAwareQualityGateEnabled(ctx.config, ctx.repo);
 
@@ -57,7 +163,7 @@ export async function workOnIssueBaselineQuality(
     if (
       cacheKey && await applyCachedBaseline(cacheKey, wantFindings, state, deps)
     ) {
-      return { status: "continue" };
+      return;
     }
 
     const gateStartedMs = Date.now();
@@ -70,7 +176,7 @@ export async function workOnIssueBaselineQuality(
       logger.warn("Baseline quality check could not run", {
         error: qualityResult.error.message,
       });
-      return { status: "continue" };
+      return;
     }
 
     // What the gate costs on this repository, measured rather than assumed
@@ -159,8 +265,6 @@ export async function workOnIssueBaselineQuality(
       error: err instanceof Error ? err.message : String(err),
     });
   }
-
-  return { status: "continue" };
 }
 
 /**
