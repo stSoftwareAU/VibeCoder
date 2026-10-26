@@ -35,7 +35,11 @@ import {
   type AlertDedupAuthorOptions,
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
-import type { FailureCategory } from "./failure_diagnosis.ts";
+import {
+  type FailureCategory,
+  workerGateCategoryOf,
+} from "./failure_diagnosis.ts";
+import { isHostDiskFaultText } from "./host_fault.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { REPO_FAST_FAILURE_MARKER_PREFIX } from "./repo_fast_failure_issue.ts";
 import { redactedLineTail, redactedTail } from "./redacted_text.ts";
@@ -209,6 +213,11 @@ export interface FastFailureCandidate {
    * host fault (Issue #2954) — fast whatever the category or the clock.
    */
   setupFault?: boolean;
+  /**
+   * The failure message. A host-disk stop in it is the host's condition,
+   * not this repository's fast failure (Issue #4388).
+   */
+  message?: string;
 }
 
 /**
@@ -218,18 +227,43 @@ export interface FastFailureCandidate {
  * agent produced any output, which is the setup fault this tracker exists
  * to catch. A run flagged `setupFault` (Issue #2954) is likewise fast
  * regardless of category or elapsed time. Host-wide causes
- * ({@link NOT_REPO_FAULT}) never count, whichever of those applies.
+ * ({@link NOT_REPO_FAULT}) never count, whichever of those applies. A
+ * host-disk stop is the same kind of host-wide cause: it is still a setup
+ * fault for the issue ladder, and it does not back this repository off
+ * (Issue #4388).
  */
 export function isFastFailure(
   candidate: FastFailureCandidate,
   policy: RepoFastFailurePolicy,
 ): boolean {
+  if (hostDiskIsNotThisRepository(candidate)) return false;
   if (NOT_REPO_FAULT.has(candidate.category)) return false;
   if (candidate.category === "zero_output") return true;
   if (candidate.setupFault === true) return true;
   const elapsed = candidate.elapsedSeconds;
   if (typeof elapsed !== "number" || !Number.isFinite(elapsed)) return false;
   return elapsed < policy.fastFailureSeconds;
+}
+
+/**
+ * A host-disk stop is the host's condition, on every repository at once.
+ *
+ * Checked before `zero_output` and `setupFault`, both of which would
+ * otherwise count it. A worker-gate marker, and any category other than
+ * `internal_error` or `zero_output`, stays the issue's own failure: a gate
+ * that quotes the floor is not the host (Issue #3454).
+ */
+function hostDiskIsNotThisRepository(candidate: FastFailureCandidate): boolean {
+  const message = candidate.message;
+  if (typeof message !== "string" || message.length === 0) return false;
+  if (workerGateCategoryOf(message) !== null) return false;
+  if (
+    candidate.category !== "internal_error" &&
+    candidate.category !== "zero_output"
+  ) {
+    return false;
+  }
+  return isHostDiskFaultText(message);
 }
 
 /** Trailing lines searched for the diagnostic one. */

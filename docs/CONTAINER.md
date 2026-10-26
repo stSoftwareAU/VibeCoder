@@ -1332,7 +1332,11 @@ with the cache skipped (`check({ force: true })`) and parks the step when the
 host is below the floor or, where the trim is refused, short of the floor
 plus the 25 GB headroom. The park is infrastructure: the reason carries
 `Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
-gate verdict, and it does not earn `failed-once`. A `Read-only file system`
+gate verdict, and it does not earn `failed-once`. The same stop is not a
+repository fast failure: a host below its floor would otherwise back the
+repository off after three tallies, including when the manager quotes
+`host disk below its floor` without the park note (Issue #4388). A
+`Read-only file system`
 /`os error 30` failure is classified the same way. While `cargo` or `deno` is
 still running, the same check repeats and the child is stopped.
 
