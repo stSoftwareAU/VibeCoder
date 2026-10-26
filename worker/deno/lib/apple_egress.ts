@@ -31,11 +31,8 @@ import {
 
 /** The flag re-exported for callers that build the network argv or pin it. */
 export { APPLE_NETWORK_INTERNAL_FLAG };
-import {
-  assertMountSourcePermitted,
-  assertRunArgumentsContained,
-  FORBIDDEN_RUN_FLAGS,
-} from "./container_launch.ts";
+import * as containerLaunch from "./container_launch.ts";
+import { FORBIDDEN_RUN_FLAGS } from "./container_launch.ts";
 import {
   CONTAINER_RUNTIMES,
   type ContainerRuntimeDescriptor,
@@ -401,7 +398,7 @@ export function assertAppleRunContained(
   argv: readonly string[],
   homeDir: string,
 ): void {
-  assertRunArgumentsContained([...argv]);
+  containerLaunch.assertRunArgumentsContained([...argv]);
   for (const arg of argv) {
     const lower = arg.toLowerCase();
     const flag = lower.split("=")[0] ?? lower;
@@ -427,7 +424,7 @@ export function assertAppleRunContained(
     }
     const source = parts[0] ?? "";
     const target = parts[1] ?? "";
-    assertMountSourcePermitted(source, homeDir, "posix");
+    containerLaunch.assertMountSourcePermitted(source, homeDir, "posix");
     if (!isAbsolutePath(target, "posix") || target.includes(":")) {
       throw new Error(
         `Refusing to launch: mount target ${

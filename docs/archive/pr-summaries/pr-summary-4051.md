@@ -99,16 +99,17 @@ unfiltered and the only signal was a coarse `egressEnforced` boolean, so a probe
 that could not run, or proxy-only routing, could be read as "egress blocked".
 
 Test:
-`worker/deno/tests/egress_proxy_ready_marker_test.ts::the egress-proxy command's start-up line opens with the readiness marker the Apple launcher waits for`.
-It fails against the base branch's `lib/egress_proxy.ts` and
-`commands/egress_proxy.ts` (the readiness marker `EGRESS_PROXY_READY_MARKER` is
-not exported there) and passes at head; run both ways in this checkout. Without
-that marker the Apple launcher cannot tell the proxy sidecar is listening, so
-containment would never come up. The behaviour tests that pin the rest of the
-fix are
-`worker/deno/tests/egress_controls_test.ts::directInternetV4 is never blocked by a probe that did not run`
-and
 `worker/deno/tests/apple_egress_test.ts::a probe that cannot run is not a pass: the attempt regresses and nothing is returned`.
+It fails against the base versions of the changed non-test files and passes at
+head; run both ways in this checkout. The launcher builds every proxy and probe
+container's run arguments and checks them with the guards that
+`lib/container_launch.ts` now exports; at base those guards are not exported, so
+the attempt cannot be brought up and the test's assertions on the regression,
+the persisted report and the empty return fail. The other behaviour tests that
+pin the fix are
+`worker/deno/tests/apple_egress_test.ts::regression runs exactly 1 + recovery attempts, tears down, persists refused, and returns nothing`
+and
+`worker/deno/tests/run_sh_apple_egress_test.ts::run.sh - apple-egress that hands back an argument key other than arg stops the launch closed (Issue #4051)`.
 
 Static reasoning: the original trigger is closed with no trivial bypass. A
 control is `blocked` only when the negative control showed the probe can see
@@ -164,7 +165,8 @@ passed.
   — reviewer: met
 - **met** — Actual Apple worker checks run unattended and persist honest
   per-control results — evidence:
-  `worker/deno/tests/egress_controls_test.ts::directInternetV4 is blocked only with a negative control proof`,
+  `worker/deno/tests/apple_egress_test.ts::a probe that prints nothing is not a pass`,
+  `worker/deno/tests/egress_controls_test.ts`,
   `worker/deno/tests/run_sh_apple_egress_test.ts` — reviewer: met — reason: the
   checks run on every Apple launch without a prompt; they have not been observed
   on a real host from this container and the docs say so
@@ -177,7 +179,7 @@ passed.
   the limit is stated in Essential Design Decisions
 - **met** — Partial/advisory modes and residual host, DNS or direct-egress gaps
   are clearly documented; none are labelled fully enforced — evidence:
-  `worker/deno/tests/egress_controls_test.ts::startup report never says complete or makes a default-deny claim`,
+  `worker/deno/tests/egress_controls_test.ts`,
   `worker/deno/tests/containment_docs_test.ts` — reviewer: met
 - **met** — Failures recover unattended without silently dropping configured
   protections — evidence:
@@ -306,8 +308,10 @@ Edited existing tests:
 
 Named-test red checks run in this checkout:
 
-- `egress_proxy_ready_marker_test.ts`: base `lib/egress_proxy.ts` and
-  `commands/egress_proxy.ts` restored, test FAILED; head, test passed.
+- The four named `apple_egress_test.ts` tests above and the named
+  `run_sh_apple_egress_test.ts` test: base versions of the changed non-test
+  files restored, the tests FAILED at run time (the launch-guard export is
+  missing, `run.sh` lacks `apple-egress`); head, tests passed.
 - `run_sh_apple_egress_test.ts` write-grant test: old file-only grant, red
   (`down may not write the proxy log's temporary sibling`); fix, green.
 - `run_sh_apple_egress_test.ts` unrecognised-key test: check disabled, red (exit
