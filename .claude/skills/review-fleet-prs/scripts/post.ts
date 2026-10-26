@@ -1,4 +1,8 @@
 import { earlierFindingGaps } from "../../../../worker/deno/lib/earlier_findings.ts";
+import {
+  applyCapabilityJudgement,
+  type CapabilityFixtureJudgement,
+} from "../../../../worker/deno/lib/capability_security_guidance.ts";
 // Posts one /review-fleet-prs review (Issue #2678).
 //
 // Input: a JSON file { pr: <one "ready" entry from gate.ts>, review: <the
@@ -90,7 +94,9 @@ interface Input {
 // reply or a gate entry without `checklistState`.
 export function reviewForPost(
   raw: unknown,
-  pr: Pick<Input["pr"], "checklistState" | "previousFindings">,
+  pr: Pick<Input["pr"], "checklistState" | "previousFindings"> & {
+    capabilityJudgement?: CapabilityFixtureJudgement;
+  },
 ): FableReview {
   const state = pr.checklistState as ChecklistState | undefined;
   if (
@@ -106,7 +112,7 @@ export function reviewForPost(
     parseFableReview(typeof raw === "string" ? raw : JSON.stringify(raw)),
     state,
   );
-  return {
+  const withEarlier = {
     ...review,
     findings: [
       ...review.findings,
@@ -116,6 +122,9 @@ export function reviewForPost(
       ),
     ],
   };
+  return pr.capabilityJudgement
+    ? applyCapabilityJudgement(withEarlier, pr.capabilityJudgement)
+    : withEarlier;
 }
 
 async function run(cmd: string, args: string[]) {

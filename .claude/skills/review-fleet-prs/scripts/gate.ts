@@ -75,8 +75,10 @@ import {
 import {
   CAPABILITY_BUNDLE_PATH,
   capabilityContextFromChange,
+  type CapabilityFixtureJudgement,
   type CapabilityLoad,
   effectiveCapabilityLoad,
+  judgeCapabilityFixtures,
   loadCapabilityBundleFromText,
   loadTrustedCapabilityBundle,
   mergeCapabilityReview,
@@ -152,6 +154,11 @@ export interface ReadyPr {
   // an unreported item into a blocking finding, so a reply that ignores the
   // section is never approved (Issue #3594, PR #3695 review).
   checklistState: ChecklistState;
+  /**
+   * Deterministic judgement of the resource-update fixtures in this diff
+   * (Issue #4366). A pre-existing flaw is not a blocking finding.
+   */
+  capabilityJudgement?: CapabilityFixtureJudgement;
 }
 
 // A PR whose dependency audit is still red after CI-fix replied at its head
@@ -1055,14 +1062,26 @@ export async function pass(
       capabilityHead,
       trustedBundle,
     );
+    const diffLoad = await loadPullRequestDiff(callGh, repo, pr.number);
+    if (!diffLoad.ok) {
+      skipped["capability-unreadable"] =
+        (skipped["capability-unreadable"] ?? 0) + 1;
+      const line =
+        `${key} capability diff not read, retried next pass: ${diffLoad.reason}`;
+      upkeep.push(line);
+      console.error(line);
+      continue;
+    }
     const capabilityReview = renderCapabilityReview(
       capabilityLoad,
       capabilityContextFromChange({
         title: pr.title,
         body: pr.body ?? "",
         paths: changed ?? [],
+        diff: diffLoad.diff,
       }),
     );
+    const capabilityJudgement = judgeCapabilityFixtures(diffLoad.diff);
     if (capabilityReview.retry) {
       skipped["capability-unreadable"] =
         (skipped["capability-unreadable"] ?? 0) + 1;
@@ -1098,12 +1117,36 @@ export async function pass(
         metClosureItems(pr.body ?? ""),
       ),
       checklistState: mergedChecks.state,
+      capabilityJudgement,
     });
   }
   // A single --repo run sees only part of the fleet, so it leaves the
   // summary's open set alone.
   if (repos.size > 1) await writeSummary(dir, open);
   return { ready, auditBlocked, skipped, upkeep };
+}
+
+/** The pull request diff, for import and sink selection (Issue #4366). */
+export async function loadPullRequestDiff(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+  number: number,
+): Promise<{ ok: true; diff: string } | { ok: false; reason: string }> {
+  try {
+    const diff = await gh([
+      "api",
+      "--header",
+      "Accept: application/vnd.github.diff",
+      `repos/${repo}/pulls/${number}`,
+    ]);
+    return { ok: true, diff };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const cause = message.split("\n").map((line) =>
+      line.trim()
+    ).find((line) => line) ?? "gh failed";
+    return { ok: false, reason: cause };
+  }
 }
 
 // Reads the repo's `review-checklists.json` at a ref: the PR's base ref (so a

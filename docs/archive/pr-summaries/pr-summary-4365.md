@@ -21,8 +21,14 @@ Closes #4365
 
 - **clean** — Australian English, tests through the real prompt path, no version bump in `worker/deno/deno.json`, and no secrets in the guidance record.
 
+## Review follow-up
+
+An issue run inspects the paths named in the task: the files themselves, config beside a named code file, and neighbouring callers. That set is passed into `buildIssuePrompt`, and the next run selects again when the set changes. A later import or sink renders that capability's advice. A docs-only task that names no path still receives no capability advice. The re-evaluate instruction stays when nothing matches, because a later entry point, import, caller, config or sink can make a capability apply.
+
 ## CI repair
 
 The intentionally empty TypeScript fixture now contains only a comment. It still exports no implementation, while satisfying the repository's zero-length-file check.
 
 The bundle is shared data under the existing coding-guidelines directory, so prompt discovery no longer mistakes it for a standalone prompt type. Callers, fixtures and documentation use the same new path. The five new modules were reviewed and registered in a sweep slice anchored to main. Evaluation subprocesses use the shared timeout helper with a 60-second bound. Validation: 40 focused capability, evaluation and timeout checks and all 866 manifest checks passed (one ignored); formatting, lint and the sweep-ancestry gate pass. The local evaluation records 14 fixture outcomes; only the secure implementations pass both dimensions, and live model comparison remains partial.
+
+CI: the operator-template test keeps the capability placeholder, the fixture credential is planted through envSource rather than Deno.env, and the version-exception gate stub returns an empty pull request diff.

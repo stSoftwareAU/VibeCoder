@@ -21,6 +21,14 @@ Part of #4368
 
 - **clean** — The harness is a local command. It does not add a fleet scheduler, import SecurityEval, or record a cost of zero.
 
+## Review follow-up
+
+A fixture command receives the untrusted-command allowlist under `clearEnv`, with a 60-second bound, a 512 MB V8 heap, `CARGO_BUILD_JOBS=1`, `deno --deny-net` and `cargo --offline`. The worker's credentials are not copied into the child. When the lease cannot be provisioned, every arm is recorded as blocked and the fixture is not started. The acceptance-test hash check remains; it is a tamper check. Live model comparison stays partial: there is no matched comparison, no winner and no cost. The issue does not require the separate `agent` account, and this harness does not demand it, because that account is absent on hosts that already score these fixtures.
+
 ## CI repair
 
 Evaluation subprocesses now use the shared timeout helper with a 60-second per-command bound. The empty TypeScript fixture contains only a comment and still fails functional and security acceptance. The evaluation and timeout regression tests pass.
+
+CI: the operator-template test keeps the capability placeholder, the fixture credential is planted through envSource rather than Deno.env, and the version-exception gate stub returns an empty pull request diff.
+
+The follow-up lint repair removes the unused `defaultCommandRunner` import left after the credential test moved to the injected environment fixture.

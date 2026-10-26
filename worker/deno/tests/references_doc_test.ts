@@ -198,6 +198,19 @@ Deno.test("docs/REFERENCES.md credits the known seed sources", () => {
   }
 });
 
+Deno.test("the CodeGuard row records the shipped five-capability bundle", () => {
+  const entries = parseReferenceEntries(read("docs/REFERENCES.md"));
+  const row = entries.find((entry) =>
+    entry.url === "https://github.com/cosai-oasis/project-codeguard"
+  );
+  assert(row, "the CodeGuard assessment row is missing");
+  assertEquals(row.note.includes("not yet shipped"), false);
+  assertEquals(row.note.toLowerCase().includes("proposed in #4365"), false);
+  assert(row.note.includes("CC-BY-4.0"));
+  assert(row.note.includes("five capabilities"));
+  assert(row.note.toLowerCase().includes("not an upstream plugin"));
+});
+
 Deno.test("every docs/REFERENCES.md entry points at paths that exist", () => {
   const entries = parseReferenceEntries(read("docs/REFERENCES.md"));
   const missing = entries

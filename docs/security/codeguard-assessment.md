@@ -1,7 +1,8 @@
 # CodeGuard assessment: useful, secure and unattended code
 
-Reviewed on 26 October 2026. This is an assessment and implementation plan,
-not a claim that the proposed runtime changes have shipped.
+Reviewed on 26 October 2026. The five-capability bundle has since shipped,
+rewritten under CC-BY-4.0, and it is not an upstream plugin. The matched
+live model comparison in #4368 has not been run.
 
 ## Sources and attribution
 
@@ -92,8 +93,9 @@ Evidence inspected includes
 | [#4367](https://github.com/stSoftwareAU/VibeCoder/issues/4367) | Static best-practices checks for specific missing behavioural security coverage | #4365; retain cross-scan dedup | work-on |
 | [#4368](https://github.com/stSoftwareAU/VibeCoder/issues/4368) | Bounded functional-and-security comparison with reproducible fixtures | Harness independent; candidate comparisons follow #4365–#4367 | work-on |
 
-All four were proposed, not implemented, at assessment time. Update this
-section as they land; record declined or removed ideas honestly.
+Issues #4365, #4366 and #4367 have landed as the local bundle, the shared review
+checks and the coverage scan. #4368 has a local fixture harness; its live
+model comparison has not been run. Record a declined idea honestly.
 
 Existing work was checked before filing. Path confinement (#2885), sibling
 trust-boundary guards (#3679), prompt fencing (#3896), independent
