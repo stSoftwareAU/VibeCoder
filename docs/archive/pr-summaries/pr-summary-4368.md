@@ -1,34 +1,103 @@
-# PR summary — #4368
+# PR Summary — Issue #4368
 
-`deno task capability-security-eval` (from `worker/deno`) scores the TypeScript and Rust resource-update fixtures with acceptance tests that stay outside the implementation directory. Functionality and security are separate. Empty output, a TODO stub, unconditional success, deny-all and an unwired helper fail functional acceptance. A working insecure implementation fails security. A secure implementation passes both. The recorded dry run is `evals/capability_security/dry-run.json`. Live model arms are skipped. Cost status is unknown. There is no winner and no invented benchmark number.
+## Summary
 
-Part of #4368
+Closes #4368. The existing trusted-fixture self-test now has an explicit live
+comparison path backed by the existing Claude subscription. It runs two repeated
+TypeScript/Rust tasks across three matched guidance arms, executes generated code
+only in verified disposable containers, and measures the production review and
+coverage checks on positive and negative fixtures. Exact prompts, hashes, source,
+served models, attempts, outcomes, uncertainty and API-equivalent estimates are
+recorded in `evals/capability_security/comparison-20261026.json`.
+
+Generation advice is simplified to the selected advice and scope-change reminder;
+the unproven expanded validation/index prose remains only as an evaluation
+candidate. Review, coverage, authorisation and quality gates remain unchanged.
+
+## Spec
+
+### Intent and Rationale
+
+Fewer scanner findings do not establish useful working code. An authorised update
+must still work while cross-tenant and privileged writes fail. A fair comparison
+also counts false accusations against secure, irrelevant and unchanged code.
+
+### Essential Design Decisions
+
+- Same explicit model, effort, task contracts and budgets, with rotated arm order
+  and repeated samples. Shared coding guidance is included in every arm; the
+  current arm includes the production compact capability section.
+- Positive subscription proof, no provider tools/MCP/hooks/settings, an empty
+  generation directory, and no paid-API fallback. Existing adapters and cost
+  telemetry preserve failed attempts and unknown prices.
+- One CPU, 512 MB, 60 seconds, read-only input/root, no production mounts or
+  credentials, and a verified empty guest network namespace. Authoritative
+  parent tests cannot be replaced by child-reported test verdicts.
+- Unknown execution/review evidence cannot become zero findings or a pass.
+  Provisioning gets one bounded retry; executed failing code does not.
+- Existing Wilson interval reporting is reused. This small correlated sample
+  never changes production model allocation or claims a general winner.
+
+### Undiscoverable Facts
+
+Apple container 1.2.2 on macOS 27.0.1 supports the verified guest network-namespace
+path with the installed image. Its CLI does not resolve the locally installed
+image by digest; the runner records and verifies the actual inspected digest
+around execution. Generated code receives no host subscription credentials.
+The dry-run host harness is for checked-in trusted fixtures only; Cargo offline
+mode and post-run file hashing are not described as native-code isolation.
+
+## Evidence
+
+- Negative controls cover empty, stub, deny-all, unwired, unconditional, working
+  insecure and working secure TypeScript/Rust implementations.
+- Regression tests failed before fixes for incomplete/contradictory parent
+  verdicts and incorrect pre-existing review reports, then passed.
+- Actual disposable probes cover secure TypeScript/Rust, forged verdict refusal,
+  network/write refusal, parent-memory refusal and bounded timeout cleanup.
+- The canonical coverage scanner and semantic judge run on secure, insecure and
+  irrelevant fixtures. Semgrep is explicitly not run by this comparison; the
+  normal repository Semgrep gate remains separate.
+- Completed matched run: all three arms passed 4/4 joint tasks, with zero review
+  false positives/negatives; canonical coverage/semantic confusion counts were
+  also zero. All 18 calls served `claude-haiku-5-5`; no retries. The per-arm 99%
+  interval is 37.6%–100%, so no superiority is inferred. API-equivalent estimates
+  are 0.0325343/0.0361822/0.0307612 USD; cache and host effects preclude a ranking.
+  The final hardened runner's file/prompt hashes and all 12 execution proofs were
+  verified against the committed artefact.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — One documented non-interactive command runs a bounded fixture suite and produces a reproducible result artefact identifying each task, arm, revisions, outcomes, skips and costs. — evidence: `evals/capability_security/dry-run.json` — reviewer: met
-- **met** — Deterministic harness self-tests prove empty/stub/deny-all/unwired implementations fail, a working insecure implementation fails security, and a secure working implementation passes both. — evidence: `worker/deno/tests/capability_security_eval_4368_test.ts` — reviewer: met
-- **met** — Hold-out acceptance tests cannot be edited or substituted by generated code; failure to provision isolation prevents execution and is recorded. — evidence: `worker/deno/lib/capability_security_eval.ts` — reviewer: met
-- **partial** — At least one completed matched comparison is recorded if supported execution is available; otherwise record the concrete blocker and automatic retry path, without claiming improvement. — evidence: `evals/capability_security/dry-run.json` — reviewer: partial — reason: no live model run is configured, so the comparison stays partial and claims no improvement
-- **missing** — Added guidance is retained only with demonstrated benefit without unacceptable functionality/precision/cost regression; otherwise simplify/remove it. Keep results in Git, not permanent dead experiment branches. — reviewer: missing — reason: no matched comparison exists, so benefit is not demonstrated; the bundle stays because #4365 requires it and this evaluation does not claim a benefit
-- **met** — Existing quality and security gates remain in place. The evaluation itself is unattended and recovers from transient infrastructure failures. — evidence: `worker/deno/tests/capability_security_eval_4368_test.ts` — reviewer: met
+- **met** — One documented non-interactive command runs a bounded fixture suite and produces a reproducible result artefact identifying each task, arm, revisions, outcomes, skips and costs. — evidence: `evals/capability_security/README.md`, `comparison-20261026.json` — reviewer: met
+- **met** — Deterministic harness self-tests prove empty/stub/deny-all/unwired implementations fail, a working insecure implementation fails security, and a secure working implementation passes both. — evidence: `capability_security_eval_4368_test.ts` — reviewer: met
+- **met** — Hold-out acceptance tests cannot be edited or substituted by generated code; failure to provision isolation prevents execution and is recorded. — evidence: `capability_security_eval_container_test.ts`, read-only mounts and trusted parent protocol — reviewer: met
+- **met** — At least one completed matched comparison is recorded if supported execution is available; otherwise record the concrete blocker and automatic retry path, without claiming improvement. — evidence: committed completed comparison and bounded recovery tests — reviewer: met
+- **met** — Added guidance is retained only with demonstrated benefit without unacceptable functionality/precision/cost regression; otherwise simplify/remove it. Keep results in Git, not permanent dead experiment branches. — evidence: compact production generation rendering; expanded candidate retained only for reproducibility; no winner claimed — reviewer: met
+- **met** — Existing quality and security gates remain in place. The evaluation itself is unattended and recovers from transient infrastructure failures. — evidence: provider transient retry, lease recovery and executed-failure refusal regressions — reviewer: met
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — The harness is a local command. It does not add a fleet scheduler, import SecurityEval, or record a cost of zero.
+- **clean** — Reuses provider adapters, cost telemetry, runtime/image selection,
+  bounded subprocess helpers, the canonical semantic/coverage checks and Wilson
+  intervals. New modules are registered in the security-sweep ledger. Attribution
+  and adoption status remain in the canonical references and guidance manual.
 
-## Review follow-up
+## Test Plan
 
-A fixture command receives the untrusted-command allowlist under `clearEnv`, with a 60-second bound, a 512 MB V8 heap, `CARGO_BUILD_JOBS=1`, `deno --deny-net` and `cargo --offline`. The worker's credentials are not copied into the child. When the lease cannot be provisioned, every arm is recorded as blocked and the fixture is not started. The acceptance-test hash check remains; it is a tamper check. Live model comparison stays partial: there is no matched comparison, no winner and no cost. The issue does not require the separate `agent` account, and this harness does not demand it, because that account is absent on hosts that already score these fixtures.
+- [x] Focused capability, review, coverage, evaluation and reporting suites.
+- [x] Formatting, lint and type checks for the changed code.
+- [x] Manifest completeness checks.
+- [x] Real disposable Apple container probes and matched subscription execution.
 
-## CI repair
+## Merge verification
 
-Evaluation subprocesses now use the shared timeout helper with a 60-second per-command bound. The empty TypeScript fixture contains only a comment and still fails functional and security acceptance. The evaluation and timeout regression tests pass.
-
-CI: the operator-template test keeps the capability placeholder, the fixture credential is planted through envSource rather than Deno.env, and the version-exception gate stub returns an empty pull request diff.
-
-The follow-up lint repair removes the unused `defaultCommandRunner` import left after the credential test moved to the injected environment fixture.
+The full local gate passed 30,207 parallel tests and all static/type/lint checks,
+then reported four existing clock/network-sensitive failures during a run whose
+wall time exceeded its test time substantially. All 76 tests in those unchanged files then passed in isolation. The serial suite
+is run separately; required CI remains authoritative.
+Local Checkov is unavailable, and local Semgrep differs from the CI pin. No policy
+or test is relaxed to obtain a passing check.

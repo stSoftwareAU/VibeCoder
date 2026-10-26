@@ -14,6 +14,28 @@ host; a genuine shortage remains an infrastructure failure. Configured floors,
 new-step admission budgets, failure categories, claim outcomes and cleanup
 ownership rules remain unchanged.
 
+## Spec
+
+### Intent and Rationale
+
+Admission reserves headroom for work that has not started. Once that work is
+running it may consume its reserve; only crossing the configured host floor
+should stop it. Repeating an unchanged disk refusal in the same process cannot
+restore capacity and prematurely releases otherwise useful work.
+
+### Essential Design Decisions
+
+Both active-process watchers use the existing shared floor judge. New-step
+admission keeps the full reserve. Category-aware host-disk failures skip the
+same-process retry and preserve their original failure outcome; a later worker
+cycle rechecks capacity through the existing recovery path.
+
+### Undiscoverable Facts
+
+The measured 66.4 GB reading was above the 46 GB stop floor but below the
+71 GB admission threshold. The earlier 62.5 GB refusal was legitimate admission
+protection and is not claimed fixed. Private fleet identifiers remain local.
+
 ## Evidence
 
 The local worker log for 2026-10-26 records a 75.9 GB host reading before
@@ -61,9 +83,14 @@ same-process retry, rather than claiming to create more disk capacity.
   `issue_worker_infra_retry_test.ts`, `heavy_build_gate_3178_test.ts`,
   `host_disk_inflight_4360_test.ts` (77 passed).
 - [x] Deno formatting and lint; manifest checks (867 passed, 1 ignored).
-- [ ] Full `quality.sh` on the integrated branch.
+
 - Twinned rules checked: both active-process watchers now call the same
   floor-only judge. Agent preflight, quality, mutation and discrimination
   admission retain `parkInFlightBuild`; maintenance retains
   `heavyBuildAdmission`. Both operator-guide descriptions in
   `docs/CONTAINER.md` distinguish admission headroom from the active floor.
+
+## Merge verification
+
+Full `quality.sh` and required CI are checked on the integrated branch before
+merge. The focused regressions above are complete.
