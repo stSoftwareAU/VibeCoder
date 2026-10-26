@@ -49,20 +49,28 @@ PRs continue. A persistence failure after an API request still fails loud.
 
 The own-diff comparison skips a sent-back PR as `awaiting-fix` when its
 patches still match after hunk-position normalisation. It also accepts a
-differing modified-file patch when both versions of that patch are one
-complete hunk replacing one bare version line with a higher version. This
-covers a workflow bump committed separately or in a base-merge resolution.
-Every other file must still match under the existing comparison rules.
+differing modified-file patch when both versions of that patch are a strict
+version increment in one of two forms. The bare form is one complete hunk
+replacing one bare version line. The manifest form replaces one `version` key
+line in a JSON or TOML manifest, and its hunk may carry unchanged context
+lines. Either form covers a workflow bump committed separately or in a
+base-merge resolution. Every other file must still match under the existing
+comparison rules.
 
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or
-build suffix may accompany a numeric increase. Suffix-only changes, equal or
-decreasing versions, extra lines or hunks, newline markers, renames and missing
-or malformed patches get a fresh review. No prerelease precedence is inferred.
+build suffix may accompany a numeric increase. In the manifest form exactly one
+line is replaced, the text around the version token (indentation, colon
+spacing, trailing comma) must be identical, and only the token may differ.
+A pin on any other key, such as a dependency `jsr:@std/path@1.2.3` moved to
+`@1.2.4`, gets a fresh review. Suffix-only changes, equal or decreasing
+versions, a second changed line or hunk, newline markers, header line counts
+that do not match the context lines, renames and missing or malformed patches
+get a fresh review. No prerelease precedence is inferred.
 
 The exception also needs the logged findings from this PR's exact sent-back
-head. A finding naming the version file (including a qualified path) forces a
-fresh review, since the version change could address it. If those findings
-are unavailable, including a review from another host absent from the local
-log, the version exception does not apply. Exact unchanged patches retain
+head. A finding naming the version file or manifest (including a qualified
+path) forces a fresh review, since the version change could address it. If
+those findings are unavailable, including a review from another host absent
+from the local log, the version exception does not apply. Exact unchanged patches retain
 their existing skip behaviour.
