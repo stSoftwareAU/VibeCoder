@@ -322,6 +322,7 @@ const RECORDED_DENO_COMMANDS = [
   "container-store-prune",
   "container-build-heal",
   "container-egress-probe",
+  "apple-egress",
   "container-restart-backoff",
   "run-entrypoint",
 ];
@@ -457,6 +458,46 @@ for arg in "\$@"; do
         prev="\${a}"
       done
       exit "\${STUB_EGRESS_EXIT:-0}"
+      ;;
+    apple-egress)
+      # Never really bring containment up or down (Issue #4051): the test
+      # decides what \`up\` reports and which argument tokens it hands the
+      # launcher. The action is the value of \`--action\`, recorded per action
+      # so \`up\` and \`down\` can be told apart.
+      apple_sub=""
+      prev=""
+      for a in "\$@"; do
+        if [[ "\${prev}" == "--action" ]]; then
+          apple_sub="\${a}"
+          break
+        fi
+        prev="\${a}"
+      done
+      printf '%s\\0' "\$@" > "\${record_dir}/apple-egress-\${apple_sub}.args"
+      if [[ "\${apple_sub}" != "up" ]]; then
+        exit 0
+      fi
+      # Up: the default, 10, is "containment does not apply" - the launch that
+      # every pre-existing test exercises. Only a 0 hands over tokens, and
+      # \`STUB_APPLE_EGRESS_ARGS\` holds one token per line.
+      up_status="\${STUB_APPLE_EGRESS_UP_EXIT:-10}"
+      if [[ "\${up_status}" -eq 0 ]]; then
+        out=""
+        prev=""
+        for a in "\$@"; do
+          if [[ "\${prev}" == "--out" ]]; then
+            out="\${a}"
+          fi
+          prev="\${a}"
+        done
+        : > "\${out}"
+        if [[ -n "\${STUB_APPLE_EGRESS_ARGS:-}" ]]; then
+          while IFS= read -r tok; do
+            printf 'arg=%s\\0' "\${tok}" >> "\${out}"
+          done <<<"\${STUB_APPLE_EGRESS_ARGS}"
+        fi
+      fi
+      exit "\${up_status}"
       ;;
     release-notice)
       # Never really reach GitHub for the new-release check (Issue #690):

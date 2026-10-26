@@ -154,6 +154,14 @@ RUN_ERR_FIFO=""
 # output is not what a later failure was caused by, and an alert that quoted
 # it would point the reader at the wrong thing.
 EVIDENCE_LOG=""
+# Apple container egress containment (Issue #4051). APPLE_EGRESS_UP is set only
+# once `apple-egress up` has succeeded, so the EXIT trap tears down exactly what
+# this run brought up. The argument file and the report directory are this
+# run's own temporary files, removed by the trap.
+APPLE_EGRESS_UP=""
+APPLE_EGRESS_ARGS_FILE=""
+APPLE_EGRESS_REPORT_DIR=""
+APPLE_EGRESS_PROXY_LOG=""
 
 # Exit status container-build-heal reports for a build failure it does not
 # cover, as opposed to 0 (healed - retry) or any other status (the heal itself
@@ -180,6 +188,11 @@ EGRESS_NETWORK_DOWN_EXIT=4
 # HOST_EGRESS_BLOCKED_EXIT_STATUS in
 # worker/deno/lib/container_egress_probe.ts by the launcher tests.
 HOST_EGRESS_BLOCKED_EXIT_STATUS=88
+
+# Exit status `apple-egress up` reports when containment does not apply to this
+# runtime (it is not Apple `container`). The launch then proceeds exactly as it
+# always has (Issue #4051). Any other non-zero status fails the launch closed.
+APPLE_EGRESS_NOT_APPLICABLE_EXIT=10
 
 # A wedged helper must never wedge this launcher: the helpers below run under
 # a time bound where the host has one (gtimeout on macOS, timeout on Linux).
@@ -289,6 +302,20 @@ record_outcome() {
   fi
 }
 
+# Take Apple container egress containment down (Issue #4051). Best-effort: `down`
+# always exits 0, and its own output goes to this launcher's stderr. Called from
+# the EXIT trap when `up` succeeded, and once from the launch when `up` failed.
+apple_egress_down() {
+  bounded 120 "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-run --allow-sys=networkInterfaces \
+    --allow-write="${APPLE_EGRESS_PROXY_LOG}" \
+    "${BASE_DIR}/worker/deno/mod.ts" apple-egress --action down \
+    --runtime "${RUNTIME}" \
+    --name "${CONTAINER_NAME}" \
+    --proxy-log "${APPLE_EGRESS_PROXY_LOG}" </dev/null >&2 || true
+}
+
 # shellcheck disable=SC2317,SC2329
 on_exit() {
   local status=$?
@@ -300,6 +327,20 @@ on_exit() {
   # so where the damage would be done (Issue #711).
   if [[ "${BASH_SUBSHELL}" != "0" ]]; then
     return 0
+  fi
+  # Containment comes down first, on every exit path - a normal finish, a
+  # failure and a signal alike (Issue #4051). Only when `up` succeeded, so this
+  # run tears down only what it brought up. `down` always exits 0; its own
+  # output goes to this launcher's stderr.
+  if [[ -n "${APPLE_EGRESS_UP}" ]]; then
+    APPLE_EGRESS_UP=""
+    apple_egress_down
+  fi
+  if [[ -n "${APPLE_EGRESS_ARGS_FILE}" ]]; then
+    rm -f "${APPLE_EGRESS_ARGS_FILE}"
+  fi
+  if [[ -n "${APPLE_EGRESS_REPORT_DIR}" ]]; then
+    rm -rf "${APPLE_EGRESS_REPORT_DIR}"
   fi
   if [[ -n "${PLAN_FILE}" ]]; then
     rm -f "${PLAN_FILE}" "${PLAN_FILE}.Containerfile"
@@ -1885,6 +1926,81 @@ watchdog_reap_on_deadline() {
   kill -KILL "${client_pid}" 2>/dev/null || true
 }
 
+# Apple container egress containment (Issue #4051), brought up after the image
+# exists and before the worker starts. The command decides whether containment
+# applies to this runtime: exit APPLE_EGRESS_NOT_APPLICABLE_EXIT means it does
+# not, and the launch goes ahead exactly as before. Any other failure means
+# containment was configured but could not be brought up, so the worker is NOT
+# launched - the command has already torn down what it started, and the launch
+# fails closed rather than falling back to unrestricted networking.
+#
+# The argument file it writes is NUL-delimited `arg=<value>` tokens, spliced
+# into the worker's run command straight after `run`. Both the file and the
+# report directory are created under this run's temporary area, and removed by
+# the EXIT trap.
+APPLE_EGRESS_ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vibe-apple-egress-args.XXXXXX")"
+APPLE_EGRESS_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vibe-apple-egress-report.XXXXXX")"
+APPLE_EGRESS_PROXY_LOG="${RUN_CORE_LOG_DIR}/apple-egress-proxy.log"
+
+# The in-container checkout path. The launch plan gave the worker its own
+# `--workdir`, so it is read back out of the run arguments rather than derived
+# a second time and left free to disagree with them.
+apple_egress_workdir=""
+for ((apple_egress_i = 0; apple_egress_i < ${#run_args[@]}; apple_egress_i++)); do
+  if [[ "${run_args[apple_egress_i]}" == "--workdir" ]]; then
+    apple_egress_workdir="${run_args[apple_egress_i + 1]}"
+    break
+  fi
+done
+
+# The host's .config.json, resolved the way the worker resolves it: CONFIG_FILE,
+# then its alias CONFIG_PATH, then the checkout's own .config.json. A relative
+# value is taken against the checkout.
+apple_egress_config="${CONFIG_FILE:-${CONFIG_PATH:-.config.json}}"
+case "${apple_egress_config}" in
+  /*) ;;
+  *) apple_egress_config="${BASE_DIR}/${apple_egress_config}" ;;
+esac
+
+apple_egress_status=0
+bounded 300 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-run --allow-net --allow-sys=networkInterfaces \
+  --allow-write="${APPLE_EGRESS_REPORT_DIR},${APPLE_EGRESS_ARGS_FILE},${APPLE_EGRESS_PROXY_LOG}" \
+  "${BASE_DIR}/worker/deno/mod.ts" apple-egress --action up \
+  --runtime "${RUNTIME}" \
+  --image "${IMAGE}" \
+  --name "${CONTAINER_NAME}" \
+  --base-dir "${BASE_DIR}" \
+  --workdir "${apple_egress_workdir}" \
+  --config "${apple_egress_config}" \
+  --report-dir "${APPLE_EGRESS_REPORT_DIR}" \
+  --out "${APPLE_EGRESS_ARGS_FILE}" </dev/null >&2 || apple_egress_status=$?
+
+apple_egress_args=()
+if ((apple_egress_status != APPLE_EGRESS_NOT_APPLICABLE_EXIT)); then
+  if ((apple_egress_status != 0)); then
+    # Best effort, once: a failed `up` may have left part of containment behind,
+    # and `down` is what removes it. APPLE_EGRESS_UP stays unset, so the EXIT
+    # trap does not repeat it.
+    apple_egress_down
+    record_phase container_egress
+    echo "[run.sh] refusing to launch: Apple container egress containment could not be brought up (status ${apple_egress_status}) - the worker is not launched without it (Issue #4051)" >&2
+    log_run_core "apple-egress: containment could not be brought up (status ${apple_egress_status}) - the worker was not launched (Issue #4051)"
+    exit 1
+  fi
+  # Up from here on: the EXIT trap takes it down, whatever the launch does next.
+  APPLE_EGRESS_UP=1
+  while IFS= read -r -d '' apple_egress_token; do
+    if [[ "${apple_egress_token%%=*}" != "arg" ]]; then
+      echo "Error: unrecognised apple-egress argument key: ${apple_egress_token%%=*} - refusing to launch" >&2
+      exit 1
+    fi
+    apple_egress_args+=("${apple_egress_token#*=}")
+  done <"${APPLE_EGRESS_ARGS_FILE}"
+  log_run_core "apple-egress: containment is up for ${CONTAINER_NAME} (Issue #4051)"
+fi
+
 # Created before the container starts: a launcher that cannot write its own
 # marker must fail here, not after it has a container to look after.
 WEDGE_MARKER="$(mktemp "${TMPDIR:-/tmp}/vibe-wedge.XXXXXX")"
@@ -1932,11 +2048,14 @@ else
     "(Issue #711)" >&2
 fi
 
+# The containment arguments (Issue #4051) go straight after `run`: they are
+# options, and the image reference is the last of run_args, so they land ahead
+# of it. Empty when containment does not apply (the launch is unchanged).
 LAUNCH_IN_FLIGHT=1
 if [[ -n "${RUN_LOG}" ]]; then
-  "${RUNTIME}" "${run_args[@]}" "$@" </dev/null 2>"${RUN_ERR_FIFO}" &
+  "${RUNTIME}" "${run_args[0]}" ${apple_egress_args[@]+"${apple_egress_args[@]}"} "${run_args[@]:1}" "$@" </dev/null 2>"${RUN_ERR_FIFO}" &
 else
-  "${RUNTIME}" "${run_args[@]}" "$@" </dev/null &
+  "${RUNTIME}" "${run_args[0]}" ${apple_egress_args[@]+"${apple_egress_args[@]}"} "${run_args[@]:1}" "$@" </dev/null &
 fi
 CHILD_PID=$!
 LAUNCH_IN_FLIGHT=""

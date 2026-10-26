@@ -238,10 +238,12 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // removed the dead `clarity-phase` command (count 157 → 156). Issue #4132
   // added `clear-worker-gate-labels` and Issue #4046 added `egress-proxy`;
   // each side reached 157 alone, and together the registry holds 158.
-  assertEquals(commands.length, 158);
+  // Issue #4051 added `apple-egress` (count 158 -> 159).
+  assertEquals(commands.length, 159);
   assertEquals(commands.includes("clear-worker-gate-labels"), true);
   assertEquals(commands.includes("route-issue"), true);
   assertEquals(commands.includes("egress-proxy"), true);
+  assertEquals(commands.includes("apple-egress"), true);
   assertEquals(commands.includes("fleet-experiment-report"), true);
   assertEquals(commands.includes("subscription-allocation"), true);
   assertEquals(commands.includes("lib-sweep-record"), true);

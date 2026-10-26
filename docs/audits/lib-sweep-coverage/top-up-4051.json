@@ -7,8 +7,10 @@
   "status": "claimed",
   "sweptAt": "9e4a7d912d55f677e7ecebaebb5cf3cfc5366c4f",
   "paths": [
+    "worker/deno/commands/apple_egress.ts",
     "worker/deno/lib/apple_container_capabilities.ts",
     "worker/deno/lib/apple_egress.ts",
+    "worker/deno/lib/apple_egress_host.ts",
     "worker/deno/lib/egress_control_probe.ts",
     "worker/deno/lib/egress_controls.ts",
     "worker/deno/lib/egress_host_allowlist.ts",

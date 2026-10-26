@@ -24,10 +24,14 @@
  */
 
 import {
+  APPLE_NETWORK_INTERNAL_FLAG,
   type AppleCommandRunner,
   type AppleNetworkCapabilities,
   detectAppleNetworkCapabilities,
 } from "./apple_container_capabilities.ts";
+
+/** The flag re-exported for callers that build the network argv or pin it. */
+export { APPLE_NETWORK_INTERNAL_FLAG };
 import { FORBIDDEN_RUN_FLAGS } from "./container_launch.ts";
 import {
   CONTAINER_RUNTIMES,
@@ -945,7 +949,7 @@ async function runAttempt(ctx: AttemptContext): Promise<AttemptResult> {
         [
           "network",
           "create",
-          "--internal",
+          APPLE_NETWORK_INTERNAL_FLAG,
           "--label",
           `vibe-coder.launch=${options.workerContainerName}`,
           names.network,

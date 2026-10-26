@@ -25,6 +25,15 @@
 /** The lowest macOS major version that offers custom networks. */
 export const APPLE_MIN_MACOS_MAJOR = 26;
 
+/**
+ * The `network create` flag that makes a per-launch network host-only.
+ *
+ * Defined here, the lower layer, and re-exported by `lib/apple_egress.ts`,
+ * so the capability check and the network creation share one spelling
+ * without an import cycle.
+ */
+export const APPLE_NETWORK_INTERNAL_FLAG = "--internal";
+
 /** Runs one command and returns its exit code and output streams. */
 export type AppleCommandRunner = (
   command: string,
@@ -289,7 +298,7 @@ export async function detectAppleNetworkCapabilities(
   );
   const networkCreateInternal = judgeFlag(
     createRead,
-    "--internal",
+    APPLE_NETWORK_INTERNAL_FLAG,
     createLabel,
     reasons,
   );

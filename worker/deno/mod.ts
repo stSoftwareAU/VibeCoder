@@ -162,6 +162,7 @@ import { greenGateReportCommand } from "./commands/green_gate_report.ts";
 import { stripContainerfileCommand } from "./commands/strip_containerfile.ts";
 import { toolchainSelfcheckCommand } from "./commands/toolchain_selfcheck.ts";
 import { egressProxyCommand } from "./commands/egress_proxy.ts";
+import { appleEgressCommand } from "./commands/apple_egress.ts";
 import { repoSettingsHardenCommand } from "./commands/repo_settings_harden.ts";
 import { auditLogTailCommand } from "./commands/audit_log_tail.ts";
 import { auditChainVerifyCommand } from "./commands/audit_chain_verify.ts";
@@ -397,6 +398,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(containerImageHashCommand);
   registry.register(toolchainSelfcheckCommand);
   registry.register(egressProxyCommand);
+  registry.register(appleEgressCommand);
   registry.register(firstRunVerifyCommand);
   registry.register(containerRuntimeDetectCommand);
   registry.register(containerLaunchPlanCommand);
@@ -642,6 +644,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "toolchain-selfcheck",
       // The egress proxy starts before any config exists (Issue #4046).
       "egress-proxy",
+      // The launcher drives Apple egress containment before any config
+      // exists (Issue #4051).
+      "apple-egress",
       "repo-settings-harden",
       // The verification harness runs before any config exists (Issue #736).
       "first-run-verify",
@@ -779,6 +784,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "toolchain-selfcheck",
       // The egress proxy starts before any config exists (Issue #4046).
       "egress-proxy",
+      // The launcher drives Apple egress containment before any config
+      // exists (Issue #4051).
+      "apple-egress",
       "repo-settings-harden",
       // The verification harness runs before any config exists (Issue #736).
       "first-run-verify",

@@ -58,6 +58,7 @@ import {
   APPLE_EGRESS_READY_TRIES_ENV,
   APPLE_EGRESS_RECOVERY_ENV,
   APPLE_EGRESS_REPORT_FILE,
+  APPLE_NETWORK_INTERNAL_FLAG,
 } from "../lib/apple_egress.ts";
 import {
   assertPins,
@@ -448,7 +449,7 @@ Deno.test("CONTAINMENT.md's Apple section names the internal network flag and bo
     APPLE_SECTION,
   );
   assertPins(body, [
-    "--internal",
+    APPLE_NETWORK_INTERNAL_FLAG,
     EGRESS_MODE_LABELS["internal-network"],
     EGRESS_MODE_LABELS["advisory-proxy"],
   ]);
