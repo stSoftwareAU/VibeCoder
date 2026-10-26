@@ -62,7 +62,6 @@ import {
 } from "../lib/apple_egress.ts";
 import {
   assertPins,
-  flat,
   flatWholeFile,
   readRepoDoc,
   section as docSection,
