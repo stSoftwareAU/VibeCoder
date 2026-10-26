@@ -261,7 +261,9 @@ export function milestoneSyncStreakPath(workDir: string): string {
 }
 
 /**
- * Where the sync left off when its budget ran out (Issue #2215).
+ * Where the sync left off when it stopped short (Issue #2215): either its
+ * budget ran out, or the run target had passed and no new sync may start
+ * (Issue #4243). Either way the next cycle resumes at this repository.
  *
  * The sync is one handler under one watchdog, and a pass over every
  * repository's milestones does not always fit the cycle that is left — on

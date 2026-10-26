@@ -30,6 +30,7 @@ import {
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { releaseRunAtFinishDeadline } from "./phases/run_wip_preservation.ts";
 
 /** The screenshot gate's verdict for this run — its failure message. */
 export interface ScreenshotGateBlock {
@@ -133,6 +134,10 @@ export async function recoverFromScreenshotGateBlock(
   }
 
   const { value } = retryResult;
+  if (value.finishDeadline) {
+    recordClaudeRunStats(state, value);
+    return await releaseRunAtFinishDeadline(ctx, state, deps);
+  }
   if (value.timedOut === true) {
     logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +

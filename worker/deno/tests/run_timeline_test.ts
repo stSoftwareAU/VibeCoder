@@ -17,6 +17,7 @@ import {
   DEFAULT_RUN_TARGET_SECONDS,
   describeRunTimeline,
   getRunTimeline,
+  pastRunTarget,
   resetRunTimelineForTests,
   resolveRunTimeline,
   type RunTimeline,
@@ -316,6 +317,39 @@ Deno.test("set/get/reset - the process-wide timeline round-trips and resets", ()
     assertStrictEquals(getRunTimeline(), t);
     resetRunTimelineForTests();
     assertEquals(getRunTimeline(), undefined);
+  } finally {
+    resetRunTimelineForTests();
+  }
+});
+
+Deno.test("pastRunTarget - with no timeline set, nothing has passed the target for any clock reading", () => {
+  resetRunTimelineForTests();
+  try {
+    assertEquals(pastRunTarget(0), false);
+    assertEquals(pastRunTarget(STARTED_MS + 3_600_000), false);
+    assertEquals(pastRunTarget(Number.MAX_SAFE_INTEGER), false);
+  } finally {
+    resetRunTimelineForTests();
+  }
+});
+
+Deno.test("pastRunTarget - false just before the target, true at it and just after", () => {
+  resetRunTimelineForTests();
+  try {
+    const t = resolveRunTimeline({
+      startedMs: STARTED_MS,
+      runDurationSeconds: DEFAULT_RUN_TARGET_SECONDS,
+      runFinishSeconds: DEFAULT_RUN_FINISH_SECONDS,
+      env: () => undefined,
+      killAfterSeconds: 30,
+      warn: () => {},
+    });
+    const targetMs = STARTED_MS + 3_600_000;
+    assertEquals(t.targetMs, targetMs);
+    setRunTimeline(t);
+    assertEquals(pastRunTarget(targetMs - 1), false);
+    assertEquals(pastRunTarget(targetMs), true);
+    assertEquals(pastRunTarget(targetMs + 1), true);
   } finally {
     resetRunTimelineForTests();
   }

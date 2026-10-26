@@ -1,10 +1,11 @@
 /**
  * Tests for claim-runway floor resolution (Issues #4304/#425, parent #397).
  *
- * The floor decides how much runway **to the supervisor hard cap** a new
- * implementation claim must have. Three regimes: a capped run (the floor
- * applies), an uncapped run (inert, with the reason stated), and a floor
- * configured to `0` (inert, with the reason stated).
+ * The floor decides how much runway a new implementation claim must have.
+ * When a timeline is set that instant is the finish deadline (Issue #4245);
+ * otherwise it is the supervisor hard cap. Three regimes: a capped run (the
+ * floor applies), an uncapped run (inert, with the reason stated), and a
+ * floor configured to `0` (inert, with the reason stated).
  *
  * The Issue #47 rule that raised the floor to the whole execute budget is
  * gone: it existed to make deadline-bound executes rare, and Issue #420
@@ -16,6 +17,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   belowClaimRunwayFloor,
+  claimRunwayBoundPhrase,
   DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
   hardCapRunwaySeconds,
   resolveClaimRunwayFloor,
@@ -110,4 +112,34 @@ Deno.test("DEFAULT_MIN_CLAIM_RUNWAY_SECONDS is five minutes so a run keeps claim
   });
   assertEquals(floor.floorSeconds, 300);
   assertEquals(belowClaimRunwayFloor(floor, 0), false);
+});
+
+Deno.test("claim runway #4245 - the floor measures runway to the finish deadline, not the extension ceiling", () => {
+  const now = 1_700_000_000_000;
+  const finishMs = now + 200_000;
+  const ceilingMs = finishMs - 150_000;
+  const floor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: 300,
+    hardCap: { ceilingMs, finishMs, windowSeconds: 7200 },
+  });
+  assertEquals(hardCapRunwaySeconds(floor, now), 200);
+  assertEquals(claimRunwayBoundPhrase(floor), "the finish deadline");
+  assertEquals(
+    belowClaimRunwayFloor(floor, now),
+    true,
+    "200s of runway to the finish is shorter than the 300s floor",
+  );
+  const comfortable = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: 300,
+    hardCap: {
+      ceilingMs: now + 61 * 60_000 - 150_000,
+      finishMs: now + 61 * 60_000,
+      windowSeconds: 7200,
+    },
+  });
+  assertEquals(
+    belowClaimRunwayFloor(comfortable, now),
+    false,
+    "a claim at minute 59 has 61 minutes before the finish, which clears the floor",
+  );
 });

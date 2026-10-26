@@ -1327,6 +1327,18 @@ async function _processFeedbackWithHeartbeat(
     };
   }
 
+  // The finish deadline is a scheduled release (Issue #4245): logged, and
+  // not charged, so no failure label is applied.
+  if (claudeResult.value.finishDeadline) {
+    const summary =
+      `PR feedback for ${repo}#${prNumber} released on schedule: the finish deadline was reached`;
+    logger.info(summary);
+    return {
+      ok: true,
+      value: { processed: false, changesPushed: false, summary },
+    };
+  }
+
   // Check for timeout (Issue #1825: distinguish silence watchdog from hard timeout)
   if (claudeResult.value.timedOut) {
     const failureMessage = claudeResult.value.timeoutReason === "no-output"

@@ -40,6 +40,13 @@ import { fakeClock } from "./support/fake_clock.ts";
 
 const POLICY = { enabled: true, grantSeconds: 900, activityStallSeconds: 300 };
 
+/**
+ * The run target the injected clock must stay before (Issue #4243). The clock
+ * starts at 0 in the abandonment test below, so the target is the default run
+ * duration.
+ */
+const RUN_TARGET_MS = createDefaultRunCoreConfig().runDurationSeconds * 1000;
+
 // ---------------------------------------------------------------------------
 // The pure decision
 // ---------------------------------------------------------------------------
@@ -308,8 +315,10 @@ Deno.test("run_core watchdog - abandoning PR Feedback terminates only its own ag
     addSignalListener: (signal, handler) => {
       if (signal === "SIGTERM") shutdown = handler;
     },
+    // Issue #4243: the timer never carries the clock to the run target, so
+    // the issue after the abandoned PR Feedback is still dispatched.
     watchdogDelay: (ms) => {
-      now += ms;
+      now = Math.min(now + ms, RUN_TARGET_MS - 1);
       return Promise.resolve();
     },
     terminateActiveAgentRuns: (reason, options) => {
@@ -335,6 +344,9 @@ Deno.test("run_core watchdog - abandoning PR Feedback terminates only its own ag
     },
     processIssue: () => {
       issueOwner = currentAgentRunOwner()?.id;
+      // Issue #4243: the clock no longer runs past the run end on its own, so
+      // end the run once the issue is processed — one cycle, one wedge.
+      shutdown?.();
       return Promise.resolve({ ok: true, value: { success: true } });
     },
   });

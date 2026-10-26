@@ -108,6 +108,15 @@ export interface ClaudeExecutionResult {
    */
   scheduledRelease?: ScheduledReleaseReason;
   /**
+   * The session was bounded by the run's finish deadline (Issue #4244).
+   *
+   * Set when the finish deadline left less than the minimum session and the
+   * agent was not spawned, and when a spawned session ended because the
+   * clamped timeout fired. Absent on a run that used up its own
+   * `timeoutSeconds`, and absent when no timeline is set.
+   */
+  finishDeadline?: boolean;
+  /**
    * Seconds the hard watchdog fired past its configured budget
    * (Issue #4254) — a starved VM delays Deno timers, and host-25 saw the
    * 3600 s watchdog fire 487 s and 3470 s late. Present only when late.

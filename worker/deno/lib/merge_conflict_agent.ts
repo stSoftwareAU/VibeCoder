@@ -107,6 +107,12 @@ export interface MergeConflictAgentOutcome {
   /** The run was ended by the worker (SIGTERM, exit 143). */
   terminated: boolean;
   /**
+   * The finish deadline ended the run (Issue #4245). Like `terminated`, the
+   * tree is not a verdict: the caller logs the release and applies no
+   * failure label.
+   */
+  finishDeadline?: boolean;
+  /**
    * Set when the provider refused to serve the run — a spent balance, a
    * rejected credential or an outlasting 429/5xx (Issue #2613). Like
    * `terminated`, the tree is no verdict on the conflict; carries the
@@ -207,6 +213,15 @@ export async function runMergeConflictAgent(
   // failure the target must pay for.
   if (claudeResult.value.terminated) {
     return { ok: true, value: { terminated: true } };
+  }
+  if (claudeResult.value.finishDeadline) {
+    const targetLabel = target.kind === "pr"
+      ? `${repo}#${target.prNumber}`
+      : `${repo} ${target.intoBranch}`;
+    logger.info(
+      `Merge-conflict resolution for ${targetLabel} released on schedule: the finish deadline was reached`,
+    );
+    return { ok: true, value: { terminated: false, finishDeadline: true } };
   }
   if (claudeResult.value.timedOut) {
     return {

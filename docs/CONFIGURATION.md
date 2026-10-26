@@ -1888,7 +1888,8 @@ unless explicitly overridden.
 | ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 1.4.0 this key wins when both are set (Issue #1032). |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
-| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway a new implementation claim must have; `0` disables the floor. When a run timeline is set the floor measures to the two-hour finish deadline (Issue #4245); otherwise to the supervisor hard cap (`VIBE_RUN_MAX_SECONDS`). A claim taken below it would be ended before it could finish setup. Measured against that instant, not the one-hour cycle: the target does not truncate an active claim, but the session budget is bounded by the finish less the kill grace and WIP reserve — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with neither a timeline nor a hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
+| Run finish deadline | `run_finish_seconds` | `7200` | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start. When a timeline is set, agent sessions, extension grants, the claim floor and the drain read this finish (Issues #4244, #4245, #4246). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 | Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
 | Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
@@ -1898,7 +1899,8 @@ unless explicitly overridden.
 > `container_launch.ts` forwards only the
 > variables it sets itself (the base directory, the config path, the host id,
 > the host-disk reading and — when `loop.sh` published them — the run cap pair
-> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`), so it does not reach a
+> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`, and the launcher's hard-kill
+> instant `VIBE_HARD_KILL_AT_EPOCH`), so it does not reach a
 > containerised worker —
 > the default run mode. Use the `.config.json` keys above, which are read from
 > the config mounted at `CONFIG_PATH`. A config key always wins over the
@@ -2433,44 +2435,66 @@ demonstrably progressing.
 
 Five stages, in the order a claim meets them:
 
-1. **The claim gate is soft.** Past the deadline a slot takes **no new claim**
-   (`slotShouldStop` returns `deadline`); nothing already running is touched.
-   The [claim-runway floor](#-adaptive-claim-floor) refuses a claim for the
-   other reason, and it now measures runway to the supervisor hard cap rather
-   than to the deadline (`hard-cap`, Issue #425) — a claim the cap would kill
-   before it finished setup is the only claim worth refusing early.
-2. **An in-flight claim keeps its full budget.** The execute phase does **not**
-   truncate `claude_timeout` to the runway left (Issue #420). A claim taken at
-   any point inside the cycle gets the whole budget, and the cycle overruns to
-   let it finish.
+1. **The claim gate is soft.** Past the one-hour target a slot takes **no new
+   claim** (`slotShouldStop` returns `deadline`); nothing already running is
+   touched (Issue #4243). The [claim-runway floor](#-adaptive-claim-floor)
+   refuses a claim for the other reason. When a run timeline is set it
+   measures runway to the two-hour finish deadline (Issue #4245); otherwise
+   it measures to the supervisor hard cap (Issue #425). A claim that deadline
+   would end before setup finished is the only claim worth refusing early.
+2. **An in-flight claim keeps its configured budget when the finish leaves
+   room.** The execute phase does **not** truncate `claude_timeout` to the
+   runway left in the one-hour cycle (Issue #420). A claim taken at minute 59
+   has 61 minutes before the two-hour finish. With the default 30 s kill grace
+   and 120 s WIP reserve, its effective session budget is at most 58 minutes
+   30 seconds before preparation (Issue #4245). The requested timeout stays
+   unchanged; the runner uses the smaller of that request and finish − now −
+   the kill grace − 120 s, and the user prompt
+   states the finish deadline (Issue #4244). The runner refreshes that budget
+   after preparation, refuses to spawn below the 120 s minimum, and caps the
+   watchdog at the absolute finish less the kill grace and WIP reserve.
+   A quality, security, summary, screenshot or pre-push recovery released at that
+   deadline preserves its WIP and ends as a scheduled release without
+   another gate run or an issue-failure charge. A custom-label PR run posts
+   that outcome on the PR and asks the developer to re-apply its consumed
+   label next run.
 3. **Extensions re-arm that budget while the run is progressing.** On by
    default (Issue #422) — see
    [Progress-extended deadline](#-progress-extended-deadline) for the two
    signals and the grant size.
-4. **The supervisor's wall-clock cap is the only place a progressing agent is
-   killed.** `VIBE_RUN_MAX_SECONDS` is the ceiling every grant is measured
-   against, less a reserve for the kill grace and the WIP commit-and-push, so
-   the worker's own kill lands *before* the supervisor's SIGTERM — see
+4. **The two-hour finish bounds every grant.** A progress-extension grant is
+   clamped to the finish less the kill grace and the 120 s WIP reserve. A
+   grant that would pass that ceiling is clamped to it, and the
+   `[progress-extension]` line says `grant clamped to the finish deadline`.
+   With no runway left the run is a **scheduled release** because the finish
+   deadline was reached: the WIP commit is kept, and no `failed-once` label,
+   timeout cooldown or worker-fault filing is applied (Issue #4245). The
+   supervisor cap (`VIBE_RUN_MAX_SECONDS`, default 10800 s) remains the outer
+   kill of the process — see
    [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).
-   Work in progress is committed and pushed, the next cycle resumes it, and the
-   issue is reported as a **scheduled release** rather than a failure
-   (Issue #424) — the fleet stopped the agent, not the other way round.
-5. **The drain waits.** `drainSlots` lets a slot that started before the
-   deadline finish, however long that takes. Only a SIGTERM *shutdown* bounds
-   the wait with a grace; a deadline drain does not.
+5. **The drain stops at the finish plus a bounded grace.** The default serial
+   claim uses the same bound as pooled claims. `drainSlots` and
+   the maintenance-lane drain wait no later than the finish plus the kill
+   grace and the 120 s WIP reserve (Issue #4246). At the finish they terminate
+   in-flight agents so the execute path can commit and push; a slot still
+   running when the grace ends has its claim released, and one line names
+   each abandoned item. The run then exits through `Run duration complete.
+   Exiting for refresh.`, and the cycle heartbeat and the success and always
+   run hooks fire as they do on any other end. A SIGTERM shutdown still bounds
+   its own wait with `slotDrainGraceSeconds`.
 
 ```mermaid
 flowchart TD
     S[Slot wants a claim] --> G{Past the deadline,<br/>or inside the runway floor?}
     G -->|yes| D[No new claim — drain]
-    G -->|no| C[Claim taken:<br/>full claude_timeout, never truncated]
+    G -->|no| C[Claim taken:<br/>full budget when the<br/>finish leaves room]
     C --> P{Budget expired?}
     P -->|no| C
     P -->|yes| E{Still progressing?}
     E -->|no| K[Kill — the run ends here]
-    E -->|yes| H{Runway left before<br/>the run hard cap?}
+    E -->|yes| H{Runway left before<br/>finish minus reserve?}
     H -->|yes| X[Extend and keep going] --> C
-    H -->|no| W[Commit and push WIP,<br/>stop before the supervisor does]
+    H -->|no| W[Clamp the grant,<br/>commit and push WIP]
     W --> R[Next cycle resumes the work]
     D --> R
     style W fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -2619,32 +2643,86 @@ but there is one on wall clock, below.
 
 #### The run hard cap bounds every grant
 
-`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 10800 s —
-3 h — `0` disables it) and now exports that cap with the run's start epoch, so
-the worker can see the deadline it is running towards (Issue #421). The cap is
-the outer bound on a cycle that *finishes* the work it started rather than "one
-run plus a margin": with claims no longer truncated at the cycle deadline
-(Issue #397), a claim taken at minute 59 runs its full budget and its progress
-extensions inside it (Issue #423). It sits 600 s under the launcher's container
-watchdog (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host
-never reaps a container this supervisor would still allow to run. The cap is
-the last stage of [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model): the
-only place a still-progressing agent is stopped. Extensions are bounded by it:
+A run has three instants. The **target** is one hour after the start
+(`runDurationSeconds`, 3600 s): past it, nothing new starts (Issue #4243). The
+**finish** is two hours after the start (`run_finish_seconds`, 7200 s): agent
+sessions, progress-extension grants and the claim floor are measured to it
+(Issues #4244, #4245), and the drain stops at the finish plus the kill grace
+and the 120 s WIP reserve (Issue #4246). The **hard cap** is three hours
+(`VIBE_RUN_MAX_SECONDS`, default 10800 s, `0` disables it): the supervisor's
+outer kill of the process (Issue #421).
 
-- The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
-  `claude_kill_after` plus 120 s for the WIP commit-and-push. The worker's own
-  kill therefore lands before the supervisor's SIGTERM, leaving
-  work-in-progress committed and pushed for the next cycle to resume.
-- A grant that would cross the ceiling is **clamped to it**, not refused: a run
-  with 200 s of runway left gets 200 s, and the line says so
-  (`grant clamped to the run hard cap: 200s of runway left, not the full
-  900s`).
+`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` and exports that
+cap with the run's start epoch, so the worker can see the deadline it is
+running towards. The cap sits 600 s under the launcher's container watchdog
+(`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host never
+reaps a container this supervisor would still allow to run. A claim taken at
+minute 59 has 61 minutes before the finish: with the default 150 s combined
+kill grace and WIP reserve, at most 58 minutes 30 seconds remain for its
+session before preparation. The one-hour target does not truncate the request;
+the finish-minus-reserve ceiling bounds the session and every extension grant.
+
+When a timeline is set, extensions are bounded by the finish:
+
+- The **ceiling** is the finish, less `claude_kill_after` plus 120 s for the
+  WIP commit-and-push. A grant that would cross it is **clamped to it**, and
+  the `[progress-extension]` line says `grant clamped to the finish deadline`.
+- With no runway left the check refuses and the run is a scheduled release:
+  `the finish deadline was reached`. The WIP commit is kept. No `failed-once`
+  is added.
+- The claim floor measures runway to the finish itself, which is the reserve
+  later than the ceiling. A claim whose runway is shorter than the floor is
+  refused.
+
+When no timeline is set, the supervisor cap is the ceiling, exactly as before:
+
+- The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less the same reserve.
+  A grant that would cross it is clamped, and the line says
+  `grant clamped to the run hard cap: 200s of runway left, not the full 900s`.
 - With no runway left the check refuses and the run is killed with
   `run hard cap reached`.
 - With `VIBE_RUN_MAX_SECONDS=0`, or the variables absent (a CLI single-issue
-  run, or `run.sh` invoked outside `loop.sh`), there is **no ceiling** and
-  extensions behave exactly as they did before. The run-start `Run hard cap:`
-  line says which of the two applies.
+  run, or `run.sh` invoked outside `loop.sh`), and no timeline, there is **no
+  ceiling** and extensions behave exactly as they did before. The run-start
+  `Run hard cap:` line says which applies.
+
+The launch plan also forwards `VIBE_HARD_KILL_AT_EPOCH` into the container: the
+epoch-seconds at which the launcher watchdog kills it (the plan's time plus the
+watchdog seconds, a conservative bound because an image build may run in
+between). The worker's run timeline (`lib/run_timeline.ts`) reads it as the
+hard-kill deadline, falling back to the `VIBE_RUN_MAX_SECONDS` /
+`VIBE_RUN_STARTED_EPOCH` pair. When it is absent the worker falls back to the
+pair, and only when that pair is also unusable does the run-start `Run timeline:`
+log line say `hard-kill=none (<reason>)`. The same line gives the run's target
+(1 h, `runDurationSeconds`) and finish (2 h, `run_finish_seconds`) as instants.
+The finish and the hard kill are logged and published through
+`lib/run_timeline.ts`. Agent sessions, extension grants, the claim floor and
+the drain read the finish from that publication. The one-hour target remains
+the start gate and is not the finish.
+
+The one-hour target is a start gate (Issue #4243). Once it has passed, nothing
+new starts. The Priority ladder defers the handler it reached, and every one
+after it, to the next cycle, logging one
+`stop reason=deadline — <handler> and any after it defer to the next cycle.`
+line; that covers milestone branch sync and the merge-conflict pass, which are
+ladder handlers. Past the target, the per-item loops take nothing new either,
+in those two handlers and in the Auto-Merge sweep: the merge-conflict drain
+starts no further resolution (one `Merge-conflict drain stopping: the run
+target has passed...` line, reported as a deadline stop), the milestone branch
+sync starts no further repository or milestone (one `Milestone sync stopped
+before ... the run target has passed...` line, and the sync cursor resumes
+there next cycle), and the Auto-Merge sweep's in-cycle milestone sync is
+deferred (one `In-cycle milestone sync deferred for <repo>#<n>: the run target
+has passed...` line; the PR is still armed). An issue run that completes a PR it
+has already claimed still syncs its milestone past the target, because that
+claim is already active. The issue scan takes no new claim,
+on its first pass as on later ones, and the Priority 2 slot pool and the
+maintenance lane refuse a new claim or pass past the target too. The idle-task
+filer is refused as well, logging one line for each refused observation (each
+slot plus the outer-cycle observer), with no permit spent and no transcript,
+audit or census call made. A handler already
+running is not interrupted at the target; it keeps its budget until the
+finish deadline, when the drain terminates it so the checkpoint can land.
 
 #### The agent is told to wind down before the cap (Issue #508)
 
@@ -2750,7 +2828,7 @@ release**, not as the issue defeating the agent:
   bounded in-process retry exists to re-run a transient blip, and a run
   released at the cap has no runway to retry into.
 - The preserved work lands in a `wip:` commit whose subject names the real
-  cause (`wip: execute was released on schedule (cycle ended or run hard cap
+  cause (`wip: execute was released on schedule (cycle ended, finish deadline reached, or run hard cap
   reached) after …`), so the next claimant reads what actually happened.
 - The release comment carries a **Work in progress** line naming the branch
   that work is on, and links the handover file when one exists (Issue #770).

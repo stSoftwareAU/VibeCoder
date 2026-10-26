@@ -1861,6 +1861,24 @@ async function _processCiWithHeartbeat(
     };
   }
 
+  // The finish deadline is a scheduled release (Issue #4245): logged, and
+  // no failure comment is posted, so no failure label is applied.
+  if (claudeResult.value.finishDeadline) {
+    const summary =
+      `CI fix for ${repo}#${prNumber} released on schedule: the finish deadline was reached`;
+    logger.info(summary);
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary,
+      },
+    };
+  }
+
   // Check for timeout (Issue #1825: distinguish silence watchdog from hard timeout)
   if (claudeResult.value.timedOut) {
     const failureMessage = claudeResult.value.timeoutReason === "no-output"

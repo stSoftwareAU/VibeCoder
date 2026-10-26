@@ -47,11 +47,12 @@ const PRE_PUSH_GATE_OUTPUT_BLOCK = "the pre-push gate output";
  * `ran: true` means the turn finished cleanly and its changes were committed
  * on the intended branch. Reconciliation or commit failures stop recovery.
  * `ran: false` names the cause in `detail`; the caller then reports
- * the gate's latest output as the block.
+ * the gate's latest output as the block. A typed `finishDeadline` release
+ * instead preserves WIP and ends the phase without charging a gate failure.
  */
 export type PrePushRecoveryTurn =
   | { ran: true }
-  | { ran: false; detail: string };
+  | { ran: false; detail: string; finishDeadline?: true };
 
 /**
  * Prompt for the pre-push gate's one extra agent turn (Issue #4128).
@@ -187,6 +188,14 @@ export async function runPrePushGateRecoveryTurn(
   }
 
   const { value } = retryResult;
+  if (value.finishDeadline) {
+    recordClaudeRunStats(state, value);
+    return {
+      ran: false,
+      detail: "the finish deadline was reached",
+      finishDeadline: true,
+    };
+  }
   if (value.timedOut === true) {
     const detail = `timed out after ${timeoutSeconds}s`;
     logger.error(

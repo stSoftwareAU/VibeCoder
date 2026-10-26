@@ -158,7 +158,10 @@ import {
 } from "../mutation_gate.ts";
 import { invokeMutationCheck } from "../mutation_check_invocation.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
-import { preserveRunWip } from "./run_wip_preservation.ts";
+import {
+  preserveRunWip,
+  releaseRunAtFinishDeadline,
+} from "./run_wip_preservation.ts";
 import {
   isWorkflowScopePushRefusal,
   WORKFLOW_SCOPE_REMEDIATION,
@@ -1829,6 +1832,9 @@ async function completionBody(
         deps,
         gate.error.message,
       );
+      if (!turn.ran && turn.finishDeadline) {
+        return await releaseRunAtFinishDeadline(ctx, state, deps);
+      }
       if (turn.ran) gate = await runGateOnce();
     }
     if (gate.ok) {

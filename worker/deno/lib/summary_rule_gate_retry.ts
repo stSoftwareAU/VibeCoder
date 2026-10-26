@@ -68,6 +68,7 @@ import {
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { workOnIssueQualityGate } from "./phases/quality_gate_remediation_phase.ts";
+import { releaseRunAtFinishDeadline } from "./phases/run_wip_preservation.ts";
 import { renderClosureBlocksFromVerdict } from "./closure_verdict_recovery.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 import {
@@ -449,6 +450,9 @@ export async function recoverFromSummaryRuleBlock(
     return await rerunCompletion();
   }
   recordClaudeRunStats(state, retryResult.value);
+  if (retryResult.value.finishDeadline) {
+    return await releaseRunAtFinishDeadline(ctx, state, deps);
+  }
 
   // The block whose shape is fixed and machine-checked is rendered by the
   // worker when the agent's own summary still fails it (Issue #2242). A no-op

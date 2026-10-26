@@ -165,6 +165,8 @@ async function runNoChangesScenario(
   input: CiFixInput,
   claudeOutput: string,
   responseMessage?: string,
+  claudeValue?: Record<string, unknown>,
+  logs?: string[],
   retryCount = 0,
 ): Promise<CapturedGh> {
   const tmpDir = await Deno.makeTempDir();
@@ -181,7 +183,12 @@ async function runNoChangesScenario(
       runClaudeWithRetry: (() =>
         Promise.resolve({
           ok: true,
-          value: { output: claudeOutput, exitCode: 0, timedOut: false },
+          value: {
+            output: claudeOutput,
+            exitCode: 0,
+            timedOut: false,
+            ...claudeValue,
+          },
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
 
@@ -202,9 +209,11 @@ async function runNoChangesScenario(
       },
     });
 
+    const logger = makeSilentLogger();
+    if (logs) logger.info = (message: string) => logs.push(message);
     const processorDeps: CiProcessorDeps = {
       promptsDir: PROMPTS_DIR,
-      logger: makeSilentLogger(),
+      logger,
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
@@ -709,11 +718,39 @@ Deno.test("processCiFailure - HEAD moved but the remote disagrees: no success cl
   }
 });
 
+Deno.test("processCiFailure - a finish deadline is released on schedule and adds no label (Issue #4245)", async () => {
+  const logs: string[] = [];
+  const captured = await runNoChangesScenario(
+    makeInput(),
+    "",
+    undefined,
+    {
+      finishDeadline: true,
+      timedOut: true,
+      timeoutReason: "hard-timeout",
+      exitCode: 124,
+    },
+    logs,
+  );
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(
+    captured.comments.some((comment) => comment.includes("Failed to fix")),
+    false,
+  );
+  assertEquals(
+    logs.some((line) => line.includes("released on schedule")),
+    true,
+    logs.join("\n"),
+  );
+});
+
 Deno.test("processCiFailure no-changes - a startup suite re-runs its workflow even with exhausted job retries (Issue #4347)", async () => {
   for (const retryCount of [0, 3]) {
     const captured = await runNoChangesScenario(
       makeInput({ checkRunId: "suite-77" }),
       "No changes needed.",
+      undefined,
+      undefined,
       undefined,
       retryCount,
     );

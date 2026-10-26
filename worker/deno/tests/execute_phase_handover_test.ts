@@ -58,6 +58,16 @@ const EXTERNAL_SIGTERM = {
 /** A timeout where the agent produced nothing at all (Issue #218 guard). */
 const TIMED_OUT_ZERO_OUTPUT = { ...TIMED_OUT, output: "" };
 
+/** The finish deadline clamped the session (Issue #4245). */
+const FINISH_DEADLINE = {
+  output: "editing the parser, running deno test",
+  exitCode: 124,
+  rawExitCode: 143,
+  timedOut: true,
+  timeoutReason: "hard-timeout",
+  finishDeadline: true,
+};
+
 /** The worker's own shutdown ended the run: the cycle is over. */
 const WORKER_SHUTDOWN = {
   output: "editing the parser, running deno test",
@@ -209,6 +219,15 @@ async function runInterrupted(options: {
     await Deno.remove(repoPath, { recursive: true });
   }
 }
+
+Deno.test("execute_phase #4245 - a finish deadline keeps the wip commit and is a scheduled release", async () => {
+  const run = await runInterrupted({ runnerValue: FINISH_DEADLINE });
+  assertEquals(run.commits.length, 1);
+  assertStringIncludes(run.commits[0] ?? "", "wip:");
+  assertStringIncludes(run.commits[0] ?? "", "released on schedule");
+  assertStringIncludes(run.reason, "Released on schedule:");
+  assertStringIncludes(run.reason, "finish deadline was reached");
+});
 
 Deno.test("execute_phase #769 - a hard timeout commits the handover note", async () => {
   const run = await runInterrupted({ runnerValue: TIMED_OUT });

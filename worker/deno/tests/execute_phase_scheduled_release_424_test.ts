@@ -34,6 +34,7 @@ import { deriveRunOutcome } from "../lib/run_outcome.ts";
 import { renderRunOutcomeClause } from "../lib/heartbeat_storage.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { WorkerConfig } from "../types.ts";
+import { handleIssueFailure } from "../lib/label_failure.ts";
 
 function makeConfig(): WorkerConfig {
   return { ...buildDefaultWorkerConfig(), infraRetryBackoffMs: 50 };
@@ -124,6 +125,38 @@ function assertNoTimeoutBlame(reason: string): void {
     );
   }
 }
+
+Deno.test("execute_phase #4245 - a finish deadline is a scheduled release and adds no failed-once", async () => {
+  const result = await runPhaseWith({
+    output: "Wiring the production side; tests next",
+    exitCode: 124,
+    rawExitCode: 143,
+    timedOut: true,
+    timeoutReason: "hard-timeout",
+    finishDeadline: true,
+  });
+
+  assertEquals(result.status, "failure");
+  const reason = result.reason ?? "";
+  assertStringIncludes(reason, "Released on schedule:");
+  assertStringIncludes(reason, "finish deadline was reached");
+  assertEquals(detectFailureCategory(reason), "scheduled_release");
+  assertNoTimeoutBlame(reason);
+  assertEquals(isTimeoutClassFailureReason(reason), false);
+  assertEquals(result.runnerCalls, 1);
+
+  const labelled = await handleIssueFailure({
+    repo: "org/repo",
+    issueNumber: 424,
+    githubUser: "testbot",
+    failureMessage: reason,
+    category: "scheduled_release",
+  }, {
+    ghCommandFn: () => Promise.resolve(""),
+  });
+  assert(labelled.ok);
+  if (labelled.ok) assertEquals(labelled.value.markedAsFailedOnce, false);
+});
 
 Deno.test("execute_phase #424 - a hard-cap release reports the handover, not a timeout", async () => {
   const result = await runPhaseWith({
