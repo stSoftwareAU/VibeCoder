@@ -108,3 +108,12 @@ allowance remains an ordinary hard timeout and carries no `finishDeadline`.
 All 8 runner deadline tests now pass.
 Removing the clamp distinction makes the new own-budget test fail with
 `finishDeadline: true` instead of the required absent flag.
+
+The final spawn-time refresh also updates the clamp classification and
+backstop duration after synchronous prompt preparation. A regression starts
+with a 400-second request inside a 450-second allowance, then spends 60
+seconds in the last preparation log. The absolute watchdog fires after the
+remaining 390 seconds and must report `finishDeadline: true`. That test failed
+with an absent flag before the fix.
+All 22 deadline, stdin and provider-invocation tests pass, along with all 866
+manifest checks (one ignored); formatting and lint pass.

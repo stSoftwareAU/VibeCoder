@@ -1588,11 +1588,10 @@ async function runClaudeWithTimeoutBody(
         nowMs: startMs,
         timeline,
       });
-      if (spawnClamp.belowFloor) {
-        finishClamp = spawnClamp;
-        sessionTimeoutSeconds = spawnClamp.timeoutSeconds;
-        return finishRefusal();
-      }
+      finishClamp = spawnClamp;
+      sessionTimeoutSeconds = spawnClamp.timeoutSeconds;
+      timeoutMs = sessionTimeoutSeconds * 1000;
+      if (spawnClamp.belowFloor) return finishRefusal();
     }
     const child = spawnCommandWithTimeout(spawnBinary, {
       args: spawnArgs,

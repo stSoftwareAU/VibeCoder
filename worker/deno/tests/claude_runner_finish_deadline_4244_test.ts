@@ -172,9 +172,17 @@ Deno.test({
   },
 });
 
-for (const requested of [REQUESTED_TIMEOUT_SECONDS, 120]) {
+for (
+  const { requested, finalSetupSeconds } of [
+    { requested: REQUESTED_TIMEOUT_SECONDS, finalSetupSeconds: 0 },
+    { requested: 120, finalSetupSeconds: 0 },
+    { requested: 400, finalSetupSeconds: 60 },
+  ]
+) {
   Deno.test({
-    name: requested === REQUESTED_TIMEOUT_SECONDS
+    name: finalSetupSeconds > 0
+      ? "runClaudeWithTimeout - synchronous final preparation carries the absolute finish clamp into the result (Issue #4244)"
+      : requested === REQUESTED_TIMEOUT_SECONDS
       ? "runClaudeWithTimeout - a session ended by the finish clamp carries finishDeadline (Issue #4244)"
       : "runClaudeWithTimeout - an own-budget timeout within the finish allowance is not a scheduled release (Issue #4244)",
     permissions: { run: true, read: true, write: true, env: true },
@@ -183,12 +191,15 @@ for (const requested of [REQUESTED_TIMEOUT_SECONDS, 120]) {
       resetRunTimelineForTests();
       // 1 h 50 m, so the clamp is 600 − kill grace − reserve, long enough to
       // spawn and short enough that the injected clock can fire it.
-      const clock = fakeClock(STARTED_MS + 110 * 60 * 1000);
+      const timers = fakeClock(STARTED_MS + 110 * 60 * 1000);
+      let setupElapsedMs = 0;
+      const clock = { ...timers, now: () => timers.now() + setupElapsedMs };
       const finishMs = STARTED_MS + DEFAULT_RUN_FINISH_SECONDS * 1000;
       publishTimeline(finishMs);
       const allowed = Math.min(
         requested,
-        600 - KILL_AFTER_SECONDS - WIP_CHECKPOINT_RESERVE_SECONDS,
+        600 - finalSetupSeconds - KILL_AFTER_SECONDS -
+          WIP_CHECKPOINT_RESERVE_SECONDS,
       );
       const stub = await createAgentStub(
         [
@@ -216,6 +227,15 @@ for (const requested of [REQUESTED_TIMEOUT_SECONDS, 120]) {
           timeoutSeconds: requested,
           killAfterSeconds: KILL_AFTER_SECONDS,
           clock,
+          logger: {
+            ...capturingLogger([]),
+            info: (message) => {
+              // The last preparation log is synchronous and precedes spawn.
+              if (message.startsWith("Prompt file:")) {
+                setupElapsedMs = finalSetupSeconds * 1000;
+              }
+            },
+          },
           agentBinaryPath: stub.path,
           onActivity: signals.onActivity,
           progressIntervalMs: 86_400_000,
@@ -230,7 +250,7 @@ for (const requested of [REQUESTED_TIMEOUT_SECONDS, 120]) {
         assertEquals(result.value.timeoutReason, "hard-timeout");
         assertEquals(
           result.value.finishDeadline,
-          requested === REQUESTED_TIMEOUT_SECONDS ? true : undefined,
+          requested > allowed ? true : undefined,
         );
       } finally {
         await stub.dispose();
