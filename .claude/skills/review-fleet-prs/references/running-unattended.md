@@ -7,6 +7,31 @@ Every 5 minutes it runs one gate pass on the host, and it starts a headless
 ready. It loops for ever, retries after a failed pass, kills a round that
 runs over 50 minutes, and keeps one runner per machine.
 
+Each ready PR gets a round of its own, and up to `pr_reviewer_parallel`
+rounds (`.config.json`, default 3, see
+[CONFIGURATION.md](../../../../docs/CONFIGURATION.md#-parallel-review-rounds))
+run at once, so a quick review posts without waiting for a slow one
+(Issue #4395). The gate is told which PRs are in a round (`--in-flight`) and skips
+them as `in-flight`, so a PR is never in two rounds on one host. The loop
+wakes every 30 seconds to collect finished rounds: after a round succeeds, or
+when the gate left PRs `over-limit`, the next gate pass runs at once to fill
+the free slot, rather than after the full 5 minutes (Issue #4396). A round
+that failed waits for the interval, so a PR that keeps failing is not retried
+straight away. Stopping the runner stops the rounds it started.
+
+A review round does only steps 1, 2 and 4 of [SKILL.md](../SKILL.md)'s
+"Reviewing the ready PRs". Step 3, learning from recurring findings, runs in a
+round of its own (Issue #4397): at most once an hour, and only when
+`log.jsonl` has a sent-back review since the last one. `learned-lines` in the
+state directory records how many `log.jsonl` lines a learning round has
+covered; it advances only when the round succeeds, so a failed one is retried
+the next hour. A runner's first start covers only reviews posted from then on.
+Learning takes one of the `pr_reviewer_parallel` slots while it runs.
+
+Two runners on different hosts are not yet coordinated: until Issue #4398
+adds a claim on GitHub, each would review a ready PR the other is already
+reviewing, so run one per fleet.
+
 ```bash
 .claude/skills/review-fleet-prs/scripts/run.sh --install   # start at login, restart on exit
 .claude/skills/review-fleet-prs/scripts/run.sh --once      # one pass, in the foreground
@@ -31,6 +56,9 @@ The log is `runner.log` in the log directory (`<logs>/review-fleet-prs/`, see
 [notes.md](notes.md)). Every pass writes a
 line to it: an idle pass logs `gate: nothing ready (...)` with the gate's
 skip counts, so a quiet log still shows the gate running every 5 minutes.
+Rounds run side by side, so each round's lines are tagged with its PR
+(`[owner/repo#7] ...`), and each round's files sit in their own
+`rounds/<timestamp>-<owner>-<repo>-<n>/` directory.
 A headless round cannot send the
 PushNotification in [SKILL.md](../SKILL.md)'s step 4; `summary.md` still shows
 what is waiting.

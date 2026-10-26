@@ -21,7 +21,9 @@
 //
 // Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts
 //          [--config=<path>] [--repo=<owner/name>] [--watch=<seconds>]
-//          [--sleep-first] [--limit=<n>]
+//          [--sleep-first] [--limit=<n>] [--in-flight=<owner/name#n>,...]
+// --in-flight names PRs a round on this host is already reviewing (run.sh's
+// pool, Issue #4395): they are skipped as `in-flight` and never take a slot.
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
 // Output: one line of JSON, { ready: [...], auditBlocked: [...],
@@ -123,6 +125,7 @@ type Skip =
   | "approved" // someone else approved it at this exact head commit (Issue #3225): nothing left to review
   | "awaiting-fix" // sent back earlier; own diff unchanged or only a strict version re-bump
   | "checklist-unreadable" // fetching review-checklists.json failed with a gh error other than not-found; retried next pass
+  | "in-flight" // already being reviewed in a round on this host (--in-flight, Issue #4395)
   | "over-limit"; // ready, but past this pass's --limit; back next pass
 
 export interface ReadyPr {
@@ -901,6 +904,8 @@ export async function pass(
     gh?: (args: string[]) => Promise<string>;
     dir?: string;
     limit?: number;
+    /** PRs (owner/name#n) already in a review round on this host. */
+    inFlight?: ReadonlySet<string>;
     /** Trusted capability bundle. Defaults to the copy shipped with the worker. */
     loadCapabilityBundle?: () => Promise<CapabilityLoad>;
   } = {},
@@ -1055,6 +1060,12 @@ export async function pass(
     }
     if (skip) {
       skipped[skip] = (skipped[skip] ?? 0) + 1;
+      continue;
+    }
+    // Being reviewed right now in another of this host's rounds: not yet
+    // `already-reviewed`, and never worth a second round (Issue #4395).
+    if (deps.inFlight?.has(prKey(repo, pr.number))) {
+      skipped["in-flight"] = (skipped["in-flight"] ?? 0) + 1;
       continue;
     }
     // The cap is applied here, after every other skip, so a red, approved
@@ -1379,6 +1390,9 @@ export async function main() {
     (await gh(["api", "user", "--jq", ".login"])).trim();
   const watchSeconds = Number(arg("watch") ?? 0);
   const limit = Number(arg("limit") ?? DEFAULT_LIMIT);
+  const inFlight = new Set(
+    (arg("in-flight") ?? "").split(",").filter((k) => k !== ""),
+  );
 
   const sleep = () => new Promise((r) => setTimeout(r, watchSeconds * 1000));
   if (watchSeconds > 0 && Deno.args.includes("--sleep-first")) await sleep();
@@ -1386,7 +1400,7 @@ export async function main() {
   let failures = 0;
   while (true) {
     try {
-      const result = await pass(repos, fleet, reviewer, { limit });
+      const result = await pass(repos, fleet, reviewer, { limit, inFlight });
       failures = 0;
       if (
         result.ready.length > 0 || result.auditBlocked.length > 0 ||

@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # Runs the review-fleet-prs skill unattended, for ever, on an always-on host.
 #
-# Every 5 minutes it runs one gate pass (a GitHub search, no model). Only
-# when a PR is ready is a headless Claude session started to review that
-# round, in the Vibe Coder's worker container, so an idle night costs no
-# tokens. With `pr_reviewer_app` in .config.json, reviews post as that
-# GitHub App (see app_token.ts).
+# Every 5 minutes it runs one gate pass (a GitHub search, no model). Each
+# ready PR gets its own headless Claude round, in the Vibe Coder's worker
+# container, with up to `pr_reviewer_parallel` (.config.json, default 3)
+# rounds running at once, so a quick review posts without waiting for a slow
+# one (Issue #4395). A slot that frees is filled at the next 30-second tick
+# rather than after the full interval (Issue #4396). Learning from recurring
+# findings runs in its own round, at most hourly and only after new
+# send-backs (Issue #4397). An idle night still costs no tokens. With
+# `pr_reviewer_app` in .config.json, reviews post as that GitHub App (see
+# app_token.ts).
 #
 #   run.sh [owner/name]           # loop for ever (all repos, or one)
-#   run.sh --once [owner/name]    # one pass: gate, then at most one round
+#   run.sh --once [owner/name]    # one pass: gate, its rounds, then learning
+#                                 # if due; waits for them all
 #   run.sh --install [owner/name] # run at login, restart on exit
 #                                 # (launchd on macOS, systemd on Linux)
 #
@@ -23,7 +29,13 @@ export PATH="$PATH:$HOME/.deno/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local
 
 SCRIPTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CHECKOUT=$(cd "$SCRIPTS_DIR/../../../.." && pwd)
-INTERVAL=300
+# The env overrides exist only so the tests need not wait minutes.
+INTERVAL=${REVIEW_FLEET_PRS_INTERVAL:-300}
+# How often the loop wakes to collect finished rounds and fill a freed slot.
+TICK=${REVIEW_FLEET_PRS_TICK:-30}
+LEARN_INTERVAL=${REVIEW_FLEET_PRS_LEARN_INTERVAL:-3600}
+CONFIG=${REVIEW_FLEET_PRS_CONFIG:-$CHECKOUT/.config.json}
+DEFAULT_PARALLEL=3
 # A hung round must not wedge the loop, nor outlive its token. Overridable
 # only so the tests can time a round out without waiting 50 minutes.
 ROUND_TIMEOUT=${REVIEW_FLEET_PRS_ROUND_TIMEOUT:-3000}
@@ -196,7 +208,7 @@ round_container() {
 # alarm is the round's only limit; it kills the runtime's client, so the
 # container itself is then killed by name.
 run_round() {
-  local log=$1 rc claude_args
+  local log=$1 tag=$2 rc claude_args
   # stream-json: the round's own result carries its per-model usage, which
   # price_round turns into each review's cost; the driver keeps the full
   # stream in the round's directory and logs only its readable lines.
@@ -208,9 +220,11 @@ run_round() {
   perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
     "$ROUND_TIMEOUT" "$RUNTIME" "${ROUND_ARGS[@]}" review-round \
     --prompt-file "$C_DIR/prompt.md" --claude-args "$claude_args" \
-    2>&1 | tee -a "$LOG" "$log"
+    2>&1 | tee -a "$log" |
+    TAG=$tag perl -ne '$|=1; print "[$ENV{TAG}] $_"' | tee -a "$LOG"
   # The round's own status, not tee's: a killed or failed round is a failed
-  # pass, so escalate_result counts it rather than seeing an ok.
+  # pass, so escalate_result counts it rather than seeing an ok. Rounds run
+  # side by side, so each line in runner.log is tagged with its PR.
   rc=${PIPESTATUS[0]}
   [[ $rc -eq 142 ]] && "$RUNTIME" kill "$ROUND_NAME" >/dev/null 2>&1
   return "$rc"
@@ -223,23 +237,130 @@ run_round() {
 price_round() {
   local dir=$1 out
   out=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh --allow-read --allow-write \
-    review_cost.ts --round-dir="$dir" 2>"$STATE_DIR/price-error")
-  [[ -s "$STATE_DIR/price-error" ]] && errors <"$STATE_DIR/price-error"
+    review_cost.ts --round-dir="$dir" 2>"$dir/price-error")
+  [[ -s "$dir/price-error" ]] && errors <"$dir/price-error"
   [[ -n "$out" ]] && log "round cost: $out"
   return 0
 }
 
-# One pass: a gate check, then a Claude round if anything is ready.
-# Returns non-zero when the App token, the gate or the Claude round failed;
-# sets $LAST_ERROR to a one-line gist of why, for escalate_result to report.
-pass() {
-  local reviewer=() ready dir minted errfile token_rc gate_rc round_rc
-  local entry input
-  LAST_ERROR=""
-  errfile="$STATE_DIR/last-error"
-  # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
-  # Its token lasts an hour, so every pass mints a fresh one; a failure skips
-  # the pass rather than post as the gh user instead.
+# The pool of rounds running in the background: one entry per round, by
+# index. Plain indexed arrays, since macOS's /bin/bash is 3.2.
+POOL_PIDS=() POOL_KEYS=() POOL_DIRS=() POOL_NAMES=()
+REAPED_OK=0 REAPED_ERRORS=()
+
+# How many rounds may run at once: `pr_reviewer_parallel` in .config.json.
+parallel_setting() {
+  local v
+  v=$(jq -r '.pr_reviewer_parallel // empty' "$CONFIG" 2>/dev/null)
+  if [[ -z $v ]]; then
+    echo "$DEFAULT_PARALLEL"
+  elif [[ $v =~ ^[1-9][0-9]*$ ]]; then
+    echo "$v"
+  else
+    log "pr_reviewer_parallel must be a whole number above 0, not '$v';" \
+      "using $DEFAULT_PARALLEL" >&2
+    echo "$DEFAULT_PARALLEL"
+  fi
+}
+
+# The PRs (owner/name#n) in a round right now, comma-separated, for the gate.
+in_flight_list() {
+  local i out=""
+  for ((i = 0; i < ${#POOL_KEYS[@]}; i++)); do
+    [[ ${POOL_KEYS[i]} == *#* ]] && out+="${out:+,}${POOL_KEYS[i]}"
+  done
+  echo "$out"
+}
+
+in_flight() {
+  local i
+  for ((i = 0; i < ${#POOL_KEYS[@]}; i++)); do
+    [[ ${POOL_KEYS[i]} == "$1" ]] && return 0
+  done
+  return 1
+}
+
+# One round in the background (a subshell): run it, price it, and leave its
+# outcome in its directory for reap. $3 is "review" or "learn".
+round_job() {
+  local dir=$1 key=$2 kind=$3 rc err=""
+  run_round "$dir/claude.log" "$key"
+  rc=$?
+  [[ $kind == review ]] && price_round "$dir"
+  if [[ $rc -eq 142 ]]; then
+    # 128 + SIGALRM: the alarm killed a hung round.
+    err="round timed out after ${ROUND_TIMEOUT}s"
+    log "$key: round timed out after ${ROUND_TIMEOUT}s: $dir"
+  elif [[ $rc -ne 0 ]]; then
+    err="round failed (exit $rc): $(last_error_line "$dir/claude.log")"
+    log "$key: round failed (exit $rc): $dir"
+  else
+    log "$key: round done: $dir"
+    # A learning round that finished has covered these log lines.
+    [[ $kind == learn ]] && echo "$LEARN_UPTO" >"$STATE_DIR/learned-lines"
+  fi
+  printf '%s' "$err" >"$dir/error"
+  echo "$rc" >"$dir/rc"
+  return "$rc"
+}
+
+# Starts the round whose container, directory and prompt are ready.
+launch() {
+  local key=$1 dir=$2 kind=$3
+  (
+    trap - EXIT INT TERM
+    round_job "$dir" "$key" "$kind"
+  ) &
+  POOL_PIDS+=("$!")
+  POOL_KEYS+=("$key")
+  POOL_DIRS+=("$dir")
+  POOL_NAMES+=("$ROUND_NAME")
+}
+
+# Collects the rounds that have finished: REAPED_OK counts the ones that
+# succeeded, REAPED_ERRORS holds a one-line reason for each that failed.
+reap() {
+  local i rc err pids=() keys=() dirs=() names=()
+  REAPED_OK=0 REAPED_ERRORS=()
+  for ((i = 0; i < ${#POOL_PIDS[@]}; i++)); do
+    if [[ ! -f ${POOL_DIRS[i]}/rc ]] && kill -0 "${POOL_PIDS[i]}" 2>/dev/null; then
+      pids+=("${POOL_PIDS[i]}") keys+=("${POOL_KEYS[i]}")
+      dirs+=("${POOL_DIRS[i]}") names+=("${POOL_NAMES[i]}")
+      continue
+    fi
+    wait "${POOL_PIDS[i]}" 2>/dev/null
+    rc=$(cat "${POOL_DIRS[i]}/rc" 2>/dev/null || echo 1)
+    if [[ $rc == 0 ]]; then
+      REAPED_OK=$((REAPED_OK + 1))
+    else
+      # No PR name: an escalation lands in the public VibeCoder repo, and
+      # the PR may be in a private one. runner.log names it.
+      err=$(cat "${POOL_DIRS[i]}/error" 2>/dev/null)
+      REAPED_ERRORS+=("${err:-round failed (exit $rc)}")
+    fi
+  done
+  POOL_PIDS=(${pids[@]+"${pids[@]}"}) POOL_KEYS=(${keys[@]+"${keys[@]}"})
+  POOL_DIRS=(${dirs[@]+"${dirs[@]}"}) POOL_NAMES=(${names[@]+"${names[@]}"})
+}
+
+# On exit, a round left running would be started again by the next runner.
+# shellcheck disable=SC2329 # invoked from the EXIT trap
+stop_rounds() {
+  local i
+  for ((i = 0; i < ${#POOL_PIDS[@]}; i++)); do
+    kill "${POOL_PIDS[i]}" 2>/dev/null
+    [[ -n ${RUNTIME:-} ]] && "$RUNTIME" kill "${POOL_NAMES[i]}" >/dev/null 2>&1
+  done
+}
+
+# Mints the reviewer App token for this pass, when one is configured: sets
+# GH_TOKEN and REVIEWER. Its token lasts an hour, so every gate pass mints a
+# fresh one, and each round keeps the token it started with (a round is cut
+# off at 50 minutes); a failure skips the pass rather than post as the gh
+# user instead.
+mint_token() {
+  local minted token_rc
+  REVIEWER=()
   unset GH_TOKEN
   # The minted token must never appear under `bash -x`: xtrace is suspended
   # from here until the App's login has been extracted from it.
@@ -259,17 +380,32 @@ pass() {
   if [[ -n "$minted" ]]; then
     GH_TOKEN=$(jq -r .token <<<"$minted")
     export GH_TOKEN
-    reviewer=("--reviewer=$(jq -r .login <<<"$minted")")
+    REVIEWER=("--reviewer=$(jq -r .login <<<"$minted")")
   fi
   [[ $xtrace == *x* ]] && set -x
+  return 0
+}
+
+# One gate pass with room for $1 new rounds: posts any audit send-backs, then
+# starts a round for each ready PR. Returns non-zero, with LAST_ERROR set,
+# when the App token, the gate or starting a round failed. Sets OVER_LIMIT
+# to the number of PRs left waiting for a slot.
+gate_pass() {
+  local free=$1 ready entry input errfile gate_rc in_flight_arg=() rc=0
+  local list
+  LAST_ERROR="" OVER_LIMIT=0
+  errfile="$STATE_DIR/last-error"
+  mint_token || return 1
+  list=$(in_flight_list)
+  [[ -n $list ]] && in_flight_arg=("--in-flight=$list")
 
   ready=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh --allow-read \
-    --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts \
-    ${reviewer[@]+"${reviewer[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
-    2>"$errfile")
+    --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --limit="$free" \
+    ${REVIEWER[@]+"${REVIEWER[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
+    ${in_flight_arg[@]+"${in_flight_arg[@]}"} 2>"$errfile")
   gate_rc=$?
-  # Same reasoning as the App token call above: gate.ts logs non-fatal
-  # upkeep failures (rebase/auto-merge) to stderr on its success path too.
+  # Same reasoning as the App token call: gate.ts logs non-fatal upkeep
+  # failures (rebase/auto-merge) to stderr on its success path too.
   [[ -s "$errfile" ]] && errors <"$errfile"
   if [[ $gate_rc -ne 0 ]]; then
     LAST_ERROR="gate failed: $(last_error_line "$errfile")"
@@ -286,23 +422,49 @@ pass() {
         --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts \
         --input="$input" --no-model 2>&1)"
   done < <(jq -c '.auditBlocked[]?' <<<"$ready" 2>/dev/null)
-  ready=$(jq -c 'del(.auditBlocked)' <<<"$ready" 2>/dev/null || echo "$ready")
+  OVER_LIMIT=$(jq -r '.skipped["over-limit"] // 0' <<<"$ready" 2>/dev/null)
+  [[ $OVER_LIMIT =~ ^[0-9]+$ ]] || OVER_LIMIT=0
   if [[ $(jq '.ready | length' <<<"$ready" 2>/dev/null) == 0 ]]; then
     # One short line per idle pass, so the log shows the gate is running.
     log "gate: nothing ready ($(jq -r '.skipped | to_entries
       | map("\(.key) \(.value)") | join(", ")' <<<"$ready" 2>/dev/null))"
     return 0
   fi
-
-  dir="$STATE_DIR/rounds/$(date '+%Y%m%d-%H%M%S')"
-  mkdir -p "$dir"
-  echo "$ready" >"$dir/gate.json"
   log "gate: $(jq -r '[.ready[] | "\(.repo)#\(.number)"] | join(", ")' \
     <<<"$ready" 2>/dev/null || echo "$ready")"
+  while IFS= read -r entry; do
+    if ! start_review "$entry"; then
+      LAST_ERROR="${LAST_ERROR:+$LAST_ERROR; }$ROUND_ERROR"
+      rc=1
+    fi
+  done < <(jq -c '.ready[]' <<<"$ready" 2>/dev/null)
+  return "$rc"
+}
 
+# A round's directory: the time it started plus what it is for, so rounds
+# started in the same second never share one (or a container name).
+round_dir() {
+  echo "$STATE_DIR/rounds/$(date '+%Y%m%d-%H%M%S')-${1//[^A-Za-z0-9_.-]/-}"
+}
+
+# Starts one round for one ready PR (a gate entry). Returns non-zero, with
+# ROUND_ERROR set, when its container cannot be started.
+start_review() {
+  local entry=$1 key dir errfile="$STATE_DIR/last-error"
+  ROUND_ERROR=""
+  key=$(jq -r '"\(.repo)#\(.number)"' <<<"$entry")
+  # Belt and braces: the gate already skips a PR given in --in-flight.
+  if in_flight "$key"; then
+    log "$key: already in a round; not started twice"
+    return 0
+  fi
+  dir=$(round_dir "$(jq -r '"\(.repo)-\(.number)"' <<<"$entry")")
+  mkdir -p "$dir"
+  jq -c '{ready: [.]}' <<<"$entry" >"$dir/gate.json"
   ROUND_NAME="review-fleet-prs-$(basename "$dir")"
   if ! round_container "$ROUND_NAME"; then
-    log "round not started: $LAST_ERROR"
+    ROUND_ERROR="$LAST_ERROR"
+    log "$key: round not started: $ROUND_ERROR"
     return 1
   fi
   C_DIR="$C_STATE_DIR/rounds/$(basename "$dir")"
@@ -313,31 +475,69 @@ Use the review-fleet-prs skill to review ONE round, then stop.
 The gate has already run for you; do NOT start gate.ts or the loop.
 Its output is:
 
-$ready
+$(cat "$dir/gate.json")
 
-Follow the skill's 'Reviewing the ready PRs' section (Review, post,
-learn from recurring findings, report) for the ready PRs above. Run post.ts
-from $C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR,
+Follow the skill's 'Reviewing the ready PRs' section for the ready PR above:
+steps 1. Review, 2. Post and 4. Report. Skip step 3 (Learn from recurring
+findings): the runner does that in a round of its own. Run post.ts from
+$C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR,
 and write its input files directly in $C_DIR (not a sub-directory: post.ts
 reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.
 PROMPT
+  log "$key: round started: $dir"
+  launch "$key" "$dir" review
+}
 
-  run_round "$dir/claude.log"
-  round_rc=$?
-  price_round "$dir"
-  if [[ $round_rc -eq 142 ]]; then
-    # 128 + SIGALRM: the alarm above killed a hung round.
-    LAST_ERROR="round timed out after ${ROUND_TIMEOUT}s"
-    log "round timed out after ${ROUND_TIMEOUT}s: $dir"
+# Whether a learning round is due: reviews were sent back since the last one
+# (records in log.jsonl after the line in learned-lines). Sets LEARN_FROM and
+# LEARN_UPTO, the log lines it should cover.
+learn_due() {
+  local logf="$STATE_DIR/log.jsonl" total covered sent
+  [[ -f $logf ]] || return 1
+  total=$(wc -l <"$logf" | tr -d ' ')
+  covered=$(cat "$STATE_DIR/learned-lines" 2>/dev/null)
+  [[ $covered =~ ^[0-9]+$ ]] || covered=$total
+  # The log was trimmed or replaced: start again from its top.
+  [[ $covered -gt $total ]] && covered=0
+  sent=$(tail -n +"$((covered + 1))" "$logf" |
+    jq -c 'select(.outcome == "changes_requested")' 2>/dev/null | wc -l |
+    tr -d ' ')
+  [[ $sent -gt 0 ]] || return 1
+  LEARN_FROM=$covered LEARN_UPTO=$total
+}
+
+# Starts the round that learns from recurring findings (the skill's step 3),
+# which review rounds no longer do (Issue #4397). Returns non-zero, with
+# ROUND_ERROR set, when its container cannot be started.
+start_learn() {
+  local dir errfile="$STATE_DIR/last-error"
+  ROUND_ERROR=""
+  dir=$(round_dir learn)
+  mkdir -p "$dir"
+  ROUND_NAME="review-fleet-prs-$(basename "$dir")"
+  if ! round_container "$ROUND_NAME"; then
+    ROUND_ERROR="learning $LAST_ERROR"
+    log "learn: round not started: $LAST_ERROR"
     return 1
   fi
-  if [[ $round_rc -ne 0 ]]; then
-    LAST_ERROR="round failed (exit $round_rc): $(last_error_line "$dir/claude.log")"
-    log "round failed (exit $round_rc): $dir"
-    return 1
-  fi
-  log "round done: $dir"
+  C_DIR="$C_STATE_DIR/rounds/$(basename "$dir")"
+  cat >"$dir/prompt.md" <<PROMPT
+Use the review-fleet-prs skill's step '3. Learn from recurring findings',
+and only that step, then stop. Do NOT start gate.ts, and do not review or
+post any PR: the review rounds have already posted their reviews.
+
+The reviews to learn from are the records after line $LEARN_FROM of
+$C_STATE_DIR/log.jsonl (lines $((LEARN_FROM + 1)) to $LEARN_UPTO); compare
+them with the earlier records as the step says. Run guidance.ts from
+$C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR,
+and write any files you need directly in $C_DIR. Skip the PushNotification
+step: this session is headless. Finish with one line naming any issues filed
+and any recurring guidance entries from guidance.ts due, or saying there was
+nothing to learn.
+PROMPT
+  log "learn: round started for log.jsonl lines $((LEARN_FROM + 1))-$LEARN_UPTO: $dir"
+  launch learn "$dir" learn
 }
 
 # Reports one pass's outcome (ok, or fail with its reason) to escalate.ts, so
@@ -363,8 +563,30 @@ escalate_result() {
   fi
 }
 
+# Reports one tick's errors (none means ok) to escalate_result.
+report() {
+  local IFS='|' joined
+  if [[ $# -eq 0 ]]; then
+    escalate_result 0 ""
+    return 0
+  fi
+  joined="$*"
+  escalate_result 1 "${joined//|/; }"
+  return 1
+}
+
+# Waits for every round in the pool, collecting their failures in ERRS.
+drain() {
+  while [[ ${#POOL_PIDS[@]} -gt 0 ]]; do
+    sleep 1
+    reap
+    ERRS+=(${REAPED_ERRORS[@]+"${REAPED_ERRORS[@]}"})
+  done
+}
+
 main() {
-  local once=false
+  local once=false parallel free now last_gate=0 last_learn=0 regate=false
+  local did
   repo_arg=()
   # The Vibe Coder's log directory, as the worker resolves it (review_log.ts).
   STATE_DIR=$(cd "$SCRIPTS_DIR" && deno run --allow-read \
@@ -389,7 +611,7 @@ main() {
   [[ -n "${1:-}" ]] && repo_arg=("--repo=$1")
 
   mkdir -p "$STATE_DIR/rounds"
-  # One runner per machine: two would review the same PRs twice.
+  # One runner per machine: two would start rounds for the same PRs.
   if ! mkdir "$LOCK" 2>/dev/null; then
     local pid
     pid=$(cat "$LOCK/pid" 2>/dev/null || true)
@@ -400,24 +622,68 @@ main() {
     # Stale lock from a runner that died: take it over.
   fi
   echo $$ >"$LOCK/pid"
-  trap 'rm -rf "$LOCK"' EXIT
+  trap 'stop_rounds; rm -rf "$LOCK"' EXIT
+  # So a service stop still runs the EXIT trap and stops its rounds.
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  parallel=$(parallel_setting)
+  # A first start learns only from reviews posted from now on, not the whole
+  # history (which earlier rounds already learned from).
+  [[ -f $STATE_DIR/learned-lines || ! -f $STATE_DIR/log.jsonl ]] ||
+    wc -l <"$STATE_DIR/log.jsonl" | tr -d ' ' >"$STATE_DIR/learned-lines"
 
   if [[ $once == true ]]; then
+    ERRS=()
     housekeep
-    pass
-    local rc=$?
-    escalate_result "$rc" "$LAST_ERROR"
-    return $rc
+    gate_pass "$parallel" || ERRS+=("$LAST_ERROR")
+    drain
+    if learn_due; then
+      start_learn || ERRS+=("$ROUND_ERROR")
+      drain
+    fi
+    report ${ERRS[@]+"${ERRS[@]}"}
+    return
   fi
-  log "runner started"
-  # A failed pass (GitHub unreachable, a bad token) is retried next interval
+  log "runner started (up to $parallel rounds at once)"
+  # Each tick collects finished rounds. The gate runs every INTERVAL, and
+  # straight away when a round has just succeeded or PRs were left waiting
+  # for a slot, so a freed slot is not left empty for minutes. A failed round
+  # waits for the interval, so a PR that keeps failing is not retried hot.
+  # A failed pass (GitHub unreachable, a bad token) is retried the same way
   # rather than waiting for someone to restart this by hand.
   while true; do
-    housekeep
-    pass
-    local rc=$?
-    escalate_result "$rc" "$LAST_ERROR"
-    sleep "$INTERVAL"
+    ERRS=()
+    did=false
+    reap
+    if [[ $REAPED_OK -gt 0 || ${#REAPED_ERRORS[@]} -gt 0 ]]; then
+      did=true
+      ERRS+=(${REAPED_ERRORS[@]+"${REAPED_ERRORS[@]}"})
+    fi
+    [[ $REAPED_OK -gt 0 ]] && regate=true
+    now=$(date +%s)
+    free=$((parallel - ${#POOL_PIDS[@]}))
+    if [[ $((now - last_gate)) -ge $INTERVAL ]] ||
+      [[ $regate == true && $free -gt 0 ]]; then
+      did=true
+      last_gate=$now
+      housekeep
+      if gate_pass "$free"; then
+        # PRs still waiting: come back as soon as a slot frees.
+        [[ $OVER_LIMIT -gt 0 ]] && regate=true || regate=false
+      else
+        ERRS+=("$LAST_ERROR")
+        regate=false
+      fi
+    fi
+    free=$((parallel - ${#POOL_PIDS[@]}))
+    if [[ $free -gt 0 && $((now - last_learn)) -ge $LEARN_INTERVAL ]] &&
+      learn_due; then
+      did=true
+      last_learn=$now
+      start_learn || ERRS+=("$ROUND_ERROR")
+    fi
+    [[ $did == true ]] && report ${ERRS[@]+"${ERRS[@]}"}
+    sleep "$TICK"
   done
 }
 
