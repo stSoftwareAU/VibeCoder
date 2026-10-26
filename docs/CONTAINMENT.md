@@ -339,16 +339,81 @@ start.
   inferring it from the launcher's arguments. The proxy publishes nothing either.
 - **Never host networking.** `--network host` (and any host namespace) is
   rejected by the plan builder before the arguments are returned.
-- **Apple container is not yet enforced** (#4051). That dialect launches with
-  no internal network and no proxy, so this boundary does not filter its hosts.
+- **Apple container has measured partial containment** (#4051): the worker
+  normally joins an internal network and the same allowlist proxy joins both
+  that network and `default`. Host/LAN access remains a known gap. The startup
+  report never describes this as complete default-deny enforcement.
+
+## Apple measured containment
+
+Apple users do not need Docker or Podman (#4051). The launcher measures the
+installed CLI and macOS versions, verifies the network flags against actual
+help, and uses the dialect verified on Apple CLI 1.2.2 and macOS 26 or later:
+`network create --internal`, repeated `run --network`, and `network delete`.
+Custom-network bare-name DNS is unavailable, so the worker receives the
+proxy's inspected internal IPv4 address. No proxy port is published.
+
+`VIBE_APPLE_EGRESS_MODE=auto` is the default. It selects `internal` when the
+measured CLI/macOS support that dialect, otherwise deliberately selects
+`advisory` and records the missing capability. `internal` explicitly refuses
+an unsupported host; `advisory` explicitly retains proxy filtering and routing
+without promising direct-egress restrictions. A failed setup never changes
+its selected mode or launches the worker on an unrestricted fallback.
+
+Before claims, the **actual worker** runs the shared CONNECT allow/deny checks
+and direct IPv4, IPv6, hostname, DNS and controlled host-listener probes. A
+separate disposable default-network container runs the same direct probes as
+a negative control, with no agent, mounts or credentials. A failed connection
+is called blocked only when the matching negative control connected. Missing
+IPv6, DNS failures, unavailable probes and untested controls remain unknown.
+The listener's random banner proves a host service really exists; a closed
+port is never sufficient firewall evidence. This measures the host gateway
+and the host's LAN interfaces, not every possible LAN destination.
+
+Each `run_core.log` start records runtime version, macOS version, selected
+mode, raw observations, negative control, allowed CONNECT paths, per-control
+results and failures. The coarse legacy verdict remains `not_enforced` and
+`passed=false`. A healthy partial launch can therefore have
+`proxyAllowlist=enforced` and `directInternetV4=blocked` without claiming whole
+network enforcement. `hostLan=reachable` is an accepted gap; DNS reachability
+is residual exposure, not a DNS filter. IPv6 with no usable negative control
+is unknown, not blocked.
+
+Both modes require the configured allowlist proxy to work. Internal mode
+also requires demonstrated IPv4 blocking, and refuses any observed direct
+IPv6 or hostname escape. A regression exits 90 before claims, using the
+existing restart backoff. Setup itself gets at most three attempts and never
+silently drops a protection. The host supervisor keeps its controlled
+listener alive, saves proxy logs, and cleans only resources recorded as its
+own. Stale cleanup requires both the original launcher and its supervisor to
+be dead; it never sweeps active worker containers or arbitrary networks.
+Ownership journals are private host state in `~/.vibe-apple-egress`, outside
+all canonical worker bind mounts. Runtime I/O and shutdown have hard-kill
+deadlines, including inherited pipes held open after a CLI exits.
+
+Measured on 26 October 2026, Apple CLI 1.2.2 and macOS 27.0.1: the allowlist
+proxy worked; direct public IPv4 was blocked with a successful negative
+control; the controlled host endpoint was reachable. IPv6 was initially
+unavailable in the control and recorded unknown; a later run obtained a
+successful IPv6 control and demonstrated blocking. DNS/hostname resolution
+was unavailable internally and remained unknown. GitHub API/web, Anthropic, OpenAI and npm CONNECT
+paths succeeded. Credential isolation remains open in #3699; an allowed
+destination can still be misused. These observations are evidence for that
+host, not an assumption made about every Apple installation.
+
+Upstream context: [Apple networking](https://github.com/apple/container/blob/main/docs/networking.md),
+[host-gateway exposure](https://github.com/apple/container/issues/1320) and
+[host-dependent direct-egress report](https://github.com/apple/container/issues/2062).
+Every launch measures the actual host rather than treating those reports as
+universal guarantees or universal failures.
 
 ## Egress allowlist
 
 The agent container may reach outbound only the hosts in one list, defined in
 `worker/deno/lib/egress_allowlist.ts`. Docker and Podman enforce the list: the
 launch plan (#4047) passes it to the [egress proxy](#egress-proxy) (#4046) and
-routes the worker through that proxy. Apple container does not enforce it yet
-(#4051).
+routes the worker through that proxy. Apple container uses the same proxy with
+measured partial containment (#4051); its host/LAN gap remains open.
 
 | Host | Purpose | Included when | Reason |
 | --- | --- | --- | --- |
@@ -404,7 +469,8 @@ after checking where the name resolves.
 **Docker and Podman route the worker through this proxy** (#4047). The launch
 plan starts it from the same image, with no mounts and no published ports, on
 the outbound bridge, then connects it to the worker's internal network. Apple
-container is not routed through it yet (#4051).
+container uses the same proxy with measured partial containment (#4051),
+attaching both networks at creation. No proxy has credential-bearing mounts.
 
 ```bash
 deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \

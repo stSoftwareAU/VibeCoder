@@ -12,7 +12,7 @@
  * allowlisted host and receives the client connection instead of an upstream
  * dial ({@link EgressRoute}). On Docker and Podman the worker container
  * reaches the network only through this proxy (Issue #4047). Apple container
- * is not routed through it yet (Issue #4051).
+ * uses this same proxy with measured partial containment (Issue #4051).
  *
  * Imports are local only; nothing is fetched from a remote registry.
  * Australian English spelling used throughout (behaviour, sanitise).

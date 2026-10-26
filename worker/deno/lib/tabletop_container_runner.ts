@@ -1,3 +1,4 @@
+import { appleWorkerArgs } from "./apple_egress_launch.ts";
 /**
  * The containerised runner for the tabletop harness (Issue #4194).
  *
@@ -491,9 +492,17 @@ export function createTabletopContainerRunner(
       const attempts: TabletopAttemptOutcome[] = [];
       try {
         // The worker joins the internal network, so the proxy is up before
-        // the first attempt. Apple container does not enforce and this is a
-        // no-op (Issue #4051).
-        await startEgressSidecar(fixture.plan);
+        // the first attempt. Apple attaches both networks at creation and resolves the proxy IP (#4051).
+        const proxyAddress = await startEgressSidecar(fixture.plan);
+        if (proxyAddress) {
+          const proxy = `http://${proxyAddress.address}:3128`;
+          fixture.plan.runArgs = appleWorkerArgs(fixture.plan.runArgs, {
+            HTTP_PROXY: proxy,
+            HTTPS_PROXY: proxy,
+            http_proxy: proxy,
+            https_proxy: proxy,
+          });
+        }
         for (const [index, item] of fixtures.entries()) {
           // Each fixture gets a clean pair of sinks, so a leak attributes to
           // the attempt that produced it.

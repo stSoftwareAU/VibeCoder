@@ -4,14 +4,22 @@
  * Every container start proves the network policy before anything is claimed.
  * On a runtime that enforces egress the worker dials four bounded probes and
  * exits {@link EGRESS_SELFCHECK_EXIT_STATUS} unless all four say the policy
- * is holding. On Apple container the same check records that egress is not
- * enforced and lets the launch continue (Issue #4051). `not_checked` and
+ * is holding. On Apple container the check records each observed control and enforces the
+ * selected partial/advisory promises (Issue #4051). `not_checked` and
  * `proxy_unavailable` are never a pass.
  *
  * Probe results are injectable so a unit test does not open a socket.
  *
  * Australian English spelling throughout (behaviour).
  */
+
+import {
+  appleAllowedPaths,
+  appleControlFailures,
+  appleControls,
+  type AppleRawProbes,
+  appleRawProbes,
+} from "./apple_egress_controls.ts";
 
 /** The worker exits with this when an enforcing runtime did not prove egress. */
 export const EGRESS_SELFCHECK_EXIT_STATUS = 90;
@@ -120,6 +128,8 @@ export interface EgressPolicyDecision {
   warning?: string;
   /** The `run_core.log` line, without the timestamp the log adds. */
   record: string;
+  /** Measured Apple controls must be persisted before claims. */
+  requireRecord?: boolean;
 }
 
 /** Format the durable evidence line. Every field is one token. */
@@ -181,7 +191,7 @@ function identityToken(
 /**
  * Decide the start-up policy.
  *
- * `enforced: false` (the flag absent or explicitly false) does not run probes:
+ * Legacy `enforced: false` (without an Apple mode) does not run probes:
  * a direct dial from Apple container or a native process would succeed and
  * would be misread as a broken policy. An explicit `false` warns once and
  * names the dialect. Only `enforced` is a pass; every other verdict on an
@@ -245,7 +255,17 @@ function isUnchecked(error: unknown): boolean {
   return /requires net access|permission denied/i.test(message);
 }
 
-/** Dial `host:port`. A timeout or a refusal is `refused`; no net permission is `not_checked`. */
+/** Unknown local errors must never become evidence of network isolation. */
+export function directTcpFailure(error: unknown): "refused" | "not_checked" {
+  if (isUnchecked(error)) return "not_checked";
+  const message = error instanceof Error ? error.message : String(error);
+  return /connection refused|timed? ?out|unreachable|aborted|network is down|host is down|no route/i
+      .test(message)
+    ? "refused"
+    : "not_checked";
+}
+
+/** Dial `host:port`; permission and unrecognised failures are `not_checked`. */
 export async function probeDirectTcp(
   host: string,
   port: number,
@@ -260,8 +280,7 @@ export async function probeDirectTcp(
     });
     return "connected";
   } catch (error) {
-    if (isUnchecked(error)) return "not_checked";
-    return "refused";
+    return directTcpFailure(error);
   } finally {
     try {
       conn?.close();
@@ -292,12 +311,14 @@ export async function probeProxyConnect(
     return "not_checked";
   }
   let conn: Deno.Conn | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     conn = await Deno.connect({
       hostname: url.hostname,
       port,
       signal: AbortSignal.timeout(timeoutMs),
     });
+    timer = setTimeout(() => conn?.close(), timeoutMs);
     const request =
       `CONNECT ${host}:${PROBE_PORT} HTTP/1.1\r\nHost: ${host}:${PROBE_PORT}\r\n\r\n`;
     await conn.write(new TextEncoder().encode(request));
@@ -314,6 +335,7 @@ export async function probeProxyConnect(
     if (isUnchecked(error)) return "not_checked";
     return "failed";
   } finally {
+    clearTimeout(timer);
     try {
       conn?.close();
     } catch {
@@ -373,11 +395,13 @@ export interface CheckEgressPolicyInput {
   /** ISO date `YYYY-MM-DD`. Defaults to today's UTC date. */
   date?: string;
   timeoutMs?: number;
+  appleObserved?: Partial<AppleRawProbes>;
+  appleControl?: Partial<AppleRawProbes>;
 }
 
 /**
- * The start-up check. Does not open the network unless the flag is `true`
- * and neither `probes` nor `probe` was supplied.
+ * The start-up check runs for enforcing dialects and explicitly selected Apple
+ * modes. Injected probe results keep unit tests off the network.
  */
 export async function checkEgressPolicy(
   input: CheckEgressPolicyInput,
@@ -395,11 +419,62 @@ export async function checkEgressPolicy(
     "unknown",
   );
   let probes = input.probes;
-  if (flag === "true" && probes === undefined) {
+  const appleMode = input.env("VIBE_APPLE_EGRESS_MODE");
+  const apple = dialect === "apple-container" &&
+    (appleMode === "internal" || appleMode === "advisory");
+  if ((flag === "true" || apple) && probes === undefined) {
     probes = input.probe ? await input.probe() : await runEgressProbes(
       input.env,
       input.timeoutMs ?? EGRESS_PROBE_TIMEOUT_MS,
     );
+  }
+  if (apple && probes) {
+    let control = input.appleControl;
+    if (!control) {
+      try {
+        control = JSON.parse(input.env("VIBE_EGRESS_NEGATIVE_CONTROL") ?? "{}");
+      } catch {
+        control = {};
+      }
+    }
+    const observed = input.appleObserved ??
+      (input.probe || input.probes
+        ? {}
+        : await appleRawProbes(input.env, input.timeoutMs));
+    const controls = appleControls(probes, observed, control ?? {});
+    const failures = appleControlFailures(appleMode, controls);
+    const paths = input.probe || input.probes
+      ? {}
+      : await appleAllowedPaths(input.env, input.timeoutMs);
+    const report = {
+      mode: appleMode,
+      runtime: dialect,
+      version,
+      macOS: input.env("VIBE_EGRESS_MACOS_VERSION") ?? "unknown",
+      date,
+      controls,
+      observed,
+      negativeControl: control,
+      allowedPaths: paths,
+      failures,
+    };
+    const decision = decideEgressPolicy({
+      flag: "false",
+      dialect,
+      version,
+      date,
+    });
+    return {
+      ...decision,
+      requireRecord: true,
+      exitCode: failures.length ? EGRESS_SELFCHECK_EXIT_STATUS : 0,
+      ...(failures.length
+        ? { marker: `${EGRESS_SELFCHECK_FAILURE_MARKER} ${failures.join(" ")}` }
+        : {}),
+      warning:
+        `${EGRESS_NOT_ENFORCED_MARKER} Apple ${appleMode}: host/LAN and DNS remain measured gaps; untested controls are unknown`,
+      record: `${decision.record} controls=${JSON.stringify(report)}`,
+    };
   }
   return decideEgressPolicy({ flag, dialect, version, date, probes });
 }

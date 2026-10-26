@@ -436,11 +436,12 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   // is the protection (Issue #570).
   tmpfsOwnership: "none",
   supportsReadOnly: false,
-  // Apple container is not placed behind the proxy yet (Issue #4051).
+  // Apple has measured partial containment; host/LAN isolation is not promised.
   egressEnforced: false,
-  internalNetworkCreateArgs: [],
-  networkRemoveArgs: [],
+  internalNetworkCreateArgs: ["network", "create", "--internal"],
+  networkRemoveArgs: ["network", "delete"],
   networkConnectArgs: [],
+  outboundNetwork: "default",
   // Singular `image` — `container images ...` is not a subcommand on Apple
   // container 1.2.2: the CLI resolves it as a plugin named `container-images`,
   // fails, and exits 64. run.sh reads any non-zero exists-check as "image
