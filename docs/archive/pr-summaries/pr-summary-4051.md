@@ -26,10 +26,10 @@ host isolation. It reuses #4045/#4046 policy and proxy, #4047 lifecycle and
   commands or bare-name DNS.
 - The proxy has no mounts or published ports. Source arrives on stdin;
   excluding the test tree keeps it inside the small scratch filesystem.
-- Internal mode promises a working proxy and demonstrated direct IPv4
+  Internal mode promises a working proxy and demonstrated direct IPv4
   blocking. Observed direct IPv6/hostname escapes also fail it. Host/LAN
   reachability is an accepted gap; unavailable IPv6/DNS coverage is unknown.
-- Advisory mode still requires the allowlist proxy. A failed intended
+  Advisory mode still requires the allowlist proxy. A failed intended
   configuration cannot turn into unrestricted fallback networking.
 - Unique resource names and successful-creation journals scope cleanup.
   Journals live in private host-only `~/.vibe-apple-egress`, with canonical
@@ -115,7 +115,16 @@ any claim. It does not claim that Apple's residual host access is fixed.
   claims — evidence: CONTAINMENT, THREAT-MODEL, SECURITY and docs tests — reviewer: met
 - **met** — unattended bounded recovery retains selected protections —
   evidence: three-attempt recovery test and existing exit-90 backoff — reviewer: met
-- **pending** — repository quality gate and independent PR review — reviewer: pending
+- **met** — independent security/correctness review — evidence: review fixes
+  and canonical rerun, 11 passed, 0 failed — reviewer: met
+- **pending** — repository quality gate — reason: CI not yet verified —
+  remaining: merge-verification-only — reviewer: pending
+
+## Merge verification
+
+Independent security/correctness review is clear after fixing the host-only
+ownership boundary and bounded pipe shutdown. Required CI and the final full
+local quality run are pending; all focused checks below have passed.
 
 ## Standards Review
 
