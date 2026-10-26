@@ -71,11 +71,11 @@ export interface CustomLabelPrDispatchDeps {
   buildPrompt: (
     candidate: CustomLabelPrCandidate,
   ) => Promise<Result<PromptParts>>;
-  /** Run the agent. Rejects on failure. */
+  /** Run the agent. Rejects on failure; scheduled releases are typed. */
   runAgent: (
     candidate: CustomLabelPrCandidate,
     parts: PromptParts,
-  ) => Promise<void>;
+  ) => Promise<"completed" | "finish-deadline">;
   /** Confirm the branch's local head is what the remote has. */
   verifyPush: (
     candidate: CustomLabelPrCandidate,
@@ -155,14 +155,18 @@ export async function dispatchCustomLabelPrPrompts(
   }
 
   try {
-    await deps.runAgent(candidate, prompt.value);
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.startsWith("released on schedule")
-    ) {
-      return { processed: false };
+    const outcome = await deps.runAgent(candidate, prompt.value);
+    if (outcome === "finish-deadline") {
+      await comment(
+        candidate,
+        deps,
+        `The \`${mapping.label}\` custom prompt was released on schedule ` +
+          `because the finish deadline was reached.\n\nThe label was consumed ` +
+          `by this attempt — re-apply \`${mapping.label}\` to retry next run.`,
+      );
+      return { processed: true };
     }
+  } catch (error) {
     await comment(
       candidate,
       deps,

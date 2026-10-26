@@ -886,7 +886,7 @@ Recoveries, backoffs, escalations, quota pauses, already-running stops and force
 | `CRASH_WEBHOOK_URL` | Optional webhook the escalation also posts to |
 | `VIBE_CONTAINER_WATCHDOG_SECONDS` | Launcher deadline before a container is reaped as wedged (default: the worker's max run duration + 600 — 10800 + 600 = **11400 s**, which is `loop.sh`'s `VIBE_RUN_MAX_SECONDS` cap plus the same 10-minute margin, so the launcher never reaps a container the supervisor would still allow to run) |
 | `VIBE_HARD_KILL_AT_EPOCH` | Set by the launch plan, not by the operator: the epoch-seconds at which the launcher watchdog kills the container (plan time + `VIBE_CONTAINER_WATCHDOG_SECONDS`). The worker's run timeline reads it as the hard-kill deadline. Always set on a launch: a plan with no usable epoch is refused |
-| `VIBE_RUN_MAX_SECONDS` | The supervisor's wall-clock cap on one run (default 10800 s, `0` disables it). `loop.sh` owns the default and exports it with `VIBE_RUN_STARTED_EPOCH` so the worker stops itself first. It is the only place a still-progressing agent is killed — see [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model) |
+| `VIBE_RUN_MAX_SECONDS` | The supervisor's outer wall-clock kill of one run's process (default 10800 s, `0` disables it). `loop.sh` owns the default and exports it with `VIBE_RUN_STARTED_EPOCH` so the worker stops itself first. A still-progressing agent is stopped at the two-hour finish deadline; session and extension budgets leave the kill grace and WIP reserve before that finish — see [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model) |
 | `VIBE_CONTAINER_REAP_GRACE_SECONDS` | Grace after `<runtime> kill` before the reaper escalates to SIGKILL (default: 30) |
 
 ## 📝 Logs

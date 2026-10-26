@@ -47,6 +47,7 @@ import {
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { workOnIssueQualityGate } from "./phases/quality_gate_remediation_phase.ts";
+import { releaseRunAtFinishDeadline } from "./phases/run_wip_preservation.ts";
 import { fileRunFailureIssue } from "./run_failure_issue.ts";
 import { getMachineId } from "./machine_id.ts";
 import { TOOL_OUTPUT_IS_DATA_RULE } from "./prompt_delimiter.ts";
@@ -432,6 +433,9 @@ export async function recoverFromSecurityGateBlock(
     );
   }
   recordClaudeRunStats(state, retryResult.value);
+  if (retryResult.value.finishDeadline) {
+    return await releaseRunAtFinishDeadline(ctx, state, deps);
+  }
 
   // The retry changed the tree, so the quality gate runs again before the
   // completion gates — the same order the pipeline uses after any agent turn.

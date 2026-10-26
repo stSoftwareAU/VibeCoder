@@ -172,64 +172,73 @@ Deno.test({
   },
 });
 
-Deno.test({
-  name:
-    "runClaudeWithTimeout - a session ended by the finish clamp carries finishDeadline (Issue #4244)",
-  permissions: { run: true, read: true, write: true, env: true },
-  ignore: Deno.build.os === "windows",
-  async fn() {
-    resetRunTimelineForTests();
-    // 1 h 50 m, so the clamp is 600 − kill grace − reserve, long enough to
-    // spawn and short enough that the injected clock can fire it.
-    const clock = fakeClock(STARTED_MS + 110 * 60 * 1000);
-    const finishMs = STARTED_MS + DEFAULT_RUN_FINISH_SECONDS * 1000;
-    publishTimeline(finishMs);
-    const allowed = 600 - KILL_AFTER_SECONDS - WIP_CHECKPOINT_RESERVE_SECONDS;
-    const stub = await createAgentStub(
-      [
-        `printf '%s\\n' '{"type":"result","result":"still working"}'`,
-        // Block until the watchdog kills the process.
-        `while [ ! -f "$(dirname "$0")/go" ]; do sleep 0.05; done`,
-        "exit 0",
-      ].join("\n"),
-      { prefix: "finish_deadline_kill_" },
-    );
-    try {
-      const signals = (() => {
-        let seen = 0;
-        const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
-        const at = (
-          index: number,
-        ) => (chunks[index] ??= Promise.withResolvers());
-        return {
-          onActivity: () => at(seen++).resolve(),
-          chunk: (n: number) => at(n - 1).promise,
-        };
-      })();
-      const run = runClaudeWithTimeout({
-        prompt: USER_PROMPT,
-        timeoutSeconds: REQUESTED_TIMEOUT_SECONDS,
-        killAfterSeconds: KILL_AFTER_SECONDS,
-        clock,
-        agentBinaryPath: stub.path,
-        onActivity: signals.onActivity,
-        progressIntervalMs: 86_400_000,
-        descendantSnapshotIntervalMs: 86_400_000,
-      });
-      await signals.chunk(1);
-      await clock.advance(allowed * 1000);
-      const result = await run;
-      assert(result.ok, `expected a run, got ${!result.ok && result.error}`);
-      if (!result.ok) return;
-      assertEquals(result.value.timedOut, true);
-      assertEquals(result.value.timeoutReason, "hard-timeout");
-      assertEquals(result.value.finishDeadline, true);
-    } finally {
-      await stub.dispose();
+for (const requested of [REQUESTED_TIMEOUT_SECONDS, 120]) {
+  Deno.test({
+    name: requested === REQUESTED_TIMEOUT_SECONDS
+      ? "runClaudeWithTimeout - a session ended by the finish clamp carries finishDeadline (Issue #4244)"
+      : "runClaudeWithTimeout - an own-budget timeout within the finish allowance is not a scheduled release (Issue #4244)",
+    permissions: { run: true, read: true, write: true, env: true },
+    ignore: Deno.build.os === "windows",
+    async fn() {
       resetRunTimelineForTests();
-    }
-  },
-});
+      // 1 h 50 m, so the clamp is 600 − kill grace − reserve, long enough to
+      // spawn and short enough that the injected clock can fire it.
+      const clock = fakeClock(STARTED_MS + 110 * 60 * 1000);
+      const finishMs = STARTED_MS + DEFAULT_RUN_FINISH_SECONDS * 1000;
+      publishTimeline(finishMs);
+      const allowed = Math.min(
+        requested,
+        600 - KILL_AFTER_SECONDS - WIP_CHECKPOINT_RESERVE_SECONDS,
+      );
+      const stub = await createAgentStub(
+        [
+          `printf '%s\\n' '{"type":"result","result":"still working"}'`,
+          // Block until the watchdog kills the process.
+          `while [ ! -f "$(dirname "$0")/go" ]; do sleep 0.05; done`,
+          "exit 0",
+        ].join("\n"),
+        { prefix: "finish_deadline_kill_" },
+      );
+      try {
+        const signals = (() => {
+          let seen = 0;
+          const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+          const at = (
+            index: number,
+          ) => (chunks[index] ??= Promise.withResolvers());
+          return {
+            onActivity: () => at(seen++).resolve(),
+            chunk: (n: number) => at(n - 1).promise,
+          };
+        })();
+        const run = runClaudeWithTimeout({
+          prompt: USER_PROMPT,
+          timeoutSeconds: requested,
+          killAfterSeconds: KILL_AFTER_SECONDS,
+          clock,
+          agentBinaryPath: stub.path,
+          onActivity: signals.onActivity,
+          progressIntervalMs: 86_400_000,
+          descendantSnapshotIntervalMs: 86_400_000,
+        });
+        await signals.chunk(1);
+        await clock.advance(allowed * 1000);
+        const result = await run;
+        assert(result.ok, `expected a run, got ${!result.ok && result.error}`);
+        if (!result.ok) return;
+        assertEquals(result.value.timedOut, true);
+        assertEquals(result.value.timeoutReason, "hard-timeout");
+        assertEquals(
+          result.value.finishDeadline,
+          requested === REQUESTED_TIMEOUT_SECONDS ? true : undefined,
+        );
+      } finally {
+        await stub.dispose();
+        resetRunTimelineForTests();
+      }
+    },
+  });
+}
 
 Deno.test({
   name:

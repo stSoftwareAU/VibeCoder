@@ -66,3 +66,11 @@ release, callback, heartbeat and zero-tail-grace assertions. The serial case
 failed against the previous head and passes after the repair. All 76
 slot-pool, thrown-release and callback tests pass, as do the 866 manifest
 checks (one ignored). Formatting and lint pass.
+
+The second review added a wedged maintenance-lane regression. Its injected
+clock stays at the finish until termination is observed, then reaches finish
+plus reserve. The test asserts the CI Fix scheduled-release log, one cycle
+heartbeat and the normal run-duration exit within that bound. It passes with
+the existing maintenance-lane and shutdown tests.
+Removing the finish bound from the lane call makes that regression fail with
+`maintenance finish drain did not return`; restoring it passes.

@@ -23,6 +23,10 @@ import {
 } from "../lib/run_core.ts";
 import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
 import { acquireMaintenanceRepoLease } from "../lib/maintenance_lane.ts";
+import {
+  finishSessionReserveSeconds,
+  resetRunTimelineForTests,
+} from "../lib/run_timeline.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -469,6 +473,94 @@ Deno.test("maintenance lane - a shutdown grace elapsing mid-pass abandons the la
       terminated.join(" | ")
     }`,
   );
+});
+
+Deno.test("maintenance lane - a wedged pass is released at the finish deadline without delaying the normal exit (Issue #4246)", async () => {
+  const start = 1_700_000_000_000;
+  let now = start;
+  const config = createDefaultRunCoreConfig();
+  const finishMs = start + config.runFinishSeconds * 1000;
+  const drainAt = finishMs +
+    finishSessionReserveSeconds(config.claudeKillAfterSeconds) * 1000;
+  const logs: string[] = [];
+  const terminations: { reason: string; at: number }[] = [];
+  const started = Promise.withResolvers<void>();
+  const hung = Promise.withResolvers<void>();
+  let clock: ReturnType<typeof setInterval> | undefined;
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  let heartbeat = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (message) => logs.push(message),
+    logError: (message) => logs.push(message),
+    sleep: () => Promise.resolve(),
+    inFlightRepos: new InFlightRepoRegistry(),
+    findAndProcessCiFailure: async () => {
+      started.resolve();
+      await hung.promise;
+      return { ok: true, value: { processed: false } };
+    },
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: async () => {
+      await started.promise;
+      now = finishMs;
+      // Stay at finish until its termination is observed, so the test proves
+      // termination happens before grace, rather than jumping over both.
+      clock = setInterval(() => {
+        if (terminations.some((entry) => entry.at === finishMs)) now = drainAt;
+      }, 15);
+      return { ok: true, value: { success: true } };
+    },
+    terminateActiveAgentRuns: (reason) => {
+      terminations.push({ reason, at: now });
+      return Promise.resolve();
+    },
+    runCycleCallback: () => {
+      heartbeat++;
+      return Promise.resolve();
+    },
+  });
+  const run = runCoreLoop({ ...config, maxConcurrentIssues: 2 }, deps);
+  try {
+    const result = await Promise.race([
+      run,
+      new Promise<never>((_resolve, reject) => {
+        guard = setTimeout(
+          () => reject(new Error("maintenance finish drain did not return")),
+          1500,
+        );
+      }),
+    ]);
+    assert(
+      terminations.some((entry) =>
+        entry.at === finishMs && entry.reason.includes("finish deadline")
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes(
+          "CI Fix released on schedule: the finish deadline was reached",
+        )
+      ),
+      logs.join("\n"),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes("Run duration complete. Exiting for refresh.")
+      ),
+      logs.join("\n"),
+    );
+    assertEquals(result.exitReason, "Run duration expired");
+    assert(now <= drainAt);
+    assertEquals(heartbeat, 1);
+  } finally {
+    if (guard !== undefined) clearTimeout(guard);
+    if (clock !== undefined) clearInterval(clock);
+    hung.resolve();
+    await run;
+    await afterTicks(2);
+    resetRunTimelineForTests();
+  }
 });
 
 /** Deps with the lane driven by `registry` and a clock the sleeps advance. */

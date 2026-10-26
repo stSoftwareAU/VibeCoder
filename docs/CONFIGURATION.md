@@ -2450,6 +2450,11 @@ Five stages, in the order a claim meets them:
    states the finish deadline (Issue #4244). The runner refreshes that budget
    after preparation, refuses to spawn below the 120 s minimum, and caps the
    watchdog at the absolute finish less the kill grace and WIP reserve.
+   A quality, security, summary or screenshot recovery released at that
+   deadline preserves its WIP and ends as a scheduled release without
+   another gate run or an issue-failure charge. A custom-label PR run posts
+   that outcome on the PR and asks the developer to re-apply its consumed
+   label next run.
 3. **Extensions re-arm that budget while the run is progressing.** On by
    default (Issue #422) — see
    [Progress-extended deadline](#-progress-extended-deadline) for the two

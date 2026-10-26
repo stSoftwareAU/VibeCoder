@@ -715,9 +715,7 @@ until the next cycle:
 | 1.7      | Milestone Completions              |
 | 1.81     | Failure-Detection Repair Resume    |
 
-The tiering above is a separate gate from the run's one-hour target: once that target has passed, no new handler starts at all, so Issue Scanning, PR Feedback, CI Fix and Auto-Merge defer to the next cycle, while work already dispatched is not interrupted. Before the target, none of these four is tiered, and the same is true of the local-only Closed Milestone Housekeeping, which spends no GraphQL budget to skip. — and neither is the
-local-only Closed Milestone Housekeeping, which spends no GraphQL
-budget to skip. The reconcile pass (1.64) is tiered as well: it services no
+The tiering above is a separate gate from the run's one-hour target: once that target has passed, no new handler starts at all, so Issue Scanning, PR Feedback, CI Fix and Auto-Merge defer to the next cycle, while work already dispatched is not interrupted. Before the target, none of these four is tiered, and the same is true of the local-only Closed Milestone Housekeeping, which spends no GraphQL budget to skip. The reconcile pass (1.64) is tiered as well: it services no
 in-flight run, and a body it skips in the reserve stays as it is until a cycle
 outside the reserve reads it.
 

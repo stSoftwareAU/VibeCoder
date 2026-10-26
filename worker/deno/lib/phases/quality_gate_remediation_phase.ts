@@ -52,6 +52,7 @@ import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 import { hostDiskInfrastructureFailure } from "../host_fault.ts";
+import { releaseRunAtFinishDeadline } from "./run_wip_preservation.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -171,6 +172,16 @@ export async function workOnIssueQualityGate(
       state,
       deps,
     );
+
+  if (
+    phaseResult.status === "failure" &&
+    phaseResult.category === "scheduled_release"
+  ) {
+    // A refused recovery is not a failed quality attempt. Do not retry the
+    // gate or audit a dependency bump after the scheduled release.
+    if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
+    return phaseResult;
+  }
 
   if (phaseResult.status === "failure" && !agentTurnLimit) {
     // Only infrastructure-category quality failures qualify for the extra
@@ -752,6 +763,11 @@ async function runQualityGateBody(
       },
     );
 
+    if (fixResult.ok && fixResult.value.finishDeadline) {
+      return {
+        phaseResult: await releaseRunAtFinishDeadline(ctx, state, deps),
+      };
+    }
     if (!fixResult.ok) {
       logger.warn("Claude fix attempt failed", {
         error: fixResult.error.message,

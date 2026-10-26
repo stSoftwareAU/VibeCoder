@@ -101,3 +101,10 @@ and provider-invocation tests, and 866 manifest checks pass (one manifest test
 ignored). Formatting and lint pass on the four changed TypeScript files.
 The reserve calculation remains shared through `finishSessionReserveSeconds`;
 serial and pooled claims both use `finishDrainBound` and `drainSlots`.
+
+The second review added the complementary timeout regression: with a timeline
+published, a session that exhausts its own 120-second budget inside the finish
+allowance remains an ordinary hard timeout and carries no `finishDeadline`.
+All 8 runner deadline tests now pass.
+Removing the clamp distinction makes the new own-budget test fail with
+`finishDeadline: true` instead of the required absent flag.

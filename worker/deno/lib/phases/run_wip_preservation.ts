@@ -15,9 +15,14 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { PhaseState } from "../issue_worker_types.ts";
+import type {
+  IssueContext,
+  PhaseResult,
+  PhaseState,
+} from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import {
+  buildInterruptedWipCommitMessage,
   preserveTimedOutWip,
   type WipPreservationCause,
 } from "../wip_checkpoint.ts";
@@ -28,6 +33,43 @@ import {
   type PreservedWip,
 } from "../preserved_wip_branch.ts";
 import { writeHandoverNote } from "../handover_note.ts";
+import { buildScheduledReleaseReason } from "../failure_diagnosis.ts";
+import { classifyRunFailure } from "../run_outcome_classifier.ts";
+
+/** Preserve a follow-up agent's work before ending at the run's finish. */
+export async function releaseRunAtFinishDeadline(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<PhaseResult> {
+  const elapsedSeconds = state.executeStartTime > 0
+    ? Math.max(0, Math.round((Date.now() - state.executeStartTime) / 1000))
+    : 0;
+  const wip = await preserveRunWip({
+    state,
+    deps,
+    issueNumber: ctx.issueNumber,
+    repo: ctx.repo,
+    buildMessage: (dirtyFiles) =>
+      buildInterruptedWipCommitMessage({
+        cause: "scheduled-release",
+        elapsedSeconds,
+        dirtyFiles,
+      }),
+    handover: { cause: "scheduled-release", elapsedSeconds },
+  });
+  const reason = buildScheduledReleaseReason(
+    "finish-deadline",
+    wip.wipNote ?? "the next claim resumes this issue",
+  );
+  deps.logger.info(reason);
+  return {
+    status: "failure",
+    category: "scheduled_release",
+    reason,
+    classification: classifyRunFailure("scheduled_release", reason, true),
+  };
+}
 
 /** What preservation found and did. */
 export interface PreservedRunWip {

@@ -4254,9 +4254,7 @@ export async function createProductionRunCoreDeps(
                 logger.info(
                   `Custom PR prompt for ${candidate.repo}#${candidate.prNumber} released on schedule: the finish deadline was reached`,
                 );
-                throw new Error(
-                  "released on schedule: the finish deadline was reached",
-                );
+                return "finish-deadline";
               }
               if (run.value.timedOut) {
                 throw new Error(
@@ -4265,6 +4263,7 @@ export async function createProductionRunCoreDeps(
                     : "the agent timed out",
                 );
               }
+              return "completed";
             },
             verifyPush: (candidate) =>
               verifyPushLanded(candidate.headRefName, {

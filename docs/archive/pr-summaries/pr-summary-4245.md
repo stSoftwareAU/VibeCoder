@@ -55,3 +55,27 @@ Version bump: not applicable — no `deno.json` version change.
 - Expected-value change: `execute_phase_full_budget_420_test.ts` keeps the full-budget assertion and adds `execute_phase - a claim at minute 59 keeps the full budget and the extension ceiling is the finish (Issue #4245)`.
 - Twins: `phases/execute_phase.ts` and `commands/execute_claude_phase.ts` both call `extensionCeiling`; `executePriorityHandler` in `run_core.ts` takes the minimum with the finish ceiling. `resolveClaimHardCap` in `run_core_production_deps.ts` and both `anchorClaimCapToFinish` call sites in `run_core.ts`. `buildScheduledReleaseReason`, the execute-phase `scheduled_release` category, and `handleIssueFailure`. The `released on schedule` path in `merge_conflict_agent.ts`, `milestone_conflict_ladder.ts`, `pr_feedback_processor.ts`, `pr_ci_processor.ts` and `custom_label_pr_dispatch.ts`. The WIP subject in `wip_checkpoint.ts`, `run_outcome_classifier.ts`, `failure_diagnosis.ts` and `docs/CONFIGURATION.md`. The "not yet applied" sentence in `types.ts`, `config.ts`, `RunCoreConfig` and the `run_finish_seconds` row.
 - `worker/deno/lib/vibe_env_registry.ts` keeps a single `VIBE_HARD_KILL_AT_EPOCH` entry, the Issue #4247 note. The second entry from the milestone merge is removed. It does not change the finish ceiling.
+
+## Independent review repairs for PR #4382
+
+Quality remediation and security, summary and screenshot retries now recognise
+the runner's typed `finishDeadline` result before starting another gate or
+completion attempt. Their shared `releaseRunAtFinishDeadline` path calls the
+existing WIP preservation helper and returns `scheduled_release`. Quality
+remediation also bypasses dependency-bump audit after that release. No blocked
+security run or `failed-once` attempt is charged for reaching the finish.
+
+Custom-label PR dispatch now returns a typed finish outcome from its agent
+seam instead of parsing an error message. A release posts a PR comment naming
+the finish deadline and asking the developer to re-apply the consumed label;
+it does not silently drop the request or enter push verification.
+
+The five recovery regressions (including an applied dependency bump) and the
+custom-label regression all failed before the repairs and pass afterwards.
+They assert WIP push, preserved branch, no extra gate/completion run, no failure
+ladder charge, no security blocked-run charge, and the visible PR retry comment.
+Validation: 17 recovery/dispatch tests, 99 related integration tests and all
+866 manifest checks pass (one ignored). Production wiring type-checks and all
+11 touched TypeScript files pass lint. The duplicated housekeeping fragment
+in `GH-API-OPTIMISATION.md` is removed, and `DEPLOYMENT.md` now describes the
+supervisor cap as the outer kill, consistent with the finish-deadline model.
