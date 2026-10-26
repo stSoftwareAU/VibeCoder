@@ -10,7 +10,11 @@
  * for that one launcher, not the test process.
  */
 
-const raw = await Deno.readFile(Deno.args[0]);
+const planPath = Deno.args[0];
+if (!planPath || !planPath.trim()) {
+  throw new Error("egress_plan_mutator requires a rendered launch-plan path");
+}
+const raw = await Deno.readFile(planPath);
 const text = new TextDecoder().decode(raw);
 const parts = text.split("\0").filter((part) => part.length > 0);
 
@@ -85,6 +89,6 @@ if (Deno.env.get("STUB_INJECT_EGRESS_PLAN") === "1") {
 }
 
 await Deno.writeFile(
-  Deno.args[0],
+  planPath,
   new TextEncoder().encode(`${next.join("\0")}\0`),
 );

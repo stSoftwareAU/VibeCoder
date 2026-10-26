@@ -2015,6 +2015,15 @@ record_phase container_run
 # pipe cannot stall this launcher.
 RUN_DRAIN_SECONDS=10
 
+# The proxy has to be listening before the worker starts. A failure here
+# exits non-zero and the trap removes whatever was created. The worker
+# capture FIFO is created only after this succeeds: a refused sidecar
+# never opens the FIFO writer, leaving its reader blocked in open(). There is no
+# fallback onto the runtime's open network (Issue #4047).
+if [[ "${EGRESS_ENFORCED}" == "true" ]]; then
+  start_egress_sidecar
+fi
+
 # Capture the client's stderr while it still reaches the console (Issue #711).
 # Issue #711 was the third self-heal report to say `container_start`, `exit
 # status 125` and nothing about why: the client's own explanation went to the
@@ -2048,13 +2057,6 @@ else
   echo "[run.sh] warning: no tee/mkfifo on this host - a refused container" \
     "start will be reported without the runtime's own explanation" \
     "(Issue #711)" >&2
-fi
-
-# The proxy has to be listening before the worker starts. A failure here
-# exits non-zero and the trap removes whatever was created. There is no
-# fallback onto the runtime's open network (Issue #4047).
-if [[ "${EGRESS_ENFORCED}" == "true" ]]; then
-  start_egress_sidecar
 fi
 
 LAUNCH_IN_FLIGHT=1
