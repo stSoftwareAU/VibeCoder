@@ -23,7 +23,12 @@
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   compareLauncherContracts,
   extractLauncherContract,
@@ -54,6 +59,53 @@ const RUN_PS1 = extractLauncherContract(
   RUN_PS1_SOURCE,
   "powershell",
 );
+
+/**
+ * Normalise the run-specific values away: each harness gets its own
+ * temporary host directory, each launch its own container name (including
+ * its derived network and proxy names), each `container-launch-plan` its own
+ * live `df` reading, and each plan its own clock-derived hard-kill instant
+ * (Issue #4242, checked above). Available bytes drift by tens of kilobytes
+ * between sequential launches once `df` stdout is actually captured (Issue
+ * #345); the parity this test
+ * cares about is that both launchers pass the env vars, not that the
+ * host's free space stayed still for a few seconds.
+ */
+const normaliseRuntimeInvocation = (
+  invocation: { args: string[]; tmpDir: string },
+) => {
+  const nameIndex = invocation.args.indexOf("--name");
+  const workerName = nameIndex < 0 ? undefined : invocation.args[nameIndex + 1];
+  assert(workerName && /^vibe-coder-\d+$/.test(workerName));
+  // Only names derived from this worker are normalised. A proxy pointing
+  // at another worker, a changed port or a broader network stays visible.
+  const names = new Map([
+    [workerName, "<container-name>"],
+    [`${workerName}-net`, "<container-name>-net"],
+    ...["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].map((key) =>
+      [
+        `${key}=http://${workerName}-proxy:3128`,
+        `${key}=http://<container-name>-proxy:3128`,
+      ] as const
+    ),
+  ]);
+  return invocation.args.map((arg) =>
+    (names.get(arg) ?? arg)
+      .replaceAll(invocation.tmpDir, "<host>")
+      .replace(
+        /^VIBE_HOST_DISK_AVAIL_BYTES=\d+$/,
+        "VIBE_HOST_DISK_AVAIL_BYTES=<bytes>",
+      )
+      .replace(
+        /^VIBE_HOST_DISK_TOTAL_BYTES=\d+$/,
+        "VIBE_HOST_DISK_TOTAL_BYTES=<bytes>",
+      )
+      .replace(
+        /^VIBE_HARD_KILL_AT_EPOCH=\d+$/,
+        "VIBE_HARD_KILL_AT_EPOCH=<epoch>",
+      )
+  );
+};
 
 // ---------------------------------------------------------------------------
 // The extractor itself, against sources whose contents are known
@@ -522,36 +574,6 @@ Deno.test({
     const bash = await invocationOf(BASH_LAUNCHER);
     const powershell = await invocationOf(POWERSHELL_LAUNCHER!);
 
-    /**
-     * Normalise the run-specific values away: each harness gets its own
-     * temporary host directory, each launch its own container name, each
-     * `container-launch-plan` its own live `df` reading, and each plan its
-     * own clock-derived hard-kill instant (Issue #4242, checked above).
-     * Available bytes drift by tens of kilobytes between sequential launches
-     * once `df`
-     * stdout is actually captured (Issue #345); the parity this test
-     * cares about is that both launchers pass the env vars, not that the
-     * host's free space stayed still for a few seconds.
-     */
-    const normalise = (invocation: { args: string[]; tmpDir: string }) =>
-      invocation.args.map((arg) =>
-        arg
-          .replaceAll(invocation.tmpDir, "<host>")
-          .replace(/^vibe-coder-\d+$/, "<container-name>")
-          .replace(
-            /^VIBE_HOST_DISK_AVAIL_BYTES=\d+$/,
-            "VIBE_HOST_DISK_AVAIL_BYTES=<bytes>",
-          )
-          .replace(
-            /^VIBE_HOST_DISK_TOTAL_BYTES=\d+$/,
-            "VIBE_HOST_DISK_TOTAL_BYTES=<bytes>",
-          )
-          .replace(
-            /^VIBE_HARD_KILL_AT_EPOCH=\d+$/,
-            "VIBE_HARD_KILL_AT_EPOCH=<epoch>",
-          )
-      );
-
     const hostDiskEnvPresent = (name: string, args: string[]) => {
       assert(
         args.some((arg) => arg.startsWith("VIBE_HOST_DISK_AVAIL_BYTES=")),
@@ -594,8 +616,8 @@ Deno.test({
     hardKillEpochPresent("run.ps1", powershell.args);
 
     assertEquals(
-      normalise(powershell),
-      normalise(bash),
+      normaliseRuntimeInvocation(powershell),
+      normaliseRuntimeInvocation(bash),
       "run.ps1 must hand the runtime exactly what run.sh does — mounts, " +
         "read-only flags, network settings and privilege flags included",
     );
@@ -603,8 +625,8 @@ Deno.test({
     // Stated separately so a failure names the mounts rather than the whole
     // argument list.
     assertEquals(
-      mountValues(normalise(powershell)),
-      mountValues(normalise(bash)),
+      mountValues(normaliseRuntimeInvocation(powershell)),
+      mountValues(normaliseRuntimeInvocation(bash)),
     );
   },
 });
@@ -644,4 +666,60 @@ Deno.test("launcher parity - neither launcher spells a log path beside the resol
       "resolved — use $LogDir_ (run.ps1) or ${RUN_CORE_LOG_DIR} (run.sh):\n" +
       offenders.join("\n"),
   );
+});
+
+Deno.test("launcher parity - egress names vary only with their own worker identity (Issue #4047)", () => {
+  const invocation = (pid: number) => ({
+    tmpDir: `/tmp/launcher-${pid}`,
+    args: [
+      "run",
+      "--rm",
+      "--name",
+      `vibe-coder-${pid}`,
+      "--network",
+      `vibe-coder-${pid}-net`,
+      ...["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((
+        key,
+      ) => ["--env", `${key}=http://vibe-coder-${pid}-proxy:3128`]),
+      "--cap-drop",
+      "ALL",
+      "--read-only",
+      "--volume",
+      `/tmp/launcher-${pid}/repo:/workspace:ro`,
+    ],
+  });
+  const bash = invocation(9125);
+  const powershell = invocation(9321);
+  assertEquals(
+    normaliseRuntimeInvocation(bash),
+    normaliseRuntimeInvocation(powershell),
+  );
+  for (
+    const [before, after] of [
+      ["vibe-coder-9321-net", "vibe-coder-9125-net"],
+      [
+        "HTTPS_PROXY=http://vibe-coder-9321-proxy:3128",
+        "HTTPS_PROXY=http://vibe-coder-9125-proxy:3128",
+      ],
+      [
+        "HTTPS_PROXY=http://vibe-coder-9321-proxy:3128",
+        "HTTPS_PROXY=http://vibe-coder-9321-proxy:3129",
+      ],
+      ["--read-only", "--privileged"],
+      [
+        "/tmp/launcher-9321/repo:/workspace:ro",
+        "/tmp/launcher-9321/repo:/workspace:rw",
+      ],
+    ] as const
+  ) {
+    const changed = {
+      ...powershell,
+      args: powershell.args.map((arg) => arg === before ? after : arg),
+    };
+    assertNotEquals(
+      normaliseRuntimeInvocation(bash),
+      normaliseRuntimeInvocation(changed),
+      `${before} -> ${after} must remain visible`,
+    );
+  }
 });

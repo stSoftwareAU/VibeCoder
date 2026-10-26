@@ -222,6 +222,100 @@ Deno.test("every in-repo link and anchor in the threat model resolves", () => {
   assertEquals(broken, [], `${THREAT_MODEL} has unresolvable links`);
 });
 
+const LIVING_EGRESS_DOCS = [
+  THREAT_MODEL,
+  "docs/CONTAINMENT.md",
+  "docs/security/agent-containment-gap-analysis.md",
+  "SECURITY.md",
+];
+
+/**
+ * A nearby claim that C12 or C13 govern general egress. A sentence that says
+ * they do not, or that they are gh-write controls only, is the correction.
+ */
+function claimsGeneralEgress(window: string): boolean {
+  if (!/general egress|egress control/i.test(window)) return false;
+  return !/only|do not|does not|gh-write|GitHub-write|gh writes/i.test(window);
+}
+
+Deno.test("C12 and C13 are not described as controlling general egress (Issue #4050)", () => {
+  const problems: string[] = [];
+  for (const relative of LIVING_EGRESS_DOCS) {
+    const body = read(relative);
+    if (
+      body.includes("egress control (C12") ||
+      body.includes("egress control (C13")
+    ) {
+      problems.push(`${relative} still calls C12 or C13 egress control`);
+    }
+    for (const match of body.matchAll(/C1[23]/g)) {
+      const at = match.index ?? 0;
+      const window = body.slice(at, at + 240);
+      if (claimsGeneralEgress(window)) {
+        problems.push(`${relative} near offset ${at}: ${window.slice(0, 120)}`);
+      }
+    }
+  }
+  assertEquals(problems, []);
+});
+
+Deno.test("R9 and R11 stay open and cite #3699 (Issue #4050)", () => {
+  const rows = dataRows("Residual risks", /\*\*R(?:9|11)\*\*/);
+  assertEquals(
+    rows.map((cells) => (cells[0] ?? "").replace(/\*/g, "").trim()),
+    [
+      "R9",
+      "R11",
+    ],
+  );
+  for (const cells of rows) {
+    const why = cells[2] ?? "";
+    assert(why.includes("Open"), `${cells[0]} must stay Open`);
+    assert(why.includes("#3699"), `${cells[0]} must cite #3699`);
+    assert(
+      why.includes("default-deny"),
+      `${
+        cells[0]
+      } must record that general egress is default-deny on Docker and Podman`,
+    );
+  }
+});
+
+Deno.test("the enforced network paths table names every path, including Apple (Issue #4050)", () => {
+  const body = section(read(THREAT_MODEL), "Enforced network paths");
+  for (
+    const phrase of [
+      "Worker and agent container",
+      "proxy",
+      "allowlist",
+      "worker/deno/tests/container_egress_probe.ts",
+      "Image builds",
+      "Apple container",
+      "Measured partial containment",
+      "#4051",
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the enforced-paths table must name "${phrase}"`,
+    );
+  }
+});
+
+Deno.test("gap analysis G2 is delivered for Docker and Podman and not for Apple (Issue #4050)", () => {
+  const file = read("docs/security/agent-containment-gap-analysis.md");
+  const body = section(file, "G2");
+  assert(
+    file.includes("### G2 — Network — **DELIVERED**"),
+    "G2 must be marked delivered",
+  );
+  assert(body.includes("#4051"), "G2 must keep Apple container open");
+  assert(
+    read("SECURITY.md").includes("measured partial containment"),
+    "SECURITY.md must distinguish Apple partial containment",
+  );
+});
+
 Deno.test("the markdown-lint workflow runs the threat-model check", () => {
   const workflow = read(".github/workflows/markdown-lint.yml");
   assert(

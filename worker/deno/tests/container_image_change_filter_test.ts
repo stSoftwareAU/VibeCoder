@@ -222,6 +222,50 @@ Deno.test("image filter - the worker's toolchain self-check builds (Issues #2070
   }
 });
 
+Deno.test("image filter - containment changes run the live Docker checks (Issue #4047)", async () => {
+  for (
+    const path of [
+      ".github/scripts/detect-image-changes.sh",
+      "run.sh",
+      "run.ps1",
+      "worker/deno/lib/container_launch.ts",
+      "worker/deno/lib/container_runtime.ts",
+      "worker/deno/commands/container_launch_plan.ts",
+      "worker/deno/lib/egress_allowlist.ts",
+      "worker/deno/lib/egress_proxy.ts",
+      "worker/deno/lib/egress_sidecar.ts",
+      "worker/deno/lib/egress_selfcheck.ts",
+      "worker/deno/commands/egress_proxy.ts",
+      "worker/deno/commands/egress_selfcheck.ts",
+      "worker/deno/egress_proxy_main.ts",
+      "worker/deno/tests/container_containment_test.ts",
+    ]
+  ) {
+    await withTempDir(async (dir) => {
+      const base = await repoWithBase(dir);
+      const head = await commitFile(dir, path, "changed\n");
+      const run = await filter(dir, base, head);
+      assertEquals(run.code, 0, run.stdout + run.stderr);
+      assertStringIncludes(run.githubOutput, "image=true", path);
+      assertStringIncludes(run.stdout, path);
+    });
+  }
+});
+
+Deno.test("image filter - an unrelated worker change still skips the image build (Issue #4047)", async () => {
+  await withTempDir(async (dir) => {
+    const base = await repoWithBase(dir);
+    const head = await commitFile(
+      dir,
+      "worker/deno/lib/issue_labels.ts",
+      "changed\n",
+    );
+    const run = await filter(dir, base, head);
+    assertEquals(run.code, 0, run.stdout + run.stderr);
+    assertStringIncludes(run.githubOutput, "image=false");
+  });
+});
+
 Deno.test("image filter - the screenshot generator builds (Issue #1584)", async () => {
   await withTempDir(async (dir) => {
     const base = await repoWithBase(dir);

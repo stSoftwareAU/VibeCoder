@@ -72,6 +72,11 @@ import { summariseSelfHealEvents } from "../lib/self_heal_events.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
 import { ROOT_FS_FAULT_EXIT_STATUS } from "../lib/root_filesystem_fault.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import {
+  explainExitStatus,
+  knownWorkerStatuses,
+} from "../lib/launcher_failure_evidence.ts";
+import { EGRESS_SELFCHECK_EXIT_STATUS } from "../lib/egress_selfcheck.ts";
 
 const TEST_FILE_PATH = new URL(import.meta.url).pathname;
 const REPO_ROOT = TEST_FILE_PATH.replace(/\/worker\/deno\/tests\/[^/]+$/, "");
@@ -1605,4 +1610,23 @@ Deno.test("recordContainerRestartOutcome - the pool is asked only on a quota pau
   } finally {
     await harness.cleanup();
   }
+});
+
+Deno.test("a failed egress self-check is classified beside the toolchain self-check (Issue #4048)", () => {
+  // The same table container_restart_backoff.ts passes to explainExitStatus.
+  // Neighbouring statuses are the worker's other deliberate exits; 90 must
+  // not be described as a runtime-client failure.
+  const known = knownWorkerStatuses(
+    75,
+    2,
+    4,
+    76,
+    88,
+    89,
+    74,
+    EGRESS_SELFCHECK_EXIT_STATUS,
+  );
+  const explanation = explainExitStatus(EGRESS_SELFCHECK_EXIT_STATUS, known);
+  assertStringIncludes(explanation, "egress self-check");
+  assertEquals(explanation.includes("container runtime client"), false);
 });

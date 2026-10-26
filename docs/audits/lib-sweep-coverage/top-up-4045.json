@@ -1,0 +1,10 @@
+{
+  "issue": 4045,
+  "chunk": "top-up-4045",
+  "title": "top-up: egress allowlist resolution and host validation",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4045",
+  "definition": "Pure module that resolves the egress host list from built-in, enabled-provider, imgbb, ANTHROPIC_BASE_URL and operator egress_allow_hosts entries, and validates untrusted config host strings; no I/O.",
+  "status": "claimed",
+  "sweptAt": "0e14874355c2ff8f3c715509d384e602ba1a9dad",
+  "paths": ["worker/deno/lib/egress_allowlist.ts"]
+}
