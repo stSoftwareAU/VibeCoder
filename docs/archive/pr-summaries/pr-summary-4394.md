@@ -54,3 +54,15 @@ Backend-only change; verified by tests below.
   so they are unrelated to this change.
 - Twin copies checked: `stageAgentResolution` (now calls the shared helper) and
   `commitAndPushPending` (already unstages); none left.
+
+## Mutation check
+
+The mutation check did not run: its baseline (unmutated) test run failed, so no
+mutant could be judged. This is not a gap in the tests for the changed lines. Re-running
+the baseline files by hand, 55 passed and only the 2 `completion_phase_repo_formatters_test.ts`
+tests failed ("formatter should commit the Rust fix"), the same 2 that fail on the
+unmodified base commit. The remaining files in the baseline list passed when run
+individually, so their failure under the mutation harness looks environmental. The
+changed lines are pinned by `pr_ci_processor_state_file_4394_test.ts` (red-checked above).
+Re-run the mutation check once the base failures are fixed, or set
+`skip_mutation_check` for this repo.
