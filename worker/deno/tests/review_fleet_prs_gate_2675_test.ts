@@ -960,6 +960,60 @@ Deno.test("own-diff manifest version exception rejects a long run of spaces afte
   );
 });
 
+Deno.test("own-diff manifest version exception rejects a hostile TOML version key (Issue #4391)", async () => {
+  const pad = " ".repeat(100000);
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "bump",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "Cargo.toml",
+      patch: cargoBump("1.2.3", "1.2.4"),
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "Cargo.toml",
+      patch: hunk(
+        "@@ -1,3 +1,3 @@",
+        " [package]",
+        `-version${pad}= "1.2.5"`,
+        `+version${pad}!`,
+        ' edition = "2021"',
+      ),
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+    false,
+  );
+});
+
+Deno.test("own-diff manifest version exception rejects a hostile hunk line count (Issue #4391)", async () => {
+  const digits = "9".repeat(100000);
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "bump",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "package.json",
+      patch: packageBump("1.2.3", "1.2.4"),
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "package.json",
+      patch: packageHunk(
+        `@@ -1,${digits}! +1,5 @@`,
+        '-  "version": "1.2.5",',
+        '+  "version": "1.2.6",',
+      ),
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+    false,
+  );
+});
+
 Deno.test("skipReason: a merge-only head after a send-back is awaiting-fix (Issue #3063)", async () => {
   const pr = searchPr({
     headRefOid: "head",
