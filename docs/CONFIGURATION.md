@@ -420,6 +420,22 @@ Do **not** add the bot to `pr_reviewers`. That list is requested as reviewers
 on every new worker PR, and GitHub cannot request a review from an App, so PR
 creation would fail.
 
+## ⏩ Parallel review rounds
+
+`pr_reviewer_parallel` sets how many review rounds the unattended
+`review-fleet-prs` runner (`scripts/run.sh`) runs at once, each reviewing one
+PR in its own worker container (Issue #4395). It defaults to `3`; `1` reviews
+one PR at a time. Each round uses a subscription from the worker's Claude
+credential pool, so a higher value spends quota faster and runs more
+containers side by side. A value that is not a whole number above 0 is logged
+and the default is used. It is read by `run.sh` only, never by the worker.
+
+```json
+{
+  "pr_reviewer_parallel": 3
+}
+```
+
 ## 🔓 Auto-release of issue-required test changes
 
 `pr_reviewer_auto_release` lets the `review-fleet-prs` skill approve, rather

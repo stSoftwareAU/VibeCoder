@@ -714,3 +714,234 @@ Deno.test("run.sh posts an audit send-back as a review with no model run", async
   assertEquals(code, 0, output);
   assertStringIncludes((await recorded(home, "post-args"))!, "--no-model");
 });
+
+// ---------------------------------------------------------------------------
+// Issues #4395-#4397: one round per ready PR, several at once; a freed slot
+// is filled at the next tick; learning from recurring findings runs in a
+// round of its own.
+// ---------------------------------------------------------------------------
+
+const TWO_READY = JSON.stringify({
+  ready: [
+    { repo: "owner/repo", number: 7, title: "Fix it" },
+    { repo: "owner/repo", number: 8, title: "Fix that" },
+  ],
+  skipped: {},
+});
+
+// Every round directory's prompt, by directory name.
+async function roundPrompts(home: string): Promise<Map<string, string>> {
+  const rounds = `${home}/logs/review-fleet-prs/rounds`;
+  const prompts = new Map<string, string>();
+  for await (const entry of Deno.readDir(rounds)) {
+    try {
+      prompts.set(
+        entry.name,
+        await Deno.readTextFile(`${rounds}/${entry.name}/prompt.md`),
+      );
+    } catch {
+      // A directory with no prompt is not a round.
+    }
+  }
+  return prompts;
+}
+
+// Runs the for-ever loop for `ms`, then stops it as a service manager would.
+async function runFor(
+  home: string,
+  ms: number,
+  env: Record<string, string> = {},
+) {
+  const child = new Deno.Command("bash", {
+    args: [RUNNER],
+    env: {
+      HOME: home,
+      PATH: `${home}/bin:/usr/bin:/bin`,
+      REVIEW_FLEET_PRS_TICK: "1",
+      ...env,
+    },
+    clearEnv: true,
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  await new Promise((r) => setTimeout(r, ms));
+  child.kill("SIGTERM");
+  await child.status;
+}
+
+const gateLines = (log: string) =>
+  log.split("\n").filter((l) => / gate: /.test(l)).length;
+
+Deno.test("run.sh reviews each ready PR in its own round, the rounds running at once (Issue #4395)", async () => {
+  const home = await fixture(TWO_READY);
+  // Each round waits until both have started: run one after the other, the
+  // first would give up and fail.
+  await claudeStub(
+    home,
+    `touch "$HOME/started-$$"
+for i in $(seq 50); do
+  [ "$(ls "$HOME" | grep -c '^started-')" -ge 2 ] && exit 0
+  sleep 0.2
+done
+echo "rounds ran one at a time" >&2; exit 9`,
+  );
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const prompts = [...(await roundPrompts(home)).values()];
+  assertEquals(prompts.length, 2);
+  // Each round is given its own PR and only that one.
+  assertEquals(
+    prompts.filter((p) => p.includes('"number":7')).length,
+    1,
+  );
+  assertEquals(
+    prompts.filter((p) => p.includes('"number":8')).length,
+    1,
+  );
+  assert(
+    prompts.every((p) =>
+      !(p.includes('"number":7') && p.includes('"number":8'))
+    ),
+  );
+  const log = await runnerLog(home);
+  assertStringIncludes(log, "owner/repo#7: round done");
+  assertStringIncludes(log, "owner/repo#8: round done");
+});
+
+Deno.test("run.sh names each round's container after its PR, so rounds started together never clash (Issue #4395)", async () => {
+  const home = await fixture(TWO_READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const names = [...(await roundPrompts(home)).keys()].sort();
+  assertEquals(names.length, 2);
+  assert(names[0]!.endsWith("-owner-repo-7"), names[0]);
+  assert(names[1]!.endsWith("-owner-repo-8"), names[1]);
+});
+
+Deno.test("run.sh asks the gate for as many PRs as pr_reviewer_parallel allows, 3 by default (Issue #4395)", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  await run(home, "--once");
+  assertStringIncludes((await recorded(home, "gate-args"))!, "--limit=3");
+
+  const config = `${home}/config.json`;
+  await Deno.writeTextFile(config, JSON.stringify({ pr_reviewer_parallel: 1 }));
+  await runBash(home, [RUNNER, "--once"], { REVIEW_FLEET_PRS_CONFIG: config });
+  assertStringIncludes((await recorded(home, "gate-args"))!, "--limit=1");
+
+  await Deno.writeTextFile(config, JSON.stringify({ pr_reviewer_parallel: 0 }));
+  await runBash(home, [RUNNER, "--once"], { REVIEW_FLEET_PRS_CONFIG: config });
+  assertStringIncludes((await recorded(home, "gate-args"))!, "--limit=3");
+  assertStringIncludes(
+    await runnerLog(home),
+    "pr_reviewer_parallel must be a whole number above 0",
+  );
+});
+
+Deno.test("run.sh's review round skips learning from recurring findings (Issue #4397)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const prompt = await roundPrompt(home);
+  assertStringIncludes(prompt, "Skip step 3 (Learn from recurring");
+});
+
+Deno.test("run.sh tells the gate which PRs are in a round, and never starts a PR twice (Issue #4395)", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exec sleep 30");
+  await runFor(home, 3500, { REVIEW_FLEET_PRS_INTERVAL: "1" });
+  // The later gate passes ran while PR 7's round was still going.
+  assertStringIncludes(
+    (await recorded(home, "gate-args"))!,
+    "--in-flight=owner/repo#7",
+  );
+  // The stub gate still reports it; the runner does not start it again.
+  assertStringIncludes(
+    await runnerLog(home),
+    "owner/repo#7: already in a round",
+  );
+  assertEquals((await roundPrompts(home)).size, 1);
+  // Stopping the runner stops the round it left running.
+  assertStringIncludes(
+    (await recorded(home, "container-kills"))!,
+    "kill review-fleet-prs-",
+  );
+});
+
+Deno.test("run.sh gates again at the next tick after a round succeeds, not after the full interval (Issue #4396)", async () => {
+  const home = await fixture(READY);
+  await runFor(home, 4000, { REVIEW_FLEET_PRS_INTERVAL: "300" });
+  const log = await runnerLog(home);
+  assert(gateLines(log) >= 2, log);
+});
+
+Deno.test("run.sh waits the full interval after a failed round, so a failing PR is not retried hot (Issue #4396)", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exit 3");
+  await runFor(home, 4000, { REVIEW_FLEET_PRS_INTERVAL: "300" });
+  const log = await runnerLog(home);
+  assertEquals(gateLines(log), 1, log);
+  assertStringIncludes(log, "round failed (exit 3)");
+});
+
+// A log.jsonl with these outcomes, and learned-lines saying how many of its
+// lines a learning round has already covered.
+async function reviewLog(home: string, outcomes: string[], learned: number) {
+  const dir = `${home}/logs/review-fleet-prs`;
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(
+    `${dir}/log.jsonl`,
+    outcomes.map((outcome, i) =>
+      JSON.stringify({ repo: "owner/repo", number: i + 1, outcome }) + "\n"
+    ).join(""),
+  );
+  await Deno.writeTextFile(`${dir}/learned-lines`, `${learned}\n`);
+}
+
+Deno.test("run.sh runs a learning round for reviews sent back since the last one (Issue #4397)", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  await reviewLog(home, ["approved", "approved", "changes_requested"], 1);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const prompt = await roundPrompt(home);
+  assertStringIncludes(prompt, "step '3. Learn from recurring findings'");
+  assertStringIncludes(prompt, "lines 2 to 3");
+  assertStringIncludes(prompt, "do not review or");
+  // Covered now, so the next pass does not learn from them again.
+  assertEquals(
+    (await Deno.readTextFile(
+      `${home}/logs/review-fleet-prs/learned-lines`,
+    )).trim(),
+    "3",
+  );
+});
+
+Deno.test("run.sh runs no learning round when nothing was sent back since the last one (Issue #4397)", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  await reviewLog(home, ["changes_requested", "approved", "held"], 1);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(await claudeArgs(home), null);
+});
+
+Deno.test("run.sh leaves a failed learning round's reviews to learn from next time (Issue #4397)", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  await reviewLog(home, ["changes_requested"], 0);
+  await claudeStub(home, "exit 3");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(
+    (await Deno.readTextFile(
+      `${home}/logs/review-fleet-prs/learned-lines`,
+    )).trim(),
+    "0",
+  );
+});
+
+Deno.test("run.sh's first start learns only from reviews posted from then on (Issue #4397)", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  await reviewLog(home, ["changes_requested", "changes_requested"], 0);
+  await Deno.remove(`${home}/logs/review-fleet-prs/learned-lines`);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(await claudeArgs(home), null);
+});
