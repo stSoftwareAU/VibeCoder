@@ -91,7 +91,8 @@ export async function workOnIssueBaselineQuality(
 /**
  * Check out, detached, the commit the resumed branch forked from: its
  * merge-base with the remote base branch, or with the local one when the
- * remote ref is missing.
+ * remote ref is missing. Refuse a dirty or unverifiable checkout so setup
+ * output is neither measured as the baseline nor discarded on return.
  */
 async function checkOutForkPoint(
   state: PhaseState,
@@ -109,6 +110,14 @@ async function checkOutForkPoint(
     return run.value.stdout.trim();
   };
   try {
+    // Pre-setup commands run before this phase and may prepare tracked or
+    // untracked files. Git can carry those edits into the fork point, then
+    // a forced return would discard tracked edits (Issue #4412).
+    if (await git(["status", "--porcelain=v1", "--untracked-files=normal"])) {
+      throw new Error(
+        "working tree has uncommitted changes; preserving setup state",
+      );
+    }
     let forkPoint: string;
     try {
       forkPoint = await git([

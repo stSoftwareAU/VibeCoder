@@ -30,6 +30,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { CheckResult } from "../lib/quality_helpers.ts";
 import { resolveEgressAllowlist } from "../lib/egress_allowlist.ts";
+import { runPreSetupCommand } from "../lib/repo_config.ts";
 import {
   isRegistryUnavailable,
   semgrepScanArgs,
@@ -57,6 +58,7 @@ async function resumedCheckout(): Promise<string> {
   await git(dir, "config", "user.name", "Test");
   await git(dir, "config", "user.email", "test@example.com");
   await Deno.writeTextFile(`${dir}/state.txt`, "clean\n");
+  await Deno.writeTextFile(`${dir}/setup.txt`, "original\n");
   await git(dir, "add", "-A");
   await git(dir, "commit", "-q", "-m", "base");
   await git(dir, "update-ref", "refs/remotes/origin/main", "HEAD");
@@ -98,11 +100,12 @@ function state(repoPath: string, resumed: boolean): PhaseState {
 }
 
 /** Deps whose gate fails `spawn timeout` when the checkout holds the break. */
-function deps(warnings: string[] = []) {
+function deps(warnings: string[] = [], onGate?: () => void) {
   const base = createMockDeps({
     git: { runGitCommand },
     quality: {
       runQualityGate: async ({ scriptDir }) => {
+        onGate?.();
         const broken = (await Deno.readTextFile(`${scriptDir}/state.txt`))
           .startsWith("broken");
         const checks: CheckResult[] = broken
@@ -126,7 +129,7 @@ function deps(warnings: string[] = []) {
   base.logger = {
     ...logger,
     warn: (msg: string, fields?: Record<string, unknown>) => {
-      warnings.push(msg);
+      warnings.push(fields?.error ? `${msg}: ${fields.error}` : msg);
       logger.warn(msg, fields);
     },
   };
@@ -160,6 +163,98 @@ Deno.test("a resumed run's baseline gates the fork point, not the branch's own c
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+for (const dirtyKind of ["unstaged", "staged", "untracked"] as const) {
+  Deno.test(`a resumed baseline preserves ${dirtyKind} pre-setup output without measuring it (Issue #4412)`, async () => {
+    const dir = await resumedCheckout();
+    try {
+      // setup.txt is identical at the fork point and resumed HEAD, so Git
+      // can carry its dirty edit through a detached checkout. A forced
+      // return to the branch would then discard this supported prep work.
+      const file = dirtyKind === "untracked" ? "generated.txt" : "setup.txt";
+      const prepared = await runPreSetupCommand("org/repo", dir, {
+        "org/repo": {
+          preSetupCommand: `printf '%s\\n' 'prepared by setup' > ${file}`,
+        },
+      });
+      assertEquals(prepared, { ok: true, value: "completed" });
+      if (dirtyKind === "staged") await git(dir, "add", file);
+      const beforeHead = await git(dir, "rev-parse", "HEAD");
+      const beforeStatus = await git(dir, "status", "--porcelain");
+      assert(beforeStatus.length > 0);
+      const warnings: string[] = [];
+      let gateCalls = 0;
+      const phaseState = state(dir, true);
+      const result = await workOnIssueBaselineQuality(
+        context(),
+        phaseState,
+        deps(warnings, () => gateCalls++),
+      );
+
+      assertEquals(
+        await Deno.readTextFile(`${dir}/${file}`),
+        "prepared by setup\n",
+      );
+      assertEquals(await git(dir, "status", "--porcelain"), beforeStatus);
+      assertEquals(await git(dir, "rev-parse", "HEAD"), beforeHead);
+      assertEquals(
+        await git(dir, "symbolic-ref", "HEAD"),
+        `refs/heads/${BRANCH}`,
+      );
+      assertEquals(result.status, "continue");
+      assertEquals(gateCalls, 0, "dirty setup must not become a baseline");
+      assertEquals(phaseState.baselineQualityPassed, true);
+      assertEquals(phaseState.baselineFailedChecks, undefined);
+      assertStringIncludes(warnings.join("\n"), "uncommitted");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
+
+for (const failure of ["command error", "nonzero exit"] as const) {
+  Deno.test(`a resumed baseline preserves its branch when cleanliness has a ${failure} (Issue #4412)`, async () => {
+    const dir = await resumedCheckout();
+    try {
+      const beforeHead = await git(dir, "rev-parse", "HEAD");
+      const warnings: string[] = [];
+      let gateCalls = 0;
+      const dependencies = deps(warnings, () => gateCalls++);
+      dependencies.git.runGitCommand = async (args, options) => {
+        if (args[0] !== "status") return await runGitCommand(args, options);
+        return failure === "command error"
+          ? { ok: false, error: new Error("status unavailable") }
+          : {
+            ok: true,
+            value: { code: 128, stdout: "", stderr: "status unavailable" },
+          };
+      };
+      const phaseState = state(dir, true);
+      const result = await workOnIssueBaselineQuality(
+        context(),
+        phaseState,
+        dependencies,
+      );
+
+      assertEquals(
+        gateCalls,
+        0,
+        "unverified cleanliness must not become a baseline",
+      );
+      assertEquals(result.status, "continue");
+      assertEquals(phaseState.baselineFailedChecks, undefined);
+      assertEquals(await git(dir, "rev-parse", "HEAD"), beforeHead);
+      assertEquals(
+        await git(dir, "symbolic-ref", "HEAD"),
+        `refs/heads/${BRANCH}`,
+      );
+      assertEquals(await git(dir, "status", "--porcelain"), "");
+      assertStringIncludes(warnings.join("\n"), "status unavailable");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
 
 Deno.test("a fresh run's baseline still gates the checkout as it stands (Issue #4412)", async () => {
   const dir = await resumedCheckout();

@@ -415,6 +415,11 @@ launch plan (#4047) passes it to the [egress proxy](#egress-proxy) (#4046) and
 routes the worker through that proxy. Apple container uses the same proxy with
 measured partial containment (#4051); its host/LAN gap remains open.
 
+Actions log and artefact storage uses exact accounts 0–19, 30–49 and
+100–199. The latter two ranges follow
+[GitHub’s 22 October 2026 endpoint update](https://github.blog/changelog/2026-10-22-meta-api-endpoints-updated-for-actions-blob-storage/);
+other Azure accounts remain outside the built-in allowlist.
+
 | Host | Purpose | Included when | Reason |
 | --- | --- | --- | --- |
 | `github.com` | GitHub | always | Git over HTTPS and the web |
@@ -443,6 +448,126 @@ measured partial containment (#4051); its host/LAN gap remains open.
 | `productionresultssa17.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
 | `productionresultssa18.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
 | `productionresultssa19.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa30.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa31.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa32.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa33.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa34.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa35.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa36.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa37.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa38.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa39.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa40.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa41.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa42.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa43.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa44.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa45.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa46.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa47.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa48.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa49.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa100.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa101.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa102.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa103.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa104.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa105.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa106.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa107.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa108.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa109.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa110.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa111.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa112.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa113.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa114.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa115.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa116.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa117.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa118.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa119.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa120.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa121.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa122.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa123.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa124.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa125.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa126.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa127.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa128.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa129.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa130.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa131.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa132.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa133.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa134.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa135.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa136.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa137.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa138.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa139.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa140.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa141.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa142.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa143.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa144.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa145.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa146.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa147.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa148.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa149.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa150.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa151.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa152.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa153.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa154.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa155.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa156.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa157.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa158.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa159.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa160.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa161.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa162.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa163.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa164.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa165.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa166.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa167.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa168.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa169.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa170.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa171.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa172.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa173.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa174.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa175.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa176.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa177.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa178.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa179.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa180.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa181.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa182.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa183.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa184.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa185.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa186.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa187.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa188.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa189.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa190.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa191.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa192.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa193.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa194.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa195.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa196.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa197.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa198.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa199.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
 | `registry.npmjs.org` | Registry | always | npm packages |
 | `jsr.io` | Registry | always | JSR packages |
 | `deno.land` | Registry | always | Deno standard modules and binaries |

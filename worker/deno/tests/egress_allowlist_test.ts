@@ -16,6 +16,14 @@ const GITHUB_HOSTS = [
     { length: 20 },
     (_, i) => `productionresultssa${i}.blob.core.windows.net`,
   ),
+  ...Array.from(
+    { length: 20 },
+    (_, i) => `productionresultssa${i + 30}.blob.core.windows.net`,
+  ),
+  ...Array.from(
+    { length: 100 },
+    (_, i) => `productionresultssa${i + 100}.blob.core.windows.net`,
+  ),
 ];
 
 const REGISTRY_HOSTS = [
@@ -50,6 +58,33 @@ const PROVIDER_HOSTS: Readonly<Record<string, string[]>> = {
 const ALL_PROVIDER_HOSTS = Object.values(PROVIDER_HOSTS).flat();
 
 const BASE_ONLY = [...GITHUB_HOSTS, ...REGISTRY_HOSTS];
+
+Deno.test("Actions storage allows current exact ranges and refuses gaps and lookalikes (Issue #4412)", () => {
+  const hosts = resolveEgressAllowlist({
+    enabledProviderIds: [],
+    imgbbConfigured: false,
+  });
+  // GitHub's 22 October 2026 update adds 30–49 and 100–199 to 0–19.
+  for (const account of [0, 19, 30, 31, 49, 100, 101, 150, 199]) {
+    const host = `productionresultssa${account}.blob.core.windows.net`;
+    assertEquals(hosts.includes(host), true, host);
+  }
+  for (const account of [20, 29, 50, 99, 200]) {
+    const host = `productionresultssa${account}.blob.core.windows.net`;
+    assertEquals(hosts.includes(host), false, host);
+  }
+  for (
+    const host of [
+      "productionresultssa030.blob.core.windows.net",
+      "productionresultssa30.blob.core.windows.net.attacker.example",
+      "attacker.productionresultssa30.blob.core.windows.net",
+      "unrelated.blob.core.windows.net",
+    ]
+  ) {
+    assertEquals(hosts.includes(host), false, host);
+  }
+  assertEquals(hosts.some((host) => host.includes("*")), false);
+});
 
 Deno.test("resolveEgressAllowlist - a disabled provider contributes no hosts (Issue #4045)", () => {
   const withClaude = resolveEgressAllowlist({

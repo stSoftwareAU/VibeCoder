@@ -71,12 +71,16 @@ export const BUILTIN_EGRESS_RULES: readonly EgressHostRule[] = [
   },
   // `gh api …/actions/jobs/<id>/logs` answers with a redirect into these
   // storage accounts, so without them the CI-failure fixer gets no log
-  // excerpt (Issue #4412). GitHub documents accounts 0 to 19.
-  ...Array.from({ length: 20 }, (_, i): EgressHostRule => ({
-    host: `productionresultssa${i}.blob.core.windows.net`,
-    purpose: "github",
-    reason: "Actions job logs and artefacts",
-  })),
+  // excerpt (Issue #4412). GitHub added 30–49 and 100–199 on 22 October
+  // 2026; keep exact hosts rather than allowing other Azure accounts.
+  // https://github.blog/changelog/2026-10-22-meta-api-endpoints-updated-for-actions-blob-storage/
+  ...([[0, 19], [30, 49], [100, 199]] as const).flatMap(([first, last]) =>
+    Array.from({ length: last - first + 1 }, (_, offset): EgressHostRule => ({
+      host: `productionresultssa${first + offset}.blob.core.windows.net`,
+      purpose: "github",
+      reason: "Actions job logs and artefacts",
+    }))
+  ),
   // Package registries
   {
     host: "registry.npmjs.org",
