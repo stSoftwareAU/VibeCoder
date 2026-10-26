@@ -26,6 +26,7 @@ import {
 } from "../quality_helpers.ts";
 import { failedChecks } from "../baseline_gate.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
+import { buildCheckoutArgs } from "../git_ref_args.ts";
 
 /**
  * Run a baseline quality check on the clean repository before Claude starts.
@@ -69,8 +70,10 @@ export async function workOnIssueBaselineQuality(
   await gateBaseline(ctx, state, deps);
   // Forced: the tree was clean before the fork point was checked out, so
   // anything the gate left in tracked files is the gate's, not the run's.
+  const restoreArgs = buildCheckoutArgs(state.branchName);
+  restoreArgs.splice(1, 0, "-q", "-f");
   const back = await deps.git.runGitCommand(
-    ["checkout", "-q", "-f", state.branchName],
+    restoreArgs,
     { cwd: state.repoPath },
   );
   if (!back.ok || back.value.code !== 0) {

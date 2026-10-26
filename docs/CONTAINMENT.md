@@ -423,7 +423,26 @@ measured partial containment (#4051); its host/LAN gap remains open.
 | `codeload.github.com` | GitHub | always | Source archive downloads |
 | `objects.githubusercontent.com` | GitHub | always | Release asset and LFS object downloads |
 | `raw.githubusercontent.com` | GitHub | always | Raw file downloads |
-| `productionresultssa0.blob.core.windows.net` to `productionresultssa19.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts; `gh api …/actions/jobs/<id>/logs` redirects there (Issue #4412) |
+| `productionresultssa0.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts; `gh api …/actions/jobs/<id>/logs` redirects there (Issue #4412) |
+| `productionresultssa1.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa2.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa3.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa4.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa5.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa6.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa7.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa8.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa9.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa10.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa11.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa12.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa13.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa14.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa15.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa16.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa17.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa18.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
+| `productionresultssa19.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts (Issue #4412) |
 | `registry.npmjs.org` | Registry | always | npm packages |
 | `jsr.io` | Registry | always | JSR packages |
 | `deno.land` | Registry | always | Deno standard modules and binaries |
