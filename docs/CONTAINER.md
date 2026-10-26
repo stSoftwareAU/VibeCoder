@@ -1831,8 +1831,12 @@ most the last minute, and the warning tells you the VM needs more memory
 
 ### Least privilege and lifecycle
 
-- No `--privileged`, no host networking, no published ports — outbound only,
-  on the runtime's bridge network.
+- No `--privileged`, no host networking, no published ports — outbound only. On
+  Docker and Podman that is the runtime's bridge network, which is not
+  restricted until #4047. On Apple `container` the worker sits on a per-launch
+  internal network and reaches the internet through the allowlist proxy, as
+  measured for each launch (see
+  [CONTAINMENT.md](CONTAINMENT.md#apple-container-partial-egress-containment)).
 - `--cap-drop ALL` and `--security-opt no-new-privileges` where the runtime
   understands them. `--rm` removes the container on exit.
 - **`--read-only`** where the runtime understands it (Issue #516): the root

@@ -10,8 +10,9 @@
  * #3699's credential broker is planned to extend this module through `routes`;
  * it will add no second outbound proxy (not yet delivered). A route claims an
  * allowlisted host and receives the client connection instead of an upstream
- * dial ({@link EgressRoute}). The container is not routed through this proxy
- * yet (#4047).
+ * dial ({@link EgressRoute}). On Apple `container` (#4051) the launch runs this
+ * proxy as a sidecar. On Docker and Podman the container is not routed through
+ * this proxy yet (#4047).
  *
  * Imports are local only; nothing is fetched from a remote registry.
  * Australian English spelling used throughout (behaviour, sanitise).
@@ -20,6 +21,13 @@
 import { validateEgressHost } from "./egress_allowlist.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { isPrivateAddress } from "./public_url_guard.ts";
+
+/**
+ * The start-up line the proxy command prints once it is listening (Issue
+ * #4051). The Apple launcher waits for this text in the container's logs
+ * before it probes the proxy. The command builds the full line from it.
+ */
+export const EGRESS_PROXY_READY_MARKER = "[EGRESS_PROXY] listening";
 
 /** Why a connection was refused. Each refusal logs one line with this class. */
 export type EgressDenyReason =

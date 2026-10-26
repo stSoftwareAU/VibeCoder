@@ -376,7 +376,7 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   VIBE_EGRESS_ALLOW_HOSTS: {
     role: "launch_plumbing",
     note:
-      "the host allowlist the `egress-proxy` command reads when `--allow` is absent (Issue #4046); the launcher does not set it yet — #4047 routes the container through the proxy",
+      "the host allowlist the `egress-proxy` command reads when `--allow` is absent (Issue #4046); `apple-egress` sets it for the Apple sidecar proxy (Issue #4051), and Docker and Podman do not set it until #4047 routes their containers through the proxy",
   },
   VIBE_RUN_MODE: {
     role: "launch_plumbing",
@@ -610,6 +610,30 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
       "escape hatch for the container-egress probe's address (Issue #997); " +
       "no launcher sets it — a host whose network blocks the default literal " +
       "points the probe elsewhere",
+  },
+  VIBE_APPLE_EGRESS_MODE: {
+    role: "switch",
+    note:
+      "the Apple egress mode, `auto`, `internal` or `advisory` (Issue #4051); " +
+      "an operator escape hatch read per launch, with no `.config.json` key",
+  },
+  VIBE_APPLE_EGRESS_RECOVERY_ATTEMPTS: {
+    role: "switch",
+    note:
+      "bounded recovery attempts for a failed Apple egress bring-up step, 0 to 5 " +
+      "(Issue #4051); read per launch, with no `.config.json` key",
+  },
+  VIBE_APPLE_EGRESS_READY_TRIES: {
+    role: "switch",
+    note:
+      "how many proxy readiness checks the Apple egress launch makes before it " +
+      "refuses (Issue #4051); read per launch, with no `.config.json` key",
+  },
+  VIBE_APPLE_EGRESS_READY_INTERVAL: {
+    role: "switch",
+    note:
+      "seconds between Apple egress proxy readiness checks (Issue #4051); read " +
+      "per launch, with no `.config.json` key",
   },
   VIBE_CONTAINMENT_IMAGE: {
     role: "switch",

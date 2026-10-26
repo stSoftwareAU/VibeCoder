@@ -51,9 +51,18 @@ import {
 } from "../lib/egress_allowlist.ts";
 import { EGRESS_ALLOW_HOSTS_ENV } from "../commands/egress_proxy.ts";
 import { formatEgressDenial } from "../lib/egress_proxy.ts";
+import { EGRESS_MODE_LABELS } from "../lib/egress_controls.ts";
+import {
+  APPLE_EGRESS_MODE_ENV,
+  APPLE_EGRESS_READY_INTERVAL_ENV,
+  APPLE_EGRESS_READY_TRIES_ENV,
+  APPLE_EGRESS_RECOVERY_ENV,
+  APPLE_EGRESS_REPORT_FILE,
+} from "../lib/apple_egress.ts";
 import {
   assertPins,
   flat,
+  flatWholeFile,
   readRepoDoc,
   section as docSection,
 } from "./support/markdown_docs.ts";
@@ -422,6 +431,60 @@ Deno.test("CONTAINMENT.md's egress proxy section says which refusals get a 403 a
       cells[2],
       expected,
       `the 403 column for ${cells[0]} must read "${expected}"`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// docs/CONTAINMENT.md — Apple container partial egress containment (Issue #4051)
+// ---------------------------------------------------------------------------
+
+/** The Apple section's heading, which the Apple pins below are scoped to. */
+const APPLE_SECTION = "Apple container: partial egress containment";
+
+Deno.test("CONTAINMENT.md's Apple section names the internal network flag and both mode labels (Issue #4051)", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    APPLE_SECTION,
+  );
+  assertPins(body, [
+    "--internal",
+    EGRESS_MODE_LABELS["internal-network"],
+    EGRESS_MODE_LABELS["advisory-proxy"],
+  ]);
+});
+
+Deno.test("CONTAINMENT.md's Apple section names the report file and the four Apple egress variables (Issue #4051)", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    APPLE_SECTION,
+  );
+  assertPins(body, [
+    APPLE_EGRESS_REPORT_FILE,
+    APPLE_EGRESS_MODE_ENV,
+    APPLE_EGRESS_RECOVERY_ENV,
+    APPLE_EGRESS_READY_TRIES_ENV,
+    APPLE_EGRESS_READY_INTERVAL_ENV,
+  ]);
+});
+
+Deno.test("CONTAINMENT.md's Apple section says the behaviour is not yet observed on a real host (Issue #4051)", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    APPLE_SECTION,
+  );
+  assertPins(body, [
+    "measured at each launch, not yet observed by the author on a real host",
+  ]);
+});
+
+Deno.test("CONTAINMENT.md never calls containment default-deny or fully enforced (Issue #4051)", async () => {
+  const text = flatWholeFile(await readRepoDoc("docs/CONTAINMENT.md"))
+    .toLowerCase();
+  for (const phrase of ["default-deny", "default deny", "fully enforced"]) {
+    assert(
+      !text.includes(phrase),
+      `docs/CONTAINMENT.md must not describe containment as "${phrase}"; the Apple claim is partial containment`,
     );
   }
 });

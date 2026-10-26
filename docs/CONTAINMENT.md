@@ -324,28 +324,35 @@ leaves `${HOME}` untouched.
 
 ## The network boundary
 
-- **Outbound is allowed** — GitHub, the coding-agent APIs and package/tool
-  registries are reachable on the runtime's own bridge network.
+- **Outbound depends on the runtime.** On Docker and Podman the container is on
+  the runtime's own bridge network, so outbound is allowed to any host and
+  nothing restricts which hosts it reaches. On Apple `container` (macOS) the
+  worker is on a per-launch internal network and reaches the internet only
+  through the allowlist proxy, to the extent each launch measures. See
+  [Apple container: partial egress containment](#apple-container-partial-egress-containment).
 - **No inbound ports.** The launch plan publishes nothing, and the containment
   suite asks the runtime (`inspect`) for the running container rather than
   inferring it from the launcher's arguments.
 - **Never host networking.** `--network host` (and any host namespace) is
   rejected by the plan builder before the arguments are returned.
-- The network boundary itself does not filter hosts. The
-  [egress proxy](#egress-proxy) now exists (#4046), but the container is not
-  routed through it until #4047, so the network boundary still does not filter
-  which hosts the container reaches. Per-host allowlisting is the job of the
-  [egress allowlist](#egress-allowlist) below.
+- The network boundary does not filter hosts on Docker or Podman. The
+  [egress proxy](#egress-proxy) exists (#4046), but those containers are not
+  routed through it until #4047 (open). On Apple the proxy is the intended route
+  out, and the measured exceptions are listed under
+  [accepted gaps](#accepted-gaps-and-regressions). Per-host allowlisting is the
+  job of the [egress allowlist](#egress-allowlist) below.
 
 ## Egress allowlist
 
-The agent container may reach outbound only the hosts in one list, defined in
-`worker/deno/lib/egress_allowlist.ts`. The list is accepted and validated when
-the config loads today, but **nothing enforces it yet**. The
-[egress proxy](#egress-proxy) (#4046) can enforce it, but the container is not
-routed through the proxy until #4047. Until then nothing enforces the list for
-the container, and the network boundary above does not restrict which hosts it
-reaches.
+The agent container is meant to reach outbound only the hosts in one list,
+defined in `worker/deno/lib/egress_allowlist.ts`. The list is accepted and
+validated when the config loads. **For Docker and Podman, nothing enforces it yet.**
+The [egress proxy](#egress-proxy) (#4046) can enforce it, and on Apple
+`container` the launch starts the proxy with this list (see
+[Apple container: partial egress containment](#apple-container-partial-egress-containment)).
+Routing Docker and Podman containers through the proxy is #4047 (open). Until
+then the network boundary above does not restrict which hosts those containers
+reach.
 
 | Host | Purpose | Included when | Reason |
 | --- | --- | --- | --- |
@@ -398,9 +405,13 @@ ships, run by the `egress-proxy` command. It is a CONNECT proxy: it accepts
 only `CONNECT host:443` for an allowlisted host, and it dials that host itself
 after checking where the name resolves.
 
-**The container is not routed through it yet.** Issue #4046 adds the proxy
-only. Routing the agent container through it is #4047, so until then the
-container reaches the network directly and the proxy enforces nothing for it.
+**The container is not routed through it yet on Docker or Podman.** Issue #4046
+adds the proxy. On Apple `container` the launch runs this same command as a
+sidecar (#4051, see
+[Apple container: partial egress containment](#apple-container-partial-egress-containment)).
+Routing Docker and Podman containers through it is #4047 (open), so until then
+those containers reach the network directly and the proxy enforces nothing for
+them.
 
 ```bash
 deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \
@@ -482,6 +493,203 @@ that receives the accepted client connection after the proxy has replied
 `200 Connection Established`; the proxy dials nothing for a route. This is the
 seam #3699's credential broker will attach to. **#3699 will extend this proxy
 through this seam (not yet delivered); it adds no second outbound proxy.**
+
+## Apple container: partial egress containment
+
+On macOS, when the worker runs on Apple's `container` runtime, `run.sh` runs the
+`apple-egress` command just before the worker starts. The result is **partial
+containment**: direct outbound is restricted to what each launch measures, and
+the worker's traffic is meant to go through the allowlist proxy. It is not a
+deny-by-default boundary. The host gateway, DNS and the LAN sit outside what it
+promises. Docker and Podman are unchanged by this section: their containers stay
+on the runtime's bridge network, as described under
+[the network boundary](#the-network-boundary).
+
+### What a launch does
+
+In mode `internal-network`, `apple-egress` does the following, in order:
+
+1. **Checks the host.** It requires macOS 26 or later (Apple documents custom
+   networks as macOS 26+), a `container network create --help` that advertises
+   `--internal`, and a `container run --help` that advertises `--network`. The
+   macOS version and the `container` CLI version are measured and recorded.
+   Neither is assumed.
+2. **Sweeps stale resources.** It removes only networks named exactly
+   `vibe-egress-<pid>` and proxies named `vibe-coder-egress-proxy-<pid>` whose
+   launcher pid is dead.
+3. **Creates a per-launch internal network**, `vibe-egress-<pid>`, with
+   `container network create --internal`. Apple describes `--internal` as
+   "Restrict to host-only network".
+4. **Starts the egress proxy as a sidecar**, `vibe-coder-egress-proxy-<pid>`,
+   from the same worker image, running the [`egress-proxy`](#egress-proxy)
+   command. It is attached to the built-in outbound `default` network and to the
+   internal network. It publishes no port and mounts no credentials; only
+   `worker/deno` is mounted, read-only, for the code. Its allowlist is the output
+   of `resolveEgressAllowlist`, passed in `VIBE_EGRESS_ALLOW_HOSTS`.
+5. **Runs unattended probes.** Two short probe containers run with no agent
+   workload and no credentials. A negative control runs first, on the open
+   default network, to prove the probes can detect open networking. The same
+   probes then run on the internal network.
+6. **Launches the worker** with `--network vibe-egress-<pid>` only, with
+   `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` and `http_proxy` set to
+   `http://<proxy ip>:3128`, and `NO_PROXY` and `no_proxy` set to
+   `localhost,127.0.0.1,::1`.
+7. **On exit**, `run.sh` saves the proxy log to `egress-proxy.log` in the log
+   directory, then deletes the proxy and the network.
+
+Environment variables alone are advisory routing: they tell a well-behaved client
+where the proxy is, and they block nothing. The network is what restricts, and
+it is measured on every launch rather than assumed.
+
+### Traffic path and probe flow
+
+```mermaid
+flowchart LR
+    W["Worker container<br/>--network vibe-egress-PID"] --> N["Internal network<br/>vibe-egress-PID (--internal)"]
+    N --> P["Egress proxy sidecar<br/>vibe-coder-egress-proxy-PID"]
+    P --> D["Default network<br/>(built-in outbound)"]
+    D --> I["Allowlisted hosts"]
+    W -. "direct route: blocked only if measured" .-> X["Internet, direct"]
+    style I fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+```mermaid
+flowchart TD
+    S["apple-egress starts"] --> H{"Capability readable?"}
+    H -->|"indeterminate, or lacking under internal"| R0["Refused"]
+    H -->|"auto and definitively lacking"| V["advisory-proxy mode"]
+    H -->|"yes"| C["Create vibe-egress-PID --internal<br/>and start the proxy sidecar"]
+    C --> NC["Negative control: probes on the default network"]
+    NC --> PI["Same probes on the internal network"]
+    PI -->|"a promised control fails"| R1["Refused: regression"]
+    PI -->|"promises hold"| L["Launch the worker on the internal network"]
+    style R0 fill:#d00000,stroke:#9d0208,color:#fff
+    style R1 fill:#d00000,stroke:#9d0208,color:#fff
+```
+
+### Modes
+
+| Mode | Label | Used when |
+| --- | --- | --- |
+| `internal-network` | internal network + allowlist proxy (partial containment) | `VIBE_APPLE_EGRESS_MODE=internal`, or `auto` on a host that has the capability. Refused on a host that lacks it. |
+| `advisory-proxy` | advisory proxy only (direct egress NOT blocked) | `VIBE_APPLE_EGRESS_MODE=advisory`, or `auto` on a host whose CLI or macOS definitively lacks the internal-network capability. |
+
+The mode is recorded as `selectedMode` and `effectiveMode` in
+`egress-controls.json`. A launch is never downgraded from `internal-network` to
+`advisory-proxy`. If the capability check cannot be read, or any bring-up step or
+promised control fails, the launch is refused with a non-zero exit after bounded
+recovery (see [Unattended operation and recovery](#unattended-operation-and-recovery)).
+It never falls back to an open network.
+
+### Settings
+
+Four environment variables tune the launch. None of them is a `.config.json`
+key, and each has a default:
+
+- `VIBE_APPLE_EGRESS_MODE`: `auto` (default), `internal` or `advisory`.
+- `VIBE_APPLE_EGRESS_RECOVERY_ATTEMPTS`: extra attempts after a failed bring-up
+  step or a regression, from `0` to `5` (default `2`).
+- `VIBE_APPLE_EGRESS_READY_TRIES`: proxy readiness checks before the launch is
+  refused (default `30`).
+- `VIBE_APPLE_EGRESS_READY_INTERVAL`: seconds between readiness checks (default
+  `1`).
+
+The [operator reference](CONFIGURATION.md) lists the same variables with their
+meanings.
+
+### Files written per launch
+
+- `egress-controls.json` in the log directory: the schema, the launch, the
+  runtime (executable, version and macOS), `selectedMode`, `effectiveMode`, the
+  `controls`, `regressions`, `acceptedGaps` and the `outcome`, which is
+  `launched` or `refused`.
+- One `egress-containment:` summary line in `run_core.log`, of the form
+  `egress-containment: mode=… proxy=… direct-v4=… direct-v6=… host=… lan=untested dns=… regressions=… gaps=…`.
+- A human startup report on the launcher's stderr, each line starting `[egress]`.
+- `egress-proxy.log`, the proxy's own log, saved on exit.
+
+### Cost
+
+Each Apple launch now creates a network, boots a proxy VM and two short probe
+VMs before the worker starts. That is added time and resource use on every Apple
+launch, not only when something fails.
+
+### Verification status
+
+The Apple behaviour described here is measured at each launch, not yet observed
+by the author on a real host. The change was developed and unit-tested on Linux
+against the documented `container` CLI. It has not been run on an Apple host by
+its author. The first real launch on a Mac measures the host, the CLI and each
+control, and records them in `egress-controls.json`. No result for a given host
+is claimed until that record exists.
+
+## Per-control results
+
+Each launch measures the controls below and writes one state per control to
+`egress-controls.json`. A state is never inferred from a failure: a failed or
+unavailable probe is never `blocked` and never a pass.
+
+| Control | States | What it measures |
+| --- | --- | --- |
+| `proxyAllowlist` | `enforced`, `not-enforced`, `untested` | `enforced` only when an allowlisted host is tunnelled with `200` and a non-allowlisted host is refused with `403 not-allowlisted`. |
+| `directInternetV4` | `blocked`, `reachable`, `untested` | TCP to the public IPv4 literals `1.1.1.1:443` and `8.8.8.8:443`, and to the name `github.com:443`, with proxy variables bypassed. |
+| `directInternetV6` | `blocked`, `reachable`, `untested`, `unavailable` | TCP to `[2606:4700:4700::1111]:443`, with proxy variables bypassed. `unavailable` when the host has no IPv6 route. |
+| `hostAccess` | `blocked`, `reachable`, `untested` | The container tries every non-loopback IPv4 address of the host on a controlled listener port and sends a nonce. `reachable` only when the host listener received the nonce. A timeout counts as `blocked` only if the negative control reached the listener. A refused connection means the host stack answered, so it is never read as a firewall. |
+| `lanAccess` | always `untested` | Nothing is measured: there is no controlled endpoint on the LAN. |
+| `dns` | `reachable`, `blocked`, `untested` | Whether the container can resolve names. A working resolver is a residual channel (see the accepted gaps below). |
+| `toolPaths` | `ok`, `failed`, `untested`, one entry per tool | `curl` to the GitHub API, the npm registry and each enabled provider's API host, and `git ls-remote` of a public GitHub repository, all through the inherited proxy variables. |
+| `negativeControl` | what the open default network reached | The same probes on the default network. `blocked` is claimed for a target class only when this control reached that class. |
+
+## Accepted gaps and regressions
+
+Some gaps are accepted on purpose. Each launch lists them in `acceptedGaps`, and
+they are not regressions.
+
+- **Host services on the gateway stay reachable.** Apple's host-only network
+  leaves the host's gateway address open to the worker (apple/container#1320).
+- **DNS leaves the container.** Name lookups are a residual tunnelling channel.
+- **The LAN beyond the host is untested.** `lanAccess` is always `untested`.
+- **IPv6 may be unavailable.** On a host with no IPv6 route, `directInternetV6`
+  is `unavailable`, not `blocked`.
+- **Credentials stay readable.** The agent can still read the mounted provider
+  and `gh` credentials, and could send them to an allowlisted host. This risk
+  stays open (R9 and R11 in the [threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks)).
+  The issue that tracked it, #3699, is closed.
+
+apple/container#2062 reports a direct-TCP escape from internal networking that the
+maintainer could not reproduce. Because of that report, the direct-egress probes
+run on every launch, and a reachable result is a regression that refuses the
+launch.
+
+A **regression** is a promised control failing. It is written to `regressions`,
+and it refuses the launch.
+
+- `internal-network` promises `proxyAllowlist` `enforced`, `directInternetV4`
+  `blocked`, `directInternetV6` not reachable (`blocked`, demonstrated by the
+  negative control, or `unavailable`), and no `toolPaths` entry `failed`.
+- `advisory-proxy` promises only `proxyAllowlist` `enforced` and working tool
+  paths. It always lists "direct egress is not blocked".
+
+## Unattended operation and recovery
+
+The Apple launch runs without a prompt, and nobody needs to act on it. Its
+results are the files and lines listed under
+[Files written per launch](#files-written-per-launch).
+
+- **Refused, never open.** A launch whose bring-up fails, or whose promised
+  controls regress, is refused with a non-zero exit. It never falls back to an
+  open network. A regression is also written to `egress-controls.json` with
+  `outcome` `refused`.
+- **Bounded recovery.** A failed bring-up step or a regression is retried, with
+  teardown between attempts, up to `VIBE_APPLE_EGRESS_RECOVERY_ATTEMPTS` more
+  times (default `2`, range `0` to `5`). A launch therefore makes at most that
+  many plus one attempts before it is refused.
+- **Readiness.** The proxy's readiness is checked up to
+  `VIBE_APPLE_EGRESS_READY_TRIES` times (default `30`), with
+  `VIBE_APPLE_EGRESS_READY_INTERVAL` seconds between checks (default `1`).
+- **Stale resources.** Each launch sweeps the networks and proxies left by
+  earlier launches whose launcher pid is dead, so a launcher that died without
+  cleaning up does not leave its network behind.
 
 ## GitHub is the control plane
 

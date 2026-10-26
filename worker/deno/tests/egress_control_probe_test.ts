@@ -643,6 +643,28 @@ realBashTest(
 );
 
 realBashTest(
+  "an unresolvable name is unreachable, not error, so it cannot make direct egress untested",
+  async () => {
+    const outcome = await runProbe(
+      baseSpec({ timeoutSeconds: 2, names: ["nonexistent.invalid:443"] }),
+    );
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertEquals(
+      outcome.observations.filter((observation) => observation.kind === "tcp"),
+      [
+        {
+          kind: "tcp",
+          family: "name4",
+          target: "nonexistent.invalid:443",
+          outcome: "unreachable",
+        },
+      ],
+      outcome.stdout,
+    );
+  },
+);
+
+realBashTest(
   "dns resolves localhost and fails for nonexistent.invalid",
   async () => {
     const local = await runProbe(baseSpec({ dnsName: "localhost" }));
