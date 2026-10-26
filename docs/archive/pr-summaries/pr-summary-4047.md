@@ -9,7 +9,8 @@ start the proxy, then the worker, and remove both on exit. A shared helper
 does the same for the containment suite and the tabletop runner. Apple
 container launches are not put on that network and are not given proxy
 environment variables. The live Docker containment step in
-`.github/workflows/container-build.yml` was not run on this host.
+`.github/workflows/container-build.yml` passed in CI run `40268960461`
+(15 tests, 47 steps); Docker is unavailable on this local host.
 
 No version file is changed.
 
@@ -50,9 +51,9 @@ No version file is changed.
   opening the worker FIFO avoids that reader on every sidecar refusal.
 - The proxy client is not `--rm`. The exit path appends `<runtime> logs
   <proxy>` to `egress-proxy.log` before removing the container.
-- Docker is not installed on the host that produced this branch, so the
-  containment workflow was not executed. The suite calls
-  `startEgressSidecar`.
+- Docker is not installed on the local host. CI executes the containment
+  suite against Docker with `VIBE_CONTAINMENT_REQUIRED=1`, using
+  `startEgressSidecar` to start the proxy.
 
 ## Evidence
 
@@ -84,8 +85,16 @@ modules, the live containment suite and the filter itself. A real-git
 regression failed with `image=false` before this fix; all 13 filter/probe
 path tests pass afterwards, including unrelated worker and docs changes
 that still skip the build. The normal required PR workflow will run its
-existing live Docker step; the acceptance criterion remains pending until
-that step is observed passing.
+existing live Docker step. Job `121397472900` in CI run `40268960461`
+built the image, passed 335 in-image checks, and passed 15 live containment
+tests (47 steps) with `VIBE_CONTAINMENT_REQUIRED=1` on head `98caf4b3d`.
+
+The next CI stage exposed an existing sweep-ledger ancestry error:
+`top-up-4047.json` recorded a milestone-only merge commit. The supported
+`deno task lib-sweep-record` command recalculated its `sweptAt` from
+`git merge-base origin/main HEAD` (`1a51ee04a`), retaining the claimed status
+and the same three paths. `sweep-drift --default-branch origin/main`
+reproduced the failure before the repair and passed afterwards.
 
 ## Acceptance Criteria
 
@@ -105,12 +114,12 @@ that step is observed passing.
   `worker/deno/tests/run_sh_launcher_test.ts` (3 passed),
   `worker/deno/tests/run_ps1_launcher_test.ts` (3 passed) and
   `worker/deno/tests/launcher_parity_test.ts` (25 passed) — reviewer: met
-- **missing** — the Docker containment step in
-  `.github/workflows/container-build.yml` still passes — reason: Docker is
-  not installed here, so that step was not run. The suite starts the sidecar
-  through `startEgressSidecar`
-  (`worker/deno/tests/container_containment_test.ts`); that call was not
-  executed against a live runtime — reviewer: missing
+- **met** — the Docker containment step in
+  `.github/workflows/container-build.yml` passes with the suite starting the
+  sidecar through `startEgressSidecar` — evidence: CI run `40268960461`,
+  job `121397472900`, 15 passed tests with 47 steps and no failures on head
+  `98caf4b3d`; `VIBE_CONTAINMENT_REQUIRED=1` prevents an unavailable runtime
+  from silently skipping the suite — reviewer: met
 - **missing** — the complete repository quality gate passes — reason:
   `./quality.sh` was not run. The focused tests, manifest suite, touched-file
   formatting and lint, Bash syntax and ShellCheck in the Test Plan pass;
@@ -145,6 +154,10 @@ that step is observed passing.
   `worker/deno/tests/egress_proxy_env_test.ts` passed in the focused batch
   (144 passed, 0 failed, including docs, self-check, mod, backoff and
   launcher-marker tests).
+- Full `run_sh_launcher_test.ts`, `run_ps1_launcher_test.ts` and
+  `launcher_parity_test.ts`: 178 passed in 8m35s after the CI repairs.
+- `sweep-drift --default-branch origin/main`: passed after repairing the
+  recorded slice ancestry with `lib-sweep-record`.
 - `deno task check:manifests`: 845 passed, one ignored. The new parity
   regression failed before the own-worker name normalisation and passed
   afterwards, including five cases that must remain unequal.
@@ -155,5 +168,7 @@ that step is observed passing.
 - `container_image_change_filter_test.ts` and
   `container_build_probe_paths_test.ts`: 13 passed. The live-containment path
   regression failed before the filter fix and passed afterwards.
-- Not run: `./quality.sh`; the Docker job in
-  `.github/workflows/container-build.yml`.
+- CI run `40268960461`, job `121397472900`: Docker image build passed,
+  335 in-image checks passed, and 15 live containment tests (47 steps)
+  passed with `VIBE_CONTAINMENT_REQUIRED=1`.
+- Not run locally: `./quality.sh` and Docker (unavailable on this host).

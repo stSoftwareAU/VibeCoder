@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4047",
   "definition": "Egress sidecar helper that creates the internal network, starts the CONNECT proxy and connects it from a launch plan's fixed argv, using argument-vector runtime calls under explicit timeouts and refusing a plan that declares enforcement without every network and proxy key; plus the egress self-check (Issue #4048) and its command, which read the launch plan's enforcement and runtime identity variables, dial bounded TCP probes to fixed targets, and exit with a fixed status when the policy is not proved. No shell interpolation, no GitHub or model writes.",
   "status": "claimed",
-  "sweptAt": "730f9e3028066d53a8df084fccc186e8da23efb9",
+  "sweptAt": "1a51ee04adbfc05cf50bdfc8e2b97a1f63b3e7fd",
   "paths": [
     "worker/deno/commands/egress_selfcheck.ts",
     "worker/deno/lib/egress_selfcheck.ts",
