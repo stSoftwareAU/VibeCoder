@@ -479,8 +479,14 @@ for arg in "\$@"; do
       fi
       # Up: the default, 10, is "containment does not apply" - the launch that
       # every pre-existing test exercises. Only a 0 hands over tokens, and
-      # \`STUB_APPLE_EGRESS_ARGS\` holds one token per line.
+      # \`STUB_APPLE_EGRESS_ARGS\` holds one token per line. \`STUB_APPLE_EGRESS_KEY\`
+      # is the key each token is written under (default \`arg\`), so a test can
+      # hand back a token the launcher must refuse; \`STUB_APPLE_EGRESS_STDERR\`
+      # is what \`up\` says on stderr, as the real command does when it refuses.
       up_status="\${STUB_APPLE_EGRESS_UP_EXIT:-10}"
+      if [[ -n "\${STUB_APPLE_EGRESS_STDERR:-}" ]]; then
+        printf '%s\\n' "\${STUB_APPLE_EGRESS_STDERR}" >&2
+      fi
       if [[ "\${up_status}" -eq 0 ]]; then
         out=""
         prev=""
@@ -493,7 +499,7 @@ for arg in "\$@"; do
         : > "\${out}"
         if [[ -n "\${STUB_APPLE_EGRESS_ARGS:-}" ]]; then
           while IFS= read -r tok; do
-            printf 'arg=%s\\0' "\${tok}" >> "\${out}"
+            printf '%s=%s\\0' "\${STUB_APPLE_EGRESS_KEY:-arg}" "\${tok}" >> "\${out}"
           done <<<"\${STUB_APPLE_EGRESS_ARGS}"
         fi
       fi

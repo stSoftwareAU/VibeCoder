@@ -24,6 +24,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { APPLE_EGRESS_REPORT_FILE } from "../lib/apple_egress.ts";
 import { containerTargetPaths } from "../lib/container_launch.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
@@ -47,6 +48,9 @@ const MANIFEST = parseContainerManifest(
 );
 const TARGETS = containerTargetPaths(MANIFEST);
 const IMAGE = await resolveContainerImageReference(REPO_ROOT);
+
+/** The launcher these tests drive: the repository's own run.sh. */
+const RUN_SH = `${REPO_ROOT}/run.sh`;
 
 /** The containment arguments the stub hands back, one token per line. */
 const APPLE_EGRESS_TOKENS =
@@ -74,6 +78,25 @@ async function privateTmp(harness: Harness): Promise<string> {
   await Deno.mkdir(dir, { recursive: true });
   harness.env.TMPDIR = dir;
   return dir;
+}
+
+/** The paths a recorded Deno invocation granted `--allow-write` to. */
+function writeGrants(args: readonly string[]): string[] {
+  return args
+    .filter((arg) => arg.startsWith("--allow-write="))
+    .flatMap((arg) => arg.slice("--allow-write=".length).split(","));
+}
+
+/**
+ * Whether `path` is inside a granted entry, i.e. the entry is a directory that
+ * is the path's parent or one of its ancestors. A file grant covers only that
+ * exact file, never its temporary sibling `<file>.tmp.<uuid>`, so a sibling is
+ * covered only by a directory grant.
+ */
+function isWritable(grants: readonly string[], path: string): boolean {
+  return grants.some((grant) =>
+    path.startsWith(`${grant.replace(/\/+$/, "")}/`)
+  );
 }
 
 /** How many times the launcher invoked `apple-egress`, `up` and `down` alike. */
@@ -161,7 +184,7 @@ Deno.test("run.sh - apple-egress exit 0 splices its arguments after run, ahead o
   }
 });
 
-Deno.test("run.sh - apple-egress up is handed the worker's own workdir, the host config, a temporary argument file and a report directory under the log directory (Issue #4051)", async () => {
+Deno.test("run.sh - apple-egress up is handed the worker's own workdir, a temporary argument file and a report directory under the log directory, and resolves the host config itself (Issues #4051, #750)", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_APPLE_EGRESS_UP_EXIT: "0",
@@ -184,10 +207,9 @@ Deno.test("run.sh - apple-egress up is handed the worker's own workdir, the host
       TARGETS.base,
       "the in-container checkout is the worker's own --workdir",
     );
-    assertEquals(
-      up[up.indexOf("--config") + 1],
-      harness.env.CONFIG_PATH,
-      "the host configuration is the one the worker resolves",
+    assert(
+      !up.includes("--config"),
+      "the launcher no longer resolves the host config; apple-egress resolves it itself",
     );
     const outFile = up[up.indexOf("--out") + 1] ?? "";
     assert(
@@ -358,5 +380,118 @@ Deno.test("run.sh - apple-egress that cannot bring containment up stops the laun
     } finally {
       await harness.cleanup();
     }
+  }
+});
+
+Deno.test("run.sh - the harness drives the repository's own run.sh (Issue #4051)", async () => {
+  assertEquals(BASH_LAUNCHER.args, [RUN_SH]);
+  assert((await Deno.stat(RUN_SH)).isFile, `${RUN_SH} is not a file`);
+});
+
+Deno.test("run.sh - apple-egress is granted write access to the temporary sibling of every file it writes (Issue #4051)", async () => {
+  // atomicWrite creates `<file>.tmp.<uuid>` beside its target and renames it
+  // into place. A grant for the target alone denies that create; the denial is
+  // only a warning, so the proxy log would silently go unsaved.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_APPLE_EGRESS_UP_EXIT: "0",
+    STUB_APPLE_EGRESS_ARGS: APPLE_EGRESS_TOKENS,
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const up = await recorded(harness, "apple-egress-up");
+    const down = await recorded(harness, "apple-egress-down");
+    assert(up, "apple-egress up was never run");
+    assert(down, "apple-egress down was never run");
+
+    // up writes the report through the same atomic write, into the report
+    // directory, so the directory grant must cover its temporary sibling.
+    const upGrants = writeGrants(up);
+    const reportFile = `${
+      up[up.indexOf("--report-dir") + 1] ?? ""
+    }/${APPLE_EGRESS_REPORT_FILE}`;
+    assert(
+      isWritable(upGrants, `${reportFile}.tmp.${crypto.randomUUID()}`),
+      `up may not write the report's temporary sibling; granted: ${
+        upGrants.join(", ")
+      }`,
+    );
+    // up writes the argument file with a plain write, so the file is granted.
+    const outFile = up[up.indexOf("--out") + 1] ?? "";
+    assert(
+      upGrants.includes(outFile) || isWritable(upGrants, outFile),
+      `up may not write its argument file ${outFile}; granted: ${
+        upGrants.join(", ")
+      }`,
+    );
+
+    // down saves the proxy log through the same atomic write.
+    const proxyLog = down[down.indexOf("--proxy-log") + 1] ?? "";
+    const downGrants = writeGrants(down);
+    assert(
+      isWritable(downGrants, `${proxyLog}.tmp.${crypto.randomUUID()}`),
+      `down may not write the proxy log's temporary sibling of ${proxyLog}; granted: ${
+        downGrants.join(", ")
+      }`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - apple-egress that hands back an argument key other than arg stops the launch closed (Issue #4051)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_APPLE_EGRESS_UP_EXIT: "0",
+    STUB_APPLE_EGRESS_ARGS: APPLE_EGRESS_TOKENS,
+    STUB_APPLE_EGRESS_KEY: "env",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(
+      outcome.stderr,
+      "unrecognised apple-egress argument key: env - refusing to launch",
+    );
+    assertEquals(
+      await recorded(harness, "run"),
+      null,
+      "a token the launcher cannot place must not reach a worker launch",
+    );
+    assert(
+      await recorded(harness, "apple-egress-down"),
+      "containment was brought up and must be taken down on the refusal",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - apple-egress up that refuses a host config naming two files (exit 2, not 10) stops the launch closed and forwards its reason (Issue #750)", async () => {
+  // The real resolver message is pinned in apple_egress_command_test.ts, where
+  // `up` runs for real. Here the stub's `up` says the same thing on stderr and
+  // exits 2, which is what the launcher must act on: refuse, and not launch.
+  const reason =
+    "[egress] apple-egress: CONFIG_FILE and CONFIG_PATH are both set and name different files";
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_APPLE_EGRESS_UP_EXIT: "2",
+    STUB_APPLE_EGRESS_STDERR: reason,
+    STUB_APPLE_EGRESS_ARGS: APPLE_EGRESS_TOKENS,
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(outcome.stderr, reason);
+    assertStringIncludes(outcome.stderr, "could not be brought up (status 2)");
+    assertEquals(
+      await recorded(harness, "run"),
+      null,
+      "the worker must not launch when the host config is in conflict",
+    );
+  } finally {
+    await harness.cleanup();
   }
 });

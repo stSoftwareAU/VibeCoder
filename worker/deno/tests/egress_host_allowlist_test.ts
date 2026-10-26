@@ -305,7 +305,7 @@ Deno.test("the imgbb key check agrees with config.ts's load on every input (Issu
       label: "a null key",
       file: { imgbb_api_key: null },
       env: {},
-      refused: false,
+      refused: true,
     },
     {
       label: "a numeric key",

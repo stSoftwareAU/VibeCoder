@@ -115,15 +115,17 @@ export async function readHostEgressAllowlist(input: {
     provider.id
   );
 
-  // Mirrors the worker's check in config.ts: a key that is set but not a
-  // string is refused here rather than read as "not configured".
-  const imgbbKey = file.imgbb_api_key ?? "";
-  if (typeof imgbbKey !== "string") {
+  // Mirrors the worker's check in config.ts: a key that is present but not a
+  // string (null included) is refused here, before any coercion, rather than
+  // read as "not configured". Only an absent key (undefined) is unconfigured.
+  const rawImgbbKey = file.imgbb_api_key;
+  if (rawImgbbKey !== undefined && typeof rawImgbbKey !== "string") {
     throw new Error(
       `Cannot resolve the egress allowlist: ${configFile} key ` +
         '"imgbb_api_key" must be a string.',
     );
   }
+  const imgbbKey = rawImgbbKey ?? "";
   const imgbbConfigured = imgbbKey.trim() !== "" ||
     readImgbbApiKeyFromEnv(env) !== "";
 

@@ -80,6 +80,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // a stubbed PATH, the same shape as run_sh_launcher_test.ts below. It also
   // runs the old-path forwarding shim at the skill root (Issue #3299).
   "tests/review_fleet_prs_runner_test.ts",
+  // Issue #4051: drives run.sh under the launcher harness, the same shape as
+  // run_sh_launcher_test.ts below.
+  "tests/run_sh_apple_egress_test.ts",
   "tests/run_sh_launcher_test.ts",
   "tests/run_sh_upgrade_test.ts",
   "tests/setup_parity_test.ts",

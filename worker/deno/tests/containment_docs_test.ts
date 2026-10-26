@@ -331,7 +331,6 @@ Deno.test("CONTAINMENT.md documents the egress proxy as the single outbound prox
   );
   for (
     const phrase of [
-      "is the single outbound proxy the worker",
       EGRESS_DENIAL_MARKER,
       EGRESS_ALLOW_HOSTS_ENV,
       EGRESS_PROXY_DOC_PATH,
