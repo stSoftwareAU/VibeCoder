@@ -34,9 +34,8 @@ import type {
   MergeConflictAgentOutcome,
   MergeConflictRepairContext,
 } from "./merge_conflict_agent.ts";
-import { unstageWorkerStateFiles } from "./git_push.ts";
+import { unstageStateAndAssertSafe } from "./git_push.ts";
 import { readPrResponseMessage } from "./pr_branch_preparation.ts";
-import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { describeGitFailure } from "./milestone_merge_state.ts";
 import type { ConflictStageTimer } from "./conflict_stage_timer.ts";
 
@@ -266,14 +265,10 @@ export async function stageAgentResolution(
     };
   }
 
-  const unstaged = await unstageWorkerStateFiles(options);
-  if (!unstaged.ok) return { ok: false, error: unstaged.error };
-  if (unstaged.value.remainingStaged === 0) {
-    return { ok: true, value: undefined };
-  }
-
-  const safe = await assertSafeToCommit(options);
-  return safe.ok ? { ok: true, value: undefined } : safe;
+  const safe = await unstageStateAndAssertSafe(options);
+  return safe.ok
+    ? { ok: true, value: undefined }
+    : { ok: false, error: safe.error };
 }
 
 /**
