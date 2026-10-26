@@ -533,6 +533,25 @@ export async function unstageWorkerStateFiles(
 }
 
 /**
+ * Unstage the worker's own state files, then run the pre-commit safety gate
+ * when anything real remains staged (Issue #4394).
+ *
+ * When nothing remains staged there is nothing to gate, so the gate is skipped
+ * and the caller sees `remainingStaged === 0`. A failure from either step is
+ * returned as an error.
+ */
+export async function unstageStateAndAssertSafe(
+  options: GitCommandOptions,
+): Promise<Result<UnstageWorkerStateResult>> {
+  const unstaged = await unstageWorkerStateFiles(options);
+  if (!unstaged.ok) return unstaged;
+  if (unstaged.value.remainingStaged === 0) return unstaged;
+
+  const safe = await assertSafeToCommit(options);
+  return safe.ok ? unstaged : { ok: false, error: safe.error };
+}
+
+/**
  * Head and tail budgets for the gate output carried in a returned error (PR
  * #3716 review). The head holds the line that names the failing command; the
  * tail holds the end of its output. The error reaches a PR comment (the
