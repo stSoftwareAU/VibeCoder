@@ -26,7 +26,12 @@ import {
 } from "../lib/repo_fast_failure_tracker.ts";
 import { formatRepoFastFailureMarker } from "../lib/repo_fast_failure_issue.ts";
 import { isRepoLevelBranchRejection } from "../lib/milestone_branch_rejection.ts";
-import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
+import {
+  detectFailureCategory,
+  SECURITY_FIX_GATE_MARKER,
+} from "../lib/failure_diagnosis.ts";
+import { isSetupFault } from "../lib/coding_failure_ladder.ts";
+import { detectHostFault } from "../lib/host_fault.ts";
 
 const HOST = "test-host";
 const REPO = "stSoftwareAU/example";
@@ -150,6 +155,71 @@ Deno.test("isFastFailure - a setup fault never overrides a host-wide cause (Issu
       policy,
     ),
     false,
+  );
+});
+
+/**
+ * The tally comment on Issue #4388. The fleet recorded a host-disk stop,
+ * 182 seconds into execute, as a fast failure of this repository.
+ */
+const HOST_DISK_FLOOR_MESSAGE =
+  "Claude execution failed: manager call failed after 2 attempt(s): " +
+  "host disk below its floor — host (estimated from the launcher's reading " +
+  "1 min ago) 41.4 GB free (9.0%) of 460.4 GB, floor 46.0 GB — below the " +
+  "floor; a repository build or test would grow host disk further, so it " +
+  "waits until the host recovers (Issue #3178)";
+
+Deno.test("isFastFailure - a host-disk stop is not a repository fast failure (Issue #4388)", () => {
+  const policy = resolveRepoFastFailurePolicy();
+  const candidate = {
+    category: "internal_error" as const,
+    elapsedSeconds: 182,
+    message: HOST_DISK_FLOOR_MESSAGE,
+    setupFault: isSetupFault({
+      phase: "execute",
+      reason: HOST_DISK_FLOOR_MESSAGE,
+      category: "internal_error",
+    }),
+  };
+  // The issue is not blamed (a host fault), and the repository is not
+  // backed off. Those two decisions must not collapse into one.
+  assertEquals(candidate.setupFault, true);
+  assertEquals(
+    detectHostFault(HOST_DISK_FLOOR_MESSAGE, "internal_error"),
+    "disk-full",
+  );
+  assertEquals(isFastFailure(candidate, policy), false);
+  assertEquals(
+    isFastFailure(
+      { ...candidate, elapsedSeconds: 10, setupFault: false },
+      policy,
+    ),
+    false,
+  );
+  assertEquals(
+    isFastFailure(
+      { ...candidate, category: "zero_output", elapsedSeconds: 10 },
+      policy,
+    ),
+    false,
+  );
+});
+
+Deno.test("isFastFailure - a security-fix gate that quotes the disk floor stays the issue's failure (Issue #4388)", () => {
+  const policy = resolveRepoFastFailurePolicy();
+  const message = `${SECURITY_FIX_GATE_MARKER}: ${HOST_DISK_FLOOR_MESSAGE}`;
+  assertEquals(detectHostFault(message, "internal_error"), null);
+  assertEquals(
+    isFastFailure(
+      {
+        category: "security_fix_gate",
+        elapsedSeconds: 10,
+        message,
+        setupFault: false,
+      },
+      policy,
+    ),
+    true,
   );
 });
 
