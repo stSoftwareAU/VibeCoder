@@ -42,7 +42,8 @@ const MACOS_VERSION = /^\d+(\.\d+){1,2}$/;
  * starting in the middle of a longer dotted or digit run, which keeps the scan
  * linear on hostile input.
  */
-const CONTAINER_VERSION = /(?<![\d.])\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?/;
+const CONTAINER_VERSION =
+  /(?<![\d.])\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?/;
 
 /** Text saying a sub-command or option is not known to the CLI. */
 const UNKNOWN_SUBCOMMAND = /Unknown option|unknown command|Usage:/;
@@ -131,9 +132,9 @@ type CommandRead =
 
 /** The first non-empty line of `text`, capped at {@link CAUSE_LIMIT}. */
 function firstCauseLine(text: string): string {
-  const line = text.split("\n").map((part) => part.trim()).find((part) =>
-    part !== ""
-  ) ?? "no output";
+  const line =
+    text.split("\n").map((part) => part.trim()).find((part) => part !== "") ??
+      "no output";
   return line.length > CAUSE_LIMIT ? line.slice(0, CAUSE_LIMIT) : line;
 }
 

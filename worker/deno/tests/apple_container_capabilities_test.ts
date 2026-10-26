@@ -1,7 +1,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  type AppleCommandRunner,
   APPLE_MIN_MACOS_MAJOR,
+  type AppleCommandRunner,
   detectAppleNetworkCapabilities,
   helpAdvertisesFlag,
   parseContainerVersion,
@@ -10,7 +10,8 @@ import {
 import { assertLinearGrowth } from "./support/growth.ts";
 
 /** `container network create --help`, as the documented usage describes it. */
-const NETWORK_CREATE_HELP = `USAGE: container network create [--help] [--internal] [--label <label> ...] [--subnet <subnet>] [--debug] <name>
+const NETWORK_CREATE_HELP =
+  `USAGE: container network create [--help] [--internal] [--label <label> ...] [--subnet <subnet>] [--debug] <name>
 
 ARGUMENTS:
   <name>                  Network name
@@ -24,7 +25,8 @@ OPTIONS:
 `;
 
 /** `container run --help`, with `--network` repeatable. */
-const RUN_HELP = `USAGE: container run [--network <network> ...] [--volume <volume> ...] [--] [<image>] [<arguments> ...]
+const RUN_HELP =
+  `USAGE: container run [--network <network> ...] [--volume <volume> ...] [--] [<image>] [<arguments> ...]
 
 OPTIONS:
   --network <network>     Attach the container to a network (name[,mac=<mac>][,alias=<name>]); repeat to attach several
@@ -97,13 +99,19 @@ Deno.test("parseMacosVersion rejects anything that is not a dotted numeric versi
       "26..0",
     ]
   ) {
-    assertEquals(parseMacosVersion(text), null, `accepted ${JSON.stringify(text)}`);
+    assertEquals(
+      parseMacosVersion(text),
+      null,
+      `accepted ${JSON.stringify(text)}`,
+    );
   }
 });
 
 Deno.test("parseContainerVersion reads the version from the CLI banner (Issue #4051)", () => {
   assertEquals(
-    parseContainerVersion("container CLI version 1.2.2 (build: release, commit: abc)"),
+    parseContainerVersion(
+      "container CLI version 1.2.2 (build: release, commit: abc)",
+    ),
     "1.2.2",
   );
 });
@@ -116,7 +124,10 @@ Deno.test("parseContainerVersion keeps a pre-release suffix (Issue #4051)", () =
 });
 
 Deno.test("parseContainerVersion reads a JSON or table version field (Issue #4051)", () => {
-  assertEquals(parseContainerVersion('{"version":"1.2.2","commit":"abc"}'), "1.2.2");
+  assertEquals(
+    parseContainerVersion('{"version":"1.2.2","commit":"abc"}'),
+    "1.2.2",
+  );
   assertEquals(parseContainerVersion("VERSION\n1.2.2\n"), "1.2.2");
 });
 
@@ -137,8 +148,14 @@ Deno.test("helpAdvertisesFlag matches --network as a whole option token (Issue #
 });
 
 Deno.test("helpAdvertisesFlag does not match a longer option name (Issue #4051)", () => {
-  assertEquals(helpAdvertisesFlag("  --internal-foo  Other", "--internal"), false);
-  assertEquals(helpAdvertisesFlag("  --network-backend <b>", "--network"), false);
+  assertEquals(
+    helpAdvertisesFlag("  --internal-foo  Other", "--internal"),
+    false,
+  );
+  assertEquals(
+    helpAdvertisesFlag("  --network-backend <b>", "--network"),
+    false,
+  );
   assertEquals(helpAdvertisesFlag("x--internal", "--internal"), false);
   assertEquals(helpAdvertisesFlag("anything", ""), false);
 });
@@ -200,8 +217,14 @@ Deno.test("detect: a capable host is capable with both flags and the version mea
   assertEquals(result.containerVersion, "1.2.2");
   assertEquals(result.networkCreateInternal, true);
   assertEquals(result.runNetworkFlag, true);
-  assertStringIncludes(result.reasons.join("\n"), "network create --help advertises --internal");
-  assertStringIncludes(result.reasons.join("\n"), "run --help advertises --network");
+  assertStringIncludes(
+    result.reasons.join("\n"),
+    "network create --help advertises --internal",
+  );
+  assertStringIncludes(
+    result.reasons.join("\n"),
+    "run --help advertises --network",
+  );
 });
 
 Deno.test("detect: macOS older than 26 is unsupported even with both flags (Issue #4051)", async () => {
@@ -211,7 +234,10 @@ Deno.test("detect: macOS older than 26 is unsupported even with both flags (Issu
   );
   assertEquals(result.verdict, "unsupported");
   assertEquals(result.macos.major, 15);
-  assertStringIncludes(result.reasons.join("\n"), `below the required ${APPLE_MIN_MACOS_MAJOR}`);
+  assertStringIncludes(
+    result.reasons.join("\n"),
+    `below the required ${APPLE_MIN_MACOS_MAJOR}`,
+  );
 });
 
 Deno.test("detect: an unreadable macOS version is indeterminate, never capable (Issue #4051)", async () => {
@@ -221,14 +247,20 @@ Deno.test("detect: an unreadable macOS version is indeterminate, never capable (
   );
   assertEquals(result.verdict, "indeterminate");
   assertEquals(result.macos, { version: null, major: null });
-  assertStringIncludes(result.reasons.join("\n"), "sw_vers -productVersion could not be run");
+  assertStringIncludes(
+    result.reasons.join("\n"),
+    "sw_vers -productVersion could not be run",
+  );
 });
 
 Deno.test("detect: a definitive negative wins over an unreadable macOS version (Issue #4051)", async () => {
   const result = await detectAppleNetworkCapabilities(
     fakeRunner(withReplies({
       [SW_VERS]: new Error("spawn sw_vers ENOENT"),
-      [CREATE_HELP]: { code: 0, stdout: "USAGE: container network create <name>\n" },
+      [CREATE_HELP]: {
+        code: 0,
+        stdout: "USAGE: container network create <name>\n",
+      },
     })),
     "container",
   );
@@ -251,14 +283,18 @@ Deno.test("detect: a help text that was read and lacks --internal is unsupported
     fakeRunner(withReplies({
       [CREATE_HELP]: {
         code: 0,
-        stdout: "USAGE: container network create [--debug] <name>\n  --debug  Enable debug logging\n",
+        stdout:
+          "USAGE: container network create [--debug] <name>\n  --debug  Enable debug logging\n",
       },
     })),
     "container",
   );
   assertEquals(result.verdict, "unsupported");
   assertEquals(result.networkCreateInternal, false);
-  assertStringIncludes(result.reasons.join("\n"), "does not advertise --internal");
+  assertStringIncludes(
+    result.reasons.join("\n"),
+    "does not advertise --internal",
+  );
 });
 
 Deno.test("detect: a failed help read is indeterminate, not a definitive negative (Issue #4051)", async () => {
@@ -270,7 +306,10 @@ Deno.test("detect: a failed help read is indeterminate, not a definitive negativ
   );
   assertEquals(result.networkCreateInternal, null);
   assertEquals(result.verdict, "indeterminate");
-  assertStringIncludes(result.reasons.join("\n"), 'container network create --help exited 1: "error: boom".');
+  assertStringIncludes(
+    result.reasons.join("\n"),
+    'container network create --help exited 1: "error: boom".',
+  );
 });
 
 Deno.test("detect: an empty successful help read is indeterminate (Issue #4051)", async () => {
@@ -314,7 +353,8 @@ Deno.test("detect: a run help that lacks --network is unsupported (Issue #4051)"
     fakeRunner(withReplies({
       [RUN_HELP_KEY]: {
         code: 0,
-        stdout: "USAGE: container run [--volume <volume> ...] <image>\n  --network-backend <b>  Other\n",
+        stdout:
+          "USAGE: container run [--volume <volume> ...] <image>\n  --network-backend <b>  Other\n",
       },
     })),
     "container",
@@ -335,13 +375,19 @@ Deno.test("detect: a CLI that says the sub-command is unknown is unsupported (Is
   );
   assertEquals(result.networkCreateInternal, false);
   assertEquals(result.verdict, "unsupported");
-  assertStringIncludes(result.reasons.join("\n"), "saying the sub-command is unknown");
+  assertStringIncludes(
+    result.reasons.join("\n"),
+    "saying the sub-command is unknown",
+  );
 });
 
 Deno.test("detect: a run help that says Unknown option is unsupported (Issue #4051)", async () => {
   const result = await detectAppleNetworkCapabilities(
     fakeRunner(withReplies({
-      [RUN_HELP_KEY]: { code: 1, stderr: "Error: Unknown option '--help'\nUsage: container run\n" },
+      [RUN_HELP_KEY]: {
+        code: 1,
+        stderr: "Error: Unknown option '--help'\nUsage: container run\n",
+      },
     })),
     "container",
   );
@@ -362,7 +408,9 @@ Deno.test("detect: help printed on stderr with exit 0 is still read (Issue #4051
 
 Deno.test("detect: an unreadable --version does not on its own block capable (Issue #4051)", async () => {
   const result = await detectAppleNetworkCapabilities(
-    fakeRunner(withReplies({ [VERSION]: { code: 0, stdout: "no version here\n" } })),
+    fakeRunner(
+      withReplies({ [VERSION]: { code: 0, stdout: "no version here\n" } }),
+    ),
     "container",
   );
   assertEquals(result.containerVersion, null);

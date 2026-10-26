@@ -4,7 +4,9 @@ import { readHostEgressAllowlist } from "../lib/egress_host_allowlist.ts";
 const INSTALLED = ["claude", "codex", "gemini", "deepseek"];
 
 /** An environment lookup over a fixed map, so no test touches the process env. */
-function envOf(vars: Record<string, string>): (name: string) => string | undefined {
+function envOf(
+  vars: Record<string, string>,
+): (name: string) => string | undefined {
   return (name) => vars[name];
 }
 
@@ -141,6 +143,11 @@ Deno.test("readHostEgressAllowlist - a missing config throws naming the file, ne
         installedProviders: INSTALLED,
         env: envOf({}),
       })
+    );
+    // This module's own refusal, not the provider helper's, which also throws.
+    assertStringIncludes(
+      (error as Error).message,
+      "Cannot resolve the egress allowlist",
     );
     assertStringIncludes((error as Error).message, configFile);
   });
