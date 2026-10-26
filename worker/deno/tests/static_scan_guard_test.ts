@@ -4,11 +4,12 @@
  * Covers the command classifier, the `PreToolUse` decision, the CLI's output
  * and the hook settings the scan installs. The end-to-end fixture, which runs
  * the real `defaultRunScan` against a Rust project, is in
- * `static_scan_cargo_build_script_test.ts`.
+ * `worker/deno/tests/static_scan_cargo_build_script_test.ts`.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildStaticScanHookSettings,
   decideStaticScanHook,
   findStaticScanBuildInvocation,
   resolveStaticScanHookSettings,
@@ -39,6 +40,10 @@ const DENIED: ReadonlyArray<readonly [string, string]> = [
   ["echo `cargo check`", "cargo"],
   ["env cargo check --offline", "cargo"],
   ["env -i HOME=/tmp cargo check", "cargo"],
+  ["env -S 'cargo check'", "cargo"],
+  ["env -S cargo check", "cargo"],
+  ["env -S'cargo check'", "cargo"],
+  ["env --split-string=cargo\\ check", "cargo"],
   ["bash -c 'cargo check'", "cargo"],
   ['sh -c "cargo clippy"', "cargo"],
   ["bash -lc 'ls && cargo clippy'", "cargo"],
@@ -48,13 +53,16 @@ const DENIED: ReadonlyArray<readonly [string, string]> = [
   ["~/.cargo/bin/cargo check", "cargo"],
   ['"cargo" check', "cargo"],
   ["'cargo' check", "cargo"],
-  ["rustup run stable cargo check", "cargo"],
+  ["rustup run stable cargo check", "rustup"],
+  ["rustup run stable ls", "rustup"],
   ["nice -n 5 cargo check", "cargo"],
   ["timeout 60 cargo check", "cargo"],
   ["timeout -s KILL 60 cargo check", "cargo"],
   ["sudo -u builder cargo check", "cargo"],
   ["time -p cargo check", "cargo"],
   ["nohup cargo check", "cargo"],
+  ["exec cargo check", "cargo"],
+  ["command -p cargo check", "cargo"],
   ["xargs cargo check", "cargo"],
   ["if true; then cargo check; fi", "cargo"],
   ["2>/dev/null cargo check", "cargo"],
@@ -75,6 +83,8 @@ const ALLOWED: readonly string[] = [
   "git status",
   "ls -la",
   "cat Cargo.toml | grep -n name",
+  "env -S 'grep cargo Cargo.toml'",
+  "env FOO=1 grep cargo Cargo.toml",
   "",
 ];
 
@@ -119,6 +129,34 @@ Deno.test("static scan guard - hostile input completes with a plain answer (Issu
   );
   assertEquals(
     findStaticScanBuildInvocation("bash -" + "c".repeat(100_000) + " 'ls'"),
+    undefined,
+  );
+});
+
+Deno.test("static scan guard - REDIRECTION completes on a long digit run before a rejected character (Issue #4415)", () => {
+  assertEquals(
+    findStaticScanBuildInvocation("1".repeat(200_000) + "x"),
+    undefined,
+  );
+});
+
+Deno.test("static scan guard - REDIRECTION_ONLY completes on a long redirection run before a rejected character (Issue #4415)", () => {
+  assertEquals(
+    findStaticScanBuildInvocation(">".repeat(200_000) + "x"),
+    undefined,
+  );
+});
+
+Deno.test("static scan guard - the shell flag pattern completes on a long letter run before a rejected character (Issue #4415)", () => {
+  assertEquals(
+    findStaticScanBuildInvocation("bash -" + "c".repeat(200_000) + "1 'ls'"),
+    undefined,
+  );
+});
+
+Deno.test("static scan guard - ASSIGNMENT completes on a long name run before a rejected character (Issue #4415)", () => {
+  assertEquals(
+    findStaticScanBuildInvocation("A".repeat(200_000) + "-"),
     undefined,
   );
 });
@@ -170,6 +208,28 @@ Deno.test("static scan guard - allows the legal sibling with the same shape (Iss
   assertEquals(decision, { deny: false });
 });
 
+Deno.test("static scan guard - denies a cargo Bash call whose payload has no hook_event_name (Issue #4415)", () => {
+  // The event is checked only when it is named: an unnamed Bash call is still
+  // classified, so the guard cannot be defeated by leaving the field out.
+  const decision = decideStaticScanHook({
+    tool_name: "Bash",
+    tool_input: { command: "cargo check" },
+  });
+  assert(decision.deny);
+  assertEquals(decision.tool, "cargo");
+});
+
+Deno.test("static scan guard - allows a cargo Bash call from a PostToolUse event (Issue #4415)", () => {
+  assertEquals(
+    decideStaticScanHook({
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "cargo check" },
+    }),
+    { deny: false },
+  );
+});
+
 Deno.test("static scan guard - allows a non-Bash tool and other events (Issue #4415)", () => {
   assertEquals(
     decideStaticScanHook({
@@ -212,6 +272,24 @@ Deno.test("static scan guard - denies a payload that is not an object (fail clos
   for (const payload of [null, 7, "cargo check", []]) {
     assertEquals(decideStaticScanHook(payload).deny, true);
   }
+});
+
+Deno.test("static scan guard - a classifier that throws fails closed with a denial naming the failure (Issue #4415)", () => {
+  const decision = decideStaticScanHook(
+    {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+    },
+    () => {
+      throw new RangeError("Maximum call stack size exceeded");
+    },
+  );
+  assert(decision.deny, "a classifier that throws must deny, not allow");
+  assertEquals(decision.tool, "Bash");
+  assert(decision.reason.startsWith(STATIC_SCAN_DENIAL_MARKER));
+  assertStringIncludes(decision.reason, "could not be classified");
+  assertStringIncludes(decision.reason, "fails closed");
 });
 
 Deno.test("static scan guard CLI - denies an unparseable payload on stdout and stderr (fail closed, Issue #4415)", () => {
@@ -275,6 +353,52 @@ Deno.test("static scan guard CLI - writes nothing for an allowed command (Issue 
   assertEquals(err, []);
 });
 
+Deno.test("static scan guard CLI process - denies a cargo call and allows grep, exiting 0 (Issue #4415)", async () => {
+  const module = new URL("../lib/static_scan_guard_cli.ts", import.meta.url)
+    .pathname;
+  const run = async (command: string) => {
+    const child = new Deno.Command(Deno.execPath(), {
+      args: ["run", "--quiet", "--no-config", "--no-lock", module],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      signal: AbortSignal.timeout(30_000),
+    }).spawn();
+    const writer = child.stdin.getWriter();
+    await writer.write(
+      new TextEncoder().encode(
+        JSON.stringify({
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          tool_input: { command },
+        }),
+      ),
+    );
+    await writer.close();
+    const { code, stdout, stderr } = await child.output();
+    return {
+      code,
+      out: new TextDecoder().decode(stdout),
+      err: new TextDecoder().decode(stderr),
+    };
+  };
+
+  const denied = await run("cargo check --offline");
+  assertEquals(denied.code, 0, "a denial must not fail the run");
+  const parsed = JSON.parse(denied.out);
+  assertEquals(parsed.hookSpecificOutput.permissionDecision, "deny");
+  assert(
+    parsed.hookSpecificOutput.permissionDecisionReason.startsWith(
+      STATIC_SCAN_DENIAL_MARKER,
+    ),
+  );
+  assertStringIncludes(denied.err, STATIC_SCAN_DENIAL_MARKER);
+
+  const allowed = await run("grep -n cargo Cargo.toml");
+  assertEquals(allowed.code, 0);
+  assertEquals(allowed.out.trim(), "", "an allowed command writes nothing");
+});
+
 Deno.test("static scan hook settings - a PreToolUse Bash hook referencing the guard module (Issue #4415)", () => {
   const settings = resolveStaticScanHookSettings({
     denoPath: "/usr/bin/deno",
@@ -305,4 +429,36 @@ Deno.test("static scan hook settings - the default guard path is the guard modul
   const entry = settings.hooks.PreToolUse[0]!;
   assertEquals(entry.matcher, "Bash");
   assertStringIncludes(entry.hooks[0]!.command, STATIC_SCAN_GUARD_MODULE);
+});
+
+/** The hook command a settings object registers under `PreToolUse`. */
+function hookCommandOf(settings: Record<string, unknown>): string {
+  const hooks = settings.hooks as {
+    PreToolUse: { hooks: { command: string }[] }[];
+  };
+  return hooks.PreToolUse[0]!.hooks[0]!.command;
+}
+
+Deno.test("static scan hook settings - a denoDir pins the guard child's cache with DENO_DIR (Issue #1448) (Issue #4415)", () => {
+  const command = hookCommandOf(
+    buildStaticScanHookSettings({
+      denoPath: "/usr/bin/deno",
+      guardModulePath: "/checkout/worker/deno/lib/static_scan_guard_cli.ts",
+      denoDir: "/x y/cache",
+    }),
+  );
+  assert(
+    command.startsWith("DENO_DIR='/x y/cache' "),
+    `expected a pinned cache, got: ${command}`,
+  );
+});
+
+Deno.test("static scan hook settings - without a denoDir the hook command sets no DENO_DIR (Issue #1448) (Issue #4415)", () => {
+  const command = hookCommandOf(
+    buildStaticScanHookSettings({
+      denoPath: "/usr/bin/deno",
+      guardModulePath: "/checkout/worker/deno/lib/static_scan_guard_cli.ts",
+    }),
+  );
+  assertEquals(command.includes("DENO_DIR"), false);
 });

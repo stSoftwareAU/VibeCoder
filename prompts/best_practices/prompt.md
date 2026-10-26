@@ -89,10 +89,11 @@ MUST end with, reproduced verbatim (see Phase 4):
    dependencies (a crate with no `build.rs` of its own can still pull one
    in), and they write build artefacts. `--offline` only limits registry
    access; it does not make a build read-only, because it does not confine
-   a build script's own network or filesystem use. The scan session's Bash
-   tool also rejects Rust build-tool commands at the tool-call hook. That
-   hook is best-effort command classification, not an OS sandbox, so it is
-   not a security boundary and does not relax this rule.
+   a build script's own network or filesystem use. The scan session also
+   refuses Rust build-tool commands: a `Bash(<tool>:*)` deny rule, plus a
+   tool-call hook on providers that run hooks. Both are best-effort command
+   classification, not an OS sandbox, so they are not a security boundary
+   and do not relax this rule.
 
    Missing compiler or linter corroboration never blocks a valid static
    finding: every finding cites its own file and line from static reading.

@@ -27,6 +27,8 @@
  * Uses Australian English throughout (behaviour, artefacts, organisation, etc.).
  */
 
+// SIMPLE-ON-PURPOSE: command text is classified by literal command words only, no shell expansion — upgrade when a scan is observed building a tool name at run time
+
 import { resolveGuardDenoDir } from "./guard_deno_dir.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import type { IssueEditHookDecision } from "./issue_executor_enforcement.ts";
@@ -322,17 +324,51 @@ function skipWrapperArgs(
 }
 
 /**
- * Index just past `rustup run <toolchain>`'s options and toolchain, so the
- * next word is the command run under that toolchain.
+ * The command string `env -S` (or `--split-string`) runs, if `env`'s options
+ * name one.
+ *
+ * `env -S` splits its argument into the command line it runs, so that text is
+ * read as a command in turn. Operands after the argument are appended to it, so
+ * the argument and the remaining words are joined and the result is read. A
+ * short option cluster containing `S` (`-iS`, `-Sstring`) and the `=` form of
+ * the long option count too. Other options are skipped as in
+ * {@link skipWrapperArgs}.
+ *
+ * The joined text is strictly shorter than the segment it came from (it omits
+ * the `env` word and the option word), so the recursion terminates.
  *
  * @param words - The segment's words
- * @param start - Index of the first word after `run`
- * @returns The index of the command word
+ * @param start - Index of the first word after `env`
+ * @returns The string to re-read as a command, or `undefined` when `env` runs no split string
  */
-function skipRustupRun(words: readonly string[], start: number): number {
+function envSplitStringCommand(
+  words: readonly string[],
+  start: number,
+): string | undefined {
+  const options = WRAPPER_OPTIONS.get("env") ?? new Set<string>();
   let i = start;
-  while (i < words.length && words[i]!.startsWith("-")) i++;
-  return i + 1;
+  while (i < words.length) {
+    const word = words[i]!;
+    const rest = words.slice(i + 1);
+    if (word === "--split-string") return rest.join(" ");
+    if (word.startsWith("--split-string=")) {
+      return [word.slice("--split-string=".length), ...rest].join(" ");
+    }
+    if (/^-[A-Za-z]*S/.test(word)) {
+      const attached = word.slice(word.indexOf("S") + 1);
+      return [attached, ...rest].join(" ");
+    }
+    if (ASSIGNMENT.test(word)) {
+      i++;
+      continue;
+    }
+    if (word.startsWith("-") && word !== "-") {
+      i += options.has(word) ? 2 : 1;
+      continue;
+    }
+    return undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -382,12 +418,12 @@ function invocationInSegment(words: readonly string[]): string | undefined {
     }
 
     const base = baseName(word);
-    if (base === "rustup" && words[i + 1] === "run") {
-      i = skipRustupRun(words, i + 2);
-      continue;
-    }
     const options = WRAPPER_OPTIONS.get(base);
     if (options !== undefined) {
+      if (base === "env") {
+        const split = envSplitStringCommand(words, i + 1);
+        if (split !== undefined) return findStaticScanBuildInvocation(split);
+      }
       i = skipWrapperArgs(words, i + 1, base, options);
       continue;
     }
@@ -452,9 +488,16 @@ function buildToolReason(tool: string): string {
  * classified. Everything else is allowed: other tools, and other events.
  *
  * @param payload - The hook payload, as parsed from the guard's stdin
+ * @param classify - The command classifier. Production uses
+ *   {@link findStaticScanBuildInvocation}; injectable so a test can exercise the
+ *   fail-closed branch with a classifier that throws.
  * @returns The decision, carrying the tool name and reason when denying
  */
-export function decideStaticScanHook(payload: unknown): IssueEditHookDecision {
+export function decideStaticScanHook(
+  payload: unknown,
+  classify: (command: string) => string | undefined =
+    findStaticScanBuildInvocation,
+): IssueEditHookDecision {
   if (
     typeof payload !== "object" || payload === null || Array.isArray(payload)
   ) {
@@ -486,7 +529,7 @@ export function decideStaticScanHook(payload: unknown): IssueEditHookDecision {
 
   let tool: string | undefined;
   try {
-    tool = findStaticScanBuildInvocation(command);
+    tool = classify(command);
   } catch {
     // Nesting deep enough to exhaust the stack cannot be classified.
     return {

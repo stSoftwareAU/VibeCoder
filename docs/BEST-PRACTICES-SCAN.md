@@ -41,12 +41,16 @@ build artefacts. `--offline` only limits registry access. It does not
 sandbox a build script's network or filesystem use, so offline mode does
 not make a build read-only.
 
-The scan session's Bash tool also has a tool-call hook
-(`worker/deno/lib/static_scan_guard.ts`, with the command-line entry point
-in `worker/deno/lib/static_scan_guard_cli.ts`) that rejects Rust
-build-tool commands. The hook classifies commands on a best-effort basis.
-It is not an OS sandbox and is not a security boundary. Normal
-implementation and CI `cargo` use is unaffected.
+The scan session refuses Rust build-tool commands in two layers, both
+defined in `worker/deno/lib/static_scan_guard.ts`. Every provider gets the
+`Bash(<tool>:*)` deny rules. On a provider that runs hooks (Claude), the
+session also installs a `PreToolUse` hook on Bash, with its command-line entry
+point in `worker/deno/lib/static_scan_guard_cli.ts`, which reads compound
+commands the prefix rules cannot. The DeepSeek provider drops session hooks
+(`worker/deno/lib/agent_provider.ts`), so there only the deny rules apply.
+Both layers classify command text on a best-effort basis. Neither is an OS
+sandbox or a security boundary. Normal implementation and CI `cargo` use is
+unaffected: only this scan's session carries them.
 
 Missing compiler or linter corroboration never blocks a valid static
 finding. Where a finding would normally want that corroboration, the

@@ -17,6 +17,10 @@
  * guard, and must write the sentinel and `target/`. That proves the fixture is
  * live: the absence above is the guard's doing, not a broken project.
  *
+ * The control needs `cargo` on PATH. On a host without it the control is
+ * ignored and reports as ignored, not passed; the fixture test above does not
+ * depend on cargo.
+ *
  * Uses Australian English throughout (behaviour, artefacts, organisation, etc.).
  */
 

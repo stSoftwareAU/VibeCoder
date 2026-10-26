@@ -8,8 +8,10 @@
  *
  * Unlike the issue executor's edit guard (`issue_edit_guard_cli.ts`), this
  * guard FAILS CLOSED. A payload it cannot parse is denied, not allowed: the
- * scan has no other defence against a build tool, and a scan that cannot read
- * its own calls must not run them. The denial is written as the CLI's
+ * scan's session also refuses the same tools as `Bash(<tool>:*)` rules, but
+ * this hook is the stronger layer: it reads every segment of a compound command,
+ * which those prefix rules do not, and a scan that cannot read its own calls
+ * must not run them. The denial is written as the CLI's
  * `PreToolUse` deny shape on stdout, and the log line on stderr.
  *
  * Exits `0` whatever it decides, so a denial is a refused tool call the agent
@@ -28,7 +30,11 @@ import {
   STATIC_SCAN_DENIAL_MARKER,
 } from "./static_scan_guard.ts";
 
-/** Read all of stdin as text. */
+/**
+ * Read all of stdin as text. A copy of `issue_edit_guard_cli.ts`'s private
+ * `readStdin`: importing that CLI entry point for one helper would couple the two
+ * guards' entry points, and no exported stdin reader exists in `lib/`.
+ */
 async function readStdin(): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of Deno.stdin.readable) chunks.push(chunk);

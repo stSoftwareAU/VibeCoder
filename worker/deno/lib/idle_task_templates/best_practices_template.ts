@@ -858,7 +858,7 @@ export async function hasAwsEmulatorWaiver(
  * `PreToolUse` hook, because a build tool runs build scripts and proc macros.
  *
  * Production callers use the default `runClaudeFn`. The behavioural fixture
- * test (`tests/static_scan_cargo_build_script_test.ts`) injects one that plays
+ * test (`worker/deno/tests/static_scan_cargo_build_script_test.ts`) injects one that plays
  * the agent, so the real wiring is exercised: the settings and disallowed
  * tools captured from the call, and the hook decision on each command.
  */
