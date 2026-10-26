@@ -415,7 +415,10 @@ export function semgrepScanArgs(files: readonly string[]): string[] {
     "--config",
     SEMGREP_CONFIG,
     "--json",
-    "--quiet",
+    // Never `--quiet`: it silences the registry error on stderr too, so a
+    // refused rules download read as an unreadable report (FAILED) instead
+    // of an unreachable registry (SKIPPED) (Issue #4412). The JSON report
+    // stays alone on stdout either way.
     // No telemetry from an unattended agent container.
     "--metrics=off",
     // Exit non-zero on findings, matching `semgrep ci`.

@@ -423,6 +423,7 @@ measured partial containment (#4051); its host/LAN gap remains open.
 | `codeload.github.com` | GitHub | always | Source archive downloads |
 | `objects.githubusercontent.com` | GitHub | always | Release asset and LFS object downloads |
 | `raw.githubusercontent.com` | GitHub | always | Raw file downloads |
+| `productionresultssa0.blob.core.windows.net` to `productionresultssa19.blob.core.windows.net` | GitHub | always | Actions job logs and artefacts; `gh api …/actions/jobs/<id>/logs` redirects there (Issue #4412) |
 | `registry.npmjs.org` | Registry | always | npm packages |
 | `jsr.io` | Registry | always | JSR packages |
 | `deno.land` | Registry | always | Deno standard modules and binaries |
@@ -433,6 +434,7 @@ measured partial containment (#4051); its host/LAN gap remains open.
 | `files.pythonhosted.org` | Registry | always | Python package files |
 | `static.rust-lang.org` | Registry | always | Rust toolchain downloads |
 | `cdn.playwright.dev` | Registry | always | Playwright browser downloads |
+| `semgrep.dev` | Registry | always | Semgrep `p/default` rules for the quality gate's SAST stage (Issue #4412) |
 | `api.anthropic.com` | Agent provider | `claude` provider enabled | Messages API |
 | `console.anthropic.com` | Agent provider | `claude` provider enabled | OAuth token refresh |
 | `platform.claude.com` | Agent provider | `claude` provider enabled | OAuth token refresh (newer CLI) |

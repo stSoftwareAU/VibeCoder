@@ -12,6 +12,10 @@ const GITHUB_HOSTS = [
   "codeload.github.com",
   "objects.githubusercontent.com",
   "raw.githubusercontent.com",
+  ...Array.from(
+    { length: 20 },
+    (_, i) => `productionresultssa${i}.blob.core.windows.net`,
+  ),
 ];
 
 const REGISTRY_HOSTS = [
@@ -25,6 +29,7 @@ const REGISTRY_HOSTS = [
   "files.pythonhosted.org",
   "static.rust-lang.org",
   "cdn.playwright.dev",
+  "semgrep.dev",
 ];
 
 const PROVIDER_HOSTS: Readonly<Record<string, string[]>> = {

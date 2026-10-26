@@ -69,6 +69,14 @@ export const BUILTIN_EGRESS_RULES: readonly EgressHostRule[] = [
     purpose: "github",
     reason: "raw file downloads",
   },
+  // `gh api …/actions/jobs/<id>/logs` answers with a redirect into these
+  // storage accounts, so without them the CI-failure fixer gets no log
+  // excerpt (Issue #4412). GitHub documents accounts 0 to 19.
+  ...Array.from({ length: 20 }, (_, i): EgressHostRule => ({
+    host: `productionresultssa${i}.blob.core.windows.net`,
+    purpose: "github",
+    reason: "Actions job logs and artefacts",
+  })),
   // Package registries
   {
     host: "registry.npmjs.org",
@@ -119,6 +127,13 @@ export const BUILTIN_EGRESS_RULES: readonly EgressHostRule[] = [
     host: "cdn.playwright.dev",
     purpose: "registry",
     reason: "Playwright browser downloads",
+  },
+  {
+    // The quality gate's SAST stage fetches its `p/default` rules from here
+    // on every scan; refused, every gate fails on every repo (Issue #4412).
+    host: "semgrep.dev",
+    purpose: "registry",
+    reason: "Semgrep rule registry for the quality gate",
   },
 ];
 
