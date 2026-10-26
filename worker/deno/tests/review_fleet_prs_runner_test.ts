@@ -22,7 +22,12 @@ const SHIM = fromFileUrl(
 );
 
 const READY = JSON.stringify({
-  ready: [{ repo: "owner/repo", number: 7, title: "Fix it" }],
+  ready: [{
+    repo: "owner/repo",
+    number: 7,
+    title: "Fix it",
+    headSha: "abc123",
+  }],
   skipped: {},
 });
 
@@ -72,6 +77,17 @@ async function fixture(
       run=--volume "run=$HOME/repo:/workspace:ro" \
       run=--workdir run=/workspace run=--env run=VIBE_BASE_DIR=/workspace \
       run=vibe-coder:test > "$out"; exit 0 ;;
+  *claim.ts*) echo "$*" >> "$HOME/claim-args"
+    case "$*" in
+    *"claim.ts release"*) echo "$*" >> "$HOME/release-args"
+      [ -f "$HOME/release-error" ] && { echo "release: boom (HTTP 500)" >&2; exit 1; }
+      echo '{"released":1}'; exit 0 ;;
+    esac
+    echo claim >> "$HOME/order"
+    [ -f "$HOME/claim-lost" ] && { echo '{"won":false,"id":2}'; exit 0; }
+    [ -f "$HOME/claim-error" ] && { echo "claim: boom (HTTP 403)" >&2; exit 1; }
+    [ -f "$HOME/claim-garbage" ] && { echo "not json"; exit 0; }
+    echo '{"won":true,"id":1}'; exit 0 ;;
   *escalate.ts*) echo "$*" >> "$HOME/escalate-args"
     echo "GH_TOKEN=\${GH_TOKEN:-unset}" >> "$HOME/escalate-env"
     [ ${escalateExit} = 0 ] || echo "escalate: boom" >&2
@@ -82,6 +98,8 @@ esac
 echo "GH_TOKEN=\${GH_TOKEN:-} $*" > "$HOME/gate-args"
 echo '${gateOutput}'; exit ${gateExit}`,
   );
+  // The runner's host name, with a space: run.sh must sanitise it (Issue #4398).
+  await stub("hostname", "echo 'fleet host'");
   // Not `container`: run.sh appends the usual install directories to PATH,
   // where a real runtime of that name may sit.
   await stub(
@@ -90,6 +108,7 @@ echo '${gateOutput}'; exit ${gateExit}`,
   image) [ -f "$HOME/no-image" ] && exit 1; exit 0 ;;
   kill) echo "$*" >> "$HOME/container-kills"; exit 0 ;;
 esac
+echo round >> "$HOME/order"
 echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
 printf '%s\\n' "$@" >> "$HOME/claude-args"
 [ -x "$HOME/round" ] && exec "$HOME/round"
@@ -464,7 +483,12 @@ Deno.test("run.sh posts each auditBlocked PR with post.ts and starts no Claude r
 
 Deno.test("run.sh keeps auditBlocked PRs out of the Claude round's prompt (Issue #3142)", async () => {
   const home = await fixture(JSON.stringify({
-    ready: [{ repo: "owner/repo", number: 7, title: "Fix it" }],
+    ready: [{
+      repo: "owner/repo",
+      number: 7,
+      title: "Fix it",
+      headSha: "abc123",
+    }],
     auditBlocked: [AUDIT_BLOCKED],
     skipped: {},
   }));
@@ -723,8 +747,8 @@ Deno.test("run.sh posts an audit send-back as a review with no model run", async
 
 const TWO_READY = JSON.stringify({
   ready: [
-    { repo: "owner/repo", number: 7, title: "Fix it" },
-    { repo: "owner/repo", number: 8, title: "Fix that" },
+    { repo: "owner/repo", number: 7, title: "Fix it", headSha: "abc123" },
+    { repo: "owner/repo", number: 8, title: "Fix that", headSha: "def456" },
   ],
   skipped: {},
 });
@@ -944,4 +968,145 @@ Deno.test("run.sh's first start learns only from reviews posted from then on (Is
   const { code, output } = await run(home, "--once");
   assertEquals(code, 0, output);
   assertEquals(await claudeArgs(home), null);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4398: several hosts may run the runner. Each ready PR is claimed on
+// GitHub before its round starts and released when the round is over; a PR
+// another host has claimed gets no round.
+// ---------------------------------------------------------------------------
+
+Deno.test("run.sh claims a ready PR for this host, with the round timeout as its lease (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await runBash(home, [RUNNER, "--once"], {
+    REVIEW_FLEET_PRS_ROUND_TIMEOUT: "1234",
+  });
+  assertEquals(code, 0, output);
+  assertStringIncludes(
+    (await recorded(home, "claim-args"))!,
+    "claim.ts claim --repo=owner/repo --number=7 --sha=abc123 --host=fleet-host --ttl=1234",
+  );
+  assert(await claudeArgs(home), "the round was not started");
+});
+
+Deno.test("run.sh tells the gate this host, so the gate can skip a PR claimed elsewhere (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertStringIncludes(
+    (await recorded(home, "gate-args"))!,
+    "--host=fleet-host",
+  );
+});
+
+Deno.test("run.sh claims a PR before its round's container starts (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(await recorded(home, "order"), "claim\nround\n");
+});
+
+Deno.test("run.sh starts no round for a PR another host has claimed, and escalates no failure (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/claim-lost`, "");
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(await runnerLog(home), "claimed by another host");
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "--result=ok",
+  );
+  // Not this host's claim, so not this host's to release.
+  assertEquals(await recorded(home, "release-args"), null);
+});
+
+Deno.test("run.sh fails and escalates a PR whose claim fails, starting no round (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/claim-error`, "");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  const args = (await recorded(home, "escalate-args"))!;
+  assertStringIncludes(args, "--result=fail");
+  assertStringIncludes(args, "claim failed");
+  assertStringIncludes(args, "HTTP 403");
+});
+
+Deno.test("run.sh treats claim output that is not a won answer as a failed claim (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/claim-garbage`, "");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "malformed claim output",
+  );
+});
+
+Deno.test("run.sh releases a PR's claim once its round is done (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertStringIncludes(
+    (await recorded(home, "release-args"))!,
+    "claim.ts release --repo=owner/repo --number=7 --host=fleet-host",
+  );
+});
+
+Deno.test("run.sh releases a PR's claim after its round fails (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exit 3");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertStringIncludes(
+    (await recorded(home, "release-args"))!,
+    "--repo=owner/repo --number=7 --host=fleet-host",
+  );
+});
+
+Deno.test("run.sh releases a PR's claim after its round times out (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exec sleep 30");
+  const { code } = await runBash(home, [RUNNER, "--once"], {
+    REVIEW_FLEET_PRS_ROUND_TIMEOUT: "1",
+  });
+  assertEquals(code, 1);
+  assertStringIncludes(
+    (await recorded(home, "release-args"))!,
+    "--repo=owner/repo --number=7 --host=fleet-host",
+  );
+});
+
+Deno.test("run.sh releases a PR's claim when its round's container cannot start (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/no-image`, "");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(
+    (await recorded(home, "release-args"))!,
+    "--repo=owner/repo --number=7 --host=fleet-host",
+  );
+});
+
+Deno.test("run.sh logs, but does not fail on, a failed claim release (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/release-error`, "");
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const log = await runnerLog(home);
+  assertStringIncludes(log, "could not release the claim");
+  assertStringIncludes(log, "release: boom (HTTP 500)");
+});
+
+Deno.test("run.sh releases the claim of a round it leaves running when it stops (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exec sleep 30");
+  await runFor(home, 2000, { REVIEW_FLEET_PRS_INTERVAL: "300" });
+  assertStringIncludes(
+    (await recorded(home, "release-args"))!,
+    "--repo=owner/repo --number=7 --host=fleet-host",
+  );
 });

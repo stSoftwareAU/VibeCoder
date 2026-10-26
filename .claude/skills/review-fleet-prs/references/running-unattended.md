@@ -17,7 +17,8 @@ wakes every 30 seconds to collect finished rounds: after a round succeeds, or
 when the gate left PRs `over-limit`, the next gate pass runs at once to fill
 the free slot, rather than after the full 5 minutes (Issue #4396). A round
 that failed waits for the interval, so a PR that keeps failing is not retried
-straight away. Stopping the runner stops the rounds it started.
+straight away. Stopping the runner stops the rounds it started and deletes
+their claims (see [Several hosts](#several-hosts)).
 
 A review round does only steps 1, 2 and 4 of [SKILL.md](../SKILL.md)'s
 "Reviewing the ready PRs". Step 3, learning from recurring findings, runs in a
@@ -28,9 +29,8 @@ covered; it advances only when the round succeeds, so a failed one is retried
 the next hour. A runner's first start covers only reviews posted from then on.
 Learning takes one of the `pr_reviewer_parallel` slots while it runs.
 
-Two runners on different hosts are not yet coordinated: until Issue #4398
-adds a claim on GitHub, each would review a ready PR the other is already
-reviewing, so run one per fleet.
+Several hosts can run the loop at once, each with its own runner: a claim on
+GitHub keeps them off each other's PRs (see [Several hosts](#several-hosts)).
 
 ```bash
 .claude/skills/review-fleet-prs/scripts/run.sh --install   # start at login, restart on exit
@@ -62,6 +62,77 @@ Rounds run side by side, so each round's lines are tagged with its PR
 A headless round cannot send the
 PushNotification in [SKILL.md](../SKILL.md)'s step 4; `summary.md` still shows
 what is waiting.
+
+## Several hosts
+
+Several hosts can each run `run.sh`. Each machine keeps its own
+`runner.lock`, which guards that machine's loop. A per-PR claim on GitHub is
+what stops two hosts reviewing the same PR (Issue #4398). Only a `run.sh`
+round posts a claim, so an interactive `/review-fleet-prs` session does not.
+
+Before a round starts, `scripts/claim.ts claim` posts this hidden PR comment:
+
+```text
+<!-- vibe-review-claim sha=<head> host=<host> expires=<iso> -->
+```
+
+`sha` is the PR's head commit, `host` is `hostname -s`, and `expires` is now
+plus the round timeout (3000 seconds by default). The host then re-reads the
+PR's claim comments. The live claim at that head with the **lowest comment
+id** wins.
+
+- The loser deletes its own claim and starts no round for that PR. It logs
+  `claimed by another host`, which is not an error, and the loop moves on.
+- The winner runs its round. When the round posts, `post.ts` deletes the
+  claims at the head it reviewed, right after posting. `run.sh` deletes this
+  host's claim when the round finishes, fails or times out, when a round
+  cannot start, and when the runner stops.
+
+```mermaid
+sequenceDiagram
+    participant A as Host A
+    participant G as PR comments on GitHub
+    participant B as Host B
+    A->>G: post claim (comment 101)
+    B->>G: post claim (comment 102)
+    A->>G: re-read claims at this head
+    G-->>A: 101 is the lowest live claim
+    A->>A: 101 wins and runs the round
+    B->>G: re-read claims at this head
+    G-->>B: 101 is the lowest live claim
+    B->>G: delete own claim 102
+    B->>B: log claimed by another host and skip the PR
+    A->>G: post.ts posts the review and deletes the claims
+```
+
+A failed claim (a GitHub error or a missing permission) is an error: the round
+is not started, and the pass's failure is escalated like any other (see
+[Persistent failure escalation](#persistent-failure-escalation)). The claim is
+a PR comment, so no new permission is needed: the App's existing Issues and
+Pull requests write cover it.
+
+The gate reads the same claims. `gate.ts --host=<name>` (`run.sh` passes
+`hostname -s`) skips a PR as `claimed-elsewhere` when a live claim at its
+current head was made by another host. That check runs after `in-flight` and
+before `over-limit`, so such a PR never takes one of the slots. The gate
+ignores its own host's claims, because its own rounds are already `in-flight`.
+
+A claim is live until its `expires=` time, and for at most 2 hours after its
+comment was created (`MAX_CLAIM_SECONDS`, 7200), whatever its `expires=` says.
+Expired claims are ignored, so a crashed host or a forged expiry cannot hold a
+PR for longer than that.
+
+The claim is a comment, not a commit status. The reviewer App has
+`statuses: read` only, and a pending status would make the gate's own rollup
+read the PR as `waiting-ci`.
+
+Two limits remain:
+
+- Two hosts can still both review a PR in the rare case that a claim comment
+  is not yet visible to the other host's re-read (GitHub read-after-write
+  lag). The cost is then a duplicate review.
+- Any account that can comment on the PR can post a forged claim. It holds
+  the review off for at most 2 hours at that head.
 
 ## Where a round runs, and on which Claude subscription
 
@@ -170,7 +241,8 @@ it, the message says to accept the new permissions on the installation page.
 
 ## Persistent failure escalation
 
-A pass fails when the App token or the gate fails, when the round's
+A pass fails when the App token or the gate fails, when its claim cannot be
+posted or re-read (see [Several hosts](#several-hosts)), when the round's
 container cannot be started (`round not started: <why>`), or when the round
 exits non-zero: it failed, or the 50-minute alarm killed it (and its
 container, by name). `runner.log` then says `round failed (exit N)` or

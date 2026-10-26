@@ -12,6 +12,11 @@
 # `pr_reviewer_app` in .config.json, reviews post as that GitHub App (see
 # app_token.ts).
 #
+# Several hosts may run this at once (Issue #4398): each ready PR is claimed on
+# GitHub before its round starts, and the claim is released when the round is
+# over, so only one host reviews a PR at a time. runner.lock still guards one
+# runner per machine; the claim guards one reviewer per PR across hosts.
+#
 #   run.sh [owner/name]           # loop for ever (all repos, or one)
 #   run.sh --once [owner/name]    # one pass: gate, its rounds, then learning
 #                                 # if due; waits for them all
@@ -46,6 +51,13 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 errors() { tee -a "$LOG" >&2; }
 # The last non-blank line of a captured stderr file: a one-line failure gist.
 last_error_line() { grep -v '^$' "$1" 2>/dev/null | tail -n1; }
+# This host's name in its claims: short, and only characters a claim may
+# carry (Issue #4398).
+host_name() {
+  local h
+  h=$(hostname -s 2>/dev/null || hostname)
+  printf '%s\n' "$h" | tr -c 'A-Za-z0-9._\n' '-'
+}
 
 # Running for ever means the log and round files must not grow for ever.
 housekeep() {
@@ -243,6 +255,23 @@ price_round() {
   return 0
 }
 
+# Gives a PR's claim back, so another host may review it (Issue #4398). Best
+# effort: a failure is logged and changes nothing else. Bounded by an alarm,
+# since stop_rounds calls it from the EXIT trap. Skipped without a host name.
+release_claim() {
+  local repo=$1 number=$2 err rc reason
+  [[ -n ${HOST_NAME:-} ]] || return 0
+  err=$(cd "$SCRIPTS_DIR" && perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
+    30 deno run --allow-run=gh claim.ts release --repo="$repo" \
+    --number="$number" --host="$HOST_NAME" 2>&1 >/dev/null)
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    reason=$(printf '%s\n' "$err" | grep -v '^$' | tail -n1)
+    log "$repo#$number: could not release the claim: ${reason:-exit $rc}"
+  fi
+  return 0
+}
+
 # The pool of rounds running in the background: one entry per round, by
 # index. Plain indexed arrays, since macOS's /bin/bash is 3.2.
 POOL_PIDS=() POOL_KEYS=() POOL_DIRS=() POOL_NAMES=()
@@ -286,7 +315,11 @@ round_job() {
   local dir=$1 key=$2 kind=$3 rc err=""
   run_round "$dir/claude.log" "$key"
   rc=$?
-  [[ $kind == review ]] && price_round "$dir"
+  if [[ $kind == review ]]; then
+    price_round "$dir"
+    # Whatever the round's outcome, its PR is free for another host (Issue #4398).
+    release_claim "${key%#*}" "${key##*#}"
+  fi
   if [[ $rc -eq 142 ]]; then
     # 128 + SIGALRM: the alarm killed a hung round.
     err="round timed out after ${ROUND_TIMEOUT}s"
@@ -351,6 +384,12 @@ stop_rounds() {
     kill "${POOL_PIDS[i]}" 2>/dev/null
     [[ -n ${RUNTIME:-} ]] && "$RUNTIME" kill "${POOL_NAMES[i]}" >/dev/null 2>&1
   done
+  # A round stopped here never reaches its own release (Issue #4398).
+  for ((i = 0; i < ${#POOL_KEYS[@]}; i++)); do
+    if [[ ${POOL_KEYS[i]} == *#* ]]; then
+      release_claim "${POOL_KEYS[i]%#*}" "${POOL_KEYS[i]##*#}"
+    fi
+  done
 }
 
 # Mints the reviewer App token for this pass, when one is configured: sets
@@ -401,7 +440,7 @@ gate_pass() {
 
   ready=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh --allow-read \
     --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --limit="$free" \
-    ${REVIEWER[@]+"${REVIEWER[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
+    --host="$HOST_NAME" ${REVIEWER[@]+"${REVIEWER[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
     ${in_flight_arg[@]+"${in_flight_arg[@]}"} 2>"$errfile")
   gate_rc=$?
   # Same reasoning as the App token call: gate.ts logs non-fatal upkeep
@@ -448,9 +487,11 @@ round_dir() {
 }
 
 # Starts one round for one ready PR (a gate entry). Returns non-zero, with
-# ROUND_ERROR set, when its container cannot be started.
+# ROUND_ERROR set, when its claim or its container cannot be made. A PR another
+# host has claimed gets no round and no error (Issue #4398).
 start_review() {
-  local entry=$1 key dir errfile="$STATE_DIR/last-error"
+  local entry=$1 key dir repo number sha claim_json claim_rc won
+  local errfile="$STATE_DIR/last-error"
   ROUND_ERROR=""
   key=$(jq -r '"\(.repo)#\(.number)"' <<<"$entry")
   # Belt and braces: the gate already skips a PR given in --in-flight.
@@ -458,6 +499,9 @@ start_review() {
     log "$key: already in a round; not started twice"
     return 0
   fi
+  repo=$(jq -r .repo <<<"$entry")
+  number=$(jq -r .number <<<"$entry")
+  sha=$(jq -r .headSha <<<"$entry")
   dir=$(round_dir "$(jq -r '"\(.repo)-\(.number)"' <<<"$entry")")
   mkdir -p "$dir"
   jq -c '{ready: [.]}' <<<"$entry" >"$dir/gate.json"
@@ -465,8 +509,35 @@ start_review() {
   if ! round_container "$ROUND_NAME"; then
     ROUND_ERROR="$LAST_ERROR"
     log "$key: round not started: $ROUND_ERROR"
+    release_claim "$repo" "$number"
     return 1
   fi
+  # Claimed before any round work, so only one host reviews this PR (Issue
+  # #4398). A failed claim is an error: the round is not started.
+  claim_json=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh claim.ts claim \
+    --repo="$repo" --number="$number" --sha="$sha" --host="$HOST_NAME" \
+    --ttl="$ROUND_TIMEOUT" 2>"$errfile")
+  claim_rc=$?
+  [[ -s "$errfile" ]] && errors <"$errfile"
+  if [[ $claim_rc -ne 0 ]]; then
+    ROUND_ERROR="claim failed: $(last_error_line "$errfile")"
+    log "$key: round not started: $ROUND_ERROR"
+    return 1
+  fi
+  won=$(jq -r 'if (.won | type) == "boolean" then (.won | tostring) else "malformed" end' \
+    <<<"$claim_json" 2>/dev/null)
+  case $won in
+  true) ;;
+  false)
+    log "$key: claimed by another host; not started"
+    return 0
+    ;;
+  *)
+    ROUND_ERROR="claim failed: malformed claim output"
+    log "$key: round not started: $ROUND_ERROR"
+    return 1
+    ;;
+  esac
   C_DIR="$C_STATE_DIR/rounds/$(basename "$dir")"
   # The round runs in the container, so every path it is given is the
   # container's; the prompt is a file in the round's own directory.
@@ -597,6 +668,7 @@ main() {
   LOG="$STATE_DIR/runner.log"
   LOCK="$STATE_DIR/runner.lock"
   SERVICE_OUT="$STATE_DIR/service.out"
+  HOST_NAME=$(host_name)
   case "${1:-}" in
   --install)
     shift

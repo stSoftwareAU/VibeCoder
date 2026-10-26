@@ -4,11 +4,12 @@
 // VibeCoder .config.json that are ready for a model review: into the default
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
 // head commit (by this reviewer, by anyone's approval, or by another host's
-// marker-carrying review), and not sent back awaiting a fix whose only new
-// commits leave their own diff unchanged apart from a strict version re-bump.
+// marker-carrying review), not held by another host's live review claim at its
+// head (Issue #4398), and not sent back awaiting a fix whose only new commits
+// leave their own diff unchanged apart from a strict version re-bump.
 // At most --limit (default 5) PRs are
-// reported per pass, counted after every other skip, so a red or approved PR
-// never takes a slot and the rest come back next pass (Issue #3225). It never
+// reported per pass, counted after every other skip, so a red, approved or
+// claimed PR never takes a slot and the rest come back next pass (Issue #3225). It never
 // posts anything itself; a red dependency audit CI-fix could not clear is
 // reported in `auditBlocked` with a ready-made review for post.ts (Issue
 // #3142).
@@ -23,8 +24,12 @@
 // Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts
 //          [--config=<path>] [--repo=<owner/name>] [--watch=<seconds>]
 //          [--sleep-first] [--limit=<n>] [--in-flight=<owner/name#n>,...]
+//          [--host=<name>]
 // --in-flight names PRs a round on this host is already reviewing (run.sh's
 // pool, Issue #4395): they are skipped as `in-flight` and never take a slot.
+// --host is this host's name, as run.sh passes it (Issue #4398): a live review
+// claim by this host is ignored, since its own rounds are `in-flight`. Without
+// --host the host is "", so every live claim counts as held elsewhere.
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
 // Output: one line of JSON, { ready: [...], auditBlocked: [...],
@@ -64,6 +69,7 @@ import {
   needsBranchUpdate,
   updateBranchOnce,
 } from "./branch_update.ts";
+import { claimedElsewhere, fetchClaimComments } from "./claim.ts";
 import {
   CHECKLIST_FILE_LIST_LIMIT,
   type ChecklistLoad,
@@ -127,6 +133,7 @@ type Skip =
   | "awaiting-fix" // sent back earlier; own diff unchanged or only a strict version re-bump
   | "checklist-unreadable" // fetching review-checklists.json failed with a gh error other than not-found; retried next pass
   | "in-flight" // already being reviewed in a round on this host (--in-flight, Issue #4395)
+  | "claimed-elsewhere" // another host holds a live review claim at this head (Issue #4398)
   | "over-limit"; // ready, but past this pass's --limit; back next pass
 
 export interface ReadyPr {
@@ -859,6 +866,10 @@ export async function pass(
     limit?: number;
     /** PRs (owner/name#n) already in a review round on this host. */
     inFlight?: ReadonlySet<string>;
+    /** This host's name (--host). Its own live claims do not count as elsewhere (Issue #4398). "" counts every live claim as elsewhere. */
+    host?: string;
+    /** Clock for claim expiry (Issue #4398). Defaults to Date.now. */
+    now?: () => number;
     /** Trusted capability bundle. Defaults to the copy shipped with the worker. */
     loadCapabilityBundle?: () => Promise<CapabilityLoad>;
   } = {},
@@ -868,6 +879,8 @@ export async function pass(
     loadTrustedCapabilityBundle;
   const dir = deps.dir ?? stateDir();
   const limit = deps.limit ?? DEFAULT_LIMIT;
+  const host = deps.host ?? "";
+  const now = deps.now ?? Date.now;
   const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
   const logins = ["app/dependabot", ...fleet];
   const ready: ReadyPr[] = [];
@@ -1021,9 +1034,18 @@ export async function pass(
       skipped["in-flight"] = (skipped["in-flight"] ?? 0) + 1;
       continue;
     }
-    // The cap is applied here, after every other skip, so a red, approved
-    // or already-reviewed PR never counts against it, and no file list is
-    // read for a PR that will not be reviewed this pass.
+    // Another host's live review claim at this head (Issue #4398). Read only
+    // for a PR otherwise ready, and a failed read propagates like any other
+    // gh failure in this pass. It sits before the cap, so a claimed PR never
+    // takes a slot.
+    const comments = await fetchClaimComments(callGh, repo, pr.number);
+    if (claimedElsewhere(comments, pr.headRefOid, host, now())) {
+      skipped["claimed-elsewhere"] = (skipped["claimed-elsewhere"] ?? 0) + 1;
+      continue;
+    }
+    // The cap is applied here, after every other skip, so a red, approved,
+    // already-reviewed or claimed PR never counts against it, and no file list
+    // is read for a PR that will not be reviewed this pass.
     if (ready.length >= limit) {
       skipped["over-limit"] = (skipped["over-limit"] ?? 0) + 1;
       continue;
@@ -1353,7 +1375,11 @@ export async function main() {
   let failures = 0;
   while (true) {
     try {
-      const result = await pass(repos, fleet, reviewer, { limit, inFlight });
+      const result = await pass(repos, fleet, reviewer, {
+        limit,
+        inFlight,
+        host: arg("host"),
+      });
       failures = 0;
       if (
         result.ready.length > 0 || result.auditBlocked.length > 0 ||
