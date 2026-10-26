@@ -180,7 +180,7 @@ Deno.test("issue prompt - an operator template without the placeholder warns on 
   const custom = `${dir}/custom-issue.md`;
   await Deno.writeTextFile(
     custom,
-    "Work issue #{{ISSUE_NUMBER}}.\n\n{{QUALITY_INSTRUCTIONS}}\n",
+    "Work issue #{{ISSUE_NUMBER}}.\n\n{{QUALITY_INSTRUCTIONS}}\n{{CAPABILITY_SECURITY_GUIDANCE}}\n",
   );
 
   const warnings: string[] = [];

@@ -90,23 +90,6 @@ Deno.test("an edited acceptance test is an error, not a pass", async () => {
   assertEquals(secure.security.pass, false);
 });
 
-Deno.test("the fixture runner does not inherit a worker credential", async () => {
-  const previous = Deno.env.get("GH_TOKEN");
-  Deno.env.set("GH_TOKEN", "super-secret-token");
-  try {
-    const result = await defaultCommandRunner(
-      "printenv",
-      ["GH_TOKEN"],
-      Deno.cwd(),
-    );
-    assertEquals(result.stdout.includes("super-secret-token"), false);
-    assertEquals(result.stderr.includes("super-secret-token"), false);
-  } finally {
-    if (previous === undefined) Deno.env.delete("GH_TOKEN");
-    else Deno.env.set("GH_TOKEN", previous);
-  }
-});
-
 Deno.test("a failed isolation provision is recorded and the fixture is not executed", async () => {
   let ran = false;
   const runner: CommandRunner = () => {

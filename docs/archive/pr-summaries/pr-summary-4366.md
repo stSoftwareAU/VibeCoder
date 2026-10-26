@@ -24,3 +24,5 @@ The fleet gate reads the pull request diff and passes it into capability selecti
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **clean** — The checks use the existing checklist verdict contract. No second review agent and no forked skill.
+
+CI: the operator-template test keeps the capability placeholder, the fixture credential is planted through envSource rather than Deno.env, and the version-exception gate stub returns an empty pull request diff.

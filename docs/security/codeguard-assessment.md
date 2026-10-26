@@ -93,7 +93,7 @@ Evidence inspected includes
 | [#4367](https://github.com/stSoftwareAU/VibeCoder/issues/4367) | Static best-practices checks for specific missing behavioural security coverage | #4365; retain cross-scan dedup | work-on |
 | [#4368](https://github.com/stSoftwareAU/VibeCoder/issues/4368) | Bounded functional-and-security comparison with reproducible fixtures | Harness independent; candidate comparisons follow #4365–#4367 | work-on |
 
-#4365, #4366 and #4367 have landed as the local bundle, the shared review
+Issues #4365, #4366 and #4367 have landed as the local bundle, the shared review
 checks and the coverage scan. #4368 has a local fixture harness; its live
 model comparison has not been run. Record a declined idea honestly.
 

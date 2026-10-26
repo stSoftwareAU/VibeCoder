@@ -319,6 +319,9 @@ Deno.test("pass binds the version exception to findings from this PR's exact sen
         if (path.includes("/contents/review-checklists.json")) {
           throw new Error("gh: Not Found (HTTP 404)");
         }
+        if (args.includes("Accept: application/vnd.github.diff")) {
+          return Promise.resolve("");
+        }
         throw new Error(`unexpected gh ${args.join(" ")}`);
       };
       const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
