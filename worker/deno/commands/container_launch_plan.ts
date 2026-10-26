@@ -45,6 +45,10 @@ import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
 import { readRunCapPassthrough } from "../lib/run_hard_cap.ts";
 import { formatGb, probeDiskReading } from "../lib/host_disk.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
+import {
+  commandOutputWithTimeout,
+  DEFAULT_SUBPROCESS_TIMEOUT_MS,
+} from "../lib/subprocess_timeout.ts";
 import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
@@ -317,11 +321,12 @@ export async function buildLaunchPlanForCommand(
   // spelling differs) records `unknown` rather than failing the launch.
   let runtimeVersion = "unknown";
   try {
-    const version = await new Deno.Command(descriptor.executable, {
+    const version = await commandOutputWithTimeout(descriptor.executable, {
       args: ["version", "--format", "{{.Server.Version}}"],
       stdout: "piped",
       stderr: "piped",
-    }).output();
+      timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+    });
     if (version.code === 0) {
       const text = new TextDecoder().decode(version.stdout).trim();
       if (text !== "" && !/\s/.test(text) && !text.includes("=")) {

@@ -13,6 +13,10 @@
  */
 
 import { EGRESS_PROXY_LISTENING_MARKER } from "./egress_proxy.ts";
+import {
+  commandOutputWithTimeout,
+  spawnCommandWithTimeout,
+} from "./subprocess_timeout.ts";
 
 /** The slice of a launch plan this helper needs. */
 export interface EgressSidecarPlan {
@@ -47,6 +51,14 @@ export interface EgressSidecarOptions {
 
 const DEFAULT_READY_MS = 90_000;
 const POLL_MS = 200;
+/** One runtime verb (`network create`, `logs`, `rm`) or the source pack. */
+const RUNTIME_COMMAND_TIMEOUT_MS = 120_000;
+/**
+ * Backstop for the attached proxy client (Issue #4248). The client lives as
+ * long as the run it serves and {@link stopEgressSidecar} ends it; this only
+ * bounds a client whose caller never reached the stop.
+ */
+const PROXY_CLIENT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Proxy clients started by {@link defaultRun}. `docker run -i` stays attached
@@ -72,12 +84,12 @@ function assertComplete(plan: EgressSidecarPlan): void {
 }
 
 async function defaultPack(bundleRoot: string): Promise<Uint8Array> {
-  const command = new Deno.Command("tar", {
+  const output = await commandOutputWithTimeout("tar", {
     args: ["-C", bundleRoot, "-cf", "-", "worker/deno"],
     stdout: "piped",
     stderr: "piped",
+    timeoutMs: RUNTIME_COMMAND_TIMEOUT_MS,
   });
-  const output = await command.output();
   if (output.code !== 0) {
     const detail = new TextDecoder().decode(output.stderr).trim();
     throw new Error(
@@ -92,12 +104,13 @@ async function defaultPack(bundleRoot: string): Promise<Uint8Array> {
 function defaultRun(runtime: string): EgressCommandRunner {
   return async (args, stdin) => {
     if (args[0] === "run" && stdin !== undefined) {
-      const child = new Deno.Command(runtime, {
+      const child = spawnCommandWithTimeout(runtime, {
         args: [...args],
         stdin: "piped",
         stdout: "null",
         stderr: "piped",
-      }).spawn();
+        timeoutMs: PROXY_CLIENT_TIMEOUT_MS,
+      });
       const nameAt = args.indexOf("--name");
       const name = nameAt >= 0 ? args[nameAt + 1] : undefined;
       if (name) proxyClients.set(name, child);
@@ -106,11 +119,12 @@ function defaultRun(runtime: string): EgressCommandRunner {
       await writer.close();
       return { code: 0, stdout: "", stderr: "" };
     }
-    const output = await new Deno.Command(runtime, {
+    const output = await commandOutputWithTimeout(runtime, {
       args: [...args],
       stdout: "piped",
       stderr: "piped",
-    }).output();
+      timeoutMs: RUNTIME_COMMAND_TIMEOUT_MS,
+    });
     return {
       code: output.code,
       stdout: new TextDecoder().decode(output.stdout),

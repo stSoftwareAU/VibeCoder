@@ -349,6 +349,8 @@ start_egress_sidecar() {
 
 # Append the proxy log, then remove the proxy and the network. Safe to call
 # when neither was created, including from the EXIT trap before the plan parse.
+# Only reached through on_exit (the EXIT trap), so shellcheck sees no caller.
+# shellcheck disable=SC2317,SC2329
 cleanup_egress_sidecar() {
   if [[ "${EGRESS_PROXY_STARTED:-}" == "1" && -n "${RUNTIME:-}" &&
     -n "${PROXY_NAME:-}" ]]; then
