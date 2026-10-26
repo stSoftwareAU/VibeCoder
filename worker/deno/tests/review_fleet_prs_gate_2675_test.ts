@@ -640,6 +640,85 @@ Deno.test("manifest version exception still reviews other edits and malformed pa
   }
 });
 
+Deno.test("manifest version exception refuses hostile long inputs, accepting the same shape when well formed (Issue #4391)", async () => {
+  const blanks = " ".repeat(1_000_000);
+  const suffix = "a".repeat(100000);
+  const hunk = (header: string, from: string, to: string) =>
+    `${header}\n context\n-${from}\n+${to}\n context`;
+  // One run of the character each pattern repeats, then a character it
+  // rejects: catastrophic backtracking would never return on these.
+  const cases: {
+    name: string;
+    filename: string;
+    line: (version: string, tail: string) => string;
+  }[] = [
+    {
+      name: "JSON blanks around the optional comma",
+      filename: "deno.json",
+      line: (v, tail) => `  "version": "${v}"${blanks}${tail}`,
+    },
+    {
+      name: "TOML blanks after the closing quote",
+      filename: "Cargo.toml",
+      line: (v, tail) => `version = "${v}"${blanks}${tail}`,
+    },
+    {
+      name: "bare version suffix",
+      filename: "VERSION",
+      line: (v, tail) => `${v}-${suffix}${tail}`,
+    },
+  ];
+  const check = async (
+    filename: string,
+    headPatch: string,
+    expected: boolean,
+    name: string,
+  ) => {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [
+        { sha: "bump", parents: 1 },
+      ]),
+      "repos/o/r/compare/main...X": compareFiles([
+        { filename, patch: manifestPatch("1.2.3", "1.2.4", "toml") },
+      ]),
+      "repos/o/r/compare/main...head": compareFiles([
+        { filename, patch: headPatch },
+      ]),
+    });
+    assertEquals(
+      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+      expected,
+      name,
+    );
+  };
+  for (const c of cases) {
+    const header = "@@ -1,3 +1,3 @@";
+    // Control: the shape with no rejected character after the run is accepted.
+    await check(
+      c.filename,
+      hunk(header, c.line("1.2.5", ""), c.line("1.2.6", "")),
+      true,
+      `${c.name}: well formed`,
+    );
+    await check(
+      c.filename,
+      hunk(header, c.line("1.2.5", "!"), c.line("1.2.6", "!")),
+      false,
+      `${c.name}: hostile`,
+    );
+  }
+  await check(
+    "deno.json",
+    hunk(
+      `@@ -1,${"9".repeat(100000)}! +1,3 @@`,
+      '  "version": "1.2.5",',
+      '  "version": "1.2.6",',
+    ),
+    false,
+    "hunk header line count",
+  );
+});
+
 Deno.test("own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)", async () => {
   const prior = versionPatch("1.32.4", "1.32.5");
   const next = versionPatch("1.32.5", "1.32.6");

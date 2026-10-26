@@ -408,12 +408,14 @@ function isVersionIncrement(patch: string): boolean {
     BigInt(hunk[2] ?? "1") !== BigInt(lines.length - 1)
   ) return false;
 
+  // The optional comma sits between two blank runs, so `(?:,[ \t]*)?` keeps
+  // them disjoint: `,?[ \t]*` after `[ \t]*` backtracks quadratically.
   const version =
     "\\d+(?:\\.\\d+){1,3}(?:[-+][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?";
   const shapes = [
     new RegExp(`^()(${version})()$`),
     new RegExp(
-      `^([ \t]*"version"[ \t]*:[ \t]*")(${version})("[ \t]*,?[ \t]*)$`,
+      `^([ \t]*"version"[ \t]*:[ \t]*")(${version})("[ \t]*(?:,[ \t]*)?)$`,
     ),
     new RegExp(`^([ \t]*version[ \t]*=[ \t]*")(${version})("[ \t]*)$`),
   ];
