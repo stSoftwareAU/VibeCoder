@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 225,
+        "outcome": "rejects non-string entry",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 226,
+        "outcome": "rejects empty entry",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 227,
+        "outcome": "rejects whitespace or control character",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 235,
+        "outcome": "rejects non-443 port",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "yes: breaking the port message turned 3 tests red (recorded result, not re-run in this check)"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 247,
+        "outcome": "rejects bare wildcard",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 251,
+        "outcome": "rejects host longer than 253 characters",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 256,
+        "outcome": "rejects IP literal (last label all digits, DIGITS_ONLY)",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 259,
+        "outcome": "rejects fewer than two labels",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 262,
+        "outcome": "rejects label failing LABEL_PATTERN or with leading or trailing hyphen",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 281,
+        "outcome": "anthropicBaseUrlHost returns undefined for an empty or unset base URL",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "resolveEgressAllowlist - an empty or unset ANTHROPIC_BASE_URL adds nothing (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 292,
+        "outcome": "anthropicBaseUrlHost returns undefined for a local host",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "resolveEgressAllowlist - local ANTHROPIC_BASE_URL values add nothing (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 313,
+        "outcome": "duplicate host is skipped; first occurrence wins",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "resolveEgressAllowlist - duplicates collapse to one entry each, first occurrence wins (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 319,
+        "outcome": "builtin rules are filtered by purpose",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "resolveEgressAllowlist - a disabled provider contributes no hosts (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/egress_allowlist.ts",
+        "line": 325,
+        "outcome": "Object.hasOwn guard skips an unknown provider id",
+        "test": "worker/deno/tests/egress_allowlist_test.ts",
+        "testName": "resolveEgressAllowlist - an unknown provider id contributes nothing (Issue #4045)",
+        "flipWentRed": "not run: no flip recorded for this outcome"
+      },
+      {
+        "path": "worker/deno/lib/config.ts",
+        "line": 635,
+        "outcome": "imgbb operand 1: file.imgbb_api_key is non-empty (|| operand 1 of 2)",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "imgbb key read from file or env; the harness search over worker/deno/tests for imgbb env keys found worker/deno/tests/config_precedence_test.ts staging VIBE_IMGBB_API_KEY, but loadConfig discards the egress list, so flipping this operand changes no asserted result"
+        }
+      },
+      {
+        "path": "worker/deno/lib/config.ts",
+        "line": 636,
+        "outcome": "imgbb operand 2: readImgbbApiKeyFromEnv(env) is non-empty (|| operand 2 of 2)",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "imgbb key read from file or env; the harness search over worker/deno/tests for imgbb env keys found worker/deno/tests/config_precedence_test.ts staging VIBE_IMGBB_API_KEY, but loadConfig discards the egress list, so flipping this operand changes no asserted result"
+        }
+      },
+      {
+        "path": "worker/deno/lib/config.ts",
+        "line": 642,
+        "outcome": "catch path rethrows an invalid egress_allow_hosts as Config file is invalid",
+        "test": "worker/deno/tests/config_test.ts",
+        "testName": "config - egress_allow_hosts rejects an IP literal (Issue #4045)",
+        "flipWentRed": "yes: evidence test, recorded as red on base and green at head (recorded result, not re-run in this check)"
+      }
+    ]
+  }
+}

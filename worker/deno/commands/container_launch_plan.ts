@@ -45,10 +45,16 @@ import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
 import { readRunCapPassthrough } from "../lib/run_hard_cap.ts";
 import { formatGb, probeDiskReading } from "../lib/host_disk.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
+import {
+  commandOutputWithTimeout,
+  DEFAULT_SUBPROCESS_TIMEOUT_MS,
+} from "../lib/subprocess_timeout.ts";
 import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
+import { resolveEgressAllowlist } from "../lib/egress_allowlist.ts";
+import { readImgbbApiKeyFromEnv } from "../lib/imgbb_upload.ts";
 import { resolveContainerExtensionLaunch } from "../lib/container_extension_launch.ts";
 import { readConfiguredLogDir } from "../lib/log_dir.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
@@ -311,6 +317,59 @@ export async function buildLaunchPlanForCommand(
   // The launcher's outer deadline (Issue #4173): the worker's own maximum run
   // duration plus a margin, so the host only steps in once the container has
   // demonstrably failed to stop itself.
+  // Best-effort. A runtime that has no `--format` version (Apple container's
+  // spelling differs) records `unknown` rather than failing the launch.
+  let runtimeVersion = "unknown";
+  try {
+    const version = await commandOutputWithTimeout(descriptor.executable, {
+      args: ["version", "--format", "{{.Server.Version}}"],
+      stdout: "piped",
+      stderr: "piped",
+      timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+    });
+    if (version.code === 0) {
+      const text = new TextDecoder().decode(version.stdout).trim();
+      if (text !== "" && !/\s/.test(text) && !text.includes("=")) {
+        runtimeVersion = text;
+      }
+    }
+  } catch {
+    runtimeVersion = "unknown";
+  }
+
+  // The same allowlist loadConfig validates (Issue #4045), handed to the
+  // proxy as one environment value (Issue #4047).
+  const configText = await Deno.readTextFile(hostPaths.configFile);
+  let configJson: unknown;
+  try {
+    configJson = JSON.parse(configText);
+  } catch {
+    throw new Error(
+      `Config file ${hostPaths.configFile} contains invalid JSON`,
+    );
+  }
+  if (
+    configJson === null || typeof configJson !== "object" ||
+    Array.isArray(configJson)
+  ) {
+    throw new Error(
+      `Config file ${hostPaths.configFile} has invalid structure`,
+    );
+  }
+  const configRecord = configJson as {
+    egress_allow_hosts?: unknown;
+    imgbb_api_key?: unknown;
+  };
+  const imgbbKey = typeof configRecord.imgbb_api_key === "string"
+    ? configRecord.imgbb_api_key.trim()
+    : "";
+  const egressAllowHosts = resolveEgressAllowlist({
+    enabledProviderIds: providers.map((provider) => provider.id),
+    imgbbConfigured: imgbbKey !== "" || readImgbbApiKeyFromEnv(env) !== "",
+    anthropicBaseUrl: env("ANTHROPIC_BASE_URL"),
+    extraHosts: configRecord.egress_allow_hosts,
+  });
+
   const watchdogSeconds = resolveWatchdogSeconds({
     env,
     maxRunSeconds: DEFAULT_MAX_RUN_SECONDS,
@@ -349,6 +408,9 @@ export async function buildLaunchPlanForCommand(
     ...(runCap ? { runCap } : {}),
     planEpochSeconds: Math.floor(now() / 1000),
     resources,
+    repoRoot: baseDir,
+    runtimeVersion,
+    egressAllowHosts,
     ...(containerfile ? { containerfile } : {}),
     ...(extension ? { containerExtension: extension } : {}),
   });

@@ -91,15 +91,13 @@ learning round, and persistent failure escalation.
    to a PR that was sent back, the re-review checks the earlier findings were
    fixed, and approves once they are. When a PR was sent back and the only
    commits since leave its own diff unchanged, the gate skips it as
-   `awaiting-fix` until the fleet pushes its fix. A strict numeric version
-   increment on a bare version line, or on a `version` key line in a JSON or
-   TOML manifest, may differ between the old and current own diffs, including
-   a separate workflow bump after a base merge. A manifest hunk may carry
-   unchanged context lines, but exactly one line is replaced and only its
-   version token differs; a pin on any other key gets a fresh review. Every
-   other patch must still match, and an earlier finding on that version file,
-   or missing findings for the exact sent-back head, requires a fresh review
-   (see [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
+   `awaiting-fix` until the fleet pushes its fix. A strict one-line numeric
+   version increment, bare or on a JSON/TOML `version` key, may differ between
+   the old and current own diffs, including a separate workflow bump after a
+   base merge. Unchanged hunk context is allowed. Every other patch
+   must still match, and an earlier finding on that version file, or missing
+   findings for the exact sent-back head, requires a fresh review (see
+   [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
    The skill runs on more than one host
    (a laptop as the `gh` user, an always-on host as the reviewer App), so a
    review carrying the skill's marker counts as this skill's review whichever login

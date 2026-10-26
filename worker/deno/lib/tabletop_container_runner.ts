@@ -1,3 +1,4 @@
+import { appleWorkerArgs } from "./apple_egress_launch.ts";
 /**
  * The containerised runner for the tabletop harness (Issue #4194).
  *
@@ -28,6 +29,7 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
 import {
   buildContainerLaunchPlan,
   type ContainerLaunchPlan,
@@ -258,6 +260,11 @@ async function buildHostFixture(
     // (Issue #1572): this container runs the harness, not a worker run.
     buildCommit: "unknown",
     hostPaths,
+    // The fixture checkout has no worker/deno. The proxy packs the real one.
+    repoRoot: new URL(import.meta.url).pathname.replace(
+      /\/worker\/deno\/lib\/[^/]+$/,
+      "",
+    ),
     volumes: {
       work: `vibe-tabletop-work-${token}`,
       approvalState: `vibe-tabletop-approval-${token}`,
@@ -484,6 +491,18 @@ export function createTabletopContainerRunner(
 
       const attempts: TabletopAttemptOutcome[] = [];
       try {
+        // The worker joins the internal network, so the proxy is up before
+        // the first attempt. Apple attaches both networks at creation and resolves the proxy IP (#4051).
+        const proxyAddress = await startEgressSidecar(fixture.plan);
+        if (proxyAddress) {
+          const proxy = `http://${proxyAddress.address}:3128`;
+          fixture.plan.runArgs = appleWorkerArgs(fixture.plan.runArgs, {
+            HTTP_PROXY: proxy,
+            HTTPS_PROXY: proxy,
+            http_proxy: proxy,
+            https_proxy: proxy,
+          });
+        }
         for (const [index, item] of fixtures.entries()) {
           // Each fixture gets a clean pair of sinks, so a leak attributes to
           // the attempt that produced it.
@@ -514,6 +533,10 @@ export function createTabletopContainerRunner(
           });
         }
       } finally {
+        const sidecarProblems = await stopEgressSidecar(fixture.plan);
+        for (const problem of sidecarProblems) {
+          console.warn(`egress sidecar cleanup: ${problem}`);
+        }
         for (const name of fixture.plan.volumes) {
           await runRuntime(
             descriptor.executable,

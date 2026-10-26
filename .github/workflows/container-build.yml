@@ -40,9 +40,11 @@ jobs:
   # Issue #4334: decide whether this change can affect the image at all.
   # The 11-minute build ran on EVERY pull request — docs-only, workflow-only,
   # a one-line worker fix — and held a runner each time. On a pull request
-  # only the image definition (container/**: Containerfile, entrypoint,
-  # tools manifest, provider scripts) and this workflow can change the
-  # outcome; a PR touching neither gets a pass without a build. This is a job rather than a `paths:` filter on the trigger
+  # the image definition, this workflow and inputs to its live probes can
+  # change the outcome. The shared path filter includes launch plans and
+  # egress enforcement: their Docker containment cannot be proved by unit
+  # tests alone (Issue #4047). An unrelated PR passes without a build.
+  # This is a job rather than a `paths:` filter on the trigger
   # because `container` is a REQUIRED status check: a filtered-out required
   # check never reports and leaves the PR blocked on "expected" for ever.
   changes:
@@ -74,13 +76,11 @@ jobs:
             echo "${EVENT_NAME} event: image checks run"
             exit 0
           fi
-          # Pull requests: only the image DEFINITION, this workflow, and the
-          # Playwright MCP generator the probe exercises (Issue #1584). The
-          # worker tree is type-checked and tested on the same commit by
-          # `validate` / `validate (tests N/4)` with the same Deno major, so
-          # a worker-only PR does not need a 3-minute image build to prove
-          # it; the weekly scheduled run above rebuilds the image against the
-          # whole tree so image/worker drift cannot decay unnoticed.
+          # Pull requests: image definitions and inputs to the live probes,
+          # including MCP setup, toolchain self-checks and containment. The
+          # remaining worker tree is type-checked and tested on the same
+          # commit by `validate` / `validate (tests N/4)`, so unrelated worker
+          # edits need no image build. The weekly sweep checks the whole tree.
           #
           # Issue #1929: the filter lives in a committed script with its own
           # tests (worker/deno/tests/container_image_change_filter_test.ts).

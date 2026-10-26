@@ -12,6 +12,7 @@
 
 import {
   assert,
+  assertArrayIncludes,
   assertEquals,
   assertStringIncludes,
   assertThrows,
@@ -473,7 +474,8 @@ Deno.test("buildContainerLaunchPlan - starts the container with least privilege"
   assertEquals(plan.runArgs.includes("--security-opt"), true);
   assertEquals(plan.runArgs.includes("no-new-privileges"), true);
   assertEquals(plan.runArgs.includes("--network"), true);
-  assertEquals(plan.runArgs.includes("bridge"), true);
+  assertEquals(plan.runArgs.includes("vibe-coder-4242-net"), true);
+  assertEquals(plan.runArgs.includes("bridge"), false);
   assertEquals(
     plan.runArgs.some((arg) => arg.startsWith("/tmp:")),
     true,
@@ -640,6 +642,115 @@ Deno.test("buildContainerLaunchPlan - never broadens privileges or publishes por
   }
 });
 
+Deno.test("buildContainerLaunchPlan - Docker and Podman run behind the egress proxy (Issue #4047)", () => {
+  for (const kind of ["docker", "podman"] as const) {
+    const plan = buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor(kind), repoRoot: "/opt/VibeCoder" }),
+    );
+    const worker = plan.runArgs.join(" ");
+    assertEquals(
+      worker.includes("--network bridge"),
+      false,
+      `${kind} worker must not join the open bridge: ${worker}`,
+    );
+    assert(
+      worker.includes("--network vibe-coder-4242-net"),
+      `${kind} worker must join the internal network: ${worker}`,
+    );
+    const proxyUrl = "http://vibe-coder-4242-proxy:3128";
+    for (
+      const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]
+    ) {
+      assert(
+        worker.includes(`${name}=${proxyUrl}`),
+        `${kind} worker is missing ${name}: ${worker}`,
+      );
+    }
+    assert(
+      worker.includes("NO_PROXY=localhost,127.0.0.1,::1"),
+      `${kind} NO_PROXY must be loopback only: ${worker}`,
+    );
+    assert(
+      worker.includes("no_proxy=localhost,127.0.0.1,::1"),
+      `${kind} no_proxy must be loopback only: ${worker}`,
+    );
+    assertEquals(plan.egressEnforced, true);
+    const proxy = plan.proxyRunArgs;
+    assertEquals(proxy.includes("--cap-drop"), true);
+    assertEquals(proxy.includes("ALL"), true);
+    assertEquals(proxy.includes("--security-opt"), true);
+    assertEquals(proxy.includes("no-new-privileges"), true);
+    assertEquals(proxy.includes("--read-only"), true);
+    assertEquals(proxy.includes("--volume"), false, proxy.join(" "));
+    assertEquals(proxy.includes("--mount"), false, proxy.join(" "));
+    assertEquals(proxy.includes("--publish"), false, proxy.join(" "));
+    assertEquals(proxy.includes("-p"), false, proxy.join(" "));
+    for (const flag of FORBIDDEN_RUN_FLAGS) {
+      assertEquals(
+        proxy.includes(flag),
+        false,
+        `${kind} proxy argv carries forbidden ${flag}: ${proxy.join(" ")}`,
+      );
+    }
+    assertEquals(plan.networkCreateArgs.includes("--internal"), true);
+    assertEquals(plan.networkCreateArgs.at(-1), "vibe-coder-4242-net");
+    const allowlistPrefix = "VIBE_EGRESS_ALLOW_HOSTS=";
+    const allowlistArg = plan.proxyRunArgs.find((arg) =>
+      arg.startsWith(allowlistPrefix)
+    );
+    assert(
+      allowlistArg,
+      "the proxy must receive the resolved allowlist",
+    );
+    assertArrayIncludes(
+      allowlistArg.slice(allowlistPrefix.length).split(","),
+      ["api.github.com"],
+      "the resolved allowlist includes the exact api.github.com host",
+    );
+  }
+
+  const apple = buildContainerLaunchPlan(
+    inputs({ descriptor: descriptorFor("apple-container") }),
+  );
+  assertEquals(apple.egressEnforced, false);
+  assertEquals(apple.networkCreateArgs, [
+    "network",
+    "create",
+    "--internal",
+    "vibe-coder-4242-net",
+  ]);
+  assertEquals(apple.networkRemoveArgs, [
+    "network",
+    "delete",
+    "vibe-coder-4242-net",
+  ]);
+  assertEquals(apple.networkConnectArgs, []);
+  assert(apple.runArgs.includes("vibe-coder-4242-net"));
+  assertEquals(
+    apple.proxyRunArgs.filter((arg) => arg === "--network").length,
+    2,
+  );
+  assertEquals(apple.proxyRunArgs.includes("--volume"), false);
+  assertEquals(apple.proxyRunArgs.includes("--publish"), false);
+  const appleJoined = apple.runArgs.join(" ");
+  assertEquals(
+    appleJoined.includes("HTTPS_PROXY=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
+  assertEquals(
+    appleJoined.includes("HTTP_PROXY=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
+  assertEquals(
+    appleJoined.includes("https_proxy=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
+  assertEquals(
+    appleJoined.includes("http_proxy=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
+});
+
 Deno.test("buildContainerLaunchPlan - omits flags the runtime does not support", () => {
   const plan = buildContainerLaunchPlan(
     inputs({ descriptor: descriptorFor("apple-container") }),
@@ -648,7 +759,7 @@ Deno.test("buildContainerLaunchPlan - omits flags the runtime does not support",
   assertEquals(plan.runArgs.includes("--cap-drop"), false);
   assertEquals(plan.runArgs.includes("--security-opt"), false);
   assertEquals(plan.runArgs.includes("--tmpfs"), false);
-  assertEquals(plan.runArgs.includes("--network"), false);
+  assertEquals(plan.runArgs.includes("--network"), true);
   // The mount set is identical regardless of runtime.
   assertEquals(mountValues(plan.runArgs).length, 8);
   // Singular `image`, verified against Apple container 1.2.2 on a real host:
@@ -1199,6 +1310,14 @@ Deno.test("buildContainerLaunchPlan - carries the builder-stop arguments only fo
   assertEquals(
     rendered.includes("builder-stop=builder\0builder-stop=stop\0"),
     true,
+  );
+  assertEquals(parseContainerLaunchPlanText(rendered).builderStop, [
+    "builder",
+    "stop",
+  ]);
+  assertEquals(
+    parseContainerLaunchPlanText(rendered).builderAbsent,
+    apple.builderAbsentPatterns,
   );
 });
 

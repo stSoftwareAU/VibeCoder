@@ -161,6 +161,8 @@ import { fleetExperimentReportCommand } from "./commands/fleet_experiment_report
 import { greenGateReportCommand } from "./commands/green_gate_report.ts";
 import { stripContainerfileCommand } from "./commands/strip_containerfile.ts";
 import { toolchainSelfcheckCommand } from "./commands/toolchain_selfcheck.ts";
+import { egressProxyCommand } from "./commands/egress_proxy.ts";
+import { egressSelfcheckCommand } from "./commands/egress_selfcheck.ts";
 import { repoSettingsHardenCommand } from "./commands/repo_settings_harden.ts";
 import { auditLogTailCommand } from "./commands/audit_log_tail.ts";
 import { auditChainVerifyCommand } from "./commands/audit_chain_verify.ts";
@@ -395,6 +397,8 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(libSweepRecordCommand);
   registry.register(containerImageHashCommand);
   registry.register(toolchainSelfcheckCommand);
+  registry.register(egressProxyCommand);
+  registry.register(egressSelfcheckCommand);
   registry.register(firstRunVerifyCommand);
   registry.register(containerRuntimeDetectCommand);
   registry.register(containerLaunchPlanCommand);
@@ -638,6 +642,11 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // CI proves the built image the way the worker will, with no config
       // (Issues #1956, #2070).
       "toolchain-selfcheck",
+      // The egress self-check runs before any claim, and before config is
+      // required (Issue #4048).
+      "egress-selfcheck",
+      // The egress proxy starts before any config exists (Issue #4046).
+      "egress-proxy",
       "repo-settings-harden",
       // The verification harness runs before any config exists (Issue #736).
       "first-run-verify",
@@ -773,6 +782,11 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // CI proves the built image the way the worker will, with no config
       // (Issues #1956, #2070).
       "toolchain-selfcheck",
+      // The egress self-check runs before any claim, and before config is
+      // required (Issue #4048).
+      "egress-selfcheck",
+      // The egress proxy starts before any config exists (Issue #4046).
+      "egress-proxy",
       "repo-settings-harden",
       // The verification harness runs before any config exists (Issue #736).
       "first-run-verify",

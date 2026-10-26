@@ -32,14 +32,16 @@ flowchart LR
         H3["container-runtime sockets"]
         M["✅ 4 host mounts"]
     end
-    subgraph box ["🐳 vibe-coder container"]
-        W["worker + baked toolchain"]
+    subgraph box ["🐳 Docker or Podman"]
+        W["worker + agent"]
+        P["egress proxy"]
     end
     M --> W
     H1 -. never mounted .-x W
     H2 -. never mounted .-x W
     H3 -. never mounted .-x W
-    W -->|outbound only| N["🌐 GitHub, agent APIs, registries"]
+    W -->|internal network| P
+    P -->|allowlist, port 443| N["🌐 allowlisted hosts"]
     style M fill:#2d6a4f,stroke:#1b4332,color:#fff
     style W fill:#40916c,stroke:#2d6a4f,color:#fff
 ```
@@ -324,15 +326,232 @@ leaves `${HOME}` untouched.
 
 ## The network boundary
 
-- **Outbound is allowed** — GitHub, the coding-agent APIs and package/tool
-  registries are reachable on the runtime's own bridge network.
+On Docker and Podman the worker container is attached only to an internal
+network. Its outbound traffic goes to the [egress proxy](#egress-proxy) on that
+network. The proxy is also connected to the runtime's outbound bridge and dials
+only hosts on the [egress allowlist](#egress-allowlist), port 443. There is no
+fallback onto an open network when the internal network or the proxy fails to
+start.
+
+- **Outbound** from the worker goes through the proxy, then the allowlist.
 - **No inbound ports.** The launch plan publishes nothing, and the containment
   suite asks the runtime (`inspect`) for the running container rather than
-  inferring it from the launcher's arguments.
+  inferring it from the launcher's arguments. The proxy publishes nothing either.
 - **Never host networking.** `--network host` (and any host namespace) is
   rejected by the plan builder before the arguments are returned.
-- Fine-grained outbound allowlisting is deliberately out of scope for this
-  boundary.
+- **Apple container has measured partial containment** (#4051): the worker
+  normally joins an internal network and the same allowlist proxy joins both
+  that network and `default`. Host/LAN access remains a known gap. The startup
+  report never describes this as complete default-deny enforcement.
+
+## Apple measured containment
+
+Apple users do not need Docker or Podman (#4051). The launcher measures the
+installed CLI and macOS versions, verifies the network flags against actual
+help, and uses the dialect verified on Apple CLI 1.2.2 and macOS 26 or later:
+`network create --internal`, repeated `run --network`, and `network delete`.
+Custom-network bare-name DNS is unavailable, so the worker receives the
+proxy's inspected internal IPv4 address. No proxy port is published.
+
+`VIBE_APPLE_EGRESS_MODE=auto` is the default. It selects `internal` when the
+measured CLI/macOS support that dialect, otherwise deliberately selects
+`advisory` and records the missing capability. `internal` explicitly refuses
+an unsupported host; `advisory` explicitly retains proxy filtering and routing
+without promising direct-egress restrictions. A failed setup never changes
+its selected mode or launches the worker on an unrestricted fallback.
+
+Before claims, the **actual worker** runs the shared CONNECT allow/deny checks
+and direct IPv4, IPv6, hostname, DNS and controlled host-listener probes. A
+separate disposable default-network container runs the same direct probes as
+a negative control, with no agent, mounts or credentials. A failed connection
+is called blocked only when the matching negative control connected. Missing
+IPv6, DNS failures, unavailable probes and untested controls remain unknown.
+The listener's random banner proves a host service really exists; a closed
+port is never sufficient firewall evidence. This measures the host gateway
+and the host's LAN interfaces, not every possible LAN destination.
+
+Each `run_core.log` start records runtime version, macOS version, selected
+mode, raw observations, negative control, allowed CONNECT paths, per-control
+results and failures. The coarse legacy verdict remains `not_enforced` and
+`passed=false`. A healthy partial launch can therefore have
+`proxyAllowlist=enforced` and `directInternetV4=blocked` without claiming whole
+network enforcement. `hostLan=reachable` is an accepted gap; DNS reachability
+is residual exposure, not a DNS filter. IPv6 with no usable negative control
+is unknown, not blocked.
+
+Both modes require the configured allowlist proxy to work. Internal mode
+also requires demonstrated IPv4 blocking, and refuses any observed direct
+IPv6 or hostname escape. A regression exits 90 before claims, using the
+existing restart backoff. Setup itself gets at most three attempts and never
+silently drops a protection. The host supervisor keeps its controlled
+listener alive, saves proxy logs, and cleans only resources recorded as its
+own. Stale cleanup requires both the original launcher and its supervisor to
+be dead; it never sweeps active worker containers or arbitrary networks.
+Ownership journals are private host state in `~/.vibe-apple-egress`, outside
+all canonical worker bind mounts. Runtime I/O and shutdown have hard-kill
+deadlines, including inherited pipes held open after a CLI exits.
+
+Measured on 26 October 2026, Apple CLI 1.2.2 and macOS 27.0.1: the allowlist
+proxy worked; direct public IPv4 was blocked with a successful negative
+control; the controlled host endpoint was reachable. IPv6 was initially
+unavailable in the control and recorded unknown; a later run obtained a
+successful IPv6 control and demonstrated blocking. DNS/hostname resolution
+was unavailable internally and remained unknown. GitHub API/web, Anthropic, OpenAI and npm CONNECT
+paths succeeded. Credential isolation remains open in #3699; an allowed
+destination can still be misused. These observations are evidence for that
+host, not an assumption made about every Apple installation.
+
+Upstream context: [Apple networking](https://github.com/apple/container/blob/main/docs/networking.md),
+[host-gateway exposure](https://github.com/apple/container/issues/1320) and
+[host-dependent direct-egress report](https://github.com/apple/container/issues/2062).
+Every launch measures the actual host rather than treating those reports as
+universal guarantees or universal failures.
+
+## Egress allowlist
+
+The agent container may reach outbound only the hosts in one list, defined in
+`worker/deno/lib/egress_allowlist.ts`. Docker and Podman enforce the list: the
+launch plan (#4047) passes it to the [egress proxy](#egress-proxy) (#4046) and
+routes the worker through that proxy. Apple container uses the same proxy with
+measured partial containment (#4051); its host/LAN gap remains open.
+
+| Host | Purpose | Included when | Reason |
+| --- | --- | --- | --- |
+| `github.com` | GitHub | always | Git over HTTPS and the web |
+| `api.github.com` | GitHub | always | REST and GraphQL API for issues, labels and pull requests |
+| `uploads.github.com` | GitHub | always | Release asset uploads |
+| `codeload.github.com` | GitHub | always | Source archive downloads |
+| `objects.githubusercontent.com` | GitHub | always | Release asset and LFS object downloads |
+| `raw.githubusercontent.com` | GitHub | always | Raw file downloads |
+| `registry.npmjs.org` | Registry | always | npm packages |
+| `jsr.io` | Registry | always | JSR packages |
+| `deno.land` | Registry | always | Deno standard modules and binaries |
+| `crates.io` | Registry | always | Cargo registry API |
+| `index.crates.io` | Registry | always | Cargo sparse index |
+| `static.crates.io` | Registry | always | Cargo crate downloads |
+| `pypi.org` | Registry | always | Python package index |
+| `files.pythonhosted.org` | Registry | always | Python package files |
+| `static.rust-lang.org` | Registry | always | Rust toolchain downloads |
+| `cdn.playwright.dev` | Registry | always | Playwright browser downloads |
+| `api.anthropic.com` | Agent provider | `claude` provider enabled | Messages API |
+| `console.anthropic.com` | Agent provider | `claude` provider enabled | OAuth token refresh |
+| `platform.claude.com` | Agent provider | `claude` provider enabled | OAuth token refresh (newer CLI) |
+| `api.openai.com` | Agent provider | `codex` provider enabled | Responses API |
+| `auth.openai.com` | Agent provider | `codex` provider enabled | ChatGPT sign-in token refresh |
+| `chatgpt.com` | Agent provider | `codex` provider enabled | Codex backend for ChatGPT plans |
+| `generativelanguage.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini API |
+| `cloudcode-pa.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini CLI Google sign-in backend |
+| `oauth2.googleapis.com` | Agent provider | `gemini` provider enabled | Google OAuth token refresh |
+| `api.deepseek.com` | Agent provider | `deepseek` provider enabled | Anthropic-compatible endpoint |
+| `api.imgbb.com` | imgbb | `VIBE_IMGBB_API_KEY` / `imgbb_api_key` set | Evidence screenshot upload |
+
+**Operator additions.** An operator can add hosts under the `egress_allow_hosts`
+key in `.config.json` ([CONFIGURATION.md](CONFIGURATION.md)). Each entry is a
+hostname or `*.hostname`, on port 443 only (an optional `:443` suffix is
+accepted). Refused: IP literals, a bare `*`, any other port, whitespace or
+control characters, and empty entries. A bad entry fails config load at worker
+start, and the error names the entry.
+
+**`ANTHROPIC_BASE_URL`.** When an operator sets it, its host is added to the
+list. Loopback, IP-literal and single-label hosts are skipped, as they are local
+rather than external egress. Duplicate hosts collapse to one entry.
+
+**Not egress.** Local dev servers inside the container are not egress and stay
+reachable. The list does not grant arbitrary external browsing.
+
+## Egress proxy
+
+`worker/deno/lib/egress_proxy.ts` is the single outbound proxy the worker
+ships, run by the `egress-proxy` command. It is a CONNECT proxy: it accepts
+only `CONNECT host:443` for an allowlisted host, and it dials that host itself
+after checking where the name resolves.
+
+**Docker and Podman route the worker through this proxy** (#4047). The launch
+plan starts it from the same image, with no mounts and no published ports, on
+the outbound bridge, then connects it to the worker's internal network. Apple
+container uses the same proxy with measured partial containment (#4051),
+attaching both networks at creation. No proxy has credential-bearing mounts.
+
+```bash
+deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \
+  --allow github.com,*.example.org --listen 127.0.0.1:3128
+```
+
+- **Allowlist source.** Hosts come from `--allow` (comma-separated) or from the
+  `VIBE_EGRESS_ALLOW_HOSTS` environment variable. They never come from a file or
+  a writable mount, so the agent cannot widen the list.
+- **Entries.** Each entry is validated by `validateEgressHost`, with the same
+  rules as the [egress allowlist](#egress-allowlist): an exact host or a `*.`
+  wildcard matching strict subdomains, and IP literals refused.
+- **Listen address.** `--listen` defaults to `127.0.0.1:3128`.
+- **Accepted requests.** Only `CONNECT host:443` to an allowlisted host.
+  Plain-HTTP forwarding, every other method, IP-literal targets and non-443
+  ports are refused.
+- **Address check.** The name is resolved through an injectable resolver. The
+  connection is refused if any address is loopback, RFC 1918, 169.254/16
+  link-local (cloud metadata), CGNAT 100.64/10, IPv6 ULA `fc00::/7` or IPv6
+  link-local `fe80::/10`. The proxy connects to exactly the address it checked,
+  so DNS rebinding between the check and the connect cannot redirect it.
+- **Bounds.** Concurrent connections default to 256, idle time defaults to 60 s
+  (while reading the request head, resolving and dialling the upstream, and
+  while tunnelling), and the request head defaults to 8 KiB at most. Idle before
+  the upstream is dialled gets the `idle-timeout` line and no 403. An idle
+  established tunnel is closed on both ends with no log line. A route that takes
+  a client after `200` owns that connection, so this idle guard does not bound
+  it.
+- **Footprint.** The proxy module (`egress_proxy.ts`) opens no files and keeps no cache.
+  Started through `mod.ts`, the command needs `--allow-read --allow-env --allow-net`
+  (`mod.ts` reads `deno.json` when it loads) and no `--allow-write`. With the image's
+  modules already cached it runs against a read-only Deno cache (`--cached-only`), as
+  checked with a read-only copy of the Deno cache directory. `mod.ts`'s own start-up
+  may log non-fatal `[SECURITY] refusing to stage the gh credential` lines when it has
+  no write access; the proxy still runs.
+
+```mermaid
+flowchart TD
+    C["Client sends a request"] --> M{"CONNECT host:443?"}
+    M -->|no| X1["403 method, bad-port or bad-request"]
+    M -->|yes| A{"Host on the allowlist?"}
+    A -->|no| X2["403 not-allowlisted or ip-literal"]
+    A -->|yes| R{"Every address public?"}
+    R -->|no| X3["403 private-address"]
+    R -->|yes| T["Connect to the checked address and tunnel"]
+    style X1 fill:#d00000,stroke:#9d0208,color:#fff
+    style X2 fill:#d00000,stroke:#9d0208,color:#fff
+    style X3 fill:#d00000,stroke:#9d0208,color:#fff
+    style T fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+**Refusals.** Each refusal writes one stderr line, `[EGRESS_DENIED] host=<host>
+port=<n> reason=<class>`, followed by ` detail=<text>` when the refusal has an
+underlying resolver or connector error. Every refusal except `idle-timeout` is
+also answered with HTTP `403`, whose body opens `[EGRESS_DENIED] host=<host>
+reason=<class>`, unless the client has already closed. An `idle-timeout` refusal
+closes the socket without a 403. A client that closes before it sends a request
+head is neither logged nor answered. The detail is logged only and never appears
+in the 403 body. The host is sanitised first: control characters are stripped and it
+is capped at 64 characters; the detail is sanitised the same way and capped at
+160 characters. The tunnel payload is never logged.
+
+| Reason class | Refused when | 403 sent? |
+| ------------ | ------------ | --------- |
+| `method` | the method is not `CONNECT` | yes |
+| `not-allowlisted` | the host is not on the allowlist | yes |
+| `ip-literal` | the target is an IP literal | yes |
+| `private-address` | a resolved address is in a range listed above | yes |
+| `bad-request` | the request head is malformed | yes |
+| `header-too-large` | the request head exceeds its size bound | yes |
+| `idle-timeout` | the client is idle before the upstream is dialled (reading the head, resolving or connecting) | no, the socket is closed |
+| `resolve-failed` | the name does not resolve | yes |
+| `bad-port` | the port is not 443 | yes |
+| `connect-failed` | the upstream connection fails | yes |
+| `capacity` | the concurrent-connection bound is reached | yes |
+
+**Per-host routes.** The `routes` option maps an allowlisted host to a handler
+that receives the accepted client connection after the proxy has replied
+`200 Connection Established`; the proxy dials nothing for a route. This is the
+seam #3699's credential broker will attach to. **#3699 will extend this proxy
+through this seam (not yet delivered); it adds no second outbound proxy.**
 
 ## GitHub is the control plane
 

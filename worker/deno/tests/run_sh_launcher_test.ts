@@ -388,7 +388,9 @@ Deno.test("run.sh - never mounts the host home, a runtime socket, or opens the c
 
     const networkIndex = args.indexOf("--network");
     if (networkIndex >= 0) {
-      assertEquals(args[networkIndex + 1], "bridge");
+      const nameIndex = args.indexOf("--name");
+      assert(nameIndex >= 0);
+      assertEquals(args[networkIndex + 1], `${args[nameIndex + 1]}-net`);
     }
     assertEquals(args.includes("--rm"), true);
     assertEquals(args[args.length - 1], IMAGE);
@@ -3518,5 +3520,101 @@ Deno.test("run.sh - no extension leaves the launch exactly as it was (Issue #980
     assertEquals(run.at(-1), IMAGE);
   } finally {
     await harness.cleanup();
+  }
+});
+
+async function assertEgressSidecarOrder(harness: Harness): Promise<void> {
+  const order = await invocationOrder(harness);
+  const removed = order.indexOf("network-rm");
+  const created = order.indexOf("network-create");
+  const proxy = order.indexOf("run-proxy");
+  const connect = order.indexOf("network-connect");
+  const worker = order.lastIndexOf("run");
+  assert(
+    removed >= 0 && removed < created,
+    `stale network was not removed first: ${order.join(",")}`,
+  );
+  assert(
+    created < proxy,
+    `network was not created before the proxy: ${order.join(",")}`,
+  );
+  assert(
+    proxy < connect && connect < worker,
+    `proxy was not connected before the worker: ${order.join(",")}`,
+  );
+  assert(
+    order.lastIndexOf("network-rm") > worker,
+    `network was not removed on exit: ${order.join(",")}`,
+  );
+  assert(
+    order.lastIndexOf("rm") > worker,
+    `proxy was not removed on exit: ${order.join(",")}`,
+  );
+  const log = await Deno.readTextFile(`${harness.logDir}/egress-proxy.log`);
+  assertStringIncludes(log, "[EGRESS_PROXY] listening");
+}
+
+/** A tiny tree the launcher can pack. The proxy stub never reads the archive. */
+async function tinyEgressBundle(): Promise<string> {
+  const bundle = await Deno.makeTempDir({ prefix: "vibe_egress_bundle_" });
+  await Deno.mkdir(`${bundle}/worker/deno`, { recursive: true });
+  await Deno.writeTextFile(
+    `${bundle}/worker/deno/egress_proxy_main.ts`,
+    "export {};\n",
+  );
+  return bundle;
+}
+
+Deno.test("run.sh - creates the egress network before the proxy and the proxy before the worker (Issue #4047)", async () => {
+  const bundle = await tinyEgressBundle();
+  const harness = await setupHarness({
+    STUB_INJECT_EGRESS_PLAN: "1",
+    STUB_EGRESS_BUNDLE: bundle,
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    await assertEgressSidecarOrder(harness);
+  } finally {
+    await harness.cleanup();
+    await Deno.remove(bundle, { recursive: true });
+  }
+});
+
+Deno.test("run.sh - refuses an enforcing plan missing a network or proxy key (Issue #4047)", async () => {
+  for (
+    const key of ["network-create", "network-remove", "proxy-run", "proxy-stop"]
+  ) {
+    const harness = await setupHarness({
+      STUB_FORCE_EGRESS_ENFORCED: "1",
+      STUB_OMIT_PLAN_KEYS: key,
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, `a plan missing ${key} must be refused`);
+      assertStringIncludes(outcome.stderr, "missing a network or proxy key");
+      assertEquals(await recorded(harness, "run"), null);
+    } finally {
+      await harness.cleanup();
+    }
+  }
+});
+
+Deno.test("run.sh - a failed egress network create does not start the worker (Issue #4047)", async () => {
+  const bundle = await tinyEgressBundle();
+  const harness = await setupHarness({
+    STUB_INJECT_EGRESS_PLAN: "1",
+    STUB_EGRESS_BUNDLE: bundle,
+    STUB_NETWORK_CREATE_EXIT: "1",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "could not create the egress network");
+    assertEquals(await recorded(harness, "run"), null);
+    assertEquals(await recorded(harness, "run-proxy"), null);
+  } finally {
+    await harness.cleanup();
+    await Deno.remove(bundle, { recursive: true });
   }
 });

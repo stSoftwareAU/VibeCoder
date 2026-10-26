@@ -443,6 +443,282 @@ Deno.test("own-diff version-only increments await the existing fix, including a 
   }
 });
 
+// Shape observed with git diff --no-index over JSON and TOML manifests:
+// unchanged context is prefixed with a space and counts towards both ranges.
+const manifestPatch = (from: string, to: string, kind = "json") =>
+  kind === "json"
+    ? `@@ -1,5 +1,5 @@
+ {
+-  "version": "${from}",
++  "version": "${to}",
+   "license": "MIT",
+   "imports": {}
+ }`
+    : `@@ -1,3 +1,3 @@
+ [package]
+-version = "${from}"
++version = "${to}"
+ license = "MIT"`;
+
+Deno.test("manifest-only version re-bumps await the existing fix (Issue #4391)", async () => {
+  for (const kind of ["json", "toml"]) {
+    for (
+      const versions of [["1.2.3", "1.2.4", "1.2.5"], [
+        "1.2.9007199254740992",
+        "1.2.9007199254740993",
+        "1.2.9007199254740994",
+      ]]
+    ) {
+      const filename = kind === "json" ? "deno.json" : "Cargo.toml";
+      const { gh } = fakeGh({
+        "repos/o/r/compare/X...head": compareResponse("ahead", [
+          { sha: "merge", parents: 2 },
+          { sha: "bump", parents: 1 },
+        ]),
+        "repos/o/r/compare/main...X": compareFiles([
+          { filename, patch: manifestPatch(versions[0]!, versions[1]!, kind) },
+          { filename: "a.ts", patch: "@@ -1 +1 @@\n-old\n+unfixed" },
+        ]),
+        "repos/o/r/compare/main...head": compareFiles([
+          { filename, patch: manifestPatch(versions[1]!, versions[2]!, kind) },
+          { filename: "a.ts", patch: "@@ -3 +3 @@\n-old\n+unfixed" },
+        ]),
+      });
+      assertEquals(
+        await skipReason(
+          searchPr({ reviews: { nodes: [review("CHANGES_REQUESTED", "X")] } }),
+          "nleck",
+          (since) =>
+            ownDiffUnchanged(gh, "o/r", "main", since, "head", [{
+              file: "a.ts",
+            }]),
+        ),
+        "awaiting-fix",
+        `${kind}: ${versions.join(" -> ")}`,
+      );
+    }
+  }
+});
+
+Deno.test("manifest version exception still reviews other edits and malformed patches (Issue #4391)", async () => {
+  const prior = manifestPatch("1.2.3", "1.2.4");
+  const next = manifestPatch("1.2.4", "1.2.5");
+  const dependency = (patch: string) =>
+    patch.replaceAll('"version"', '"dependency"');
+  const cases: {
+    name: string;
+    oldPatch?: string;
+    newPatch: string;
+    findings?: { file: string }[];
+    otherPatch?: string;
+    findingsMissing?: boolean;
+  }[] = [
+    { name: "another file changed", newPatch: next, otherPatch: "+fixed" },
+    {
+      name: "another key",
+      oldPatch: dependency(prior),
+      newPatch: dependency(next),
+    },
+    {
+      name: "dependency pin",
+      oldPatch: dependency(prior).replaceAll('"1.', '"@1.'),
+      newPatch: dependency(next).replaceAll('"1.', '"@1.'),
+    },
+    {
+      name: "adjacent edit",
+      newPatch: next.replace(
+        '   "license": "MIT",',
+        '-  "license": "MIT",\n+  "license": "Apache-2.0",',
+      ),
+    },
+    {
+      name: "finding on manifest",
+      newPatch: next,
+      findings: [{ file: "deno.json" }],
+    },
+    {
+      name: "qualified finding on manifest",
+      newPatch: next,
+      findings: [{ file: "./deno.json" }],
+    },
+    { name: "findings unavailable", newPatch: next, findingsMissing: true },
+    {
+      name: "changed indentation",
+      newPatch: next.replace('+  "version"', '+    "version"'),
+    },
+    {
+      name: "changed separator",
+      newPatch: next.replace('+  "version":', '+  "version" :'),
+    },
+    {
+      name: "changed trailing comma",
+      newPatch: next.replace('+  "version": "1.2.5",', '+  "version": "1.2.5"'),
+    },
+    { name: "truncated context", newPatch: next.slice(0, -2) },
+    { name: "wrong old count", newPatch: next.replace("-1,5", "-1,6") },
+    { name: "wrong new count", newPatch: next.replace("+1,5", "+1,6") },
+    { name: "second hunk", newPatch: next + "\n@@ -20 +20 @@\n-old\n+new" },
+    {
+      name: "newline marker",
+      newPatch: next + "\n\\ No newline at end of file",
+    },
+    { name: "version downgrade", newPatch: manifestPatch("1.2.5", "1.2.4") },
+    {
+      name: "prior downgrade",
+      oldPatch: manifestPatch("1.2.4", "1.2.3"),
+      newPatch: next,
+    },
+    { name: "equal version", newPatch: manifestPatch("1.2.5", "1.2.5") },
+    {
+      name: "suffix-only change",
+      newPatch: manifestPatch("1.2.5-beta.1", "1.2.5-beta.2"),
+    },
+    {
+      name: "component count change",
+      newPatch: manifestPatch("1.2.4", "1.2.5.0"),
+    },
+    { name: "prefixed version", newPatch: manifestPatch("v1.2.4", "v1.2.5") },
+    {
+      name: "commented JSON key",
+      newPatch: next.replaceAll('  "version"', '  // "version"'),
+    },
+    {
+      name: "escaped JSON key",
+      newPatch: next.replaceAll('"version"', '"ver\\u0073ion"'),
+    },
+    {
+      name: "TOML other key",
+      oldPatch: manifestPatch("1.2.3", "1.2.4", "toml").replaceAll(
+        "version =",
+        "dependency =",
+      ),
+      newPatch: manifestPatch("1.2.4", "1.2.5", "toml").replaceAll(
+        "version =",
+        "dependency =",
+      ),
+    },
+    {
+      name: "TOML trailing comma",
+      newPatch: manifestPatch("1.2.4", "1.2.5", "toml").replaceAll(
+        '"\n',
+        '",\n',
+      ),
+    },
+  ];
+  for (const c of cases) {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [{
+        sha: "bump",
+        parents: 1,
+      }]),
+      "repos/o/r/compare/main...X": compareFiles([
+        { filename: "deno.json", patch: c.oldPatch ?? prior },
+        { filename: "a.ts", patch: "+unfixed" },
+      ]),
+      "repos/o/r/compare/main...head": compareFiles([
+        { filename: "deno.json", patch: c.newPatch },
+        { filename: "a.ts", patch: c.otherPatch ?? "+unfixed" },
+      ]),
+    });
+    assertEquals(
+      await skipReason(
+        searchPr({ reviews: { nodes: [review("CHANGES_REQUESTED", "X")] } }),
+        "nleck",
+        (since) =>
+          ownDiffUnchanged(
+            gh,
+            "o/r",
+            "main",
+            since,
+            "head",
+            c.findingsMissing ? undefined : c.findings ?? [{ file: "a.ts" }],
+          ),
+      ),
+      null,
+      c.name,
+    );
+  }
+});
+
+Deno.test("manifest version exception refuses hostile long inputs, accepting the same shape when well formed (Issue #4391)", async () => {
+  const blanks = " ".repeat(1_000_000);
+  const suffix = "a".repeat(100000);
+  const hunk = (header: string, from: string, to: string) =>
+    `${header}\n context\n-${from}\n+${to}\n context`;
+  // One run of the character each pattern repeats, then a character it
+  // rejects: catastrophic backtracking would never return on these.
+  const cases: {
+    name: string;
+    filename: string;
+    line: (version: string, tail: string) => string;
+  }[] = [
+    {
+      name: "JSON blanks around the optional comma",
+      filename: "deno.json",
+      line: (v, tail) => `  "version": "${v}"${blanks}${tail}`,
+    },
+    {
+      name: "TOML blanks after the closing quote",
+      filename: "Cargo.toml",
+      line: (v, tail) => `version = "${v}"${blanks}${tail}`,
+    },
+    {
+      name: "bare version suffix",
+      filename: "VERSION",
+      line: (v, tail) => `${v}-${suffix}${tail}`,
+    },
+  ];
+  const check = async (
+    filename: string,
+    headPatch: string,
+    expected: boolean,
+    name: string,
+  ) => {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [
+        { sha: "bump", parents: 1 },
+      ]),
+      "repos/o/r/compare/main...X": compareFiles([
+        { filename, patch: manifestPatch("1.2.3", "1.2.4", "toml") },
+      ]),
+      "repos/o/r/compare/main...head": compareFiles([
+        { filename, patch: headPatch },
+      ]),
+    });
+    assertEquals(
+      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+      expected,
+      name,
+    );
+  };
+  for (const c of cases) {
+    const header = "@@ -1,3 +1,3 @@";
+    // Control: the shape with no rejected character after the run is accepted.
+    await check(
+      c.filename,
+      hunk(header, c.line("1.2.5", ""), c.line("1.2.6", "")),
+      true,
+      `${c.name}: well formed`,
+    );
+    await check(
+      c.filename,
+      hunk(header, c.line("1.2.5", "!"), c.line("1.2.6", "!")),
+      false,
+      `${c.name}: hostile`,
+    );
+  }
+  await check(
+    "deno.json",
+    hunk(
+      `@@ -1,${"9".repeat(100000)}! +1,3 @@`,
+      '  "version": "1.2.5",',
+      '  "version": "1.2.6",',
+    ),
+    false,
+    "hunk header line count",
+  );
+});
+
 Deno.test("own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)", async () => {
   const prior = versionPatch("1.32.4", "1.32.5");
   const next = versionPatch("1.32.5", "1.32.6");
@@ -556,462 +832,6 @@ Deno.test("own-diff version exception never hides a file addition or rename (Iss
       status,
     );
   }
-});
-
-// Issue #4391: a manifest version bump sits in a hunk with unchanged context.
-const hunk = (...lines: string[]) => lines.join("\n");
-const PACKAGE_HEADER = "@@ -1,5 +1,5 @@";
-const PACKAGE_CONTEXT = [
-  '   "license": "MIT",',
-  '   "imports": {',
-  '     "a": "b"',
-];
-const packageHunk = (header: string, removed: string, added: string) =>
-  hunk(header, " {", removed, added, ...PACKAGE_CONTEXT);
-const jsonBump = (key: string, from: string, to: string) =>
-  packageHunk(
-    PACKAGE_HEADER,
-    `-  "${key}": "${from}",`,
-    `+  "${key}": "${to}",`,
-  );
-const packageBump = (from: string, to: string) => jsonBump("version", from, to);
-const cargoBump = (from: string, to: string) =>
-  hunk(
-    "@@ -1,3 +1,3 @@",
-    " [package]",
-    `-version = "${from}"`,
-    `+version = "${to}"`,
-    ' edition = "2021"',
-  );
-
-Deno.test("own-diff manifest version exception accepts a package version key bump in a context hunk, with or without a separate bump commit (Issue #4391)", async () => {
-  for (
-    const commits of [
-      [{ sha: "merge", parents: 2 }],
-      [{ sha: "merge", parents: 2 }, { sha: "bump", parents: 1 }],
-    ]
-  ) {
-    const { gh } = fakeGh({
-      "repos/o/r/compare/X...head": compareResponse("ahead", commits),
-      "repos/o/r/compare/main...X": compareFiles([
-        { filename: "deno.json", patch: packageBump("1.2.3", "1.2.4") },
-        { filename: "a.ts", patch: "@@ -1 +1 @@\n-old\n+unfixed" },
-      ]),
-      "repos/o/r/compare/main...head": compareFiles([
-        { filename: "deno.json", patch: packageBump("1.2.5", "1.2.6") },
-        { filename: "a.ts", patch: "@@ -3 +3 @@\n-old\n+unfixed" },
-      ]),
-    });
-    assertEquals(
-      await skipReason(
-        searchPr({
-          headRefOid: "head",
-          baseRefName: "main",
-          reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
-        }),
-        "nleck",
-        (since) =>
-          ownDiffUnchanged(gh, "o/r", "main", since, "head", [{
-            file: "a.ts",
-          }]),
-      ),
-      "awaiting-fix",
-    );
-  }
-});
-
-Deno.test("own-diff manifest version exception accepts a TOML version key bump in a context hunk (Issue #4391)", async () => {
-  const { gh } = fakeGh({
-    "repos/o/r/compare/X...head": compareResponse("ahead", [{
-      sha: "bump",
-      parents: 1,
-    }]),
-    "repos/o/r/compare/main...X": compareFiles([{
-      filename: "Cargo.toml",
-      patch: cargoBump("1.2.3", "1.2.4"),
-    }]),
-    "repos/o/r/compare/main...head": compareFiles([{
-      filename: "Cargo.toml",
-      patch: cargoBump("1.2.5", "1.2.6"),
-    }]),
-  });
-  assertEquals(
-    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
-    true,
-  );
-});
-
-Deno.test("own-diff manifest version exception refuses other changes, ambiguous hunks, other keys, prefix or suffix differences, non-increases, bad headers and earlier package.json findings (Issue #4391)", async () => {
-  const since = packageBump("1.2.3", "1.2.4");
-  const head = packageBump("1.2.5", "1.2.6");
-  const twoPairs = (header: string) =>
-    hunk(
-      header,
-      " {",
-      '-  "version": "1.2.5",',
-      '+  "version": "1.2.6",',
-      '-  "name": "fleet",',
-      '+  "name": "fleet-2",',
-      ...PACKAGE_CONTEXT,
-    );
-  for (
-    const [name, sincePatch, headPatch, findings, otherHead, expected] of [
-      // The positive control: the base fixture is accepted, so each refusal
-      // below is caused by the one rule its label names.
-      ["base fixture is accepted", since, head, [], "+same", true],
-      ["another file's own diff changes", since, head, [], "+different", false],
-      [
-        "a second changed pair with real header counts",
-        since,
-        twoPairs("@@ -1,6 +1,6 @@"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a second changed pair adjacent to the version pair, header counts claiming one pair",
-        since,
-        twoPairs(PACKAGE_HEADER),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a second hunk",
-        since,
-        `${head}\n@@ -20,1 +20,1 @@\n-x\n+y`,
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a dependency pin moves to a higher version",
-        jsonBump("@std/path", "jsr:@std/path@1.2.3", "jsr:@std/path@1.2.4"),
-        jsonBump("@std/path", "jsr:@std/path@1.2.5", "jsr:@std/path@1.2.6"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a schemaVersion key moves to a higher version",
-        jsonBump("schemaVersion", "1.2.3", "1.2.4"),
-        jsonBump("schemaVersion", "1.2.5", "1.2.6"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a versions key moves to a higher version",
-        jsonBump("versions", "1.2.3", "1.2.4"),
-        jsonBump("versions", "1.2.5", "1.2.6"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the removed and added indentation differ",
-        since,
-        packageHunk(
-          PACKAGE_HEADER,
-          '-  "version": "1.2.5",',
-          '+    "version": "1.2.6",',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the colon spacing differs",
-        since,
-        packageHunk(
-          PACKAGE_HEADER,
-          '-  "version": "1.2.5",',
-          '+  "version":"1.2.6",',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a trailing comma is removed",
-        since,
-        packageHunk(
-          PACKAGE_HEADER,
-          '-  "version": "1.2.5",',
-          '+  "version": "1.2.6"',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a trailing comma is added",
-        since,
-        packageHunk(
-          PACKAGE_HEADER,
-          '-  "version": "1.2.5"',
-          '+  "version": "1.2.6",',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a JSON line is replaced by a TOML line",
-        since,
-        packageHunk(
-          PACKAGE_HEADER,
-          '-  "version": "1.2.5",',
-          '+version = "1.2.6"',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the key is not quoted",
-        since,
-        packageHunk(
-          PACKAGE_HEADER,
-          '-  "version": "1.2.5",',
-          '+  version: "1.2.6",',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the TOML colon spacing differs",
-        cargoBump("1.2.3", "1.2.4"),
-        hunk(
-          "@@ -1,3 +1,3 @@",
-          " [package]",
-          '-version = "1.2.5"',
-          '+version="1.2.6"',
-          ' edition = "2021"',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the head version is equal",
-        since,
-        packageBump("1.2.5", "1.2.5"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the head version decreases",
-        since,
-        packageBump("1.2.5", "1.2.4"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the since version decreases",
-        packageBump("1.2.4", "1.2.3"),
-        head,
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the change is suffix-only",
-        since,
-        packageBump("1.2.5-beta.1", "1.2.5-beta.2"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the component count differs",
-        since,
-        packageBump("1.2", "1.2.1"),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the old header count is wrong",
-        since,
-        packageHunk(
-          "@@ -1,6 +1,5 @@",
-          '-  "version": "1.2.5",',
-          '+  "version": "1.2.6",',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the new header count is wrong",
-        since,
-        packageHunk(
-          "@@ -1,5 +1,4 @@",
-          '-  "version": "1.2.5",',
-          '+  "version": "1.2.6",',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "the header counts are omitted",
-        since,
-        packageHunk(
-          "@@ -1 +1 @@",
-          '-  "version": "1.2.5",',
-          '+  "version": "1.2.6",',
-        ),
-        [],
-        "+same",
-        false,
-      ],
-      [
-        "a no-newline marker follows",
-        since,
-        `${head}\n\\ No newline at end of file`,
-        [],
-        "+same",
-        false,
-      ],
-      ["a trailing empty line follows", since, `${head}\n`, [], "+same", false],
-      [
-        "an earlier finding names package.json",
-        since,
-        head,
-        [{ file: "package.json" }],
-        "+same",
-        false,
-      ],
-      [
-        "an earlier finding names ./package.json",
-        since,
-        head,
-        [{ file: "./package.json" }],
-        "+same",
-        false,
-      ],
-      [
-        "the earlier findings are unavailable",
-        since,
-        head,
-        undefined,
-        "+same",
-        false,
-      ],
-    ] as [
-      string,
-      string,
-      string,
-      { file: string }[] | undefined,
-      string,
-      boolean,
-    ][]
-  ) {
-    const { gh } = fakeGh({
-      "repos/o/r/compare/X...head": compareResponse("ahead", [{
-        sha: "merge",
-        parents: 2,
-      }, { sha: "bump", parents: 1 }]),
-      "repos/o/r/compare/main...X": compareFiles([{
-        filename: "package.json",
-        patch: sincePatch,
-      }, { filename: "a.ts", patch: "+same" }]),
-      "repos/o/r/compare/main...head": compareFiles([{
-        filename: "package.json",
-        patch: headPatch,
-      }, { filename: "a.ts", patch: otherHead }]),
-    });
-    assertEquals(
-      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", findings),
-      expected,
-      name,
-    );
-  }
-});
-
-Deno.test("own-diff manifest version exception rejects a long run of spaces after a version key promptly (Issue #4391)", async () => {
-  const pad = " ".repeat(100000);
-  const { gh } = fakeGh({
-    "repos/o/r/compare/X...head": compareResponse("ahead", [{
-      sha: "bump",
-      parents: 1,
-    }]),
-    "repos/o/r/compare/main...X": compareFiles([{
-      filename: "package.json",
-      patch: packageBump("1.2.3", "1.2.4"),
-    }]),
-    "repos/o/r/compare/main...head": compareFiles([{
-      filename: "package.json",
-      patch: packageHunk(
-        PACKAGE_HEADER,
-        `-  "version":${pad}"1.2.5",`,
-        `+  "version":${pad}"1.2.6"!`,
-      ),
-    }]),
-  });
-  assertEquals(
-    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
-    false,
-  );
-});
-
-Deno.test("own-diff manifest version exception rejects a hostile TOML version key (Issue #4391)", async () => {
-  const pad = " ".repeat(100000);
-  const { gh } = fakeGh({
-    "repos/o/r/compare/X...head": compareResponse("ahead", [{
-      sha: "bump",
-      parents: 1,
-    }]),
-    "repos/o/r/compare/main...X": compareFiles([{
-      filename: "Cargo.toml",
-      patch: cargoBump("1.2.3", "1.2.4"),
-    }]),
-    "repos/o/r/compare/main...head": compareFiles([{
-      filename: "Cargo.toml",
-      patch: hunk(
-        "@@ -1,3 +1,3 @@",
-        " [package]",
-        `-version${pad}= "1.2.5"`,
-        `+version${pad}!`,
-        ' edition = "2021"',
-      ),
-    }]),
-  });
-  assertEquals(
-    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
-    false,
-  );
-});
-
-Deno.test("own-diff manifest version exception rejects a hostile hunk line count (Issue #4391)", async () => {
-  const digits = "9".repeat(100000);
-  const { gh } = fakeGh({
-    "repos/o/r/compare/X...head": compareResponse("ahead", [{
-      sha: "bump",
-      parents: 1,
-    }]),
-    "repos/o/r/compare/main...X": compareFiles([{
-      filename: "package.json",
-      patch: packageBump("1.2.3", "1.2.4"),
-    }]),
-    "repos/o/r/compare/main...head": compareFiles([{
-      filename: "package.json",
-      patch: packageHunk(
-        `@@ -1,${digits}! +1,5 @@`,
-        '-  "version": "1.2.5",',
-        '+  "version": "1.2.6",',
-      ),
-    }]),
-  });
-  assertEquals(
-    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
-    false,
-  );
 });
 
 Deno.test("skipReason: a merge-only head after a send-back is awaiting-fix (Issue #3063)", async () => {

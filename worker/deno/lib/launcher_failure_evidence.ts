@@ -58,6 +58,7 @@ export function knownWorkerStatuses(
   hostEgressBlockedStatus: number,
   toolchainSelfCheckStatus: number,
   rootFsFaultStatus: number,
+  egressSelfCheckStatus: number,
 ): KnownWorkerStatuses {
   const table = new Map<number, string>([
     [0, "a clean run"],
@@ -98,6 +99,13 @@ export function knownWorkerStatuses(
       rootFsFaultStatus,
       "a container root filesystem that went read-only or I/O-faulted " +
       "(a host fault; the next launch gets a fresh container)",
+    ],
+    // Issue #4048: the worker refused to claim because the egress self-check
+    // did not prove the network policy. The image stays; the next launch
+    // recreates the network and the proxy.
+    [
+      egressSelfCheckStatus,
+      "an egress self-check that did not prove the network policy before claiming",
     ],
   ]);
   return {

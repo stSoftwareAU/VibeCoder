@@ -20,6 +20,7 @@ import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
 import { HOST_EGRESS_BLOCKED_EXIT_STATUS } from "../lib/container_egress_probe.ts";
 import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "../lib/toolchain_selfcheck.ts";
+import { EGRESS_SELFCHECK_EXIT_STATUS } from "../lib/egress_selfcheck.ts";
 import { ROOT_FS_FAULT_EXIT_STATUS } from "../lib/root_filesystem_fault.ts";
 
 const KNOWN = knownWorkerStatuses(
@@ -30,6 +31,7 @@ const KNOWN = knownWorkerStatuses(
   HOST_EGRESS_BLOCKED_EXIT_STATUS,
   TOOLCHAIN_SELFCHECK_EXIT_STATUS,
   ROOT_FS_FAULT_EXIT_STATUS,
+  EGRESS_SELFCHECK_EXIT_STATUS,
 );
 
 // ---------------------------------------------------------------------------
@@ -81,6 +83,10 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
   // runtime client would send the reader to the wrong half of the search
   // space.
   assertEquals(TOOLCHAIN_SELFCHECK_EXIT_STATUS, 89);
+  // The egress self-check (Issue #4048) is the worker's own status too: the
+  // network policy was not proved, and an alert that blamed 90 on the runtime
+  // client would send the reader to the wrong half of the search space.
+  assertEquals(EGRESS_SELFCHECK_EXIT_STATUS, 90);
   // The read-only root of Issue #3179 is the worker's own status as well.
   assertEquals(ROOT_FS_FAULT_EXIT_STATUS, 74);
   assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [
@@ -93,6 +99,7 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
     76,
     88,
     89,
+    90,
   ]);
 });
 
@@ -105,6 +112,12 @@ Deno.test("explainExitStatus - a read-only root filesystem is named as a host fa
 Deno.test("explainExitStatus - a failed toolchain self-check is named, not blamed on the runtime (Issue #1956)", () => {
   const explanation = explainExitStatus(TOOLCHAIN_SELFCHECK_EXIT_STATUS, KNOWN);
   assertStringIncludes(explanation, "toolchain self-check");
+  assertEquals(explanation.includes("container runtime client"), false);
+});
+
+Deno.test("explainExitStatus - a failed egress self-check is named, not blamed on the runtime (Issue #4048)", () => {
+  const explanation = explainExitStatus(EGRESS_SELFCHECK_EXIT_STATUS, KNOWN);
+  assertStringIncludes(explanation, "egress self-check");
   assertEquals(explanation.includes("container runtime client"), false);
 });
 

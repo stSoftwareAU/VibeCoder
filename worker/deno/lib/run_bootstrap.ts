@@ -235,12 +235,19 @@ function utcTimestamp(date: Date = new Date()): string {
 export async function appendRunCoreLogLine(
   logDir: string,
   message: string,
+  required = false,
 ): Promise<void> {
   try {
     await Deno.mkdir(logDir, { recursive: true });
     await appendLine(`${logDir}/run_core.log`, `${utcTimestamp()} ${message}`);
-  } catch {
-    // Best-effort logging.
+  } catch (error) {
+    if (required) {
+      throw new Error(
+        `Required startup evidence could not be written to ${logDir}/run_core.log`,
+        { cause: error },
+      );
+    }
+    // Ordinary log lines remain best-effort; containment evidence is required.
   }
 }
 

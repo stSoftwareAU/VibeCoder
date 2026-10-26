@@ -5,7 +5,8 @@
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
 // head commit (by this reviewer, by anyone's approval, or by another host's
 // marker-carrying review), and not sent back awaiting a fix whose only new
-// commits are base-branch merges. At most --limit (default 5) PRs are
+// commits leave their own diff unchanged apart from a strict version re-bump.
+// At most --limit (default 5) PRs are
 // reported per pass, counted after every other skip, so a red or approved PR
 // never takes a slot and the rest come back next pass (Issue #3225). It never
 // posts anything itself; a red dependency audit CI-fix could not clear is
@@ -387,97 +388,49 @@ function normalisePatch(patch: string): string {
   return patch.replace(/^@@ [^@]* @@.*$/gm, "@@");
 }
 
-// A version token: two-to-four numeric components, then an optional prerelease
-// or build suffix. Its parts are disjoint, so matching cannot backtrack badly.
-const VERSION_TOKEN =
-  /\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?/;
-const BARE_VERSION = new RegExp(`^${VERSION_TOKEN.source}$`);
+// One complete hunk replacing only a bare version or a JSON/TOML version key.
+// Context counts towards both ranges; truncated or additional edits fail closed.
+// Compare two-to-four numeric components exactly, without Number rounding.
+// Suffix-only changes stay reviewable: no prerelease/build ordering is guessed.
+function isVersionIncrement(patch: string): boolean {
+  const [header, ...lines] = patch.split("\n");
+  const hunk =
+    /^@@ -[1-9]\d*(?:,([1-9]\d*))? \+[1-9]\d*(?:,([1-9]\d*))? @@[^\n]*$/
+      .exec(header!);
+  if (!hunk) return false;
+  const removed = lines.filter((line) => line.startsWith("-"));
+  const added = lines.filter((line) => line.startsWith("+"));
+  if (
+    removed.length !== 1 || added.length !== 1 ||
+    lines.indexOf(added[0]!) !== lines.indexOf(removed[0]!) + 1 ||
+    lines.some((line) => !/^[ +\-]/.test(line)) ||
+    BigInt(hunk[1] ?? "1") !== BigInt(lines.length - 1) ||
+    BigInt(hunk[2] ?? "1") !== BigInt(lines.length - 1)
+  ) return false;
 
-// A JSON `"version"` key or a TOML `version =` key, as the text after a diff
-// marker. Only the version token may differ between the removed and added line.
-const MANIFEST_VERSION_LINES = [
-  new RegExp(`^(\\s*"version"\\s*:\\s*")(${VERSION_TOKEN.source})("\\s*,?)$`),
-  new RegExp(`^(version\\s*=\\s*")(${VERSION_TOKEN.source})(")$`),
-];
-
-// A manifest hunk header. Each old and new line count is optional (default 1).
-const MANIFEST_HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@[^\n]*\n/;
-
-// Compares the numeric components exactly, without Number rounding. Both
-// versions need the same component count, and the first differing component
-// must be higher. Equal numerics return false, so suffix-only changes stay
-// reviewable: no prerelease/build ordering is guessed.
-function isStrictNumericIncrease(from: string, to: string): boolean {
-  const before = from.split(/[-+]/)[0]!.split(".").map(BigInt);
-  const after = to.split(/[-+]/)[0]!.split(".").map(BigInt);
-  if (before.length !== after.length) return false;
-  for (let i = 0; i < before.length; i++) {
-    if (after[i] !== before[i]) return after[i]! > before[i]!;
+  // The optional comma sits between two blank runs, so `(?:,[ \t]*)?` keeps
+  // them disjoint: `,?[ \t]*` after `[ \t]*` backtracks quadratically.
+  const version =
+    "\\d+(?:\\.\\d+){1,3}(?:[-+][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?";
+  const shapes = [
+    new RegExp(`^()(${version})()$`),
+    new RegExp(
+      `^([ \t]*"version"[ \t]*:[ \t]*")(${version})("[ \t]*(?:,[ \t]*)?)$`,
+    ),
+    new RegExp(`^([ \t]*version[ \t]*=[ \t]*")(${version})("[ \t]*)$`),
+  ];
+  const pair = shapes.map((shape) => [
+    shape.exec(removed[0]!.slice(1)),
+    shape.exec(added[0]!.slice(1)),
+  ]).find(([from, to]) => from && to && from[1] === to[1] && from[3] === to[3]);
+  if (!pair) return false;
+  const from = pair[0]![2]!.split(/[-+]/)[0]!.split(".").map(BigInt);
+  const to = pair[1]![2]!.split(/[-+]/)[0]!.split(".").map(BigInt);
+  if (from.length !== to.length) return false;
+  for (let i = 0; i < from.length; i++) {
+    if (to[i] !== from[i]) return to[i]! > from[i]!;
   }
   return false;
-}
-
-// A complete single-line replacement of a bare version, not a truncated or
-// context-bearing hunk.
-function isBareVersionIncrement(patch: string): boolean {
-  const hunk =
-    /^@@ -[1-9]\d*(?:,1)? \+[1-9]\d*(?:,1)? @@[^\n]*\n-([^\n]+)\n\+([^\n]+)$/
-      .exec(patch);
-  if (!hunk) return false;
-  if (!BARE_VERSION.test(hunk[1]!) || !BARE_VERSION.test(hunk[2]!)) {
-    return false;
-  }
-  return isStrictNumericIncrease(hunk[1]!, hunk[2]!);
-}
-
-// The prefix, version token and suffix of a manifest `version` line.
-function manifestVersion(
-  text: string,
-): { prefix: string; version: string; suffix: string } | null {
-  for (const form of MANIFEST_VERSION_LINES) {
-    const m = form.exec(text);
-    if (m) return { prefix: m[1]!, version: m[2]!, suffix: m[3]! };
-  }
-  return null;
-}
-
-// A manifest-form hunk: unchanged context lines around exactly one removed
-// line immediately followed by one added line. Both must be a `version` key
-// with the same prefix and suffix, and the token must strictly increase. The
-// header counts must equal the context lines plus the replaced line.
-function isManifestVersionIncrement(patch: string): boolean {
-  const header = MANIFEST_HUNK_HEADER.exec(patch);
-  if (!header) return false;
-  const lines = patch.slice(header[0].length).split("\n");
-  if (!lines.every((line) => /^[ +-]/.test(line))) return false;
-  const changed = lines.flatMap((line, i) => line.startsWith(" ") ? [] : [i]);
-  if (changed.length !== 2) return false;
-  const removedAt = changed[0]!;
-  const addedAt = changed[1]!;
-  if (
-    !lines[removedAt]!.startsWith("-") || addedAt !== removedAt + 1 ||
-    !lines[addedAt]!.startsWith("+")
-  ) {
-    return false;
-  }
-  const removed = manifestVersion(lines[removedAt]!.slice(1));
-  const added = manifestVersion(lines[addedAt]!.slice(1));
-  if (!removed || !added) return false;
-  if (removed.prefix !== added.prefix || removed.suffix !== added.suffix) {
-    return false;
-  }
-  if (!isStrictNumericIncrease(removed.version, added.version)) return false;
-  const context = lines.filter((line) => line.startsWith(" ")).length;
-  const [, oldCount = "1", newCount = "1"] = header;
-  return Number(oldCount) === context + 1 && Number(newCount) === context + 1;
-}
-
-// Whether a patch is a strict version increment, in one of two forms and
-// nothing else. Bare: a single-line replacement of a version, `-1.2.3` then
-// `+1.2.4`. Manifest: a `version` key line in a JSON or TOML manifest, with
-// unchanged context lines allowed, where only the version token differs.
-function isVersionIncrement(patch: string): boolean {
-  return isBareVersionIncrement(patch) || isManifestVersionIncrement(patch);
 }
 
 // Whether commits since `since` leave this PR's own diff (its change against
