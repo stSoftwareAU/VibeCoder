@@ -118,16 +118,17 @@ another foreign ABI), `#[no_mangle]` exports, and the Rust helpers
 those items call directly. A safe internal function is not an FFI
 function merely because the crate links a C library somewhere.
 
-**Tooling assist.** Where this checkout builds offline, you MAY run
-`cargo clippy` and `cargo check` read-only to corroborate a
-candidate. They are corroboration, not evidence: every finding still
-cites the file and line range that demonstrates the concern. When the
-toolchain or the crate registry cache is unavailable the command will
-fail — record that it could not run, fall back to grep/read static
-evidence, and never treat a failed or skipped analyser run as a clean
-result. Do not run `cargo run`, `cargo test`, `cargo build`, or any
-command that executes repo logic. The dead-dependency check above is
-deliberately stricter and stays static-evidence only.
+**No tooling assist.** This bucket is static evidence only. Do not run
+`cargo clippy`, `cargo check`, `cargo build`, `cargo test`, `cargo run`,
+or any other command that executes repo logic, even where the checkout
+builds offline. Cargo runs build scripts (`build.rs`) and procedural
+macros, including those supplied by transitive dependencies, and it
+writes build artefacts; `--offline` does not stop that. Every finding
+cites the file and line range that demonstrates the concern. Where a
+finding would normally want compiler or clippy corroboration, say in the
+issue body that corroboration was "not checked (static scan)"; never
+present the absence of compiler output as a clean result. The
+dead-dependency check above is likewise static-evidence only.
 
 **Severity guidance.** Memory-safety violations, data races, and
 undefined behaviour reachable from untrusted input are

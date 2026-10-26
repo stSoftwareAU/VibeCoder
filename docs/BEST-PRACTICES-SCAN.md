@@ -29,17 +29,29 @@ performed entirely by Claude. The orchestrating prompt at
 instructs Claude to read the source tree, apply the per-bucket
 checklist, and file each surviving finding as its own GitHub issue.
 
-**Linters and compilers only ever *corroborate* here.** From prompt
-v7 a bucket guide may nominate a **read-only language
-analyser** — today only the `rust` guide does, nominating `cargo
-clippy` and `cargo check` — which the scan may run to corroborate a
-candidate when the checkout builds offline. The relaxation is bounded:
-repo logic (`cargo run`, `cargo test`, `npm test`, `bash`, …) stays
-forbidden, every finding still carries its own file/line citation, and
-an analyser that cannot run (no toolchain, no offline registry cache)
-degrades to grep/read static evidence — a failed or skipped run is
-never reported as a clean result. Both cross-bucket checks below stay
-static-evidence only regardless.
+**The scan runs no compiler or linter.** The best-practices scan is an
+evidence-backed static review: it reads source and manifests, and every
+finding cites its own file and line. No bucket guide may nominate a tool
+for the scan to run, and repo logic (`cargo run`, `cargo test`,
+`npm test`, `bash`, …) stays forbidden. Build and analyser tools are
+forbidden too, including `cargo check`, `cargo clippy`, and `cargo
+build`. They run build scripts (`build.rs`) and procedural macros,
+including those supplied by transitive dependencies, and they write
+build artefacts. `--offline` only limits registry access. It does not
+sandbox a build script's network or filesystem use, so offline mode does
+not make a build read-only.
+
+The scan session's Bash tool also has a tool-call hook
+(`worker/deno/lib/static_scan_guard.ts`, with the command-line entry point
+in `worker/deno/lib/static_scan_guard_cli.ts`) that rejects Rust
+build-tool commands. The hook classifies commands on a best-effort basis.
+It is not an OS sandbox and is not a security boundary. Normal
+implementation and CI `cargo` use is unaffected.
+
+Missing compiler or linter corroboration never blocks a valid static
+finding. Where a finding would normally want that corroboration, the
+issue body says it was "not checked (static scan)". An unavailable or
+skipped tool is never reported as a clean result.
 
 The CI-gate check (described below) is a *configuration* check — it
 inspects

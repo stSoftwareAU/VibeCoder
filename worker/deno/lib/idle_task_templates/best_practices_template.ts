@@ -95,6 +95,10 @@ import {
 } from "../prompt_manager.ts";
 import { type EnvLookup, processEnvLookup } from "../env_lookup.ts";
 import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
+import {
+  resolveStaticScanHookSettings,
+  STATIC_SCAN_DISALLOWED_BASH_TOOLS,
+} from "../static_scan_guard.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
@@ -848,15 +852,21 @@ export async function hasAwsEmulatorWaiver(
 /**
  * Default Claude runner. Loads `prompts/best_practices/prompt.md`, inlines
  * the matching bucket guide, substitutes placeholders, and invokes
- * Claude with the same write-tool blocklist as `security_scanner`.
+ * Claude with the same write-tool blocklist as `security_scanner`, plus the
+ * build-tool refusals of the static-scan hook (Issue #4415): the scan's
+ * session denies `cargo`, `rustc` and the rest as Bash rules and as a
+ * `PreToolUse` hook, because a build tool runs build scripts and proc macros.
  *
- * Tests do NOT exercise this path — they inject a `runScanFn` stub.
- * Kept here so the production wiring is symmetric with security-scan.
+ * Production callers use the default `runClaudeFn`. The behavioural fixture
+ * test (`tests/static_scan_cargo_build_script_test.ts`) injects one that plays
+ * the agent, so the real wiring is exercised: the settings and disallowed
+ * tools captured from the call, and the hook decision on each command.
  */
-async function defaultRunScan(
+export async function defaultRunScan(
   opts: RunScanOptions,
   loadPromptFn: (name: string) => Promise<Result<string>>,
   readBucketGuideFn: (path: string) => Promise<string>,
+  runClaudeFn: typeof runIdleTaskClaude = runIdleTaskClaude,
 ): Promise<Result<true, ScanError>> {
   const promptResult = await loadPromptFn(PROMPT_NAME);
   if (!promptResult.ok) {
@@ -881,7 +891,7 @@ async function defaultRunScan(
     preScanCandidates: opts.preScanCandidates,
   });
 
-  const result = await runIdleTaskClaude({
+  const result = await runClaudeFn({
     prompt,
     cwd: opts.workDir,
     phase: "best_practices",
@@ -892,6 +902,10 @@ async function defaultRunScan(
       "NotebookEdit",
       "EnterPlanMode",
       "ExitPlanMode",
+      // Build tools run build scripts and proc macros and write target/
+      // (Issue #4415). The static-scan hook below is the enforcement; these
+      // rules are the same refusal expressed to the CLI.
+      ...STATIC_SCAN_DISALLOWED_BASH_TOOLS,
     ],
   });
   if (!result.ok) {

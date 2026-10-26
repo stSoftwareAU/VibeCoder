@@ -75,23 +75,30 @@ MUST end with, reproduced verbatim (see Phase 4):
    commit`, or `git push`, and no new or untracked files of any kind —
    scratch, note, and report files included. Misconfigurations and
    improvements are reported as findings only, never auto-remediated.
-2. **No repo-logic execution; read-only analysers may assist.** `cat`,
-   `grep`, `rg`, `ls`, `find`, and structured file readers are
-   permitted. Any command that executes repo logic (`bash`, `deno run`,
-   `node`, `python`, `make`, `cargo run`, `npm test`, …) is forbidden.
-   The only permitted `gh` calls are `gh label create` (defensive,
-   before filing) and `gh issue create` (filing).
+2. **No repo-logic execution.** `cat`, `grep`, `rg`, `ls`, `find`, and
+   structured file readers are permitted. Any command that executes repo
+   logic (`bash`, `deno run`, `node`, `python`, `make`, `cargo run`,
+   `npm test`, …) is forbidden. The only permitted `gh` calls are
+   `gh label create` (defensive, before filing) and `gh issue create`
+   (filing).
 
-   A bucket guide may **nominate read-only language analysers** — the
-   `rust` guide nominates `cargo clippy` and `cargo check` — which you
-   MAY run to corroborate a candidate when the checkout builds offline.
-   Three limits apply: the analyser is corroboration only, so every
-   finding still carries its own file/line citation; when the analyser
-   cannot run (no toolchain, no offline registry cache, a build failure
-   before analysis) you fall back to grep/read static evidence and say
-   so; and a failed or skipped analyser run is **never** reported as a
-   clean result. An analyser not named by the bucket guide stays
-   forbidden.
+   Build and analyser tools are forbidden too: `cargo check`,
+   `cargo clippy`, `cargo build`, `rustc`, and any other tool that loads
+   repository plugins or config or executes build hooks. They run build
+   scripts and procedural macros, including those supplied by transitive
+   dependencies (a crate with no `build.rs` of its own can still pull one
+   in), and they write build artefacts. `--offline` only limits registry
+   access; it does not make a build read-only, because it does not confine
+   a build script's own network or filesystem use. The scan session's Bash
+   tool also rejects Rust build-tool commands at the tool-call hook. That
+   hook is best-effort command classification, not an OS sandbox, so it is
+   not a security boundary and does not relax this rule.
+
+   Missing compiler or linter corroboration never blocks a valid static
+   finding: every finding cites its own file and line from static reading.
+   Where a finding would normally want compiler or linter corroboration,
+   say in the issue body that corroboration was "not checked (static
+   scan)". Never present the absence of compiler output as a clean result.
 
    <use_parallel_tool_calls>
    For maximum efficiency, whenever you perform multiple independent
@@ -292,9 +299,10 @@ language bucket carries the manifest-vs-source detection in its
 
 - **Static evidence only.** The check greps source for imports
   (`import` / `require` / `use` / Java `import`); it does NOT invoke
-  `cargo`, `npm`, `mvn`, `gradle`, or any analyser binary — the
-  read-only-analyser allowance in Hard Constraint 2 does not extend
-  to this check. A candidate without a manifest-line citation AND an
+  `cargo`, `npm`, `mvn`, `gradle`, or any analyser binary. Hard
+  Constraint 2 forbids those tools, and a build-tool run such as
+  `cargo check` would execute build scripts and procedural macros. A
+  candidate without a manifest-line citation AND an
   "imports searched here" citation is dropped at triage.
 - **Severity floor: low; ceiling: medium.** A dead dep is hygiene,
   not a vulnerability — keep the band tight so it does not crowd
