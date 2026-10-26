@@ -5479,9 +5479,11 @@ export async function createProductionRunCoreDeps(
           {
             category: outcome.category,
             elapsedSeconds: outcome.elapsedSeconds,
+            message: outcome.message,
             setupFault: isSetupFault({
               phase: outcome.phase,
               reason: outcome.message,
+              category: outcome.category,
             }),
           },
           fastFailurePolicy,
