@@ -1,0 +1,14 @@
+{
+  "issue": 4368,
+  "chunk": "top-up-4368",
+  "title": "top-up: bounded subscription comparison and disposable execution",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4368",
+  "definition": "Reviewed the comparison orchestrator, subscription-only text provider and disposable runner. Generated source is data until a verified container lease is established. Runtime and image inspection, argv execution, environment allowlisting, capability dropping, read-only mounts, bounded time/output and exact-name cleanup are explicit. Positive subscription authentication is required; provider tools, hooks and MCP are disabled. Authoritative acceptance runs in a parent process and treats child output as a protocol, not a test verdict. Unknown execution and telemetry are preserved.",
+  "status": "claimed",
+  "sweptAt": "9e4a7d912d55f677e7ecebaebb5cf3cfc5366c4f",
+  "paths": [
+    "worker/deno/lib/capability_security_comparison.ts",
+    "worker/deno/lib/capability_security_eval_container.ts",
+    "worker/deno/lib/capability_security_eval_provider.ts"
+  ]
+}

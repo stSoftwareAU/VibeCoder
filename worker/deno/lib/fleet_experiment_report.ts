@@ -584,7 +584,7 @@ function evidenceFor(merged: number): EvidenceLevel {
 }
 
 /** The Wilson score interval, at 99% confidence, for successes out of n. */
-function wilsonInterval(successes: number, n: number): Interval | null {
+export function wilsonInterval(successes: number, n: number): Interval | null {
   if (n === 0) return null;
   const z2 = Z_99 * Z_99;
   const p = successes / n;

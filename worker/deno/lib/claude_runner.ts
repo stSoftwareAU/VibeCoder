@@ -29,6 +29,7 @@ import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
+  parkRunningBuild,
 } from "./heavy_build_gate.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import {
@@ -1792,7 +1793,7 @@ async function runClaudeWithTimeoutBody(
     if (cwd && inFlightHostDiskGateEnabled()) {
       hostDiskPoll = clock.setInterval(() => {
         if (runFinished || hostDiskPark) return;
-        void parkInFlightBuild(cwd).then((reason) => {
+        void parkRunningBuild().then((reason) => {
           if (!reason || runFinished || hostDiskPark) return;
           hostDiskPark = reason;
           logger?.error(reason);

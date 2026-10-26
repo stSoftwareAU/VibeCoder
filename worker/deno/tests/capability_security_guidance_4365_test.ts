@@ -225,3 +225,20 @@ Deno.test("authorised update succeeds and the other two requests fail at the ent
   const role = updateResource({ tenant: "a" }, resource, { role: "admin" });
   assertEquals(role, { ok: false, reason: "forbidden-field" });
 });
+
+Deno.test("generation keeps short applicable advice without the expanded candidate index (#4368)", async () => {
+  const prompt = await built({
+    title: "Authorise a tenant resource update",
+    entryPoints: ["src/http/update_user.ts"],
+  });
+  assertStringIncludes(prompt.prompt, "explicit field allowlist");
+  assertStringIncludes(prompt.prompt, "compact generation advice");
+  assertEquals(
+    prompt.prompt.includes("Not selected (no advice is included"),
+    false,
+  );
+  assertEquals(
+    prompt.prompt.includes("Validation: An authorised request"),
+    false,
+  );
+});

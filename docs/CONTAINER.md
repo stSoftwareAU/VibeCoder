@@ -1337,8 +1337,17 @@ repository fast failure: a host below its floor would otherwise back the
 repository off after three tallies, including when the manager quotes
 `host disk below its floor` without the park note (Issue #4388). A
 `Read-only file system`
-/`os error 30` failure is classified the same way. While `cargo` or `deno` is
-still running, the same check repeats and the child is stopped.
+/`os error 30` failure is classified the same way. While an agent, `cargo`
+or `deno` is running, polling stops the child only when the host crosses the
+floor. The 25 GB is admission headroom that the running work may consume;
+requiring it afresh on every poll killed admitted agents at 66.4 GB free on
+a host with a 46 GB floor (Issue #4390). The next build step still needs the
+full admission budget. Active polling does not prune other checkouts.
+
+A recognised host-disk failure is released with its original cause and is
+not retried in-process: repeating the agent invocation cannot replenish the
+budget. A later scheduled cycle reads the host again. This does not turn a
+disk failure into a successful run or a scheduled finish-deadline release.
 
 Where the runtime refuses the trim **and** the host is below the floor, the
 launch ends with status 74. Deleting files in that volume does not return
@@ -1557,13 +1566,15 @@ build artefacts.
   the build stays on the volume.
 - **The root has a budget (Issues #3178, #4326, #4360).** The layer is
   released at every relaunch, but **within** a launch every byte written there
-  is real host disk. Before a maintenance build, and before an in-flight
-  agent, quality, mutation or discrimination build, the host must have its
+  is real host disk. Before a maintenance build, and before each new
+  agent, quality, mutation or discrimination step, the host must have its
   floor **plus 25 GB of headroom** free where the trim is refused. Short of
   that, other checkouts' target directories are pruned, largest first,
   skipping any written to in the last 20 minutes and the building checkout's
-  own incremental cache. If the build is still not covered, an in-flight
-  build is parked. A cargo-only milestone tree can still land that cycle
+  own incremental cache. If the build is still not covered, the new step
+  is parked. Once started, active-process polling enforces the host floor;
+  it does not demand another 25 GB while the admitted work consumes its
+  headroom (Issue #4390). A cargo-only milestone tree can still land that cycle
   without its cargo build: a conflict-free or deterministically resolved merge
   is pushed unverified. A Deno-only tree and a mixed tree keep their Deno
   checks and suites and are rolled back when those are red. A conflict that
