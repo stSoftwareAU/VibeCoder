@@ -95,13 +95,13 @@ Deno.test("resolveEgressAllowlist - api.imgbb.com is present iff imgbb is config
     enabledProviderIds: [],
     imgbbConfigured: true,
   });
-  assertEquals(on.includes("api.imgbb.com"), true);
+  assertEquals(on, [...GITHUB_HOSTS, "api.imgbb.com", ...REGISTRY_HOSTS]);
 
   const off = resolveEgressAllowlist({
     enabledProviderIds: [],
     imgbbConfigured: false,
   });
-  assertEquals(off.includes("api.imgbb.com"), false);
+  assertEquals(off, BASE_ONLY);
 });
 
 Deno.test("resolveEgressAllowlist - GitHub and registry hosts are always present, in order (Issue #4045)", () => {
