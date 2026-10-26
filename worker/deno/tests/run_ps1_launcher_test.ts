@@ -44,6 +44,7 @@ import {
   declareContainerExtension,
   denoInvocationOrder,
   type Harness,
+  invocationOrder,
   type LauncherInvocation,
   type LaunchOutcome,
   mountValues,
@@ -191,7 +192,9 @@ Deno.test({
 
       const networkIndex = args.indexOf("--network");
       if (networkIndex >= 0) {
-        assertEquals(args[networkIndex + 1], "bridge");
+        const nameIndex = args.indexOf("--name");
+        assert(nameIndex >= 0);
+        assertEquals(args[networkIndex + 1], `${args[nameIndex + 1]}-net`);
       }
       assertEquals(args.includes("--rm"), true);
       assertEquals(args[args.length - 1], IMAGE);
@@ -1574,6 +1577,100 @@ Deno.test({
       );
     } finally {
       await harness.cleanup();
+    }
+  },
+});
+
+async function tinyEgressBundle(): Promise<string> {
+  const bundle = await Deno.makeTempDir({ prefix: "vibe_egress_bundle_" });
+  await Deno.mkdir(`${bundle}/worker/deno`, { recursive: true });
+  await Deno.writeTextFile(
+    `${bundle}/worker/deno/egress_proxy_main.ts`,
+    "export {};\n",
+  );
+  return bundle;
+}
+
+Deno.test({
+  name:
+    "run.ps1 - creates the egress network before the proxy and the proxy before the worker (Issue #4047)",
+  ignore,
+  async fn() {
+    const bundle = await tinyEgressBundle();
+    const harness = await setupHarness({
+      STUB_INJECT_EGRESS_PLAN: "1",
+      STUB_EGRESS_BUNDLE: bundle,
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+      const order = await invocationOrder(harness);
+      const removed = order.indexOf("network-rm");
+      const created = order.indexOf("network-create");
+      const proxy = order.indexOf("run-proxy");
+      const connect = order.indexOf("network-connect");
+      const worker = order.lastIndexOf("run");
+      assert(removed >= 0 && removed < created, order.join(","));
+      assert(
+        created < proxy && proxy < connect && connect < worker,
+        order.join(","),
+      );
+      assert(order.lastIndexOf("network-rm") > worker, order.join(","));
+      assert(order.lastIndexOf("rm") > worker, order.join(","));
+      const log = await Deno.readTextFile(`${harness.logDir}/egress-proxy.log`);
+      assertStringIncludes(log, "[EGRESS_PROXY] listening");
+    } finally {
+      await harness.cleanup();
+      await Deno.remove(bundle, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - refuses an enforcing plan missing a network or proxy key (Issue #4047)",
+  ignore,
+  async fn() {
+    for (const key of ["network-create", "proxy-run"]) {
+      const harness = await setupHarness({
+        STUB_FORCE_EGRESS_ENFORCED: "1",
+        STUB_OMIT_PLAN_KEYS: key,
+      }, { denoStub: true });
+      try {
+        const outcome = await runLauncher(harness);
+        assert(outcome.code !== 0, `a plan missing ${key} must be refused`);
+        assertStringIncludes(outcome.stderr, "missing a network or proxy key");
+        assertEquals(await recorded(harness, "run"), null);
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a failed egress network create does not start the worker (Issue #4047)",
+  ignore,
+  async fn() {
+    const bundle = await tinyEgressBundle();
+    const harness = await setupHarness({
+      STUB_INJECT_EGRESS_PLAN: "1",
+      STUB_EGRESS_BUNDLE: bundle,
+      STUB_NETWORK_CREATE_EXIT: "1",
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, outcome.stderr);
+      assertStringIncludes(
+        outcome.stderr,
+        "could not create the egress network",
+      );
+      assertEquals(await recorded(harness, "run"), null);
+      assertEquals(await recorded(harness, "run-proxy"), null);
+    } finally {
+      await harness.cleanup();
+      await Deno.remove(bundle, { recursive: true });
     }
   },
 });

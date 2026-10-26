@@ -260,9 +260,108 @@ function Write-RestartOutcome {
 .SYNOPSIS
     Exit with a status, recording the outcome on the way out.
 #>
+function Start-EgressSidecar {
+    if ($NetworkCreateArgs.Count -eq 0 -or $NetworkRemoveArgs.Count -eq 0 -or
+        $NetworkConnectArgs.Count -eq 0 -or $ProxyRunArgs.Count -eq 0 -or
+        $ProxyStopArgs.Count -eq 0 -or -not $ProxyName -or -not $ProxyBundle) {
+        [Console]::Error.WriteLine(
+            "Error: launch plan declares egress enforcement but is missing a network or proxy key - refusing to launch")
+        Exit-Launcher 1
+    }
+    # A crashed launch leaves the name behind. Ignore a remove of a network
+    # that is not there; a create that fails is fatal.
+    & $Runtime @($NetworkRemoveArgs) *> $null
+    & $Runtime @($NetworkCreateArgs)
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine(
+            "Error: could not create the egress network - refusing to launch")
+        Exit-Launcher 1
+    }
+    $script:EgressNetworkCreated = $true
+    & $Runtime @($ProxyStopArgs) *> $null
+    $script:EgressProxyBundleFile = Join-Path ([System.IO.Path]::GetTempPath()) "vibe-egress-$PID.tar"
+    & tar -C $ProxyBundle -cf $script:EgressProxyBundleFile worker/deno
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine(
+            "Error: could not pack the egress proxy source - refusing to launch")
+        Exit-Launcher 1
+    }
+    $script:EgressProxyProcess = Start-Process -FilePath $Runtime `
+        -ArgumentList ([string[]]$ProxyRunArgs.ToArray()) `
+        -RedirectStandardInput $script:EgressProxyBundleFile `
+        -PassThru -NoNewWindow
+    $script:EgressProxyStarted = $true
+    $ready = $false
+    for ($i = 0; $i -lt 450; $i++) {
+        $logs = & $Runtime logs $ProxyName 2>&1 | Out-String
+        if ($logs.Contains("[EGRESS_PROXY] listening")) {
+            $ready = $true
+            break
+        }
+        if ($script:EgressProxyProcess.HasExited) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    if (-not $ready) {
+        [Console]::Error.WriteLine(
+            "Error: egress proxy did not start listening - refusing to launch")
+        Exit-Launcher 1
+    }
+    & $Runtime @($NetworkConnectArgs)
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine(
+            "Error: could not connect the egress proxy to the internal network - refusing to launch")
+        Exit-Launcher 1
+    }
+}
+
+function Get-VibeVar {
+    param([Parameter(Mandatory = $true)][string] $Name)
+    # StrictMode throws on a name that has not been assigned yet. The EXIT
+    # path runs before the plan variables exist when the launch fails early.
+    $found = Get-Variable -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $found) { return $null }
+    return $found.Value
+}
+
+function Remove-EgressSidecar {
+    $runtime = Get-VibeVar Runtime
+    $proxyName = Get-VibeVar ProxyName
+    $logDir = Get-VibeVar LogDir_
+    $proxyStop = Get-VibeVar ProxyStopArgs
+    $networkRemove = Get-VibeVar NetworkRemoveArgs
+    $started = Get-VibeVar EgressProxyStarted
+    $created = Get-VibeVar EgressNetworkCreated
+    $process = Get-VibeVar EgressProxyProcess
+    $bundle = Get-VibeVar EgressProxyBundleFile
+    if ($started -and $runtime -and $proxyName) {
+        if ($logDir) {
+            try {
+                $logs = & $runtime logs $proxyName 2>&1 | Out-String
+                Add-Content -LiteralPath (Join-Path $logDir "egress-proxy.log") -Value $logs
+            } catch {
+                [Console]::Error.WriteLine(
+                    "[run.ps1] warning: could not capture egress proxy logs")
+            }
+        }
+        if ($proxyStop -and $proxyStop.Count -gt 0) {
+            & $runtime @($proxyStop) *> $null
+        }
+    }
+    if ($process -and -not $process.HasExited) {
+        try { $process.Kill() } catch { }
+    }
+    if ($created -and $runtime -and $networkRemove -and $networkRemove.Count -gt 0) {
+        & $runtime @($networkRemove) *> $null
+    }
+    if ($bundle) {
+        Remove-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Exit-Launcher {
     param([Parameter(Mandatory = $true)][int] $Code)
 
+    Remove-EgressSidecar
     Write-RestartOutcome -Status $Code
     # The comment-stripped Containerfile beside the plan file (Issue #4393)
     # must not outlive the launcher on any exit path.
@@ -631,6 +730,20 @@ $ExtensionBuildArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderStopArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderAbsentPatterns = [System.Collections.Generic.List[string]]::new()
 $RunArgs = [System.Collections.Generic.List[string]]::new()
+# Egress sidecar (Issue #4047). Empty unless the plan says this runtime
+# enforces it. A missing piece on an enforcing plan is a refusal.
+$EgressEnforced = ""
+$NetworkCreateArgs = [System.Collections.Generic.List[string]]::new()
+$NetworkRemoveArgs = [System.Collections.Generic.List[string]]::new()
+$NetworkConnectArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyRunArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyStopArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyName = ""
+$ProxyBundle = ""
+$script:EgressNetworkCreated = $false
+$script:EgressProxyStarted = $false
+$script:EgressProxyProcess = $null
+$script:EgressProxyBundleFile = ""
 
 try {
     # The plan resolves and validates the container runtime, computes the
@@ -694,6 +807,14 @@ try {
             "extension-build" { $ExtensionBuildArgs.Add($value) }
             "builder-stop" { $BuilderStopArgs.Add($value) }
             "builder-absent" { $BuilderAbsentPatterns.Add($value) }
+            "egress-enforced" { $EgressEnforced = $value }
+            "network-create" { $NetworkCreateArgs.Add($value) }
+            "network-remove" { $NetworkRemoveArgs.Add($value) }
+            "network-connect" { $NetworkConnectArgs.Add($value) }
+            "proxy-run" { $ProxyRunArgs.Add($value) }
+            "proxy-stop" { $ProxyStopArgs.Add($value) }
+            "proxy-name" { $ProxyName = $value }
+            "proxy-bundle" { $ProxyBundle = $value }
             "run" { $RunArgs.Add($value) }
             default {
                 [Console]::Error.WriteLine(
@@ -1430,6 +1551,13 @@ try {
 # path, a stopped PowerShell pipeline, by stopping the container by name. A
 # hard TerminateProcess (Task Scheduler "End task") runs no cleanup anywhere,
 # which is why the container is started with --rm under a per-run name.
+# The proxy has to be listening before the worker starts. A failure here
+# exits non-zero and Exit-Launcher removes whatever was created. There is no
+# fallback onto the runtime's open network (Issue #4047).
+if ($EgressEnforced -eq "true") {
+    Start-EgressSidecar
+}
+
 $runInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $runInfo.FileName = $Runtime
 foreach ($argument in $RunArgs) { [void]$runInfo.ArgumentList.Add($argument) }
@@ -1631,6 +1759,25 @@ if ($runStatus -eq $ToolchainSelfCheckExitStatus) {
     # on those would hand the rebuild loop back the cycle this bound took.
     Remove-Item -LiteralPath $ToolchainRebuildState -Force `
         -ErrorAction SilentlyContinue
+}
+
+# The egress self-check did not prove the policy (Issue #4048).
+#
+# The worker exits with this before it claims anything. The image stays: the
+# fault is the network, not the cached tag, and removing it would rebuild a
+# multi-gigabyte image that would fail the same check.
+#
+# Kept in step with EGRESS_SELFCHECK_EXIT_STATUS and
+# EGRESS_SELFCHECK_FAILURE_MARKER in worker/deno/lib/egress_selfcheck.ts by
+# the launcher tests.
+$EgressSelfCheckExitStatus = 90
+$EgressSelfCheckFailureMarker = "[EGRESS-SELFCHECK-FAILED]"
+if ($runStatus -eq $EgressSelfCheckExitStatus) {
+    [Console]::Error.WriteLine(
+        "[run.ps1] egress self-check failed - the worker claimed nothing (Issue #4048)")
+    Write-RunCoreLog ("egress-selfcheck: $EgressSelfCheckFailureMarker " +
+        "the container's egress policy was not enforced - no issue was " +
+        "claimed (Issue #4048)")
 }
 
 # A launch that failed hands this capture over as its evidence, whatever the

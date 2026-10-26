@@ -32,14 +32,16 @@ flowchart LR
         H3["container-runtime sockets"]
         M["✅ 4 host mounts"]
     end
-    subgraph box ["🐳 vibe-coder container"]
-        W["worker + baked toolchain"]
+    subgraph box ["🐳 Docker or Podman"]
+        W["worker + agent"]
+        P["egress proxy"]
     end
     M --> W
     H1 -. never mounted .-x W
     H2 -. never mounted .-x W
     H3 -. never mounted .-x W
-    W -->|outbound only| N["🌐 GitHub, agent APIs, registries"]
+    W -->|internal network| P
+    P -->|allowlist, port 443| N["🌐 allowlisted hosts"]
     style M fill:#2d6a4f,stroke:#1b4332,color:#fff
     style W fill:#40916c,stroke:#2d6a4f,color:#fff
 ```
@@ -324,28 +326,29 @@ leaves `${HOME}` untouched.
 
 ## The network boundary
 
-- **Outbound is allowed** — GitHub, the coding-agent APIs and package/tool
-  registries are reachable on the runtime's own bridge network.
+On Docker and Podman the worker container is attached only to an internal
+network. Its outbound traffic goes to the [egress proxy](#egress-proxy) on that
+network. The proxy is also connected to the runtime's outbound bridge and dials
+only hosts on the [egress allowlist](#egress-allowlist), port 443. There is no
+fallback onto an open network when the internal network or the proxy fails to
+start.
+
+- **Outbound** from the worker goes through the proxy, then the allowlist.
 - **No inbound ports.** The launch plan publishes nothing, and the containment
   suite asks the runtime (`inspect`) for the running container rather than
-  inferring it from the launcher's arguments.
+  inferring it from the launcher's arguments. The proxy publishes nothing either.
 - **Never host networking.** `--network host` (and any host namespace) is
   rejected by the plan builder before the arguments are returned.
-- The network boundary itself does not filter hosts. The
-  [egress proxy](#egress-proxy) now exists (#4046), but the container is not
-  routed through it until #4047, so the network boundary still does not filter
-  which hosts the container reaches. Per-host allowlisting is the job of the
-  [egress allowlist](#egress-allowlist) below.
+- **Apple container is not yet enforced** (#4051). That dialect launches with
+  no internal network and no proxy, so this boundary does not filter its hosts.
 
 ## Egress allowlist
 
 The agent container may reach outbound only the hosts in one list, defined in
-`worker/deno/lib/egress_allowlist.ts`. The list is accepted and validated when
-the config loads today, but **nothing enforces it yet**. The
-[egress proxy](#egress-proxy) (#4046) can enforce it, but the container is not
-routed through the proxy until #4047. Until then nothing enforces the list for
-the container, and the network boundary above does not restrict which hosts it
-reaches.
+`worker/deno/lib/egress_allowlist.ts`. Docker and Podman enforce the list: the
+launch plan (#4047) passes it to the [egress proxy](#egress-proxy) (#4046) and
+routes the worker through that proxy. Apple container does not enforce it yet
+(#4051).
 
 | Host | Purpose | Included when | Reason |
 | --- | --- | --- | --- |
@@ -398,9 +401,10 @@ ships, run by the `egress-proxy` command. It is a CONNECT proxy: it accepts
 only `CONNECT host:443` for an allowlisted host, and it dials that host itself
 after checking where the name resolves.
 
-**The container is not routed through it yet.** Issue #4046 adds the proxy
-only. Routing the agent container through it is #4047, so until then the
-container reaches the network directly and the proxy enforces nothing for it.
+**Docker and Podman route the worker through this proxy** (#4047). The launch
+plan starts it from the same image, with no mounts and no published ports, on
+the outbound bridge, then connects it to the worker's internal network. Apple
+container is not routed through it yet (#4051).
 
 ```bash
 deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \

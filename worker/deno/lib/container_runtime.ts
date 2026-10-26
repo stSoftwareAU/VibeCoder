@@ -137,9 +137,28 @@ export interface ContainerRuntimeDialect {
   /**
    * Explicit non-host network mode to request, when the runtime takes one.
    * Undefined means "leave the runtime's own default", which is never host
-   * networking on any supported runtime.
+   * networking on any supported runtime. Unused by the current catalogue:
+   * Docker and Podman place the worker on an internal network
+   * ({@link ContainerRuntimeDialect.egressEnforced}).
    */
   networkMode?: string;
+  /**
+   * True when the worker is placed on an internal network and can reach the
+   * outside only through the egress proxy (Issues #4047, #4048). False for
+   * Apple container, which is not enforced yet (Issue #4051).
+   */
+  egressEnforced: boolean;
+  /** `network create --internal`, before the network name. Empty when unused. */
+  internalNetworkCreateArgs: readonly string[];
+  /** `network rm`, before the network name. Empty when unused. */
+  networkRemoveArgs: readonly string[];
+  /** `network connect`, before the network name and the container. Empty when unused. */
+  networkConnectArgs: readonly string[];
+  /**
+   * The network the proxy container is created on, so it can dial the
+   * allowlist. The worker is never placed here.
+   */
+  outboundNetwork?: string;
   /** Sub-command that reports whether an image is present locally. */
   imageInspectArgs: readonly string[];
   /**
@@ -341,9 +360,13 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   // Docker passes the kernel's own tmpfs options through untouched.
   tmpfsOwnership: "mount-options",
   supportsReadOnly: true,
-  // Explicit rather than implicit: the launcher asks for bridge networking so
-  // a reviewer can see host networking was never requested.
-  networkMode: "bridge",
+  // The worker joins an internal network; the proxy is the only container on
+  // the outbound bridge (Issue #4047).
+  egressEnforced: true,
+  internalNetworkCreateArgs: ["network", "create", "--internal"],
+  networkRemoveArgs: ["network", "rm"],
+  networkConnectArgs: ["network", "connect"],
+  outboundNetwork: "bridge",
   imageInspectArgs: ["image", "inspect"],
   // A reference per line rather than `--format json`: the Go template has been
   // understood by both Docker and Podman for far longer than the `json`
@@ -413,6 +436,11 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   // is the protection (Issue #570).
   tmpfsOwnership: "none",
   supportsReadOnly: false,
+  // Apple container is not placed behind the proxy yet (Issue #4051).
+  egressEnforced: false,
+  internalNetworkCreateArgs: [],
+  networkRemoveArgs: [],
+  networkConnectArgs: [],
   // Singular `image` — `container images ...` is not a subcommand on Apple
   // container 1.2.2: the CLI resolves it as a plugin named `container-images`,
   // fails, and exits 64. run.sh reads any non-zero exists-check as "image
