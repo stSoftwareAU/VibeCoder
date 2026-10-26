@@ -796,40 +796,81 @@ Deno.test("worker args for advisory mode carry the same variables and no network
 // Containment guard
 // ---------------------------------------------------------------------------
 
-Deno.test("assertAppleRunContained refuses --publish in either spelling", () => {
-  assertThrowsSync(() =>
-    assertAppleRunContained(["run", "--publish", "8080:80", IMAGE], HOME)
+/**
+ * Assert that `refused` is refused with a message naming `rule`, and that
+ * `twin` (the same argv with only the probed value made legal) is accepted.
+ */
+function assertRefusedWithTwin(
+  refused: readonly string[],
+  rule: string,
+  twin: readonly string[],
+): void {
+  const error = assertThrowsReturn(() =>
+    assertAppleRunContained(refused, HOME)
   );
-  assertThrowsSync(() =>
-    assertAppleRunContained(["run", "--publish=8080:80", IMAGE], HOME)
+  assertStringIncludes(error.message, rule);
+  assertAppleRunContained(twin, HOME);
+}
+
+Deno.test("assertAppleRunContained refuses --publish in either spelling, and accepts the twin without it", () => {
+  assertRefusedWithTwin(
+    ["run", "--publish", "8080:80", IMAGE],
+    "run arguments contain --publish, which broadens",
+    ["run", "--label", "8080:80", IMAGE],
   );
-  assertThrowsSync(() =>
-    assertAppleRunContained(["run", "--network=host", IMAGE], HOME)
+  assertRefusedWithTwin(
+    ["run", "--publish=8080:80", IMAGE],
+    "run arguments contain --publish=8080:80, which broadens",
+    ["run", "--label=8080:80", IMAGE],
+  );
+  assertRefusedWithTwin(
+    ["run", "--network=host", IMAGE],
+    "run arguments contain --network=host, which broadens",
+    ["run", "--network=bridge", IMAGE],
   );
 });
 
-Deno.test("assertAppleRunContained refuses a home mount, the root, a socket and a colon source", () => {
-  const refused: string[][] = [
+Deno.test("assertAppleRunContained refuses a home mount, the root, a socket and a malformed mount, and accepts each twin", () => {
+  assertRefusedWithTwin(
     ["run", "--volume", `${HOME}:/mnt`, IMAGE],
+    "it is the host home directory (or an ancestor of it)",
+    ["run", "--volume", `${BASE}:/mnt`, IMAGE],
+  );
+  assertRefusedWithTwin(
     ["run", "--volume", "/:/mnt", IMAGE],
+    "Refusing to mount the host filesystem root",
+    ["run", "--volume", `${BASE}:/mnt`, IMAGE],
+  );
+  assertRefusedWithTwin(
     ["run", "--volume", "/var/run/docker.sock:/var/run/docker.sock", IMAGE],
+    "a container-runtime control socket",
+    ["run", "--volume", `${BASE}:/var/run/docker.sock`, IMAGE],
+  );
+  assertRefusedWithTwin(
     ["run", "--volume", `${BASE}:rw/x:/work/x:ro`, IMAGE],
+    "is not source:target or source:target:ro",
+    ["run", "--volume", `${BASE}:/work/x:ro`, IMAGE],
+  );
+  assertRefusedWithTwin(
     ["run", "--volume", `${BASE}/x:relative:ro`, IMAGE],
+    "must be an absolute container path",
+    ["run", "--volume", `${BASE}/x:/relative:ro`, IMAGE],
+  );
+  assertRefusedWithTwin(
     ["run", "--volume", `${BASE}/x:/work/x:rw`, IMAGE],
+    "is not source:target or source:target:ro",
+    ["run", "--volume", `${BASE}/x:/work/x:ro`, IMAGE],
+  );
+  assertRefusedWithTwin(
     ["run", "--volume", `${BASE}/x:work/x:ro`, IMAGE],
-  ];
-  for (const argv of refused) {
-    assertThrowsSync(() => assertAppleRunContained(argv, HOME));
-  }
+    "must be an absolute container path",
+    ["run", "--volume", `${BASE}/x:/work/x:ro`, IMAGE],
+  );
 });
 
 Deno.test("assertAppleRunContained accepts the read-only code mount", () => {
   assertAppleRunContained(expectedProxyRunInternal(), HOME);
 });
-
-function assertThrowsSync(fn: () => unknown): void {
-  assertThrowsReturn(fn);
-}
 
 // ---------------------------------------------------------------------------
 // Stale sweep

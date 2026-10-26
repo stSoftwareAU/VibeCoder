@@ -16,9 +16,8 @@
  * - The stale sweep touches only `vibe-egress-<pid>` networks whose launcher
  *   pid is dead, and only the names this module derives from that pid.
  *
- * The run-argument and mount checks mirror the containment rules in
- * `container_launch.ts`, which does not export them. See
- * {@link assertAppleRunContained}.
+ * The run-argument and mount checks reuse the containment rules in
+ * `container_launch.ts`. See {@link assertAppleRunContained}.
  *
  * Australian English spelling used throughout (behaviour, normalised).
  */
@@ -32,7 +31,11 @@ import {
 
 /** The flag re-exported for callers that build the network argv or pin it. */
 export { APPLE_NETWORK_INTERNAL_FLAG };
-import { FORBIDDEN_RUN_FLAGS } from "./container_launch.ts";
+import {
+  assertMountSourcePermitted,
+  assertRunArgumentsContained,
+  FORBIDDEN_RUN_FLAGS,
+} from "./container_launch.ts";
 import {
   CONTAINER_RUNTIMES,
   type ContainerRuntimeDescriptor,
@@ -65,7 +68,7 @@ import {
   EGRESS_PROXY_PORT,
   egressProxyEnv,
 } from "./egress_proxy_env.ts";
-import { isAbsolutePath, isAtOrAbove, isRootPath } from "./host_path_style.ts";
+import { isAbsolutePath } from "./host_path_style.ts";
 
 /** Operator choice of launch mode. `auto` selects by the capability check. */
 export const APPLE_EGRESS_MODE_ENV = "VIBE_APPLE_EGRESS_MODE";
@@ -193,14 +196,6 @@ const NETWORK_DELETE_RETRY_MS = 1_000;
 const PROXY_LOG_TAIL_LINES = 10;
 const CAUSE_LIMIT = 200;
 const WORKER_CODE_SUBDIR = "worker/deno";
-const SOCKET_HINTS: readonly string[] = [
-  "docker.sock",
-  "podman.sock",
-  "containerd.sock",
-  "container.sock",
-  "crio.sock",
-  "docker_engine",
-];
 const STALE_NETWORK = /^vibe-egress-(\d+)$/;
 const IPV4 =
   /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
@@ -223,8 +218,12 @@ function proxyNameFor(pid: number): string {
 /**
  * Derive every name one launch uses from the worker's container name.
  *
- * None of the derived names starts with `vibe-coder-<digits>`, so the
- * pre-launch reaper never reads them as worker containers.
+ * The internal and control probe names (`vibe-coder-<pid>-egress-int` and
+ * `-ctl`) do begin `vibe-coder-<pid>`, but the pre-launch reaper still never
+ * reads them as worker containers: `launcherPidFromContainerName` accepts a
+ * name only when everything after the prefix is digits, and `<pid>-egress-int`
+ * is not. The proxy name (`vibe-coder-egress-proxy-<pid>`) fails the same test,
+ * and the network name (`vibe-egress-<pid>`) has a different prefix.
  *
  * @param workerContainerName - `vibe-coder-<launcher pid>`
  * @returns The network, proxy and probe names, and the pid
@@ -385,10 +384,14 @@ function envArguments(values: Record<string, string>): string[] {
 /**
  * Refuse a run argument list that would broaden the container.
  *
- * The same rules `container_launch.ts` applies to worker launches, because
- * that module does not export them: no forbidden flag, no host namespace, and
- * every `--volume` source is an absolute host path that is not the filesystem
- * root, the home directory or an ancestor of it, and not a runtime socket.
+ * Reuses the rules `container_launch.ts` applies to worker launches:
+ * {@link assertRunArgumentsContained} for the forbidden flags and host
+ * namespaces, and {@link assertMountSourcePermitted} for each `--volume`
+ * source (the absolute host path, not the filesystem root, the home directory
+ * or an ancestor of it, and not a runtime socket). Two checks are Apple's own:
+ * the `--flag=value` spelling of a forbidden flag is refused too, and each
+ * `--volume` must parse as `source:target` or `source:target:ro` with an
+ * absolute target.
  *
  * @param argv - The complete argument list for one `run`
  * @param homeDir - The host home directory
@@ -398,19 +401,13 @@ export function assertAppleRunContained(
   argv: readonly string[],
   homeDir: string,
 ): void {
+  assertRunArgumentsContained([...argv]);
   for (const arg of argv) {
     const lower = arg.toLowerCase();
     const flag = lower.split("=")[0] ?? lower;
-    if (
-      FORBIDDEN_RUN_FLAGS.includes(lower) || FORBIDDEN_RUN_FLAGS.includes(flag)
-    ) {
+    if (FORBIDDEN_RUN_FLAGS.includes(flag)) {
       throw new Error(
         `Refusing to launch: run arguments contain ${arg}, which broadens the container beyond its least-privilege contract (Issue #4065).`,
-      );
-    }
-    if (lower === "host" || lower.endsWith("=host")) {
-      throw new Error(
-        `Refusing to launch: run arguments request host namespace/network access (${arg}).`,
       );
     }
   }
@@ -430,7 +427,7 @@ export function assertAppleRunContained(
     }
     const source = parts[0] ?? "";
     const target = parts[1] ?? "";
-    assertMountSourcePermitted(source, homeDir);
+    assertMountSourcePermitted(source, homeDir, "posix");
     if (!isAbsolutePath(target, "posix") || target.includes(":")) {
       throw new Error(
         `Refusing to launch: mount target ${
@@ -438,39 +435,6 @@ export function assertAppleRunContained(
         } must be an absolute container path without a colon.`,
       );
     }
-  }
-}
-
-/** The mount-source rules, POSIX spelling. */
-function assertMountSourcePermitted(source: string, homeDir: string): void {
-  for (let index = 0; index < source.length; index++) {
-    const code = source.charCodeAt(index);
-    if (code < 0x20 || code === 0x7f) {
-      throw new Error(
-        `Mount source contains a control character: ${JSON.stringify(source)}`,
-      );
-    }
-  }
-  if (!isAbsolutePath(source, "posix") || source.includes(":")) {
-    throw new Error(
-      `Mount source must be an absolute host path without a colon, got: ${source}`,
-    );
-  }
-  if (isRootPath(source, "posix")) {
-    throw new Error("Refusing to mount the host filesystem root");
-  }
-  if (homeDir !== "" && isAtOrAbove(source, homeDir, "posix")) {
-    throw new Error(
-      `Refusing to mount ${source}: it is the host home directory (or an ancestor of it) (Issue #4060).`,
-    );
-  }
-  const lower = source.toLowerCase();
-  if (
-    lower.endsWith(".sock") || SOCKET_HINTS.some((hint) => lower.includes(hint))
-  ) {
-    throw new Error(
-      `Refusing to mount ${source}: a container-runtime control socket would let the worker escape its own containment (Issue #4060).`,
-    );
   }
 }
 
@@ -633,6 +597,7 @@ async function sweepStaleNetworks(
       if (!Number.isSafeInteger(pid) || pid <= 0 || pid === ownPid) continue;
       if (deps.isProcessAlive(pid)) continue;
       const problems: string[] = [];
+      // SIMPLE-ON-PURPOSE: probe containers of dead launchers are not swept; upgrade when one is seen left behind.
       const proxyProblem = await deleteContainer(
         deps,
         proxyNameFor(pid),

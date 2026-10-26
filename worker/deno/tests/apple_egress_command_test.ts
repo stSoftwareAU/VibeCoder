@@ -77,7 +77,6 @@ function upArgs(dir: string, runtime = "container"): Record<string, unknown> {
     name: "vibe-coder-4242",
     "base-dir": dir,
     workdir: "/work/checkout",
-    config: `${dir}/.config.json`,
     "report-dir": dir,
     out: `${dir}/args.bin`,
   };
@@ -104,6 +103,58 @@ Deno.test("apple-egress - up without a required flag is an argument error, exit 
   });
   assertEquals(result.exitCode, 2);
   assertStringIncludes(result.message, "--workdir");
+});
+
+Deno.test("apple-egress - up resolves the host config itself, relative to the checkout (Issue #750)", async () => {
+  const dir = await Deno.makeTempDir();
+  let seenConfig: string | undefined;
+  const result = await appleEgressCommand.execute(upArgs(dir), CONFIG, {
+    env: (name) => (name === "CONFIG_FILE" ? "cfg/host.json" : undefined),
+    createDeps: () => fakeDeps(),
+    resolveAllowlist: (input) => {
+      seenConfig = input.configFile;
+      return Promise.resolve(ALLOWLIST);
+    },
+    bringUp: () =>
+      Promise.resolve({
+        report: undefined as unknown as EgressControlReport,
+        workerArgs: ["--network", "vibe-egress-4242"],
+        attempts: 1,
+      }),
+  });
+  assertEquals(result.success, true);
+  assertEquals(seenConfig, `${dir}/cfg/host.json`);
+});
+
+Deno.test("apple-egress - up refuses CONFIG_FILE and CONFIG_PATH naming different files: exit 2, nothing brought up (Issue #750)", async () => {
+  const dir = await Deno.makeTempDir();
+  let resolved = false;
+  let brought = false;
+  const result = await appleEgressCommand.execute(upArgs(dir), CONFIG, {
+    env: (name) =>
+      name === "CONFIG_FILE"
+        ? `${dir}/a.json`
+        : name === "CONFIG_PATH"
+        ? `${dir}/b.json`
+        : undefined,
+    createDeps: () => fakeDeps(),
+    resolveAllowlist: () => {
+      resolved = true;
+      return Promise.resolve(ALLOWLIST);
+    },
+    bringUp: () => {
+      brought = true;
+      return Promise.reject(new Error("must not be called"));
+    },
+  });
+  assertEquals(result.success, false);
+  assertEquals(result.exitCode, 2);
+  assertFalse(result.exitCode === 10, "a conflict is not 'not applicable'");
+  assertStringIncludes(result.message, "name different files");
+  assertStringIncludes(result.message, `CONFIG_FILE=${dir}/a.json`);
+  assertStringIncludes(result.message, `CONFIG_PATH=${dir}/b.json`);
+  assertFalse(resolved);
+  assertFalse(brought);
 });
 
 Deno.test("apple-egress - malformed egress settings are an argument error, exit 2", async () => {

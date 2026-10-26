@@ -13,7 +13,7 @@
  * Usage:
  *   deno run ... mod.ts apple-egress --action up --runtime container \
  *     --image <ref> --name vibe-coder-<pid> --base-dir <dir> \
- *     --workdir <in-container checkout> --config <.config.json> \
+ *     --workdir <in-container checkout> \
  *     --report-dir <dir> --out <args file>
  *   deno run ... mod.ts apple-egress --action down --runtime container \
  *     --name vibe-coder-<pid> [--proxy-log <file>]
@@ -23,7 +23,8 @@
  *       teardown, even when a deletion failed (each failure is a warning).
  *   1   up: containment could not be brought up, or the args file was not
  *       written.
- *   2   bad arguments or egress settings.
+ *   2   bad arguments, egress settings, or a host configuration path that
+ *       cannot be resolved (CONFIG_FILE and CONFIG_PATH naming two files).
  *   10  up: the runtime is not Apple `container`. Nothing was done.
  *
  * The args file holds one `arg=<value>` token per worker argument, each
@@ -51,6 +52,7 @@ import {
   type HostEgressAllowlist,
   readHostEgressAllowlist,
 } from "../lib/egress_host_allowlist.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 
 /** Exit status: the runtime is not Apple `container`, so nothing was done. */
 export const APPLE_EGRESS_NOT_APPLICABLE_EXIT = 10;
@@ -61,13 +63,15 @@ const APPLE_EGRESS_FAILED_EXIT = 1;
 /** Exit status: bad arguments. */
 const APPLE_EGRESS_ARGUMENT_EXIT = 2;
 
-/** The flags `up` requires, besides `--runtime`. */
+/**
+ * The flags `up` requires, besides `--runtime`. The host configuration is not
+ * one of them: `up` resolves it from the environment (Issue #750).
+ */
 const UP_FLAGS = [
   "image",
   "name",
   "base-dir",
   "workdir",
-  "config",
   "report-dir",
   "out",
 ] as const;
@@ -202,13 +206,22 @@ async function runUp(
     return argumentError(errorMessage(error));
   }
 
+  // The host's .config.json, resolved as the worker resolves it. A conflicting
+  // CONFIG_FILE and CONFIG_PATH is refused here, before anything is brought up.
+  let configFile: string;
+  try {
+    configFile = resolveHostConfigPath({ baseDir: flag("base-dir"), env });
+  } catch (error) {
+    return argumentError(errorMessage(error));
+  }
+
   const deps = (seams.createDeps ?? productionDeps)(runtime);
   const bringUp = seams.bringUp ?? bringUpAppleEgress;
   const resolveAllowlist = seams.resolveAllowlist ?? resolveLaunchAllowlist;
   try {
     const allowlist = await resolveAllowlist({
       baseDir: flag("base-dir"),
-      configFile: flag("config"),
+      configFile,
       env,
     });
     const options: AppleEgressOptions = {

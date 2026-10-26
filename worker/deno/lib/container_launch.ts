@@ -703,7 +703,7 @@ export function tmpfsArgument(
 }
 
 /** Path fragments that identify a container-runtime control socket. */
-const RUNTIME_SOCKET_HINTS: readonly string[] = [
+export const RUNTIME_SOCKET_HINTS: readonly string[] = [
   "docker.sock",
   "podman.sock",
   "containerd.sock",
@@ -767,7 +767,7 @@ function hasControlCharacter(value: string): boolean {
  * @throws When the path is relative, unframeable, the home directory (or an
  *   ancestor of it), or a container-runtime control socket
  */
-function assertMountSourcePermitted(
+export function assertMountSourcePermitted(
   source: string,
   homeDir: string,
   style: LauncherPathStyle,
@@ -822,7 +822,7 @@ function assertMountSourcePermitted(
  *   The read-only root is a containment control, not a nicety: without this
  *   check a later edit could drop it and nothing would notice (Issue #516).
  */
-function assertRunArgumentsContained(
+export function assertRunArgumentsContained(
   args: string[],
   expectReadOnlyRoot = false,
   /**

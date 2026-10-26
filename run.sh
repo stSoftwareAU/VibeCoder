@@ -311,7 +311,7 @@ apple_egress_down() {
   bounded 120 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-run --allow-sys=networkInterfaces \
-    --allow-write="${APPLE_EGRESS_PROXY_LOG}" \
+    --allow-write="${RUN_CORE_LOG_DIR}" \
     "${BASE_DIR}/worker/deno/mod.ts" apple-egress --action down \
     --runtime "${RUNTIME}" \
     --name "${CONTAINER_NAME}" \
@@ -1959,15 +1959,8 @@ for ((apple_egress_i = 0; apple_egress_i < ${#run_args[@]}; apple_egress_i++)); 
   fi
 done
 
-# The host's .config.json, resolved the way the worker resolves it: CONFIG_FILE,
-# then its alias CONFIG_PATH, then the checkout's own .config.json. A relative
-# value is taken against the checkout.
-apple_egress_config="${CONFIG_FILE:-${CONFIG_PATH:-.config.json}}"
-case "${apple_egress_config}" in
-  /*) ;;
-  *) apple_egress_config="${BASE_DIR}/${apple_egress_config}" ;;
-esac
-
+# The host's .config.json is not resolved here: `apple-egress up` resolves it
+# itself, through the same resolver the worker uses (lib/host_config_path.ts).
 apple_egress_status=0
 bounded 300 "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
@@ -1979,7 +1972,6 @@ bounded 300 "${DENO_CMD}" run \
   --name "${CONTAINER_NAME}" \
   --base-dir "${BASE_DIR}" \
   --workdir "${apple_egress_workdir}" \
-  --config "${apple_egress_config}" \
   --report-dir "${APPLE_EGRESS_REPORT_DIR}" \
   --out "${APPLE_EGRESS_ARGS_FILE}" </dev/null >&2 || apple_egress_status=$?
 

@@ -1,5 +1,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { readHostEgressAllowlist } from "../lib/egress_host_allowlist.ts";
+import { loadConfig } from "../lib/config.ts";
+import { IMGBB_API_KEY_ENV } from "../lib/imgbb_upload.ts";
 
 const INSTALLED = ["claude", "codex", "gemini", "deepseek"];
 
@@ -267,5 +269,104 @@ Deno.test("readHostEgressAllowlist - a comma in ANTHROPIC_BASE_URL's host is ref
       (error as Error).message,
       '"api.example.com,evil.example.org"',
     );
+  });
+});
+
+Deno.test("the imgbb key check agrees with config.ts's load on every input (Issue #4051)", async () => {
+  // readHostEgressAllowlist mirrors the imgbb check config.ts makes. Each
+  // input must be refused by both or accepted by both; the absent-key control
+  // proves config.ts accepts a plain config, so a refusal is the key's doing.
+  const cases: Array<{
+    label: string;
+    file: Record<string, unknown>;
+    env: Record<string, string>;
+    refused: boolean;
+  }> = [
+    { label: "an absent key", file: {}, env: {}, refused: false },
+    {
+      label: "an empty key",
+      file: { imgbb_api_key: "" },
+      env: {},
+      refused: false,
+    },
+    {
+      label: "a blank key",
+      file: { imgbb_api_key: "   " },
+      env: {},
+      refused: false,
+    },
+    {
+      label: "a set key",
+      file: { imgbb_api_key: "abc" },
+      env: {},
+      refused: false,
+    },
+    {
+      label: "a null key",
+      file: { imgbb_api_key: null },
+      env: {},
+      refused: false,
+    },
+    {
+      label: "a numeric key",
+      file: { imgbb_api_key: 42 },
+      env: {},
+      refused: true,
+    },
+    {
+      label: "a false key",
+      file: { imgbb_api_key: false },
+      env: {},
+      refused: true,
+    },
+    {
+      label: "an array key",
+      file: { imgbb_api_key: [] },
+      env: {},
+      refused: true,
+    },
+    {
+      label: "an object key",
+      file: { imgbb_api_key: {} },
+      env: {},
+      refused: true,
+    },
+    {
+      label: "a numeric key with the env key set",
+      file: { imgbb_api_key: 42 },
+      env: { [IMGBB_API_KEY_ENV]: "env-key" },
+      refused: true,
+    },
+    {
+      label: "an absent key with the env key set",
+      file: {},
+      env: { [IMGBB_API_KEY_ENV]: "env-key" },
+      refused: false,
+    },
+  ];
+  await withTempDir(async (dir) => {
+    for (const c of cases) {
+      const configFile = await writeConfig(dir, c.file);
+      const env = envOf(c.env);
+      const allowlistRefused = await readHostEgressAllowlist({
+        configFile,
+        installedProviders: INSTALLED,
+        env,
+      }).then(() => false, () => true);
+      const configRefused = await loadConfig(configFile, { env }).then(
+        () => false,
+        () => true,
+      );
+      assertEquals(
+        allowlistRefused,
+        c.refused,
+        `readHostEgressAllowlist refused=${allowlistRefused} on ${c.label}`,
+      );
+      assertEquals(
+        configRefused,
+        c.refused,
+        `loadConfig refused=${configRefused} on ${c.label}`,
+      );
+    }
   });
 });

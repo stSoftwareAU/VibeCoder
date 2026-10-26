@@ -502,18 +502,27 @@ On macOS, when the worker runs on Apple's `container` runtime, `run.sh` runs
 `--action down` on exit and after a failed `up`. Only the bash launcher
 (`run.sh`) enforces this. `run.ps1` does not, because Apple `container` is macOS-only.
 
-`--action up` exits 10 for any other runtime, does nothing, and the launch is
-unchanged. It exits 0 when containment is up, and exits 1 when containment could
-not be brought up. Exit 2 means bad arguments or settings. `run.sh` refuses the
-launch on any status other than 0 or 10. `--action down` exits 0 after its
-teardown, even when a deletion fails, and exits 2 only for bad arguments.
+On every runtime, Docker and Podman included, `run.sh` creates
+`<run core log dir>/apple-egress` and then starts one Deno process for
+`apple-egress --action up`, bounded to 300 s. On any runtime other than Apple
+`container`, that process applies no containment, changes no launch arguments,
+and exits 10 ("not applicable"). Each launch therefore pays for one short Deno
+start-up; the launcher already runs Deno for other steps. `run.sh` refuses the
+launch if the directory cannot be created, or if the Deno process fails before
+it exits 10. On Apple `container`, `--action up` exits 0 when containment is up,
+and exits 1 when containment could not be brought up. Exit 2 means bad arguments
+or settings. `run.sh` refuses the launch on any status other than 0 or 10.
+`--action down` exits 0 after its teardown, even when a deletion fails, and
+exits 2 only for bad arguments.
 
 The result is **partial containment**: direct outbound is restricted to what
 each launch measures, and the worker's traffic is meant to go through the
 allowlist proxy. It is not a deny-by-default boundary. The host gateway, DNS and
-the LAN sit outside what it promises. Docker and Podman are unchanged by this section: their containers stay
-on the runtime's bridge network, as described under
-[the network boundary](#the-network-boundary).
+the LAN sit outside what it promises. On Docker and Podman no containment is
+applied by this section: their containers stay on the runtime's bridge network,
+as described under [the network boundary](#the-network-boundary). The only
+effects there are the `apple-egress` directory and the `up` call above, which
+exits 10 without changing the launch.
 
 ### What a launch does
 
@@ -557,8 +566,8 @@ on the runtime's bridge network, as described under
    the default network.
 7. **On exit**, or after a failed bring-up, `run.sh` runs
    `apple-egress --action down`. That saves the proxy's `container logs` output
-   to `apple-egress-proxy.log` in the log directory, then deletes the proxy and
-   the network.
+   to `apple-egress-proxy.log` in the run's log directory, then deletes the proxy
+   and the network.
 
 Environment variables alone are advisory routing: they tell a well-behaved client
 where the proxy is, and they block nothing. The network is what restricts, and
@@ -631,8 +640,9 @@ meanings.
 - **`egress-controls.json`** is written to `<run core log dir>/apple-egress/egress-controls.json`,
   where the run core log dir is the log directory `run.sh` resolves through
   `log_dir` (see [Where the logs go](CONFIGURATION.md#-where-the-logs-go)). `run.sh`
-  creates the `apple-egress` directory (mode `700`, best-effort) and does not
-  remove it on exit, so the file persists after the launch. The next launch on
+  creates the `apple-egress` directory on every runtime (mode `700`, best-effort),
+  refuses the launch if it cannot be created, and does not remove it on exit, so
+  the file persists after the launch. The next launch on
   the same host overwrites it. It holds the schema,
   the launch, the runtime (executable, version and macOS), `selectedMode`,
   `effectiveMode`, the `controls`, `regressions`, `acceptedGaps` and the
@@ -649,7 +659,7 @@ meanings.
 - **`run_core.log`** gets one line for each outcome:
   `apple-egress: containment is up for <worker container> (Issue #4051)`, or
   `apple-egress: containment could not be brought up (status N) - the worker was not launched (Issue #4051)`.
-- **`apple-egress-proxy.log`** in the log directory: the proxy's `container logs`
+- **`apple-egress-proxy.log`** in the run's log directory: the proxy's `container logs`
   output, saved by `--action down`. That runs on exit and after a failed bring-up.
 
 ### Cost
