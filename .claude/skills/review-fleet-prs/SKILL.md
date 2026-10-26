@@ -23,7 +23,8 @@ Optional argument: `owner/name` to review one repo only.
 Read [references/running-unattended.md](references/running-unattended.md)
 before running the loop without an open session through `scripts/run.sh`:
 installing it, where a round runs and on which Claude subscription,
-reviewing as a GitHub App, and persistent failure escalation.
+reviewing as a GitHub App, parallel rounds (one PR per round), the separate
+learning round, and persistent failure escalation.
 
 ## Rules
 
@@ -371,7 +372,8 @@ for a run that delivered its issue to fail, and the review on the PR already
 catches the mistake.
 
 After posting the round, look at repeated blocking findings only for these two
-outcomes:
+outcomes. (`scripts/run.sh` skips this step in its review rounds and runs it
+in a learning round of its own, after new send-backs, at most hourly.)
 
 1. **A worker defect.** The worker itself did something wrong: it pushed the
    wrong branch, dropped a commit, lost a review reply, or produced a concrete

@@ -247,6 +247,26 @@ Deno.test("pass: at most `limit` PRs are ready, counted after every other skip, 
   }
 });
 
+Deno.test("pass: a PR already in a round on this host is skipped as in-flight and never takes a slot (Issue #4395)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const prs = [12, 13, 14].map((n) => fleetPr(n));
+    const { gh, calls } = makeGh(prs);
+    const result = await pass(REPOS, FLEET, REVIEWER, {
+      gh,
+      dir,
+      limit: 1,
+      inFlight: new Set(["acme/app#12"]),
+    });
+    assertEquals(result.ready.map((p) => p.number), [13]);
+    assertEquals(result.skipped, { "in-flight": 1, "over-limit": 1 });
+    // No file list is read for the PR already being reviewed.
+    assertEquals(fileCalls(calls), 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // --- (3) approved first, then up to date -----------------------------------
 
 Deno.test("needsBranchUpdate: only an approved, behind, non-draft fleet PR not already asked at this head (Issue #3225)", () => {
