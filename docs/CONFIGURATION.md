@@ -1888,7 +1888,7 @@ unless explicitly overridden.
 | ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 1.4.0 this key wins when both are set (Issue #1032). |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
-| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway a new implementation claim must have; `0` disables the floor. When a run timeline is set the floor measures to the two-hour finish deadline (Issue #4245); otherwise to the supervisor hard cap (`VIBE_RUN_MAX_SECONDS`). A claim taken below it would be ended before it could finish setup. Measured against that instant, not the one-hour cycle: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with neither a timeline nor a hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway a new implementation claim must have; `0` disables the floor. When a run timeline is set the floor measures to the two-hour finish deadline (Issue #4245); otherwise to the supervisor hard cap (`VIBE_RUN_MAX_SECONDS`). A claim taken below it would be ended before it could finish setup. Measured against that instant, not the one-hour cycle: the target does not truncate an active claim, but the session budget is bounded by the finish less the kill grace and WIP reserve — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with neither a timeline nor a hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
 | Run finish deadline | `run_finish_seconds` | `7200` | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start. When a timeline is set, agent sessions, extension grants, the claim floor and the drain read this finish (Issues #4244, #4245, #4246). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 | Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
@@ -2445,9 +2445,11 @@ Five stages, in the order a claim meets them:
 2. **An in-flight claim keeps its configured budget when the finish leaves
    room.** The execute phase does **not** truncate `claude_timeout` to the
    runway left in the one-hour cycle (Issue #420). A claim taken at minute 59
-   has at least 61 minutes before the two-hour finish, so a 60-minute budget
-   still fits (Issue #4245). The agent session itself is the smaller of that
-   budget and finish − now − the kill grace − 120 s, and the user prompt
+   has 61 minutes before the two-hour finish. With the default 30 s kill grace
+   and 120 s WIP reserve, its effective session budget is at most 58 minutes
+   30 seconds before preparation (Issue #4245). The requested timeout stays
+   unchanged; the runner uses the smaller of that request and finish − now −
+   the kill grace − 120 s, and the user prompt
    states the finish deadline (Issue #4244). The runner refreshes that budget
    after preparation, refuses to spawn below the 120 s minimum, and caps the
    watchdog at the absolute finish less the kill grace and WIP reserve.
@@ -2655,8 +2657,10 @@ cap with the run's start epoch, so the worker can see the deadline it is
 running towards. The cap sits 600 s under the launcher's container watchdog
 (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host never
 reaps a container this supervisor would still allow to run. A claim taken at
-minute 59 has at least 61 minutes before the finish, so its configured budget
-still fits; grants do not move the deadline past the finish less the reserve.
+minute 59 has 61 minutes before the finish: with the default 150 s combined
+kill grace and WIP reserve, at most 58 minutes 30 seconds remain for its
+session before preparation. The one-hour target does not truncate the request;
+the finish-minus-reserve ceiling bounds the session and every extension grant.
 
 When a timeline is set, extensions are bounded by the finish:
 

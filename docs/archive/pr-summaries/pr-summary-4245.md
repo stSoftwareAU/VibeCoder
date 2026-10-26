@@ -8,7 +8,7 @@ Version bump: not applicable — no `deno.json` version change.
 
 ### Intent and Rationale
 - The extension ceiling, the claim floor and the failure ladder still treated the three-hour supervisor cap as the end of useful work. The finish is an hour earlier, so stopping there has to be a release.
-- Issue #420's reason still holds. The execute phase still passes the full `claudeTimeout`. A claim at minute 59 has at least 61 minutes before the finish, so the argument is not truncated. The bound that does truncate is the extension ceiling.
+- Issue #420's reason still holds: the execute phase passes the full requested `claudeTimeout` instead of truncating it at the one-hour target. The runner then clamps the effective session budget at finish minus kill grace and WIP reserve, and the same ceiling bounds extension grants. At minute 59, the default reserve leaves at most 58 minutes 30 seconds before preparation.
 
 ### Essential Design Decisions
 - `extensionCeiling` picks the nearer of the supervisor ceiling and finish − reserve, and labels it `"the finish deadline"` or `"the run hard cap"`. `decideProgressExtension` keeps the #421 sentences when the label is absent. With the finish label, a shortened grant says `grant clamped to the finish deadline`, and no runway says `finish deadline reached`. The runner logs that reason on the `[progress-extension]` line and sets `finishDeadline` when the cause is `"finish-deadline"`.
@@ -87,3 +87,14 @@ fix; it now requires `scheduled_release`, no gate rerun, no normal push or PR
 creation, and no failure attempt.
 All 192 configuration, pre-push and recovery integration tests pass, along
 with all 866 manifest checks (one ignored); formatting and lint pass.
+
+
+## Final documentation review
+
+Corrected the three operator-guide statements that promised a full 60-minute
+session for a claim taken at minute 59. The unchanged requested timeout and
+the effective finish-minus-reserve budget are now distinguished, including
+the default 58-minute-30-second allowance before preparation. The matching
+rationale above is corrected too. No runtime or test behaviour changes.
+All 866 manifest checks pass (one ignored), including the deadline-model
+documentation checks.
