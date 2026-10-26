@@ -1,16 +1,17 @@
 ## Summary
 
-Part of #4047
+Closes #4047
 
 Docker and Podman now start the worker on an internal network and send its
 outbound traffic through the egress proxy from #4046. The launch plan carries
 the network and proxy commands, `run.sh` and `run.ps1` create the network,
 start the proxy, then the worker, and remove both on exit. A shared helper
-does the same for the containment suite and the tabletop runner. Apple
-container launches are not put on that network and are not given proxy
-environment variables. The live Docker containment step in
-`.github/workflows/container-build.yml` passed in CI run `40268960461`
-(15 tests, 47 steps); Docker is unavailable on this local host.
+does the same for the containment suite and the tabletop runner. The original
+#4047 change left Apple unchanged; the combined milestone now includes
+#4051's separate measured internal/advisory modes and shared proxy. Apple's
+host/LAN and unavailable DNS/IPv6 coverage remain documented gaps.
+The final required Docker job passed in CI run `40270317445`
+(15 tests, 47 steps); Docker was unavailable on the local implementation host.
 
 No version file is changed.
 
@@ -23,13 +24,15 @@ No version file is changed.
   both that network and the outbound bridge.
 - A failed network or proxy start exits non-zero. The launchers do not fall
   back to an open network.
-- Apple container is a different runtime. This change does not claim to
-  contain it; that is #4051.
+- Apple container is a different runtime. Its measured partial containment
+  is implemented separately by #4051; Docker/Podman evidence is not proof of
+  Apple's whole-policy enforcement.
 
 ### Essential Design Decisions
 
 - `OCI_DIALECT` and `PODMAN_DIALECT` set `egressEnforced`. `APPLE_DIALECT`
-  does not, and its launch plan gains no `--network` and no proxy URL.
+  does not set that whole-policy boolean. Since #4051 it uses the shared
+  proxy and measured internal/advisory modes, with per-control evidence.
 - The proxy container uses `--cap-drop ALL`, `--security-opt
   no-new-privileges` and `--read-only`, with no mount and no published port.
   `FORBIDDEN_RUN_FLAGS` applies to its argv. It listens on `0.0.0.0:3128`
@@ -92,10 +95,18 @@ it now selects both launchers, the runtime and launch-plan modules, egress
 modules, the live containment suite and the filter itself. A real-git
 regression failed with `image=false` before this fix; all 13 filter/probe
 path tests pass afterwards, including unrelated worker and docs changes
-that still skip the build. The normal required PR workflow will run its
+that still skip the build. The normal required PR workflow ran its
 existing live Docker step. Job `121397472900` in CI run `40268960461`
 built the image, passed 335 in-image checks, and passed 15 live containment
 tests (47 steps) with `VIBE_CONTAINMENT_REQUIRED=1` on head `98caf4b3d`.
+
+The final [Quality run](https://github.com/stSoftwareAU/VibeCoder/actions/runs/40270317445)
+passed on `1ec7ddaf5b97b237320c0de27a46d3e8ac6638eb`.
+Its [Docker job](https://github.com/stSoftwareAU/VibeCoder/actions/runs/40270317445/job/121401723263)
+again built the image and passed 335 in-image checks and all 15 live
+containment tests / 47 steps with `VIBE_CONTAINMENT_REQUIRED=1`.
+PR #4392 then merged as `c34848301822ea81bc21ff4eb3d3e312f8820685`.
+This is required CI evidence, not a claim that local `./quality.sh` ran.
 
 The next CI stage exposed an existing sweep-ledger ancestry error:
 `top-up-4047.json` recorded a milestone-only merge commit. The supported
@@ -111,10 +122,11 @@ reproduced the failure before the repair and passed afterwards.
 - **met** — a Docker or Podman plan contains no `--network bridge` on the
   worker; the worker runs on the internal network with both proxy spellings;
   the proxy argv carries `--cap-drop ALL`, `no-new-privileges` and
-  `--read-only`, with no `--volume`, no `--publish` and no forbidden flag; an
-  Apple plan has no `--network` and no proxy URL — evidence:
+  `--read-only`, with no `--volume`, no `--publish` and no forbidden flag — evidence:
   `worker/deno/tests/container_launch_test.ts` (107 tests in that file plus
-  `run_worker_test.ts` passed) — reviewer: met
+  `run_worker_test.ts` passed). The original Apple no-network/no-proxy
+  expectation was verified for #4047 and then superseded by #4051's explicit
+  partial-containment requirements — reviewer: met
 - **met** — both launchers remove a stale same-named network, create the
   network before the proxy and the proxy before the worker, capture proxy
   logs, remove both resources on exit, and refuse a plan that is missing a
@@ -124,14 +136,15 @@ reproduced the failure before the repair and passed afterwards.
   `worker/deno/tests/launcher_parity_test.ts` (25 passed) — reviewer: met
 - **met** — the Docker containment step in
   `.github/workflows/container-build.yml` passes with the suite starting the
-  sidecar through `startEgressSidecar` — evidence: CI run `40268960461`,
-  job `121397472900`, 15 passed tests with 47 steps and no failures on head
-  `98caf4b3d`; `VIBE_CONTAINMENT_REQUIRED=1` prevents an unavailable runtime
+  sidecar through `startEgressSidecar` — evidence: final CI run `40270317445`,
+  job `121401723263`, 15 passed tests with 47 steps and no failures on head
+  `1ec7ddaf5b97b237320c0de27a46d3e8ac6638eb`;
+  `VIBE_CONTAINMENT_REQUIRED=1` prevents an unavailable runtime
   from silently skipping the suite — reviewer: met
-- **missing** — the complete repository quality gate passes — reason:
-  `./quality.sh` was not run. The focused tests, manifest suite, touched-file
-  formatting and lint, Bash syntax and ShellCheck in the Test Plan pass;
-  these do not constitute the complete gate — reviewer: missing
+- **met** — the complete repository quality gate passes — evidence: final
+  required Quality run `40270317445` succeeded on
+  `1ec7ddaf5b97b237320c0de27a46d3e8ac6638eb`, including runtime checks and
+  the live Docker job. Local `./quality.sh` was not run — reviewer: met
 
 ## Standards Review
 
@@ -146,8 +159,12 @@ reproduced the failure before the repair and passed afterwards.
 
 ## Merge verification
 
-- Required CI, including the Docker containment step, and the routine code
-  review are pending until observed.
+- PR #4392 merged as `c34848301822ea81bc21ff4eb3d3e312f8820685` after final
+  required Quality run `40270317445` passed on its exact head, including
+  the Docker containment step. This closes #4047's implementation criteria.
+- The final milestone-to-main PR still needs its own review and required CI
+  on the combined head. Windows Docker Desktop and rootless Podman
+  networking were not independently exercised by the recorded live runs.
 
 ## Test Plan
 
@@ -179,6 +196,8 @@ reproduced the failure before the repair and passed afterwards.
 - CI run `40268960461`, job `121397472900`: Docker image build passed,
   335 in-image checks passed, and 15 live containment tests (47 steps)
   passed with `VIBE_CONTAINMENT_REQUIRED=1`.
+- Final required Quality run `40270317445` and Docker job `121401723263`:
+  passed on the final #4392 head with the same image and live-test counts.
 - `run_ps1_launcher_test.ts --filter "waits for the container and reports a
   termination"` on Linux with PowerShell 7.6.0: hung past five minutes
   before the redirect, 1 passed in 9s afterwards.
