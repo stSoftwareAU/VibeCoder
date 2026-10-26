@@ -52,7 +52,7 @@ import {
 } from "./ephemeral_build_cache.ts";
 import {
   inFlightHostDiskGateEnabled,
-  parkInFlightBuild,
+  parkRunningBuild,
 } from "./heavy_build_gate.ts";
 
 export interface ProcessResult {
@@ -1079,7 +1079,7 @@ export function defaultMutationRunnerSeams(
       const diskTimer = watchDisk
         ? setInterval(() => {
           if (diskSettled || diskPark) return;
-          const ask = options?.park ?? parkInFlightBuild;
+          const ask = options?.park ?? parkRunningBuild;
           void ask(opts.cwd).then((reason) => {
             if (diskSettled || !reason || diskPark) return;
             diskPark = reason;

@@ -65,10 +65,11 @@
  * documented `unknown` default of Issue #226.
  *
  * Issue #4360: a build already running is held to the same floor. The claim
- * gate only stops new claims, so {@link parkInFlightBuild} parks an agent,
- * mutation or discrimination build when the reading is low or the ephemeral
- * budget is short, and {@link hostDiskLaunchStopReason} ends the launch when
- * the trim was refused and the host is below the floor — exiting the container
+ * gate only stops new claims, so {@link parkInFlightBuild} checks admission
+ * before an agent, mutation or discrimination build. {@link parkRunningBuild}
+ * stops an active process at the host floor, letting it consume the headroom
+ * admission required (Issue #4390). {@link hostDiskLaunchStopReason} ends the
+ * launch when the trim was refused and the host is below the floor — exiting the container
  * is what discards the ephemeral layer and lets the next launch recreate the
  * volume. The in-flight gate stays off until production enables it, so a test
  * that registers a probe does not park every other test in the process.
@@ -417,10 +418,11 @@ export function inFlightHostDiskGateEnabled(): boolean {
 }
 
 /**
- * Why an in-flight build must not run in `checkoutPath` (Issue #4360).
+ * Why a new build step must not start in `checkoutPath` (Issue #4360).
  *
  * Same floor and ephemeral headroom as {@link heavyBuildAdmission}. Null when
  * the gate is not armed, no probe is registered, or the host has room.
+ * Active-process watchers use {@link parkRunningBuild} instead.
  */
 export async function parkInFlightBuild(
   checkoutPath: string,
@@ -432,6 +434,20 @@ export async function parkInFlightBuild(
   return inFlightParkReason(
     admission.mode === "build" ? null : admission.reason,
   );
+}
+
+/**
+ * Stop an active process only at the host floor (Issue #4390).
+ *
+ * The full headroom is required before starting, then may be consumed:
+ * re-applying it while running killed admitted builds after their first few
+ * gigabytes. Poll the same live monitor without pruning other checkouts or
+ * demanding another complete build's headroom. An unknown reading retains
+ * the existing gate policy; a known low reading still stops the process.
+ */
+export async function parkRunningBuild(): Promise<string | null> {
+  if (!inFlightGateEnabled || probe === undefined) return null;
+  return inFlightParkReason(judgeHostDiskForBuild(await probe()));
 }
 
 /**
