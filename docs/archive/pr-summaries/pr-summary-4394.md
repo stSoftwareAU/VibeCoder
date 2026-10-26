@@ -39,7 +39,11 @@ Backend-only change; verified by tests below.
 - Added `worker/deno/tests/pr_ci_processor_state_file_4394_test.ts` (real git in
   a temp repo with no ignore rule): case A reply file alone makes no commit and
   stays on disk; case B a fix plus reply file commits the fix only; case C a
-  staged `.env` is refused by the safety gate.
+  staged `.env` is refused by the safety gate. The fixture pins
+  `core.excludesFile` to its own empty file, so a host's global excludes cannot
+  hide `.env` from any real Git call. Case C captures the post-quality warning
+  and requires the #1758 refusal diagnostic to name `.env`, while retaining
+  the no-commit and file-preservation checks.
 - Red check: stubbing the helper call out of `pr_ci_processor.ts` made all 3
   tests fail; restored.
 - Modified `worker/deno/tests/pr_ci_processor_test.ts`: two tests now `git init`
@@ -47,8 +51,13 @@ Backend-only change; verified by tests below.
   helper uses real git. No assertion was removed.
 - `deno task test:unit` on `pr_ci_processor_test.ts`,
   `pr_ci_processor_no_changes_test.ts`, `milestone_conflict_ladder_test.ts` and
-  the new file: 76 passed, 0 failed.
-- `./quality.sh`: every stage passed except deno tests, which failed on 2 tests
+  the new file: 76 passed, 0 failed after the review fix.
+- After the review fix, `deno task check:manifests`: 846 passed, 0 failed,
+  one existing ignore. The changed test file passes format, lint and type-check;
+  `git diff --check` passes. The full local quality gate was not repeated for
+  this test-only follow-up.
+- Initial implementation `./quality.sh`: every stage passed except deno tests,
+  which failed on 2 tests
   in `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("formatter
   should commit the Rust fix"). The same 2 fail on the unmodified base commit,
   so they are unrelated to this change.
@@ -57,13 +66,20 @@ Backend-only change; verified by tests below.
 
 ## Mutation check
 
-The mutation check did not run: its baseline (unmutated) test run failed, so no
-mutant could be judged. This is not a gap in the tests for the changed lines.
-Re-running the baseline files by hand, 55 passed and only the 2
-`completion_phase_repo_formatters_test.ts` tests failed ("formatter should
-commit the Rust fix"), the same 2 that fail on the unmodified base commit. The
-remaining files in the baseline list passed when run individually, so their
-failure under the mutation harness looks environmental. The changed lines are
-pinned by `pr_ci_processor_state_file_4394_test.ts` (red-checked above). Re-run
-the mutation check once the base failures are fixed, or set
-`skip_mutation_check` for this repo.
+The independent review identified a false positive in case C. With a temporary
+global Git configuration that ignored `.env`, the original test passed without
+the safety refusal. Adding the diagnostic assertion first made that same run
+fail because the expected refusal was absent. Pinning the fixture's own empty
+excludes file made it pass under the same global configuration.
+
+The focused review mutation bypassed only the `assertSafeToCommit` call in
+`unstageStateAndAssertSafe`, leaving worker-state unstaging intact. Case C then
+failed specifically at the missing safety-refusal diagnostic. Restoring that
+call restored the green test; production code was restored byte-for-byte and
+the follow-up changes only the test and this summary.
+
+The initial broad mutation harness could not judge mutants because its
+unmutated baseline failed on the two Rust formatter tests noted above. The
+focused review mutant failed as expected and the 76-test baseline passed; the
+broad mutation harness was not repeated. CI and independent re-review remain
+outstanding for the follow-up head.

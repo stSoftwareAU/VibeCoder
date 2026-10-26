@@ -9,7 +9,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -17,7 +17,7 @@ import {
 } from "../lib/pr_ci_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
-import type { Logger } from "../types.ts";
+import type { LogContext, Logger } from "../types.ts";
 import type {
   ClaudeDeps,
   GitDeps,
@@ -80,6 +80,11 @@ async function gitOut(cwd: string, args: string[]): Promise<string> {
 async function makeRepo(): Promise<string> {
   const repo = await Deno.makeTempDir({ prefix: "ci_fix_4394_repo_" });
   await gitOut(repo, ["init", "-q"]);
+  // Every real Git call, including the safety helper's, must ignore the
+  // host's global excludes: otherwise `.env` may never reach the index.
+  const excludes = `${repo}/.git/fixture-excludes`;
+  await Deno.writeTextFile(excludes, "");
+  await gitOut(repo, ["config", "--local", "core.excludesFile", excludes]);
   await gitOut(repo, ["config", "user.email", "worker@example.invalid"]);
   await gitOut(repo, ["config", "user.name", "Worker Test"]);
   await gitOut(repo, ["config", "commit.gpgsign", "false"]);
@@ -115,8 +120,10 @@ async function runCiFix(
 ): Promise<{
   result: Awaited<ReturnType<typeof processCiFailure>>;
   push: PushObservation;
+  warnings: { message: string; context?: LogContext }[];
 }> {
   const push: PushObservation = { pushCalls: 0, onDiskAtPush: [] };
+  const warnings: { message: string; context?: LogContext }[] = [];
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: (async () => {
       await agentWrites(repo);
@@ -155,7 +162,10 @@ async function runCiFix(
   });
   const processorDeps: CiProcessorDeps = {
     promptsDir: PROMPTS_DIR,
-    logger: makeSilentLogger(),
+    logger: {
+      ...makeSilentLogger(),
+      warn: (message, context) => warnings.push({ message, context }),
+    },
     deps,
     // Outside the repo, so `git add -A` never stages the state directory.
     stateDir: `${stateRoot}/.ci_check_state`,
@@ -165,7 +175,7 @@ async function runCiFix(
       Promise.resolve({ action: "passed", qualityOutput: "" }),
   };
   const result = await processCiFailure(makeInput(), processorDeps);
-  return { result, push };
+  return { result, push, warnings };
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -284,7 +294,7 @@ Deno.test("processCiFailure - the safety gate still refuses a secret-bearing fil
   try {
     const before = await commitCount(repo);
 
-    const { push } = await runCiFix(
+    const { push, warnings } = await runCiFix(
       repo,
       stateRoot,
       [".env", PR_RESPONSE_MESSAGE],
@@ -294,6 +304,22 @@ Deno.test("processCiFailure - the safety gate still refuses a secret-bearing fil
       },
     );
 
+    const refusal = warnings.find(({ message }) =>
+      message ===
+        "Failed to unstage worker state / safety gate for post-Claude changes"
+    );
+    assert(refusal, "the post-quality commit must report its safety refusal");
+    const diagnostic = refusal.context?.error;
+    assert(typeof diagnostic === "string");
+    assertStringIncludes(
+      diagnostic,
+      "Pre-commit safety gate refused commit (Issue #1758)",
+    );
+    assertEquals(
+      diagnostic.split("\n").includes("  - .env"),
+      true,
+      "the refusal must name the staged .env file",
+    );
     assertEquals(
       await commitCount(repo),
       before,
