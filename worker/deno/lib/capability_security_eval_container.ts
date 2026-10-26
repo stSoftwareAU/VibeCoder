@@ -22,6 +22,7 @@ export const CAPSEC_CONTAINER_MEMORY_MB = 512;
 export const CAPSEC_CONTAINER_CPUS = 1;
 const OUTPUT_LIMIT = 1024 * 1024;
 const MARKER = "CAPSEC_ISOLATION_OK\n";
+const PARENT_MARKER = "CAPSEC_PARENT_PROTECTED\n";
 const PATH = "/usr/local/bin:/usr/bin:/bin";
 
 export interface EvalContainerResult {
@@ -51,6 +52,8 @@ export interface EvalContainerOptions {
 }
 /** Injectable external boundaries; fixture construction and refusal stay real. */
 export interface EvalContainerDependencies {
+  /** Tests may shorten, but never extend, the production execution lease. */
+  timeoutMs?: number;
   detect?: (
     runtime?: EvalContainerOptions["runtime"],
   ) => Promise<ContainerRuntimeDescriptor>;
@@ -129,6 +132,7 @@ async function runBounded(
       stderr: new TextDecoder().decode(output.stderr),
     };
   }
+  const deadlineAt = Date.now() + timeoutMs;
   const child = spawnCommandWithTimeout(executable, {
     args,
     timeoutMs,
@@ -136,6 +140,10 @@ async function runBounded(
     stdout: "piped",
     stderr: "piped",
   });
+  // Keep only enough trusted prefix to retain containment evidence on an
+  // interrupted stream. Partial test verdicts must not become a completed run.
+  let stdoutPrefix = "";
+  const prefixDecoder = new TextDecoder();
   let exited = false;
   const childStatus = child.status.then((value) => {
     exited = true;
@@ -155,10 +163,24 @@ async function runBounded(
   };
   const streams = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const collect = async (stream: ReadableStream<Uint8Array>) => {
+  const collect = async (
+    stream: ReadableStream<Uint8Array>,
+    stdout = false,
+  ) => {
     const result = await readTextBounded(
       new Response(
-        stream.pipeThrough(new TransformStream(), { signal: streams.signal }),
+        stream.pipeThrough(
+          new TransformStream({
+            transform(chunk, controller) {
+              if (stdout && stdoutPrefix.length < 4096) {
+                stdoutPrefix += prefixDecoder.decode(chunk, { stream: true })
+                  .slice(0, 4096 - stdoutPrefix.length);
+              }
+              controller.enqueue(chunk);
+            },
+          }),
+          { signal: streams.signal },
+        ),
       ),
       OUTPUT_LIMIT,
     );
@@ -177,10 +199,29 @@ async function runBounded(
       }, timeoutMs);
     });
     const [status, stdout, stderr] = await Promise.race([
-      Promise.all([childStatus, collect(child.stdout), collect(child.stderr)]),
+      Promise.all([
+        childStatus,
+        collect(child.stdout, true),
+        collect(child.stderr),
+      ]),
       deadline,
     ]);
+    if (status.signal && Date.now() >= deadlineAt) {
+      throw new Error(`container timed out after ${timeoutMs}ms`);
+    }
     return { code: status.code, stdout, stderr };
+  } catch (error) {
+    if (!stdoutPrefix.startsWith(MARKER)) throw error;
+    const timedOut = Date.now() >= deadlineAt;
+    return {
+      code: timedOut ? 124 : 125,
+      stdout: isolationProof(stdoutPrefix),
+      stderr: timedOut
+        ? `container timed out after ${timeoutMs}ms`
+        : error instanceof Error
+        ? error.message
+        : String(error),
+    };
   } finally {
     clearTimeout(timer);
     stop();
@@ -199,6 +240,26 @@ async function runBounded(
       clearTimeout(reapTimer);
     }
   }
+}
+
+function isolationProof(stdout: string): string {
+  return stdout.startsWith(MARKER)
+    ? MARKER + (stdout.includes(PARENT_MARKER) ? PARENT_MARKER : "")
+    : "";
+}
+
+/** Fail closed without erasing evidence that generated execution was attempted. */
+function failedCommand(result: CommandResult, error: unknown): CommandResult {
+  const stdout = isolationProof(result.stdout);
+  return {
+    code: stdout ? result.code || 125 : null,
+    stdout,
+    stderr: [
+      result.stderr,
+      error instanceof Error ? error.message : String(error),
+    ]
+      .filter(Boolean).join("\n"),
+  };
 }
 
 async function createFixture(options: EvalContainerOptions): Promise<string> {
@@ -314,6 +375,7 @@ function runArgs(
     "--deny-net",
     "--allow-read=/fixture",
     "--allow-env=CAPSEC_LANGUAGE",
+    "--allow-ffi=/lib/aarch64-linux-gnu/libc.so.6,/lib/x86_64-linux-gnu/libc.so.6",
     language === "typescript"
       ? "--allow-run=/usr/local/bin/deno"
       : "--allow-run=/tmp/build/adapter",
@@ -363,7 +425,6 @@ export async function runIsolatedCapabilitySource(
     stdout: "",
     stderr: "isolation not provisioned",
   };
-  let detail = "";
   try {
     descriptor = await (deps.detect ?? resolveRuntime)(options.runtime);
     image = options.image ?? await (deps.image ?? resolveImage)(options.root);
@@ -389,7 +450,10 @@ export async function runIsolatedCapabilitySource(
       result = await run(
         descriptor.executable,
         runArgs(descriptor, image, dir, name, options.language),
-        CAPSEC_CONTAINER_TIMEOUT_MS,
+        Math.min(
+          deps.timeoutMs ?? CAPSEC_CONTAINER_TIMEOUT_MS,
+          CAPSEC_CONTAINER_TIMEOUT_MS,
+        ),
       );
       // Only a runtime failure before the supervisor started may be retried.
       // Acceptance failures and errors printed by generated code never qualify.
@@ -425,14 +489,8 @@ export async function runIsolatedCapabilitySource(
         inspectedDigest(after.stdout, descriptor) !== imageDigest
       ) throw new Error("evaluation image reference changed during execution");
     }
-    detail =
-      "verified readonly root and inputs; uid/gid 1000; no capabilities; no privilege restoration; loopback-only network; CPU 1, memory 512M, time 60s";
   } catch (error) {
-    result = {
-      code: null,
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    };
+    result = failedCommand(result, error);
   } finally {
     if (launched && descriptor) {
       try {
@@ -445,23 +503,22 @@ export async function runIsolatedCapabilitySource(
           cleanup.code !== 0 &&
           !/(?:not found|no such container)/i.test(cleanup.stderr)
         ) {
-          result = {
-            code: null,
-            stdout: "",
-            stderr: `evaluation container cleanup failed: ${cleanup.stderr}`,
-          };
+          result = failedCommand(
+            result,
+            `evaluation container cleanup failed: ${cleanup.stderr}`,
+          );
         }
       } catch (error) {
-        result = {
-          code: null,
-          stdout: "",
-          stderr: `${result.stderr}\n${
-            error instanceof Error ? error.message : error
-          }`.trim(),
-        };
+        result = failedCommand(result, error);
       }
     }
     if (dir) await Deno.remove(dir, { recursive: true });
+  }
+  let detail =
+    "verified readonly root and inputs; uid/gid 1000; no capabilities; no privilege restoration; loopback-only network; CPU 1, memory 512M, time 60s";
+  if (result.stdout.includes(PARENT_MARKER)) {
+    detail +=
+      "; trusted parent verified non-dumpable before generated children";
   }
   return {
     ...result,

@@ -144,8 +144,71 @@ Deno.test("evaluation reports cleanup failure instead of a successful isolated r
     language: "typescript",
     source: "export const value = 42;",
   }, fake.deps);
-  assertEquals(result.code, null);
+  assertEquals(result.code, 125);
+  assertEquals(result.isolation.status, "enforced");
   assertStringIncludes(result.stderr, "runtime refused deletion");
+});
+
+Deno.test("execution timeouts and output limits preserve proof and cannot become retryable provisioning failures", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "capsec-timeout-test-" });
+  try {
+    for (
+      const { prefix, flood } of [
+        { prefix: "CAPSEC_ISOLATION_OK\n", flood: false },
+        { prefix: "", flood: false },
+        { prefix: "fake\nCAPSEC_ISOLATION_OK\n", flood: false },
+        { prefix: "CAPSEC_ISOLATION_OK\n", flood: true },
+      ]
+    ) {
+      const executable = `${dir}/runtime`;
+      const launches = `${dir}/launches`;
+      await Deno.writeTextFile(launches, "");
+      await Deno.writeTextFile(
+        executable,
+        `#!/bin/sh
+if [ "$1" = image ]; then
+  printf '%s' '[{"configuration":{"descriptor":{"digest":"sha256:${
+          "a".repeat(64)
+        }"}}}]'
+elif [ "$1" = run ]; then
+  printf 'launch\\n' >> '${launches}'
+  printf '%s' '${prefix}'
+  exec ${flood ? "/bin/dd if=/dev/zero bs=1048576 count=2" : "/bin/sleep 5"}
+fi
+`,
+      );
+      await Deno.chmod(executable, 0o755);
+      const result = await runIsolatedCapabilitySource({
+        root,
+        language: "typescript",
+        source: "export const value = 42;",
+        image: "vibe-coder:test",
+      }, {
+        timeoutMs: 250,
+        detect: async () => ({
+          ...CONTAINER_RUNTIMES["apple-container"],
+          executable,
+          platform: "darwin",
+          probed: ["apple-container"],
+        }),
+      });
+      const verified = prefix === "CAPSEC_ISOLATION_OK\n";
+      assertEquals(
+        result.code,
+        verified ? flood ? 125 : 124 : null,
+        result.stderr,
+      );
+      assertEquals(
+        result.isolation.status,
+        verified ? "enforced" : "unavailable",
+      );
+      assertStringIncludes(result.stderr, flood ? "byte limit" : "timed out");
+      assertEquals(await Deno.readTextFile(launches), "launch\n");
+      assert(result.elapsedMs < 3000);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test({
@@ -188,6 +251,21 @@ Deno.test({
         ),
         expected: 0,
       },
+      {
+        language: "rust" as const,
+        source: rust.replace(
+          "    if actor.tenant",
+          `    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let ppid = status.lines().find(|line| line.starts_with("PPid:")).unwrap().split_whitespace().nth(1).unwrap();
+    for target in ["mem", "fd/1"] {
+        assert!(std::fs::OpenOptions::new().write(true).open(format!("/proc/{}/{}", ppid, target)).is_err(), "trusted parent writable");
+    }
+    if actor.tenant`,
+        ),
+        expected: 0,
+      },
+      // The refusal must not make an ordinary secure implementation unusable.
+      { language: "rust" as const, source: rust, expected: 0 },
     ];
     for (const probe of probes) {
       const result = await run(probe.language, probe.source);
@@ -281,7 +359,7 @@ Deno.test("evaluation requires an image digest and refuses an Apple tag that cha
       language: "typescript",
       source: "export const value = 42;",
     }, fake.deps);
-    assertEquals(result.code, null);
+    assertEquals(result.code, missing ? null : 125);
     assertStringIncludes(
       result.stderr,
       missing ? "no immutable digest" : "changed during execution",

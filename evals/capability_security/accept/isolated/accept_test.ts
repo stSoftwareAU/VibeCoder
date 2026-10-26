@@ -4,6 +4,29 @@ if (language !== "typescript" && language !== "rust") {
   throw new Error("CAPSEC_LANGUAGE must identify a supported fixture language");
 }
 
+// Native children share our unprivileged UID. Disable ptrace/proc memory access
+// in this already-execed process before starting them; doing so before exec
+// would be ineffective because exec resets dumpability. Only this read-only
+// parent receives FFI permission, scoped to the image's libc paths.
+const libc = Deno.dlopen(
+  `/lib/${Deno.build.arch}-linux-gnu/libc.so.6`,
+  {
+    prctl: {
+      parameters: ["i32", "u64", "u64", "u64", "u64"],
+      result: "i32",
+    },
+  },
+);
+try {
+  if (
+    libc.symbols.prctl(4, 0n, 0n, 0n, 0n) !== 0 ||
+    libc.symbols.prctl(3, 0n, 0n, 0n, 0n) !== 0
+  ) throw new Error("trusted parent cannot disable dumpability");
+} finally {
+  libc.close();
+}
+console.log("CAPSEC_PARENT_PROTECTED");
+
 async function call(
   actor: string,
   name: string,
