@@ -1,0 +1,17 @@
+{
+  "issue": 4051,
+  "chunk": "top-up-4051",
+  "title": "top-up: Apple container egress containment",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4051",
+  "definition": "Per-launch internal network for Apple `container`, with the allowlist proxy sidecar attached to both the internal and the external network so it is the only route out; a version-verified CLI capability check that refuses a runtime whose flags cannot be proven; per-control egress probe results where a probe that did not run is recorded as not-run and never as a pass; a scoped stale-resource sweep limited to containers and networks this worker created; and bounded recovery that refuses the launch rather than falling back to unrestricted networking.",
+  "status": "claimed",
+  "sweptAt": "9e4a7d912d55f677e7ecebaebb5cf3cfc5366c4f",
+  "paths": [
+    "worker/deno/lib/apple_container_capabilities.ts",
+    "worker/deno/lib/apple_egress.ts",
+    "worker/deno/lib/egress_control_probe.ts",
+    "worker/deno/lib/egress_controls.ts",
+    "worker/deno/lib/egress_host_allowlist.ts",
+    "worker/deno/lib/egress_proxy_env.ts"
+  ]
+}

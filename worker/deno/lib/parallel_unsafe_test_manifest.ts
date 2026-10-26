@@ -298,6 +298,9 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // measurement separates its character loop from a super-linear one on a
   // long line of open brackets and quotes (Issue #4234).
   "tests/doc_prose_scope_lexer_test.ts",
+  // The capability parser patterns run over untrusted CLI output and are
+  // checked with a growth measurement via support/growth.ts (Issue #4051).
+  "tests/apple_container_capabilities_test.ts",
 ];
 
 /**
