@@ -25,28 +25,11 @@ import {
   type IssueEditHookDecision,
   renderIssueEditHookOutput,
 } from "./issue_executor_enforcement.ts";
+import { readStdin } from "./issue_edit_guard_cli.ts";
 import {
   decideStaticScanHook,
   STATIC_SCAN_DENIAL_MARKER,
 } from "./static_scan_guard.ts";
-
-/**
- * Read all of stdin as text. A copy of `issue_edit_guard_cli.ts`'s private
- * `readStdin`: importing that CLI entry point for one helper would couple the two
- * guards' entry points, and no exported stdin reader exists in `lib/`.
- */
-async function readStdin(): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of Deno.stdin.readable) chunks.push(chunk);
-  const total = chunks.reduce((sum, c) => sum + c.length, 0);
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return new TextDecoder().decode(joined);
-}
 
 /**
  * The log line a denial writes, naming the tool that was denied.

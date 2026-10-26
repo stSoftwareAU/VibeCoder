@@ -23,8 +23,8 @@ import {
   renderIssueEditHookOutput,
 } from "./issue_executor_enforcement.ts";
 
-/** Read all of stdin as text. */
-async function readStdin(): Promise<string> {
+/** Read all of stdin as text. Also reused by `static_scan_guard_cli.ts`. */
+export async function readStdin(): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of Deno.stdin.readable) chunks.push(chunk);
   const total = chunks.reduce((sum, c) => sum + c.length, 0);
