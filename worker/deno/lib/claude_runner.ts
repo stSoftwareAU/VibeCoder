@@ -32,6 +32,13 @@ import {
 } from "./heavy_build_gate.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import {
+  appendFinishDeadlinePrompt,
+  clampTimeoutToFinishDeadline,
+  finishSessionReserveSeconds,
+  getRunTimeline,
+  MIN_AGENT_SESSION_SECONDS,
+} from "./run_timeline.ts";
+import {
   commandOutputWithTimeout,
   isCommandTimeoutError,
   spawnCommandWithTimeout,
@@ -350,6 +357,14 @@ export interface ClaudeRunResult {
    * means the run really did exhaust its own budget.
    */
   scheduledRelease?: ScheduledReleaseReason;
+  /**
+   * The session was bounded by the run's finish deadline (Issue #4244).
+   *
+   * Set when the agent was not spawned because less than the minimum session
+   * remained, and when a spawned session ended at the clamped timeout.
+   * Absent means the run used its own budget, or no timeline was set.
+   */
+  finishDeadline?: boolean;
   /**
    * Seconds the hard watchdog fired past its configured budget
    * (Issue #4254). Deno timers in a starved VM are not a reliable clock —
@@ -1189,6 +1204,44 @@ async function runClaudeWithTimeoutBody(
     clock = systemClock,
   } = options;
 
+  // The finish deadline bounds every session (Issue #4244). With no timeline
+  // set the prompt, the arguments and the timeout stay exactly as the caller
+  // asked. The line is appended to the user prompt only — the system prompt
+  // is the cached prefix and is not touched.
+  const timeline = getRunTimeline();
+  let finishClamp = timeline
+    ? clampTimeoutToFinishDeadline({
+      requestedTimeoutSeconds: timeoutSeconds,
+      killAfterSeconds,
+      nowMs: clock.now(),
+      timeline,
+    })
+    : undefined;
+  let userPrompt = finishClamp
+    ? appendFinishDeadlinePrompt(prompt, finishClamp)
+    : prompt;
+  let sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
+  const finishRefusal = () => {
+    logger?.info(
+      `claude_timeout=${sessionTimeoutSeconds} (clamped to finish deadline ${
+        finishClamp!.finishIso
+      }) — ` +
+        `below ${MIN_AGENT_SESSION_SECONDS}s, not spawning the agent`,
+    );
+    return {
+      ok: true as const,
+      value: {
+        exitCode: TIMEOUT_EXIT_CODE,
+        output: "",
+        stderr: "",
+        timedOut: true,
+        timeoutReason: "hard-timeout" as const,
+        finishDeadline: true,
+      },
+    };
+  };
+  if (finishClamp?.belowFloor) return finishRefusal();
+
   // An agent in a checkout runs cargo and deno. Below the floor it does not
   // start (Issue #4360). No checkout means there is no build to bound, and
   // the gate is a no-op until production arms it.
@@ -1237,7 +1290,7 @@ async function runClaudeWithTimeoutBody(
   const promptViaStdin = provider.promptTransport === "stdin";
   const invocationRequest = {
     orchestrationRole: options.orchestrationRole,
-    prompt,
+    prompt: userPrompt,
     systemPrompt,
     model,
     phase,
@@ -1260,7 +1313,7 @@ async function runClaudeWithTimeoutBody(
       options.settingsJson ? JSON.parse(options.settingsJson) : undefined,
     ),
   };
-  const args = provider.buildInvocation({
+  let args = provider.buildInvocation({
     ...invocationRequest,
     promptViaStdin,
   });
@@ -1291,11 +1344,11 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   }
-  const stdinPayload = promptViaStdin
-    ? (provider.stdinBody?.(invocationRequest) ?? prompt)
-    : prompt;
+  let stdinPayload = promptViaStdin
+    ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
+    : userPrompt;
 
-  const timeoutMs = timeoutSeconds * 1000;
+  let timeoutMs = sessionTimeoutSeconds * 1000;
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
 
   let timedOut = false;
@@ -1305,6 +1358,10 @@ async function runClaudeWithTimeoutBody(
   // (Issue #424). Carried onto the result so the phase can report a
   // scheduled release instead of a per-issue timeout.
   let scheduledRelease: ScheduledReleaseReason | undefined;
+  // Set when an extension grant was refused because the finish deadline left
+  // no runway (Issue #4245). The session-clamp path sets the same flag from
+  // `finishClamp` at return time; this covers a grant the ceiling stopped.
+  let finishDeadlineReached = false;
   let hardWatchdog: TimerHandle | undefined;
   let silenceWatchdog: TimerHandle | undefined;
   let killBoundTimer: TimerHandle | undefined;
@@ -1406,6 +1463,34 @@ async function runClaudeWithTimeoutBody(
     }
     prePushHook = hookOutcome.value;
 
+    if (promptViaStdin) {
+      promptFilePath = await Deno.makeTempFile({
+        prefix: "vibe-agent-prompt-",
+        suffix: ".md",
+      });
+    }
+    // Setup can consume the remaining runway. Refresh only after every
+    // awaited preparation step, then render the invocation from that budget.
+    finishClamp = timeline
+      ? clampTimeoutToFinishDeadline({
+        requestedTimeoutSeconds: timeoutSeconds,
+        killAfterSeconds,
+        nowMs: clock.now(),
+        timeline,
+      })
+      : undefined;
+    sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
+    timeoutMs = sessionTimeoutSeconds * 1000;
+    if (finishClamp?.belowFloor) return finishRefusal();
+    userPrompt = finishClamp
+      ? appendFinishDeadlinePrompt(prompt, finishClamp)
+      : prompt;
+    invocationRequest.prompt = userPrompt;
+    args = provider.buildInvocation({ ...invocationRequest, promptViaStdin });
+    stdinPayload = promptViaStdin
+      ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
+      : userPrompt;
+
     // Issue #324: run the agent at a lower scheduler priority.
     //
     // On 2026-08-22 two agents each wrote an unbounded bash busy-wait — one
@@ -1441,14 +1526,19 @@ async function runClaudeWithTimeoutBody(
       ? ["-n", String(agentNice), agentBinary, ...args]
       : args;
 
+    const finishClampNote = finishClamp?.clamped
+      ? ` (clamped to finish deadline ${finishClamp.finishIso})`
+      : "";
     logger?.info(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
-      `Running ${provider.displayName} with ${timeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
+      `Running ${provider.displayName} with ${sessionTimeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
         (args.includes("--max-turns")
-          ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
+          ? ` claude_timeout=${sessionTimeoutSeconds} claude_max_turns=${
             args[args.indexOf("--max-turns") + 1]
-          }`
+          }${finishClampNote}`
+          : finishClampNote
+          ? ` claude_timeout=${sessionTimeoutSeconds}${finishClampNote}`
           : "") +
         (noOutputMs > 0 ? `, no-output watchdog ${noOutputTimeout}s` : "") +
         "...",
@@ -1478,15 +1568,10 @@ async function runClaudeWithTimeoutBody(
     // Wall-clock start for per-run stats (Issue #2647). Measured around the
     // whole subprocess lifetime; used as the duration fallback when the CLI
     // result line does not report its own `duration_ms`.
-    if (promptViaStdin) {
-      // Written before the spawn so the file exists for the whole run; a
-      // kill mid-stream leaves it for post-mortem when the transcript tee
-      // is on, otherwise it is removed with the run.
-      promptFilePath = await Deno.makeTempFile({
-        prefix: "vibe-agent-prompt-",
-        suffix: ".md",
-      });
-      await Deno.writeTextFile(promptFilePath, stdinPayload);
+    if (promptViaStdin && promptFilePath) {
+      // Finalise the already allocated file without an await between the
+      // refreshed budget and spawn. It remains inspectable for the run.
+      Deno.writeTextFileSync(promptFilePath, stdinPayload);
       logger?.info(
         `Prompt file: ${promptFilePath} (${
           new TextEncoder().encode(stdinPayload).length
@@ -1494,6 +1579,20 @@ async function runClaudeWithTimeoutBody(
       );
     }
     const startMs = clock.now();
+    // Even synchronous prompt I/O can consume time. Refuse if it crossed the
+    // admission floor; the absolute deadline below also bounds shorter delays.
+    if (timeline) {
+      const spawnClamp = clampTimeoutToFinishDeadline({
+        requestedTimeoutSeconds: timeoutSeconds,
+        killAfterSeconds,
+        nowMs: startMs,
+        timeline,
+      });
+      finishClamp = spawnClamp;
+      sessionTimeoutSeconds = spawnClamp.timeoutSeconds;
+      timeoutMs = sessionTimeoutSeconds * 1000;
+      if (spawnClamp.belowFloor) return finishRefusal();
+    }
     const child = spawnCommandWithTimeout(spawnBinary, {
       args: spawnArgs,
       cwd,
@@ -1506,7 +1605,7 @@ async function runClaudeWithTimeoutBody(
       // watchdog still kills the tree at its deadline; this signal fires only
       // if that child is still alive.
       timeoutMs: agentSpawnBackstopMs(
-        timeoutSeconds,
+        sessionTimeoutSeconds,
         killAfterSeconds,
         options.progressExtension === undefined ? undefined : {
           enabled: options.progressExtension.policy.enabled === true,
@@ -1742,7 +1841,13 @@ async function runClaudeWithTimeoutBody(
     // The hard deadline, epoch-ms (Issue #4296). Without the opt-in it is
     // `startMs + timeoutMs` for the whole run and every figure below reduces
     // to what it was; with it, each granted extension moves it forward.
-    let deadlineMs = startMs + timeoutMs;
+    let deadlineMs = Math.min(
+      startMs + timeoutMs,
+      timeline
+        ? timeline.finishMs -
+          finishSessionReserveSeconds(killAfterSeconds) * 1000
+        : Infinity,
+    );
     let extensionsGranted = 0;
     let extensionInFlight = false;
     const extension = options.progressExtension;
@@ -1792,7 +1897,7 @@ async function runClaudeWithTimeoutBody(
     ): ExtensionTelemetry | undefined =>
       telemetryActive
         ? buildExtensionTelemetry({
-          baseTimeoutSeconds: timeoutSeconds,
+          baseTimeoutSeconds: sessionTimeoutSeconds,
           startMs,
           deadlineMs,
           nowMs,
@@ -2151,6 +2256,9 @@ async function runClaudeWithTimeoutBody(
         // cross it is clamped to it, and a run with no runway left is
         // refused so the worker's own kill lands first.
         ...(opts.ceilingMs !== undefined ? { ceilingMs: opts.ceilingMs } : {}),
+        ...(opts.ceilingLabel !== undefined
+          ? { ceilingLabel: opts.ceilingLabel }
+          : {}),
       }, opts.policy);
 
       const elapsedSeconds = Math.round((nowMs - startMs) / 1000);
@@ -2161,6 +2269,10 @@ async function runClaudeWithTimeoutBody(
         // release (Issue #424) — the issue is not at fault and must not be
         // told it ran out of time.
         if (decision.cause === "hard-cap") scheduledRelease = "hard-cap";
+        if (decision.cause === "finish-deadline") {
+          scheduledRelease = "finish-deadline";
+          finishDeadlineReached = true;
+        }
         logger?.info(
           `[progress-extension] not extending after ${elapsedSeconds}s ` +
             // Name every signal the decision saw (Issue #767): the #732
@@ -2725,6 +2837,14 @@ async function runClaudeWithTimeoutBody(
         timedOut,
         timeoutReason,
         ...(scheduledRelease ? { scheduledRelease } : {}),
+        // The hard watchdog that fired is the finish clamp, not the caller's
+        // own budget (Issue #4244). A silence watchdog or a call storm is a
+        // different ending and does not carry the flag.
+        ...(finishDeadlineReached ||
+            (timedOut && timeoutReason === "hard-timeout" &&
+              finishClamp?.clamped)
+          ? { finishDeadline: true }
+          : {}),
         ...(terminated ? { terminated: true } : {}),
         ...(externalSigterm ? { externalSigterm: true } : {}),
         ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
@@ -3356,6 +3476,7 @@ async function runRetryLadder(
           ...(result.value.scheduledRelease
             ? { scheduledRelease: result.value.scheduledRelease }
             : {}),
+          ...(result.value.finishDeadline ? { finishDeadline: true } : {}),
           // Carry the #4254 evidence: a late-firing watchdog and an
           // abandoned post-kill wait must survive into the diagnostics.
           ...(result.value.watchdogLateSeconds !== undefined

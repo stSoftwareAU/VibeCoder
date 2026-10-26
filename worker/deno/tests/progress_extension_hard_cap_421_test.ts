@@ -231,3 +231,29 @@ Deno.test("progress extension #421 - the ceiling never rescues a stalled run", (
     `the stalled signal must still be the reason: ${decision.reason}`,
   );
 });
+
+Deno.test("progress extension #4245 - a grant that would pass the finish is clamped, and the line says so", () => {
+  const nowMs = START_MS + 100 * 60_000;
+  const ceilingMs = nowMs + 200_000;
+  const decision = decideProgressExtension({
+    nowMs,
+    startMs: START_MS,
+    deadlineMs: nowMs,
+    lastToolCallAtMs: nowMs - 5_000,
+    treeState: "advanced",
+    extensionsGranted: 1,
+    ceilingMs,
+    ceilingLabel: "the finish deadline",
+  }, POLICY);
+  assertEquals(decision.action, "extend");
+  if (decision.action !== "extend") return;
+  assertEquals(decision.newDeadlineMs, ceilingMs);
+  assert(
+    decision.reason.includes("grant clamped to the finish deadline"),
+    decision.reason,
+  );
+  assert(
+    decision.newDeadlineMs <= ceilingMs,
+    "a grant must not move the deadline past the finish ceiling",
+  );
+});

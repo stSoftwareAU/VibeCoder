@@ -22,6 +22,7 @@ import type {
 } from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
+import { DEFAULT_RUN_FINISH_SECONDS } from "./run_timeline.ts";
 import { DEFAULT_CALL_STORM_NOVEL_SHARE } from "./call_storm.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { DEFAULT_CADENCE_POLICY } from "./idle_task_cadence.ts";
@@ -214,6 +215,12 @@ export const OPERATIONAL_DEFAULTS = {
    * `claim_runway.ts`.
    */
   minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
+  /**
+   * Run finish deadline in seconds from run start (Issue #4242): two hours.
+   * Must exceed the one-hour run target. The single definition lives in
+   * `run_timeline.ts`.
+   */
+  runFinishSeconds: DEFAULT_RUN_FINISH_SECONDS,
   /**
    * Re-armable hard deadline for issue work (Issue #4296, part of #4290).
    *
@@ -1584,6 +1591,7 @@ export function buildDefaultWorkerConfig(
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
     claudeMaxTurns: OPERATIONAL_DEFAULTS.claudeMaxTurns,
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
+    runFinishSeconds: OPERATIONAL_DEFAULTS.runFinishSeconds,
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
     progressExtensionEnabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,

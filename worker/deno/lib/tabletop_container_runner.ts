@@ -253,6 +253,7 @@ async function buildHostFixture(
     image,
     containerName: `vibe-tabletop-${token}`,
     watchdogSeconds: 11_400,
+    planEpochSeconds: Math.floor(Date.now() / 1000),
     // The tabletop exercises containment, not the fleet build stamp
     // (Issue #1572): this container runs the harness, not a worker run.
     buildCommit: "unknown",

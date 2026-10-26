@@ -34,6 +34,7 @@ import {
   setConfiguredProviderFallbackPolicy,
 } from "./provider_fallback_policy.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
+import { DEFAULT_RUN_TARGET_SECONDS } from "./run_timeline.ts";
 import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
@@ -663,6 +664,27 @@ export async function loadConfig(
   const minClaimRunwaySeconds = file.min_claim_runway_seconds ??
     readNonNegativeNumberEnv("MIN_CLAIM_RUNWAY_SECONDS", env) ??
     OPERATIONAL_DEFAULTS.minClaimRunwaySeconds;
+  // Run finish deadline (Issue #4242): seconds from run start. Validated
+  // here and published by the run timeline. Agent sessions, extension
+  // grants, the claim floor and the drain read it (Issues #4244, #4245,
+  // #4246). A finish at or before the one-hour run target leaves no time
+  // to finish, so it is refused loudly rather than logged as a live deadline.
+  const runFinishSeconds = file.run_finish_seconds ??
+    OPERATIONAL_DEFAULTS.runFinishSeconds;
+  if (!Number.isFinite(runFinishSeconds)) {
+    throw new Error(
+      `run_finish_seconds must be a finite number, got ` +
+        `${String(runFinishSeconds)}.`,
+    );
+  }
+  if (runFinishSeconds <= DEFAULT_RUN_TARGET_SECONDS) {
+    throw new Error(
+      `run_finish_seconds must be greater than the run duration target ` +
+        `(${DEFAULT_RUN_TARGET_SECONDS}), got ${runFinishSeconds}. The finish ` +
+        `deadline is measured from run start, so a value at or below the ` +
+        `target leaves the run no time to finish after it.`,
+    );
+  }
   // Adaptive claim floor (Issue #245): labels that mark an issue as a long
   // job, alongside the preserved-WIP and prior-execute-timeout evidence.
   const claimLongJobLabels = file.claim_long_job_labels ??
@@ -1270,6 +1292,7 @@ export async function loadConfig(
     claudeTimeout,
     claudeMaxTurns,
     minClaimRunwaySeconds,
+    runFinishSeconds,
     claimLongJobLabels,
     progressExtensionEnabled,
     agentTranscriptEnabled,

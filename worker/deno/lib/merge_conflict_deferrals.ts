@@ -82,7 +82,8 @@ export type ConflictDeferralBound = "repo-leased" | "deadline" | "cap";
 /** What each bound is, in words, for the comment. */
 const BOUND_DESCRIPTIONS: Record<ConflictDeferralBound, string> = {
   "repo-leased": "an issue slot held the repository's shared clone",
-  "deadline": "too little of the cycle remained to start a resolution",
+  "deadline":
+    "too little of the cycle remained, or the run's target had passed, to start a resolution",
   // Deferrals count against the cap as well as attempts, so "used up" rather
   // than "spent on resolutions" — the latter would be false for a cycle that
   // hit the cap on deferrals.

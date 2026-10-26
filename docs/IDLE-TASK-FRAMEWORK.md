@@ -682,7 +682,12 @@ repo:
    filed=<n> idle_slots=<n>`. The latch is released whenever a slot takes a
    claim — the fleet has work again, so a later idle stretch may file again —
    and at the start of every cycle. The audit and the census run behind the
-   same latch, so an idle slot's 74 re-scans cost one probe, not 74.
+   same latch, so an idle slot's 74 re-scans cost one probe, not 74. Filing is
+   a start, so once the run's one-hour target has passed the filer is refused
+   before the latch is consumed (Issue #4243): no permit is spent and the audit,
+   census and filer do not run, with one
+   `[idle-hooks] skipping=idle-task-filer reason=past_run_target` line for each
+   refused observation.
 
 **Per-repo wrapper exclusivity (Issues #2092, #1083).** Before the per-repo
 loop the filer takes a census of every monitored repo already holding an open

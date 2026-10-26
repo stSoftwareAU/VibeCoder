@@ -308,13 +308,23 @@ export interface WorkerConfig {
   /** Positive per-invocation Claude Code turn cap; defaults to 100. */
   claudeMaxTurns?: number;
   /**
-   * Seconds of runway to the supervisor hard cap a new implementation claim
-   * must have (`.config.json` `min_claim_runway_seconds`, Issues #289/#425).
-   * `0` disables the floor. Environment variable `MIN_CLAIM_RUNWAY_SECONDS`
-   * is the fallback when the key is absent — it does not cross the container
-   * boundary, so only a native run can set it. See `lib/claim_runway.ts`.
+   * Seconds of runway a new implementation claim must have (`.config.json`
+   * `min_claim_runway_seconds`, Issues #289/#425/#4245). When a timeline is
+   * set the floor measures to the finish deadline; otherwise to the
+   * supervisor hard cap. `0` disables the floor. Environment variable
+   * `MIN_CLAIM_RUNWAY_SECONDS` is the fallback when the key is absent — it
+   * does not cross the container boundary, so only a native run can set it.
+   * See `lib/claim_runway.ts`.
    */
   minClaimRunwaySeconds: number;
+  /**
+   * Seconds from run start to the run's finish deadline (`.config.json`
+   * `run_finish_seconds`, Issue #4242). Must exceed the run duration target.
+   * When a timeline is set, agent sessions, extension grants, the claim
+   * floor and the drain read this finish (Issues #4244, #4245, #4246).
+   * See `lib/run_timeline.ts`.
+   */
+  runFinishSeconds?: number;
   /**
    * Labels marking an issue as a long job for the adaptive claim floor
    * (`.config.json` `claim_long_job_labels`, Issue #245). An issue carrying
@@ -1410,6 +1420,8 @@ export interface ConfigFile {
   /** Positive per-invocation Claude Code turn cap; defaults to 100. */
   claude_max_turns?: number;
   min_claim_runway_seconds?: number;
+  /** Seconds from run start to the run's finish deadline (Issue #4242) */
+  run_finish_seconds?: number;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];
   /** Extend the issue-work deadline while progress holds (Issue #4296) */

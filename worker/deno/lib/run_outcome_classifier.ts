@@ -486,7 +486,7 @@ export function classifyRunFailure(
       fixability: "not_code_fixable",
       failureClass: "scheduled-release",
       rationale:
-        "The run was released on schedule (cycle ended or run hard cap reached) with its work preserved — not a worker defect.",
+        "The run was released on schedule (cycle ended, finish deadline reached, or run hard cap reached) with its work preserved — not a worker defect.",
     };
   }
   if (isOutOfCreditMessage(message)) return OUT_OF_CREDIT;

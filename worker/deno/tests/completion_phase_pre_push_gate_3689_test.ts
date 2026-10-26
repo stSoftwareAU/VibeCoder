@@ -109,7 +109,7 @@ interface Scenario {
    * "ok" a clean exit, "error" a failed invocation, "throw" a thrown one.
    * Defaults to "ok".
    */
-  agent?: "ok" | "error" | "throw";
+  agent?: "ok" | "error" | "throw" | "finish-deadline";
   /** Whether the PR base resolves to nothing (no local, remote or fetched ref). */
   baseUnresolvable?: boolean;
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
@@ -266,6 +266,18 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             ok: false as const,
             error: new Error("agent invocation failed"),
           });
+        }
+        if (scenario.agent === "finish-deadline") {
+          return {
+            ok: true,
+            value: {
+              exitCode: 124,
+              output: "",
+              timedOut: true,
+              timeoutReason: "hard-timeout",
+              finishDeadline: true,
+            },
+          };
         }
         return Promise.resolve({
           ok: true as const,
@@ -704,6 +716,28 @@ Deno.test({
       !reason.includes(BLOCK),
       "the reason quotes the latest gate output, not the first",
     );
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a pre-push recovery at the finish is a scheduled release without another gate or failure charge",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      agent: "finish-deadline",
+      gateAnswers: [BLOCK, "pass"],
+    });
+    assertEquals(o.status, "failure");
+    assertEquals(o.category, "scheduled_release");
+    assertStringIncludes(o.reason ?? "", "finish deadline");
+    assertEquals(o.agentCalls, 1);
+    assertEquals(o.gateCalls, 1);
+    assertEquals(o.pushes, 0);
+    assertEquals(o.prCreates, 0);
+    assertEquals(o.attempts, 0);
   },
 });
 

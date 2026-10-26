@@ -34,6 +34,9 @@ import {
 import type { DiagnosticSummary } from "../lib/issue_finder_logger.ts";
 import type { InFlightClaim } from "../lib/work_stream.ts";
 import { createRendezvous, waitUntil } from "./support/rendezvous.ts";
+import { resetRunTimelineForTests } from "../lib/run_timeline.ts";
+import { startWipCheckpoints } from "../lib/wip_checkpoint.ts";
+import { resumeIssueBranch } from "../lib/issue_branch_resume.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -924,7 +927,9 @@ Deno.test("slot pool - deadline with 3 slots of staggered durations: all three c
       // Slot ages differ: 5 ms, 25 ms, 60 ms. The deadline passes while
       // the slowest is still running.
       await new Promise((r) => setTimeout(r, 5 + i.issueNumber * 25));
-      now += config.runDurationSeconds * 1000; // past the deadline
+      // Each slot finishes after the target but before the two-hour finish.
+      // The same elapsed interval is not charged once per concurrent slot.
+      now = Math.max(now, config.runDurationSeconds * 1000 + 1);
       completed++;
       return { ok: true, value: { success: false } };
     },
@@ -2363,4 +2368,269 @@ Deno.test("slot pool - a rate-limit refusal with the quota still spent pauses as
   await runOneCycle(deps, 2);
   assert(logs.some((l) => l.startsWith("Primary rate limit hit mid-cycle")));
   assert(!logs.some((l) => l.includes("GraphQL window has reopened")));
+});
+
+for (const slotCount of [1, 2]) {
+  Deno.test(`slot count ${slotCount} - a claim that never settles does not hold the drain past the finish grace (Issue #4246)`, async () => {
+    const start = 1_700_000_000_000;
+    let now = start;
+    const config = createDefaultRunCoreConfig();
+    const finishMs = start + config.runFinishSeconds * 1000;
+    const reserveMs = (config.claudeKillAfterSeconds + 120) * 1000;
+    const drainAt = finishMs + reserveMs;
+    const logs: string[] = [];
+    const released: string[] = [];
+    const callbacks: string[] = [];
+    const cycles: string[] = [];
+    const sleeps: number[] = [];
+    let terminatedAt = 0;
+    let clock: ReturnType<typeof setInterval> | undefined;
+    let releaseHang: (() => void) | undefined;
+    const hung = new Promise<void>((resolve) => {
+      releaseHang = resolve;
+    });
+    const deps = createMockDeps({
+      now: () => now,
+      log: (message: string) => logs.push(message),
+      logError: (message: string) => logs.push(message),
+      // Record every wait. The finish grace is the drain's bound; the
+      // end-of-run tail must not add the default 300 s slot grace on top
+      // (Issue #4246). A no-op sleep would hide that second wait.
+      sleep: (ms?: number) => {
+        sleeps.push(ms ?? 0);
+        return Promise.resolve();
+      },
+      runCycleCallback: () => {
+        cycles.push("heartbeat");
+        return Promise.resolve();
+      },
+      runIssueCallbacks: (run) => {
+        callbacks.push(run.result);
+        return Promise.resolve();
+      },
+      terminateActiveAgentRuns: () => {
+        terminatedAt = now;
+        return Promise.resolve();
+      },
+      findNextIssue: issueQueue([issue("o/hang", 2)]),
+      releaseClaim: (repo, n) => {
+        released.push(`${repo}#${n}`);
+        return Promise.resolve();
+      },
+      processIssue: () => {
+        clock = setInterval(() => {
+          now = now < finishMs ? finishMs : drainAt;
+        }, 15);
+        return hung.then(() => ({
+          ok: true as const,
+          value: { success: true },
+        }));
+      },
+    });
+    let guardTimer: ReturnType<typeof setTimeout> | undefined;
+    const run = runCoreLoop(
+      { ...config, maxConcurrentIssues: slotCount },
+      deps,
+    );
+    try {
+      const result = await Promise.race([
+        run,
+        new Promise<never>((_resolve, reject) => {
+          guardTimer = setTimeout(
+            () =>
+              reject(new Error("finish drain did not release the hung claim")),
+            1500,
+          );
+        }),
+      ]);
+      assertEquals(
+        logs.some((line) => line.includes("failed-once")),
+        false,
+      );
+      assert(
+        logs.some((line) =>
+          line.includes("Run duration complete. Exiting for refresh.")
+        ),
+        logs.join("\n"),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes("Abandoned at the finish deadline: o/hang#2")
+        ),
+        logs.join("\n"),
+      );
+      assert(terminatedAt > 0 && terminatedAt <= drainAt);
+      assert(released.includes("o/hang#2"));
+      assert(cycles.includes("heartbeat"));
+      assert(callbacks.includes("success"));
+      assertEquals(result.exitReason, "Run duration expired");
+      // The default tail grace is 300 s. Once the finish grace has elapsed
+      // that wait must be zero, so the exit is not one slot grace later.
+      assert(
+        logs.some((line) =>
+          line.includes("still finishing — waiting up to 0s")
+        ),
+        logs.join("\n"),
+      );
+      assertEquals(
+        sleeps.filter((ms) => ms >= 300_000),
+        [],
+        `tail wait held the exit past the finish grace: ${sleeps.join(",")}`,
+      );
+    } finally {
+      if (guardTimer !== undefined) clearTimeout(guardTimer);
+      if (clock !== undefined) clearInterval(clock);
+      releaseHang?.();
+      await hung.catch(() => {});
+      await run.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      resetRunTimelineForTests();
+    }
+  });
+}
+
+Deno.test("slot pool - the finish deadline checkpoints, releases, and the next scan resumes the WIP branch (Issue #4246)", async () => {
+  const start = 1_700_000_000_000;
+  let now = start;
+  const config = createDefaultRunCoreConfig();
+  const finishMs = start + config.runFinishSeconds * 1000;
+  const logs: string[] = [];
+  const released: string[] = [];
+  const callbacks: string[] = [];
+  const cycles: string[] = [];
+  const pushes: string[] = [];
+  let terminated = false;
+  let clock: ReturnType<typeof setInterval> | undefined;
+  const wipBranch = "issue-2-hang";
+  const deps = createMockDeps({
+    now: () => now,
+    log: (message: string) => logs.push(message),
+    logError: (message: string) => logs.push(message),
+    sleep: (ms?: number) => {
+      now += ms ?? config.runDurationSeconds * 1000;
+      return Promise.resolve();
+    },
+    runCycleCallback: () => {
+      cycles.push("heartbeat");
+      return Promise.resolve();
+    },
+    runIssueCallbacks: (run) => {
+      callbacks.push(`${run.repo}#${run.issueNumber}:${run.result}`);
+      return Promise.resolve();
+    },
+    terminateActiveAgentRuns: () => {
+      terminated = true;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/hang", 2)]),
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+    processIssue: async () => {
+      clock = setInterval(() => {
+        now = finishMs;
+      }, 15);
+      await new Promise<void>((resolve) => {
+        const wait = setInterval(() => {
+          if (terminated) {
+            clearInterval(wait);
+            resolve();
+          }
+        }, 10);
+      });
+      const handle = startWipCheckpoints({
+        repoPath: "/repo",
+        branchName: wipBranch,
+        deps: {
+          currentBranch: () => Promise.resolve(wipBranch),
+          commitAndPush: (branch, message) => {
+            pushes.push(`${branch} ${message}`);
+            return Promise.resolve({
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+                finalUnpushedSource: "remote-head",
+              },
+            });
+          },
+        },
+      });
+      try {
+        await handle.runNow();
+      } finally {
+        handle.stop();
+      }
+      if (clock !== undefined) clearInterval(clock);
+      return { ok: true, value: { success: true } };
+    },
+  });
+  try {
+    const first = await runCoreLoop(
+      { ...config, maxConcurrentIssues: 2 },
+      deps,
+    );
+    assert(
+      logs.some((line) =>
+        line.includes("Run duration complete. Exiting for refresh.")
+      ),
+      logs.join("\n"),
+    );
+    assertEquals(first.exitReason, "Run duration expired");
+    assert(pushes.some((line) => line.startsWith(`${wipBranch} `)));
+    assert(released.includes("o/hang#2"));
+    assert(cycles.includes("heartbeat"));
+    assert(callbacks.includes("o/hang#2:success"));
+    assertEquals(logs.some((line) => line.includes("failed-once")), false);
+
+    let resumed: string | null = null;
+    const secondStart = finishMs + 10_000;
+    now = secondStart;
+    const second = createMockDeps({
+      now: () => now,
+      log: () => {},
+      sleep: (ms?: number) => {
+        now += ms ?? 2_000;
+        return Promise.resolve();
+      },
+      findNextIssue: issueQueue([issue("o/hang", 2)]),
+      releaseClaim: (repo, n) => {
+        released.push(`again ${repo}#${n}`);
+        return Promise.resolve();
+      },
+      processIssue: async () => {
+        const outcome = await resumeIssueBranch({
+          issueNumber: 2,
+          baseBranch: "main",
+          gitOptions: { cwd: "/repo" },
+        }, {
+          listRemoteIssueBranches: () =>
+            Promise.resolve({
+              ok: true,
+              value: [{ branch: wipBranch, sha: "abc123" }],
+            }),
+          orderBranchesByRecency: (branches) => Promise.resolve([...branches]),
+          countCommitsAhead: () => Promise.resolve({ ok: true, value: 1 }),
+          resumeFeatureBranchFromRemote: () =>
+            Promise.resolve({ ok: true, value: true }),
+        });
+        resumed = outcome.branch;
+        now = secondStart + 2_000;
+        return { ok: true, value: { success: true } };
+      },
+    });
+    await runCoreLoop({
+      ...config,
+      maxConcurrentIssues: 1,
+      runDurationSeconds: 1,
+      runFinishSeconds: 2,
+    }, second);
+    assertEquals(resumed, wipBranch);
+    assert(released.includes("again o/hang#2"));
+  } finally {
+    if (clock !== undefined) clearInterval(clock);
+    resetRunTimelineForTests();
+  }
 });

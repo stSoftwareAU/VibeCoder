@@ -22,6 +22,9 @@
  *   is granted an agent timeout that fits inside the budget that is left —
  *   never the configured one when the cycle cannot cover it. See
  *   `docs/workflows/merge-conflicts.md` for the incident behind it.
+ *   The run's target is a second deadline (Issue #4243): once the process-wide
+ *   run timeline's target has passed, no new resolution starts, whatever the
+ *   cycle has left, and the stop is reported as a deadline.
  * - **A per-cycle cap**, so one repository's backlog cannot take the whole run.
  * - **The exclusion set**, so a PR already taken — or one deferred because an
  *   issue slot holds its repository — is not re-selected by the next scan.
@@ -68,6 +71,7 @@ import {
   shouldAnnounceDeferral,
 } from "./merge_conflict_deferrals.ts";
 import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
+import { pastRunTarget } from "./run_timeline.ts";
 
 /**
  * Conflicting PRs one cycle's pass will take.
@@ -233,7 +237,10 @@ export interface ConflictDrainOptions {
 export type ConflictDrainStopReason =
   /** Nothing else is due — the queue is empty. */
   | "queue-empty"
-  /** Too little of the cycle remains for another agent run. */
+  /**
+   * Too little of the cycle remains for another agent run, or the run's
+   * target has passed (Issue #4243): no new resolution starts either way.
+   */
   | "deadline"
   /** The per-cycle cap was reached. */
   | "cap";
@@ -417,6 +424,25 @@ export async function drainConflictingPrs(
     };
 
     for (let taken = 0; taken < maxPerCycle; taken++) {
+      // Issue #4243: the run's target is a start-gate of its own. Past it no
+      // new resolution starts, whatever the cycle has left, and the remaining
+      // PRs defer to the next cycle. Logged even at taken === 0, because a
+      // refusal the operator cannot see looks exactly like an empty queue.
+      if (pastRunTarget(now())) {
+        logger.info(
+          "Merge-conflict drain stopping: the run target has passed; no new " +
+            "resolution starts and any remaining conflicting PR defers to the " +
+            "next cycle",
+          { taken, merged },
+        );
+        return {
+          kind: "deadline",
+          remainingMs: deadlineEpochMs !== undefined
+            ? deadlineEpochMs - now()
+            : 0,
+        };
+      }
+
       if (deadlineEpochMs !== undefined) {
         const remaining = deadlineEpochMs - now();
         // What the agent would actually get: the clone, the merge and the

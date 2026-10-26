@@ -279,6 +279,34 @@ Deno.test("merge conflict agent - a forged boundary marker in a milestone branch
 
 // --- Outcomes are reported, never swallowed ---
 
+Deno.test("merge conflict agent - a finish deadline is released on schedule, not judged (Issue #4245)", async () => {
+  const lines: string[] = [];
+  const captured = makeCaptured();
+  const outcome = await runMergeConflictAgent(makeRequest(
+    makeRunner(captured, {
+      finishDeadline: true,
+      timedOut: true,
+      timeoutReason: "hard-timeout",
+      exitCode: 124,
+    }),
+    {
+      logger: {
+        ...makeSilentLogger(),
+        info: (message: string) => lines.push(message),
+      },
+    },
+  ));
+
+  assertEquals(outcome.ok, true);
+  assert(outcome.ok);
+  assertEquals(outcome.value.finishDeadline, true);
+  assertEquals(outcome.value.terminated, false);
+  assert(
+    lines.some((line) => line.includes("released on schedule")),
+    lines.join("\n"),
+  );
+});
+
 Deno.test("merge conflict agent - a terminated run is reported, not judged", async () => {
   const captured = makeCaptured();
   const outcome = await runMergeConflictAgent(makeRequest(

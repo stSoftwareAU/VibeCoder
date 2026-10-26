@@ -10,6 +10,12 @@
  *
  * They still assert on the wiring rather than a pure function: what the runner
  * is actually handed, plus the run-start deadline the shutdown drain reads.
+ * Issue #4245 re-anchors the bound that does truncate: the two-hour finish,
+ * not the cycle deadline. A claim at minute 59 still has at least 61 minutes
+ * before that finish, so the argument stays the full budget. The extension
+ * ceiling, when a timeline is set, is the finish less the reserve. The tests
+ * below that pin "never truncated by the cycle deadline" keep that assertion;
+ * the finish-deadline test is the new contract.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -22,6 +28,12 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { runInSlotContext } from "../lib/slot_context.ts";
 import type { RunDeadlineState } from "../lib/run_deadline.ts";
 import type { WorkerConfig } from "../types.ts";
+import {
+  finishSessionReserveSeconds,
+  resetRunTimelineForTests,
+  resolveRunTimeline,
+  setRunTimeline,
+} from "../lib/run_timeline.ts";
 
 /** Config with the progress-extension feature switched on. */
 function extensionConfig(): WorkerConfig {
@@ -224,4 +236,38 @@ Deno.test("execute_phase - the run publishes its full-budget deadline to the slo
     late.deadlines[0]!.deadlineMs >= lateBefore + config.claudeTimeout * 1000,
     "a claim taken late reports the same whole budget, not a shortened one",
   );
+});
+
+Deno.test("execute_phase - a claim at minute 59 keeps the full budget and the extension ceiling is the finish (Issue #4245)", async () => {
+  const config = extensionConfig();
+  const now = Date.now();
+  const startedMs = now - 59 * 60_000;
+  try {
+    setRunTimeline(resolveRunTimeline({
+      startedMs,
+      runDurationSeconds: 3600,
+      runFinishSeconds: 7200,
+      env: () => undefined,
+      killAfterSeconds: config.claudeKillAfter,
+      warn: () => {},
+    }));
+    const { runnerOptions } = await runPhase(config, now + 61 * 60_000);
+    assertEquals(
+      runnerOptions.timeoutSeconds,
+      config.claudeTimeout,
+      "61 minutes before the finish still covers the configured budget",
+    );
+    const extension = runnerOptions.progressExtension as {
+      ceilingMs?: number;
+      ceilingLabel?: string;
+    };
+    const finishMs = startedMs + 7200 * 1000;
+    assertEquals(extension.ceilingLabel, "the finish deadline");
+    assertEquals(
+      extension.ceilingMs,
+      finishMs - finishSessionReserveSeconds(config.claudeKillAfter) * 1000,
+    );
+  } finally {
+    resetRunTimelineForTests();
+  }
 });
