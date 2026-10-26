@@ -79,3 +79,11 @@ Validation: 17 recovery/dispatch tests, 99 related integration tests and all
 11 touched TypeScript files pass lint. The duplicated housekeeping fragment
 in `GH-API-OPTIMISATION.md` is removed, and `DEPLOYMENT.md` now describes the
 supervisor cap as the outer kill, consistent with the finish-deadline model.
+
+After #4380 merged, retained both configuration test groups and extended the
+same typed scheduled-release handling to its new pre-push recovery turn. A
+completion-level regression failed with `pre_push_gate` before this integration
+fix; it now requires `scheduled_release`, no gate rerun, no normal push or PR
+creation, and no failure attempt.
+All 192 configuration, pre-push and recovery integration tests pass, along
+with all 866 manifest checks (one ignored); formatting and lint pass.

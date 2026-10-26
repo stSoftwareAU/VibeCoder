@@ -680,7 +680,6 @@ Deno.test("config - loadConfig throws for config with invalid structure", async 
 // getEnvNumberOrDefault tests (Issue #218)
 // ======================================================================});
 
-
 Deno.test("config - getEnvNumberOrDefault returns env var as number when set", () => {
   const result = getEnvNumberOrDefault(
     "TEST_NUM_VAR",
@@ -726,7 +725,6 @@ Deno.test("config - getEnvNumberOrDefault handles negative numbers", () => {
 
 // getEnvArrayOrDefault tests (Issue #218)
 // ======================================================================});
-
 
 Deno.test("config - getEnvArrayOrDefault returns env var as array when set", () => {
   const result = getEnvArrayOrDefault(
@@ -882,7 +880,6 @@ Deno.test("config - loadConfig reads its overrides through the injected lookup (
 // isAllowedAuthor tests (Issue #218)
 // ======================================================================});
 
-
 Deno.test("config - isAllowedAuthor returns true for allowed user", () => {
   const config: WorkerConfig = buildDefaultWorkerConfig({
     allowedAuthors: ["alice", "bob"],
@@ -919,7 +916,6 @@ Deno.test("config - isAllowedAuthor is case-insensitive, as GitHub logins are (I
 
 // validateConfig additional edge cases (Issue #218)
 // ======================================================================});
-
 
 Deno.test("config - validateConfig rejects invalid username format", () => {
   const config: WorkerConfig = buildDefaultWorkerConfig({
@@ -989,7 +985,6 @@ Deno.test("config - validateConfig accepts multiple allowed authors", () => {
 
 // The single trust source — collaborators minus the Vibe Coders (Issue #1066)
 // ======================================================================});
-
 
 function captureConsoleWarn(fn: () => void): string[] {
   const warnings: string[] = [];
@@ -1143,7 +1138,6 @@ Deno.test("config - loadConfig warns that local logins no longer grant trust (Is
 // loadConfig allowed_authors array (Issue #218)
 // ======================================================================});
 
-
 Deno.test("config - allowed_authors seeds only the default PR reviewer (Issue #1066)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["user1", "user2", "user3"],
@@ -1213,7 +1207,6 @@ Deno.test("config - loadConfig defaults authorisedCommenters to the known bots (
 // Claude Model Configuration (Issue #260)
 // ======================================================================});
 
-
 Deno.test("config - loadConfig loads claude_model from config file", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
@@ -1259,7 +1252,6 @@ Deno.test("config - loadConfig uses config file claude_model, ignores env (Issue
 
 // Operational Configuration from .config.json (Issue #277)
 // ======================================================================});
-
 
 Deno.test("config - loadConfig uses default operational values when not in config file (Issue #277)", async () => {
   const testConfig: ConfigFile = {
@@ -1533,7 +1525,6 @@ Deno.test("config - loadConfig normalises per-repo issue_executor_split (Issue #
 // Issue #1296: repo_config snake_case to camelCase normalisation
 // ======================================================================});
 
-
 Deno.test("config - loadConfig normalises repo_config snake_case keys to camelCase (Issue #1296)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
@@ -1663,7 +1654,6 @@ Deno.test("config - loadConfig round-trips repo_config nice through normaliseRep
 
 // Issue #1334: Unknown config key detection at startup
 // ======================================================================});
-
 
 Deno.test("config - loadConfig warns about unknown keys in config file (Issue #1334)", async () => {
   // Write a config file with an unknown camelCase key
@@ -2112,7 +2102,6 @@ Deno.test("config - trusted_authors_cache_hours outside 0..24 is rejected (Issue
 // repos is one repository per name, whatever the casing (Issue #1546)
 // ======================================================================});
 
-
 Deno.test("config - loadConfig collapses a case-variant repos entry, keeping the first spelling", async () => {
   _resetDuplicateRepoWarning();
   const testConfig: ConfigFile = {
@@ -2342,7 +2331,6 @@ Deno.test("config - a non-boolean rtk_output.enabled fails the load (Issue #2380
 
 // run_finish_seconds tests (Issue #4242)
 // ======================================================================});
-
 
 Deno.test("config - run_finish_seconds defaults to two hours when absent (Issue #4242)", async () => {
   await withTempConfig({
