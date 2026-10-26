@@ -6,9 +6,11 @@
  * extras are appended last.
  *
  * The CONNECT egress proxy (#4046, `egress-proxy`) takes its allowlist from
- * `--allow` or `VIBE_EGRESS_ALLOW_HOSTS`, not from this list. Not yet: #4047
- * will feed the resolved list to the proxy and route the container through
- * it. Until then `loadConfig` only validates `egress_allow_hosts`.
+ * `--allow` or `VIBE_EGRESS_ALLOW_HOSTS`. The launch plan (Issue #4047) feeds
+ * this resolved list into that variable and routes the Docker and Podman
+ * worker through the proxy. `loadConfig` still validates `egress_allow_hosts`
+ * at startup. Apple container is not routed through the proxy yet
+ * (Issue #4051).
  *
  * Australian English spelling throughout (normalised, behaviour).
  */

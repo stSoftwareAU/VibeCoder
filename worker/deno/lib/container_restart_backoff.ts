@@ -89,6 +89,7 @@ import {
 } from "./quota_pause.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "./container_extension_start.ts";
 import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "./toolchain_selfcheck.ts";
+import { EGRESS_SELFCHECK_EXIT_STATUS } from "./egress_selfcheck.ts";
 import { ROOT_FS_FAULT_EXIT_STATUS } from "./root_filesystem_fault.ts";
 import { escalationHostId } from "./host_escalation.ts";
 import type { CallbackInvocation, CallbackStatus } from "./run_callbacks.ts";
@@ -1127,6 +1128,9 @@ export function buildContainerEscalationParams(
         TOOLCHAIN_SELFCHECK_EXIT_STATUS,
         // Issue #3179: the run's own read-only-root declaration.
         ROOT_FS_FAULT_EXIT_STATUS,
+        // Issue #4048: the worker chose this status when egress was not
+        // proved. It is not a runtime-client failure.
+        EGRESS_SELFCHECK_EXIT_STATUS,
       ),
     ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,

@@ -17,7 +17,11 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
-import { parseEgressAllowlist, startEgressProxy } from "../lib/egress_proxy.ts";
+import {
+  EGRESS_PROXY_LISTENING_MARKER,
+  parseEgressAllowlist,
+  startEgressProxy,
+} from "../lib/egress_proxy.ts";
 
 /** Environment variable that supplies the allowlist when `--allow` is absent. */
 export const EGRESS_ALLOW_HOSTS_ENV = "VIBE_EGRESS_ALLOW_HOSTS";
@@ -172,7 +176,7 @@ export const egressProxyCommand: EgressProxyCommand = {
     // Log the address the proxy actually bound, which differs from the request
     // when the OS picks the port.
     console.error(
-      `[EGRESS_PROXY] listening on ${proxy.addr.hostname}:${proxy.addr.port} hosts=${parsed.allowlist.length}`,
+      `${EGRESS_PROXY_LISTENING_MARKER} on ${proxy.addr.hostname}:${proxy.addr.port} hosts=${parsed.allowlist.length}`,
     );
     await waitForStop();
     await proxy.close();

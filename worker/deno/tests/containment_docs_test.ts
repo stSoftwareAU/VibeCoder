@@ -287,15 +287,35 @@ Deno.test("CONTAINMENT.md's egress allowlist lists exactly the module's hosts", 
   );
 });
 
-Deno.test("CONTAINMENT.md says the egress allowlist is not enforced for the container until #4047", () => {
+Deno.test("CONTAINMENT.md enforces the egress allowlist on Docker and Podman (Issue #4050)", () => {
   const body = section(read("docs/CONTAINMENT.md"), "Egress allowlist");
-  assert(
-    body.includes("nothing enforces it yet"),
-    "the egress-allowlist section must say nothing enforces the list yet",
-  );
+  const network = section(read("docs/CONTAINMENT.md"), "network boundary");
+  const whole = read("docs/CONTAINMENT.md");
   assert(
     body.includes("#4047"),
-    "the egress-allowlist section must name #4047 as the issue that routes the container through the proxy",
+    "the egress-allowlist section must name #4047 as the launch that routes the container through the proxy",
+  );
+  assert(
+    body.includes("#4051"),
+    "the egress-allowlist section must say Apple container is not yet enforced",
+  );
+  assert(
+    !body.includes("nothing enforces it yet"),
+    "the egress-allowlist section must not say the list is unenforced",
+  );
+  assert(
+    !whole.includes(
+      "Fine-grained outbound allowlisting is deliberately out of scope",
+    ),
+    "CONTAINMENT.md must not call outbound allowlisting out of scope",
+  );
+  assert(
+    !network.toLowerCase().includes("out of scope"),
+    "the network boundary must not call filtering out of scope",
+  );
+  assert(
+    network.includes("#4051"),
+    "the network boundary must say Apple container is not yet enforced",
   );
 });
 
@@ -336,19 +356,28 @@ Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #
   }
 });
 
-Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is routed through it yet", async () => {
+Deno.test("CONTAINMENT.md's egress proxy section routes Docker and Podman through the proxy (Issue #4050)", async () => {
   const body = docSection(
     await readRepoDoc("docs/CONTAINMENT.md"),
     "Egress proxy",
   );
   for (
-    const phrase of ["#4047", "The container is not routed through it yet"]
+    const phrase of [
+      "#4047",
+      "Docker and Podman route the worker through this proxy",
+      "#4051",
+      "not routed through it yet",
+    ]
   ) {
     assert(
       body.includes(phrase),
-      `the egress-proxy section must say the container is not routed through the proxy until #4047 (missing "${phrase}")`,
+      `the egress-proxy section must describe the Docker/Podman route and the Apple gap (missing "${phrase}")`,
     );
   }
+  assert(
+    !body.includes("The container is not routed through it yet"),
+    "the egress-proxy section must not say no container is routed through the proxy",
+  );
 });
 
 Deno.test("CONTAINMENT.md's egress proxy section states the proxy opens no files, keeps no cache and needs --allow-read --allow-env --allow-net", async () => {

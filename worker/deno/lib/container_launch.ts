@@ -107,6 +107,12 @@ import { HARD_KILL_AT_EPOCH_ENV } from "./run_timeline.ts";
 import type { ContainerExtensionSpec } from "../types.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
 import { resolveAgentStateDir } from "./agent_state_dir.ts";
+import { resolveEgressAllowlist } from "./egress_allowlist.ts";
+import {
+  EGRESS_ENFORCED_ENV,
+  EGRESS_RUNTIME_KIND_ENV,
+  EGRESS_RUNTIME_VERSION_ENV,
+} from "./egress_selfcheck.ts";
 import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
   CUSTOM_PROMPTS_TARGET_SUBDIR,
@@ -214,6 +220,23 @@ export interface ContainerLaunchInputs {
    * unless a deployment enables more.
    */
   agentProviders?: readonly AgentProviderDescriptor[];
+  /**
+   * Checkout that holds `worker/deno`, packed into the proxy on stdin
+   * (Issue #4047). Defaults to the mounted checkout. A containment fixture
+   * whose checkout is synthetic passes the real repository here.
+   */
+  repoRoot?: string;
+  /**
+   * Allowlist the proxy receives. Absent → resolved from the enabled
+   * providers (Issue #4045). The launch command passes the full resolution,
+   * including operator extras and imgbb.
+   */
+  egressAllowHosts?: readonly string[];
+  /**
+   * Runtime version token recorded by the egress self-check. Absent →
+   * `unknown`. A value with whitespace is collapsed to underscores.
+   */
+  runtimeVersion?: string;
   /**
    * The deployer-selected build-time tools (#5), as the compact JSON the
    * Containerfile's `VIBE_CONTAINER_TOOLS` build arg carries and
@@ -557,6 +580,25 @@ export interface ContainerLaunchPlan {
    * #492) — empty for runtimes with no builder helper.
    */
   builderAbsentPatterns: string[];
+  /**
+   * True when the worker joins an internal network behind the egress proxy
+   * (Issue #4047). False for Apple container (Issue #4051).
+   */
+  egressEnforced: boolean;
+  /** `network create --internal <name>`. Empty when egress is not enforced. */
+  networkCreateArgs: string[];
+  /** `network rm <name>`. Empty when egress is not enforced. */
+  networkRemoveArgs: string[];
+  /** `network connect <name> <proxy>`. Empty when egress is not enforced. */
+  networkConnectArgs: string[];
+  /** The proxy container's `run` argv. Empty when egress is not enforced. */
+  proxyRunArgs: string[];
+  /** `rm --force <proxy>`. Empty when egress is not enforced. */
+  proxyStopArgs: string[];
+  /** Proxy container name. Empty when egress is not enforced. */
+  proxyName: string;
+  /** Host directory whose `worker/deno` is streamed to the proxy. */
+  proxyBundle: string;
   /** Arguments that run the worker container. */
   runArgs: string[];
 }
@@ -992,6 +1034,183 @@ export function resolveContainerLaunchHostPaths(
   };
 }
 
+/** Port the proxy listens on inside its own network namespace. */
+export const EGRESS_PROXY_PORT = "3128";
+
+/** Destinations that must not be sent through the proxy. Loopback only. */
+export const EGRESS_NO_PROXY = "localhost,127.0.0.1,::1";
+
+/**
+ * What the proxy container runs after stdin has delivered `worker/deno`.
+ * One argv element. `/dev/shm` stays writable under `--read-only`, so the
+ * proxy needs no mount.
+ */
+export const EGRESS_PROXY_BOOT_SCRIPT = [
+  "set -eu",
+  "mkdir -p /dev/shm/src /dev/shm/deno-cache",
+  "tar -xf - -C /dev/shm/src",
+  "cd /dev/shm/src",
+  "exec deno run --allow-net --allow-env --allow-read=/dev/shm worker/deno/egress_proxy_main.ts --listen 0.0.0.0:" +
+  EGRESS_PROXY_PORT,
+].join("\n");
+
+interface EgressLaunchPieces {
+  egressEnforced: boolean;
+  networkCreateArgs: string[];
+  networkRemoveArgs: string[];
+  networkConnectArgs: string[];
+  proxyRunArgs: string[];
+  proxyStopArgs: string[];
+  proxyName: string;
+  proxyBundle: string;
+  /** Set when the worker must join the internal network. */
+  workerNetwork?: string;
+  workerEnv: ReadonlyArray<readonly [string, string]>;
+}
+
+function runtimeVersionToken(raw: string | undefined): string {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return "unknown";
+  const token = trimmed.replace(/\s+/g, "_");
+  if (token.includes("=") || token.includes("\0")) return "unknown";
+  return token;
+}
+
+/**
+ * The network, the proxy argv and the worker's proxy environment.
+ *
+ * An enforcing dialect with no outbound network, or an allowlist that cannot
+ * be passed as one environment value, refuses the launch. Apple container
+ * gets the enforcement flag and nothing else (Issue #4051).
+ */
+function buildEgressLaunch(input: {
+  descriptor: ContainerRuntimeDescriptor;
+  containerName: string;
+  image: string;
+  providers: readonly AgentProviderDescriptor[];
+  repoRoot: string;
+  runtimeVersion: string | undefined;
+  egressAllowHosts: readonly string[] | undefined;
+}): EgressLaunchPieces {
+  const version = runtimeVersionToken(input.runtimeVersion);
+  const identity: ReadonlyArray<readonly [string, string]> = [
+    [EGRESS_RUNTIME_KIND_ENV, input.descriptor.kind],
+    [EGRESS_RUNTIME_VERSION_ENV, version],
+  ];
+  if (!input.descriptor.dialect.egressEnforced) {
+    return {
+      egressEnforced: false,
+      networkCreateArgs: [],
+      networkRemoveArgs: [],
+      networkConnectArgs: [],
+      proxyRunArgs: [],
+      proxyStopArgs: [],
+      proxyName: "",
+      proxyBundle: "",
+      workerEnv: [[EGRESS_ENFORCED_ENV, "false"], ...identity],
+    };
+  }
+  const dialect = input.descriptor.dialect;
+  if (
+    dialect.internalNetworkCreateArgs.length === 0 ||
+    dialect.networkRemoveArgs.length === 0 ||
+    dialect.networkConnectArgs.length === 0 ||
+    dialect.outboundNetwork === undefined ||
+    dialect.outboundNetwork.trim() === ""
+  ) {
+    throw new Error(
+      `Refusing to launch: ${input.descriptor.kind} declares egress enforcement but has no network verbs.`,
+    );
+  }
+  const networkName = `${input.containerName}-net`;
+  const proxyName = `${input.containerName}-proxy`;
+  for (const name of [networkName, proxyName]) {
+    if (!CONTAINER_NAME_RE.test(name)) {
+      throw new Error(
+        `Refusing to launch: egress name ${
+          JSON.stringify(name)
+        } is not a plain name the runtime accepts.`,
+      );
+    }
+  }
+  const hosts = input.egressAllowHosts ??
+    resolveEgressAllowlist({
+      enabledProviderIds: input.providers.map((provider) => provider.id),
+      imgbbConfigured: false,
+    });
+  if (hosts.length === 0) {
+    throw new Error(
+      "Refusing to launch: the egress allowlist is empty, so the proxy would deny every connection.",
+    );
+  }
+  for (const host of hosts) {
+    if (host.trim() === "" || /[\s,=]/.test(host)) {
+      throw new Error(
+        `Refusing to launch: egress allowlist host ${
+          JSON.stringify(host)
+        } cannot be passed in one environment value.`,
+      );
+    }
+  }
+  const bundle = input.repoRoot.trim();
+  if (bundle === "") {
+    throw new Error(
+      "Refusing to launch: no repository root to pack into the egress proxy.",
+    );
+  }
+  const proxyUrl = `http://${proxyName}:${EGRESS_PROXY_PORT}`;
+  const proxyRunArgs = [
+    "run",
+    "-i",
+    "--name",
+    proxyName,
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--read-only",
+    "--network",
+    dialect.outboundNetwork,
+    "--env",
+    `VIBE_EGRESS_ALLOW_HOSTS=${hosts.join(",")}`,
+    "--env",
+    "HOME=/dev/shm",
+    "--env",
+    "DENO_DIR=/dev/shm/deno-cache",
+    "--entrypoint",
+    "bash",
+    input.image,
+    "-c",
+    EGRESS_PROXY_BOOT_SCRIPT,
+  ];
+  assertRunArgumentsContained(proxyRunArgs, true, []);
+  return {
+    egressEnforced: true,
+    networkCreateArgs: [...dialect.internalNetworkCreateArgs, networkName],
+    networkRemoveArgs: [...dialect.networkRemoveArgs, networkName],
+    networkConnectArgs: [
+      ...dialect.networkConnectArgs,
+      networkName,
+      proxyName,
+    ],
+    proxyRunArgs,
+    proxyStopArgs: ["rm", "--force", proxyName],
+    proxyName,
+    proxyBundle: bundle,
+    workerNetwork: networkName,
+    workerEnv: [
+      ["HTTPS_PROXY", proxyUrl],
+      ["HTTP_PROXY", proxyUrl],
+      ["https_proxy", proxyUrl],
+      ["http_proxy", proxyUrl],
+      ["NO_PROXY", EGRESS_NO_PROXY],
+      ["no_proxy", EGRESS_NO_PROXY],
+      [EGRESS_ENFORCED_ENV, "true"],
+      ...identity,
+    ],
+  };
+}
+
 /**
  * Build the launch plan for one run.
  *
@@ -1154,8 +1373,26 @@ export function buildContainerLaunchPlan(
     runArgs.push("--cpus", inputs.resources.cpus);
   }
 
-  // Networking: outbound only. No published ports and never host networking.
-  if (dialect.networkMode) runArgs.push("--network", dialect.networkMode);
+  // Docker and Podman: the worker joins an internal network and the proxy is
+  // the only path out (Issue #4047). Apple container is unchanged on the
+  // network (Issue #4051) and only learns that egress is not enforced.
+  const egress = buildEgressLaunch({
+    descriptor,
+    containerName,
+    image: runImage,
+    providers,
+    repoRoot: inputs.repoRoot ?? hostPaths.baseDir,
+    runtimeVersion: inputs.runtimeVersion,
+    egressAllowHosts: inputs.egressAllowHosts,
+  });
+  if (egress.workerNetwork) {
+    runArgs.push("--network", egress.workerNetwork);
+  } else if (dialect.networkMode) {
+    runArgs.push("--network", dialect.networkMode);
+  }
+  for (const [name, value] of egress.workerEnv) {
+    runArgs.push("--env", `${name}=${value}`);
+  }
   // Least privilege, where the runtime understands the flag. Apple container
   // gives each container its own lightweight VM and takes neither.
   if (dialect.supportsCapDrop) runArgs.push("--cap-drop", "ALL");
@@ -1412,6 +1649,14 @@ export function buildContainerLaunchPlan(
     extensionBuildArgs,
     builderStopArgs: [...dialect.builderStopArgs],
     builderAbsentPatterns: [...dialect.builderAbsentPatterns],
+    egressEnforced: egress.egressEnforced,
+    networkCreateArgs: egress.networkCreateArgs,
+    networkRemoveArgs: egress.networkRemoveArgs,
+    networkConnectArgs: egress.networkConnectArgs,
+    proxyRunArgs: egress.proxyRunArgs,
+    proxyStopArgs: egress.proxyStopArgs,
+    proxyName: egress.proxyName,
+    proxyBundle: egress.proxyBundle,
     runArgs,
   };
 }
@@ -1435,6 +1680,14 @@ export type ContainerLaunchPlanKey =
   | "build"
   // The operator's private layer, built after `build` (Issue #980).
   | "extension-build"
+  | "egress-enforced"
+  | "network-create"
+  | "network-remove"
+  | "network-connect"
+  | "proxy-run"
+  | "proxy-stop"
+  | "proxy-name"
+  | "proxy-bundle"
   | "run";
 
 /** A parsed plan, as the launcher reconstructs it. */
@@ -1462,6 +1715,15 @@ export interface ParsedContainerLaunchPlan {
   build: string[];
   /** The operator's private layer build, empty when none is configured. */
   extensionBuild: string[];
+  /** `true` or `false`. Absent on a plan rendered before Issue #4047. */
+  egressEnforced: string;
+  networkCreate: string[];
+  networkRemove: string[];
+  networkConnect: string[];
+  proxyRun: string[];
+  proxyStop: string[];
+  proxyName: string;
+  proxyBundle: string;
   run: string[];
 }
 
@@ -1499,6 +1761,14 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.extensionBuildArgs.map((arg) => `extension-build=${arg}`),
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
     ...plan.builderAbsentPatterns.map((p) => `builder-absent=${p}`),
+    `egress-enforced=${plan.egressEnforced ? "true" : "false"}`,
+    ...plan.networkCreateArgs.map((arg) => `network-create=${arg}`),
+    ...plan.networkRemoveArgs.map((arg) => `network-remove=${arg}`),
+    ...plan.networkConnectArgs.map((arg) => `network-connect=${arg}`),
+    ...plan.proxyRunArgs.map((arg) => `proxy-run=${arg}`),
+    ...plan.proxyStopArgs.map((arg) => `proxy-stop=${arg}`),
+    ...(plan.proxyName !== "" ? [`proxy-name=${plan.proxyName}`] : []),
+    ...(plan.proxyBundle !== "" ? [`proxy-bundle=${plan.proxyBundle}`] : []),
     ...plan.runArgs.map((arg) => `run=${arg}`),
   ];
 
@@ -1545,6 +1815,14 @@ export function parseContainerLaunchPlanText(
     exists: [],
     build: [],
     extensionBuild: [],
+    egressEnforced: "",
+    networkCreate: [],
+    networkRemove: [],
+    networkConnect: [],
+    proxyRun: [],
+    proxyStop: [],
+    proxyName: "",
+    proxyBundle: "",
     run: [],
   };
 
@@ -1607,6 +1885,30 @@ export function parseContainerLaunchPlanText(
         break;
       case "extension-build":
         parsed.extensionBuild.push(value);
+        break;
+      case "egress-enforced":
+        parsed.egressEnforced = value;
+        break;
+      case "network-create":
+        parsed.networkCreate.push(value);
+        break;
+      case "network-remove":
+        parsed.networkRemove.push(value);
+        break;
+      case "network-connect":
+        parsed.networkConnect.push(value);
+        break;
+      case "proxy-run":
+        parsed.proxyRun.push(value);
+        break;
+      case "proxy-stop":
+        parsed.proxyStop.push(value);
+        break;
+      case "proxy-name":
+        parsed.proxyName = value;
+        break;
+      case "proxy-bundle":
+        parsed.proxyBundle = value;
         break;
       case "run":
         parsed.run.push(value);

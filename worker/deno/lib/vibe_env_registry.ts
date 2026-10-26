@@ -376,7 +376,24 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   VIBE_EGRESS_ALLOW_HOSTS: {
     role: "launch_plumbing",
     note:
-      "the host allowlist the `egress-proxy` command reads when `--allow` is absent (Issue #4046); the launcher does not set it yet — #4047 routes the container through the proxy",
+      "the host allowlist the `egress-proxy` command reads when `--allow` is absent (Issue #4046); the launch plan sets it on the proxy container (Issue #4047)",
+  },
+  VIBE_EGRESS_ENFORCED: {
+    role: "launch_plumbing",
+    note:
+      "`true` when the launch plan put the worker behind the egress proxy, " +
+      "`false` for a runtime that does not enforce; the start-up egress " +
+      "self-check reads it (Issues #4047, #4048)",
+  },
+  VIBE_RUNTIME_KIND: {
+    role: "launch_plumbing",
+    note: "the container runtime kind the launch plan resolved, named on the " +
+      "egress self-check's evidence line (Issue #4048)",
+  },
+  VIBE_RUNTIME_VERSION: {
+    role: "launch_plumbing",
+    note: "the container runtime's version token, or `unknown`, named on the " +
+      "egress self-check's evidence line (Issue #4048)",
   },
   VIBE_RUN_MODE: {
     role: "launch_plumbing",

@@ -27,7 +27,7 @@ set -euo pipefail
 
 readonly PROGRAM_NAME="${0##*/}"
 
-# The only paths that can change what the image build produces.
+# Paths that change the built image or the live checks that exercise it.
 #
 # `container/**` is the image definition itself (Containerfile, entrypoint,
 # tools manifest, provider scripts) and this workflow drives the build.
@@ -48,6 +48,19 @@ readonly IMAGE_PATHS=(
   'worker/deno/lib/toolchain_selfcheck.ts'
   'worker/deno/lib/container_manifest.ts'
   'worker/deno/commands/toolchain_selfcheck.ts'
+  # Issue #4047: launch plans and egress enforcement are proved by the live
+  # Docker containment step, which is skipped along with the image build.
+  # Unit tests alone cannot prove that the runtime connects the sidecar.
+  '.github/scripts/detect-image-changes.sh'
+  'run.sh'
+  'run.ps1'
+  'worker/deno/lib/container_launch.ts'
+  'worker/deno/lib/container_runtime.ts'
+  'worker/deno/commands/container_launch_plan.ts'
+  'worker/deno/lib/egress_*.ts'
+  'worker/deno/commands/egress_*.ts'
+  'worker/deno/egress_proxy_main.ts'
+  'worker/deno/tests/container_containment_test.ts'
 )
 
 usage() {

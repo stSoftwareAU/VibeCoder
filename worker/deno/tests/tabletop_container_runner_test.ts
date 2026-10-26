@@ -54,6 +54,16 @@ function plan(): ContainerLaunchPlan {
     claimFloorOrigin: "gb=default,percent=default",
     builderStopArgs: [],
     builderAbsentPatterns: [],
+    // Egress fields ride the plan (Issue #4047); this fixture is the
+    // not-enforced shape, so every argv is empty.
+    egressEnforced: false,
+    networkCreateArgs: [],
+    networkRemoveArgs: [],
+    networkConnectArgs: [],
+    proxyRunArgs: [],
+    proxyStopArgs: [],
+    proxyName: "",
+    proxyBundle: "",
     runArgs: [
       "run",
       "--rm",

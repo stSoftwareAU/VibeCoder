@@ -290,6 +290,93 @@ record_outcome() {
 }
 
 # shellcheck disable=SC2317,SC2329
+# Remove a same-named network left by a crashed launch, create the internal
+# network, start the proxy, and connect it. Any failure exits non-zero. The
+# worker is never started on the runtime's open network (Issue #4047).
+start_egress_sidecar() {
+  if [[ ${#network_create_args[@]} -eq 0 || ${#network_remove_args[@]} -eq 0 ||
+    ${#network_connect_args[@]} -eq 0 || ${#proxy_run_args[@]} -eq 0 ||
+    ${#proxy_stop_args[@]} -eq 0 || -z "${PROXY_NAME}" || -z "${PROXY_BUNDLE}" ]]; then
+    echo "Error: launch plan declares egress enforcement but is missing a network or proxy key - refusing to launch" >&2
+    exit 1
+  fi
+  # A crashed launch leaves the name behind. Ignore a remove of a network
+  # that is not there; a create that fails is fatal.
+  "${RUNTIME}" "${network_remove_args[@]}" >/dev/null 2>&1 || true
+  if ! "${RUNTIME}" "${network_create_args[@]}"; then
+    echo "Error: could not create the egress network - refusing to launch" >&2
+    exit 1
+  fi
+  EGRESS_NETWORK_CREATED=1
+  "${RUNTIME}" "${proxy_stop_args[@]}" >/dev/null 2>&1 || true
+  # Trailing X's: macOS mktemp only randomises a template that ends in X,
+  # and a fixed name collides with a crashed launch's leftover archive.
+  EGRESS_PROXY_BUNDLE_FILE="$(mktemp "${TMPDIR:-/tmp}/vibe-egress.XXXXXX")" || {
+    echo "Error: could not create the egress proxy archive - refusing to launch" >&2
+    exit 1
+  }
+  if ! tar -C "${PROXY_BUNDLE}" -cf "${EGRESS_PROXY_BUNDLE_FILE}" worker/deno; then
+    echo "Error: could not pack the egress proxy source - refusing to launch" >&2
+    exit 1
+  fi
+  "${RUNTIME}" "${proxy_run_args[@]}" <"${EGRESS_PROXY_BUNDLE_FILE}" &
+  EGRESS_PROXY_PID=$!
+  EGRESS_PROXY_STARTED=1
+  local ready=0
+  local _
+  for _ in {1..450}; do
+    local logs
+    logs="$("${RUNTIME}" logs "${PROXY_NAME}" 2>&1 || true)"
+    if [[ "${logs}" == *"[EGRESS_PROXY] listening"* ]]; then
+      ready=1
+      break
+    fi
+    if ! kill -0 "${EGRESS_PROXY_PID}" 2>/dev/null; then
+      break
+    fi
+    sleep 0.2
+  done
+  if [[ "${ready}" -ne 1 ]]; then
+    echo "Error: egress proxy did not start listening - refusing to launch" >&2
+    exit 1
+  fi
+  if ! "${RUNTIME}" "${network_connect_args[@]}"; then
+    echo "Error: could not connect the egress proxy to the internal network" \
+      "- refusing to launch" >&2
+    exit 1
+  fi
+}
+
+# Append the proxy log, then remove the proxy and the network. Safe to call
+# when neither was created, including from the EXIT trap before the plan parse.
+# Only reached through on_exit (the EXIT trap), so shellcheck sees no caller.
+# shellcheck disable=SC2317,SC2329
+cleanup_egress_sidecar() {
+  if [[ "${EGRESS_PROXY_STARTED:-}" == "1" && -n "${RUNTIME:-}" &&
+    -n "${PROXY_NAME:-}" ]]; then
+    if [[ -n "${RUN_CORE_LOG_DIR:-}" ]]; then
+      mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || true
+      "${RUNTIME}" logs "${PROXY_NAME}" \
+        >>"${RUN_CORE_LOG_DIR}/egress-proxy.log" 2>&1 || true
+    fi
+    if [[ -n "${proxy_stop_args+x}" ]]; then
+      "${RUNTIME}" "${proxy_stop_args[@]}" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [[ -n "${EGRESS_PROXY_PID:-}" ]]; then
+    kill "${EGRESS_PROXY_PID}" 2>/dev/null || true
+    wait "${EGRESS_PROXY_PID}" 2>/dev/null || true
+  fi
+  if [[ "${EGRESS_NETWORK_CREATED:-}" == "1" && -n "${RUNTIME:-}" &&
+    -n "${network_remove_args+x}" ]]; then
+    "${RUNTIME}" "${network_remove_args[@]}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${EGRESS_PROXY_BUNDLE_FILE:-}" ]]; then
+    rm -f "${EGRESS_PROXY_BUNDLE_FILE}"
+  fi
+}
+
+# shellcheck disable=SC2317,SC2329
 on_exit() {
   local status=$?
   # Never from a background subshell. Bash runs this trap in an asynchronous
@@ -301,6 +388,14 @@ on_exit() {
   if [[ "${BASH_SUBSHELL}" != "0" ]]; then
     return 0
   fi
+  # An early refusal exits before the worker opens the capture FIFO. tee is
+  # blocked in open() until a writer appears, and this shell will not finish
+  # exiting while that job is alive (Issue #4047).
+  if [[ -n "${RUN_TEE_PID:-}" ]]; then
+    kill "${RUN_TEE_PID}" 2>/dev/null || true
+    wait "${RUN_TEE_PID}" 2>/dev/null || true
+  fi
+  cleanup_egress_sidecar
   if [[ -n "${PLAN_FILE}" ]]; then
     rm -f "${PLAN_FILE}" "${PLAN_FILE}.Containerfile"
   fi
@@ -706,6 +801,21 @@ extension_build_args=()
 builder_stop_args=()
 builder_absent_patterns=()
 run_args=()
+# Egress sidecar (Issue #4047). Empty unless the plan says this runtime
+# enforces it. A missing piece on an enforcing plan is a refusal, never a
+# launch onto the runtime's open network.
+EGRESS_ENFORCED=""
+network_create_args=()
+network_remove_args=()
+network_connect_args=()
+proxy_run_args=()
+proxy_stop_args=()
+PROXY_NAME=""
+PROXY_BUNDLE=""
+EGRESS_NETWORK_CREATED=""
+EGRESS_PROXY_STARTED=""
+EGRESS_PROXY_PID=""
+EGRESS_PROXY_BUNDLE_FILE=""
 
 while IFS= read -r -d '' token; do
   key="${token%%=*}"
@@ -730,6 +840,14 @@ while IFS= read -r -d '' token; do
     extension-build) extension_build_args+=("${value}") ;;
     builder-stop) builder_stop_args+=("${value}") ;;
     builder-absent) builder_absent_patterns+=("${value}") ;;
+    egress-enforced) EGRESS_ENFORCED="${value}" ;;
+    network-create) network_create_args+=("${value}") ;;
+    network-remove) network_remove_args+=("${value}") ;;
+    network-connect) network_connect_args+=("${value}") ;;
+    proxy-run) proxy_run_args+=("${value}") ;;
+    proxy-stop) proxy_stop_args+=("${value}") ;;
+    proxy-name) PROXY_NAME="${value}" ;;
+    proxy-bundle) PROXY_BUNDLE="${value}" ;;
     run) run_args+=("${value}") ;;
     *)
       echo "Error: unrecognised launch-plan key: ${key}" >&2
@@ -1897,6 +2015,15 @@ record_phase container_run
 # pipe cannot stall this launcher.
 RUN_DRAIN_SECONDS=10
 
+# The proxy has to be listening before the worker starts. A failure here
+# exits non-zero and the trap removes whatever was created. The worker
+# capture FIFO is created only after this succeeds: a refused sidecar
+# never opens the FIFO writer, leaving its reader blocked in open(). There is no
+# fallback onto the runtime's open network (Issue #4047).
+if [[ "${EGRESS_ENFORCED}" == "true" ]]; then
+  start_egress_sidecar
+fi
+
 # Capture the client's stderr while it still reaches the console (Issue #711).
 # Issue #711 was the third self-heal report to say `container_start`, `exit
 # status 125` and nothing about why: the client's own explanation went to the
@@ -2088,6 +2215,23 @@ elif ((status == 0)) && toolchain_rebuild_recorded; then
   # or a failed rebuild says nothing about the self-check, and clearing on
   # those would hand the rebuild loop back the cycle this bound took from it.
   rm -f "${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
+fi
+
+# The egress self-check did not prove the policy (Issue #4048).
+#
+# The worker exits with this before it claims anything. The image stays: the
+# fault is the network, not the cached tag, and removing it would rebuild a
+# multi-gigabyte image that would fail the same check.
+#
+# Kept in step with EGRESS_SELFCHECK_EXIT_STATUS and
+# EGRESS_SELFCHECK_FAILURE_MARKER in worker/deno/lib/egress_selfcheck.ts by
+# the launcher tests.
+EGRESS_SELFCHECK_EXIT_STATUS=90
+EGRESS_SELFCHECK_FAILURE_MARKER="[EGRESS-SELFCHECK-FAILED]"
+if ((status == EGRESS_SELFCHECK_EXIT_STATUS)); then
+  echo "[run.sh] ${EGRESS_SELFCHECK_FAILURE_MARKER} egress self-check failed" \
+    "- the worker claimed nothing (Issue #4048)" >&2
+  log_run_core "egress-selfcheck: ${EGRESS_SELFCHECK_FAILURE_MARKER} the container's egress policy was not enforced - no issue was claimed (Issue #4048)"
 fi
 
 # A launch that failed hands this capture over as its evidence, whatever the

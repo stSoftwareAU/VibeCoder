@@ -79,6 +79,10 @@ import {
   resolveGithubUserWithRetry,
 } from "./github_user_resolution.ts";
 import { formatRunModeRecord, resolveRunHostId } from "./run_mode_record.ts";
+import {
+  checkEgressPolicy,
+  type EgressPolicyDecision,
+} from "./egress_selfcheck.ts";
 import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
 import {
@@ -113,6 +117,8 @@ export type RunWorkerOutcome =
   | "prompts-writable"
   /** The image does not provide the toolchains tools.json pins (#1956). */
   | "toolchains-unusable"
+  /** An enforcing runtime did not prove its egress policy (Issue #4048). */
+  | "egress-unproven"
   | "github-user-failed"
   | "identity-mismatch"
   | "completed"
@@ -246,6 +252,14 @@ export interface RunWorkerDeps {
     host: string;
     runId: string;
   }): Promise<void>;
+  /**
+   * Prove the network policy before anything is claimed (Issue #4048).
+   * Injectable so a test does not open a socket. The production
+   * implementation probes only when the launch plan set the flag.
+   */
+  checkEgress(input: {
+    env: (name: string) => string | undefined;
+  }): Promise<EgressPolicyDecision>;
 }
 
 /** Seams for {@link checkWorkerCredentials} — every one injectable. */
@@ -362,6 +376,7 @@ export function createDefaultRunWorkerDeps(
     bootstrap: (options) => runBootstrap(options, { setEnv }),
     recordRunMode: ({ logDir, mode, host, runId }) =>
       appendRunCoreLogLine(logDir, formatRunModeRecord({ mode, host, runId })),
+    checkEgress: ({ env }) => checkEgressPolicy({ env }),
     validateConfig: (config) => validateWorkerConfig(config),
     checkCredentials: async () => {
       // Issue #2002: a usage-limit signal left by the previous run names the
@@ -775,6 +790,24 @@ ${credentialFailure}`);
         exitCode: toolchainVerdict.fault === "manifest"
           ? 1
           : TOOLCHAIN_SELFCHECK_EXIT_STATUS,
+        reason,
+      };
+    }
+
+    // Step 4.56: Prove egress before the first claim (Issue #4048). An
+    // enforcing runtime that cannot show the policy is holding exits before
+    // the prompt check and before GitHub user resolution, so nothing is
+    // claimed. Apple container warns and continues (Issue #4051).
+    const egress = await deps.checkEgress({ env });
+    await appendRunCoreLogLine(logDir, egress.record);
+    if (egress.warning) deps.logError(`[run-worker] ${egress.warning}`);
+    if (egress.exitCode !== 0) {
+      const reason = egress.marker ??
+        `egress self-check failed: ${egress.verdict}`;
+      deps.logError(`[run-worker] ${reason}`);
+      return {
+        outcome: "egress-unproven",
+        exitCode: egress.exitCode,
         reason,
       };
     }

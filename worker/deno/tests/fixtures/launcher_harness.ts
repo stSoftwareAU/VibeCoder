@@ -71,6 +71,17 @@ record_dir="\${VIBE_STUB_RECORD}"
 mkdir -p "\${record_dir}"
 ${RECORD_TEMP_MODES}
 sub="\${1:-none}"
+# The egress proxy is also a \`run\` with \`--entrypoint\`. Record it on its own
+# so it neither overwrites the volume-init record nor looks like the worker
+# (Issue #4047).
+if [[ "\${sub}" == "run" ]]; then
+  for arg in "\$@"; do
+    if [[ "\${arg}" == *egress_proxy_main.ts* ]]; then
+      sub="run-proxy"
+      break
+    fi
+  done
+fi
 # The volume-ownership init (Issue #4186) is also a \`run\`; record it under
 # its own name so a test waiting for the worker's run cannot fire early on it.
 if [[ "\${sub}" == "run" ]]; then
@@ -80,6 +91,10 @@ if [[ "\${sub}" == "run" ]]; then
       break
     fi
   done
+fi
+# Network sub-commands are recorded per action (network-create, network-rm).
+if [[ "\${sub}" == "network" ]]; then
+  sub="network-\${2:-none}"
 fi
 # Volume sub-commands are recorded per action (volume-inspect, volume-create).
 if [[ "\${sub}" == "volume" ]]; then
@@ -135,6 +150,37 @@ if [[ -n "\${STUB_READY_DELAY:-}" &&
   sleep "\${STUB_READY_DELAY}"
 fi
 case "\${sub}" in
+  run-proxy)
+    # Drain the packed source so the launcher's redirect does not block, then
+    # stay up until the launcher removes the proxy. A non-zero
+    # STUB_PROXY_EXIT fails the start the way a runtime that rejects the
+    # argv would.
+    cat >/dev/null || true
+    if [[ -n "\${STUB_PROXY_EXIT:-}" ]]; then
+      exit "\${STUB_PROXY_EXIT}"
+    fi
+    # Backgrounded so the TERM trap above can reap it. A foreground sleep
+    # defers that trap until the sleep ends, and the launcher's exit would
+    # then wait out the whole proxy lifetime (Issue #4047).
+    sleep "\${STUB_PROXY_SLEEP:-300}" >/dev/null 2>&1 &
+    sleep_pid=\$!
+    wait "\${sleep_pid}" || true
+    exit 0
+    ;;
+  logs)
+    # The readiness line is printed only after the proxy run was recorded, so
+    # a poll that races the start retries instead of succeeding first.
+    if [[ -f "\${record_dir}/run-proxy.args" ]]; then
+      printf '%s\\n' "\${STUB_PROXY_LOGS:-[EGRESS_PROXY] listening on 0.0.0.0:3128 hosts=1}"
+    fi
+    exit 0
+    ;;
+  network-create)
+    exit "\${STUB_NETWORK_CREATE_EXIT:-0}"
+    ;;
+  network-connect)
+    exit "\${STUB_NETWORK_CONNECT_EXIT:-0}"
+    ;;
   image-prune)
     # The store prune's dangling-layer pass (Issue #227): nothing to reclaim.
     printf 'Total reclaimed space: 0B\\n'
@@ -403,6 +449,9 @@ function denoStubSource(full: boolean): string {
       ;;`
     : "";
 
+  const planMutator = decodeURIComponent(
+    new URL("./egress_plan_mutator.ts", import.meta.url).pathname,
+  );
   return `#!/bin/bash
 set -u
 record_dir="\${VIBE_STUB_RECORD}"
@@ -486,6 +535,34 @@ for arg in "\$@"; do
       ;;
   esac
 done
+# Launcher tests that cannot detect Docker (the darwin probe order is
+# apple-container only) rewrite the plan the real command just wrote.
+# Absent the STUB_* variables this is a no-op and the real plan is kept.
+mutate=0
+if [[ -n "\${STUB_OMIT_PLAN_KEYS:-}\${STUB_FORCE_EGRESS_ENFORCED:-}\${STUB_INJECT_EGRESS_PLAN:-}" ]]; then
+  for arg in "\$@"; do
+    if [[ "\${arg}" == "container-launch-plan" ]]; then
+      mutate=1
+    fi
+  done
+fi
+if [[ "\${mutate}" == "1" ]]; then
+  "\${VIBE_REAL_DENO}" "\$@"
+  code=\$?
+  out=""
+  prev=""
+  for arg in "\$@"; do
+    if [[ "\${prev}" == "--out" ]]; then
+      out="\${arg}"
+    fi
+    prev="\${arg}"
+  done
+  if [[ "\${code}" -eq 0 && -n "\${out}" ]]; then
+    "\${VIBE_REAL_DENO}" run --allow-read --allow-write --allow-env \\
+      "${planMutator}" "\${out}" || exit \$?
+  fi
+  exit "\${code}"
+fi
 exec "\${VIBE_REAL_DENO}" "\$@"
 `;
 }
