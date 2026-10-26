@@ -80,7 +80,7 @@ row red; removing strict increase → "equal version" row red; removing the head
 count check → "old header count is wrong" row red; forcing the manifest branch
 to `false` → the three positive tests red.
 
-Results on the final head:
+Initial implementation validation:
 `deno task test:unit tests/review_fleet_prs_gate_2675_test.ts` passed (26
 passed, 0 failed); with `review_fleet_prs_upkeep_failure_2891_test.ts` also
 passed (30 passed). `./quality.sh`: every static stage passed (fmt, lint, type
@@ -99,3 +99,27 @@ exception (grepped `version re-bump`, `version increment`, `bare version`,
 Not done: the issue's log-based check (no consecutive `changes_requested` on one
 PR) was not run; it needs the live `log.jsonl`. Real GitHub patches were not
 fetched; fixtures follow the shape in the issue.
+
+### Review follow-up
+
+Commit `c5de76414` adds the two hostile-input cases requested by the independent
+review: a TOML `version` key followed by 100,000 spaces and a rejected character,
+and a hunk line count containing 100,000 digits and a rejected character. Both
+call `ownDiffUnchanged` and assert `false`. Existing assertions and production
+behaviour are unchanged; the current parser already rejects these inputs.
+
+Each case was checked independently by temporarily adding an overlapping
+quantifier to its intended regex. Each mutated run reached the new test and
+stalled until an external eight-second bound killed it; the production parser
+was restored byte-for-byte. This demonstrates the new coverage, not a defect
+in the current parser. No timing assertion was added to the unit tests.
+
+Validation after restoring the parser: 58 focused gate/audit/backlog/upkeep
+tests passed; manifest checks passed with 867 tests and one existing ignore;
+format, lint, type-check and `git diff --check` passed. The full local quality
+gate was not repeated for this test-only follow-up.
+
+The first follow-up CI run, `40283079367`, passed format, lint and type-check
+but the summary-freshness check rejected the test commit because this summary
+predated it. This update records the review fix and its evidence. CI and
+independent re-review remain outstanding for the resulting head.
