@@ -67,6 +67,35 @@ const DENIED: ReadonlyArray<readonly [string, string]> = [
   ["if true; then cargo check; fi", "cargo"],
   ["2>/dev/null cargo check", "cargo"],
   ["! cargo check", "cargo"],
+  // Each separator ends a segment (Issue #4415).
+  ["echo hi | cargo check", "cargo"],
+  ["(echo hi) cargo check", "cargo"],
+  ["{ cargo check", "cargo"],
+  ["echo hi } cargo check", "cargo"],
+  // Each shell keyword may precede a command.
+  ["if cargo check", "cargo"],
+  ["then cargo check", "cargo"],
+  ["else cargo check", "cargo"],
+  ["elif cargo check", "cargo"],
+  ["do cargo check", "cargo"],
+  ["while cargo check", "cargo"],
+  ["until cargo check", "cargo"],
+  // Each wrapper option that takes an argument keeps that argument from being
+  // read as the command word.
+  ["sudo -g grp cargo check", "cargo"],
+  ["sudo -C 3 cargo check", "cargo"],
+  ["sudo -h host cargo check", "cargo"],
+  ["sudo -p prompt cargo check", "cargo"],
+  ["sudo -r role cargo check", "cargo"],
+  ["sudo -t type cargo check", "cargo"],
+  ["sudo -U other cargo check", "cargo"],
+  ["sudo --user other cargo check", "cargo"],
+  ["sudo --group grp cargo check", "cargo"],
+  ["xargs -I X cargo check", "cargo"],
+  ["xargs -n 1 cargo check", "cargo"],
+  ["xargs -P 4 cargo check", "cargo"],
+  ["xargs -d x cargo check", "cargo"],
+  ["xargs -L 1 cargo check", "cargo"],
 ];
 
 /** Commands the scan must allow: cargo only as an argument, or no cargo at all. */
