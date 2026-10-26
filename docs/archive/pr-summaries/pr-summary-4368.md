@@ -27,6 +27,8 @@ also counts false accusations against secure, irrelevant and unchanged code.
 - Same explicit model, effort, task contracts and budgets, with rotated arm order
   and repeated samples. Shared coding guidance is included in every arm; the
   current arm includes the production compact capability section.
+  Review cases have opaque IDs and matched rotated order; expected labels stay
+  outside model prompts, with a separate prompt hash for every review repeat.
 - Positive subscription proof, no provider tools/MCP/hooks/settings, an empty
   generation directory, and no paid-API fallback. Existing adapters and cost
   telemetry preserve failed attempts and unknown prices.
@@ -52,7 +54,9 @@ mode and post-run file hashing are not described as native-code isolation.
 - Negative controls cover empty, stub, deny-all, unwired, unconditional, working
   insecure and working secure TypeScript/Rust implementations.
 - Regression tests failed before fixes for incomplete/contradictory parent
-  verdicts and incorrect pre-existing review reports, then passed.
+  verdicts, incorrect pre-existing review reports and answer-revealing fixture
+  identifiers, then passed. Independent opaque-ID review and all nine focused
+  comparison tests passed.
 - Actual disposable probes cover secure TypeScript/Rust, forged verdict refusal,
   network/write refusal, parent-memory refusal and bounded timeout cleanup.
 - The canonical coverage scanner and semantic judge run on secure, insecure and
@@ -62,7 +66,7 @@ mode and post-run file hashing are not described as native-code isolation.
   false positives/negatives; canonical coverage/semantic confusion counts were
   also zero. All 18 calls served `claude-haiku-5-5`; no retries. The per-arm 99%
   interval is 37.6%–100%, so no superiority is inferred. API-equivalent estimates
-  are 0.0325343/0.0361822/0.0307612 USD; cache and host effects preclude a ranking.
+  are 0.1227175/0.1230255/0.1221426 USD; cache and host effects preclude a ranking.
   The final hardened runner's file/prompt hashes and all 12 execution proofs were
   verified against the committed artefact.
 
@@ -97,7 +101,8 @@ mode and post-run file hashing are not described as native-code isolation.
 
 The full local gate passed 30,207 parallel tests and all static/type/lint checks,
 then reported four existing clock/network-sensitive failures during a run whose
-wall time exceeded its test time substantially. All 76 tests in those unchanged files then passed in isolation. The serial suite
-is run separately; required CI remains authoritative.
+wall time exceeded its test time substantially. All 76 tests in those unchanged
+files then passed in isolation. The separate serial suite passed 780 tests with
+zero failures and one existing ignore; required CI remains authoritative.
 Local Checkov is unavailable, and local Semgrep differs from the CI pin. No policy
 or test is relaxed to obtain a passing check.

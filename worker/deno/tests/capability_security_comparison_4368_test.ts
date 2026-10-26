@@ -58,11 +58,20 @@ Deno.test("comparison runs every matched arm/task/sample with the same model and
   deps.invoke = (request) => {
     seen.push(request);
     if (request.prompt.includes("REVIEW_FIXTURES")) {
+      const cases: { id: string; path: string; base: string; head: string }[] =
+        JSON.parse(request.prompt.split("\n").at(-1)!);
+      assert(cases.every(({ id }) => /^case-\d+$/.test(id)));
+      const preExisting = cases.filter(({ base, head }) =>
+        base !== "" && head.endsWith("// spelling\n")
+      );
       return Promise.resolve({
         ok: true,
         text: JSON.stringify({
-          blocking: ["insecure", "deny-all", "newly-exposed"],
-          preExisting: ["pre-existing"],
+          blocking: cases.filter((item) =>
+            item.path !== "README.md" && !preExisting.includes(item) &&
+            !item.head.includes("actor.tenant !== resource.tenant")
+          ).map(({ id }) => id),
+          preExisting: preExisting.map(({ id }) => id),
         }),
         attempts: [{
           ok: true,
@@ -93,6 +102,18 @@ Deno.test("comparison runs every matched arm/task/sample with the same model and
   assertEquals(result.liveComparison, "completed");
   assertEquals(result.winner, null);
   assertEquals(result.adoption.action, "simplify");
+  for (const review of result.reviews) {
+    const pin = result.revision
+      .prompts[`${review.arm}/review/${review.sample}`]!;
+    assertEquals(pin.sha256, review.promptSha256);
+    const cases: { id: string }[] = JSON.parse(pin.text.split("\n").at(-1)!);
+    assertEquals(Object.keys(review.caseLabels), cases.map(({ id }) => id));
+    assertEquals(Object.keys(cases[0]!).sort(), ["base", "head", "id", "path"]);
+  }
+  assert(
+    result.reviews[0]!.caseLabels["case-1"] !==
+      result.reviews[3]!.caseLabels["case-1"],
+  );
   for (const arm of result.arms) {
     assertEquals(arm.jointPassed, 4);
     assertEquals(arm.attempted, 4);
@@ -280,4 +301,36 @@ Deno.test("review false positives include erroneous pre-existing reports", () =>
   );
   assertEquals(result.falsePositives, 2);
   assertEquals(result.falseNegatives, 0);
+});
+
+Deno.test("opaque review IDs are mapped privately and gold-label replies are rejected", () => {
+  const labels = {
+    "case-1": "pre-existing",
+    "case-2": "newly-exposed",
+    "case-3": "insecure",
+    "case-4": "deny-all",
+    "case-5": "secure",
+    "case-6": "docs",
+  };
+  const score = scoreReviewReply(
+    JSON.stringify({
+      blocking: ["case-2", "case-3", "case-4"],
+      preExisting: ["case-1"],
+    }),
+    labels,
+  );
+  assertEquals(score.status, "completed");
+  assertEquals(score.falsePositives, 0);
+  assertEquals(score.falseNegatives, 0);
+  assertEquals(score.preExistingCorrect, true);
+  for (const id of ["insecure", "case-7", "__proto__"]) {
+    assertEquals(
+      scoreReviewReply(
+        JSON.stringify({ blocking: [id], preExisting: [] }),
+        labels,
+      )
+        .status,
+      "unknown",
+    );
+  }
 });

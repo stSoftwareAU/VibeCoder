@@ -24,6 +24,10 @@ and six reviews of the same six base/head fixtures. `--samples` accepts 2–5;
 `--timeout-ms` bounds each model invocation including its retry (default 60000,
 maximum 300000). Generated execution has a separate fixed 60-second bound.
 
+Model-facing review cases use opaque identifiers. Their order rotates by repeat,
+identically across arms; expected classifications are stored only in the result
+artefact's private scoring map. Each repeat's full prompt and hash are retained.
+
 The artefact records exact prompts and hashes, source, fixture and scanner hashes,
 actually served models, every attempt, outcome, elapsed time and existing
 API-equivalent estimates. Unknown prices remain null. A different or unreported
@@ -102,15 +106,15 @@ count is approximately 37.6%–100%, so these results do not demonstrate superio
 
 | Arm | Joint tasks | Estimated API-equivalent USD | Model-attempt plus execution time |
 | --- | --- | --- | --- |
-| `current-guidance` | 4/4 | 0.0325343 | 83.2 s |
-| `generic-secure-coding` | 4/4 | 0.0361822 | 159.6 s |
-| `codeguard-derived` | 4/4 | 0.0307612 | 71.1 s |
+| `current-guidance` | 4/4 | 0.1227175 | 61.7 s |
+| `generic-secure-coding` | 4/4 | 0.1230255 | 58.7 s |
+| `codeguard-derived` | 4/4 | 0.1221426 | 56.1 s |
 
 Timings exclude subscription authentication probes. Cache reuse and shared-host
 load affect cost and time; this run is not a production cost/speed ranking. The
 expanded prompt showed no functional or precision advantage in this sample.
 Production generation therefore uses the compact selected advice, without the
 expanded validation paragraphs and unselected-capability index. Existing review
-and security gates are retained. A preliminary instrumentation run preceded the
-parent-memory hardening; the committed result was rerun with the final boundary
-and its source hashes match the recorded files.
+and security gates are retained. The committed result uses the final hardened
+execution boundary and opaque review identifiers; its source hashes match the
+recorded files.

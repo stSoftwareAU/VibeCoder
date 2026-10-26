@@ -65,11 +65,17 @@ type Review = ReturnType<typeof scoreReviewReply> & {
   arm: typeof ARMS[number];
   sample: number;
   promptSha256: string;
+  caseLabels: Readonly<Record<string, string>>;
   invocation: CapabilityModelResult;
 };
 
 /** Unknown or incomplete replies are never counted as zero findings. */
-export function scoreReviewReply(text: string) {
+export function scoreReviewReply(
+  text: string,
+  caseLabels: Readonly<Record<string, string>> = Object.fromEntries(
+    IDS.map((id) => [id, id]),
+  ),
+) {
   const unknown = {
     status: "unknown" as const,
     falsePositives: null,
@@ -85,20 +91,26 @@ export function scoreReviewReply(text: string) {
     }
     if (
       ![...value.blocking, ...value.preExisting].every((id) =>
-        typeof id === "string" && IDS.includes(id)
+        typeof id === "string" && Object.hasOwn(caseLabels, id) &&
+        IDS.includes(caseLabels[id]!)
       )
     ) return unknown;
-    const blocking = new Set<string>(value.blocking);
+    const blocking = new Set<string>(
+      value.blocking.map((id: string) => caseLabels[id]!),
+    );
+    const preExisting: string[] = value.preExisting.map((id: string) =>
+      caseLabels[id]!
+    );
     return {
       status: "completed" as const,
       falsePositives: [...blocking].filter((id) =>
         !BLOCKING.includes(id)
-      ).length + [...new Set<string>(value.preExisting)].filter((id) =>
+      ).length + [...new Set(preExisting)].filter((id) =>
         id !== "pre-existing"
       ).length,
       falseNegatives: BLOCKING.filter((id) => !blocking.has(id)).length,
-      preExistingCorrect: value.preExisting.length === 1 &&
-        value.preExisting[0] === "pre-existing",
+      preExistingCorrect: preExisting.length === 1 &&
+        preExisting[0] === "pre-existing",
     };
   } catch {
     return unknown;
@@ -430,26 +442,31 @@ export async function compareCapabilityGuidance(options: {
     }
     for (const index of order) {
       const arm = ARMS[index]!;
+      // Gold labels stay in the artefact, never in the model-facing cases.
+      // Every arm sees the same order; repeats rotate it to vary ordinal IDs.
+      const caseLabels: Record<string, string> = {};
+      const cases = fixtures.map((_, i) => {
+        const item = fixtures[(i + sample) % fixtures.length]!;
+        const id = `case-${i + 1}`;
+        caseLabels[id] = item.id;
+        return { id, path: item.path, base: item.base, head: item.head };
+      });
       const prompt = `${
         guidance[index]
       }\n\nREVIEW_FIXTURES\nReview each independent base/head change below. The operation must allow an authorised tenant name update and reject cross-tenant and role writes. Block new defects or newly exposed defects. Report an unchanged pre-existing defect separately. A docs change has no code defect. Return ONLY JSON with both keys: {"blocking":["fixture-id"],"preExisting":["fixture-id"]}. Do not report style preferences.\n${
-        JSON.stringify(
-          fixtures.map(({ id, path, base, head }) => ({
-            id,
-            path,
-            base,
-            head,
-          })),
-        )
+        JSON.stringify(cases)
       }`;
-      const key = `${arm}/review`;
+      const key = `${arm}/review/${sample}`;
       promptPins[key] = {
         sha256: await computePromptHash(prompt),
         text: prompt,
       };
       const invocation = await deps.invoke({ ...settings, prompt });
       inspectInvocation(invocation);
-      const score = scoreReviewReply(invocation.ok ? invocation.text : "");
+      const score = scoreReviewReply(
+        invocation.ok ? invocation.text : "",
+        caseLabels,
+      );
       if (score.status === "unknown") {
         blockers.add("review returned unknown/incomplete evidence");
       }
@@ -457,6 +474,7 @@ export async function compareCapabilityGuidance(options: {
         arm,
         sample,
         promptSha256: promptPins[key]!.sha256,
+        caseLabels,
         invocation,
         ...score,
       });
