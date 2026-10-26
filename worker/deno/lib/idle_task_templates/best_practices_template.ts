@@ -907,6 +907,8 @@ export async function defaultRunScan(
       // rules are the same refusal expressed to the CLI.
       ...STATIC_SCAN_DISALLOWED_BASH_TOOLS,
     ],
+    // The `PreToolUse` hook that denies a Bash call invoking a build tool.
+    settingsJson: JSON.stringify(resolveStaticScanHookSettings()),
   });
   if (!result.ok) {
     return {
