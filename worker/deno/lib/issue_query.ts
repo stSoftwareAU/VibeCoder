@@ -14,10 +14,7 @@ import {
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
 } from "./pr_body.ts";
-import {
-  findMissingCriteria,
-  hasFollowUpChainStop,
-} from "./missing_criterion_close_guard.ts";
+import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 import { runGhCommand } from "./github.ts";
 import {
   prTitleMatchesIssue,
@@ -160,13 +157,6 @@ export interface MergedPR {
    */
   missingCriteria?: string[];
   /**
-   * Whether the PR body carries the chain-stop section's marker (PR #3676
-   * review): the PR worked a partial-delivery follow-up whose gaps no further
-   * follow-up holds, so it does not close its issue. Absent on a cache entry
-   * written before this field was collected — treat as false.
-   */
-  followUpChainStop?: boolean;
-  /**
    * The sub-agent tier from the PR body's `vibe-sub-agent-tier` marker,
    * `sonnet` when the body has none (Issue #3404). Absent on a cache entry
    * written before this field was collected — consumers treat absent as
@@ -238,23 +228,6 @@ export interface BlockingPRInfo {
 }
 
 /**
- * Raw issue JSON from gh issue list.
- */
-interface GhIssueListItem {
-  number: number;
-  title: string;
-  url: string;
-  assignees: Array<{ login: string }>;
-  labels: Array<{ name: string }>;
-  createdAt: string;
-  updatedAt?: string;
-  author: { login: string };
-  milestone?: { title: string } | null;
-  /** Raw GitHub native sub-issue counts, validated by {@link parseSubIssuesSummary}. */
-  subIssuesSummary?: unknown;
-}
-
-/**
  * Validate a raw `subIssuesSummary` field from `gh issue list` (Issue #3314).
  *
  * Only `total` and `completed` are kept (`percentCompleted` is derivable and
@@ -294,12 +267,6 @@ export function hasOpenSubIssues(
 }
 
 /**
- * Parse raw gh issue list JSON into FilterableIssue array.
- *
- * @param jsonStr - Raw JSON string from gh CLI
- * @returns Parsed issues
- */
-/**
  * Refuse to treat a failed gh list call as an empty list (Issue #4257).
  *
  * `runGh`-style wrappers return `""` on failure (rate limit, network,
@@ -327,51 +294,106 @@ function assertListOutput(output: string, context: string): void {
   }
 }
 
+/**
+ * Parse raw gh issue list JSON into FilterableIssue array.
+ *
+ * Reject malformed lists and rows with field context before callers can
+ * cache an incomplete snapshot (Issue #4124). Optional absent fields retain
+ * their existing defaults; malformed supplied values are never skipped.
+ *
+ * @param jsonStr - Raw JSON string from gh CLI
+ * @returns Parsed issues
+ * @throws When the output is invalid JSON, not an array, or has a malformed row.
+ */
 export function parseIssueListJson(jsonStr: string): FilterableIssue[] {
-  try {
-    const raw: unknown = JSON.parse(jsonStr);
-    if (!Array.isArray(raw)) return [];
-    // Inline runtime shape guard — gh CLI output at trust boundary (Issue #1532).
-    const items: GhIssueListItem[] = [];
-    for (const item of raw) {
-      if (!isRecord(item)) continue;
-      if (typeof item.number !== "number") continue;
-      if (typeof item.title !== "string") continue;
-      items.push(item as unknown as GhIssueListItem);
-    }
-    return items.map((item) => {
-      const issue: FilterableIssue = {
-        number: item.number,
-        title: item.title,
-        url: item.url ?? "",
-        author: item.author?.login ?? "",
-        assignees: (item.assignees ?? []).map((a) => a.login),
-        labels: (item.labels ?? []).map((l) => l.name),
-        createdAt: item.createdAt ?? "",
-        updatedAt: item.updatedAt ?? "",
-        milestone: item.milestone?.title ?? "",
-      };
-      // Body is optional in `FilterableIssue`; include it only when present
-      // so older cached payloads remain compatible (Issue #1805).
-      const bodyValue = (item as unknown as { body?: unknown }).body;
-      if (typeof bodyValue === "string") {
-        issue.body = bodyValue;
-      }
-      // Issue #3314: GitHub native sub-issue counts, kept only when valid.
-      const subIssuesSummary = parseSubIssuesSummary(item.subIssuesSummary);
-      if (subIssuesSummary !== undefined) {
-        issue.subIssuesSummary = subIssuesSummary;
-      }
-      return issue;
-    });
-  } catch {
-    return [];
+  assertListOutput(jsonStr, "parseIssueListJson");
+  const raw: unknown = JSON.parse(jsonStr);
+  if (!Array.isArray(raw)) {
+    throw new Error("parseIssueListJson: expected a JSON array");
   }
+  // Inline runtime shape guard — gh CLI output at trust boundary (Issue #1532).
+  const issues: FilterableIssue[] = [];
+  for (const [index, item] of raw.entries()) {
+    const reject: (field: string) => never = (field) => {
+      throw new Error(
+        `parseIssueListJson: row ${index} — malformed ${field} (Issue #4124)`,
+      );
+    };
+    if (!isRecord(item)) reject("row");
+    if (typeof item.number !== "number") reject("number");
+    if (typeof item.title !== "string") reject("title");
+    const author = singleStringField(item.author, "login");
+    if (author === null) {
+      reject("author");
+    }
+    const assignees = stringListField(item.assignees, "login");
+    if (assignees === null) {
+      reject("assignees");
+    }
+    const labels = stringListField(item.labels, "name");
+    if (labels === null) {
+      reject("labels");
+    }
+    const milestone = singleStringField(item.milestone, "title");
+    if (milestone === null) {
+      reject("milestone");
+    }
+    const issue: FilterableIssue = {
+      number: item.number,
+      title: item.title,
+      url: stringOrEmpty(item.url),
+      author,
+      assignees,
+      labels,
+      createdAt: stringOrEmpty(item.createdAt),
+      updatedAt: stringOrEmpty(item.updatedAt),
+      milestone,
+    };
+    // Body is optional in `FilterableIssue`; include it only when present
+    // so older cached payloads remain compatible (Issue #1805).
+    if (typeof item.body === "string") {
+      issue.body = item.body;
+    }
+    // Issue #3314: GitHub native sub-issue counts, kept only when valid.
+    const subIssuesSummary = parseSubIssuesSummary(item.subIssuesSummary);
+    if (subIssuesSummary !== undefined) {
+      issue.subIssuesSummary = subIssuesSummary;
+    }
+    issues.push(issue);
+  }
+  return issues;
 }
 
 /** Type guard for plain objects used by inline validators (Issue #1532). */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `""` when absent, the string under `key` when valid, else `null` (Issue #4110). */
+function singleStringField(value: unknown, key: string): string | null {
+  if (value === undefined || value === null) return "";
+  if (!isRecord(value)) return null;
+  const inner = value[key];
+  return typeof inner === "string" ? inner : null;
+}
+
+/** `[]` when absent, the strings under `key` when every element is valid, else `null` (Issue #4110). */
+function stringListField(value: unknown, key: string): string[] | null {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const element of value) {
+    if (!isRecord(element)) return null;
+    const inner = element[key];
+    if (typeof inner !== "string") return null;
+    out.push(inner);
+  }
+  return out;
+}
+
+/** `value` when it is a string, else `""` (Issue #4110). */
+function stringOrEmpty(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 /**
@@ -434,7 +456,7 @@ interface AllIssuesCacheEntry {
   /** The issues returned by that listing. */
   issues: FilterableIssue[];
   /**
-   * Rows GitHub returned, before parsing dropped any malformed ones.
+   * Rows GitHub returned. Older cache entries may have dropped malformed rows.
    *
    * Exhaustion is judged on this, not on `issues.length`: a listing that hit
    * its limit but lost one unparseable row would otherwise look short - and
@@ -612,15 +634,17 @@ export async function fetchAllIssues(
   // Never cache a failure (Issue #4257): a runGh-style "" or garbage
   // payload must surface as an error, not as "repo has no open issues".
   assertListOutput(output, `fetchAllIssues(${repo})`);
+  // Issue #4110: a non-array root (e.g. `{}`) is a failed call, not `[]`.
+  const rawCount = countListRows(output);
+  if (rawCount === null) {
+    throw new Error(
+      `fetchAllIssues(${repo}): gh output was not a JSON array — treating as a failed call, not an empty list (Issue #4110)`,
+    );
+  }
 
   const issues = parseIssueListJson(output);
   if (cache) {
-    const rawCount = countListRows(output);
-    const entry: AllIssuesCacheEntry = {
-      limit,
-      issues,
-      ...(rawCount === null ? {} : { rawCount }),
-    };
+    const entry: AllIssuesCacheEntry = { limit, issues, rawCount };
     await cache.write(repo, cacheKey, entry);
   }
   return issues;
@@ -730,6 +754,7 @@ const CLOSED_ALL_DEFAULT_LIMIT = 500;
  * milestone scan. The cache key is repo-scoped (no milestone
  * namespacing) so concurrent milestone scans within a single iteration
  * share one round-trip.
+ * Command and validation failures propagate without writing to the cache.
  */
 export async function fetchAllClosedIssues(
   repo: string,
@@ -744,52 +769,27 @@ export async function fetchAllClosedIssues(
     if (cached) return cached;
   }
 
-  let output: string;
-  try {
-    output = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "closed",
-      "--json",
-      "number,title,milestone,updatedAt",
-      "--limit",
-      String(limit),
-    ]);
-  } catch {
-    return [];
-  }
+  const output = await ghCommandFn([
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "closed",
+    "--json",
+    "number,title,milestone,updatedAt",
+    "--limit",
+    String(limit),
+  ]);
 
-  // Never cache a failure (Issue #4257). This fetcher's contract swallows
-  // gh failures into an uncached [], so an empty or unparseable payload
-  // takes that same path instead of being cached as "no closed issues".
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output.trim());
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-
-  const issues: ClosedIssueAll[] = [];
-  for (const item of parsed) {
-    if (!isRecord(item)) continue;
-    if (typeof item.number !== "number") continue;
-    let milestone: string | null = null;
-    if (isRecord(item.milestone) && typeof item.milestone.title === "string") {
-      milestone = item.milestone.title;
-    }
-    issues.push({
-      number: item.number,
-      title: typeof item.title === "string" ? item.title : "",
-      milestone,
-      ...(typeof item.updatedAt === "string" && item.updatedAt !== ""
-        ? { updatedAt: item.updatedAt }
-        : {}),
-    });
-  }
+  // Share the open-list validator: neither failures nor partial lists are
+  // evidence of an empty repository (Issue #4124).
+  const issues: ClosedIssueAll[] = parseIssueListJson(output).map((item) => ({
+    number: item.number,
+    title: item.title,
+    milestone: item.milestone || null,
+    ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+  }));
   if (cache) await cache.write(repo, cacheKey, issues);
   return issues;
 }
@@ -2129,7 +2129,6 @@ function parseMergedPrListing(output: string): MergedPR[] {
       subAgentTier: subAgentTierFromBody(body) ?? "sonnet",
       lifecycleAssignmentId: assignmentIdFromBody(body) ?? null,
       ...(missingCriteria.length > 0 ? { missingCriteria } : {}),
-      ...(hasFollowUpChainStop(body) ? { followUpChainStop: true } : {}),
     });
   }
   return prs;
@@ -2305,9 +2304,15 @@ export function getBlockingPRForIssue(
 ): BlockingPRInfo | null {
   if (prs.length === 0) return null;
 
-  // Issue #4133: someone else's PR is not the worker's work stream.
+  // Issue #4133: someone else's PR is not the worker's work stream. Issue
+  // #4146: neither is the fleet's own DRAFT for this issue — a timed-out run
+  // keeps one so the next run can resume the branch and finish the job, and
+  // holding the issue on it would strand the work it exists to continue.
   const fleetPrs = prs.filter(
-    (pr) => !isHumanAuthoredPr(prAuthorForGate(pr), pushCapableAuthors),
+    (pr) =>
+      !isHumanAuthoredPr(prAuthorForGate(pr), pushCapableAuthors) &&
+      !(issueNumber !== undefined && pr.isDraft === true &&
+        isPrForIssue(pr, issueNumber)),
   );
   if (fleetPrs.length === 0) return null;
 

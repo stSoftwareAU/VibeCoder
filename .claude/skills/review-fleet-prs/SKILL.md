@@ -34,7 +34,10 @@ reviewing as a GitHub App, and persistent failure escalation.
    checks, merge conflicts and drafts belong to the fleet, so leave them
    alone and post nothing. A PR whose only red checks are cancelled runs is
    infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
-   once per head, and it is left alone exactly like `ci-failed`. **One
+   once per head, and it is left alone exactly like `ci-failed`. A completed
+   GitHub Actions check suite that failed counts as `ci-failed` too, even with
+   no check run: a workflow that fails at startup (`startup_failure`) creates
+   one, and the rollup does not show it (Issue #4347). **One
    exception:** a red dependency-audit check (`audit` in its name) that
    CI-fix has already replied to at the current head, with a fleet
    `vibe-ci-fix-attempt` marker for that check, is sent back once with a
@@ -198,7 +201,8 @@ ones behind it.
    `already-reviewed` at their head commit, so the gate does not report them
    again; one whose review failed, or that was `over-limit`, or whose
    checklist file could not be fetched (`checklist-unreadable`, a gh error
-   other than not-found, retried rather than reviewed), is reported after the
+   other than not-found, retried rather than reviewed), or whose capability
+   security guidance could not be read (`capability-unreadable`), is reported after the
    next interval rather than straight away.
 
 If the gate exits non-zero it could not reach GitHub for an hour; report its
@@ -250,7 +254,10 @@ fields as follows:
   PR's changed files, Issue #3594; the PR's own copy governs only when the PR
   edits the file and either copy is broken); the empty string when it is empty. The
   reviewer's reply then carries a `checklist` array with a verdict per item,
-  and any `missing` item sends the PR back. Pass the entry to `post.ts`
+  and any `missing` item sends the PR back. When the change uses a
+  capability from the trusted VibeCoder guidance, that value also lists
+  those checks. They are the same checks the pre-PR verifier renders.
+  A pull request cannot replace them with a weaker copy. Pass the entry to `post.ts`
   verbatim: its `checklistState` (the load problem and the items owed a
   verdict) lets `post.ts` add a blocking finding itself for a file that could
   not be applied or an item the reply left without a verdict, and `post.ts`
@@ -355,59 +362,47 @@ posted, and the PR comes back on the next gate pass.
 
 ### 3. Learn from recurring findings
 
-After posting the round, treat repeated blocking findings as training data for
-VibeCoder's own guidance:
+The Vibe Coder exists to **complete the issues it is assigned**. Every PR is
+armed for auto-merge when it is raised, and merges once it has an approving
+review and CI is green (Issue #4291). New requirements come from the owner. Do not invent them from
+review findings: each added check, evidence obligation or rule is one more way
+for a run that delivered its issue to fail, and the review on the PR already
+catches the mistake.
 
-1. For each blocking finding, identify the **root mistake**, not merely its
-   wording or file. Compare it with `<logs>/review-fleet-prs/log.jsonl` and the
-   recent review history it records. A concrete correctness/security risk can
-   justify a one-off safety proposal; state the risk rather than inventing
-   recurrence or measured savings. A recurrence means the same preventable
-   mistake has appeared in at least **two independent PRs**; repeated comments
-   on one PR or one head commit count once. When the finding matches the
-   target pattern of guidance already filed (the `pattern` slugs in
-   `guidance.ts due`'s output), record it with
+After posting the round, look at repeated blocking findings only for these two
+outcomes:
+
+1. **A worker defect.** The worker itself did something wrong: it pushed the
+   wrong branch, dropped a commit, lost a review reply, or produced a concrete
+   correctness or security risk in the product. File the bug.
+2. **Guidance that causes the mistake.** An existing rule, gate, check or
+   prompt passage is what made the agent fail. It might be contradictory,
+   unclear, impossible to satisfy, or a gate that fails runs that delivered
+   their issue. Propose removing it, simplifying it or rewording it.
+
+Never propose adding a gate, check, lint rule, Semgrep rule, deno task,
+Test Plan or summary obligation, recovery trigger, or prose rule. Never
+propose anything that withholds, disarms or delays auto-merge. A mistake that
+fits neither outcome is left to the review on the PR: do nothing. Never relax
+safety, testing or correctness guidance either.
+
+When filing:
+
+1. Compare the finding with `<logs>/review-fleet-prs/log.jsonl`. A recurrence
+   means the same mistake has appeared in at least **two independent PRs**;
+   repeated comments on one PR or one head commit count once. A worker defect
+   or a concrete correctness or security risk needs no recurrence. When the
+   finding matches the target pattern of guidance already filed (the
+   `pattern` slugs in `guidance.ts due`'s output), record it with
    `guidance.ts hit --pattern=<slug> --pr=<owner/repo#n>`.
-2. First find the existing producer, check or guidance that owns the mistake.
-   Propose the smallest repair there; extend or retire overlapping checks before
-   adding another gate. Assess a deterministic check that catches the mistake
-   mechanically, whether or not the agent remembers a rule. Consider:
-   - a worker gate (the worker refuses the PR or the push);
-   - a test or lint rule;
-   - a Semgrep rule;
-   - a script or deno task the agent or the gate runs.
-
-   Explain the expected prevented failures and added checks, model calls or
-   elapsed time. Unknown costs or benefits stay unknown. A speculative gate
-   expansion is not a measured throughput improvement. A concrete correctness
-   or security risk can justify a safety fix without a financial ROI estimate;
-   name that risk instead of inventing recurrence or a saving.
-3. Propose prose guidance only when none of these checks is feasible: ask
-   whether a concrete change to VibeCoder's prompt, a skill,
-   `CODING-STANDARDS.md`, templates, or similar worker guidance would likely
-   prevent or materially reduce that mistake. If the answer is no, do
-   nothing. Product bugs, repository-specific design decisions and random
-   implementation mistakes are not automatically prompt problems. A prose
-   proposal prefers rewording, moving or replacing an existing rule over
-   adding a new one. When a rule already exists and was ignored, diagnose
-   why first (#3425) rather than restating it.
-4. Before filing, search open issues in `stSoftwareAU/VibeCoder` for the root
-   mistake and the proposed guidance area. If an issue already covers it,
-   do not create another one.
-5. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
-   - the recurring failure pattern and why it is preventable;
-   - at least two independent PR/review examples for recurrence, or the
-     concrete correctness/security risk for a one-off safety fix: links for
-     public evidence and concept-level descriptions, with no name, number or
-     link, for private evidence (see
+2. Search open issues in `stSoftwareAU/VibeCoder` for the same cause. If an
+   issue already covers it, do not create another one.
+3. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
+   - the defect, or the guidance that causes the mistake, and why;
+   - the evidence: links for public PRs, and concept-level descriptions with
+     no name, number or link for private ones (see
      [Keeping private repos private](#keeping-private-repos-private));
-   - the VibeCoder prompt/skill/guidance that should change, when identifiable;
-   - the smallest existing-path repair, expected cost/benefit and missing data;
-   - the proposed verification method, including a comparable follow-up window
-     for any throughput claim (see the stabilisation baseline in
-     `docs/evidence/stabilisation-2026-10-18.md`);
-   - a `## Deterministic check assessment` section naming the checks
-     considered, and the check proposed or why none is feasible;
+   - the removal, simplification or rewording proposed, or the bug fix;
    - a `## Target pattern` section naming one lower-case slug for the root
      mistake (for example `untested-call-site`). After filing, record it with
      `guidance.ts track --issue=<n> --pattern=<slug>`.
@@ -415,22 +410,18 @@ VibeCoder's own guidance:
    `work-on`, `top-priority`, `low-priority` or `planning`): the reviewer
    App is in `authorized_commenters`, so the worker trusts only its
    `idle-task` add, and reserved labels are for humans to set. Otherwise
-   leave assignment/triage unchanged.
-6. Once per round, run `guidance.ts due` and act on each `recurring` entry:
+   leave assignment and triage unchanged.
+4. Once per round, run `guidance.ts due` and act on each `recurring` entry:
    guidance that closed as completed at least 30 days ago while its pattern
    still recurs in two or more independent PRs has not worked. Search first,
    then file at most one issue proposing removal or a rewrite of that
    guidance, never an extension, under the same private-repo rules, and
    record it with `guidance.ts retire --issue=<n> --by=<new issue>`. See
    [references/guidance-ledger.md](references/guidance-ledger.md).
-7. Keep the threshold evidence-based. Similar symptoms with different causes
-   are not a recurrence. A one-off proposal needs a concrete correctness or
-   security risk; ordinary guidance expansion needs observed recurrence. Never
-   create an issue solely to make a review pass,
-   and never relax safety, testing or correctness guidance as the cure.
 
-Include any self-improvement issue created in the round report. Failure to
-search or file an improvement issue must not change the PR review outcome.
+Never create an issue solely to make a review pass. Include any issue created
+in the round report. Failure to search or file an issue must not change the PR
+review outcome.
 
 ### 4. Report
 

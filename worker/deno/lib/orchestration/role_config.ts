@@ -1,8 +1,11 @@
 /** Per-host and per-repository role settings (Issue #3643). */
 import type { RoleSelection } from "./types.ts";
 import {
-  DEFAULT_CLAUDE_MODEL,
   DEFAULT_CLAUDE_MODEL_ISSUE,
+  DEFAULT_CLAUDE_MODEL_TOP_TIER,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_MODEL_CHEAP_TIER,
+  DEFAULT_CODEX_MODEL_TOP_TIER,
 } from "../config_defaults.ts";
 import {
   HAIKU_ISSUE_EXECUTOR_EFFORT,
@@ -281,40 +284,98 @@ export function validateRoleProviders(config: WorkerConfig): void {
   }
 }
 
+/** The three roles an orchestrated issue run dispatches. */
+type OrchestrationRole = "manager" | "executor" | "reviewer";
+
+/**
+ * Each role's default model, per provider (owner decision 2026-10-22): Opus
+ * does the code reviews, Sonnet manages, Haiku executes, and on Codex each
+ * role takes the similar OpenAI tier — Astra reviews, 6.1 Sol manages, Luna
+ * executes. A provider with no row here leaves the model to the CLI.
+ */
+const ROLE_DEFAULTS: Readonly<
+  Record<string, Readonly<Record<OrchestrationRole, RoleSelection>>>
+> = {
+  claude: {
+    manager: {
+      provider: "claude",
+      model: DEFAULT_CLAUDE_MODEL_ISSUE,
+      effort: "high",
+    },
+    executor: {
+      provider: "claude",
+      model: HAIKU_ISSUE_EXECUTOR_MODEL,
+      effort: HAIKU_ISSUE_EXECUTOR_EFFORT,
+    },
+    reviewer: {
+      provider: "claude",
+      model: DEFAULT_CLAUDE_MODEL_TOP_TIER,
+      effort: "high",
+    },
+  },
+  codex: {
+    manager: { provider: "codex", model: DEFAULT_CODEX_MODEL, effort: "high" },
+    executor: {
+      provider: "codex",
+      model: DEFAULT_CODEX_MODEL_CHEAP_TIER,
+      effort: "high",
+    },
+    reviewer: {
+      provider: "codex",
+      model: DEFAULT_CODEX_MODEL_TOP_TIER,
+      effort: "high",
+    },
+  },
+};
+
 /** The selections recorded and invoked for this issue, with provider-local inheritance. */
 export function effectiveRoleSelections(
   settings: ExternalOrchestrationSettings,
-): Record<"manager" | "executor" | "reviewer", RoleSelection> {
-  const select = (
-    fallback: RoleSelection,
-    override?: ExternalOrchestrationRoleSettings,
-  ): RoleSelection => {
-    const provider = override?.provider ?? fallback.provider;
-    const base = provider === fallback.provider
-      ? fallback
-      : { provider: provider as RoleSelection["provider"] };
-    return {
-      ...base,
-      ...override,
-      provider: provider as RoleSelection["provider"],
-    };
+  defaultProvider: RoleSelection["provider"] = "claude",
+): Record<OrchestrationRole, RoleSelection> {
+  // A role keeps its own default on its own provider; moved to another
+  // provider it takes that provider's default for the role rather than none.
+  const select = (role: OrchestrationRole): RoleSelection => {
+    const override = settings[role];
+    // Existing model-only settings name Claude models; retain that explicit pin.
+    const provider = (override?.provider ??
+      (override?.model || override?.cliAdapter
+        ? "claude"
+        : defaultProvider)) as RoleSelection[
+        "provider"
+      ];
+    const base = ROLE_DEFAULTS[provider]?.[role] ?? { provider };
+    return { ...base, ...override, provider };
   };
-  const manager = select({
-    provider: "claude",
-    model: DEFAULT_CLAUDE_MODEL_ISSUE,
-    effort: "high",
-  }, settings.manager);
-  const executor = select({
-    provider: "claude",
-    model: HAIKU_ISSUE_EXECUTOR_MODEL,
-    effort: HAIKU_ISSUE_EXECUTOR_EFFORT,
-  }, settings.executor);
-  const reviewer = settings.reviewer
-    ? select({
-      provider: "claude",
-      model: DEFAULT_CLAUDE_MODEL,
-      effort: "high",
-    }, settings.reviewer)
-    : manager;
-  return { manager, executor, reviewer };
+  return {
+    manager: select("manager"),
+    executor: select("executor"),
+    reviewer: select("reviewer"),
+  };
+}
+
+/** Bind automatic issue runs to the selected provider and its role models. */
+export function resolveIssueOrchestration(
+  enabled: boolean,
+  settings: ExternalOrchestrationSettings,
+  provider: string,
+  automatic: boolean,
+): {
+  externalOrchestration: boolean;
+  effectiveOrchestrationSettings: ExternalOrchestrationSettings;
+} {
+  return {
+    // Codex cannot consume Claude's native --agents definitions. The external
+    // orchestrator preserves the manager/executor/reviewer workflow on Codex.
+    externalOrchestration: enabled || (automatic && provider === "codex"),
+    effectiveOrchestrationSettings: automatic
+      ? {
+        ...settings,
+        ...effectiveRoleSelections(
+          settings,
+          provider === "codex" ? "codex" : "claude",
+        ),
+      }
+      : settings,
+  };
 }

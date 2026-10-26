@@ -269,7 +269,10 @@ export interface WorkerConfig {
    * projection guard is the opt-in.
    */
   claudeWeekPaceDrain?: boolean;
-  /** Claude model ID to use (empty string means CLI default) (Issue #260) */
+  /**
+   * Host-wide Claude model from `claude_model` (Issue #260). Empty when unset,
+   * so each phase routes to its own model (Issue #4117).
+   */
   claudeModel: string;
   /**
    * Configured best planning model (Issue #2654). The degraded-model detector
@@ -305,13 +308,23 @@ export interface WorkerConfig {
   /** Positive per-invocation Claude Code turn cap; defaults to 100. */
   claudeMaxTurns?: number;
   /**
-   * Seconds of runway to the supervisor hard cap a new implementation claim
-   * must have (`.config.json` `min_claim_runway_seconds`, Issues #289/#425).
-   * `0` disables the floor. Environment variable `MIN_CLAIM_RUNWAY_SECONDS`
-   * is the fallback when the key is absent — it does not cross the container
-   * boundary, so only a native run can set it. See `lib/claim_runway.ts`.
+   * Seconds of runway a new implementation claim must have (`.config.json`
+   * `min_claim_runway_seconds`, Issues #289/#425/#4245). When a timeline is
+   * set the floor measures to the finish deadline; otherwise to the
+   * supervisor hard cap. `0` disables the floor. Environment variable
+   * `MIN_CLAIM_RUNWAY_SECONDS` is the fallback when the key is absent — it
+   * does not cross the container boundary, so only a native run can set it.
+   * See `lib/claim_runway.ts`.
    */
   minClaimRunwaySeconds: number;
+  /**
+   * Seconds from run start to the run's finish deadline (`.config.json`
+   * `run_finish_seconds`, Issue #4242). Must exceed the run duration target.
+   * When a timeline is set, agent sessions, extension grants, the claim
+   * floor and the drain read this finish (Issues #4244, #4245, #4246).
+   * See `lib/run_timeline.ts`.
+   */
+  runFinishSeconds?: number;
   /**
    * Labels marking an issue as a long job for the adaptive claim floor
    * (`.config.json` `claim_long_job_labels`, Issue #245). An issue carrying
@@ -344,6 +357,12 @@ export interface WorkerConfig {
    * `OPERATIONAL_DEFAULTS`.
    */
   screenshotRetryTimeoutSeconds?: number;
+  /**
+   * Timeout in seconds for the pre-push gate's one extra in-run agent turn
+   * (Issue #4128). Optional; `loadConfig` always populates it from
+   * `OPERATIONAL_DEFAULTS`.
+   */
+  prePushRetryTimeoutSeconds?: number;
   /**
    * Stop a run making dozens of tool calls a minute with no working-tree
    * change (`.config.json` `call_storm_enabled`, Issue #2230; default: true).
@@ -1114,7 +1133,7 @@ export interface RepoConfig {
    * use an empty array to configure no repo commands. That does NOT switch the
    * changed-file checks off: Step 1b (for callers that pass a pre-flight spec)
    * and the completion phase's gate still run deno/cargo fmt, markdownlint,
-   * cspell and `sweptAt` ancestry over the files the branch changes, and can
+   * cspell and the Floci deploy test over the files the branch changes, and can
    * fail the run, for a repo with no entry too.
    *
    * When set, every command runs in listed order at the same chokepoint as
@@ -1407,6 +1426,8 @@ export interface ConfigFile {
   /** Positive per-invocation Claude Code turn cap; defaults to 100. */
   claude_max_turns?: number;
   min_claim_runway_seconds?: number;
+  /** Seconds from run start to the run's finish deadline (Issue #4242) */
+  run_finish_seconds?: number;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];
   /** Extend the issue-work deadline while progress holds (Issue #4296) */
@@ -1419,6 +1440,8 @@ export interface ConfigFile {
   progress_extension_check_seconds?: number;
   /** Timeout for the screenshot gate's one extra agent turn (Issue #2960) */
   screenshot_retry_timeout_seconds?: number;
+  /** Timeout for the pre-push gate's one extra agent turn (Issue #4128) */
+  pre_push_retry_timeout_seconds?: number;
   /** Stop a run that polls instead of working (Issue #2230) */
   call_storm_enabled?: boolean;
   /** Tool calls in the window at which a run is a call storm (Issue #2230) */

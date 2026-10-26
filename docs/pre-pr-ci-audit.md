@@ -107,13 +107,15 @@ worker test job is also class local and is already covered by `quality.sh`.
 | [38123883049](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38123883049) | c384c70e | semgrep | blocking `detect-non-literal-regexp` at `worker/deno/lib/mutation_gate.ts:627` (`SEMGREP_APP_TOKEN` empty) | local | A semgrep stage exists in `quality.sh` / `lib/quality_gate.ts` (Issue #559); whether it ran on c384c70e is not recorded; since Issue #3726 each gate stage's outcome is (see below) | Cause not recoverable; most likely #3730; recording added by #3726 |
 | [38126786967](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38126786967) | 9dfa6301 | type check and tests | compile or test failure | local | Covered by `quality.sh` | No change needed |
 | [38345577457](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38345577457) | 543adc87 | tests | runner disk full | local / runner infrastructure | Covered by `quality.sh` | Infrastructure |
-| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Gap, tracked in #3727 |
+| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Pre-push gate runs `test-floci.sh` since #3727; skipped in the worker container (no Docker socket) |
 
 The sweptAt failures were a feature-branch commit recorded as the sweep
 ledger's `sweptAt`, which is not an ancestor of the base branch. The check
 needs deeper history than the shallow worker checkout has, and no pre-PR stage
-checked ancestry. #3689 adds a sweptAt check to the pre-push gate that deepens
-shallow history and fails closed, plus a rule in the `security_scan` prompt.
+checked ancestry. #3689 added a sweptAt check to the pre-push gate that deepened
+shallow history and failed closed, plus a rule in the `security_scan` prompt.
+That pre-push check was removed (Issue #4234). CI still refuses a `sweptAt`
+that is not an ancestor of the default branch.
 
 The agent pre-push hook runs markdownlint on the agent's own `git push`.
 markdownlint now also runs in the completion-phase gate, which covers the whole
@@ -297,10 +299,104 @@ private-repo-A, one in private-repo-C), and none logged
 `Pre-push gate blocked the push`. One of the private-repo-A runs reached PR
 recovery
 (`IDEMPOTENT: recovering the PR`) at 03:06Z; `completionBody` gets there only
-after `gateBeforePush()` returns no block. The gate logs nothing when it
-passes, so the log cannot show which checks it reached on a live run. The
-replay above is the evidence for its checks, and #3770 tracks a log line for
-a pass.
+after `gateBeforePush()` returns no block. Since #3770 the gate logs one INFO
+line per run — `Pre-push gate passed checks=[...]` naming the checks, or
+`Pre-push gate: nothing ahead of <base>` for a no-op — so the log now shows
+which checks a live run reached. The replay above is the evidence for which
+checks the gate runs.
+
+### Completion-phase pre-push gate: fleet record
+
+The host logs above end at 2026-10-15 03:11Z and hold no gate pass line, so
+the days after that are not covered by them. This record comes from the
+fleet's private run archive. It stores one metadata record per
+finished issue run, with the failure category the worker assigned. A block by
+the completion-phase gate carries the worker-written category `pre_push_gate`
+(`PRE_PUSH_GATE_MARKER`, `lib/failure_diagnosis.ts`). The window runs from the
+merge of #3716 (2026-10-14 22:20Z) to the latest record (2026-10-22 20:04Z),
+across four worker hosts. The archive is private, so only counts are quoted;
+VibeCoder rows are classified from its public issue comments.
+
+| Measure | All repos | VibeCoder |
+| --- | --- | --- |
+| Recorded issue runs in the window | 605 | 205 |
+| Runs ended by a gate block (`pre_push_gate`) | 67 (11%) | 22 (11%) |
+| Distinct issues blocked | 59 | 20 |
+| Repos with a block | 8 of 11 | 1 |
+| Blocked issues with a later successful run | 6 | 1 |
+| Blocked runs that had raised no PR | 63 | 22 |
+| Blocked runs with a PR already open | 4 | 0 |
+
+What the 20 VibeCoder issues show, read from each issue's "released this claim"
+and "Automated Processing Failed" comments:
+
+- 18 were blocked on the sweptAt ancestry check:
+  [#3609](https://github.com/stSoftwareAU/VibeCoder/issues/3609),
+  [#3617](https://github.com/stSoftwareAU/VibeCoder/issues/3617),
+  [#3642](https://github.com/stSoftwareAU/VibeCoder/issues/3642),
+  [#3645](https://github.com/stSoftwareAU/VibeCoder/issues/3645),
+  [#3647](https://github.com/stSoftwareAU/VibeCoder/issues/3647),
+  [#3653](https://github.com/stSoftwareAU/VibeCoder/issues/3653),
+  [#3657](https://github.com/stSoftwareAU/VibeCoder/issues/3657),
+  [#3659](https://github.com/stSoftwareAU/VibeCoder/issues/3659),
+  [#3726](https://github.com/stSoftwareAU/VibeCoder/issues/3726),
+  [#3742](https://github.com/stSoftwareAU/VibeCoder/issues/3742),
+  [#3750](https://github.com/stSoftwareAU/VibeCoder/issues/3750),
+  [#3760](https://github.com/stSoftwareAU/VibeCoder/issues/3760),
+  [#3766](https://github.com/stSoftwareAU/VibeCoder/issues/3766),
+  [#3804](https://github.com/stSoftwareAU/VibeCoder/issues/3804),
+  [#3970](https://github.com/stSoftwareAU/VibeCoder/issues/3970),
+  [#4045](https://github.com/stSoftwareAU/VibeCoder/issues/4045),
+  [#4046](https://github.com/stSoftwareAU/VibeCoder/issues/4046) and
+  [#4119](https://github.com/stSoftwareAU/VibeCoder/issues/4119). This is the
+  failure that broke five VibeCoder CI runs in the table above. Here the
+  unattended worker stopped it before `gh pr create`, and the comment quotes the
+  offending slice and the `git log --diff-filter=A -1 …` command that repoints
+  it.
+- 2 were blocked on a pre-flight `deno fmt --check` failure:
+  [#3779](https://github.com/stSoftwareAU/VibeCoder/issues/3779) and
+  [#3860](https://github.com/stSoftwareAU/VibeCoder/issues/3860).
+- The check that blocked is recorded in the issue comment only. The archive
+  metadata holds the category, not the check, so the table cannot be split by
+  check for the other repos.
+
+Findings:
+
+- The executable checks do run on the unattended worker path: each of the four
+  hosts recorded at least one gate block (22, 25, 17 and 3 blocks), and the
+  blocks stop real failures before the PR exists. This confirms the replay
+  above on live runs.
+- A block ended the run in the audited period: only 1 of the 20 VibeCoder
+  issues has a later success. At the time of the audit the comment above
+  `gateBeforePush()` in `lib/phases/completion_phase.ts` said the gate "fails
+  closed and never enters push recovery", so the agent got no turn to fix what
+  the gate found. #4128 has since added one in-run recovery turn
+  (`worker/deno/lib/pre_push_gate_retry.ts`): the first verdict block of a run
+  gets one agent turn and the gate re-runs. If it still blocks, or the turn
+  fails, the run fails closed with category `pre_push_gate` and never enters
+  push recovery. No new issue is filed.
+- The sweptAt block recurred on 2026-10-20 to 2026-10-22
+  ([#3970](https://github.com/stSoftwareAU/VibeCoder/issues/3970),
+  [#4045](https://github.com/stSoftwareAU/VibeCoder/issues/4045),
+  [#4046](https://github.com/stSoftwareAU/VibeCoder/issues/4046),
+  [#4119](https://github.com/stSoftwareAU/VibeCoder/issues/4119)) after #3976
+  (the producer-side fix) closed on 2026-10-18. Whether those hosts ran code
+  with that fix was not checked.
+- Four blocked runs (fleet-wide) already had a PR open, as described under
+  [Known remaining limits](#known-remaining-limits).
+- Not observed: the checks that passing runs reached. The `Pre-push gate
+  passed checks=[...]` line (#3770) is in the worker log. This host's logs
+  end at 2026-10-15 03:11Z and hold no pass line, and it holds no worker log
+  for the days after that, so the pass lines are not in this record. The replay above remains the evidence
+  for which checks the gate runs.
+
+The pre-PR verifier has a public fleet-wide trace on VibeCoder. When it blocks,
+the worker posts a comment headed "The pre-PR verifier found blocking
+problems." on the issue. Of the 164 VibeCoder issues with a run recorded since
+2026-10-12, 48 carry at least one such comment dated 2026-10-12 or later, 73
+comments in all. This shows how often it blocked on any host; it does not show
+whether the agent then fixed the finding, and it does not count verifier runs
+that passed. The miss record above is still single-host.
 
 ## Checks the worker cannot run
 
@@ -357,13 +453,20 @@ a pass.
     cases stay SKIPPED and are recorded.
   - Floci (run 38033819415): a deterministic `ValidationException` from
     `infra/cloudformation/test-floci.sh`, reproducible with the baked `floci`
-    binary. No pre-PR stage runs it. Tracked in #3727.
+    binary. #3727 adds the script to the pre-push gate's changed-files check
+    for a push that changes `infra/cloudformation/`. Inside the worker container
+    that would not have caught this failure: the template creates an
+    `AWS::EC2::Instance`, and with no Docker socket the script reports it
+    `SKIPPED (needs Docker)` (the image also ships no `aws` CLI). A host with
+    Docker and the `aws` CLI catches it before the push; CI stays the enforcer
+    otherwise.
 - The pre-PR stages had no executable Mermaid parse that caught a flowchart
   label mixing unquoted text with a quoted string (found by a private-repo-A
   review); VibeCoder's own validator passed it. Fixed by #3769, which adds
   that check to the validator.
-- The pre-push gate logs nothing on a pass, so its checks on live runs are not
-  observable in the worker log. Tracked in #3770.
+- The pre-push gate used to log nothing on a pass, so its checks on live runs
+  were not observable in the worker log. #3770 now logs one INFO line per gate
+  run naming the checks reached (or `nothing ahead of <base>` for a no-op).
 
 CI still runs every required check independently after PR creation. Nothing in
 Issue #3689 weakens or removes a CI, review or security gate.
@@ -373,14 +476,18 @@ Issue #3689 weakens or removes a CI, review or security gate.
 - Rows were derived from the failed GitHub Actions runs in the tables (first
   failing job per run, log read via `gh`). Only VibeCoder's runs are linked.
 - Blocking review findings are audited in their own table (Issue #3717); the
-  verifier's live record comes from one host's logs only.
+  verifier's miss record comes from one host's logs only; its block count is
+  fleet-wide for VibeCoder (see Completion-phase pre-push gate: fleet record).
 - Fixtures in this repository's tests reproduce each fixed gap. Issue #3717
   also replayed the completion-phase gate on seven real heads in disposable
   checkouts (see Unattended worker path).
 - The unattended worker path is verified by unit tests of Step 1b and
-  `gateBeforePush()`, by the disposable-checkout replay, and by this host's
-  worker logs (see Unattended worker path). No live run on this host has yet
-  logged a pre-push gate block, and the gate logs nothing on a pass (#3770).
+  `gateBeforePush()`, by the disposable-checkout replay, by this host's worker
+  logs, and by the fleet-wide run archive (see Unattended worker path). The
+  archive records 67 live gate blocks across four hosts, 22 of them on
+  VibeCoder; it records the category, not the check, and not the checks passing
+  runs reached (#3770 logs those in the worker log; this host's logs end at
+  2026-10-15 03:11Z and hold no pass line).
 - #3644 consumes two kinds of evidence. The CI tables have one row per failing
   run. VibeCoder rows give the check name, first failing SHA, run link, local,
   network or GitHub-exclusive class, and whether pre-flight ran an equivalent.

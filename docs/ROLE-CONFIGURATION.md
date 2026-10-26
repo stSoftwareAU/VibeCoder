@@ -38,12 +38,22 @@ example does not establish entitlement. A model rejection fails the invocation
 rather than selecting another provider or activating API billing.
 
 Repository role fields override host fields. Changing a role's provider clears
-inherited model, effort and adapter settings from the previous provider. With no
-role selections, external dispatch uses a Sonnet/high manager, a Haiku/high
-executor, and manager review. An explicit `reviewer` selection uses a separate
-read-only call, defaulting to Claude Opus/high for omitted fields. This reviewer
-checks the issue implementation; post-PR review and required CI retain their
-existing gates.
+inherited model, effort and adapter settings from the previous provider, and the
+role takes the new provider's own default for it. With no role selections,
+external dispatch uses a Sonnet/high manager, a Haiku/high executor, and a
+separate read-only Opus/high reviewer call. Opus does the code reviews (owner
+decision 2026-10-22), so the reviewer is never the manager reviewing its own
+work. This reviewer checks the issue implementation; post-PR review and required
+CI retain their existing gates.
+
+| Role | Claude default | Codex default (role moved to `codex`) |
+| --- | --- | --- |
+| manager | `sonnet` / `high` | `gpt-6.1-sol` / `high` |
+| executor | `haiku` / `high` | `gpt-6-luna` / `high` |
+| reviewer | `opus` / `high` | `gpt-6-astra` / `high` |
+
+A model or effort named beside the provider still wins. A provider with no row
+(Gemini, DeepSeek) leaves the role's model to that provider's phase routing.
 
 Supported effort values are `low`, `medium` and `high`. `cli_adapter`, when
 specified, must name the selected provider's registered adapter; arbitrary
@@ -68,9 +78,12 @@ flowchart LR
 ```
 
 External dispatch is sequential. `max_concurrency` above one is refused. Claude
-roles use CLI tool denials; Codex roles use `read-only` or `workspace-write`
-sandboxes with approval prompts disabled, network access disabled for workspace
-writes, and multi-agent delegation disabled. Gemini cannot enforce the required
+roles use CLI tool denials. Codex roles run with the container as their
+sandbox, approval prompts disabled and multi-agent delegation disabled; the
+worker holds a Codex manager or reviewer to read-only by recording the checkout
+before the call and putting back anything the call changed (Issue #4356).
+Codex's own `--sandbox` is not used: it needs bubblewrap and a fresh procfs
+mount, which the agent container cannot provide. Gemini cannot enforce the required
 tool restrictions; DeepSeek has no proved fixed-price subscription. Those
 combinations fail closed. A host without the requested CLI or subscription
 fails before paid work. Observed exhausted or unavailable quota also refuses;
@@ -97,4 +110,4 @@ selection. This configuration does not select or rebalance experiment cohorts.
 Behavioural tests cover configuration layering, malformed overrides, adapter
 validation, same-provider and cross-provider handoffs, independent review,
 context separation, checkpoint recovery and native rollback. Live subscription
-entitlements and sandbox support must be verified on each participating host.
+entitlements must be verified on each participating host.

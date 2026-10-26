@@ -9,12 +9,12 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | Action | Version | Commit SHA | Used in | Verdict |
 | --- | --- | --- | --- | --- |
 | actions/cache | v6.1.0 | 55cc8345863c7cc4c66a329aec7e433d2d1c52a9 | .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
-| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/floci.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/quality.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
+| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/checkov.yml, .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/floci.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/quality.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | actions/dependency-review-action | v5.0.0 | a1d282b36b6f3519aa1f3fc636f609c47dddb294 | .github/workflows/dependency-review.yml | pinned to commit SHA |
 | actions/setup-node | v7.1.0 | 949feb2413d6458794dcd2491c4babbbce0c15c1 | .github/workflows/markdown-lint.yml | pinned to commit SHA |
 | actions/upload-artifact | v7.0.2 | cf430e030ddbb5b0abf93d22962f4752f3646cd9 | .github/workflows/dependency-audit.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | aquasecurity/trivy-action | v0.36.0 | ed142fd0673e97e23eac54620cfb913e5ce36c25 | .github/workflows/dependency-audit.yml | pinned to commit SHA |
-| denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
+| denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/checkov.yml, .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | github/codeql-action/analyze | v4.39.0 | 6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | github/codeql-action/init | v4.39.0 | 6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
@@ -23,40 +23,40 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Image | Digest | Declared in | Verdict |
 | --- | --- | --- | --- |
-| docker.io/denoland/deno:bin-2.9.6 | sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba | container/Containerfile:19 (ARG DENO_IMAGE) | digest-pinned |
-| docker.io/floci/floci:2.2.0 | sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520 | container/Containerfile:21 (ARG FLOCI_IMAGE) | digest-pinned |
-| docker.io/library/ruby:3.4-trixie | sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b | container/Containerfile:23 (ARG BASE_IMAGE) | digest-pinned |
+| docker.io/denoland/deno:bin-2.9.8 | sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543 | container/Containerfile:19 (ARG DENO_IMAGE) | digest-pinned |
+| docker.io/floci/floci:2.3.0 | sha256:e0b292df4dc9559b7b1bf4f51bdda4bb8e269276236438cd03cae661260ea8a9 | container/Containerfile:21 (ARG FLOCI_IMAGE) | digest-pinned |
+| docker.io/library/ruby:3.4-trixie | sha256:48ecc7a76bacf6fc0da5f6c7a5b43f96461bac68fa571213a8afcf79c461c7b7 | container/Containerfile:23 (ARG BASE_IMAGE) | digest-pinned |
 
 ## Container tools (container/tools.json)
 
 | Tool | Kind | Version | SHA-256 | Verdict |
 | --- | --- | --- | --- | --- |
-| claude | provider | 2.1.293 | amd64: 8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978<br>arm64: a43629e888f0a7d96c5e8de62abf44852433a7ff2481574688db3e5b6399491f | exact version + SHA-256 verified |
-| codex | provider | 0.147.0 | amd64: 0246e2e773834e07f0fb5249ed6ebad12e4591e608f8c7bb97dd6a9690544c36<br>arm64: eb677c80f666b1ab8b4b1d083b66e8d614b1281d960bb6f9fd8ca98f58b38b90 | exact version + SHA-256 verified |
-| deepseek | provider | 2.1.223 | amd64: 98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7<br>arm64: 60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac | exact version + SHA-256 verified |
-| gemini | provider | 0.55.1 | noarch: 4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e | exact version + SHA-256 verified |
-| gh | tool | 2.97.0 | amd64: a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112<br>arm64: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 | exact version + SHA-256 verified |
+| claude | provider | 2.1.310 | amd64: b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56<br>arm64: 9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54 | exact version + SHA-256 verified |
+| codex | provider | 0.164.0 | amd64: 90dd0b03b28afcb7fa733a4f73b413db2916a47347efd43fb669cc1c774ee8e4<br>arm64: 29a507a2a3fd8f6cd94b96b762d281d299d15d7902dee6132d314b78cf9108eb | exact version + SHA-256 verified |
+| deepseek | provider | 2.1.310 | amd64: b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56<br>arm64: 9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54 | exact version + SHA-256 verified |
+| gemini | provider | 0.65.0 | noarch: 97f1f7f1e7e189054d27edfb9c62c6a45cec15b678840dfdde3c0ccd87fab376 | exact version + SHA-256 verified |
+| gh | tool | 2.103.2 | amd64: 62ccf747115ddc61237efffdde66a3c8f70ba249433dc64f70801089b59c59c8<br>arm64: 4c3e99a50bd8b181a3fe9d69b25dd978bac768148d88f01507c6b4d1ef61a443 | exact version + SHA-256 verified |
 | jq | tool | 1.8.2 | amd64: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f<br>arm64: 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 | exact version + SHA-256 verified |
-| pip | tool | 26.2.1 | noarch: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e | exact version + SHA-256 verified |
+| pip | tool | 26.2.2 | noarch: fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70 | exact version + SHA-256 verified |
 | playwright-core | tool | 1.61.0-alpha-1778188671000 | chromium_amd64: 4f5dfbb09cc103573be201e870573fe53f36b1de076ac649049c421bb5b31e69<br>chromium_arm64: 549844a1f15687f91486645079ec0e495a880687e6813e2d42ef4d044782d589<br>ffmpeg_amd64: ebc74fc5b94830176a3c2914ae96bd8bc7f6a91f4f33890230f84a172ee61ccc<br>ffmpeg_arm64: 2628c03f05318ff812c8c9baaf207dea2ddf53e818c0dc936714b0fbe3afb009<br>headless_shell_amd64: 1f56c33a82881212d708748b9975292d40ab403b7caee16451e32eabec94c0cb<br>headless_shell_arm64: 4cd3d333c78771a29ae56506f26c54a225d4e3d8fc716165c012e8922e10bb61<br>noarch: d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516 | exact version + SHA-256 verified |
 | actionlint | toolchain | 1.7.12 | amd64: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8<br>arm64: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 | exact version + SHA-256 verified |
 | bats-core | toolchain | 1.14.0 | noarch: bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177 | exact version + SHA-256 verified |
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
 | cargo-mutants | toolchain | 27.1.0 | amd64: dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e | exact version + SHA-256 verified |
-| codegraph | toolchain | 1.6.0 | amd64: de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0<br>arm64: 6dc935a7b8f1a61e688a578b98ea34680eb2e36d7b91db079d64f4011f1a668f | exact version + SHA-256 verified |
+| codegraph | toolchain | 1.6.2 | amd64: ef0af416092128fb1ccc723786000b7edf4a6971fe604acd08bf966e4f37b828<br>arm64: c8c6be292be21d00dea26bad8b28d434731cf612fb8cc475dc10f5b3038b5b64 | exact version + SHA-256 verified |
 | codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
-| cspell | toolchain | 10.3.6 | noarch: b5d865984fa8a8c13d1ee2a25514b45a29c5186f64afa8586b0fb89517b10e9f | exact version + SHA-256 verified |
-| floci | toolchain | 2.2.0 | amd64: 3d7b4e5c9bde62c0005e5d15878a2c32f4914304818d50c05f89ab2b60280667<br>arm64: 7137285fac8d0baf4f6f7dc3f72868a551b28d1d1dddb424c009dc5a1cca48f7 | exact version + SHA-256 verified |
+| cspell | toolchain | 10.4.0 | noarch: 73b8354d9bf11df027d08283848f67fc45fae15bdad804dd741ef6ffc1b22ac2 | exact version + SHA-256 verified |
+| floci | toolchain | 2.3.0 | amd64: bb4be0860e3b2394c1822ed98450f9432d8054d867e072b5e66901b93adfa514<br>arm64: ab62c17a4f81234b1ab646415137d0fbbe36750451774d6db3a9fb0b513bf600 | exact version + SHA-256 verified |
 | gitleaks | toolchain | 8.30.1 | amd64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb<br>arm64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | exact version + SHA-256 verified |
-| graft | toolchain | 0.18.0 | noarch: 729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc | exact version + SHA-256 verified |
-| markdownlint-cli2 | toolchain | 0.23.2 | noarch: b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09 | exact version + SHA-256 verified |
-| node | toolchain | 24.19.0 | amd64: 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647<br>arm64: 01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc | exact version + SHA-256 verified |
-| npm | toolchain | 12.0.2 | noarch: 5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1 | exact version + SHA-256 verified |
-| pwsh | toolchain | 7.6.5 | amd64: b34ab3b19acac1d3d4d0d3cfdb02acf62f457b0b6a962ff008132033f7566844<br>arm64: ed4084f215d8bce2edd23aa7cb1f1e7b0818e41363a635a22065d2701b6141df | exact version + SHA-256 verified |
+| graft | toolchain | 0.25.0 | noarch: 685f2af74ab4ded3b2af01d92f25877648e78cf00c4db99baa5c0e732f8ef35e | exact version + SHA-256 verified |
+| markdownlint-cli2 | toolchain | 0.24.0 | noarch: 66ab8e028fd8e6eb64a4f277660142e1c4ea8c61501974d91a060f2586a0c548 | exact version + SHA-256 verified |
+| node | toolchain | 24.22.1 | amd64: 6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6<br>arm64: dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e | exact version + SHA-256 verified |
+| npm | toolchain | 12.2.1 | noarch: 228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67 | exact version + SHA-256 verified |
+| pwsh | toolchain | 7.6.8 | amd64: 59112e38ad83350e4f6dc0195953c66b5926792f300ca2e7691b8242e7a16e7f<br>arm64: 3179e07fd98f026d39c730ebcb7626d071aac3351b171dda13f9f38d99efcef0 | exact version + SHA-256 verified |
 | pyyaml | toolchain | 6.0.3 | amd64: 0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6<br>arm64: ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c | exact version + SHA-256 verified |
-| rtk | toolchain | 0.49.0 | amd64: 7278231dfd7e6a730a4ab7f847b195bcf02289c2d57622b0dab75a6411100c8f<br>arm64: c8ea4b6560841e73157c134fd4a3293914c6ede42e786ee985cf491fde691ba7 | exact version + SHA-256 verified |
-| rust | toolchain | 1.99.0 | amd64: de0581ca9d732295a6474cfbd02461db27d69acd5050a8206523a8d6fa1599db<br>arm64: 42214e693ec00733e2a591e67c13af98faf02a82934108a9f37afd247b376dd0<br>clippy_amd64: 4b3b972738f6b8e0e55065e273a972cc25fccf53629b4308eec67d6a66a8cf4a<br>clippy_arm64: 18b0a743b8b6952ec6271edd385c8af8517de2d3eba5939f8bebd0f9ba99ffbd<br>rustfmt_amd64: 9fc3a87d3d4f6e5e2bd87e6fb8779b7a95831f533cb8cc8ae1304a797c648733<br>rustfmt_arm64: 6dd2fc9666ca97f366a8d581e46ca115ebcc962e9717d72ff4b9422c0c99551d | exact version + SHA-256 verified |
-| semgrep | toolchain | 1.173.0 | amd64: cb21aa06246bdd79d3e9e7f9118ec7baecb1be39cf89c46e07af13b4128d7b79<br>arm64: e1a508dd8bccaff05482bb2968d4ae84a432f932e502d3caccdb3d525da51f22 | exact version + SHA-256 verified |
+| rtk | toolchain | 1.0.1 | amd64: 5b919c3bccb799b67a61866d0e617410a4fcdf173e2614440e59de2fa2003436<br>arm64: cd627c4091ad90b5e5aca83ca5af66ee4b8aa8537a736533fa90544f461f1c2b | exact version + SHA-256 verified |
+| rust | toolchain | 1.99.1 | amd64: aded4e6c1d580415e7b594a3080d8e23e9cbe06f159f97e300aa6875211f71bf<br>arm64: 703b190f0d723ae68985797f3bb5f62f01b1723f138464c6f30f32b766eb0abf<br>clippy_amd64: 3c6d008544b6e456cc785c86f8ce3713f0d845b94be3a6c8a34662b8504561b5<br>clippy_arm64: e1082c9d61ce461d2f5cd1878c9efe8c3faf6a5b896e0807481e0301791de848<br>rustfmt_amd64: e3a88008061f485126fe24569c4d3e5a0f49462a06ee6339920f8f202124b13a<br>rustfmt_arm64: b61cf040e386c53732522066da16d2ba88d5766a743b3b411f1c66f3d0cb97e2 | exact version + SHA-256 verified |
+| semgrep | toolchain | 1.182.1 | amd64: bba25e5a38db5061d725c0920699ecee3e8137026427e722a271bd9bb8d25a40<br>arm64: 3fdfbd68ac5eeead60983dbcd539428bbc40d01f805e0569301068d06be7eaa3 | exact version + SHA-256 verified |
 | shellcheck | toolchain | 0.11.0 | amd64: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198<br>arm64: 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 | exact version + SHA-256 verified |
 
 ## Worker Deno dependencies
@@ -85,5 +85,5 @@ Top-level imports of `container/deno-seed/deno.json` resolved through `container
 
 | Tool | Version | Source | Verdict |
 | --- | --- | --- | --- |
-| Deno | 2.9.6 | .deno-version | exact version |
-| Node.js | 24.19.0 | .node-version | exact version |
+| Deno | 2.9.8 | .deno-version | exact version |
+| Node.js | 24.22.1 | .node-version | exact version |

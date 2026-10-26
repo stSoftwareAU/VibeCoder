@@ -293,14 +293,17 @@ Deno.test("DEFAULT_FEASIBILITY_MODELS names the Codex consumer labels", () => {
   assert(keys.includes("codex:gpt-6.1-sol"));
 });
 
-Deno.test("buildFeasibilityCombinations yields 40 rows with the expected role counts", () => {
+Deno.test("buildFeasibilityCombinations yields 30 rows with the expected role counts", () => {
+  // Six candidates: Claude's three tiers and the three Codex tiers they map
+  // to (Astra, 6.1 Sol, Luna — owner decision 2026-10-22). Each is a manager
+  // once, and an executor and a reviewer under each manager provider.
   const combinations = buildFeasibilityCombinations(DEFAULT_FEASIBILITY_MODELS);
-  assertEquals(combinations.length, 40);
+  assertEquals(combinations.length, 30);
   const count = (role: string) =>
     combinations.filter((entry) => entry.role === role).length;
-  assertEquals(count("manager"), 8);
-  assertEquals(count("executor"), 16);
-  assertEquals(count("reviewer"), 16);
+  assertEquals(count("manager"), 6);
+  assertEquals(count("executor"), 12);
+  assertEquals(count("reviewer"), 12);
 });
 
 Deno.test("formatFeasibilityReport writes the header counts and one line per row", () => {

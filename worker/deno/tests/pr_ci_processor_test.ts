@@ -7,11 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import {
-  assertEquals,
-  assertStrictEquals,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -20,7 +16,6 @@ import {
   resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
-import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import {
   getCiCheckRetryCount,
   recordCiCheckRetry,
@@ -278,7 +273,7 @@ Deno.test("processCiFailure - the heartbeat and milestone state land in the work
   }
 });
 
-Deno.test("processCiFailure - skips when max retries exceeded", async () => {
+Deno.test("processCiFailure - max retries re-runs the check and asks nobody to intervene (Issue #4304)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const stateDir = `${tmpDir}/.ci_check_state`;
@@ -286,13 +281,15 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
     await Deno.writeTextFile(`${stateDir}/org_repo_67890.retries`, "3");
 
     const ghCalls: string[][] = [];
-    const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: (args: string[]) => {
-        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-        ghCalls.push(args);
-        return Promise.resolve("");
-      },
+    const gh = (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      ghCalls.push(args);
+      if (args[1] === "repos/org/repo/actions/jobs/67890") {
+        return Promise.resolve(JSON.stringify({ run_id: 808, steps: [] }));
+      }
+      return Promise.resolve("");
     };
+    const mockGithub: Partial<GitHubDeps> = { runGhCommand: gh };
     const deps = createMockDeps({ github: mockGithub });
 
     const processorDeps: CiProcessorDeps = {
@@ -302,11 +299,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
       stateDir,
       workRoot: tmpDir,
       maxCiRetries: 3,
-      ghCommandFn: (args: string[]) => {
-        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-        ghCalls.push(args);
-        return Promise.resolve("");
-      },
+      ghCommandFn: gh,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -315,6 +308,16 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
       assertEquals(result.value.processed, false);
       assertEquals(result.value.summary.includes("exceeded max retries"), true);
     }
+    // No "Manual intervention is required" comment: the failed jobs are
+    // re-run, so a fresh check run with a fresh retry budget follows.
+    assertEquals(
+      ghCalls.filter((a) => a[0] === "pr" && a[1] === "comment"),
+      [],
+    );
+    assertEquals(
+      ghCalls.filter((a) => a[0] === "run" && a[1] === "rerun"),
+      [["run", "rerun", "808", "--failed", "--repo", "org/repo"]],
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -2754,40 +2757,6 @@ Deno.test("processCiFailure - syncs the PR body once after a verified push", asy
     assertEquals(calls[0]?.prNumber, 42);
     assertEquals(calls[0]?.repo, "org/repo");
     assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("processCiFailure - forwards the sync follow-up filer to the PR body sync (Issue #3678)", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const sentinel: SyncFollowUpFiling = {
-      verifyIssueContent: () =>
-        Promise.reject(new Error("sentinel filer must not be called")),
-      ensureLabelExists: () =>
-        Promise.reject(new Error("sentinel filer must not be called")),
-      fleetAuthors: [],
-    };
-    let syncCalls = 0;
-    let forwarded: SyncFollowUpFiling | undefined;
-    const syncPrBodyFn: CiProcessorDeps["syncPrBodyFn"] = (_input, deps) => {
-      syncCalls++;
-      forwarded = deps.followUpFiling;
-      return Promise.resolve({
-        ok: true,
-        value: { status: "updated", issueNumber: 42 },
-      });
-    };
-    const processorDeps: CiProcessorDeps = {
-      ...makeSuccessfulCiPushDeps(tmpDir, syncPrBodyFn),
-      syncFollowUpFiling: sentinel,
-    };
-
-    const result = await processCiFailure(makeInput(), processorDeps);
-    assertEquals(result.ok, true);
-    assertEquals(syncCalls, 1);
-    assertStrictEquals(forwarded, sentinel);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

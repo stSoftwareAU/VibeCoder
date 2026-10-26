@@ -16,7 +16,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -40,6 +40,8 @@ const REPO = "org/paced-milestone-fixture";
 const WORKER_USER = "worker-bot";
 const MILESTONE = "Paced Milestone";
 const FIXTURE_LABELS = ["work-on"];
+/** Not a fleet login, so the label-author gate stays open (Issue #4213). */
+const TRUSTED = "alice";
 
 /** The one issue's fields, keyed by gh field name. */
 const FIXTURE_FIELDS: Record<string, unknown> = {
@@ -62,6 +64,9 @@ const ghCalls: string[][] = [];
  * Mirrors real `gh` for the calls the filer makes: `issue list` returns only
  * the requested `--json` fields, a `--label` filter the fixture does not carry
  * returns no rows, `issue create` is never reached (it throws and is counted).
+ * The timeline answers with a `work-on` add by {@link TRUSTED} so the
+ * label-author gate stays open and the pacing hold is what the audit reports
+ * (Issue #4213).
  */
 function stubGh(args: string[]): Promise<string> {
   ghCalls.push([...args]);
@@ -85,6 +90,17 @@ function stubGh(args: string[]): Promise<string> {
       if (requested.has(field)) row[field] = FIXTURE_FIELDS[field];
     }
     return Promise.resolve(JSON.stringify([row]));
+  }
+  if (
+    args[0] === "api" && /\/issues\/(\d+)\/timeline/.test(args[1] ?? "")
+  ) {
+    return Promise.resolve(JSON.stringify([{
+      id: 1,
+      event: "labeled",
+      label: { name: "work-on" },
+      actor: { login: TRUSTED },
+      created_at: "2026-01-01T00:00:00Z",
+    }]));
   }
   return Promise.resolve("[]");
 }
@@ -150,8 +166,19 @@ async function buildDeps(paced: boolean, layout: WorkDirLayout): Promise<{
       repos: [REPO],
       workDir: layout.configWorkDir,
     },
+    // Issue #4213: the audit applies the label-author gate. Trust starts
+    // closed until refresh, so name the adder before the audit runs.
+    resolveTrustedAuthors: () =>
+      Promise.resolve({
+        ok: true,
+        byRepo: new Map([[
+          REPO,
+          { allowedAuthors: [TRUSTED], authorisedCommenters: [TRUSTED] },
+        ]]),
+      }),
     idleDetectGhCommandFn: stubGh,
   });
+  assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
   return { deps, lines };
 }
 

@@ -184,6 +184,18 @@ Before reviewing any code:
 
 ## Phase 2 — Apply the bucket checklist
 
+### Behavioural security-test coverage
+
+Three contracts are checked narrowly, from the capability guidance:
+resource or tenant authorisation, a sensitive-field update, and
+redaction at a log or outbound sink. The worker files a gap itself,
+as a best-practices issue, before this prompt runs. Do not file a
+second issue for the same production path, and do not describe the
+gap as an exploit. The security scan owns exploit findings. A missing
+file named security is not missing coverage. A test that was not
+executed is not a pass. If the worker logged that the inspection was
+not checked, leave the coverage unknown.
+
 **Working across a long run.** A whole-repo, whole-bucket scan yields
 more reading than one context window holds, and that window is
 **compacted** rather than exhausted — you will keep going after older

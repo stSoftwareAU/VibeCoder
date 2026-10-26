@@ -385,18 +385,12 @@ Deno.test(
   async () => {
     const outcome = await runCompletion({ covered: CRITERIA.length - 1 });
 
-    // Recovery invocation, first verdict question, one re-ask — no more.
-    assertEquals(outcome.prompts.length, 3);
-    assertStringIncludes(outcome.prompts[2]!, "previous verdict was short");
-    assertStringIncludes(outcome.prompts[2]!, "4 of 5");
-
-    // Still short, so the block stands and the run fails — with the summary
-    // committed, so the next attempt resumes from it.
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "Acceptance criteria");
-    assertEquals(outcome.committedOn.length, 1);
-    assertStringIncludes(outcome.summary, "## Acceptance Criteria");
+    // One in-session note, then the pull request, even while a criterion is
+    // still short (Issue #4234).
+    assertEquals(outcome.prompts.length >= 1, true);
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertStringIncludes(outcome.comments[0] ?? "", "auto-merge stays armed");
   },
 );
 
@@ -425,13 +419,10 @@ Deno.test(
       refuseVerdict: true,
     });
 
-    // Asked twice, no verdict either time; the block stands.
-    assertEquals(outcome.prompts.length, 3);
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
+    // No verdict was written. The pull request is still raised.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.summary, PROSE_SUMMARY, "nothing was invented");
-    assertEquals(outcome.committedOn.length, 1, "the prose is still committed");
-    // One comment per distinct verdict — the gate's own, already deduped.
     assertEquals(outcome.comments.length, 1);
   },
 );

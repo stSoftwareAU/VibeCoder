@@ -42,7 +42,7 @@ import {
   describeStrandedBranches,
   findStrandedIssueBranches,
 } from "../stranded_issue_branch.ts";
-import type { PostMergeReapproval } from "../reapproval_superseded_handoff.ts";
+import type { PostMergeReapproval } from "../reapproval_superseded_close.ts";
 
 /** Reason string for the early-exit result — stable identifier used by the orchestrator. */
 export const MERGED_PR_PRECHECK_EARLY_EXIT_REASON = "pr_already_merged";

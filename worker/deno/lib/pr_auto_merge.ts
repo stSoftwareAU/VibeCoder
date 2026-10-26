@@ -14,14 +14,16 @@ import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
+import { pastRunTarget } from "./run_timeline.ts";
 import {
   milestoneFixMergeCommitRefusal,
   milestoneFixMergeMethod,
 } from "./milestone_fix_pr.ts";
 import {
+  abandonOrphanBoundPr,
+  type AbandonOrphanBoundPrOptions,
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,
-  holdOrphanBoundPr,
   invalidateMilestoneBehindMemoForBranch,
   isMilestoneBranch,
   postOpenChildrenBlockComment,
@@ -32,6 +34,10 @@ import {
   type SummaryPrMergeDecision,
 } from "./milestone_children_gate.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  openRollupForLandedChild,
+  restoreClosedMilestoneRoute,
+} from "./milestone_route_restore.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import {
   forkSyncDowngradeWarning,
@@ -46,12 +52,17 @@ import {
 } from "./milestone_sync_pr_retirement.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
   /** Auto-merge enabled successfully */
   Enabled = "enabled",
-  /** Auto-merge not enabled on the repository (not an error) */
+  /**
+   * Auto-merge not enabled on the repository (not an error). The gated direct
+   * merge takes over and this is what it returns while it defers
+   * (Issue #4304).
+   */
   NotEnabledOnRepo = "not_enabled_on_repo",
   /** Auto-merge not allowed for this PR (branch not protected) — needs fallback */
   NotAllowed = "not_allowed",
@@ -93,16 +104,20 @@ export enum AutoMergeResult {
   MergedDirectly = "merged_directly",
   /**
    * Refused to merge into a milestone branch whose route closed (rollup PR
-   * merged, or milestone closed). The PR is left on its base, auto-merge is
-   * disarmed, a comment is posted and a human decides (Issue #4396 gate,
-   * Issue #3433 hold).
+   * merged and the milestone is closed or has no open work). Auto-merge is
+   * disarmed and the PR is never retargeted (Issue #4396 gate, Issue #3433);
+   * it is closed and its originating issue redone, never left on hold for a
+   * human (Issue #4304). An open milestone with open work is given a fresh
+   * rollup instead (Issue #4175).
    */
   HeldRouteClosed = "held_route_closed",
   /**
    * The PR's base no longer matches where the fleet opened it — a
    * `milestone-fix/**` head on a non-milestone base, or a PR moved onto the
    * default branch after it was opened — so it is never armed or merged
-   * there and its auto-merge is disarmed; a human decides (Issue #3433).
+   * there and its auto-merge is disarmed (Issue #3433). It is moved back onto
+   * the base it was opened against, or closed and its issue redone
+   * (Issue #4304).
    */
   HeldBaseRetargeted = "held_base_retargeted",
   /**
@@ -178,6 +193,11 @@ export interface EnableAutoMergeOptions {
    * what every production caller does.
    */
   authorOptions?: AlertDedupAuthorOptions;
+  /**
+   * Abandon override for a PR whose milestone route has closed (tests);
+   * defaults to `abandonAndRestart` (Issue #4304).
+   */
+  abandonFn?: AbandonOrphanBoundPrOptions["abandon"];
   /** Repository in "owner/repo" format */
   repo: string;
   /** PR number */
@@ -204,6 +224,11 @@ export interface EnableAutoMergeOptions {
   headRefName?: string;
   /** Logging function for the open-children gate. Defaults to `console.warn`. */
   log?: (message: string) => void;
+  /**
+   * Clock seam (epoch milliseconds) for the run-target start-gate on the
+   * in-cycle milestone sync (Issue #4243). Defaults to `Date.now`; tests inject.
+   */
+  now?: () => number;
   /**
    * Whether the PR's base branch enforces required checks (Issue #4375).
    * Defaults to a rules lookup (`repos/{repo}/rules/branches/{base}`);
@@ -233,7 +258,10 @@ export interface EnableAutoMergeOptions {
    * When the milestone base is behind the default branch, attempt one
    * in-cycle sync and re-ask the gate if it lands (Issue #2005). Absent — or
    * when the sync conflicts — the child is armed anyway (Issue #2460); only
-   * the sync-reason comment is skipped when no hook was supplied.
+   * the sync-reason comment is skipped when no hook was supplied. Once the
+   * run target has passed the hook is not called at all when
+   * {@link deferSyncPastRunTarget} is set (Issue #4243): the attempt is
+   * deferred, and the periodic sync clears "behind" next cycle.
    */
   syncBehindMilestone?: (info: {
     milestoneBranch: string;
@@ -247,6 +275,16 @@ export interface EnableAutoMergeOptions {
      */
     unmeasured?: string;
   }>;
+  /**
+   * Set only by callers whose in-cycle sync would be a NEW unit of work — the
+   * Priority 1.65 Auto-Merge sweep (Issue #4243). Once the run target has
+   * passed, `true` defers that sync instead of calling
+   * {@link syncBehindMilestone}, so nothing new starts after the 1 h target.
+   * Absent or `false` leaves the hook called as before: the issue-run
+   * completion phase leaves it off because its claim is already active, so
+   * finishing that PR still syncs past the target.
+   */
+  deferSyncPastRunTarget?: boolean;
 }
 
 /** Marker on a PR comment that an in-cycle sync could not clear "behind". */
@@ -280,12 +318,13 @@ async function postBehindSyncReason(
   // The outcome is settled before the comment is written, so the PR is never
   // told it was armed by a run that then held it (fail loud, never falsely
   // green).
+  // Posted into the target repo, so the VibeCoder issue numbers (#2460, #2005)
+  // live here, not in the text.
   const outcome = willArm
-    ? "Auto-merge is armed anyway (Issue #2460) — the base ruleset holds the " +
+    ? "Auto-merge is armed anyway — the base ruleset holds the " +
       "merge until the branch is level."
     : "Auto-merge is not armed: the base enforces no required status checks, " +
-      "so nothing would hold the merge back until the branch is level " +
-      "(Issue #2460).";
+      "so nothing would hold the merge back until the branch is level.";
   // Issue #2824: a count that git could not run at all is not a "still
   // behind" — the reason is quoted verbatim, collapsed to one line and with
   // backticks stripped so it cannot break out of the code span.
@@ -302,14 +341,16 @@ async function postBehindSyncReason(
     secondLine,
     "",
     `${outcome} The periodic milestone sync will retry; a conflicting sync ` +
-    `is never side-picked (Issue #2005).`,
+    `is never side-picked.`,
   ].join("\n");
   try {
     await commentFn(repo, prNumber, body);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
     );
   }
 }
@@ -322,7 +363,8 @@ async function postBehindSyncReason(
  * `Deferred` that nothing else has already explained. Everything else is
  * either the worker doing what it set out to do (`Enabled`, `Skipped`,
  * `MergedDirectly`) or already explained on the PR by the path that produced
- * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
+ * it — `Draft` (author's choice), `NotEnabledOnRepo` (the gated direct
+ * merge retries it next scan, Issue #4304),
  * `BlockedOpenChildren` (#3909), `HeldRouteClosed` and `HeldBaseRetargeted`
  * (#3433, each posts its own hold comment), `BlockedPendingDependencies` (#3014), a
  * `milestone-behind` outcome (the #2005 `postBehindSyncReason` already
@@ -344,6 +386,26 @@ export function autoMergeOutcomeNeedsComment(
 }
 
 /**
+ * The reason the target repository is shown (Issue #4183).
+ *
+ * `outcome.message` keeps its `(Issue #N)` citation for the worker log. This
+ * comment is posted on the target repository, which autolinks a bare `#N` to
+ * its own issue or pull request, so a VibeCoder citation is removed here.
+ * The pull request's own number stays: that `#N` is the target's PR.
+ */
+function armingReasonForComment(message: string): string {
+  const ownPr = new Set<string>();
+  for (const match of message.matchAll(/\bPR #(\d+)\b/g)) {
+    ownPr.add(match[1]!);
+  }
+  const withoutCitation = message.replace(/\s*\(Issue #\d+\)/g, "");
+  return withoutCitation.replace(
+    /#(\d+)\b/g,
+    (full, digits: string) => ownPr.has(digits) ? full : digits,
+  ).replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/**
  * Build the comment body explaining why auto-merge was not armed at creation
  * (Issue #2457).
  *
@@ -351,7 +413,8 @@ export function autoMergeOutcomeNeedsComment(
  * periodic sweep re-reads the PR every cycle and arms it the moment the
  * obstruction clears. A latched refusal names the latch's reset time instead,
  * because in-run retries are futile — every further `gh` call in the window
- * fails the same way.
+ * fails the same way. VibeCoder issue citations stay on `outcome.message`
+ * for the log and are omitted from this comment (Issue #4183).
  */
 export function buildArmingReasonComment(
   outcome: EnableAutoMergeResult,
@@ -362,7 +425,9 @@ export function buildArmingReasonComment(
     : `The Auto-Merge sweep retries.`;
   return [
     ARMING_REASON_MARKER,
-    `Auto-merge was not armed on this PR: ${outcome.message}`,
+    `Auto-merge was not armed on this PR: ${
+      armingReasonForComment(outcome.message)
+    }`,
     "",
     retryLine,
   ].join("\n");
@@ -419,7 +484,14 @@ async function postOpenChildrenLookupReason(
   // secret the transport error carried, then neutralise marker-shaped content
   // so neither can forge a fleet marker in this body (Issues #1249, #2479).
   const safeTitle = scrubUntrustedText(milestoneTitle);
-  const safeDetail = scrubUntrustedText(redactSecrets(detail));
+  // Posted into the target repo, which autolinks a bare `#N`: the milestone is
+  // named by an inert code span and an explicit link, not `#<number>`.
+  const codeTitle = safeTitle.replace(/`/g, "'");
+  // The gate names the milestone as `milestone #N`, which autolinks in the target repo.
+  const unlinkedDetail = detail.split(`milestone #${milestoneNumber}`).join(
+    "this milestone",
+  );
+  const safeDetail = scrubUntrustedText(redactSecrets(unlinkedDetail));
   const subject = stage === "open-children"
     ? "the open-children count"
     : "the declared dependencies";
@@ -431,9 +503,11 @@ async function postOpenChildrenLookupReason(
   const body = [
     OPEN_CHILDREN_LOOKUP_MARKER,
     `Auto-merge is not armed: ${subject} for milestone ` +
-    `#${milestoneNumber} '${safeTitle}' could not be read — ${safeDetail}`,
+    `\`${codeTitle}\` (https://github.com/${repo}/milestone/${milestoneNumber}) ` +
+    `could not be read — ${safeDetail}`,
     "",
-    `${risk}, so the gate refuses (Issue #3909). The Auto-Merge sweep ` +
+    // Provenance: the gate refusal this comment explains is Issue #3909.
+    `${risk}, so the gate refuses. The Auto-Merge sweep ` +
     "retries every cycle and arms the PR once the failed read succeeds.",
   ].join("\n");
   try {
@@ -442,8 +516,10 @@ async function postOpenChildrenLookupReason(
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not post the unreadable ${subject} on ${repo}#${prNumber}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `could not post the unreadable ${subject} on ${repo}#${prNumber}: ${message}`,
     );
     return false;
   }
@@ -723,7 +799,7 @@ export function invisiblePolicyWarning(
   baseRefName: string,
   refusal: string,
 ): string {
-  return `WARNING: ${repo} '${baseRefName}' is policy-protected but the ` +
+  return `${repo} '${baseRefName}' is policy-protected but the ` +
     `effective-rules endpoint shows no rule the fleet token can read — ` +
     `an organisation ruleset (needs admin:org to list) or a repository ` +
     `setting; arming GitHub auto-merge instead of retrying the direct ` +
@@ -742,6 +818,80 @@ export function invisiblePolicyWarning(
  * @param options - Auto-merge options
  * @returns Result of the attempt
  */
+/**
+ * A waiting route is not a closed one (Issue #4175). The arming path is
+ * about to land the child through the ordinary checks, so the pre-merge
+ * gate must not treat that wait as a refusal. A closed milestone, or a
+ * route that could not be read, is unchanged.
+ */
+async function allowWaitingMilestoneRoute(
+  args: Parameters<typeof decideMilestoneBaseMerge>[0],
+): ReturnType<typeof decideMilestoneBaseMerge> {
+  const decision = await decideMilestoneBaseMerge(args);
+  if (decision.decision === "defer" && decision.reason === "route-waiting") {
+    return { decision: "allow", reason: "route-open" };
+  }
+  return decision;
+}
+
+/** Open the rollup once the child merge has landed. A deferral never calls this. */
+async function rollupAfterChildLanded(
+  repo: string,
+  prNumber: number,
+  milestoneBranch: string,
+  plan: { defaultBranch: string; issueNumbers: readonly number[] },
+  ghCommandFn: (args: string[]) => Promise<string>,
+  log: (message: string) => void,
+): Promise<EnableAutoMergeResult> {
+  const rolled = await openRollupForLandedChild({
+    repo,
+    milestoneBranch,
+    defaultBranch: plan.defaultBranch,
+    childPrNumber: prNumber,
+    issueNumbers: plan.issueNumbers,
+    ghCommandFn,
+    log,
+  });
+  if (rolled.action === "created") {
+    return {
+      result: AutoMergeResult.MergedDirectly,
+      message:
+        `PR #${prNumber} merged onto ${milestoneBranch} and a rollup was opened at ${rolled.prUrl} (Issue #4175)`,
+    };
+  }
+  const reason = rolled.action === "land-failed" || rolled.action === "failed"
+    ? rolled.reason
+    : "the rollup was not opened after the child merged";
+  return {
+    result: AutoMergeResult.Failed,
+    message: `PR #${prNumber} on ${milestoneBranch}: ${reason} (Issue #4175)`,
+  };
+}
+
+/** True when GitHub has already merged the pull request. A failed read is not a merge. */
+async function childMergeHasLanded(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  try {
+    const state = (await ghCommandFn([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "state",
+      "--jq",
+      ".state",
+    ])).trim();
+    return state === "MERGED";
+  } catch {
+    return false;
+  }
+}
+
 export async function enableAutoMerge(
   options: EnableAutoMergeOptions,
 ): Promise<EnableAutoMergeResult> {
@@ -778,6 +928,10 @@ export async function enableAutoMerge(
     };
   }
 
+  // Issue #4291: PRs do not merge until they have a review approval and CI
+  // is green, and GitHub enforces both, so nothing here withholds arming for
+  // a review, a finding or a label. Only the routing holds below remain.
+
   // Issue #3909: the milestone summary PR is the irreversible step — merging
   // it deletes the milestone branch and GitHub auto-closes every PR based on
   // it. Re-read the milestone's open children here, immediately before the
@@ -801,11 +955,80 @@ export async function enableAutoMerge(
     );
   }
 
+  // Issue #4175: an open milestone whose rollup has merged gets a fresh
+  // rollup from the milestone branch before the gate is asked, so a held
+  // child can be armed onto that branch. When the branch is not ahead, the
+  // child is merged by the ordinary path below — gated direct merge on an
+  // unprotected base, auto-merge on a protected one — and the rollup is
+  // opened only once that merge has landed. A milestone-fix pull request is
+  // not moved onto the default branch (Issue #3433). A failed restore is
+  // not armed and not held — the next scan reads it again.
+  let landThroughGate:
+    | { defaultBranch: string; issueNumbers: readonly number[] }
+    | undefined;
+  if (
+    !options.decideMilestoneBaseFn && options.baseRefName &&
+    isMilestoneBranch(options.baseRefName)
+  ) {
+    // A sync head is not the child whose work the rollup must carry. Landing
+    // it here would open a route by merging the sync pull request.
+    const landThisChild = options.headRefName === undefined ||
+      !isMilestoneSyncBranch(options.headRefName);
+    const restored = await restoreClosedMilestoneRoute({
+      repo,
+      milestoneBranch: options.baseRefName,
+      ghCommandFn,
+      log,
+      ...(options.getDefaultBranchFn
+        ? { getDefaultBranchFn: options.getDefaultBranchFn }
+        : {}),
+      ...(landThisChild ? { landChildPrNumber: prNumber } : {}),
+    });
+    if (restored.action === "failed") {
+      return {
+        result: AutoMergeResult.Deferred,
+        message:
+          `PR #${prNumber} left on ${options.baseRefName}: fresh rollup was not opened (${restored.reason}) — retrying next scan (Issue #4175)`,
+      };
+    }
+    if (restored.action === "land-failed") {
+      return {
+        result: AutoMergeResult.Failed,
+        message:
+          `PR #${prNumber} on ${options.baseRefName}: ${restored.reason} (Issue #4175)`,
+      };
+    }
+    if (
+      restored.action === "created" && restored.landedChildPr === prNumber
+    ) {
+      return {
+        result: AutoMergeResult.MergedDirectly,
+        message:
+          `PR #${prNumber} merged onto ${options.baseRefName} and a rollup was opened at ${restored.prUrl} (Issue #4175)`,
+      };
+    }
+    if (restored.action === "merge-via-gate") {
+      landThroughGate = {
+        defaultBranch: restored.defaultBranch,
+        issueNumbers: restored.issueNumbers,
+      };
+    } else if (restored.action === "waiting") {
+      // A sync head, or any caller that did not ask to land the child.
+      // Do not arm it onto a branch with no rollup.
+      return {
+        result: AutoMergeResult.Deferred,
+        message:
+          `PR #${prNumber} left on ${options.baseRefName}: ${restored.detail} — not armed (Issue #4175)`,
+      };
+    }
+  }
+
   // Issue #4396: the mirror image — never merge INTO a milestone branch
   // whose route to the default branch has closed (rollup PR merged, or
   // milestone closed). Seven fixes were lost that way with their issues
   // reading COMPLETED. Refuse loud and hold the PR where it is: the fleet never
-  // moves it to the default branch (Issue #3433).
+  // moves it to the default branch (Issue #3433). An open milestone is
+  // armed onto its branch only once a rollup is open (Issue #4175).
   // Issue #1779: `requireSyncedBase` adds the second half — it reports a
   // milestone tip that is behind the default branch, which drives the
   // in-cycle sync below. Issue #2460: being behind no longer withholds
@@ -848,17 +1071,38 @@ export async function enableAutoMerge(
       detail: string;
       unmeasured?: string;
     };
-    try {
-      sync = await options.syncBehindMilestone({
-        milestoneBranch: routeGate.milestoneBranch,
-        behindBy: routeGate.behindBy,
-      });
-    } catch (err) {
-      const thrown = err instanceof Error ? err.message : String(err);
+    // Issue #4243: when the sweep (a new unit of work) asks for it, no new sync
+    // attempt starts once the run target has passed. The hook is not called;
+    // the attempt is deferred as a non-landing sync, so the arming path below
+    // runs unchanged and the PR is still armed.
+    if (
+      options.deferSyncPastRunTarget === true &&
+      pastRunTarget((options.now ?? Date.now)())
+    ) {
       log(
-        `WARNING: in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
+        `In-cycle milestone sync deferred for ${repo}#${prNumber}: the run ` +
+          `target has passed; no new sync attempt starts, the periodic sync ` +
+          `clears "behind" next cycle (Issue #4243)`,
       );
-      sync = { status: "deferred", detail: thrown };
+      sync = {
+        status: "deferred",
+        detail: "the run target has passed; deferred to the next cycle",
+      };
+    } else {
+      try {
+        sync = await options.syncBehindMilestone({
+          milestoneBranch: routeGate.milestoneBranch,
+          behindBy: routeGate.behindBy,
+        });
+      } catch (err) {
+        const thrown = err instanceof Error ? err.message : String(err);
+        logAt(
+          log,
+          "warn",
+          `in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
+        );
+        sync = { status: "deferred", detail: thrown };
+      }
     }
     if (sync.status === "level" || sync.status === "synced") {
       invalidateMilestoneBehindMemoForBranch(
@@ -908,7 +1152,18 @@ export async function enableAutoMerge(
     routeGate.decision === "defer" && routeGate.reason === "milestone-behind"
   ) {
     behindDeferral = "milestone-behind";
-  } else if (routeGate.decision === "defer") {
+  } else if (
+    routeGate.decision === "defer" && routeGate.reason === "route-waiting" &&
+    !landThroughGate
+  ) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — not armed, retried on the next scan (Issue #4175)`,
+    };
+  } else if (
+    routeGate.decision === "defer" && routeGate.reason !== "route-waiting"
+  ) {
     return {
       result: AutoMergeResult.Deferred,
       message:
@@ -916,20 +1171,22 @@ export async function enableAutoMerge(
     };
   }
   if (routeGate.decision === "block") {
-    await holdOrphanBoundPr({
+    await abandonOrphanBoundPr({
       repo,
       prNumber,
+      ...(options.headRefName ? { headRefName: options.headRefName } : {}),
       gate: routeGate,
       ghCommandFn,
       log,
       ...(options.authorOptions
         ? { authorOptions: options.authorOptions }
         : {}),
+      ...(options.abandonFn ? { abandon: options.abandonFn } : {}),
     });
     return {
       result: AutoMergeResult.HeldRouteClosed,
       message:
-        `PR #${prNumber} held on ${routeGate.milestoneBranch}: ${routeGate.detail} — not merged, not retargeted, auto-merge disarmed (Issue #3433)`,
+        `PR #${prNumber} not merged into ${routeGate.milestoneBranch}: ${routeGate.detail} — not retargeted, auto-merge disarmed, closed and its issue redone (Issue #4304)`,
     };
   }
 
@@ -1102,11 +1359,16 @@ export async function enableAutoMerge(
         prNumber,
         ghCommandFn,
         undefined,
-        options.fleetAuthors && options.fleetAuthors.length > 0
-          ? {
-            approvedDefaultBranch: { fleetAuthors: options.fleetAuthors },
-          }
-          : {},
+        {
+          ...(options.fleetAuthors && options.fleetAuthors.length > 0
+            ? {
+              approvedDefaultBranch: { fleetAuthors: options.fleetAuthors },
+            }
+            : {}),
+          ...(landThroughGate
+            ? { decideMilestoneBaseFn: allowWaitingMilestoneRoute }
+            : {}),
+        },
       );
       if (!merge.ok) {
         // Issue #1763: GitHub's own refusal outranks the rules endpoint. A
@@ -1126,6 +1388,16 @@ export async function enableAutoMerge(
           };
         }
       } else if (merge.value.merged) {
+        if (landThroughGate) {
+          return await rollupAfterChildLanded(
+            repo,
+            prNumber,
+            baseRefName,
+            landThroughGate,
+            ghCommandFn,
+            log,
+          );
+        }
         return {
           result: AutoMergeResult.MergedDirectly,
           message:
@@ -1222,6 +1494,19 @@ export async function enableAutoMerge(
         "--auto",
         mergeMethod,
       ]);
+      if (
+        landThroughGate && baseRefName &&
+        await childMergeHasLanded(repo, prNumber, ghCommandFn)
+      ) {
+        return await rollupAfterChildLanded(
+          repo,
+          prNumber,
+          baseRefName,
+          landThroughGate,
+          ghCommandFn,
+          log,
+        );
+      }
       return {
         result: AutoMergeResult.Enabled,
         // Issue #2460: kept for logging — the base was behind when armed.
@@ -1258,7 +1543,7 @@ export async function enableAutoMerge(
             prNumber,
             errorMsg,
           );
-          log(`WARNING: ${refusal}`);
+          logAt(log, "warn", `${refusal}`);
           return {
             result: AutoMergeResult.Failed,
             message: `Auto-merge not armed on PR #${prNumber}: ${refusal}`,
@@ -1289,19 +1574,35 @@ export async function enableAutoMerge(
       }
 
       if (classification === AutoMergeResult.NotEnabledOnRepo) {
-        try {
-          await commentFn(
-            repo,
-            prNumber,
-            "**Note:** Auto-merge is not enabled on this repository. This PR will need to be merged manually after review.",
-          );
-        } catch {
-          // Comment failure is not fatal
+        // Issue #4304: a repository with auto-merge switched off is merged by
+        // the worker itself, through the same gated, SHA-pinned direct merge
+        // an unprotected base takes — once the PR is approved and green. It
+        // is never handed to a human to "merge manually"; a gate that defers
+        // is retried on the next scan.
+        const merge = await (options.directMergeFn ?? directMergePr)(
+          repo,
+          prNumber,
+          ghCommandFn,
+          undefined,
+          options.fleetAuthors && options.fleetAuthors.length > 0
+            ? { approvedDefaultBranch: { fleetAuthors: options.fleetAuthors } }
+            : {},
+        );
+        if (merge.ok && merge.value.merged) {
+          return {
+            result: AutoMergeResult.MergedDirectly,
+            message:
+              `PR #${prNumber} merged directly: auto-merge is not enabled on ${repo}, so the gated direct merge landed it (Issue #4304)`,
+          };
         }
         return {
           result: AutoMergeResult.NotEnabledOnRepo,
           message:
-            `Auto-merge is not enabled on this repository — PR #${prNumber} needs manual merge`,
+            `Auto-merge is not enabled on ${repo} — PR #${prNumber} takes the gated direct merge, which did not merge it yet (${
+              merge.ok
+                ? merge.value.blocked ?? "gate deferred"
+                : merge.error.message
+            }); retried next scan (Issue #4304)`,
         };
       }
 
@@ -1361,7 +1662,7 @@ async function refuseMilestoneMerge(
       ? "open-children count"
       : "declared dependencies";
     const message =
-      `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
+      `refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
       `for milestone #${gate.milestoneNumber} '${gate.milestoneTitle}' — its ` +
       `${subject} could not be read: ${gate.message} (Issue #3909)`;
     log(message);

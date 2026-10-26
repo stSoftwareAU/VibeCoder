@@ -555,6 +555,15 @@ fi
 # principle to the agent.
 export DISABLE_AUTOUPDATER=1
 
+# Cap cargo's compile parallelism (Issue #4225). An uncapped `cargo test`
+# starts about one rustc or linker per vCPU. On an 8GB guest with no swap
+# that exhausted memory without an OOM kill and the container stopped
+# scheduling until the launcher's watchdog reaped it. Exported here, after
+# the rest of the environment and before the driver, so the worker, the
+# coding agent and every cargo they start inherit it. A value already in
+# the environment is replaced: the cap belongs to the guest.
+export CARGO_BUILD_JOBS=2
+
 # --- The deployment's extension start script (Issue #981, parent #933) ------
 # An extension's services — a Postgres server, a Jenkins — have to be running
 # before the agent starts work, so the declared start script runs here: after

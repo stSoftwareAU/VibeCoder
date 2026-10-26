@@ -26,8 +26,29 @@
  *   `/var/tmp/vibe-cargo-target`, a build starts only when the host has the
  *   floor **plus** {@link EPHEMERAL_CARGO_HEADROOM_BYTES} free — room for one
  *   build of the size that took GRQ-23 down. Short of that, idle checkouts'
- *   target directories are pruned (largest first); a build that is still not
- *   covered is refused ({@link enforceEphemeralCargoBudget}).
+ *   target directories are pruned (largest first). A build still not covered
+ *   after pruning is not run, and the sync is not deferred. Merge-only mode
+ *   ({@link heavyBuildAdmission}, Issue #4326) applies to a tree that holds a
+ *   cargo project, because only a cargo build writes to the ephemeral cargo
+ *   root; a repository with no cargo project keeps its own type check and the
+ *   normal agent. In a cargo-only tree a conflict-free merge is pushed
+ *   unverified with the `UNGATED:` note, and the milestone PR's own CI builds
+ *   it. So is a merge whose conflicts the deterministic rules settle: its
+ *   resolution gate reports a `skipped` verdict marked `landUnverified`, which
+ *   is pushed with the same note. A Deno-only tree and a mixed tree keep their
+ *   Deno checks and suites and are rolled back when those are red; a mixed
+ *   tree whose Deno half passed records that cargo was left to CI. A conflict
+ *   that needs the resolution agent is not landed in that cycle, because the
+ *   agent is free to run the very cargo build the host cannot afford. The
+ *   first such cycle is a refusal and is not charged. The next over-budget
+ *   cycle charges the attempt, so the recovery ladder applies and the branch
+ *   does not stay behind on disk budget alone.
+ *
+ *   No further reclaim step exists. On a runtime that refuses the trim,
+ *   deleting artefacts inside the guest returns nothing to the host
+ *   (`ephemeral_build_cache.ts`, `judgeGuestReclaim` in
+ *   `work_volume_ratchet.ts`), so the ephemeral root's idle target directories
+ *   are the only space the worker can hand back.
  * - **A pass cleans up after itself.** {@link releaseCheckoutTargetDirs}
  *   removes a checkout's target directories when the maintenance pass that
  *   built in it finishes, rather than leaving them to the relaunch.
@@ -43,10 +64,23 @@
  * probe registered (tests, ad hoc callers) nothing is gated, which is the
  * documented `unknown` default of Issue #226.
  *
+ * Issue #4360: a build already running is held to the same floor. The claim
+ * gate only stops new claims, so {@link parkInFlightBuild} parks an agent,
+ * mutation or discrimination build when the reading is low or the ephemeral
+ * budget is short, and {@link hostDiskLaunchStopReason} ends the launch when
+ * the trim was refused and the host is below the floor — exiting the container
+ * is what discards the ephemeral layer and lets the next launch recreate the
+ * volume. The in-flight gate stays off until production enables it, so a test
+ * that registers a probe does not park every other test in the process.
+ *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
 import { formatGb, type HostDiskStatus } from "./host_disk.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
 import {
   cargoTargetDirForCheckout,
   EPHEMERAL_CARGO_TARGET_ROOT,
@@ -123,6 +157,12 @@ function belongsTo(path: string, key: string): boolean {
   return name === key || name.startsWith(`${key}-`);
 }
 
+/**
+ * Phrase a deferral carries when the merge may land and cargo must not run
+ * (Issue #4326). Callers match it with {@link deferralSkipsCargoForMerge}.
+ */
+export const CARGO_BUILD_SKIPPED_FOR_MERGE = "cargo builds wait for CI";
+
 /** The budget's verdict for one build. */
 export interface CargoBudgetVerdict {
   proceed: boolean;
@@ -130,6 +170,24 @@ export interface CargoBudgetVerdict {
   prunedBytes: number;
   /** One line for the log. */
   detail: string;
+  /**
+   * Free space is at or above the floor and short of floor + headroom, and
+   * pruning freed nothing. Cargo must not run; a merge-only sync may land
+   * and the repository's CI builds the tree (Issue #4326).
+   */
+  skipCargoBuild: boolean;
+}
+
+/**
+ * Whether `deferral` is the merge-only cargo skip (Issue #4326).
+ *
+ * A real build still waits. A milestone sync that is only a merge does not.
+ */
+export function deferralSkipsCargoForMerge(
+  deferral: string | null,
+): boolean {
+  return deferral !== null &&
+    deferral.includes(CARGO_BUILD_SKIPPED_FOR_MERGE);
 }
 
 /**
@@ -138,9 +196,10 @@ export interface CargoBudgetVerdict {
  * The bound is tied to host free space: a build may start when
  * `free − headroom ≥ floor`. Short of that, other checkouts' idle target
  * directories are removed, largest first, until the shortfall is covered;
- * still short, the build is refused. The checkout's own directories (its
- * incremental cache) and any written to recently (another slot's build in
- * progress) are never pruned.
+ * still short, `proceed` is false and {@link heavyBuildAdmission} turns the
+ * sync into a merge-only one (Issue #4326). The checkout's own directories
+ * (its incremental cache) and any written to recently (another slot's build
+ * in progress) are never pruned.
  */
 export async function enforceEphemeralCargoBudget(
   input: {
@@ -162,6 +221,7 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: true,
       prunedBytes: 0,
+      skipCargoBuild: false,
       detail: `within budget (${terms})`,
     };
   }
@@ -173,6 +233,7 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: false,
       prunedBytes: 0,
+      skipCargoBuild: false,
       detail: `ephemeral cargo root over budget (${terms}) and ${root} could ` +
         `not be read to prune it: ${
           err instanceof Error ? err.message : String(err)
@@ -207,13 +268,29 @@ export async function enforceEphemeralCargoBudget(
     return {
       proceed: true,
       prunedBytes: pruned,
+      skipCargoBuild: false,
       detail: `ephemeral cargo root back within budget (${terms}) — ` +
         `${prunedNote} (Issue #3178)`,
+    };
+  }
+  // Above the floor, with nothing pruned, a merge must not wait on cargo.
+  // The host stays at or above its floor because cargo does not run; CI
+  // builds the merged tree (Issue #4326). A prune that freed some bytes and
+  // is still short keeps refusing, so a partial free cannot start a build.
+  if (pruned === 0 && input.hostFreeBytes >= input.floorBytes) {
+    return {
+      proceed: false,
+      prunedBytes: 0,
+      skipCargoBuild: true,
+      detail: `ephemeral cargo root over budget (${terms}) — ${prunedNote} ` +
+        `and ${formatGb(shortfall)} is still short, so ` +
+        `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #3178 budget; Issue #4326 skip)`,
     };
   }
   return {
     proceed: false,
     prunedBytes: pruned,
+    skipCargoBuild: false,
     detail: `ephemeral cargo root over budget (${terms}) — ${prunedNote} and ` +
       `${formatGb(shortfall)} is still short, so the build is refused ` +
       `(Issue #3178)`,
@@ -234,31 +311,153 @@ export function registerHeavyBuildDiskProbe(
 }
 
 /**
+ * What a maintenance pass does with a repository build or test (Issue #4326).
+ *
+ * - `build` — run it as usual.
+ * - `defer` — the host is below its floor: no build and no merge this cycle
+ *   (Issue #3178).
+ * - `merge-only` — the ephemeral root is still short of budget after pruning:
+ *   cargo builds wait for the milestone PR's CI. Deno projects retain their
+ *   normal verification. The reason names the budget verdict.
+ */
+export type HeavyBuildAdmission =
+  | { mode: "build" }
+  | { mode: "defer"; reason: string }
+  | { mode: "merge-only"; reason: string };
+
+/**
  * The one call a maintenance pass makes before it runs a repository build or
  * test in `checkoutPath`.
  *
- * @returns Why the build must wait, or null to proceed.
+ * @returns How the pass proceeds; see {@link HeavyBuildAdmission}
  */
-export async function heavyBuildDeferral(
+export async function heavyBuildAdmission(
   checkoutPath: string,
   deps: EphemeralRootDeps = productionEphemeralRootDeps,
-): Promise<string | null> {
-  if (probe === undefined) return null;
+): Promise<HeavyBuildAdmission> {
+  if (probe === undefined) return { mode: "build" };
   const reading = await probe();
   const low = judgeHostDiskForBuild(reading);
-  if (low !== null) return low;
+  if (low !== null) return { mode: "defer", reason: low };
   // The budget is about the ephemeral root, which builds use only where the
   // runtime refuses the trim (Issue #2247).
-  if (!reading.trimRefused) return null;
+  if (!reading.trimRefused) return { mode: "build" };
   const free = reading.status.availableBytes;
-  if (reading.status.level !== "ok" || free === undefined) return null;
-  if (reading.floorBytes === undefined) return null;
+  if (reading.status.level !== "ok" || free === undefined) {
+    return { mode: "build" };
+  }
+  if (reading.floorBytes === undefined) return { mode: "build" };
   const verdict = await enforceEphemeralCargoBudget({
     checkoutPath,
     hostFreeBytes: free,
     floorBytes: reading.floorBytes,
   }, deps);
-  return verdict.proceed ? null : verdict.detail;
+  if (verdict.proceed) return { mode: "build" };
+  return {
+    mode: "merge-only",
+    reason:
+      `${verdict.detail}; cargo builds wait for CI; Deno projects keep their ` +
+      `normal checks (Issue #4326)`,
+  };
+}
+
+/**
+ * The sentence appended when a build is parked for the host disk (Issue #4360).
+ *
+ * Both host-fault classifiers match it, and it is not a worker-gate marker, so
+ * the issue is not charged a failed-once or a gate verdict.
+ */
+export const HOST_DISK_PARK_NOTE = "Parked as infrastructure (Issue #4360).";
+
+/** The deferral, plus {@link HOST_DISK_PARK_NOTE}, or null when the build may run. */
+export function inFlightParkReason(deferral: string | null): string | null {
+  if (deferral === null) return null;
+  return `${deferral} ${HOST_DISK_PARK_NOTE}`;
+}
+
+/**
+ * Whether this launch must end so the host gets its space back (Issue #4360).
+ *
+ * Deleting files inside a volume whose trim was refused does not return host
+ * blocks. Ending the launch discards the container's ephemeral layer, and the
+ * next launch recreates the volume when the host is still below the floor.
+ * Above the floor, or where the trim is honoured, the build is parked and the
+ * launch continues: fstrim can return the blocks, and a recreate would not.
+ *
+ * @returns The reason to end the launch, naming the floor, or null to continue.
+ */
+export function hostDiskLaunchStopReason(
+  reading: HeavyBuildDiskReading,
+): string | null {
+  if (reading.status.level !== "low" || !reading.trimRefused) return null;
+  const deferral = judgeHostDiskForBuild(reading);
+  if (deferral === null) return null;
+  return `${deferral} The work volume trim was refused, so this launch ends ` +
+    `and the ephemeral build layer is discarded; the next launch recreates ` +
+    `the volume if the host is still below the floor (Issue #4360). ` +
+    `${HOST_DISK_PARK_NOTE}`;
+}
+
+/**
+ * Off until production turns it on. A process-global probe is how the
+ * maintenance gate already reads the disk; enabling the in-flight callers
+ * only in the worker process keeps a test's probe from parking another
+ * test's agent (deno test runs files in parallel).
+ */
+let inFlightGateEnabled = false;
+
+/** Enable or clear the in-flight host-disk gate for this process. */
+export function enableInFlightHostDiskGate(enabled: boolean): void {
+  inFlightGateEnabled = enabled;
+}
+
+/** Whether production has armed {@link parkInFlightBuild}. */
+export function inFlightHostDiskGateEnabled(): boolean {
+  return inFlightGateEnabled;
+}
+
+/**
+ * Why an in-flight build must not run in `checkoutPath` (Issue #4360).
+ *
+ * Same floor and ephemeral headroom as {@link heavyBuildAdmission}. Null when
+ * the gate is not armed, no probe is registered, or the host has room.
+ */
+export async function parkInFlightBuild(
+  checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<string | null> {
+  if (!inFlightGateEnabled) return null;
+  const admission = await heavyBuildAdmission(checkoutPath, deps);
+  // A merge-only admission permits a milestone merge, never its build.
+  return inFlightParkReason(
+    admission.mode === "build" ? null : admission.reason,
+  );
+}
+
+/**
+ * Whether cargo must not run for `checkoutPath` (Issue #4326).
+ *
+ * True only when the host is above its floor, the runtime refuses the trim,
+ * and pruning idle target directories freed nothing. No registered probe
+ * (tests, ad hoc callers) never skips.
+ */
+export async function shouldSkipEphemeralCargoBuild(
+  checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<boolean> {
+  if (probe === undefined) return false;
+  const reading = await probe();
+  if (judgeHostDiskForBuild(reading) !== null) return false;
+  if (!reading.trimRefused) return false;
+  const free = reading.status.availableBytes;
+  if (reading.status.level !== "ok" || free === undefined) return false;
+  if (reading.floorBytes === undefined) return false;
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath,
+    hostFreeBytes: free,
+    floorBytes: reading.floorBytes,
+  }, deps);
+  return verdict.skipCargoBuild;
 }
 
 /** What {@link releaseCheckoutTargetDirs} removed. */
@@ -283,9 +482,15 @@ export async function releaseCheckoutTargetDirs(
   let dirs: EphemeralTargetDir[];
   try {
     dirs = await deps.listTargetDirs(root);
-  } catch {
-    // No root yet means nothing was built there.
-    return { bytes: 0, errors: [] };
+  } catch (err) {
+    // No root yet means nothing was built there. Any other failure — a `du`
+    // that timed out among them — left this checkout's dirs in place, and
+    // saying so is what keeps a leak on the disk floor visible.
+    if (err instanceof Deno.errors.NotFound) return { bytes: 0, errors: [] };
+    return {
+      bytes: 0,
+      errors: [`${root}: ${err instanceof Error ? err.message : String(err)}`],
+    };
   }
   let bytes = 0;
   const errors: string[] = [];
@@ -302,17 +507,25 @@ export async function releaseCheckoutTargetDirs(
   return { bytes, errors };
 }
 
-/** `du -sk` of one directory, in bytes; 0 when it cannot be measured. */
-async function duBytes(path: string): Promise<number> {
+/** `du` of one cargo target. Long enough for a large tree, still bounded. */
+const DU_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** `du -sk` of one directory, in bytes; 0 when it cannot be measured. A timeout is a failure. */
+export async function measureDirectoryBytes(
+  path: string,
+  timeoutMs: number = DU_TIMEOUT_MS,
+): Promise<number> {
   try {
-    const out = await new Deno.Command("du", {
+    const out = await commandOutputWithTimeout("du", {
       args: ["-sk", "--", path],
       stdout: "piped",
       stderr: "null",
-    }).output();
+      timeoutMs,
+    });
     const kb = Number.parseInt(new TextDecoder().decode(out.stdout), 10);
     return Number.isFinite(kb) ? kb * 1024 : 0;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return 0;
   }
 }
@@ -343,7 +556,7 @@ export const productionEphemeralRootDeps: EphemeralRootDeps = {
       const path = `${root}/${entry.name}`;
       dirs.push({
         path,
-        bytes: await duBytes(path),
+        bytes: await measureDirectoryBytes(path),
         lastWriteMs: await lastWriteMs(path),
       });
     }

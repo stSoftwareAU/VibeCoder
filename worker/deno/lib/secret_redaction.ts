@@ -466,10 +466,33 @@ const RULES: readonly RedactionRule[] = [
   // The window is bounded (the Issue #3942 linearity rule) and the value is
   // excluded from being pure lowercase hex — a git commit SHA is exactly 40
   // hex characters and appears beside redacted material constantly.
+  //
+  // Issue #3857: in JSON-encoded or escaped text the secret follows a literal
+  // `\n`, `\r` or `\t`, so the escape letter abuts it and `\b` never fires.
+  // Only those three escapes are accepted, so a word glued to 40 characters
+  // is still not a match.
+  //
+  // Issue #4103: `\b` also fails beside `/` and `+`, which are secret
+  // characters but not word characters, so a secret starting or ending in one
+  // was left verbatim. Lookarounds over the secret alphabet replace `\b`. The
+  // context class omits `=` to preserve `id=secret` and `secret=…`. The
+  // old `\b` fired beside `=` only next to a word character. Two guards
+  // keep separator lines after an id from being mistaken for secrets: one
+  // rejects a leading `=`, the other a candidate made only of `/`, `+` and `=`
+  // (a `+====+` border, a `//====` banner, a run of 40 `/`). Real secrets
+  // always contain an alphanumeric. Every lookaround is constant width (the
+  // Issue #3942 linearity rule), and the escape alternative stays because the
+  // escape letter is itself an alphabet character.
+  //
+  // `_` is in both context classes because `\b` treated it as a word
+  // character, so a secret glued to `_` stays unmasked as it did for letters
+  // and digits. The hex guard needs no inner `\b`: a hex candidate with a
+  // class character after it is rejected by the hex guard or the trailing
+  // guard alike, so `(?![0-9a-f]{40})` alone gives the same outcome.
   {
     name: "aws-secret-access-key",
     pattern:
-      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)\b(?![0-9a-f]{40}\b)([A-Za-z0-9/+=]{40})\b/g,
+      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)(?:(?<![A-Za-z0-9/+_])|(?<=\\[nrt]))(?![0-9a-f]{40})(?![/+=]{40})(?!=)([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+_])/g,
     replace: (_m, lead: string) => `${lead}${REDACTION_PLACEHOLDER}`,
   },
   // AWS access key id.

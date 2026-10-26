@@ -15,9 +15,14 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { PhaseState } from "../issue_worker_types.ts";
+import type {
+  IssueContext,
+  PhaseResult,
+  PhaseState,
+} from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import {
+  buildInterruptedWipCommitMessage,
   preserveTimedOutWip,
   type WipPreservationCause,
 } from "../wip_checkpoint.ts";
@@ -28,12 +33,51 @@ import {
   type PreservedWip,
 } from "../preserved_wip_branch.ts";
 import { writeHandoverNote } from "../handover_note.ts";
+import { buildScheduledReleaseReason } from "../failure_diagnosis.ts";
+import { classifyRunFailure } from "../run_outcome_classifier.ts";
+
+/** Preserve a follow-up agent's work before ending at the run's finish. */
+export async function releaseRunAtFinishDeadline(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<PhaseResult> {
+  const elapsedSeconds = state.executeStartTime > 0
+    ? Math.max(0, Math.round((Date.now() - state.executeStartTime) / 1000))
+    : 0;
+  const wip = await preserveRunWip({
+    state,
+    deps,
+    issueNumber: ctx.issueNumber,
+    repo: ctx.repo,
+    buildMessage: (dirtyFiles) =>
+      buildInterruptedWipCommitMessage({
+        cause: "scheduled-release",
+        elapsedSeconds,
+        dirtyFiles,
+      }),
+    handover: { cause: "scheduled-release", elapsedSeconds },
+  });
+  const reason = buildScheduledReleaseReason(
+    "finish-deadline",
+    wip.wipNote ?? "the next claim resumes this issue",
+  );
+  deps.logger.info(reason);
+  return {
+    status: "failure",
+    category: "scheduled_release",
+    reason,
+    classification: classifyRunFailure("scheduled_release", reason, true),
+  };
+}
 
 /** What preservation found and did. */
 export interface PreservedRunWip {
   /**
    * Release-comment note naming what was preserved (or why preservation
-   * failed). Absent only when there was nothing at all to preserve.
+   * failed). Absent only when there was nothing at all to preserve. It is
+   * posted on the target repo's issue, so it cites no fixed VibeCoder issue
+   * number (Issue #3665).
    */
   wipNote?: string;
   /**
@@ -286,11 +330,14 @@ async function resolvePreservedWip(
 /**
  * The one sentence naming the checkpoint commits already on the branch —
  * shared so the "clean tree" and "note-only commit" wordings cannot drift.
+ * The checkpoints are the periodic WIP commits from `wip_checkpoint.ts`; the
+ * sentence cites no VibeCoder issue number because it is posted on the target
+ * repo's issue (Issue #3665).
  */
 function describeCheckpointCommits(commits: number, branch: string): string {
   return `WIP preserved: ${commits} checkpoint commit` +
     `${commits === 1 ? "" : "s"} pushed to '${branch}' ` +
-    `— the next claim resumes from that branch (Issue #4170).`;
+    `— the next claim resumes from that branch.`;
 }
 
 /**
@@ -417,7 +464,7 @@ export async function preserveRunWip(
     return {
       wipNote: (dirtyFiles > 0
         ? `WIP preserved: committed and pushed to '${state.branchName}' ` +
-          `— the next claim resumes from that branch (Issue #47).`
+          `— the next claim resumes from that branch.`
         // Nothing was dirty: the checkpoints already hold the work and this
         // commit carried the note alone. Say so, rather than claiming the
         // working tree was rescued.
@@ -433,8 +480,7 @@ export async function preserveRunWip(
     const onBranch = await resolvePreservedWip(options);
     state.preservedWip = onBranch;
     return {
-      wipNote:
-        `WIP already checkpointed on '${state.branchName}' (Issue #4170).` +
+      wipNote: `WIP already checkpointed on '${state.branchName}'.` +
         describeHandoverFile(onBranch),
       preserved: onBranch,
       dirtyFiles,
@@ -444,7 +490,7 @@ export async function preserveRunWip(
   }
   return {
     wipNote: `WIP preservation failed (${preserved.reason}) — uncommitted ` +
-      `work remains only in the local clone (Issue #47)`,
+      `work remains only in the local clone`,
     dirtyFiles,
     wipCommits,
     pushed: false,

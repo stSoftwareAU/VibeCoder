@@ -18,6 +18,7 @@ today.
 | **[GhostCommit canary regression tests](ghostcommit-canary-tests.md)** | The empirical half of the same work: canary tests that prove the posture at runtime and guard against regressions |
 | **[VulnHunter methodology evaluation](vulnhunter-methodology-evaluation.md)** | Adopt/skip evaluation of five VulnHunter defensive techniques (falsification, independent verification, evidence filter, remediation mapping, RED→GREEN) against the security-fix gate, the whole-tree sweep and the code-scanning feed |
 | **[Agent containment gap analysis](agent-containment-gap-analysis.md)** | Gap analysis of Anthropic's agent containment best practices against the run boundary: sandbox, egress, credentials, permissions, run limits, transcript monitoring and incident response, with seven verdicts and follow-ups #3698–#3703 |
+| **[CodeGuard assessment](codeguard-assessment.md)** | Assessment and attribution of CodeGuard ideas for useful, secure unattended coding, including existing controls and proposed follow-ups |
 
 Related index entries outside this directory:
 
@@ -42,3 +43,6 @@ Related index entries outside this directory:
   that fail on an unpinned `uses:`, an unfrozen `deno` invocation, a
   tag-referenced or short-named container base, a permissive Renovate
   auto-merge policy or a stale dependency inventory.
+- [Capability-scoped security guidance](../CAPABILITY-SECURITY-GUIDANCE.md) —
+  the small shared bundle implementation and review select from the task,
+  not a catalogue pasted into the always-loaded guidelines.

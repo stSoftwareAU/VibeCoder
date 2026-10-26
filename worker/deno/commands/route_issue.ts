@@ -30,6 +30,7 @@
  */
 
 import type { Command, CommandResult, Logger, WorkerConfig } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "../lib/alert_dedup_authors.ts";
 import {
   coerceBooleanFlag,
   coerceStringListFlag,
@@ -64,6 +65,8 @@ export interface RouteIssueDeps {
   ghCommandFn?: GhCommandFn;
   readTextFile?: (path: string) => Promise<string>;
   now?: () => Date;
+  /** Fleet author set for the owned-artefact checks; omitted means configured identity. */
+  authors?: AlertDedupAuthorOptions;
   logger?: Logger;
 }
 
@@ -207,7 +210,11 @@ export const routeIssueCommand: Command = {
       vibeCoderRepo: ROUTE_ISSUE_VIBECODER_REPO,
       productRepos: (config.repos ?? []).filter((r) => isValidRepoSlug(r)),
     };
-    const gh = { ghCommandFn: deps.ghCommandFn, now: deps.now };
+    const gh = {
+      ghCommandFn: deps.ghCommandFn,
+      now: deps.now,
+      authors: deps.authors,
+    };
     const finish = (
       success: boolean,
       summary: string,

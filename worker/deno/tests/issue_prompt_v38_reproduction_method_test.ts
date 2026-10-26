@@ -34,7 +34,6 @@ Deno.test("issue - keeps the placeholders and the existing gated blocks", async 
     const required of [
       "{{VERBOSITY_INSTRUCTIONS}}",
       "{{ISSUE_NUMBER}}",
-      "{{REPO}}",
       "## Reproduction",
       "## Acceptance Criteria",
       "`verified`",

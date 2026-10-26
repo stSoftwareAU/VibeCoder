@@ -19,6 +19,7 @@ import {
   CODEX_PROVIDER_ID,
   DEEPSEEK_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
+  resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 import type { Result } from "../types.ts";
@@ -172,10 +173,9 @@ Deno.test("RTK_OFF - the shared off result is frozen", () => {
   assertEquals(RTK_OFF.enabled, false);
 });
 
-Deno.test("prepareRtkRun - every non-Claude provider is unsupported", async () => {
+Deno.test("prepareRtkRun - providers without hook support are unsupported", async () => {
   for (
     const providerId of [
-      CODEX_PROVIDER_ID,
       GEMINI_PROVIDER_ID,
       DEEPSEEK_PROVIDER_ID,
     ]
@@ -719,4 +719,73 @@ Deno.test("settingsJsonOption - another hook still travels when RTK is off", () 
 
   const matchers = preToolUseOf(settingsJson).map((entry) => entry.matcher);
   assertEquals(matchers, ["Edit|Write"]);
+});
+
+Deno.test("prepareRtkRun - Codex installs RTK per spawn and records saved tokens", async () => {
+  const logger = recordingLogger();
+  const stub = healthy(100, gain(145));
+  const run = await prepareRtkRun({
+    enabled: true,
+    providerId: CODEX_PROVIDER_ID,
+    logger,
+    run: stub.run,
+  });
+  assertEquals(run.result.status, "ok");
+  const args = resolveAgentProvider(CODEX_PROVIDER_ID).buildInvocation({
+    prompt: run.applyPrompt("P"),
+    model: "m",
+    ...settingsJsonOption(undefined, run.hookSettings()),
+  });
+  assert(args.includes("--dangerously-bypass-hook-trust"));
+  assert(args.includes("features.hooks=true"));
+  assert(
+    args.includes(
+      'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command="rtk hook claude"}]}]',
+    ),
+  );
+  assertStringIncludes(args.at(-1)!, RTK_PROMPT_LINE);
+  await run.record();
+  assertEquals(run.result.savedTokens, 45);
+  assertEquals(stub.calls.length, 3);
+});
+
+Deno.test("prepareRtkRun - disabled Codex RTK leaves invocation unchanged", async () => {
+  const stub = stubRunner([]);
+  const run = await prepareRtkRun({
+    enabled: false,
+    providerId: CODEX_PROVIDER_ID,
+    logger: recordingLogger(),
+    run: stub.run,
+  });
+  const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
+  assertEquals(
+    codex.buildInvocation({
+      prompt: run.applyPrompt("P"),
+      model: "m",
+      ...settingsJsonOption(undefined, run.hookSettings()),
+    }),
+    codex.buildInvocation({ prompt: "P", model: "m" }),
+  );
+  assertEquals(stub.calls, []);
+  assertEquals(run.result.status, "off");
+});
+
+Deno.test("prepareRtkRun - support follows the provider capability", async () => {
+  const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
+  const original = codex.supportsPreToolUseHooks;
+  try {
+    codex.supportsPreToolUseHooks = false;
+    const stub = stubRunner([]);
+    const run = await prepareRtkRun({
+      enabled: true,
+      providerId: CODEX_PROVIDER_ID,
+      logger: recordingLogger(),
+      run: stub.run,
+    });
+    assertEquals(run.result.status, "unsupported");
+    assertEquals(run.hookSettings(), undefined);
+    assertEquals(stub.calls, []);
+  } finally {
+    codex.supportsPreToolUseHooks = original;
+  }
 });

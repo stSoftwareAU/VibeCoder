@@ -18,10 +18,15 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import type { CheckAnnotation } from "./pr_spelling_processor.ts";
 import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
+import {
+  commentCarriesOpenPreprReview,
+  preprReviewIsOpen,
+} from "./prepr_review_record.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
@@ -46,7 +51,11 @@ import {
   getCiCheckRetryCount,
   resolveCheckFixRoute,
 } from "./pr_ci_checks.ts";
-import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
+import {
+  fetchFailedCheckRunsBatch,
+  STARTUP_FAILURE_CONCLUSION,
+  startupFailedSuiteEntry,
+} from "./check_runs_batch.ts";
 import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
@@ -80,6 +89,7 @@ import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import {
   classifyRedChecks,
   RED_CHECK_CONCLUSIONS,
+  rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "./ci_infrastructure_rerun.ts";
 import {
@@ -106,6 +116,11 @@ import {
 export interface PrEntry {
   number: number;
   headRefName: string;
+  /**
+   * Whether the PR is a draft — work in progress (owner, 2026-10-23). The CI
+   * scan skips drafts: their checks are deliberately not run.
+   */
+  isDraft?: boolean;
   headRefOid?: string;
   body?: string;
   createdAt?: string;
@@ -169,9 +184,13 @@ export interface CommentEntry {
 /** Check run entry from the GitHub API. */
 export interface CheckRunEntry {
   id: number;
+  /** Synthetic startup entries carry their suite identity separately from jobs. */
+  checkSuiteId?: number;
   name: string;
   status: string;
   conclusion: string;
+  /** Startup failures have no check-run endpoint; carry their run details here. */
+  annotations?: CheckAnnotation[];
 }
 
 /** Options for PR scanning functions. */
@@ -280,14 +299,13 @@ export interface AutoMergeOptions extends PrScanOptions {
   ) => Promise<MergeAttemptOutcome>;
   /**
    * Handler for a merge attempt's outcome (Issue #3584). Defaults to
-   * {@link handleMergeAttempt}, which updates a stale branch and escalates
-   * a PR that cannot be landed. Injectable for testing.
+   * {@link handleMergeAttempt}, which updates a stale branch and retries
+   * a PR that cannot be landed next cycle (Issue #4304). Injectable for
+   * testing.
    */
   handleMergeAttemptFn?: (
     options: HandleMergeAttemptOptions,
   ) => Promise<MergeAttemptHandling>;
-  /** Label applied when a merge is escalated. Defaults to `needs-human`. */
-  needsHumanLabel?: string;
   /** Needs-screenshot label name. */
   needsScreenshotLabel?: string;
   /**
@@ -410,7 +428,7 @@ export interface CiCheckScanOptions extends PrScanOptions {
  * harmless to callers, which read only what they use.
  */
 export const PR_MAINTENANCE_LIST_FIELDS =
-  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels,body,reviewDecision";
+  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels,body,reviewDecision,isDraft";
 
 /**
  * Explicit page size for the cached superset listing (Issue #4303). The
@@ -619,18 +637,45 @@ export async function fetchPrComments(
     : `repos/${repo}/issues/${prNumber}/comments`;
 
   try {
+    // `--paginate` is required. A busy pull request's change-request record
+    // sits past the first page of thirty, and the feedback pass must still
+    // see it (Issue #4236).
     const output = await ghCommandFn([
       "api",
+      "--paginate",
       apiPath,
       "--jq",
       '[.[] | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), eyes: (.reactions.eyes // 0), created_at: .created_at}]',
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as CommentEntry[];
+    const parsed = parseCommentPages(output);
+    return parsed ?? [];
   } catch {
     return [];
   }
+}
+
+/**
+ * Flatten what `gh api --paginate --jq` prints: one JSON array per line.
+ * A single page is one array. A page that is not JSON is unreadable, and
+ * the caller treats that as no comments for this scan.
+ */
+function parseCommentPages(output: string): CommentEntry[] | null {
+  const comments: CommentEntry[] = [];
+  const trimmed = output.trim();
+  if (trimmed === "") return [];
+  for (const line of trimmed.split("\n")) {
+    const piece = line.trim();
+    if (piece === "") continue;
+    let page: unknown;
+    try {
+      page = JSON.parse(piece);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(page)) return null;
+    comments.push(...(page as CommentEntry[]));
+  }
+  return comments;
 }
 
 /**
@@ -774,6 +819,77 @@ export async function fetchFailedCheckRuns(
 }
 
 /**
+ * Fetch the startup-failed GitHub Actions suites on a branch's head commit
+ * (Issue #4347) — the REST twin of `rollupToStartupFailedSuites`. Such a suite
+ * carries no check run, so {@link fetchFailedCheckRuns} cannot see it; it is
+ * returned as a synthetic entry keyed by the suite id.
+ */
+/**
+ * The workflow run GitHub recorded for a check suite, via
+ * `actions/runs?check_suite_id=` (Issue #4347). A missing or unreadable run
+ * leaves the CI-fix candidate with a stable generic name.
+ */
+async function workflowRunForSuite(
+  repo: string,
+  suiteId: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<
+  { name: string | null; path: string | null; htmlUrl: string | null }
+> {
+  const empty = { name: null, path: null, htmlUrl: null };
+  try {
+    const output = await ghCommandFn([
+      "api",
+      `repos/${repo}/actions/runs?check_suite_id=${suiteId}`,
+      "--jq",
+      ".workflow_runs[0] // {} | {name, path, html_url}",
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return empty;
+    }
+    const run = parsed as {
+      name?: unknown;
+      path?: unknown;
+      html_url?: unknown;
+    };
+    return {
+      name: typeof run.name === "string" ? run.name : null,
+      path: typeof run.path === "string" ? run.path : null,
+      htmlUrl: typeof run.html_url === "string" ? run.html_url : null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export async function fetchStartupFailedSuites(
+  repo: string,
+  branchName: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<CheckRunEntry[]> {
+  try {
+    const output = await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${branchName}/check-suites?per_page=100`,
+      "--jq",
+      `[.check_suites[] | select(.app.slug == "github-actions" and .status == "completed" and .conclusion == "${STARTUP_FAILURE_CONCLUSION}" and .latest_check_runs_count == 0) | .id]`,
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) return [];
+    const ids = parsed.filter((id): id is number => typeof id === "number");
+    const entries: CheckRunEntry[] = [];
+    for (const id of ids) {
+      const workflow = await workflowRunForSuite(repo, id, ghCommandFn);
+      entries.push(startupFailedSuiteEntry(id, workflow));
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build a per-PR failed-check-runs lookup for a repo (Issue #1806).
  *
  * Tries one batched GraphQL `statusCheckRollup` call covering every PR
@@ -787,6 +903,9 @@ export async function fetchFailedCheckRuns(
  * @param conclusions - Conclusions to keep (default `["failure"]`; Issue
  *   #2914 passes `["failure", "cancelled"]` from the CI-fix scan), passed
  *   through to both the batched and the REST-fallback path.
+ * @param includeStartupFailedSuites - Also return the head commit's
+ *   startup-failed Actions suites, which carry no check run (Issue #4347);
+ *   only the CI-fix scan sets it.
  */
 export async function buildFailedCheckRunsLookup(
   repo: string,
@@ -794,6 +913,7 @@ export async function buildFailedCheckRunsLookup(
   ghCommandFn: (args: string[]) => Promise<string>,
   conclusions: readonly string[] = ["failure"],
   observe?: (prNumber: number, rollup: PrRollup) => Promise<void>,
+  includeStartupFailedSuites = false,
 ): Promise<(pr: PrEntry) => Promise<CheckRunEntry[]>> {
   const prNumbers = prs.map((p) => p.number);
   const batch = await fetchFailedCheckRunsBatch(
@@ -802,13 +922,23 @@ export async function buildFailedCheckRunsLookup(
     ghCommandFn,
     conclusions,
     observe,
+    includeStartupFailedSuites,
   );
   if (batch !== null) {
     return (pr) => Promise.resolve(batch.get(pr.number) ?? []);
   }
   // GraphQL failed — fall back to per-PR REST path
-  return (pr) =>
-    fetchFailedCheckRuns(repo, pr.headRefName, ghCommandFn, conclusions);
+  return async (pr) => [
+    ...await fetchFailedCheckRuns(
+      repo,
+      pr.headRefName,
+      ghCommandFn,
+      conclusions,
+    ),
+    ...(includeStartupFailedSuites
+      ? await fetchStartupFailedSuites(repo, pr.headRefName, ghCommandFn)
+      : []),
+  ];
 }
 
 /**
@@ -1185,7 +1315,20 @@ async function findActionableComment(
     const isVerifierHold = commentType === "issue" &&
       isFleetAuthor(comment.login, [...fleetAuthors]) &&
       comment.body.split(/\r?\n/, 1)[0] === PRE_PR_VERIFIER_HOLD_MARKER;
-    if (comment.login === githubUser && !isVerifierHold) continue;
+    // Issue #4236: the worker's own change-request record is the one other
+    // own-comment the scan answers. A later resolved marker on the thread
+    // means it has already been answered, so it is not actionable.
+    const isPreprReview = commentType === "issue" &&
+      isFleetAuthor(comment.login, [...fleetAuthors]) &&
+      commentCarriesOpenPreprReview(comment.body) &&
+      preprReviewIsOpen(
+        comments
+          .filter((entry) => isFleetAuthor(entry.login, [...fleetAuthors]))
+          .map((entry) => entry.body),
+      );
+    if (comment.login === githubUser && !isVerifierHold && !isPreprReview) {
+      continue;
+    }
 
     const isAuthorised = isAuthorisedCommenter(comment.login);
     const isTrustedReviewBot = commentType === "review" &&
@@ -1199,6 +1342,7 @@ async function findActionableComment(
     let hasAuthorisedThumbsUp = false;
     if (
       !isAuthorised && !isTrustedReviewBot && !isVerifierHold &&
+      !isPreprReview &&
       (comment.thumbs_up ?? 0) > 0
     ) {
       const reactors = await fetchCommentThumbsUpReactors(
@@ -1214,7 +1358,7 @@ async function findActionableComment(
 
     if (
       isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot ||
-      isVerifierHold
+      isVerifierHold || isPreprReview
     ) {
       // The comment is actionable — unless the fleet has already processed
       // it. The `eyes` marker is the worker's own, so a count is not the
@@ -1256,7 +1400,9 @@ async function findActionableComment(
         });
       }
 
-      const trustReason = isVerifierHold
+      const trustReason = isPreprReview
+        ? "worker-prepr-review"
+        : isVerifierHold
         ? "worker-verifier-hold"
         : isAuthorised
         ? "authorised"
@@ -1276,7 +1422,7 @@ async function findActionableComment(
       return {
         repo,
         prNumber,
-        commentType: commentType as CommentType,
+        commentType: (isPreprReview ? "pr_review" : commentType) as CommentType,
         commentId: String(comment.id),
         encodedBody,
         commentAuthor: comment.login,
@@ -1357,6 +1503,7 @@ export async function findFailedPrChecks(
       const failedChecks = await getFailedChecks(pr);
 
       for (const check of failedChecks) {
+        if (check.checkSuiteId !== undefined) continue;
         // Route on the step that failed, not the job name (Issue #1579):
         // a `Scripts & spelling` job whose bats step failed is a CI-fix
         // job, and sending it here left the bats failure unfixed.
@@ -1523,13 +1670,16 @@ export async function findFailedCiChecks(
       }
     }
 
-    const prs = await listActionablePrs(
+    // A draft is work in progress (owner, 2026-10-23): its checks are not
+    // run, and its required `gate` fails on purpose, so it is never handed to
+    // the CI fixer. Marking it ready runs CI, and this scan sees it then.
+    const prs = (await listActionablePrs(
       repo,
       scanAuthors,
       // headRefOid pins a human-gate park to the head it was confirmed on.
-      "number,headRefName,headRefOid,baseRefName,body,createdAt,reviewDecision",
+      "number,headRefName,headRefOid,baseRefName,body,createdAt,reviewDecision,isDraft",
       options,
-    );
+    )).filter((pr) => pr.isDraft !== true);
 
     // Batch all check-run lookups for this repo into a single GraphQL
     // call (Issue #1806), with REST fallback handled internally. Reads
@@ -1572,6 +1722,7 @@ export async function findFailedCiChecks(
           );
         }
         : undefined,
+      true,
     );
 
     // Issue #1878: the `needs:` topology from the host's existing clone,
@@ -1709,12 +1860,17 @@ export async function findFailedCiChecks(
         if (deferredNames.has(check.name)) continue;
         if (gatedNames.has(check.name)) continue;
 
+        // A suite has no job id to replace on rerun. Preserve its identity all
+        // the way through the string-based worker handoff (Issue #4347).
+        const checkId = check.checkSuiteId === undefined
+          ? String(check.id)
+          : `suite-${check.checkSuiteId}`;
         // Skip genuine spelling failures — handled by findFailedPrChecks.
         // The decision reads the failed *step*, so a non-spelling step
         // inside a spelling-named job stays on this route (Issue #1579).
         const routing = await resolveCheckFixRoute({
           repo,
-          checkId: String(check.id),
+          checkId,
           checkName: check.name,
           ghCommandFn,
           logger,
@@ -1725,15 +1881,27 @@ export async function findFailedCiChecks(
         const retryCount = await getCiCheckRetryCount(
           stateDir,
           repo,
-          String(check.id),
+          checkId,
         );
-        if (retryCount >= maxRetries) {
-          logger.warn("CI check exceeded max retries — skipping", {
+        // Startup suites retain their id across reruns, so a job-local cap
+        // would strand them. The processor's fleet-wide attempt cap still
+        // bounds repair and abandons/restarts the PR when it is spent.
+        if (retryCount >= maxRetries && check.checkSuiteId === undefined) {
+          // Issue #4304: a spent check run is re-run rather than left red
+          // for a person. The fresh run has a fresh retry budget and is
+          // picked up next scan; the fleet-wide auto-fix cap bounds it.
+          logger.warn("CI check exceeded max retries — re-running it", {
             repo,
             prNumber,
             checkName: check.name,
             retries: retryCount,
             maxRetries,
+          });
+          await rerunFailedJobsOfCheck({
+            repo,
+            checkId,
+            ghCommandFn,
+            logger,
           });
           continue;
         }
@@ -1745,18 +1913,16 @@ export async function findFailedCiChecks(
           checkId: check.id,
         });
 
-        const annotationsJson = await fetchCheckAnnotations(
-          repo,
-          check.id,
-          ghCommandFn,
-        );
+        const annotationsJson = check.annotations
+          ? JSON.stringify(check.annotations)
+          : await fetchCheckAnnotations(repo, check.id, ghCommandFn);
         const encodedAnnotations = encodeBase64(annotationsJson);
 
         const failedCheck: FailedCiCheck = {
           repo,
           prNumber,
           branchName,
-          checkId: String(check.id),
+          checkId,
           checkName: check.name,
           encodedAnnotations,
           // Issue #1880: the base branch, so the processor can verify an
@@ -1806,7 +1972,8 @@ export async function findFailedCiChecks(
  *
  * Every outcome is then handled loudly by {@link handleMergeAttempt}: a
  * stale branch is updated so its checks re-run, and a PR that cannot be
- * landed gets an explanatory comment plus `needs-human`.
+ * landed is logged and retried next cycle — never handed to a human
+ * (Issue #4304).
  *
  * The scan lists PRs the fleet itself authored (host login + `prAuthors`
  * — Issue #4076), so a PR from outside the fleet, including a trusted
@@ -1828,7 +1995,6 @@ export async function ensureAutoMergeOnOpenPrs(
     enableAutoMergeFn,
     directMergeFn,
     needsScreenshotLabel = "needs-screenshot",
-    needsHumanLabel = "needs-human",
     handleMergeAttemptFn = handleMergeAttempt,
     cache,
     prAuthors,
@@ -1937,20 +2103,19 @@ export async function ensureAutoMergeOnOpenPrs(
       );
 
       // Issue #3584: act on the outcome loudly — a stale branch is updated
-      // so its checks re-run, and a PR that cannot be landed gets an
-      // explanatory comment plus `needs-human`. Nothing is swallowed.
+      // so its checks re-run, and a PR that cannot be landed is logged and
+      // retried next cycle (Issue #4304). Nothing is swallowed.
       const handling = await handleMergeAttemptFn({
         repo,
         prNumber,
         outcome,
         logger,
         ghFn: ghCommandFn,
-        needsHumanLabel,
       });
 
       if (handling.disposition === "landed") {
         enabledCount++;
-      } else if (handling.disposition === "escalate") {
+      } else if (handling.disposition === "retry") {
         failedCount++;
       } else {
         skippedCount++;
@@ -2044,9 +2209,10 @@ async function closeIssueForMergedPr(
  * Try to arrange for a PR to merge, and report what happened (Issue #3584).
  *
  * Precedence: native auto-merge first; direct merge only when native
- * auto-merge is refused because the target branch is unprotected. Any
- * other result — including a thrown gh error — is a merge error, so the
- * caller escalates instead of counting a silent failure.
+ * auto-merge is refused because the target branch is unprotected, or because
+ * the repository has auto-merge switched off (Issue #4304). Any other
+ * result — including a thrown gh error — is a merge error, so the caller
+ * retries it instead of counting a silent success.
  */
 async function attemptMerge(
   repo: string,
@@ -2112,7 +2278,13 @@ async function attemptMerge(
       return { kind: "landed", merged: true };
     }
 
-    if (result.result === "not_allowed" && directMergeFn) {
+    // Issue #4304: a repository with auto-merge switched off takes the same
+    // gated direct merge as an unprotected base — it lands once it is
+    // approved and green, and nobody is asked to merge it by hand.
+    if (
+      (result.result === "not_allowed" ||
+        result.result === "not_enabled_on_repo") && directMergeFn
+    ) {
       // Issue #553: say WHY. GitHub's refusal was dropped here, so a PR that
       // merged directly looked like one where auto-merge had "randomly" not
       // been set. It is deterministic — GitHub refuses to arm auto-merge on a

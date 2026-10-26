@@ -732,6 +732,9 @@ const SHELL_OWNED_ENV = new Set([
   // matches for a reason that is the opposite of a leak — the child set it —
   // and without this the case fails on every containerised run.
   "DISABLE_AUTOUPDATER",
+  // Same shape (Issue #4225): the entrypoint always exports the cargo job
+  // cap, so a suite that already inherited it matches the child on purpose.
+  "CARGO_BUILD_JOBS",
 ]);
 
 /**
@@ -774,6 +777,37 @@ Deno.test("entrypoint - disables the agent CLI's self-updater (Issue #4248)", as
     });
     assertEquals(outcome.code, 0, outcome.stderr);
     assertEquals((await Deno.readTextFile(envFile)).trim(), "1");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - caps cargo build jobs at 2 (Issue #4225)", async () => {
+  // The guest inherits this from the entrypoint, not from the host launcher.
+  // An existing value is replaced so a host that exported a wider cap cannot
+  // raise it inside the container.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const envFile = `${dir}/driver-env.txt`;
+    await Deno.mkdir(`${dir}/bin`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/bin/deno`,
+      `#!/bin/bash\nprintf '%s\\n' "\${CARGO_BUILD_JOBS:-UNSET}" > "${envFile}"\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/deno`, 0o755);
+    await fakeRepo(dir);
+
+    const outcome = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: `${dir}/home`,
+        CARGO_BUILD_JOBS: "8",
+      },
+    });
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertEquals((await Deno.readTextFile(envFile)).trim(), "2");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

@@ -120,7 +120,7 @@ Deno.test("census - blocking label excludes an issue from unblocked counts", () 
         issues: [
           issue(1, ["work-on", "needs-human"]),
           issue(2, ["work-on", "planning"]),
-          issue(3, ["work-on", "failed"]),
+          issue(3, ["work-on", "needs-revision"]),
         ],
       }),
     ],
@@ -2228,7 +2228,6 @@ Deno.test("census - an issue quoting the tracker marker is claimable to census a
     body,
   };
   const kept = filterAndSort([scanned], {
-    failedLabel: "failed",
     needsRevisionLabel: "needs-revision",
     refineIssueLabel: "refine-issue",
     planningLabel: "planning",

@@ -32,7 +32,6 @@ function makeIssue(overrides: Partial<FilterableIssue> = {}): FilterableIssue {
 }
 
 const defaultFilterLabels: FilterLabels = {
-  failedLabel: "failed",
   needsRevisionLabel: "needs-revision",
   refineIssueLabel: "refine-issue",
   planningLabel: "planning",
@@ -201,7 +200,7 @@ Deno.test("issue_filter - isMilestoneOccupied fleet match is case-insensitive", 
 
 Deno.test("issue_filter - filterAndSort excludes blocking labels", () => {
   // Issue #2031: needs-clarification retired; needs-human is the blocking
-  // handoff label.
+  // handoff label. Issue #4158: `failed` no longer blocks.
   const issues = [
     makeIssue({ number: 1, labels: ["bug"] }),
     makeIssue({ number: 2, labels: ["failed"] }),
@@ -209,9 +208,7 @@ Deno.test("issue_filter - filterAndSort excludes blocking labels", () => {
     makeIssue({ number: 4, labels: ["enhancement"] }),
   ];
   const result = filterAndSort(issues, defaultFilterLabels);
-  assertEquals(result.length, 2);
-  assertEquals(result[0]?.number, 1);
-  assertEquals(result[1]?.number, 4);
+  assertEquals(result.map((i) => i.number), [1, 2, 4]);
 });
 
 Deno.test("issue_filter - filterAndSort excludes assigned issues", () => {

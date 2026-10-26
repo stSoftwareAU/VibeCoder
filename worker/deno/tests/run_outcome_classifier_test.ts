@@ -9,10 +9,12 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   classifyRunFailure,
+  parseCodexTranscript,
   RUN_FAILURE_CLASSES,
   type RunFailureClassification,
   splitAgentNarration,
 } from "../lib/run_outcome_classifier.ts";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 import {
   detectFailureCategory,
   type FailureCategory,
@@ -185,6 +187,168 @@ const ROWS: {
     failureClass: "unknown",
   },
 ];
+
+/**
+ * The Codex session from the code-mode outage (Issue #4324): the provider's
+ * first item says the host is missing, then the agent speaks, and no tool
+ * is ever called.
+ */
+const CODE_MODE_TRANSCRIPT: readonly unknown[] = [
+  {
+    type: "error",
+    message: "Code Mode is unavailable: host executable was not found",
+  },
+  {
+    type: "agent_message",
+    message: "I cannot use tools in this session, so I made no code change.",
+  },
+];
+
+/** An ordinary no-change session: a tool ran, then the agent stopped. */
+const WORKING_TOOLS_TRANSCRIPT: readonly unknown[] = [
+  { type: "function_call", name: "shell", status: "completed" },
+  {
+    type: "agent_message",
+    message: "No code change was required.",
+  },
+];
+
+const NO_CHANGE_REASON = "Completed without making any changes";
+
+Deno.test("classifyRunFailure - a Code Mode unavailable transcript is code-fixable infrastructure, not an agent outcome (Issue #4324)", () => {
+  const got = classifyRunFailure(
+    "no_changes",
+    NO_CHANGE_REASON,
+    true,
+    CODE_MODE_TRANSCRIPT,
+  );
+  assertEquals(got.fixability, "code_fixable");
+  assertEquals(got.failureClass, "tool-runtime");
+  assert(
+    (RUN_FAILURE_CLASSES as readonly string[]).includes("tool-runtime"),
+  );
+  // Transient: the ladder applies no failed-once and no escalating back-off.
+  const decision = classifyCodingFailure(
+    NO_CHANGE_REASON,
+    "no_changes",
+    undefined,
+    CODE_MODE_TRANSCRIPT,
+  );
+  assertEquals(decision.failureClass, "tool-runtime");
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.cooldownKind, undefined);
+});
+
+Deno.test("classifyRunFailure - a Codex JSONL session whose first item is the code-mode error is tool-runtime (Issue #4324)", () => {
+  const text = [
+    JSON.stringify({
+      type: "error",
+      message: "Code Mode is unavailable: host executable was not found",
+    }),
+    JSON.stringify({
+      type: "agent_message",
+      message: "I cannot use tools in this session.",
+    }),
+  ].join("\n");
+  const got = classifyRunFailure(
+    "no_changes",
+    NO_CHANGE_REASON,
+    true,
+    parseCodexTranscript(text),
+  );
+  assertEquals(got.failureClass, "tool-runtime");
+  assertEquals(got.fixability, "code_fixable");
+});
+
+Deno.test("classifyRunFailure - every tool call failing to spawn is tool-runtime (Issue #4324)", () => {
+  const got = classifyRunFailure("no_changes", NO_CHANGE_REASON, true, [
+    {
+      type: "function_call",
+      name: "shell",
+      message: "failed to spawn: host executable was not found",
+    },
+    { type: "command_execution", status: "failed_to_spawn" },
+  ]);
+  assertEquals(got.fixability, "code_fixable");
+  assertEquals(got.failureClass, "tool-runtime");
+});
+
+Deno.test("classifyRunFailure - a criteria-unmet run whose later session has no tools is tool-runtime (Issue #4362)", () => {
+  // The implementing agent used tools, then the pre-PR verifier's session
+  // opened with the code-mode host missing. That later fault is
+  // infrastructure even though the recorded category is a worker gate.
+  const transcript = [
+    { type: "function_call", name: "shell", status: "completed" },
+    {
+      type: "error",
+      message:
+        "Code Mode is unavailable because failed to spawn code-mode host /usr/local/bin/codex-code-mode-host: host executable was not found.",
+    },
+    {
+      type: "agent_message",
+      message: "I cannot use tools, so I could not check the criteria.",
+    },
+  ];
+  const got = classifyRunFailure(
+    "criteria_unmet",
+    "the run did not meet every acceptance criterion",
+    true,
+    transcript,
+  );
+  assertEquals(got.failureClass, "tool-runtime");
+  assertEquals(got.fixability, "code_fixable");
+  const decision = classifyCodingFailure(
+    "the run did not meet every acceptance criterion",
+    "criteria_unmet",
+    undefined,
+    transcript,
+  );
+  assertEquals(decision.failureClass, "tool-runtime");
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.cooldownKind, undefined);
+});
+
+Deno.test("classifyRunFailure - a criteria-unmet run whose tools worked stays on the ladder (Issue #4362)", () => {
+  const got = classifyRunFailure(
+    "criteria_unmet",
+    "the run did not meet every acceptance criterion",
+    true,
+    WORKING_TOOLS_TRANSCRIPT,
+  );
+  assertEquals(got.failureClass, "agent-outcome");
+  const decision = classifyCodingFailure(
+    "the run did not meet every acceptance criterion",
+    "criteria_unmet",
+    undefined,
+    WORKING_TOOLS_TRANSCRIPT,
+  );
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.cooldownKind, "non_transient");
+});
+
+Deno.test("classifyRunFailure - an ordinary no-change run whose tools worked stays an agent outcome (Issue #4324)", () => {
+  const withTools = classifyRunFailure(
+    "no_changes",
+    NO_CHANGE_REASON,
+    true,
+    WORKING_TOOLS_TRANSCRIPT,
+  );
+  assertEquals(withTools.fixability, "not_code_fixable");
+  assertEquals(withTools.failureClass, "agent-outcome");
+  const noTranscript = classifyRunFailure(
+    "no_changes",
+    NO_CHANGE_REASON,
+    true,
+  );
+  assertEquals(noTranscript.failureClass, "agent-outcome");
+  const decision = classifyCodingFailure(
+    NO_CHANGE_REASON,
+    "no_changes",
+    withTools,
+  );
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.failureClass, "agent-outcome");
+});
 
 Deno.test("run failure classifier - table: one real-message case per row (Issue #4328)", () => {
   for (const row of ROWS) {

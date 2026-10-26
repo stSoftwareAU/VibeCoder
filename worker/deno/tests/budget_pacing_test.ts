@@ -4,11 +4,13 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 import {
   BUDGET_RESERVE_FRACTION,
   computePacedSleepSeconds,
   isInReserve,
-  MAX_PACED_SLEEP_SECONDS,
+  PACED_SLEEP_CAP_MULTIPLE,
+  pacedSleepCapSeconds,
   type PacedSleepInput,
 } from "../lib/budget_pacing.ts";
 
@@ -28,6 +30,21 @@ function input(overrides: Partial<PacedSleepInput>): PacedSleepInput {
     ...overrides,
   };
 }
+
+Deno.test("a default sleepInterval overspend sleeps at three times that base (Issue #4137)", () => {
+  // The real host default, not a pinned 120s. The cap is 3× this base, so
+  // pacing can lengthen a default host past its jittered sleep.
+  const base = OPERATIONAL_DEFAULTS.sleepInterval;
+  const result = computePacedSleepSeconds(input({
+    remaining: RESERVE,
+    spentLastCycle: 100,
+    baseSleepSeconds: base,
+  }));
+  assertEquals(result.sleepSeconds, base * PACED_SLEEP_CAP_MULTIPLE);
+  assertEquals(result.sleepSeconds, pacedSleepCapSeconds(base));
+  assert(result.sleepSeconds > base);
+  assert(Number.isFinite(result.sleepSeconds));
+});
 
 Deno.test("plenty of budget returns the base sleep", () => {
   const result = computePacedSleepSeconds(input({
@@ -49,27 +66,31 @@ Deno.test("overspend stretches the sleep proportionally", () => {
     baseSleepSeconds: 30,
   }));
   // cyclesLeft = 2400 / 150 = 16; affordable = 500 / 16 = 31.25;
-  // stretched = 30 * (270 / 31.25) = 259.2.
-  assertEquals(Math.round(result.sleepSeconds * 10) / 10, 259.2);
+  // stretched = 30 * (270 / 31.25) = 259.2, which is past 3 × 30.
+  assertEquals(result.sleepSeconds, 30 * PACED_SLEEP_CAP_MULTIPLE);
   assert(result.sleepSeconds > 30);
   assertEquals(result.inReserve, false);
 });
 
-Deno.test("the paced sleep never exceeds the cap", () => {
+Deno.test("the paced sleep never exceeds three times its base", () => {
+  const base = 120;
   const result = computePacedSleepSeconds(input({
     remaining: 2000,
     spentLastCycle: 10_000,
+    baseSleepSeconds: base,
   }));
-  assertEquals(result.sleepSeconds, MAX_PACED_SLEEP_SECONDS);
+  assertEquals(result.sleepSeconds, pacedSleepCapSeconds(base));
 });
 
 Deno.test("reaching the reserve flags inReserve and paces to the cap", () => {
+  const base = 120;
   const result = computePacedSleepSeconds(input({
     remaining: RESERVE,
     spentLastCycle: 100,
+    baseSleepSeconds: base,
   }));
   assertEquals(result.inReserve, true);
-  assertEquals(result.sleepSeconds, MAX_PACED_SLEEP_SECONDS);
+  assertEquals(result.sleepSeconds, pacedSleepCapSeconds(base));
 });
 
 Deno.test("a window about to reset floors cyclesLeftInWindow at 1", () => {
@@ -110,6 +131,19 @@ Deno.test("never returns less than the base sleep", () => {
   assert(result.sleepSeconds >= 120);
 });
 
+Deno.test("an overspend lengthens the base and never shortens it", () => {
+  // The ceiling is three times the base this call was given, so a large
+  // overspend sleeps at that ceiling, which is longer than the base.
+  const base = 340;
+  const result = computePacedSleepSeconds(input({
+    remaining: 1500,
+    spentLastCycle: 1_000_000,
+    baseSleepSeconds: base,
+  }));
+  assertEquals(result.sleepSeconds, pacedSleepCapSeconds(base));
+  assert(result.sleepSeconds > base);
+});
+
 Deno.test("a base sleep of zero inside the reserve paces to the cap, not NaN", () => {
   // `0 × Infinity` is NaN, and a NaN sleep would reach `deps.sleep()`; with
   // nothing affordable the stretch goes straight to the cap instead.
@@ -122,7 +156,7 @@ Deno.test("a base sleep of zero inside the reserve paces to the cap, not NaN", (
     Number.isFinite(result.sleepSeconds),
     "the paced sleep must be finite",
   );
-  assertEquals(result.sleepSeconds, MAX_PACED_SLEEP_SECONDS);
+  assertEquals(result.sleepSeconds, pacedSleepCapSeconds(0));
   assertEquals(result.inReserve, true);
 });
 

@@ -2,8 +2,10 @@
  * Issue #3689: the issue worker's final-mile push runs the pre-push gate.
  *
  * Drives `workOnIssueCompletion` with the git seams mocked and counts gate
- * calls and pushes: a blocked gate means no push and no recovery; a passing
- * gate lets the push through; recovery re-gates before the retry push.
+ * calls, agent turns and pushes: a verdict block earns one in-run agent turn
+ * (Issue #4128) and the gate re-runs, and a block that stays fails closed with
+ * no push; a passing gate lets the push through; recovery re-gates before the
+ * retry push.
  *
  * Australian English throughout (behaviour, organisation).
  */
@@ -28,7 +30,10 @@ import {
   PRE_PUSH_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
-import { PrePushGateBlockedError } from "../lib/git_push.ts";
+import {
+  commitAndPushPending,
+  PrePushGateBlockedError,
+} from "../lib/git_push.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type {
   IssueContext,
@@ -36,7 +41,8 @@ import type {
   PhaseState,
   WorkOnIssueResult,
 } from "../lib/issue_worker_types.ts";
-import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { createMockDeps, type WorkerDeps } from "../lib/issue_worker_wiring.ts";
+import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { GitHubClient, Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
@@ -76,6 +82,8 @@ function stubClient(): GitHubClient {
 type GitResult = Result<{ code: number; stdout: string; stderr: string }>;
 
 interface Scenario {
+  /** A real git hook rejects the uncommitted recovery fix. */
+  recoveryCommitFailure?: boolean;
   landedWhen?: "before-recovery" | "during-push" | "before-bookkeeping";
   partialMerged?: boolean;
   unrelatedMerged?: boolean;
@@ -96,6 +104,12 @@ interface Scenario {
    * failed).
    */
   gateAnswers: Array<"pass" | string | Error>;
+  /**
+   * The agent's answer to the pre-push gate's one extra turn (Issue #4128):
+   * "ok" a clean exit, "error" a failed invocation, "throw" a thrown one.
+   * Defaults to "ok".
+   */
+  agent?: "ok" | "error" | "throw" | "finish-deadline";
   /** Whether the PR base resolves to nothing (no local, remote or fetched ref). */
   baseUnresolvable?: boolean;
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
@@ -103,6 +117,9 @@ interface Scenario {
 }
 
 interface Outcome {
+  originBefore?: string;
+  originAfter?: string;
+  recoveryContents?: string;
   outcome?: RunOutcome;
   attempts: number;
   prCreates: number;
@@ -113,9 +130,24 @@ interface Outcome {
   pushes: number;
   recoveries: number;
   gateCalls: number;
+  /** Agent invocations the run made, including the pre-push gate's turn (Issue #4128). */
+  agentCalls: number;
+  /**
+   * Calls to `commitAndPushPending` (the recovery turn's commit, Issue #4128).
+   * Each call pushes only when no `beforePush` refuses it.
+   */
+  recoveryCommits: number;
+  /** The prompt of each agent invocation, in order. */
+  agentPrompts: string[];
   /** The `baseRef` each gate call received (5th argument). */
   gateBaseRefs: Array<string | undefined>;
+  /** The `preFlightAlreadyRan` flag each gate call received (4th argument). */
+  gatePreFlightFlags: boolean[];
+  /** The `baseRef` each formatter call received (Issue #4128). */
+  formatBaseRefs: Array<string | undefined>;
   warnings: string[];
+  /** INFO lines the completion phase logged (Issue #3770). */
+  infos: string[];
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -140,8 +172,14 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   }
   let recoveries = 0;
   let gateCalls = 0;
+  let agentCalls = 0;
+  let recoveryCommits = 0;
+  const agentPrompts: string[] = [];
   const gateBaseRefs: Array<string | undefined> = [];
+  const gatePreFlightFlags: boolean[] = [];
+  const formatBaseRefs: Array<string | undefined> = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   const config: WorkerConfig = buildDefaultWorkerConfig();
   // The in-run infrastructure retry must not sleep its real backoff.
   config.infraRetryBackoffMs = 1;
@@ -163,8 +201,90 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repoPath,
   } as PhaseState;
   if (scenario.landedTarget) state.milestoneBranch = scenario.landedTarget;
+  let originPath: string | undefined;
+  let originBefore: string | undefined;
+  const realGit = async (args: string[], cwd = repoPath): Promise<string> => {
+    const output = await new Deno.Command("git", {
+      args,
+      cwd,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
+    return new TextDecoder().decode(output.stdout).trim();
+  };
+  if (scenario.recoveryCommitFailure) {
+    originPath = await Deno.makeTempDir({ prefix: "pre-push-origin-" });
+    await realGit(["init", "--bare", "-b", "main"], originPath);
+    await realGit(["init", "-b", "main"]);
+    await realGit(["config", "user.name", "Fixture"]);
+    await realGit(["config", "user.email", "fixture@example.com"]);
+    await realGit(["config", "commit.gpgsign", "false"]);
+    await realGit(["config", "core.hooksPath", `${repoPath}/.git/hooks`]);
+    await realGit(["remote", "add", "origin", originPath]);
+    await Deno.writeTextFile(`${repoPath}/guide.md`, "correct spelling\n");
+    await realGit(["add", "."]);
+    await realGit(["commit", "-m", "seed"]);
+    await realGit(["checkout", "-b", state.branchName]);
+    await realGit(["push", "-u", "origin", state.branchName]);
+    originBefore = await realGit([
+      "rev-parse",
+      `refs/heads/${state.branchName}`,
+    ], originPath);
+    await Deno.writeTextFile(`${repoPath}/guide.md`, "incorrect spellling\n");
+    await realGit(["add", "guide.md"]);
+    await realGit(["commit", "-m", "introduce spelling error"]);
+    await Deno.writeTextFile(
+      `${repoPath}/.git/hooks/pre-commit`,
+      "#!/bin/sh\nexit 1\n",
+      { mode: 0o755 },
+    );
+  }
   const deps = createMockDeps({
-    logger: { warn: (message: string) => warnings.push(message) },
+    logger: {
+      info: (message: string) => infos.push(message),
+      warn: (message: string) => warnings.push(message),
+    },
+    claude: {
+      runClaudeWithRetry: async (
+        runOptions: RunClaudeOptions,
+      ): ReturnType<WorkerDeps["claude"]["runClaudeWithRetry"]> => {
+        agentCalls++;
+        if (scenario.recoveryCommitFailure) {
+          await Deno.writeTextFile(
+            `${repoPath}/guide.md`,
+            "correct spelling\n",
+          );
+        }
+        agentPrompts.push(runOptions.prompt);
+        if (scenario.agent === "throw") {
+          throw new Error("agent invocation threw");
+        }
+        if (scenario.agent === "error") {
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error("agent invocation failed"),
+          });
+        }
+        if (scenario.agent === "finish-deadline") {
+          return {
+            ok: true,
+            value: {
+              exitCode: 124,
+              output: "",
+              timedOut: true,
+              timeoutReason: "hard-timeout",
+              finishDeadline: true,
+            },
+          };
+        }
+        return Promise.resolve({
+          ok: true as const,
+          value: { exitCode: 0, output: "mock", timedOut: false },
+        });
+      },
+    },
     github: {
       createClient: () => stubClient(),
       handleIssueFailure: () => {
@@ -273,22 +393,40 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (cmdArgs[0] === "rev-list") return ok("1\n");
         return ok("");
       },
-      gateUnpushedCommits: (_branch, _opts, _spec, _ran, baseRef) => {
-        gateBaseRefs.push(baseRef);
-        const answer = scenario.gateAnswers[gateCalls++] ?? "pass";
-        return Promise.resolve(
-          answer === "pass" ? { ok: true as const, value: undefined } : {
-            ok: false as const,
-            error: answer instanceof Error
-              ? new PrePushGateInfrastructureError(answer.message, {
-                cause: answer,
-              })
-              : new PrePushGateBlockedError(answer),
-          },
-        );
+      formatBranchChanges: (_repo, baseRef) => {
+        formatBaseRefs.push(baseRef);
+        return Promise.resolve({ runs: [], failures: [], committed: false });
       },
-      pushUnpushedCommits: () => {
+      gateUnpushedCommits: (_branch, _opts, _spec, ran, baseRef) => {
+        gateBaseRefs.push(baseRef);
+        gatePreFlightFlags.push(ran === true);
+        const answer = scenario.gateAnswers[gateCalls++] ?? "pass";
+        if (answer === "pass") {
+          return Promise.resolve({
+            ok: true as const,
+            value: { kind: "passed" as const, checksRun: GATE_CHECKS },
+          });
+        }
+        if (answer === "noop") {
+          return Promise.resolve({
+            ok: true as const,
+            value: { kind: "noop" as const },
+          });
+        }
+        return Promise.resolve({
+          ok: false as const,
+          error: answer instanceof Error
+            ? new PrePushGateInfrastructureError(answer.message, {
+              cause: answer,
+            })
+            : new PrePushGateBlockedError(answer),
+        });
+      },
+      pushUnpushedCommits: async () => {
         pushes++;
+        if (scenario.recoveryCommitFailure) {
+          await realGit(["push", "origin", state.branchName]);
+        }
         if (scenario.landedWhen === "during-push") merged = true;
         return scenario.pushRefused && pushes === 1
           ? Promise.resolve({
@@ -296,6 +434,49 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             error: new Error(REFUSAL_STALE),
           })
           : Promise.resolve({ ok: true as const, value: 1 });
+      },
+      // The recovery turn's one commit call (Issue #4128), with production's
+      // contract: a `beforePush` refusal is returned as is and nothing is
+      // pushed; otherwise the commit pushes.
+      commitAndPushPending: async (
+        _branchName,
+        _message,
+        _opts,
+        _allowDefault,
+        _preFlight,
+        _runId,
+        _formatBeforeGate,
+        beforePush,
+      ) => {
+        recoveryCommits++;
+        if (scenario.recoveryCommitFailure) {
+          return await commitAndPushPending(
+            _branchName,
+            _message,
+            _opts,
+            _allowDefault,
+            _preFlight,
+            _runId,
+            _formatBeforeGate,
+            beforePush,
+          );
+        }
+        if (beforePush) {
+          const verified = await beforePush();
+          if (!verified.ok) {
+            return { ok: false as const, error: verified.error };
+          }
+        }
+        pushes++;
+        return {
+          ok: true as const,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+            finalUnpushedSource: "remote-head" as const,
+          },
+        };
       },
       recoverFromPushRejection: () => {
         recoveries++;
@@ -397,6 +578,16 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       terminal = await runPhase();
     }
     return {
+      ...(originPath
+        ? {
+          originBefore,
+          originAfter: await realGit([
+            "rev-parse",
+            `refs/heads/${state.branchName}`,
+          ], originPath),
+          recoveryContents: await Deno.readTextFile(`${repoPath}/guide.md`),
+        }
+        : {}),
       category: "category" in result ? result.category : undefined,
       outcome: terminal.outcome,
       attempts,
@@ -412,14 +603,26 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       recoveries,
       gateCalls,
       gateBaseRefs,
+      gatePreFlightFlags,
+      formatBaseRefs,
+      agentCalls,
+      recoveryCommits,
+      agentPrompts,
       warnings,
+      infos,
     };
   } finally {
     await Deno.remove(repoPath, { recursive: true });
+    if (originPath) await Deno.remove(originPath, { recursive: true });
   }
 }
 
+/** The checks the pass stub reports, to assert the pass line names them. */
+const GATE_CHECKS = ["deno fmt", "markdownlint"];
+
 const BLOCK = "[PRE_PUSH_BLOCKED] docs/USAGE.md:117 MD018";
+/** A second, different block: the latest gate output in a run. */
+const BLOCK_B = "[PRE_PUSH_BLOCKED] docs/OTHER.md:3 MD013";
 const base = {
   scope: "granted" as WorkflowScopeState,
   diffAnswers: true,
@@ -428,20 +631,197 @@ const base = {
 
 Deno.test({
   name:
-    "completion - a blocking pre-push gate fails closed: no push, no recovery (Issue #3689)",
+    "completion - a blocking pre-push gate still blocking after its one agent turn fails closed: no push, no recovery (Issue #3689, #4128)",
   permissions: { read: true, write: true },
   async fn() {
     const o = await runCompletion({
       ...base,
       pushRefused: false,
-      gateAnswers: [BLOCK],
+      gateAnswers: [BLOCK, BLOCK],
     });
     assertEquals(o.status, "failure");
-    assertEquals(o.gateCalls, 1);
+    assertEquals(o.gateCalls, 2);
+    assertEquals(o.agentCalls, 1);
     assertEquals(o.pushes, 0, "a blocked gate must never reach the push");
     assertEquals(o.recoveries, 0);
     assert((o.reason ?? "").startsWith(PRE_PUSH_GATE_MARKER));
     assertStringIncludes(o.reason ?? "", BLOCK);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a pre-push gate block that the one agent turn fixes passes on the re-run and pushes (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: [BLOCK, "pass"],
+    });
+    assertEquals(o.agentCalls, 1);
+    assertStringIncludes(o.agentPrompts[0] ?? "", BLOCK);
+    assertEquals(o.recoveryCommits, 1, "the turn's commit ran once");
+    assertEquals(o.gateCalls, 2, "the same gate runs again after the turn");
+    assertEquals(
+      o.pushes,
+      1,
+      "the re-run passed, so the completion phase's own push is the only push",
+    );
+    // The run's status is not asserted: a later phase may fail on this mock.
+    // What is asserted is that the gate did not stop the run. A block would
+    // carry the pre-push category and the gate marker.
+    assert(
+      o.category !== "pre_push_gate",
+      `the gate must not be the failure category, got ${String(o.category)}`,
+    );
+    assert(
+      !(o.reason ?? "").startsWith(PRE_PUSH_GATE_MARKER),
+      `the gate must not be the failure reason, got ${o.reason}`,
+    );
+    // The run got past the gate to PR creation (the `pr create` call is
+    // counted). On this mock it may then fail later, in PR creation's own
+    // environment checks, which is why the status above is not asserted.
+    assertEquals(o.prCreates, 1, "the run must reach PR creation");
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a pre-push gate still blocking after its one agent turn fails closed with the latest output (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: [BLOCK, BLOCK_B],
+    });
+    assertEquals(o.status, "failure");
+    assertEquals(o.category, "pre_push_gate");
+    assertEquals(o.agentCalls, 1);
+    assertEquals(
+      o.recoveryCommits,
+      1,
+      "the turn's commit ran once, and its push was refused",
+    );
+    assertEquals(
+      o.pushes,
+      0,
+      "a gate still blocking must never reach the push",
+    );
+    const reason = o.reason ?? "";
+    assert(reason.startsWith(PRE_PUSH_GATE_MARKER));
+    assertStringIncludes(reason, BLOCK_B);
+    assert(
+      !reason.includes(BLOCK),
+      "the reason quotes the latest gate output, not the first",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a pre-push recovery at the finish is a scheduled release without another gate or failure charge",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      agent: "finish-deadline",
+      gateAnswers: [BLOCK, "pass"],
+    });
+    assertEquals(o.status, "failure");
+    assertEquals(o.category, "scheduled_release");
+    assertStringIncludes(o.reason ?? "", "finish deadline");
+    assertEquals(o.agentCalls, 1);
+    assertEquals(o.gateCalls, 1);
+    assertEquals(o.pushes, 0);
+    assertEquals(o.prCreates, 0);
+    assertEquals(o.attempts, 0);
+  },
+});
+
+for (const agent of ["error", "throw"] as const) {
+  Deno.test({
+    name: `completion - a pre-push gate whose one agent turn ${
+      agent === "error" ? "fails" : "throws"
+    } fails closed on the original block, with no re-run (Issue #4128)`,
+    permissions: { read: true, write: true },
+    async fn() {
+      const o = await runCompletion({
+        ...base,
+        pushRefused: false,
+        agent,
+        gateAnswers: [BLOCK, "pass"],
+      });
+      assertEquals(o.status, "failure");
+      assertEquals(o.category, "pre_push_gate");
+      assertEquals(o.agentCalls, 1);
+      assertEquals(
+        o.gateCalls,
+        1,
+        "a turn that did not finish left nothing to re-gate",
+      );
+      assertEquals(o.pushes, 0, "a blocked gate must never reach the push");
+      assertEquals(
+        o.recoveryCommits,
+        0,
+        "a turn that did not finish commits nothing",
+      );
+      const reason = o.reason ?? "";
+      assert(reason.startsWith(PRE_PUSH_GATE_MARKER));
+      assertStringIncludes(reason, BLOCK);
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "completion - the pre-push recovery turn runs once per run, across the first and the retry gate calls (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: true,
+      gateAnswers: [BLOCK, "pass", BLOCK_B],
+    });
+    assertEquals(
+      o.agentCalls,
+      1,
+      "the retry gate's block must not earn a second turn",
+    );
+    assertEquals(o.status, "failure");
+    assertEquals(o.recoveries, 1);
+    assertEquals(o.gateCalls, 3);
+    assertEquals(o.pushes, 1, "the retry push must be blocked by the gate");
+    assertStringIncludes(o.reason ?? "", BLOCK_B);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - an infrastructure pre-push gate failure gets no agent turn (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: Array.from(
+        { length: 5 },
+        () =>
+          new Error(
+            "fatal: unable to access 'https://github.com/o/r.git/': " +
+              "Could not resolve host: github.com",
+          ),
+      ),
+    });
+    assertEquals(
+      o.agentCalls,
+      0,
+      "a failed lookup says nothing about the branch, so no agent turn",
+    );
+    assertEquals(o.pushes, 0, "an unreadable branch state must not push");
+    assertEquals(o.category, "push_failure");
   },
 });
 
@@ -459,6 +839,38 @@ Deno.test({
     // WIP checkpoints push the agent's commits ungated, so "unpushed" alone
     // would miss them: both calls must name the base the PR will compare to.
     assertEquals(o.gateBaseRefs, ["origin/main", "origin/main"]);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - the formatters and the gate take the PR base and never claim the pre-flight already ran, before and after the agent turn (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: [BLOCK, "pass"],
+    });
+    assertEquals(o.gateCalls, 2);
+    assertEquals(o.formatBaseRefs, ["origin/main", "origin/main"]);
+    assertEquals(o.gatePreFlightFlags, [false, false]);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - with an unresolvable PR base the formatters get no base either (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      baseUnresolvable: true,
+      pushRefused: false,
+      gateAnswers: ["pass"],
+    });
+    assert(o.formatBaseRefs.length >= 1, "the formatters still run");
+    assert(o.formatBaseRefs.every((ref) => ref === undefined));
   },
 });
 
@@ -506,11 +918,12 @@ Deno.test({
     const o = await runCompletion({
       ...base,
       pushRefused: true,
-      gateAnswers: ["pass", BLOCK],
+      gateAnswers: ["pass", BLOCK, BLOCK],
     });
     assertEquals(o.status, "failure");
     assertEquals(o.recoveries, 1);
-    assertEquals(o.gateCalls, 2);
+    assertEquals(o.gateCalls, 3);
+    assertEquals(o.agentCalls, 1);
     assertEquals(o.pushes, 1, "the retry push must be blocked by the gate");
     assert((o.reason ?? "").startsWith(PRE_PUSH_GATE_MARKER));
     assertStringIncludes(o.reason ?? "", BLOCK);
@@ -522,13 +935,14 @@ Deno.test({
     "completion - a blocked gate whose quoted output says rate limit, timed out and SIGKILL still earns a ladder attempt (PR #3716 review)",
   permissions: { read: true, write: true },
   async fn() {
+    // The block repeats: the one agent turn is followed by a re-run of the gate.
+    const quoted =
+      "[PRE_PUSH_BLOCKED] -    // back off when the exchange rate limit is hit\n" +
+      "the check timed out and was killed by SIGKILL";
     const o = await runCompletion({
       ...base,
       pushRefused: false,
-      gateAnswers: [
-        "[PRE_PUSH_BLOCKED] -    // back off when the exchange rate limit is hit\n" +
-        "the check timed out and was killed by SIGKILL",
-      ],
+      gateAnswers: [quoted, quoted],
     });
     assertEquals(o.status, "failure");
     const decision = classifyCodingFailure(o.reason);
@@ -551,7 +965,7 @@ Deno.test({
     const o = await runCompletion({
       ...base,
       pushRefused: false,
-      gateAnswers: [huge],
+      gateAnswers: [huge, huge],
     });
     assertEquals(o.status, "failure");
     const reason = o.reason ?? "";
@@ -572,13 +986,13 @@ Deno.test({
   permissions: { read: true, write: true },
   async fn() {
     const token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+    // The block repeats: the one agent turn is followed by a re-run of the gate.
+    const leak = `[PRE_PUSH_BLOCKED] command \`./pre-flight.sh\` failed\n` +
+      `GITHUB_TOKEN=${token}\n`;
     const o = await runCompletion({
       ...base,
       pushRefused: false,
-      gateAnswers: [
-        `[PRE_PUSH_BLOCKED] command \`./pre-flight.sh\` failed\n` +
-        `GITHUB_TOKEN=${token}\n`,
-      ],
+      gateAnswers: [leak, leak],
     });
     assert(!(o.reason ?? "").includes(token));
   },
@@ -675,6 +1089,74 @@ Deno.test({
 
 Deno.test({
   name:
+    "completion - a passing pre-push gate logs the checks it ran (Issue #3770)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: ["pass"],
+    });
+    assert(
+      o.infos.includes(
+        `Pre-push gate passed checks=[${GATE_CHECKS.join(", ")}]`,
+      ),
+      `expected a pass line naming the checks, got: ${JSON.stringify(o.infos)}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a no-op pre-push gate logs nothing ahead, never as a pass (Issue #3770)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: ["noop"],
+    });
+    assert(
+      o.infos.some((line) =>
+        line.startsWith("Pre-push gate: nothing ahead of ")
+      ),
+      `expected a nothing-ahead line, got: ${JSON.stringify(o.infos)}`,
+    );
+    assert(
+      !o.infos.some((line) => line.startsWith("Pre-push gate passed")),
+      `a no-op must not log as a pass, got: ${JSON.stringify(o.infos)}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a no-op gate on an unresolvable base logs nothing unpushed, never as a pass (Issue #3770)",
+  permissions: { read: true, write: true },
+  async fn() {
+    // The unresolvable base fails the branch-outcomes gate closed (the diff
+    // could not be read), so the summary-rule recovery re-runs completion and
+    // the gate is asked again. Both gate calls answer "noop" so neither is
+    // ever logged as a pass.
+    const o = await runCompletion({
+      ...base,
+      baseUnresolvable: true,
+      pushRefused: false,
+      gateAnswers: ["noop", "noop"],
+    });
+    assert(
+      o.infos.includes("Pre-push gate: nothing unpushed"),
+      `expected a nothing-unpushed line, got: ${JSON.stringify(o.infos)}`,
+    );
+    assert(
+      !o.infos.some((line) => line.startsWith("Pre-push gate passed")),
+      `a no-op must not log as a pass, got: ${JSON.stringify(o.infos)}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
     "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
   permissions: { read: true, write: true },
   async fn() {
@@ -706,10 +1188,19 @@ Deno.test({
         "the phase must declare its cause instead of depending on reason wording",
       );
       assertEquals(
-        o.gateCalls > 1,
-        category === "push_failure",
-        "only the network failure is retried in-run",
+        o.agentCalls,
+        category === "pre_push_gate" ? 1 : 0,
+        "only a verdict block earns the one agent turn (Issue #4128)",
       );
+      if (category === "push_failure") {
+        assert(o.gateCalls > 1, "only the network failure is retried in-run");
+      } else {
+        assertEquals(
+          o.gateCalls,
+          2,
+          "a verdict block gets one agent turn, then the gate re-runs once",
+        );
+      }
       // A transport wrapper can reword/quote the result. Its declared cause
       // still drives decisions and telemetry rather than the quotation.
       const reason = "outer wrapper: " + o.reason;
@@ -784,7 +1275,9 @@ Deno.test("completion reconciles merges before recovery and final failure bookke
       ...base,
       landedWhen,
       pushRefused: landedWhen === "during-push",
-      gateAnswers: landedWhen === "before-bookkeeping" ? [BLOCK] : ["pass"],
+      gateAnswers: landedWhen === "before-bookkeeping"
+        ? [BLOCK, BLOCK]
+        : ["pass"],
     });
     assertEquals(o.status, "early_exit", landedWhen);
     assertEquals(o.attempts, 0, landedWhen);
@@ -808,7 +1301,7 @@ Deno.test("completion keeps partial, unrelated and unavailable merges and distin
       ...base,
       landedWhen: "before-bookkeeping",
       pushRefused: false,
-      gateAnswers: [BLOCK],
+      gateAnswers: [BLOCK, BLOCK],
       ...extra,
     });
     assertEquals(o.status, "failure", JSON.stringify(extra));
@@ -841,4 +1334,28 @@ Deno.test("completion retains the milestone target and repeated completion produ
     assertEquals(o.outcome.baseBranch, "milestone/implementation");
     assertEquals(o.outcome.defaultBranch, "main");
   }
+});
+
+Deno.test("completion - an uncommitted recovery fix cannot pass the gate and advance origin", async () => {
+  const o = await runCompletion({
+    ...base,
+    pushRefused: false,
+    gateAnswers: [BLOCK, "pass"],
+    recoveryCommitFailure: true,
+  });
+  assertEquals(
+    o.recoveryContents,
+    "correct spelling\n",
+    "the working tree contains a fix that would pass the second gate",
+  );
+  assertEquals(o.status, "failure");
+  assertEquals(o.agentCalls, 1);
+  assertEquals(o.recoveryCommits, 1);
+  assertEquals(o.gateCalls, 1, "do not gate uncommitted recovery contents");
+  assertEquals(o.pushes, 0);
+  assertEquals(
+    o.originAfter,
+    o.originBefore,
+    "origin must retain its original commit",
+  );
 });

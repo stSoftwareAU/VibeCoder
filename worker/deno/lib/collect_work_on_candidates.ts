@@ -11,14 +11,11 @@
  * gates. This tier shares a busy stream (Issue #2530); occupancy still
  * serialises the lower tiers.
  *
- * Issue #2752: `work-on` issues that can never be progressed are escalated
- * rather than left to dangle. A dependency cycle (A→B→A) and a
- * self-suppressing dead label (a milestone-tracking issue carrying
- * `work-on`) both result in `needs-human` + exactly one explanatory comment,
- * after which the issue is dropped from candidates and the scan continues.
- * Escalation is idempotent — the applied `needs-human` label drops the issue
- * from `filterAndSort` next scan, and a stable per-issue dedup key prevents a
- * duplicate comment within 24 hours.
+ * Issue #2752: `work-on` issues that could never be progressed are not left
+ * to dangle, and (Issue #4298) never handed to a human either. A dependency
+ * cycle (A→B→A) is broken in issue-number order — its lowest-numbered member
+ * becomes a candidate — and a self-suppressing dead label (a
+ * milestone-tracking issue carrying `work-on`) is stripped.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -57,11 +54,6 @@ import {
   detectDependencyCycles,
   findCyclePath,
 } from "./issue_dependencies.ts";
-import {
-  buildCycleEscalation,
-  buildDeadLabelEscalation,
-  escalateUnworkableWorkOn,
-} from "./escalate_unworkable_work_on.ts";
 import {
   filterTrustedLabels,
   verifyOperationalLabels,
@@ -210,7 +202,6 @@ export async function collectWorkOnCandidates(
 
   // Issue #2031: needs-clarification retired — needs-human is the only handoff label.
   const filterLabels = {
-    failedLabel: config.failedLabel,
     refineIssueLabel: config.refineIssueLabel,
     planningLabel: config.planningLabel,
     questionLabel: config.questionLabel,
@@ -350,15 +341,15 @@ export async function collectWorkOnCandidates(
     }
   }
 
-  // Issue #2752: escalate self-suppressing dead labels. A milestone-tracking
-  // issue that carries the `work-on` label is work the worker never actions
-  // (`filterAndSort` drops it via `isMilestoneTrackingIssue`). After #2751 it
-  // no longer suppresses the backlog; here it is also escalated so a human
-  // relabels or closes it. Only issues dropped *solely* because they are
-  // trackers qualify — issues that are assigned, already carry `needs-human`
-  // (idempotence), or carry another blocking label have their own handling.
+  // Issue #2752: a milestone-tracking issue carrying `work-on` is work the
+  // worker never actions (`filterAndSort` drops it via
+  // `isMilestoneTrackingIssue`), so the label is dead. Issue #4298: the worker
+  // strips it rather than asking a human to — it is the worker's own pickup
+  // label, and removing it changes nothing but the noise. Only issues dropped
+  // *solely* because they are trackers qualify: issues that are assigned or
+  // carry another blocking label have their own handling. Best-effort: a
+  // failed removal leaves the tracker as it was, still never actioned.
   const blockingLabelSet = new Set([
-    config.failedLabel,
     config.needsRevisionLabel,
     config.refineIssueLabel,
     config.planningLabel,
@@ -371,21 +362,30 @@ export async function collectWorkOnCandidates(
     if (issue.assignees.length > 0) continue;
     if (issue.labels.some((l) => blockingLabelSet.has(l))) continue;
     if (!isMilestoneTrackingIssue(issue)) continue;
-    await escalateUnworkableWorkOn({
-      repo,
-      issueNumber: issue.number,
-      needsHumanLabel: config.needsHumanLabel,
-      escalation: buildDeadLabelEscalation(issue.number),
-      githubUser: options.githubUser,
-      ghFn,
-      deps: options.escalateDeps,
-    });
-    diag?.logIssueSkipped(
-      repo,
-      issue.number,
-      "dead-label-tracker-escalated",
-      config.needsHumanLabel,
-    );
+    try {
+      await ghFn([
+        "issue",
+        "edit",
+        String(issue.number),
+        "--repo",
+        repo,
+        "--remove-label",
+        config.workOnLabel,
+      ]);
+      diag?.logIssueSkipped(
+        repo,
+        issue.number,
+        "dead-label-tracker-stripped",
+        config.workOnLabel,
+      );
+    } catch (err) {
+      diag?.logIssueSkipped(
+        repo,
+        issue.number,
+        "dead-label-tracker-stripped",
+        `removal failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Issue #2752: collect the issues that hit the dependency-blocking gate so
@@ -396,6 +396,12 @@ export async function collectWorkOnCandidates(
   // sub-issue reads `isDependencyBlocked` already made via `memoFetcher`, so
   // the feature adds no extra `gh` calls.
   const dependencyBlockedIssues: number[] = [];
+  // Issue #4298: what a dependency-blocked issue needs to become a candidate
+  // when it turns out to sit on a cycle.
+  const dependencyBlockedContext = new Map<
+    number,
+    { issue: FilterableIssue; milestone: string; blockers: DependencyBlocker[] }
+  >();
   // Issue #460: the per-issue skip reasons, recorded beside the diagnostic
   // log calls so the two cannot drift.
   const blockedDetails: BlockedCandidateInfo[] = [];
@@ -432,6 +438,39 @@ export async function collectWorkOnCandidates(
         : { fleetPrCap: gate.fleetPrCap }),
     });
     if (suppressesLowerTiers(reason)) suppressingCount++;
+  };
+
+  /** Admit an issue that passed every gate as a candidate. */
+  const addCandidate = async (
+    issue: FilterableIssue,
+    milestoneTitle: string,
+  ): Promise<void> => {
+    diag?.logIssueEligible(repo, issue.number);
+    // Issue #2164: an eligible work-on issue is the original serialisation
+    // signal — the repo has real higher-tier work, so the lower tiers wait.
+    suppressingCount++;
+    // Issue #3034: a merge-conflict redo is the next pickup in its repo.
+    const conflictRedo = await classifyConflictRedo({
+      repo,
+      issue,
+      openPRs: repoPRs,
+      closedPRs: repoClosedPRs,
+      trustedAuthors: pushCapableAuthors,
+      ghFn,
+      cache: options.cache,
+    });
+    candidates.push({
+      repo,
+      number: issue.number,
+      url: issue.url,
+      title: issue.title,
+      milestone: milestoneTitle,
+      createdAt: issue.createdAt,
+      labelIndex: 99,
+      source: "work-on",
+      milestonePriority: extractMilestonePriority(issue.labels),
+      ...(conflictRedo ? { conflictRedo } : {}),
+    });
   };
 
   for (const issue of filtered) {
@@ -669,35 +708,15 @@ export async function collectWorkOnCandidates(
       });
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       dependencyBlockedIssues.push(issue.number);
+      dependencyBlockedContext.set(issue.number, {
+        issue,
+        milestone: milestoneTitle,
+        blockers,
+      });
       continue;
     }
 
-    diag?.logIssueEligible(repo, issue.number);
-    // Issue #2164: an eligible work-on issue is the original serialisation
-    // signal — the repo has real higher-tier work, so the lower tiers wait.
-    suppressingCount++;
-    // Issue #3034: a merge-conflict redo is the next pickup in its repo.
-    const conflictRedo = await classifyConflictRedo({
-      repo,
-      issue,
-      openPRs: repoPRs,
-      closedPRs: repoClosedPRs,
-      trustedAuthors: pushCapableAuthors,
-      ghFn,
-      cache: options.cache,
-    });
-    candidates.push({
-      repo,
-      number: issue.number,
-      url: issue.url,
-      title: issue.title,
-      milestone: milestoneTitle,
-      createdAt: issue.createdAt,
-      labelIndex: 99,
-      source: "work-on",
-      milestonePriority: extractMilestonePriority(issue.labels),
-      ...(conflictRedo ? { conflictRedo } : {}),
-    });
+    await addCandidate(issue, milestoneTitle);
   }
 
   // Issue #4024: one structured line per blocking PR, naming the author,
@@ -719,13 +738,15 @@ export async function collectWorkOnCandidates(
     }
   }
 
-  // Issue #2752: escalate dependency cycles. A cyclic issue (A→B→A) was
-  // already dropped above via the dependency-blocking gate, so candidate
-  // selection and the suppression signal are unaffected — what remains is to
-  // surface the deadlock to a human. The graph is built only from the
-  // dependency-blocked set and only when at least two such issues exist (a
-  // cross-issue cycle cannot form otherwise); every read is a `memoFetcher`
-  // cache hit, so no extra `gh` calls are made.
+  // Issue #2752: dependency cycles. A cyclic issue (A→B→A) was dropped above
+  // by the dependency-blocking gate, and would wait for ever. Issue #4298:
+  // the worker breaks the cycle itself, in issue-number order — the
+  // lowest-numbered member of each cycle is worked, and the rest wait on it as
+  // ordinary dependencies, clearing as it closes. A member that also waits on
+  // an open issue outside its cycle is a real wait and stays blocked. The
+  // graph is built only from the dependency-blocked set and only when at least
+  // two such issues exist (a cross-issue cycle cannot form otherwise); every
+  // read is a `memoFetcher` cache hit, so no extra `gh` calls are made.
   if (dependencyBlockedIssues.length >= 2) {
     const cycleNodes = await buildWorkOnDependencyGraph(
       memoFetcher,
@@ -733,26 +754,20 @@ export async function collectWorkOnCandidates(
       dependencyBlockedIssues,
     );
     const cycleSet = new Set(detectDependencyCycles(cycleNodes));
-    for (const issueNumber of dependencyBlockedIssues) {
-      if (!cycleSet.has(issueNumber)) continue;
-      await escalateUnworkableWorkOn({
-        repo,
-        issueNumber,
-        needsHumanLabel: config.needsHumanLabel,
-        escalation: buildCycleEscalation(
-          issueNumber,
-          findCyclePath(cycleNodes, issueNumber),
-        ),
-        githubUser: options.githubUser,
-        ghFn,
-        deps: options.escalateDeps,
-      });
-      diag?.logIssueSkipped(
-        repo,
-        issueNumber,
-        "dependency-cycle-escalated",
-        config.needsHumanLabel,
+    for (const issueNumber of [...cycleSet].sort((a, b) => a - b)) {
+      const path = findCyclePath(cycleNodes, issueNumber);
+      if (Math.min(...path) !== issueNumber) continue;
+      const context = dependencyBlockedContext.get(issueNumber);
+      if (!context) continue;
+      const onlyCycle = context.blockers.every((b) =>
+        b.repo === repo && b.number !== issueNumber && cycleSet.has(b.number)
       );
+      if (!onlyCycle) continue;
+      const entry = blockedDetails.findIndex((b) =>
+        b.issueNumber === issueNumber && b.reason === "dependency-blocked"
+      );
+      if (entry >= 0) blockedDetails.splice(entry, 1);
+      await addCandidate(context.issue, context.milestone);
     }
   }
 
@@ -780,8 +795,8 @@ export async function collectWorkOnCandidates(
   // #25 cannot rejoin the signal unclassified.
   //
   // Issue #2752: dependency-cycle issues are a subset of the
-  // dependency-blocked set, so they are already excluded here — escalating
-  // them adds no separate suppression adjustment.
+  // dependency-blocked set, so they are already excluded here; the member a
+  // cycle is broken on counts as the candidate it became (Issue #4298).
   const hasSuppressingWorkOn = suppressingCount > 0;
 
   return { candidates, hasOpenIssues, hasSuppressingWorkOn, blockedDetails };

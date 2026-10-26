@@ -314,6 +314,7 @@ The current production templates live in
 | `duplicated-knowledge` | [`duplicated_knowledge_template.ts`](../worker/deno/lib/idle_task_templates/duplicated_knowledge_template.ts) | LLM-only weekly scan (template #17) for **duplicated knowledge** — a block of five or more lines appearing in two or more places where every copy encodes the same rule and one call to an existing (or extractable) helper would serve them all. Duplication is the measured signature of AI-assisted development and no sibling template sees it: `dead-code` finds code nothing calls, `orphan-deps` finds unimported packages, `format-drift` measures formatter drift — a block pasted into three live, called places is invisible to all three. A deterministic pre-pass ([`duplicate_block_scanner.ts`](../worker/deno/lib/duplicate_block_scanner.ts) — normalised token-window hashing, clones greedily extended to full length) seeds `{{DUPLICATE_BLOCKS}}` the way `coverage_gap_scanner.ts` seeds `{{COVERAGE_GAPS}}` for `test-audit`; it narrows the search only, and Claude makes the knowledge-vs-text judgement. The prompt is **biased towards silence**: duplicated text is not duplicated knowledge, the wrong abstraction is worse than duplication, and the single test is _would every copy need the same edit if the rule changed?_ — so structural/boilerplate similarity, an already-wrong shared abstraction, and any new abstraction with fewer than three callers are all dropped. Findings carry `duplicated-knowledge` + `severity:<level>` (**high** when the copies have already diverged — a latent bug). `runTask` ensures the label, then invokes Claude, which files each finding as its own issue; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [DUPLICATED-KNOWLEDGE-SCAN.md](DUPLICATED-KNOWLEDGE-SCAN.md). |
 | `retro` | [`retro_template.ts`](../worker/deno/lib/idle_task_templates/retro_template.ts) | LLM-only weekly **suggestion-only** retrospective (template #18) on a finished piece of work — the most recent merged PR with enough evidence, its issue, its commits, and its review and check feedback. It proposes improvements to the **environment** that run worked in, never to the code it wrote: five categories, each firing only on evidence — navigation (the run had to hunt for the right files), automated checks (a mistake a linter/type check/test could have caught), coding standards (review caught what a written rule should have), steering-file size (a named block that belongs in a check or the standards instead), and information access (a fact the run had no way to reach). Tool economy and no-ops are **out of scope** — both need the session transcript, which the merged artefacts do not carry, and the prompt-rubric surface owns the no-op test. Files **at most one** issue carrying `retro` + `severity:<highest>`, with one `<!-- finding-id: BP-… -->` marker per candidate so each dedups independently; the scan never raises a PR and changes nothing itself. Capped at once per repo per week (`cooldownHours: 168`). See [RETRO-SCAN.md](RETRO-SCAN.md). |
 | `gate-skip-drift` | [`gate_skip_drift_template.ts`](../worker/deno/lib/idle_task_templates/gate_skip_drift_template.ts) | **Native** (no LLM) weekly audit (template #19) that compares the repo's own `quality.sh` with its own `.github/workflows/*` and files **one issue per repository** naming every tool the gate skips with a warning while CI installs and runs it — the drift that let NEAT-AI-core PR 597 pass locally and fail in CI. Driven by `gate_skip_drift_scanner.ts`; a tool `container/tools.json` already pins as a toolchain naming that repository is suppressed, as is a governed `best-practice-ignore: BP-GATE-SKIP-<TOOL>` waiver in the gate script. Findings carry `gate-skip-drift` + `severity:high` under the fixed id `BP-GATE-SKIP-DRIFT`. A gate that **fails** instead of skipping is never a finding; a scanner read/parse failure is **fail-loud**. Issue-only — never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [`GATE-SKIP-DRIFT-SCAN.md`](GATE-SKIP-DRIFT-SCAN.md). |
+| `ponytail-debt` | [`ponytail_debt_template.ts`](../worker/deno/lib/idle_task_templates/ponytail_debt_template.ts) | **Native** (no LLM) weekly report (template #20) that lists every `// SIMPLE-ON-PURPOSE:` marker with `path:line`, its ceiling and its `upgrade when` condition, and flags a marker that has no upgrade condition. Driven by `simple_on_purpose_scanner.ts`. It posts one ledger issue or refreshes the open one. A read error is **fail-loud**. Report-only — no commit and never a pull request. Capped at once per repo per week (`cooldownHours: 168`). See [`PONYTAIL-DEBT-SCAN.md`](PONYTAIL-DEBT-SCAN.md). |
 
 The four `dead-code`, `doc-coverage`, `format-drift`, and `deprecated-api`
 templates are the "Boy Scout" family — created in milestone and wired into
@@ -469,7 +470,7 @@ flowchart LR
 ```
 
 The **native** templates (`alert-feed`, `bash-script-refs`, `bash-syntax-audit`,
-`gate-skip-drift`, `workflow-annotation-scan`) are deliberately excluded: they invoke no LLM and
+`gate-skip-drift`, `ponytail-debt`, `workflow-annotation-scan`) are deliberately excluded: they invoke no LLM and
 file only fixed-id or fingerprinted findings, so they have no
 semantic-duplicate surface for a title list to guard.
 
@@ -487,11 +488,11 @@ So a new template must do one of two things before CI goes green:
 
 - **wire it up** — add a `HARNESSES` entry naming its factory and its prompt
   assembler; or
-- **exempt it** — add it to `NON_PARTICIPATING` with a stated reason (the five
+- **exempt it** — add it to `NON_PARTICIPATING` with a stated reason (the six
   native templates above are the existing entries).
 
-An implicit skip is not available, which is the point: wiring nineteen
-templates up once does not stop the nineteenth being written against the old,
+An implicit skip is not available, which is the point: wiring twenty
+templates up once does not stop the twentieth being written against the old,
 label-scoped pattern.
 
 Wiring a template up means all four of:
@@ -681,7 +682,12 @@ repo:
    filed=<n> idle_slots=<n>`. The latch is released whenever a slot takes a
    claim — the fleet has work again, so a later idle stretch may file again —
    and at the start of every cycle. The audit and the census run behind the
-   same latch, so an idle slot's 74 re-scans cost one probe, not 74.
+   same latch, so an idle slot's 74 re-scans cost one probe, not 74. Filing is
+   a start, so once the run's one-hour target has passed the filer is refused
+   before the latch is consumed (Issue #4243): no permit is spent and the audit,
+   census and filer do not run, with one
+   `[idle-hooks] skipping=idle-task-filer reason=past_run_target` line for each
+   refused observation.
 
 **Per-repo wrapper exclusivity (Issues #2092, #1083).** Before the per-repo
 loop the filer takes a census of every monitored repo already holding an open
@@ -803,7 +809,7 @@ a **scan wrapper** (run its template `runTask`) or an **ordinary work item**
    (human-style wrappers).
 2. **Body-fingerprint match** — `template.matchesIdleTaskBody?.(body)` returns
    `true`. Defence-in-depth when the title was edited or the label was stripped
-   and re-added between filing and pickup. All nineteen templates implement
+   and re-added between filing and pickup. All twenty templates implement
    this, so a genuine wrapper is always recognised even with a mangled title.
 
 If **neither** signal matches, the handler returns `{ handled: false }` and the
@@ -1107,6 +1113,11 @@ filter was never the reason. Both rank below the PR gates and
 it later, and the later gate is the more specific one. `quota_idle_deferred`
 (Issue #3628) ranks directly below `pace_suppressed`, its application point in
 `classifyIssues`.
+
+The audit applies the label-author gate as `label_author_not_allowed`, fed
+from the census's untrusted-label set (Issues #4212 and #4213). The idle-task
+filing gate's `classifyIssues` call (`repoHasStartableWork` in
+`repo_busy_for_idle_task.ts`) does not pass the set.
 
 That incident also exposed the other half of the fault, in the scan's own
 reporting: the cooldown filters logged their skip and recorded nothing in
@@ -1618,7 +1629,7 @@ see [Cadence bias on the idle tick](#cadence-bias-on-the-idle-tick).
 ### Seeding all wrappers on demand
 
 The steady-state filer above deliberately seeds **one** wrapper per idle tick.
-That is the wrong cadence when an operator wants the **full** set of nineteen
+That is the wrong cadence when an operator wants the **full** set of twenty
 wrappers raised on a single repo immediately — for example, to re-check a repo
 after the best-practices templates were improved. The
 `create-all-idle-task-wrappers` command
@@ -1701,7 +1712,7 @@ flowchart TD
 1. **Preflight.** If the run's write-repo allowlist is active and the target
    repo is not on it, the sweep aborts before a single body is built — naming
    the blocked repo and the active allowlist — so a blocked sweep costs zero
-   `gh` calls and at most one blocked-write audit event instead of nineteen.
+   `gh` calls and at most one blocked-write audit event instead of twenty.
 2. **Terminal vs transient.** A `WriteRepoBlockedError` /
    `WriteTargetUndeterminableError` surfacing mid-sweep aborts immediately (a
    retry cannot succeed); any other per-template failure is recorded and the
@@ -1761,11 +1772,11 @@ deno run -A worker/deno/mod.ts raise-boy-scout-idle-tasks \
 
 ### Raising all wrappers across several repos
 
-`create-all-idle-task-wrappers` seeds all nineteen wrappers on **one** repo;
+`create-all-idle-task-wrappers` seeds all twenty wrappers on **one** repo;
 `raise-boy-scout-idle-tasks` seeds **four** wrappers on **every** repo. The
 `raise-all-idle-tasks` command
 ([`worker/deno/commands/raise_all_idle_tasks.ts`](../worker/deno/commands/raise_all_idle_tasks.ts))
-combines both axes — it seeds the **full** set of nineteen wrappers in **each**
+combines both axes — it seeds the **full** set of twenty wrappers in **each**
 repo supplied, in a single pass. Use it to bring several repos up to the
 complete best-practice set at once:
 
@@ -2372,8 +2383,8 @@ flowchart TD
 ### Weighting the template draw
 
 The template draw is **weighted** and **config-driven**. By default every
-registered template carries an equal weight, so the draw is uniform (1/19 each
-with nineteen templates) — no behaviour change unless configured. An operator
+registered template carries an equal weight, so the draw is uniform (1/20 each
+with twenty templates) — no behaviour change unless configured. An operator
 can bias the draw toward higher-priority templates (e.g. `security-scan` and
 `supply-chain-readiness`) via the `idle_task_template_weights` map in
 `.config.json`:
@@ -2624,7 +2635,7 @@ The claim handler now publishes an **idle-task run context** —
 | `cycleDeadlineEpochMs` | Retries are suppressed for that run: the timeout is resolved once, so a retry after a back-off would start from past the deadline. A scan has no WIP to protect. |
 | `logger`              | The worker logger reaches the runner, so its per-minute `[agent-progress] <phase>: …` lines land in `worker-*.log` instead of nowhere.                          |
 
-The context is ambient rather than an argument threaded through all nineteen
+The context is ambient rather than an argument threaded through all twenty
 templates — the same choke-point reasoning as the budget itself: a template
 cannot forget to pass what it never sees. It is removed in `finally`, by
 identity, so two concurrent slots each drop only their own entry.

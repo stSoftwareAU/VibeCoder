@@ -1,0 +1,12 @@
+{
+  "issue": 4254,
+  "chunk": "top-up-4254",
+  "title": "top-up: hard-kill evidence reported as one deduplicated issue, a hard_kill failure callback and a fleet failure count",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4254",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/hard_kill_report.ts (one deduplicated hard-kill issue per signature, the hard_kill failure callback and the fleet failure count) (#4254)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/hard_kill_report.ts"
+  ],
+  "sweptAt": "f3632801e9e58e1ea1af71cdf3894bfc955f4633"
+}

@@ -29,7 +29,7 @@ ends.
 |                          | **Graft**                                                                                    | **CodeGraph**                                                                                |
 | ------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Milestone                | #2060                                                                                        | #2145                                                                                        |
-| Install                  | npm `@nanonets/graft@0.18.0`, 7 native modules compiled at image build                       | pinned GitHub-release tarball, checksum-verified (`container/toolchains/codegraph.sh`)       |
+| Install                  | npm `@nanonets/graft@0.25.0`, 7 native modules compiled at image build                       | pinned GitHub-release tarball, checksum-verified (`container/toolchains/codegraph.sh`)       |
 | How the agent reaches it | a `graft ask --source` bundle (about 1,900 tokens) **injected into the prompt** at run start, **and** the `graft` **MCP server** (`graft_find_code`, `graft_file_api`, …) the agent queries itself (Issue #2314) | an **MCP server** beside Playwright — the agent calls `codegraph_explore` itself             |
 | Index                    | built per run, about 47 s on this repository, about 132 MB under `graft/`                    | `codegraph init`/`sync` on the checkout, kept in `.codegraph/` between runs, capped at 300 s |
 | Model calls to index     | none                                                                                         | none                                                                                         |
@@ -70,8 +70,7 @@ processors, the reactive PR paths: PR feedback
 (`worker/deno/lib/pr_feedback_processor.ts`) and CI fix
 (`worker/deno/lib/pr_ci_processor.ts`), the grill-me rounds
 (`worker/deno/lib/grill_me_processor.ts`, Issue #2561), and the
-clarification-family runs — clarity assessment
-(`worker/deno/lib/clarity_phase.ts`), refinement
+clarification-family runs — refinement
 (`worker/deno/lib/refinement_processor.ts`), revision
 (`worker/deno/lib/revision_processor.ts`) and quorum
 (`worker/deno/lib/quorum_processor.ts`), all through

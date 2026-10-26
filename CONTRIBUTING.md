@@ -92,9 +92,10 @@ runs:
 ```
 
 This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
-Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, and
-semgrep. CI additionally runs shellcheck over the repo's shell scripts —
-the gate itself does not. Always redirect stdin from `/dev/null` so
+Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, semgrep,
+and Checkov (registered only where `.github/workflows/checkov.yml` exists).
+CI additionally runs shellcheck over the repo's shell scripts — the gate
+itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.
 
 Run it in the **foreground** and let it finish — each check reports as it
@@ -108,7 +109,7 @@ the full gate is the last step before the PR.
 **The gate needs PowerShell 7** (Issue #1598). Its unit suite runs the three
 `run.ps1` launcher suites, so a host without `pwsh` fails the gate with a
 message naming the remedy rather than skipping them quietly — a skipped test
-is not a passed one. The container image ships PowerShell 7.6.5 at
+is not a passed one. The container image ships PowerShell 7.6.8 at
 `/usr/local/bin/pwsh` (Issue #1596); on a host, install PowerShell 7 or set
 `VIBE_PWSH` to the interpreter's absolute path. The `setup.ps1` suites remain
 integration tests and are still CI's, not the gate's.
@@ -124,8 +125,8 @@ Markdown files there are in that state on `main`, by design rather than by
 drift. Match the surrounding wrapping by hand, as the existing text does.
 
 CI-enforced workflows live under `.github/workflows/`, including
-`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
-`semgrep.yml`. A green local `./quality.sh` is the best predictor of a
+`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, `semgrep.yml`,
+and `checkov.yml`. A green local `./quality.sh` is the best predictor of a
 green PR.
 
 ### Semgrep (SAST) before the push
@@ -161,6 +162,40 @@ flowchart LR
   before it reaches the constructor. A dynamic regex over constants the
   code itself authored is still flagged — change the pattern rather than
   arguing with the rule (Issue #559).
+
+### Checkov (CloudFormation) before the push and in CI
+
+`checkov.yml` scans CloudFormation templates with the digest-pinned
+`CHECKOV_IMAGE` (`worker/deno/lib/pinned_actions.ts`) and `CHECKOV_SCAN_ARGS`,
+with no SARIF upload, no path filter and no `--skip-path`.
+`worker/deno/lib/checkov_report.ts` decides the verdict: a failed check, a parse
+error, a skip without an inline `# checkov:skip=<ID>:<reason>`, or a
+`.checkov.yaml` / `.checkov.yml` in the scanned root fails. It is a mandatory part of the CI `gate`,
+so a red scan blocks merge. `worker/deno/tests/checkov_workflow_test.ts` keeps
+the workflow in lock-step with the pin and the scan arguments.
+
+The `checkov` stage of `./quality.sh` runs the same judge over a local scan.
+It is registered only where `.github/workflows/checkov.yml` exists. It installs
+nothing, pulls nothing and adds no suppression, and the CI `checkov` job stays
+authoritative. It tries two routes, in order:
+
+- **A pinned PATH binary.** A `checkov` on PATH is used only when
+  `checkov --version` equals `CHECKOV_IMAGE_TAG`. An unpinned binary is never
+  run; it is recorded and the gate falls through to the image route. It runs
+  with a built environment (no `CKV_*`, `BC_*` or `PRISMA_*` variable, an empty
+  private HOME), so neither your environment nor `~/.checkov.yaml` can narrow
+  the scan.
+- **A pinned image.** `docker` or `podman` is used only if it already holds
+  `CHECKOV_IMAGE`, checked with `image inspect`; it is never pulled. The
+  checkout is mounted read-only, and `CHECKOV_SCAN_ARGS` (which include
+  `--skip-download`) stop Checkov downloading anything. The container receives
+  none of your environment.
+- **Have a pinned route or it skips, loudly.** With neither route usable the
+  stage reports `SKIPPED` and names what is missing; `--strict` turns that into
+  a failure. A `.checkov.yaml` or `.checkov.yml` in the scanned directory is
+  `FAILED` before any route is tried, so it never reads as `SKIPPED`. A scan over its deadline is `FAILED`. The fleet worker image has no
+  pip and no container runtime, so fleet runs show `checkov` as `SKIPPED`; that
+  is expected, unlike semgrep.
 
 ### Workflow hygiene
 
@@ -225,6 +260,19 @@ themselves:
   issue), an `## Evidence` section (screenshot, benchmark numbers, or
   test results as appropriate), and a `## Test Plan` enumerating the
   tests added or modified.
+- **Arm auto-merge the moment a PR is opened** (owner, 2026-10-25). Run
+  `gh pr merge <n> --auto --squash` straight after `gh pr create`, whoever
+  opens the PR: the worker, an interactive session, Cursor or any other
+  agent. A PR merges once it has an approving review and CI is green.
+  Nothing else holds it, and a PR left unarmed merges late and collects
+  conflicts. When a review requests changes, fix them and dismiss that
+  review with a message naming the fix.
+- **An incomplete PR is a draft** (owner, 2026-10-23). A draft is work in
+  progress: the Quality and dependency checks skip it, the required `gate`
+  fails on purpose (so auto-merge can never act on a stale pass), the PR
+  reviewer and the auto-merge sweep skip it, and the worker's CI fixer
+  ignores it. Marking it ready (`gh pr ready`) runs CI once, and auto-merge
+  is armed at the same time so it merges as soon as CI and review pass.
 - Use **Australian English** spelling throughout — `colour`,
   `behaviour`, `organisation`, `favour`, `centre`. CI does not block
   on this but reviewers will ask for changes.

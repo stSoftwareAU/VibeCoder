@@ -27,8 +27,10 @@
     "security-tabletop": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tabletop",
     "publish-decision-check": "deno run --frozen --lock=deno.lock --allow-read --allow-env mod.ts publish-decision-check --repo ../..",
     "security-tree-sweep": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tree-sweep --repo ../.. --slug stSoftwareAU/VibeCoder",
+    "lib-sweep-record": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname commands/lib_sweep_record.ts",
     "references-refresh": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys=hostname mod.ts references-refresh --repo ../.. --slug stSoftwareAU/VibeCoder",
-    "stabilisation-report": "deno run --frozen --lock=deno.lock --allow-read lib/stabilisation_report_cli.ts"
+    "stabilisation-report": "deno run --frozen --lock=deno.lock --allow-read lib/stabilisation_report_cli.ts",
+    "capability-security-eval": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-run --allow-env lib/capability_security_eval_cli.ts --out ../../evals/capability_security/dry-run.json"
   },
   "compilerOptions": {
     "strict": true,
@@ -55,5 +57,8 @@
         "verbatim-module-syntax"
       ]
     }
+  },
+  "fmt": {
+    "exclude": ["tests/fixtures/checkov/"]
   }
 }

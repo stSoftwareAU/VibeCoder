@@ -69,6 +69,7 @@ export const RUN_FAILURE_CLASSES = [
   "disk-full",
   "worker-crash",
   "missing-tools",
+  "tool-runtime",
   "timeout",
   "no-output",
   "agent-outcome",
@@ -76,6 +77,9 @@ export const RUN_FAILURE_CLASSES = [
   "repo-config",
   "prompt-too-long",
   "clone-corrupt",
+  // Filed by `security_fix_gate_retry.ts`, never emitted by the classifier
+  // (Issue #4298): repeated gate blocks on one approved issue are a gate bug.
+  "security-fix-gate-blocked",
   "unknown",
 ] as const;
 
@@ -118,7 +122,7 @@ const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
  */
 const ENOSPC_RE = /(?<![\w/-])ENOSPC(?![\w/-])/;
 const DISK_FULL_PHRASE_RE =
-  /\bno space left on device\b|\bdisk full\b|\bdisk is full\b/i;
+  /\bno space left on device\b|\bdisk full\b|\bdisk is full\b|Read-only file system|\bos error 30\b|Parked as infrastructure \(Issue #4360\)/i;
 
 /** Whether `message` reports disk exhaustion in error-shaped text. */
 function isDiskFull(message: string): boolean {
@@ -204,14 +208,168 @@ const AGENT_OUTCOME: RunFailureClassification = {
 };
 
 /**
+ * The agent's tool runtime failed (Issue #4324).
+ *
+ * A code-mode host that is unavailable, or a session whose every tool call
+ * failed to spawn, is the worker's infrastructure. It is code-fixable, so the
+ * run-failure filer raises one deduped issue, and it is not the source
+ * issue's fault.
+ */
+const TOOL_RUNTIME: RunFailureClassification = {
+  fixability: "code_fixable",
+  failureClass: "tool-runtime",
+  rationale:
+    "The agent's tool runtime failed (tools or the code-mode host were unavailable, or every tool call failed to spawn) — infrastructure, not an agent outcome.",
+};
+
+/** Codex item types that are tool calls (the same set the progress tracker counts). */
+const TOOL_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "command_execution",
+  "command",
+  "function_call",
+  "mcp_tool_call",
+  "mcp_tool",
+  "tool",
+  "tool_use",
+]);
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+/** One transcript entry, unwrapping a Codex `item` or `payload` envelope. */
+function unwrapTranscriptItem(entry: unknown): Record<string, unknown> | null {
+  const record = asRecord(entry);
+  if (!record) return null;
+  return asRecord(record.item) ?? asRecord(record.payload) ?? record;
+}
+
+function itemType(item: Record<string, unknown>): string {
+  const raw = item.item_type ?? item.type;
+  return typeof raw === "string" ? raw.toLowerCase() : "";
+}
+
+/** Text a transcript item carries, folded for a case-insensitive check. */
+function itemText(item: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of ["message", "text", "content", "error"]) {
+    const value = item[key];
+    if (typeof value === "string") {
+      parts.push(value);
+      continue;
+    }
+    const nested = asRecord(value);
+    if (nested && typeof nested.message === "string") {
+      parts.push(nested.message);
+    }
+  }
+  return parts.join("\n").toLowerCase();
+}
+
+/**
+ * A provider error item saying tools, or the code-mode host, are unavailable.
+ */
+function isProviderToolRuntimeError(item: Record<string, unknown>): boolean {
+  if (itemType(item) !== "error") return false;
+  const text = itemText(item);
+  return text.includes("code mode is unavailable") ||
+    text.includes("host executable was not found") ||
+    (text.includes("tool") && text.includes("unavailable"));
+}
+
+function isToolItem(item: Record<string, unknown>): boolean {
+  return TOOL_ITEM_TYPES.has(itemType(item));
+}
+
+/** A tool call that never started because the runtime could not spawn it. */
+function toolFailedToSpawn(item: Record<string, unknown>): boolean {
+  const status = typeof item.status === "string"
+    ? item.status.toLowerCase()
+    : "";
+  if (status === "failed_to_spawn" || status === "spawn_failed") return true;
+  const text = itemText(item);
+  return text.includes("failed to spawn") ||
+    text.includes("failure to spawn") ||
+    text.includes("could not spawn");
+}
+
+/**
+ * Whether a Codex transcript shows the tool runtime itself failing
+ * (Issue #4324).
+ *
+ * Two shapes count. A provider error item — `Code Mode is unavailable`, a
+ * missing code-mode host, or tools reported unavailable — when no tool call
+ * *after that error* succeeded. Or at least one tool call, every one of
+ * which failed to spawn. A later session counts on its own (Issue #4362):
+ * the implementing agent may have used tools, and the pre-PR verifier's
+ * session can still open with the code-mode host missing. A tool that
+ * succeeds after the error means the runtime recovered.
+ */
+/**
+ * Parse a Codex session JSONL into items.
+ *
+ * A line that is not a JSON object is skipped. A torn final line is not a
+ * transcript item, and it does not discard the items already read.
+ */
+export function parseCodexTranscript(text: string): unknown[] {
+  const items: unknown[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      items.push(JSON.parse(trimmed));
+    } catch {
+      continue;
+    }
+  }
+  return items;
+}
+
+function transcriptShowsToolRuntimeFailure(
+  transcript: readonly unknown[] | undefined,
+): boolean {
+  if (!transcript || transcript.length === 0) return false;
+  const items: Record<string, unknown>[] = [];
+  for (const entry of transcript) {
+    const item = unwrapTranscriptItem(entry);
+    if (item) items.push(item);
+  }
+  // A provider error counts when nothing after it actually ran. Tools that
+  // succeeded *before* the error are an earlier session (Issue #4362).
+  let sawRuntimeError = false;
+  let toolSucceededAfterError = false;
+  for (const item of items) {
+    if (isProviderToolRuntimeError(item)) sawRuntimeError = true;
+    if (
+      sawRuntimeError && isToolItem(item) && !toolFailedToSpawn(item)
+    ) {
+      toolSucceededAfterError = true;
+    }
+  }
+  if (sawRuntimeError && !toolSucceededAfterError) return true;
+
+  const tools = items.filter(isToolItem);
+  // A tool that actually ran, with no provider error after it, means the
+  // runtime was up. Quoted errors in a later agent message do not undo that.
+  if (tools.some((tool) => !toolFailedToSpawn(tool))) return false;
+  return tools.length > 0 && tools.every(toolFailedToSpawn);
+}
+
+/**
  * Classify a no-PR run failure.
  *
  * ORDER MATTERS and is fixed here, most specific first — exactly as
  * `detectFailureCategory` documents its own ordering:
  *
- * 0. Every registered worker gate category (`WORKER_GATE_MARKERS`: summary,
+ * 0. A transcript that shows the tool runtime failing (Issue #4362) —
+ *    infrastructure, even when the recorded category is a worker gate such
+ *    as `criteria_unmet`. The signal is the session items, not quoted prose.
+ * 0b. Every registered worker gate category (`WORKER_GATE_MARKERS`: summary,
  *    security-fix and pre-push gates; Issues #3431, #3454, #3716) — answered
- *    before everything else, because the gate refusal quotes the agent's
+ *    before the message rules, because the gate refusal quotes the agent's
  *    summary, tests or tool output and a quoted "ENOSPC", usage limit or stack
  *    trace must not turn it into another class.
  * 1. Account limits (`rate_limit` category, out-of-credit message) — the
@@ -235,6 +393,9 @@ const AGENT_OUTCOME: RunFailureClassification = {
  * 8. `quality_check` / `no_changes` /
  *    `evidence_missing` — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
+ *    Exception (Issue #4324): a transcript that shows the tool runtime
+ *    failing is infrastructure (`tool-runtime`, code-fixable). An ordinary
+ *    no-change run, whose tools worked, stays an agent outcome.
  * 9. `workflow_gate` — a pre-PR gate the worker applied refused the change
  *    (Issue #2044): not a worker defect either, and it keeps its own class so
  *    an archive can tell a gate block from an unexplained failure.
@@ -244,6 +405,7 @@ export function classifyRunFailure(
   category: FailureCategory,
   failureMessage: string,
   declaredCategory: boolean,
+  transcript?: readonly unknown[],
 ): RunFailureClassification {
   // A declared source cause cannot be replaced by quoted git, test or agent
   // prose. Kills, account limits and internal-tool errors retain their source-specific
@@ -255,6 +417,12 @@ export function classifyRunFailure(
       ? splitAgentNarration(failureMessage ?? "").worker
       : ""
     : failureMessage ?? "";
+
+  // A broken tool runtime is infrastructure whatever category the run was
+  // recorded under (Issue #4362). The signal is the session items, not the
+  // gate's quoted reason, so a criteria-unmet record whose verifier or agent
+  // had no working tools is not an agent outcome.
+  if (transcriptShowsToolRuntimeFailure(transcript)) return TOOL_RUNTIME;
 
   // A worker gate refusal (summary, security-fix or pre-push gate) quotes text
   //    the worker did not write, so any message-pattern rule below (secondary
@@ -318,7 +486,7 @@ export function classifyRunFailure(
       fixability: "not_code_fixable",
       failureClass: "scheduled-release",
       rationale:
-        "The run was released on schedule (cycle ended or run hard cap reached) with its work preserved — not a worker defect.",
+        "The run was released on schedule (cycle ended, finish deadline reached, or run hard cap reached) with its work preserved — not a worker defect.",
     };
   }
   if (isOutOfCreditMessage(message)) return OUT_OF_CREDIT;
@@ -350,7 +518,7 @@ export function classifyRunFailure(
       fixability: "code_fixable",
       failureClass: "disk-full",
       rationale:
-        "The message reports disk exhaustion (ENOSPC / no space left on device).",
+        "The message reports disk exhaustion (ENOSPC, no space left on device, or a read-only filesystem after the disk filled).",
     };
   }
 
@@ -419,6 +587,10 @@ export function classifyRunFailure(
       // 8. The agent did not deliver — a property of the attempt, not a
       //    worker defect. Stated plainly, never auto-filed: filing an issue
       //    every time the model fails a quality gate would be pure noise.
+      //    A broken tool runtime is not that attempt (Issue #4324): the
+      //    transcript says the tools never came up, so the worker files it
+      //    and the issue is not blamed.
+      if (transcriptShowsToolRuntimeFailure(transcript)) return TOOL_RUNTIME;
       return AGENT_OUTCOME;
     case "workflow_gate":
       // Issue #2044: the changed-workflow gate refused the run over a finding

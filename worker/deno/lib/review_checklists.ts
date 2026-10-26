@@ -64,6 +64,12 @@ export interface ChecklistExpectation {
 export interface ChecklistState {
   problem: string | null;
   expected: ChecklistExpectation[];
+  /**
+   * File the problem is about, when it is not `review-checklists.json`.
+   * Capability-guidance failures set this so the finding is not attributed
+   * to the repo checklist (Issue #4366).
+   */
+  problemFile?: string;
 }
 
 const VERDICTS: readonly string[] = ["met", "missing", "not applicable"];
@@ -478,14 +484,19 @@ export function checklistGapFindings(
 ): ChecklistGapFinding[] {
   const out: ChecklistGapFinding[] = [];
   if (state.problem !== null) {
+    const capability = state.problemFile !== undefined &&
+      state.problemFile !== REVIEW_CHECKLISTS_FILE;
     out.push({
-      file: REVIEW_CHECKLISTS_FILE,
+      file: state.problemFile ?? REVIEW_CHECKLISTS_FILE,
       line: 1,
-      problem: `Repository review checklists were not applied: ${
-        gapText(state.problem, 600)
-      }.`,
-      fix:
-        `Repair \`${REVIEW_CHECKLISTS_FILE}\` in this change, or reduce the change so its file list is complete. The base ref's copy governs, except that a change which edits the file is judged on its own copy when the base copy is unusable, so a repair can be reviewed and merged.`,
+      problem: capability
+        ? gapText(state.problem, 600)
+        : `Repository review checklists were not applied: ${
+          gapText(state.problem, 600)
+        }.`,
+      fix: capability
+        ? `Restore \`${state.problemFile}\`. The trusted base revision governs, so this change cannot weaken the checks used to review it. A broken copy must be repaired before the change can merge.`
+        : `Repair \`${REVIEW_CHECKLISTS_FILE}\` in this change, or reduce the change so its file list is complete. The base ref's copy governs, except that a change which edits the file is judged on its own copy when the base copy is unusable, so a repair can be reviewed and merged.`,
     });
   }
   const reported = new Set(
@@ -513,39 +524,32 @@ export function checklistGapFindings(
   return out;
 }
 
-/** Validate the reply's `checklist` array; throws naming the problem. */
+/**
+ * Read the reply's `checklist` array, keeping every entry that is usable.
+ * Never throws: a non-array value and a malformed entry are dropped. A dropped
+ * entry's item then falls into the unchanged `checklistGapFindings` "no verdict
+ * was reported ... so they were not checked" finding, which blocks, so a
+ * dropped verdict is never read as a pass. Verdicts are matched after trim and
+ * lower-casing.
+ */
 export function parseChecklistVerdicts(value: unknown): ChecklistVerdict[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error("review JSON checklist is not an array");
+  if (!Array.isArray(value)) return [];
+  const out: ChecklistVerdict[] = [];
+  for (const raw of value as unknown[]) {
+    if (!isObject(raw)) continue;
+    const { checklist, item, verdict, note } = raw;
+    if (typeof checklist !== "string" || checklist.trim() === "") continue;
+    if (typeof item !== "string" || item.trim() === "") continue;
+    if (typeof verdict !== "string") continue;
+    const normalised = verdict.trim().toLowerCase();
+    if (!VERDICTS.includes(normalised)) continue;
+    if (note !== undefined && typeof note !== "string") continue;
+    out.push({
+      checklist,
+      item,
+      verdict: normalised as ChecklistVerdictValue,
+      note: note ?? "",
+    });
   }
-  return value.map((raw, i) => {
-    if (!isObject(raw)) {
-      throw new Error(`review JSON checklist[${i}] is not an object`);
-    }
-    for (const key of ["checklist", "item"] as const) {
-      const v = raw[key];
-      if (typeof v !== "string" || v.trim() === "") {
-        throw new Error(
-          `review JSON checklist[${i}] lacks a non-empty "${key}"`,
-        );
-      }
-    }
-    if (typeof raw.verdict !== "string" || !VERDICTS.includes(raw.verdict)) {
-      throw new Error(
-        `review JSON checklist[${i}] has verdict=${
-          JSON.stringify(raw.verdict)
-        }; expected met, missing or not applicable`,
-      );
-    }
-    if (raw.note !== undefined && typeof raw.note !== "string") {
-      throw new Error(`review JSON checklist[${i}] has a non-string note`);
-    }
-    return {
-      checklist: raw.checklist as string,
-      item: raw.item as string,
-      verdict: raw.verdict as ChecklistVerdictValue,
-      note: (raw.note as string | undefined) ?? "",
-    };
-  });
+  return out;
 }

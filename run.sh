@@ -651,8 +651,8 @@ if ((release_notice_status != 0)); then
   echo "[run.sh] warning: could not check for a newer release (status ${release_notice_status}) - ${release_notice_detail}" >&2
   log_run_core "release-notice: failed (status ${release_notice_status}) - ${release_notice_detail}"
 elif [[ -n "${release_notice}" ]]; then
-  echo "${release_notice}" >&2
-  log_run_core "${release_notice}"
+  echo "[run.sh] WARNING: ${release_notice}" >&2
+  log_run_core "WARNING: ${release_notice}"
 fi
 rm -f "${release_notice_err}"
 # The plan resolves and validates the container runtime, computes the
@@ -1862,14 +1862,18 @@ watchdog_reap_on_deadline() {
     "${WATCHDOG_SECONDS}s - reaping it (Issue #4173)" >&2
   printf 'container_wedged\n' >"${WEDGE_MARKER}"
 
+  # Issue #4253: the reaper writes hard-kill evidence into the worker log
+  # directory before it kills anything. Capture is best-effort and bounded, so
+  # it never blocks the reap; --allow-sys=hostname lets it record the host.
   if ! bounded 300 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-    --allow-env --allow-read --allow-write --allow-run \
+    --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
     "${BASE_DIR}/worker/deno/mod.ts" container-reap \
     --runtime "${RUNTIME}" \
     --name "${CONTAINER_NAME}" \
     --client-pid "${client_pid}" \
     --reason "the launcher's ${WATCHDOG_SECONDS}s watchdog deadline expired" \
+    --evidence-dir "${RUN_CORE_LOG_DIR}" \
     </dev/null >&2; then
     echo "[run.sh] warning: the container reaper did not clear" \
       "${CONTAINER_NAME}" >&2

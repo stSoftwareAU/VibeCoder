@@ -1,0 +1,12 @@
+{
+  "issue": 3972,
+  "chunk": "top-up-3972",
+  "title": "top-up: local Checkov quality-gate stage",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3972",
+  "definition": "module added for the local Checkov quality-gate stage: checkov_check.ts",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/checkov_check.ts"
+  ],
+  "sweptAt": "a4ce41463d61f3628fc77e7dcb4bee8c1b89c533"
+}

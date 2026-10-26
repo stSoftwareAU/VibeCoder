@@ -123,7 +123,7 @@ function harness(
     },
     runAgent: () => {
       order.push("run-agent");
-      return Promise.resolve();
+      return Promise.resolve("completed");
     },
     verifyPush: () => {
       order.push("verify-push");
@@ -156,6 +156,17 @@ Deno.test("pr dispatch - a trusted label removes, checks out, runs, and comments
   ]);
   assertEquals(h.comments.length, 1);
   assertStringIncludes(h.comments[0]!, "secret-squirrel");
+});
+
+Deno.test("pr dispatch - a finish release reports the consumed label and how to retry", async () => {
+  const h = harness({ runAgent: () => Promise.resolve("finish-deadline") });
+  const result = await dispatchCustomLabelPrPrompts(h.deps);
+  assertEquals(result.processed, true);
+  assertEquals(h.comments.length, 1);
+  assertStringIncludes(h.comments[0]!, "finish deadline");
+  assertStringIncludes(h.comments[0]!, "re-apply `secret-squirrel`");
+  assertEquals(h.order.includes("verify-push"), false);
+  assertEquals((await dispatchCustomLabelPrPrompts(h.deps)).processed, false);
 });
 
 Deno.test("pr dispatch - the label is removed before the agent is invoked", async () => {

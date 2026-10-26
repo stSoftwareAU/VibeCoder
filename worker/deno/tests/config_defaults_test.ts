@@ -203,18 +203,6 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_HEALTH stays haiku (effort-fir
   assertEquals(DEFAULT_CLAUDE_MODEL_HEALTH, "haiku");
 });
 
-Deno.test("config_defaults - loadConfig uses shared claude model default", async () => {
-  const testConfig: ConfigFile = {
-    allowed_authors: ["testuser"],
-    repos: ["org/repo1"],
-  };
-
-  await withTempConfig(testConfig, async (configPath) => {
-    const config = await loadConfig(configPath);
-    assertEquals(config.claudeModel, DEFAULT_CLAUDE_MODEL);
-  });
-});
-
 // =============================================================================
 // Operational Defaults (Issue #277)
 // =============================================================================
@@ -570,14 +558,21 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases 
     "question",
     "clarification",
   ]);
-  const haikuPhases = new Set(["spelling_fix", "summarise", "health"]);
+  const haikuPhases = new Set([
+    "spelling_fix",
+    "summarise",
+    "health",
+    "compaction",
+  ]);
   // Owner decision on #3473: the `issue` manager joins them on Sonnet, with
-  // Haiku executors under it and the PR reviewer on Opus.
+  // Haiku executors under it and the PR reviewer on Opus. Issue #4174:
+  // merge_conflict is the same standard tier.
   const sonnetPhases = new Set([
     "ci_fix",
     "pr_feedback",
     "quality_fix",
     "issue",
+    "merge_conflict",
   ]);
   for (const [phase, model] of Object.entries(PHASE_MODEL_DEFAULTS)) {
     if (topTierPhases.has(phase)) {
@@ -932,10 +927,11 @@ Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS all values are valid effort l
   }
 });
 
-Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS has exactly 15 phases (Issues #1402, #2621, #4112)", () => {
+Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS has exactly 17 phases (Issues #1402, #2621, #4112, #4174)", () => {
   // Issue #2621 added the explicit grill_me entry (was 12); Issue #4112 added
-  // the two Quorum phases (quorum, quorum_judge).
-  assertEquals(Object.keys(PHASE_EFFORT_DEFAULTS).length, 15);
+  // the two Quorum phases (quorum, quorum_judge); Issue #4174 added
+  // merge_conflict and compaction.
+  assertEquals(Object.keys(PHASE_EFFORT_DEFAULTS).length, 17);
 });
 
 // =============================================================================
@@ -945,8 +941,18 @@ Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS has exactly 15 phases (Issues
 Deno.test("config_defaults - routing: trivial phases on haiku, reactive on sonnet, planning-shaped on opus (Issues #2391, #2621, #3229, #2560, #2812)", () => {
   // Trivial phases run on Haiku; the reactive phases on Sonnet 5.5, half the
   // Opus 5.5 price (Issue #2812); planning-shaped phases on the Opus tier.
-  const haikuPhases = new Set(["spelling_fix", "summarise", "health"]);
-  const sonnetPhases = new Set(["ci_fix", "pr_feedback", "quality_fix"]);
+  const haikuPhases = new Set([
+    "spelling_fix",
+    "summarise",
+    "health",
+    "compaction",
+  ]);
+  const sonnetPhases = new Set([
+    "ci_fix",
+    "pr_feedback",
+    "quality_fix",
+    "merge_conflict",
+  ]);
   for (const phase of Object.keys(PHASE_EFFORT_DEFAULTS)) {
     if (phase === "issue") continue; // issue has no model-default entry (base tier)
     const expected = haikuPhases.has(phase)
@@ -1031,10 +1037,14 @@ Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues
     ci_fix: { model: "sonnet", effort: "high" },
     pr_feedback: { model: "sonnet", effort: "high" },
     quality_fix: { model: "sonnet", effort: "high" },
-    // Trivial phases → Haiku secondary tier at low.
+    // Issue #4174: the merge engineer, Sonnet at high, like the reactive phases.
+    merge_conflict: { model: "sonnet", effort: "high" },
+    // Trivial phases → Haiku secondary tier at low. Compaction is the same
+    // fast tier: a summarising turn (Issue #4174).
     spelling_fix: { model: "haiku", effort: "low" },
     summarise: { model: "haiku", effort: "low" },
     health: { model: "haiku", effort: "low" },
+    compaction: { model: "haiku", effort: "low" },
   };
 
   // Every phase in the table resolves to the expected model + effort.

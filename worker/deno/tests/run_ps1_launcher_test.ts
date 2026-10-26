@@ -31,6 +31,7 @@ import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { parseKeepReferences } from "../lib/container_image_prune.ts";
 import { executableLines } from "../lib/launcher_source.ts";
+import { formatReleaseNotice } from "../lib/release_notice.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
@@ -1465,6 +1466,112 @@ Deno.test({
       assertStringIncludes(outcome.stderr, "container extension");
       assertEquals(await buildCount(harness), 2);
       assertEquals(await recorded(harness, "run"), null);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// New-release notice (Issues #690, #4119)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "run.ps1 - the new-release notice is one WARNING line on stderr and in run_core.log (Issue #4119)",
+  ignore,
+  fn: async () => {
+    const notice = formatReleaseNotice("1.0.4", "1.0.5");
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RELEASE_NOTICE_STDOUT: notice,
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      // The check is asked about this checkout, after the checkout update and
+      // before the launch plan, as in run.sh.
+      const args = await recorded(harness, "release-notice");
+      assert(args, `the release check never ran: ${outcome.stderr}`);
+      assertEquals(args[args.indexOf("--base-dir") + 1], REPO_ROOT);
+      const order = await denoInvocationOrder(harness);
+      assert(
+        order.indexOf("worker-checkout-update") <
+            order.indexOf("release-notice") &&
+          order.indexOf("release-notice") <
+            order.indexOf("container-launch-plan"),
+        `deno order: ${order.join(", ")}`,
+      );
+
+      // A frozen host behind the newest release is degraded but continuing:
+      // one WARNING line on stderr...
+      const stderrLines = outcome.stderr.split("\n").filter((line) =>
+        line.includes(notice)
+      );
+      assertEquals(
+        stderrLines,
+        [`[run.ps1] WARNING: ${notice}`],
+        `stderr must hold exactly one WARNING notice line: ${outcome.stderr}`,
+      );
+      // ...and one in the run-core log, once per launch.
+      const logLines = (await runCoreLog(harness)).split("\n").filter((
+        line,
+      ) => line.includes(notice));
+      assertEquals(logLines.length, 1, `run_core.log: ${logLines}`);
+      assertStringIncludes(logLines[0] ?? "", `WARNING: ${notice}`);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - says nothing when the release check has nothing to say (Issue #4119)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      assert(
+        await recorded(harness, "release-notice"),
+        "the release check must still run",
+      );
+      assertEquals(outcome.stderr.includes("WARNING:"), false);
+      assertEquals((await runCoreLog(harness)).includes("WARNING:"), false);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a failed release check warns with its reason and the launch proceeds (Issue #4119)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RELEASE_NOTICE_EXIT: "1",
+      STUB_RELEASE_NOTICE_STDERR: "gh: could not resolve api.github.com",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      // Never blocks the launch: the container still runs.
+      assertEquals(outcome.code, 0, outcome.stderr);
+      assert(await recorded(harness, "run"), outcome.stderr);
+
+      assertStringIncludes(
+        outcome.stderr,
+        "[run.ps1] warning: could not check for a newer release (status 1) - gh: could not resolve api.github.com",
+      );
+      assertStringIncludes(
+        await runCoreLog(harness),
+        "release-notice: failed (status 1) - gh: could not resolve api.github.com",
+      );
     } finally {
       await harness.cleanup();
     }

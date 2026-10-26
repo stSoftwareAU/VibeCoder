@@ -25,7 +25,7 @@ import {
 const PARAGRAPH_START =
   "**An edited expectation must still go red without its guard.**";
 const PREVIOUS_START = "**A new test must go red without its change.**";
-const NEXT_START = "**A negative test must be able to fail.**";
+const NEXT_START = "**A test must be able to fail on the wrong input.**";
 
 function editedParagraph(sectionText: DocSection, what: string): string {
   const start = sectionText.indexOf(PARAGRAPH_START);
@@ -41,7 +41,7 @@ function editedParagraph(sectionText: DocSection, what: string): string {
   );
   assert(
     next > start,
-    `${what}: the edited-expectation rule must precede the negative-test rule`,
+    `${what}: the edited-expectation rule must precede the wrong-input rule`,
   );
   const end = sectionText.indexOf("\n\n", start);
   const paragraph = excerpt(sectionText, start, end >= 0 ? end : undefined);

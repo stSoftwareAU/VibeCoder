@@ -114,6 +114,7 @@ const searchPr = (
           state: rollup,
           ...(contexts ? { contexts: { nodes: contexts } } : {}),
         },
+        checkSuites: { nodes: [] },
       },
     }],
   },

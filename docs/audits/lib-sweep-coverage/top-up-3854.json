@@ -1,0 +1,13 @@
+{
+  "issue": 3854,
+  "chunk": "top-up-3854",
+  "title": "top-up: fleet reuse paths for owned issues and PRs",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3854",
+  "definition": "modules added by #3854 after the 12a-12af coverage was recorded: worker/deno/lib/owned_open_artefact.ts (fail-closed owned issue and PR listing) and worker/deno/lib/owned_reuse_manifest.ts (reuse manifest for owned artefacts) (#3854)",
+  "status": "claimed",
+  "sweptAt": "f5b0c628e168a045eb98390d0a389828b28498da",
+  "paths": [
+    "worker/deno/lib/owned_open_artefact.ts",
+    "worker/deno/lib/owned_reuse_manifest.ts"
+  ]
+}

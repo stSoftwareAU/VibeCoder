@@ -100,8 +100,8 @@ Deno.test("#3641 contract — haiku-tier payload pins the agent names, models an
       ) => [name, { model: def.model, effort: def.effort }]),
     ),
     {
-      "spec-reviewer": { model: "sonnet", effort: "medium" },
-      "standards-reviewer": { model: "haiku", effort: "medium" },
+      "spec-reviewer": { model: "opus", effort: "medium" },
+      "standards-reviewer": { model: "opus", effort: "medium" },
       executor: { model: "haiku", effort: "high" },
       explorer: { model: "haiku", effort: "medium" },
     },
@@ -239,8 +239,10 @@ Deno.test("#3641 contract — DeepSeek strips --agents and --settings and warns 
 
 // This pins the silent drop at the descriptor's `buildInvocation` layer, which
 // is recorded as a gap in docs/MANAGER-WORKER-CONTRACT.md. The native split
-// path is no longer silent: `runClaudeWithTimeoutBody` refuses loudly before
-// spawn when a run carries `agents` but the argv lacks `--agents` (Issue #4010).
+// path is no longer silent: the issue-run planner reroutes or strips such a run
+// before spawn (lib/issue_run_provider_agents.ts), and `runClaudeWithTimeoutBody`
+// refuses loudly as a backstop when a run carries `agents` but the argv lacks
+// `--agents` (Issue #4010).
 // That refusal has its own regression test in claude_runner_test.ts; this test
 // still holds because it calls `buildInvocation` directly, where the drop
 // remains the descriptor's contract.

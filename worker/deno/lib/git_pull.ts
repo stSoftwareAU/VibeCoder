@@ -18,6 +18,7 @@ import {
   raiseMilestoneSyncPr,
   syncPrLandingNote,
 } from "./milestone_sync_pr.ts";
+import { restoreClosedMilestoneRoute } from "./milestone_route_restore.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
 import {
@@ -36,6 +37,7 @@ import {
 } from "./milestone_merge_state.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import { endHandlerLandingStep } from "./handler_watchdog.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { mergeWithUnshallowRetry } from "./git_merge_unshallow_retry.ts";
 import {
@@ -261,6 +263,47 @@ async function pushSyncedMilestoneBranch(
     };
   }
 
+  const gh = async (args: string[]): Promise<string> => {
+    const result = await spawnGh(args);
+    if (!result.success) {
+      throw new Error(result.stderr.trim() || `gh exited ${result.code}`);
+    }
+    return result.stdout;
+  };
+  // Issue #4175: do not open a sync PR into a route that is still closed.
+  // An open milestone is restored first (a fresh rollup when the branch is
+  // ahead). A closed milestone, or one with no open work, is left alone.
+  const restored = await restoreClosedMilestoneRoute({
+    repo,
+    milestoneBranch,
+    defaultBranch,
+    ghCommandFn: gh,
+  });
+  if (restored.action === "failed") {
+    return {
+      ok: false,
+      error: new Error(
+        `sync PR not opened into '${milestoneBranch}': the route could not be restored (${restored.reason})`,
+      ),
+    };
+  }
+  // `waiting` has no open rollup either: the branch is not ahead, so a
+  // sync PR would sit on a closed route (the #4100 case). Skip it until a
+  // rollup is open.
+  if (restored.action === "merge-via-gate") {
+    return {
+      ok: true,
+      value:
+        `sync PR not opened into '${milestoneBranch}': the branch is not ahead of ${defaultBranch}, so no rollup is open yet (Issue #4175) — `,
+    };
+  }
+  if (restored.action === "left-closed" || restored.action === "waiting") {
+    return {
+      ok: true,
+      value:
+        `sync PR not opened into '${milestoneBranch}': ${restored.detail} (Issue #4175) — `,
+    };
+  }
   const raised = await raiseMilestoneSyncPr(
     repo,
     milestoneBranch,
@@ -276,13 +319,7 @@ async function pushSyncedMilestoneBranch(
           }
           : { code: 1, stderr: result.error.message, stdout: "" };
       },
-      gh: async (args) => {
-        const result = await spawnGh(args);
-        if (!result.success) {
-          throw new Error(result.stderr.trim() || `gh exited ${result.code}`);
-        }
-        return result.stdout;
-      },
+      gh,
     },
   );
   if (!raised.ok) {
@@ -431,6 +468,8 @@ async function gateThenPushMilestoneBranch(
   // read exactly like a checked one.
   const gateNote = outcome.status === "skipped"
     ? `UNGATED: ${outcome.detail} (Issue #974) — `
+    : outcome.cargoSkipped
+    ? `CARGO SKIPPED: ${outcome.detail} (Issue #4326) — `
     : "";
   return { ok: true, value: `${gateNote}${pushNote.value}` };
 }
@@ -456,7 +495,12 @@ async function readRef(
  * conflict — the same fix landed twice, or one side keeps every line of the
  * other — the decision is applied, recorded on the merge commit, verified
  * against the repository's own check, manifest check and unit suite, and only
- * then pushed.
+ * then pushed. A merge-only sync (Issue #4326) of a cargo-only tree pushes it
+ * unverified with the `UNGATED:` note instead, leaving the cargo build to the
+ * milestone PR's CI. A Deno-only tree and a mixed tree keep their Deno checks
+ * and suites and are rolled back when red. A mixed tree whose Deno half
+ * passed carries a `CARGO SKIPPED:` note, so the report does not claim the
+ * cargo half passed.
  *
  * What the triage cannot decide climbs the rest of the ladder the PR pass
  * climbs (Issue #1777): the deterministic dependency rules, then the
@@ -486,6 +530,19 @@ async function readRef(
  * @returns Result carrying the summary, and the conflict when there was one
  */
 export async function syncMilestoneBranchWithDefault(
+  ...args: Parameters<typeof syncMilestoneBranchWithDefaultBody>
+): Promise<Result<MilestoneSyncOutcome>> {
+  try {
+    return await syncMilestoneBranchWithDefaultBody(...args);
+  } finally {
+    // The conflict agent marks commit/push as still landing (Issue #4173).
+    // Clear it here so a later wedge in this same handler is not treated as
+    // that landing. A no-op when no step was begun.
+    endHandlerLandingStep();
+  }
+}
+
+async function syncMilestoneBranchWithDefaultBody(
   milestoneBranch: string,
   defaultBranch: string,
   options: GitCommandOptions = {},
@@ -652,7 +709,7 @@ export async function syncMilestoneBranchWithDefault(
           // Porcelain v1 is a two-character status field, then the path.
           files.slice(0, 3).map((line) => line.slice(2).trim()).join(", ")}${
           files.length > 3 ? `, +${files.length - 3} more` : ""
-        })${cleaned.ok ? "" : " — WARNING: " + cleaned.error.message} — `;
+        })${cleaned.ok ? "" : " — " + cleaned.error.message} — `;
     }
 
     const checkoutResult = await runGitCommand(
@@ -1173,7 +1230,9 @@ export async function syncMilestoneBranchWithDefault(
   // A resolution the worker chose is verified the way a human's would be
   // (Issue #1559): the repository's own check, its manifest check and its
   // unit suite. A tree that defines none of them verified nothing, so
-  // `skipped` refuses the push rather than reading as a pass.
+  // `skipped` refuses the push rather than reading as a pass — except a
+  // merge-only gate's `skipped` marked `landUnverified` (Issue #4326), which is
+  // pushed with the `UNGATED:` note.
   const runResolutionGate = (): Promise<MergeGateOutcome> =>
     resolutionGate(options.cwd ?? ".");
 
@@ -1301,6 +1360,11 @@ export async function syncMilestoneBranchWithDefault(
         milestoneSha: preMergeSha,
         defaultSha,
         resolution: "auto",
+        ...(finalGate.status === "skipped"
+          ? { unverified: true }
+          : finalGate.cargoSkipped
+          ? { cargoSkipped: true }
+          : {}),
         decisions: resolved,
         ...(repaired ? { repair: repaired } : {}),
         // Issue #2306: the agent names each judgement call file by file in

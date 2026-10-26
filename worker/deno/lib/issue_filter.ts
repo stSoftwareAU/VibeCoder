@@ -48,9 +48,12 @@ export interface FilterableIssue {
  *   issues, otherwise the worker loops on tasks it cannot progress
  *   autonomously. Issue #2031 retired the separate `needs-clarification`
  *   label and consolidated the handoff signal onto `needs-human`.
+ *
+ * Issue #4158: `failed` is not among them. An assigned issue is never
+ * parked: a repeated failure keeps `failed-once` and its cooldown, and a
+ * leftover `failed` is stripped as stale by `cleanStaleLabels`.
  */
 export interface FilterLabels {
-  failedLabel: string;
   needsRevisionLabel: string;
   refineIssueLabel: string;
   planningLabel: string;
@@ -322,7 +325,8 @@ export function isIssueFleetAssigned(
  *
  * Filters out:
  * - Issues with assignees (in multi-worker setups)
- * - Issues with any blocking label (failed, needs-clarification, etc.)
+ * - Issues with any blocking label (needs-human, planning, etc.) — never
+ *   `failed`, which no longer parks an issue (Issue #4158)
  *
  * Sorts by createdAt ascending (oldest first).
  *
@@ -335,7 +339,6 @@ export function filterAndSort(
   labels: FilterLabels,
 ): FilterableIssue[] {
   const blockingLabels = new Set([
-    labels.failedLabel,
     labels.needsRevisionLabel,
     labels.refineIssueLabel,
     labels.planningLabel,
@@ -431,11 +434,16 @@ export function wasReopenedAfterLabel(
 }
 
 /**
- * Find stale blocking labels on a reopened issue.
+ * Find stale failure labels on an issue.
  *
  * Issue #2031: `needs-clarification` was retired — the stale-label
  * cleanup no longer touches it. Only the failure labels remain in the
- * reopened-issue stale set.
+ * stale set.
+ *
+ * Issue #4158: `failed` is always stale. The worker no longer applies it,
+ * because parking an assigned issue is a failure of the Vibe Coder, so one
+ * still on an issue is a leftover to strip. `failed-once` is stale only
+ * once the issue was reopened after it was applied.
  *
  * @param issueLabels - Current labels on the issue
  * @param timeline - Timeline events from GitHub API
@@ -451,7 +459,8 @@ export function getStaleLabelsForReopenedIssue(
 ): string[] {
   const checkLabels = [failedLabel, failedOnceLabel];
   return checkLabels.filter((label) =>
-    issueLabels.includes(label) && wasReopenedAfterLabel(timeline, label)
+    issueLabels.includes(label) &&
+    (label === failedLabel || wasReopenedAfterLabel(timeline, label))
   );
 }
 
@@ -495,13 +504,14 @@ export async function cleanStaleLabels(
     const hasBlocking = issue.labels.some((l) => blockingLabels.has(l));
     if (!hasBlocking) continue;
 
+    // Issue #4158: a leftover `failed` needs no timeline to be stale, so
+    // an unreadable timeline must not strand the issue behind it.
     const timeline = await fetchTimelineWithCache(
       repo,
       issue.number,
       ghCommandFn,
       cache,
-    );
-    if (timeline === null) continue;
+    ) ?? [];
 
     const staleLabels = getStaleLabelsForReopenedIssue(
       issue.labels,

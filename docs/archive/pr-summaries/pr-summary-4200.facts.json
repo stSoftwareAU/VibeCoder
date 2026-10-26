@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 525,
+        "outcome": "a non-array checklist value returns an empty list instead of throwing",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts accepts valid entries and defaults",
+        "flipWentRed": "non-array forced to throw: 2 failed (308:6 and 322:6)"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 528,
+        "outcome": "a non-object entry is skipped and the valid neighbours are kept",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "non-object entry forced to throw: 1 failed (322:6)"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 530,
+        "outcome": "an entry whose checklist is not a string is skipped (typeof operand)",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "typeof checklist operand forced to pass: 1 failed (322:6)"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 530,
+        "outcome": "an entry whose checklist is empty or blank is skipped (trim operand)",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "checklist.trim() === \"\" operand forced to false: drop test red at 322:6"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 531,
+        "outcome": "an entry whose item is not a string is skipped (typeof operand)",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "typeof item operand forced to pass: 1 failed (322:6)"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 531,
+        "outcome": "an entry whose item is empty or blank is skipped (trim operand)",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "item.trim() === \"\" operand forced to false: drop test red at 322:6"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 532,
+        "outcome": "an entry whose verdict is not a string is skipped",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "typeof verdict check forced to pass (if (false) continue): 1 failed (322:6)"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 534,
+        "outcome": "an out-of-vocabulary verdict such as partial or n/a is skipped, so its item is left without a verdict",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "out-of-vocabulary verdict forced through as met: 5 failed (brief run, not re-run this session)"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 535,
+        "outcome": "an entry whose note is not undefined and not a string is skipped (note-undefined operand)",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "note !== undefined operand forced to pass: 1 failed (322:6)"
+      },
+      {
+        "path": "worker/deno/lib/review_checklists.ts",
+        "line": 535,
+        "outcome": "an entry whose note is not a string is skipped (typeof-note operand)",
+        "test": "worker/deno/tests/review_checklists_3594_test.ts",
+        "testName": "parseChecklistVerdicts drops each bad shape and keeps valid neighbours",
+        "flipWentRed": "typeof note operand forced to pass: 1 failed (322:6)"
+      }
+    ]
+  }
+}

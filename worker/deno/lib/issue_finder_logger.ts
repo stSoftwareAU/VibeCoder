@@ -80,10 +80,11 @@ export const SKIP_REASONS = [
   "filtered-out",
   /** Issue #1470: worker-to-human escalation — skip issues with needs-human */
   "needs-human",
-  /** Issue #2752: dependency cycle detected — escalated and dropped */
-  "dependency-cycle-escalated",
-  /** Issue #2752: milestone-tracking issue labelled work-on — escalated */
-  "dead-label-tracker-escalated",
+  /**
+   * Issue #2752: milestone-tracking issue labelled work-on — the dead label
+   * is stripped by the worker (Issue #4298)
+   */
+  "dead-label-tracker-stripped",
   /** Issue #4078: blocked by a human-authored PR — nudged and escalated */
   "human-pr-blocked-escalated",
   /**
@@ -93,8 +94,11 @@ export const SKIP_REASONS = [
    * "no diagnostic was there".
    */
   "self-schedule-refused",
-  /** Issue #505: an unschedulable diagnostic escalated to a human */
-  "self-schedule-escalated",
+  /**
+   * Issue #505: a diagnostic a merged PR names — closed as resolved by the
+   * worker (Issue #4298)
+   */
+  "self-schedule-resolved",
   /**
    * Issue #1475: the issue is workflow work and this host's token lacks the
    * `workflow` scope, so the push would be rejected — skipped, not claimed.
@@ -175,6 +179,13 @@ export interface BlockedCandidateInfo {
    * recorded", never as "no blocking PR".
    */
   blockingPr?: number;
+  /**
+   * Discovery tier the issue was skipped from (Issue #4362).
+   * `configured-label` is top-priority and is named first on the
+   * selection-reasoning line so a truncated `blocked=` list still
+   * carries its skip reason.
+   */
+  tier?: "configured-label" | "work-on";
   /**
    * Set on a `pr-blocked` skip of a non-milestone issue when the fleet's
    * open PRs on the default-branch stream reached the slot cap
@@ -388,6 +399,62 @@ function closeOutPassedOverTier(source: string): string {
 }
 
 const MAX_UNTRUSTED_FIELD_LENGTH = 200;
+
+/**
+ * Cap for the `blocked=` field on a selection-reasoning line (Issue #4362).
+ * External log shipping truncates long lines, and a top-priority skip that
+ * sits at the tail is then invisible. Configured-label entries are placed
+ * first and kept; other entries are dropped to stay inside this length.
+ */
+const MAX_SELECTION_BLOCKED_LENGTH = 1024;
+
+/**
+ * Render `blocked=` so a truncated line still names every configured-label
+ * skip (Issue #4362). Entries without a tier keep their input order.
+ * When the field would exceed {@link MAX_SELECTION_BLOCKED_LENGTH},
+ * non-top-priority entries are dropped first and the omitted count is
+ * appended as `+N`.
+ */
+function formatSelectionBlockedField(
+  entries: readonly BlockedCandidateInfo[],
+): string {
+  const ranked = entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => {
+      const rank = (tier: BlockedCandidateInfo["tier"]): number =>
+        tier === "configured-label" ? 0 : 1;
+      const byTier = rank(a.entry.tier) - rank(b.entry.tier);
+      return byTier !== 0 ? byTier : a.index - b.index;
+    })
+    .map((rankedEntry) => rankedEntry.entry);
+
+  const tokens = ranked.map((entry) =>
+    `${entry.repo}#${entry.issueNumber}(${entry.reason})`
+  );
+  const kept: string[] = [];
+  let index = 0;
+  while (
+    index < ranked.length && ranked[index]?.tier === "configured-label"
+  ) {
+    kept.push(tokens[index]!);
+    index++;
+  }
+  while (index < tokens.length) {
+    const remainingAfter = tokens.length - index - 1;
+    const candidate = [...kept, tokens[index]!];
+    const suffix = remainingAfter > 0 ? `,+${remainingAfter}` : "";
+    if (
+      `${candidate.join(",")}${suffix}`.length > MAX_SELECTION_BLOCKED_LENGTH
+    ) {
+      break;
+    }
+    kept.push(tokens[index]!);
+    index++;
+  }
+  const omitted = tokens.length - kept.length;
+  if (omitted > 0) kept.push(`+${omitted}`);
+  return kept.join(",");
+}
 
 /**
  * C0 (`0x00`-`0x1F`) and C1 (`0x7F`-`0x9F`) control-character ranges.
@@ -800,9 +867,7 @@ export function createDiagnostics(options: {
       // can see why top-priority was passed over without having to set
       // ISSUE_FINDER_DEBUG=true. All other diagnostic lines remain
       // debug-gated.
-      const blockedList = blockedEntries
-        .map((b) => `${b.repo}#${b.issueNumber}(${b.reason})`)
-        .join(",");
+      const blockedList = formatSelectionBlockedField(blockedEntries);
       const blockedField = blockedList.length > 0
         ? ` blocked=${blockedList}`
         : "";

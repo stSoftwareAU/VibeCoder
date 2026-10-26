@@ -85,16 +85,12 @@ export interface FindIssuesByLabelOptions extends FindIssuesOptions {
  *
  * @param config - Worker configuration
  * @param label - Label to search for
- * @param filterFailed - Whether to filter out issues with the failed label.
- *   Implied by `options.gateNewWork`, which drops every blocking label
- *   (Issue #937)
  * @param options - Search options
  * @returns Array of formatted candidate strings (one per line)
  */
 export async function findIssuesByLabel(
   config: WorkerConfig,
   label: string,
-  filterFailed: boolean,
   options: FindIssuesByLabelOptions,
 ): Promise<FindIssuesResult> {
   const ghFn = options.ghCommandFn ?? runGhCommand;
@@ -150,13 +146,6 @@ export async function findIssuesByLabel(
     } catch (err) {
       if (isRateLimitError(err)) throw err;
       continue;
-    }
-
-    // Issue #937: a gated scan leaves this to `filterAndSort`, which runs
-    // *after* `cleanStaleLabels` has shed the stale `failed` label a reopened
-    // issue still carries — filtering here first would strand it.
-    if (filterFailed && !options.gateNewWork) {
-      issues = issues.filter((i) => !i.labels.includes(config.failedLabel));
     }
 
     // Filter out assigned issues

@@ -294,7 +294,10 @@ async function ensureSnapshotRef(
   }
 }
 
-/** The body of a partial rollup PR. Carries no closing keyword by design. */
+/**
+ * The body of a partial rollup PR. Carries no closing keyword by design, and
+ * no VibeCoder issue number: it is posted in the target repo (Issue #3674).
+ */
 export function buildPartialRollupBody(options: {
   milestone: string;
   milestoneBranch: string;
@@ -315,7 +318,7 @@ export function buildPartialRollupBody(options: {
 ## Partial milestone rollup
 
 This PR lands the work already merged into \`${milestoneBranch}\` onto
-\`${defaultBranch}\` to break a cross-milestone dependency deadlock (#2794).
+\`${defaultBranch}\` to break a cross-milestone dependency deadlock.
 
 - Snapshot: \`${snapshotBranch}\` at \`${headSha}\` — an immutable copy of the
   milestone tip, ${aheadBy} commit(s) ahead of \`${defaultBranch}\`.
@@ -323,7 +326,7 @@ This PR lands the work already merged into \`${milestoneBranch}\` onto
   remaining issues land.
 - No issue is closed by this merge.
 
-Raised automatically by the Vibe Coder (Issue #2830).`;
+Raised automatically by the Vibe Coder.`;
 }
 
 /**

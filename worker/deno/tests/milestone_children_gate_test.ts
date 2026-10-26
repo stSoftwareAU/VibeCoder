@@ -6,15 +6,19 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  abandonOrphanBoundPr,
   decideSummaryPrMerge,
+  describeClosedRoute,
   fetchOpenMilestoneChildren,
-  holdOrphanBoundPr,
   isMilestoneBranch,
   OPEN_CHILDREN_BLOCK_MARKER,
   postOpenChildrenBlockComment,
   renderOpenChildrenBlockComment,
-  renderRouteClosedHoldComment,
 } from "../lib/milestone_children_gate.ts";
+import type {
+  AbandonRestartOutcome,
+  AbandonRestartRequest,
+} from "../lib/conflict_abandon_restart.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
 
 /**
@@ -498,6 +502,23 @@ Deno.test("decideMilestoneBaseMerge - a closed milestone blocks even with no rol
   if (d.decision === "block") assertEquals(d.reason, "milestone-closed");
 });
 
+Deno.test("decideMilestoneBaseMerge - a closed milestone's detail names it by title, not as #N (Issue #3673)", async () => {
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 1,
+    baseRefName: "milestone/clean-up",
+    ghCommandFn: ghForBaseGate({
+      rollups: [],
+      milestones: [{ number: 7, title: "Clean up", state: "closed" }],
+    }),
+  });
+  assertEquals(d.decision, "block");
+  if (d.decision === "block") {
+    assertEquals(d.detail, 'milestone "Clean up" is closed');
+    assertEquals(d.detail.match(/#\d+/g), null);
+  }
+});
+
 Deno.test("decideMilestoneBaseMerge - a milestone base that cannot be verified DEFERS, it does not block (Issue #477)", async () => {
   // Business-logic change from Issue #4396, which blocked here. A `block`
   // then retargeted the PR at the default branch, so an unreadable route — a
@@ -862,17 +883,89 @@ Deno.test("decideMilestoneBaseMerge - an ordinary child resolves its own head wh
   if (d.decision === "defer") assertEquals(d.reason, "milestone-behind");
 });
 
-Deno.test("holdOrphanBoundPr - a failed hold comment is logged, does not throw, and the disarm is still issued (Issue #3433)", async () => {
+Deno.test("abandonOrphanBoundPr - disarms, then closes the PR and redoes its issue with the closed route as the reason (Issue #4304)", async () => {
+  const calls: string[][] = [];
+  const requests: AbandonRestartRequest[] = [];
+  await abandonOrphanBoundPr({
+    repo: "o/r",
+    prNumber: 9,
+    headRefName: "issue-5-x",
+    gate: {
+      decision: "block",
+      reason: "rollup-merged",
+      milestoneBranch: "milestone/x",
+      rollupPrNumber: 41,
+      detail: "rollup merged",
+    },
+    ghCommandFn: (args) => {
+      calls.push(args);
+      return Promise.resolve(args[0] === "api" ? "[]" : "");
+    },
+    log: () => {},
+    authorOptions: { fleetAuthors: ["bot"] },
+    abandon: (request) => {
+      requests.push(request);
+      const outcome: AbandonRestartOutcome = {
+        outcome: "abandoned",
+        issueNumber: 5,
+        label: { kept: "work-on" },
+      };
+      return Promise.resolve(outcome);
+    },
+  });
+  assertEquals(
+    calls.filter((c) => c.includes("--disable-auto")).length,
+    1,
+  );
+  // Never moved to the default branch, and no hold comment of its own: the
+  // abandon carries the explanation.
+  assertEquals(calls.filter((c) => c[0] === "pr" && c[1] === "edit"), []);
+  assertEquals(calls.filter((c) => c[0] === "pr" && c[1] === "comment"), []);
+  assertEquals(requests.length, 1);
+  assertEquals(requests[0]!.branchName, "issue-5-x");
+  assertEquals(requests[0]!.baseBranch, "milestone/x");
+  const reason = requests[0]!.reason;
+  assertEquals(reason?.kind, "stalled");
+  if (reason?.kind === "stalled") {
+    assertEquals(reason.tried, "route-closed-hold");
+    assertStringIncludes(reason.detail, "rollup PR #41");
+  }
+});
+
+Deno.test("abandonOrphanBoundPr - a failed abandon is logged, does not throw, and the disarm is still issued (Issue #4304)", async () => {
   const calls: string[][] = [];
   const logs: string[] = [];
-  const ghCommandFn = (args: string[]): Promise<string> => {
-    calls.push(args);
-    if (args[0] === "pr" && args[1] === "comment") {
-      return Promise.reject(new Error("comment refused"));
-    }
-    return Promise.resolve(args[0] === "api" ? "[]" : "");
-  };
-  await holdOrphanBoundPr({
+  await abandonOrphanBoundPr({
+    repo: "o/r",
+    prNumber: 9,
+    headRefName: "issue-5-x",
+    gate: {
+      decision: "block",
+      reason: "milestone-closed",
+      milestoneBranch: "milestone/x",
+      detail: "milestone closed",
+    } as never,
+    ghCommandFn: (args) => {
+      calls.push(args);
+      return Promise.resolve(args[0] === "api" ? "[]" : "");
+    },
+    log: (m) => logs.push(m),
+    authorOptions: { fleetAuthors: ["bot"] },
+    abandon: () => Promise.reject(new Error("abandon refused")),
+  });
+  assertEquals(
+    calls.filter((c) => c.includes("--disable-auto")).length,
+    1,
+  );
+  assertEquals(
+    logs.some((l) => l.includes("o/r#9") && l.includes("abandon refused")),
+    true,
+  );
+});
+
+Deno.test("abandonOrphanBoundPr - reads the head branch when the caller has none (Issue #4304)", async () => {
+  const requests: AbandonRestartRequest[] = [];
+  await abandonOrphanBoundPr({
     repo: "o/r",
     prNumber: 9,
     gate: {
@@ -881,33 +974,28 @@ Deno.test("holdOrphanBoundPr - a failed hold comment is logged, does not throw, 
       milestoneBranch: "milestone/x",
       detail: "milestone closed",
     } as never,
-    ghCommandFn,
-    log: (m) => logs.push(m),
+    ghCommandFn: (args) =>
+      Promise.resolve(
+        args[0] === "pr" && args[1] === "view" ? "issue-7-y\n" : "",
+      ),
+    log: () => {},
     authorOptions: { fleetAuthors: ["bot"] },
+    abandon: (request) => {
+      requests.push(request);
+      return Promise.resolve(
+        { outcome: "closed-without-issue", reason: "no-match" } as never,
+      );
+    },
   });
-  assertEquals(
-    calls.filter((c) => c.includes("--disable-auto")).length,
-    1,
-  );
-  assertEquals(
-    calls.filter((c) => c[0] === "pr" && c[1] === "comment").length,
-    1,
-  );
-  assertEquals(
-    logs.some((l) =>
-      l.includes("could not post the hold comment on o/r#9") &&
-      l.includes("comment refused")
-    ),
-    true,
-  );
+  assertEquals(requests.map((r) => r.branchName), ["issue-7-y"]);
 });
 
-Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the rollup PR or milestone it names (Issue #3501)", () => {
-  // The comment is posted in the target repo, where GitHub autolinks a bare
+Deno.test("describeClosedRoute - carries no bare #N apart from the rollup PR or milestone it names (Issue #3501)", () => {
+  // The reason is posted in the target repo, where GitHub autolinks a bare
   // `#N` to that repo's own issue — a VibeCoder issue number would point at
   // an unrelated one.
   const cases: Array<{
-    gate: Parameters<typeof renderRouteClosedHoldComment>[0];
+    gate: Parameters<typeof describeClosedRoute>[0];
     expected: string[];
   }> = [
     {
@@ -928,7 +1016,7 @@ Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the roll
         milestoneNumber: 7,
         detail: "milestone closed",
       },
-      expected: ["#7"],
+      expected: [],
     },
     {
       gate: {
@@ -942,8 +1030,94 @@ Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the roll
   ];
   for (const { gate, expected } of cases) {
     assertEquals(
-      renderRouteClosedHoldComment(gate).match(/#\d+/g) ?? [],
+      describeClosedRoute(gate, "o/r").match(/#\d+/g) ?? [],
       expected,
     );
+  }
+});
+
+Deno.test("describeClosedRoute - names a closed milestone by title and links its page, never as #N (Issue #3673)", () => {
+  // inertCodeSpan pads the title inside its fence, so the span reads
+  // `` ` Clean up ` `` in the rendered Markdown.
+  const linked = describeClosedRoute({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/clean-up",
+    milestoneNumber: 7,
+    milestoneTitle: "Clean up",
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(
+    linked,
+    "its milestone [` Clean up `](https://github.com/o/r/milestone/7) is closed",
+  );
+  assertEquals(linked.includes("#7"), false);
+
+  const titleOnly = describeClosedRoute({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/clean-up",
+    milestoneTitle: "Clean up",
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(
+    titleOnly,
+    "its milestone ` Clean up ` is closed",
+  );
+  assertEquals(titleOnly.includes("](https://"), false);
+
+  const hostile = describeClosedRoute({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/release",
+    milestoneNumber: 7,
+    milestoneTitle: "Release #5",
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(
+    hostile,
+    "[` Release #5 `](https://github.com/o/r/milestone/7)",
+  );
+
+  const untitled = describeClosedRoute({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/clean-up",
+    milestoneNumber: 7,
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(untitled, "its milestone is closed");
+  assertEquals(untitled.includes("#7"), false);
+  assertEquals(untitled.includes("](https://"), false);
+});
+
+Deno.test("abandonOrphanBoundPr - the abandon reason links the closed milestone in the PR's own repo (Issue #3673)", async () => {
+  const requests: AbandonRestartRequest[] = [];
+  await abandonOrphanBoundPr({
+    repo: "o/r",
+    prNumber: 9,
+    headRefName: "issue-5-x",
+    gate: {
+      decision: "block",
+      reason: "milestone-closed",
+      milestoneBranch: "milestone/clean-up",
+      milestoneNumber: 7,
+      milestoneTitle: "Clean up",
+      detail: 'milestone "Clean up" is closed',
+    },
+    ghCommandFn: (args) => Promise.resolve(args[0] === "api" ? "[]" : ""),
+    log: () => {},
+    authorOptions: { fleetAuthors: ["bot"] },
+    abandon: (request) => {
+      requests.push(request);
+      return Promise.resolve(
+        { outcome: "closed-without-issue", reason: "no-match" } as never,
+      );
+    },
+  });
+  const reason = requests[0]?.reason;
+  assertEquals(reason?.kind, "stalled");
+  if (reason?.kind === "stalled") {
+    assertStringIncludes(reason.detail, "(https://github.com/o/r/milestone/7)");
   }
 });

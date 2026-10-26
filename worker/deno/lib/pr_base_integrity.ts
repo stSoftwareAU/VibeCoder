@@ -7,22 +7,39 @@
  * milestone's final review. The Auto-merge sweep therefore re-reads the PR's
  * base each pass and holds, disarms or re-evaluates it before any arming.
  *
+ * A moved PR is never held for a human (Issue #4304). It is moved back onto
+ * the base it was opened against — which the base-change guard allows, since
+ * it only ever returns a PR to a milestone branch — and merges there as
+ * normal. When there is no such base to return to (the move was GitHub's own,
+ * because the old base was deleted, or the base cannot be restored), the PR is
+ * closed and its originating issue redone through `abandonAndRestart`.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "./alert_dedup_authors.ts";
+import {
+  abandonAndRestart,
+  type AbandonRestartDeps,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 import {
   isMilestoneBranch,
   isMilestoneFixBranch,
 } from "./milestone_branch_names.ts";
 import { hasFleetAuthoredMarker } from "./milestone_children_gate.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_pr.ts";
-import { parseMilestoneFixHead } from "./pr_base_change_guard.ts";
+import { decidePrBaseChange } from "./pr_base_change_guard.ts";
 import {
   AutoMergeResult,
   type EnableAutoMergeResult,
 } from "./pr_auto_merge.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Marker on the comment placed on a retargeted milestone-fix PR. */
 export const MILESTONE_FIX_RETARGETED_MARKER =
@@ -30,11 +47,6 @@ export const MILESTONE_FIX_RETARGETED_MARKER =
 
 /** Marker on the comment explaining a PR moved onto the default branch. */
 export const MOVED_ONTO_DEFAULT_MARKER = "<!-- vibe-pr-moved-onto-default -->";
-
-/** Marker on the milestone's final PR, naming the retargeted fix PR. */
-export function milestoneFixRetargetedFinalPrMarker(fixPr: number): string {
-  return `<!-- vibe-milestone-fix-retargeted pr="${fixPr}" -->`;
-}
 
 const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -216,8 +228,16 @@ export interface CheckPrBaseIntegrityOptions {
   gh: GhFn;
   /** Warning logger. */
   log: (message: string) => void;
-  /** Fleet author options for comment de-duplication. */
+  /**
+   * Fleet author options for comment de-duplication, and the trusted authors
+   * the abandon reads restart claims against.
+   */
   authorOptions?: AlertDedupAuthorOptions;
+  /** Abandon override (tests); defaults to {@link abandonAndRestart}. */
+  abandon?: (
+    request: AbandonRestartRequest,
+    deps: AbandonRestartDeps,
+  ) => Promise<AbandonRestartOutcome>;
 }
 
 /** Post `body` on `prNumber` once per `marker`; never throws. */
@@ -248,11 +268,99 @@ async function commentOnce(
       `${marker}\n${body}`,
     ]);
   } catch (err) {
-    o.log(
-      `WARNING: could not comment on ${o.repo}#${prNumber} about its base: ${
+    logAt(
+      o.log,
+      "warn",
+      `could not comment on ${o.repo}#${prNumber} about its base: ${
         err instanceof Error ? err.message : String(err)
       } (Issue #3433)`,
     );
+  }
+}
+
+/**
+ * The base a moved PR goes back to: the one it was moved off, when the
+ * base-change guard would let the fleet return it there (Issue #4304).
+ * `undefined` means there is nothing to go back to.
+ */
+function restorableBase(reading: PrBaseIntegrityReading): string | undefined {
+  const from = reading.lastBaseChange?.from;
+  if (!from || from === reading.baseRefName) return undefined;
+  const decision = decidePrBaseChange({
+    headRefName: reading.headRefName,
+    currentBase: reading.baseRefName,
+    newBase: from,
+  });
+  return decision.allowed && isMilestoneBranch(from) ? from : undefined;
+}
+
+/** Move the PR back onto `base`; false (logged) when it could not be. */
+async function retargetBack(
+  o: CheckPrBaseIntegrityOptions,
+  base: string,
+): Promise<boolean> {
+  try {
+    await o.gh([
+      "pr",
+      "edit",
+      String(o.pr.number),
+      "--repo",
+      o.repo,
+      "--base",
+      base,
+    ]);
+    return true;
+  } catch (err) {
+    logAt(
+      o.log,
+      "warn",
+      `could not move ${o.repo}#${o.pr.number} back onto '${base}': ${
+        err instanceof Error ? err.message : String(err)
+      } — closing it and redoing its issue instead (Issue #4304)`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Close a PR that cannot land where it is and redo its originating issue
+ * (Issue #4304). Never throws; the outcome is the hold's message.
+ */
+async function abandonMovedPr(
+  o: CheckPrBaseIntegrityOptions,
+  reading: PrBaseIntegrityReading,
+  detail: string,
+): Promise<string> {
+  const abandon = o.abandon ?? abandonAndRestart;
+  try {
+    const trustedAuthors = await resolveAlertDedupAuthors(
+      o.authorOptions ?? {},
+      o.log,
+    );
+    const outcome = await abandon(
+      {
+        repo: o.repo,
+        prNumber: o.pr.number,
+        branchName: reading.headRefName,
+        baseBranch: reading.baseRefName,
+        reason: { kind: "stalled", detail, tried: "retarget-back" },
+      },
+      { gh: o.gh, trustedAuthors },
+    );
+    switch (outcome.outcome) {
+      case "abandoned":
+        return `closed and issue #${outcome.issueNumber} re-queued`;
+      case "closed-without-issue":
+        return "closed; it names no originating issue";
+      case "declined":
+        return `abandon declined (${outcome.reason.kind}), retried next pass`;
+      case "failed":
+        return `abandon failed at ${outcome.step}: ${outcome.message}, retried next pass`;
+    }
+  } catch (err) {
+    return `abandon threw: ${
+      err instanceof Error ? err.message : String(err)
+    }, retried next pass`;
   }
 }
 
@@ -292,57 +400,60 @@ export async function checkPrBaseIntegrity(
   const decision = decidePrBaseIntegrity(reading);
   const base = reading.baseRefName;
   switch (decision.kind) {
-    case "mistargeted-milestone-fix": {
-      await disarmAutoMerge(repo, pr.number, gh, log);
-      log(
-        `WARNING: [MILESTONE_FIX_RETARGETED] ${repo}#${pr.number} has milestone-fix head '${reading.headRefName}' on base '${base}', not a milestone branch — auto-merge disarmed (Issue #3433)`,
-      );
-      const text =
-        `This milestone-fix PR targets \`${base}\` instead of a milestone branch. Its diff is the milestone's work, so it must land only through the milestone's final PR. Auto-merge has been disarmed. A human should retarget it to \`milestone/<…>\` or close it (Issue #3433).`;
-      await commentOnce(o, pr.number, MILESTONE_FIX_RETARGETED_MARKER, text);
-      const parsed = parseMilestoneFixHead(reading.headRefName);
-      if (parsed) {
-        await commentOnce(
-          o,
-          parsed.milestonePrNumber,
-          milestoneFixRetargetedFinalPrMarker(pr.number),
-          `Milestone-fix PR #${pr.number} targets \`${base}\` instead of a milestone branch. ${text}`,
-        );
-      }
-      return {
-        action: "hold",
-        outcome: {
-          result: AutoMergeResult.HeldBaseRetargeted,
-          message:
-            `PR #${pr.number} is a milestone-fix PR on base '${base}', not a milestone branch — auto-merge disarmed (Issue #3433)`,
-        },
-      };
-    }
+    case "mistargeted-milestone-fix":
     case "moved-onto-default": {
+      const fix = decision.kind === "mistargeted-milestone-fix";
       const from = reading.lastBaseChange?.from ?? "unknown";
       await disarmAutoMerge(repo, pr.number, gh, log);
-      log(
-        `WARNING: ${repo}#${pr.number} was moved onto '${base}' from '${from}' after it was opened — auto-merge disarmed (Issue #3433)`,
+      logAt(
+        log,
+        "warn",
+        fix
+          ? `[MILESTONE_FIX_RETARGETED] ${repo}#${pr.number} has milestone-fix head '${reading.headRefName}' on base '${base}', not a milestone branch — auto-merge disarmed (Issue #3433)`
+          : `${repo}#${pr.number} was moved onto '${base}' from '${from}' after it was opened — auto-merge disarmed (Issue #3433)`,
       );
-      await commentOnce(
+      // Issue #4304: never held for a human. Moved back where it was opened,
+      // or closed and redone.
+      const back = restorableBase(reading);
+      if (back !== undefined && await retargetBack(o, back)) {
+        // Posted in the target repo, so it cites no VibeCoder issue number (Issue #3674).
+        await commentOnce(
+          o,
+          pr.number,
+          fix ? MILESTONE_FIX_RETARGETED_MARKER : MOVED_ONTO_DEFAULT_MARKER,
+          `This PR was moved onto \`${base}\` after it was opened. The fleet has moved it back onto \`${back}\`, the base it was opened against, and it merges there as normal once it is approved and green.`,
+        );
+        return {
+          action: "hold",
+          outcome: {
+            result: AutoMergeResult.Deferred,
+            message:
+              `PR #${pr.number} moved back onto '${back}' from '${base}' — re-evaluated next pass (Issue #4304)`,
+          },
+        };
+      }
+      const what = await abandonMovedPr(
         o,
-        pr.number,
-        MOVED_ONTO_DEFAULT_MARKER,
-        `This PR was moved onto the default branch \`${base}\` from \`${from}\` after it was opened, so the fleet will not auto-merge it there. Auto-merge has been disarmed; a human should review and merge it (Issue #3433).`,
+        reading,
+        fix
+          ? `targets \`${base}\` instead of a milestone branch, so it cannot land where it is`
+          : `was moved onto the default branch \`${base}\` after it was opened, so it cannot land where it is`,
       );
       return {
         action: "hold",
         outcome: {
           result: AutoMergeResult.HeldBaseRetargeted,
           message:
-            `PR #${pr.number} was moved onto '${base}' from '${from}' after it was opened — not armed, not merged, auto-merge disarmed (Issue #3433)`,
+            `PR #${pr.number} on base '${base}' has no base to move back to — ${what} (Issue #4304)`,
         },
       };
     }
     case "base-changed-since-armed": {
       const disarmed = await disarmAutoMerge(repo, pr.number, gh, log);
-      log(
-        `WARNING: ${repo}#${pr.number} base changed after auto-merge was armed — disarmed for re-evaluation (Issue #3433)`,
+      logAt(
+        log,
+        "warn",
+        `${repo}#${pr.number} base changed after auto-merge was armed — disarmed for re-evaluation (Issue #3433)`,
       );
       if (!disarmed) {
         return {

@@ -26,7 +26,23 @@ import { agentPreFlightCommands } from "./agent_pre_flight.ts";
 import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  inFlightHostDiskGateEnabled,
+  parkInFlightBuild,
+} from "./heavy_build_gate.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
+import {
+  appendFinishDeadlinePrompt,
+  clampTimeoutToFinishDeadline,
+  finishSessionReserveSeconds,
+  getRunTimeline,
+  MIN_AGENT_SESSION_SECONDS,
+} from "./run_timeline.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+  spawnCommandWithTimeout,
+} from "./subprocess_timeout.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
   describeMemoryPressure,
@@ -40,10 +56,10 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
-  detectInvalidSessionId,
   detectModelUnavailable,
   detectOutOfMemory,
   detectRateLimit,
+  detectResumedSessionUnusable,
   detectUsageLimit,
   extractStreamJsonText,
   getTokenEstimate,
@@ -342,6 +358,14 @@ export interface ClaudeRunResult {
    */
   scheduledRelease?: ScheduledReleaseReason;
   /**
+   * The session was bounded by the run's finish deadline (Issue #4244).
+   *
+   * Set when the agent was not spawned because less than the minimum session
+   * remained, and when a spawned session ended at the clamped timeout.
+   * Absent means the run used its own budget, or no timeline was set.
+   */
+  finishDeadline?: boolean;
+  /**
    * Seconds the hard watchdog fired past its configured budget
    * (Issue #4254). Deno timers in a starved VM are not a reliable clock —
    * host-25 saw the 3600 s watchdog fire 487 s and 3470 s late. Present on
@@ -604,6 +628,12 @@ export interface RunClaudeOptions {
    * `0` disables the snapshot and the collection. Default 20 s.
    */
   descendantSnapshotIntervalMs?: number;
+  /**
+   * How often a running agent is asked whether the host is still above its
+   * disk floor (Issue #4360). Default 30 s. The watch itself starts only
+   * once production has armed the in-flight gate.
+   */
+  hostDiskPollMs?: number;
   /** Process-table seams for the orphan collector — tests only. */
   orphanCollectorDeps?: OrphanCollectorDeps;
   /**
@@ -648,16 +678,6 @@ export interface RunClaudeOptions {
   promptCacheHit?: boolean;
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
-  /**
-   * Context window (in tokens) at which the CLI compacts on its own
-   * (Issue #2337) — `--autocompact`.
-   *
-   * Set by a run whose stream conversation could not be verifiably compacted
-   * before the issue started (`stream_compaction.ts`), so every phase run of
-   * that issue carries it. Omitted, no flag is emitted and the CLI's default
-   * window stands.
-   */
-  autocompactTokens?: number;
   /**
    * Claude Code settings for this one spawn, already serialised (Issue #2383).
    *
@@ -1184,6 +1204,52 @@ async function runClaudeWithTimeoutBody(
     clock = systemClock,
   } = options;
 
+  // The finish deadline bounds every session (Issue #4244). With no timeline
+  // set the prompt, the arguments and the timeout stay exactly as the caller
+  // asked. The line is appended to the user prompt only — the system prompt
+  // is the cached prefix and is not touched.
+  const timeline = getRunTimeline();
+  let finishClamp = timeline
+    ? clampTimeoutToFinishDeadline({
+      requestedTimeoutSeconds: timeoutSeconds,
+      killAfterSeconds,
+      nowMs: clock.now(),
+      timeline,
+    })
+    : undefined;
+  let userPrompt = finishClamp
+    ? appendFinishDeadlinePrompt(prompt, finishClamp)
+    : prompt;
+  let sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
+  const finishRefusal = () => {
+    logger?.info(
+      `claude_timeout=${sessionTimeoutSeconds} (clamped to finish deadline ${
+        finishClamp!.finishIso
+      }) — ` +
+        `below ${MIN_AGENT_SESSION_SECONDS}s, not spawning the agent`,
+    );
+    return {
+      ok: true as const,
+      value: {
+        exitCode: TIMEOUT_EXIT_CODE,
+        output: "",
+        stderr: "",
+        timedOut: true,
+        timeoutReason: "hard-timeout" as const,
+        finishDeadline: true,
+      },
+    };
+  };
+  if (finishClamp?.belowFloor) return finishRefusal();
+
+  // An agent in a checkout runs cargo and deno. Below the floor it does not
+  // start (Issue #4360). No checkout means there is no build to bound, and
+  // the gate is a no-op until production arms it.
+  if (cwd) {
+    const park = await parkInFlightBuild(cwd);
+    if (park) return { ok: false, error: new Error(park) };
+  }
+
   // The provider seam (Issue #4067) owns the binary, the argument list and
   // the child environment, so a second provider is a new descriptor rather
   // than an edit here. Resolved once, per invocation (Issue #4109): the
@@ -1224,7 +1290,7 @@ async function runClaudeWithTimeoutBody(
   const promptViaStdin = provider.promptTransport === "stdin";
   const invocationRequest = {
     orchestrationRole: options.orchestrationRole,
-    prompt,
+    prompt: userPrompt,
     systemPrompt,
     model,
     phase,
@@ -1235,18 +1301,11 @@ async function runClaudeWithTimeoutBody(
     // absent value emits no `--agents` argument.
     ...(options.agents ? { agents: options.agents } : {}),
     sessionResumeState: options.sessionResumeState,
-    // The pulled-forward autocompaction window (Issue #2337), when the
-    // stream's conversation could not be compacted before the issue started.
-    ...(options.autocompactTokens
-      ? { autocompactTokens: options.autocompactTokens }
-      : {}),
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
-    // other when a run has both on. Claude only — DeepSeek drops the
-    // executor definitions, so a guard there would deny the advisor's edits
-    // with no executor to make them, and the other providers take no such
-    // flag.
+    // other when a run has both on. The advisor guard remains Claude-only;
+    // Codex translates RTK settings to its own per-spawn hook configuration.
     ...settingsJsonOption(
       options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
         ? resolveIssueExecutorHookSettings()
@@ -1254,7 +1313,7 @@ async function runClaudeWithTimeoutBody(
       options.settingsJson ? JSON.parse(options.settingsJson) : undefined,
     ),
   };
-  const args = provider.buildInvocation({
+  let args = provider.buildInvocation({
     ...invocationRequest,
     promptViaStdin,
   });
@@ -1263,7 +1322,13 @@ async function runClaudeWithTimeoutBody(
   // Haiku-tier explorer). A provider whose argv cannot carry them drops them —
   // Codex and Gemini silently, DeepSeek with a warning — so the advisor would
   // be told to dispatch sub-agents the CLI never defines. Refuse before spawn
-  // instead. `invocationRequest.agents` is present only when the run's flags
+  // instead. This is a backstop: the issue-run planner
+  // (lib/issue_run_provider_agents.ts) normally reroutes or strips such a run
+  // before it reaches here, but the retry loop switches `agentProvider` to
+  // `agent_provider_fallback` after a model refusal and keeps `agents`, so this
+  // guard can still refuse a fallback provider such as Codex, as well as any
+  // caller that bypasses the planner.
+  // `invocationRequest.agents` is present only when the run's flags
   // resolved some definition, and the check asks the provider's own argv rather
   // than a provider-id table.
   if (invocationRequest.agents && !args.includes("--agents")) {
@@ -1279,11 +1344,11 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   }
-  const stdinPayload = promptViaStdin
-    ? (provider.stdinBody?.(invocationRequest) ?? prompt)
-    : prompt;
+  let stdinPayload = promptViaStdin
+    ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
+    : userPrompt;
 
-  const timeoutMs = timeoutSeconds * 1000;
+  let timeoutMs = sessionTimeoutSeconds * 1000;
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
 
   let timedOut = false;
@@ -1293,6 +1358,10 @@ async function runClaudeWithTimeoutBody(
   // (Issue #424). Carried onto the result so the phase can report a
   // scheduled release instead of a per-issue timeout.
   let scheduledRelease: ScheduledReleaseReason | undefined;
+  // Set when an extension grant was refused because the finish deadline left
+  // no runway (Issue #4245). The session-clamp path sets the same flag from
+  // `finishClamp` at return time; this covers a grant the ceiling stopped.
+  let finishDeadlineReached = false;
   let hardWatchdog: TimerHandle | undefined;
   let silenceWatchdog: TimerHandle | undefined;
   let killBoundTimer: TimerHandle | undefined;
@@ -1300,6 +1369,10 @@ async function runClaudeWithTimeoutBody(
   // the survivors of an external kill can be collected after the fact.
   let descendantSnapshotTimer: TimerHandle | undefined;
   let descendantTracker: DescendantTracker | undefined;
+  // Set when the host crosses its disk floor while the agent is running
+  // (Issue #4360). The run then fails as infrastructure, not as a timeout.
+  let hostDiskPark: string | undefined;
+  let hostDiskPoll: TimerHandle | undefined;
   let ghGuard: GhGuardShim | undefined;
   let prePushHook: PrePushHook | undefined;
   let transcript: AgentTranscriptWriter | undefined;
@@ -1390,6 +1463,34 @@ async function runClaudeWithTimeoutBody(
     }
     prePushHook = hookOutcome.value;
 
+    if (promptViaStdin) {
+      promptFilePath = await Deno.makeTempFile({
+        prefix: "vibe-agent-prompt-",
+        suffix: ".md",
+      });
+    }
+    // Setup can consume the remaining runway. Refresh only after every
+    // awaited preparation step, then render the invocation from that budget.
+    finishClamp = timeline
+      ? clampTimeoutToFinishDeadline({
+        requestedTimeoutSeconds: timeoutSeconds,
+        killAfterSeconds,
+        nowMs: clock.now(),
+        timeline,
+      })
+      : undefined;
+    sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
+    timeoutMs = sessionTimeoutSeconds * 1000;
+    if (finishClamp?.belowFloor) return finishRefusal();
+    userPrompt = finishClamp
+      ? appendFinishDeadlinePrompt(prompt, finishClamp)
+      : prompt;
+    invocationRequest.prompt = userPrompt;
+    args = provider.buildInvocation({ ...invocationRequest, promptViaStdin });
+    stdinPayload = promptViaStdin
+      ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
+      : userPrompt;
+
     // Issue #324: run the agent at a lower scheduler priority.
     //
     // On 2026-08-22 two agents each wrote an unbounded bash busy-wait — one
@@ -1425,24 +1526,19 @@ async function runClaudeWithTimeoutBody(
       ? ["-n", String(agentNice), agentBinary, ...args]
       : args;
 
-    const command = new Deno.Command(spawnBinary, {
-      args: spawnArgs,
-      cwd,
-      clearEnv: true,
-      env: prePushHook.env,
-      stdout: "piped",
-      stderr: "piped",
-      stdin: promptViaStdin ? "piped" : "null",
-    });
-
+    const finishClampNote = finishClamp?.clamped
+      ? ` (clamped to finish deadline ${finishClamp.finishIso})`
+      : "";
     logger?.info(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
-      `Running ${provider.displayName} with ${timeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
+      `Running ${provider.displayName} with ${sessionTimeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
         (args.includes("--max-turns")
-          ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
+          ? ` claude_timeout=${sessionTimeoutSeconds} claude_max_turns=${
             args[args.indexOf("--max-turns") + 1]
-          }`
+          }${finishClampNote}`
+          : finishClampNote
+          ? ` claude_timeout=${sessionTimeoutSeconds}${finishClampNote}`
           : "") +
         (noOutputMs > 0 ? `, no-output watchdog ${noOutputTimeout}s` : "") +
         "...",
@@ -1472,15 +1568,10 @@ async function runClaudeWithTimeoutBody(
     // Wall-clock start for per-run stats (Issue #2647). Measured around the
     // whole subprocess lifetime; used as the duration fallback when the CLI
     // result line does not report its own `duration_ms`.
-    if (promptViaStdin) {
-      // Written before the spawn so the file exists for the whole run; a
-      // kill mid-stream leaves it for post-mortem when the transcript tee
-      // is on, otherwise it is removed with the run.
-      promptFilePath = await Deno.makeTempFile({
-        prefix: "vibe-agent-prompt-",
-        suffix: ".md",
-      });
-      await Deno.writeTextFile(promptFilePath, stdinPayload);
+    if (promptViaStdin && promptFilePath) {
+      // Finalise the already allocated file without an await between the
+      // refreshed budget and spawn. It remains inspectable for the run.
+      Deno.writeTextFileSync(promptFilePath, stdinPayload);
       logger?.info(
         `Prompt file: ${promptFilePath} (${
           new TextEncoder().encode(stdinPayload).length
@@ -1488,7 +1579,41 @@ async function runClaudeWithTimeoutBody(
       );
     }
     const startMs = clock.now();
-    const child = command.spawn();
+    // Even synchronous prompt I/O can consume time. Refuse if it crossed the
+    // admission floor; the absolute deadline below also bounds shorter delays.
+    if (timeline) {
+      const spawnClamp = clampTimeoutToFinishDeadline({
+        requestedTimeoutSeconds: timeoutSeconds,
+        killAfterSeconds,
+        nowMs: startMs,
+        timeline,
+      });
+      finishClamp = spawnClamp;
+      sessionTimeoutSeconds = spawnClamp.timeoutSeconds;
+      timeoutMs = sessionTimeoutSeconds * 1000;
+      if (spawnClamp.belowFloor) return finishRefusal();
+    }
+    const child = spawnCommandWithTimeout(spawnBinary, {
+      args: spawnArgs,
+      cwd,
+      clearEnv: true,
+      env: prePushHook.env,
+      stdout: "piped",
+      stderr: "piped",
+      stdin: promptViaStdin ? "piped" : "null",
+      // Backstop past the latest deadline the watchdog can reach. The
+      // watchdog still kills the tree at its deadline; this signal fires only
+      // if that child is still alive.
+      timeoutMs: agentSpawnBackstopMs(
+        sessionTimeoutSeconds,
+        killAfterSeconds,
+        options.progressExtension === undefined ? undefined : {
+          enabled: options.progressExtension.policy.enabled === true,
+          ceilingMs: options.progressExtension.ceilingMs,
+        },
+        clock.now(),
+      ),
+    });
     const childPid = child.pid;
     if (promptViaStdin && promptFilePath) {
       // Stream the file into stdin and close it at EOF (pipeTo closes the
@@ -1661,6 +1786,32 @@ async function runClaudeWithTimeoutBody(
       );
     };
 
+    // While the agent runs, a build it started can fill the host. Stop the
+    // tree when the reading crosses the floor and fail the run as a host
+    // fault, not as a timeout (Issue #4360).
+    if (cwd && inFlightHostDiskGateEnabled()) {
+      hostDiskPoll = clock.setInterval(() => {
+        if (runFinished || hostDiskPark) return;
+        void parkInFlightBuild(cwd).then((reason) => {
+          if (!reason || runFinished || hostDiskPark) return;
+          hostDiskPark = reason;
+          logger?.error(reason);
+          void killClaudeProcessTree(
+            childPid,
+            killAfterSeconds,
+            logger,
+            childIdentity,
+          ).catch((err) => {
+            logger?.error(
+              `Host-disk kill failed for PID ${childPid}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+        });
+      }, options.hostDiskPollMs ?? 30_000);
+    }
+
     // Periodic progress lines (Issue #4169): the same stream the silence
     // watchdog reads, folded into one compact line per interval so a long
     // agent phase is no longer a black box in the worker log. Chunk-driven,
@@ -1690,7 +1841,13 @@ async function runClaudeWithTimeoutBody(
     // The hard deadline, epoch-ms (Issue #4296). Without the opt-in it is
     // `startMs + timeoutMs` for the whole run and every figure below reduces
     // to what it was; with it, each granted extension moves it forward.
-    let deadlineMs = startMs + timeoutMs;
+    let deadlineMs = Math.min(
+      startMs + timeoutMs,
+      timeline
+        ? timeline.finishMs -
+          finishSessionReserveSeconds(killAfterSeconds) * 1000
+        : Infinity,
+    );
     let extensionsGranted = 0;
     let extensionInFlight = false;
     const extension = options.progressExtension;
@@ -1740,7 +1897,7 @@ async function runClaudeWithTimeoutBody(
     ): ExtensionTelemetry | undefined =>
       telemetryActive
         ? buildExtensionTelemetry({
-          baseTimeoutSeconds: timeoutSeconds,
+          baseTimeoutSeconds: sessionTimeoutSeconds,
           startMs,
           deadlineMs,
           nowMs,
@@ -2099,6 +2256,9 @@ async function runClaudeWithTimeoutBody(
         // cross it is clamped to it, and a run with no runway left is
         // refused so the worker's own kill lands first.
         ...(opts.ceilingMs !== undefined ? { ceilingMs: opts.ceilingMs } : {}),
+        ...(opts.ceilingLabel !== undefined
+          ? { ceilingLabel: opts.ceilingLabel }
+          : {}),
       }, opts.policy);
 
       const elapsedSeconds = Math.round((nowMs - startMs) / 1000);
@@ -2109,6 +2269,10 @@ async function runClaudeWithTimeoutBody(
         // release (Issue #424) — the issue is not at fault and must not be
         // told it ran out of time.
         if (decision.cause === "hard-cap") scheduledRelease = "hard-cap";
+        if (decision.cause === "finish-deadline") {
+          scheduledRelease = "finish-deadline";
+          finishDeadlineReached = true;
+        }
         logger?.info(
           `[progress-extension] not extending after ${elapsedSeconds}s ` +
             // Name every signal the decision saw (Issue #767): the #732
@@ -2379,6 +2543,10 @@ async function runClaudeWithTimeoutBody(
     if (descendantSnapshotTimer) {
       clock.clearInterval(descendantSnapshotTimer);
       descendantSnapshotTimer = undefined;
+    }
+    if (hostDiskPoll) {
+      clock.clearInterval(hostDiskPoll);
+      hostDiskPoll = undefined;
     }
 
     // Wait for any kill cascade to finish so its internal timers complete
@@ -2654,6 +2822,9 @@ async function runClaudeWithTimeoutBody(
         await descendantTracker.settle();
       }
     }
+    if (hostDiskPark) {
+      return { ok: false, error: new Error(hostDiskPark) };
+    }
     return {
       ok: true,
       value: {
@@ -2666,6 +2837,14 @@ async function runClaudeWithTimeoutBody(
         timedOut,
         timeoutReason,
         ...(scheduledRelease ? { scheduledRelease } : {}),
+        // The hard watchdog that fired is the finish clamp, not the caller's
+        // own budget (Issue #4244). A silence watchdog or a call storm is a
+        // different ending and does not carry the flag.
+        ...(finishDeadlineReached ||
+            (timedOut && timeoutReason === "hard-timeout" &&
+              finishClamp?.clamped)
+          ? { finishDeadline: true }
+          : {}),
         ...(terminated ? { terminated: true } : {}),
         ...(externalSigterm ? { externalSigterm: true } : {}),
         ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
@@ -2695,6 +2874,7 @@ async function runClaudeWithTimeoutBody(
     if (silenceWatchdog) clock.clearTimeout(silenceWatchdog);
     if (killBoundTimer) clock.clearTimeout(killBoundTimer);
     if (descendantSnapshotTimer) clock.clearInterval(descendantSnapshotTimer);
+    if (hostDiskPoll) clock.clearInterval(hostDiskPoll);
     if (descendantTracker) await descendantTracker.settle();
     for (const [pid, run] of activeAgentRuns) {
       if (run.logger === logger && run.label.startsWith(phase ?? "agent")) {
@@ -2798,15 +2978,51 @@ export async function killClaudeProcessTree(
 /** Default gap between two memory-pressure evidence lines (Issue #4384). */
 export const DEFAULT_MEMORY_WATCH_MIN_INTERVAL_MS = 60_000;
 
+/** The longest delay `setTimeout` honours; a longer one fires at once. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * The agent spawn's backstop timeout, in milliseconds (Issue #4251).
+ *
+ * It must not fire before the watchdog's own deadline plus its grace. With
+ * the progress extension on (Issue #4296) that deadline moves: up to the
+ * supervisor's ceiling when there is one, and without limit when there is
+ * not, so the backstop is then the longest timer there is.
+ */
+export function agentSpawnBackstopMs(
+  timeoutSeconds: number,
+  killAfterSeconds: number,
+  extension: { enabled: boolean; ceilingMs?: number } | undefined,
+  nowMs: number,
+): number {
+  let budgetMs = timeoutSeconds * 1000;
+  if (extension?.enabled === true) {
+    if (extension.ceilingMs === undefined) return MAX_TIMER_DELAY_MS;
+    budgetMs = Math.max(budgetMs, extension.ceilingMs - nowMs);
+  }
+  return Math.min(budgetMs + killAfterSeconds * 1000, MAX_TIMER_DELAY_MS);
+}
+
+/** `ps` for the memory watch. Seconds. A timeout is not an empty table. */
+const AGENT_PS_TIMEOUT_MS = 10_000;
+
 /** `ps -eo pid,ppid,rss,etime,args` for the memory watch. */
-async function defaultRunPs(): Promise<string> {
-  const out = await new Deno.Command("ps", {
+export async function readAgentProcessTable(
+  timeoutMs: number = AGENT_PS_TIMEOUT_MS,
+): Promise<string> {
+  const out = await commandOutputWithTimeout("ps", {
     args: ["-eo", "pid,ppid,rss,etime,args"],
     stdout: "piped",
     stderr: "null",
-  }).output();
+    timeoutMs,
+  });
   if (!out.success) throw new Error("ps failed");
   return new TextDecoder().decode(out.stdout);
+}
+
+/** `ps -eo pid,ppid,rss,etime,args` for the memory watch. */
+async function defaultRunPs(): Promise<string> {
+  return await readAgentProcessTable();
 }
 
 /**
@@ -2821,6 +3037,39 @@ async function readMemoryPressureAtKill(
   } catch {
     return { level: "unknown" };
   }
+}
+
+/**
+ * The evidence that a failed run was rate-limited by its provider, or
+ * undefined when it was not (Issue #4114).
+ *
+ * The provider's own classifier (Issue #1695) decides when it gave a verdict:
+ * it reads the CLI's error records and stderr, never the agent's transcript.
+ * An overloaded upstream (529) is classified `network` there but keeps the
+ * short-backoff ladder it has always taken. Only a provider with no output
+ * adapter falls back to the prose match, over the CLI's error surface alone.
+ *
+ * @param failure - The provider's normalised failure, if it classified one.
+ * @param cliErrorSurface - Stderr plus the provider's structured error text.
+ * @param tailLines - Lines from the end of the surface to scan.
+ * @returns The redacted line or message that matched, or undefined.
+ */
+export function rateLimitEvidence(
+  failure: AgentFailure | undefined,
+  cliErrorSurface: string,
+  tailLines: number,
+): string | undefined {
+  if (failure) {
+    const overloaded = failure.category === "network" &&
+      (failure.httpStatus === 529 || /overloaded/i.test(failure.message));
+    return failure.category === "rate-limit" || overloaded
+      ? failure.message
+      : undefined;
+  }
+  const { matchedLine } = detectRateLimit(cliErrorSurface, tailLines);
+  return matchedLine === undefined
+    ? undefined
+    : redactedLineTail(matchedLine.trim(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -3227,6 +3476,7 @@ async function runRetryLadder(
           ...(result.value.scheduledRelease
             ? { scheduledRelease: result.value.scheduledRelease }
             : {}),
+          ...(result.value.finishDeadline ? { finishDeadline: true } : {}),
           // Carry the #4254 evidence: a late-firing watchdog and an
           // abandoned post-kill wait must survive into the diagnostics.
           ...(result.value.watchdogLateSeconds !== undefined
@@ -3327,9 +3577,13 @@ async function runRetryLadder(
       // a second refusal has no session flags left to blame and falls through
       // to the ordinary failure path. Loud, because the run continues without
       // CLI session continuity and the caller must see that in the log.
+      // Issue #4147 widens "refused" to "unusable": a resume of a transcript
+      // that is gone (`No conversation found with session ID`) or one whose
+      // size thrashes autocompaction fails at the same point, before the
+      // task's work, and the same fresh retry is the remedy.
       if (
         currentOptions.sessionResumeState &&
-        detectInvalidSessionId(bothStreams, errorScanTailLines)
+        detectResumedSessionUnusable(bothStreams, errorScanTailLines)
       ) {
         const rejectedId = currentOptions.sessionResumeState.sessionId;
         currentOptions.logger?.warn(
@@ -3384,18 +3638,43 @@ async function runRetryLadder(
           continue;
         }
 
-        // No cheaper model on this provider. A refusal is terminal for the
-        // provider — a ChatGPT login that does not offer a model never will
-        // (Issue #4019) — so the configured `agent_provider_fallback` is the
-        // remaining remedy (Issue #4034). Only the health gate consulted it
-        // before, and a phase whose model the provider refused gave up every
-        // cycle while a healthy alternative stood idle. The fallback resolves
-        // its own model: the refused id names the old provider's catalogue,
-        // and a session id belongs to the CLI that recorded it.
-        const refusingProvider = selectAgentProvider(
+        // No cheaper model on this provider. A Codex built-in default that a
+        // ChatGPT login refused is first retried once without --model
+        // (Issue #4221). Otherwise a refusal is terminal for the provider — a
+        // ChatGPT login that does not offer a model never will (Issue #4019) —
+        // so the configured `agent_provider_fallback` is the remedy (Issue
+        // #4034). Only the health gate consulted it before, and a phase whose
+        // model the provider refused gave up every cycle while a healthy
+        // alternative stood idle. The fallback resolves its own model: the
+        // refused id names the old provider's catalogue, and a session id
+        // belongs to the CLI that recorded it.
+        const refusingDescriptor = selectAgentProvider(
           currentOptions.agentProvider,
           currentOptions.env ? { env: currentOptions.env } : {},
-        ).id;
+        );
+        // (Issue #4221) A ChatGPT login refused a built-in default: retry once
+        // on the same provider with the CLI's own default, before any switch.
+        // A second refusal falls through to the switch: the refused default now
+        // resolves to no model, so adaptAfterModelRefusal returns false.
+        // An explicit request model is never dropped: only a routed default.
+        if (
+          !currentOptions.model &&
+          refusingDescriptor.adaptAfterModelRefusal?.(
+            currentModel,
+            currentOptions.phase,
+            currentOptions.env,
+          )
+        ) {
+          currentOptions.logger?.info(
+            `[model-adaptation] ${refusingDescriptor.id} refused built-in default model "${currentModel}" — retrying once with the CLI default model (Issue #4221).`,
+          );
+          currentOptions = { ...currentOptions, model: undefined };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+        const refusingProvider = refusingDescriptor.id;
         const nextProvider = providerAfterModelRefusal(
           configuredProviderFallbackPolicy(),
           refusingProvider,
@@ -3526,18 +3805,18 @@ async function runRetryLadder(
         };
       }
 
-      // Check for rate limiting on non-zero exit
-      const { isRateLimited, isPrimary } = detectRateLimit(
-        bothStreams,
+      // Check for rate limiting on non-zero exit — the provider's refusal
+      // only, never the agent's own transcript (Issue #4114).
+      const rateLimited = rateLimitEvidence(
+        invokedAgentFailure,
+        `${stderr ?? ""}\n${structuredEvidence}`,
         errorScanTailLines,
       );
 
-      if (isRateLimited) {
+      if (rateLimited !== undefined) {
         retryCount++;
         currentOptions.logger?.warn(
-          isPrimary
-            ? `Credits exhausted or rate limited (exit code: ${exitCode}).`
-            : `Possible rate limit detected (exit code: ${exitCode}).`,
+          `Credits exhausted or rate limited (exit code: ${exitCode}): ${rateLimited}`,
         );
         currentOptions.logger?.security?.(
           "RATE_LIMIT",
@@ -4267,6 +4546,9 @@ function requiredTools(agentBinaryPath?: string): string[] {
   ];
 }
 
+/** `which` probe. Seconds. A timeout is not "tool missing". */
+const WHICH_TIMEOUT_MS = 10_000;
+
 /**
  * Check whether a CLI tool is available.
  *
@@ -4274,7 +4556,10 @@ function requiredTools(agentBinaryPath?: string): string[] {
  *   the tool (Issue #959).
  * @returns true if the tool is found
  */
-async function isCommandAvailable(tool: string): Promise<boolean> {
+export async function isCommandAvailable(
+  tool: string,
+  timeoutMs: number = WHICH_TIMEOUT_MS,
+): Promise<boolean> {
   // An explicit path is checked where it is, not searched for (Issue #959):
   // `PATH` has nothing to say about a binary the caller already located, and
   // a `which` probe here is what forced a test holding a stub agent to
@@ -4288,14 +4573,15 @@ async function isCommandAvailable(tool: string): Promise<boolean> {
     }
   }
   try {
-    const command = new Deno.Command("which", {
+    const output = await commandOutputWithTimeout("which", {
       args: [tool],
       stdout: "piped",
       stderr: "piped",
+      timeoutMs,
     });
-    const output = await command.output();
     return output.success;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return false;
   }
 }

@@ -234,13 +234,17 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #3293 added `review-round` (count 151 → 152).
   // Issue #3744 added `route-issue` (count 152 → 153).
   // Provider feasibility and fleet experiment reporting add two commands.
-  // Issue #4046 added egress-proxy (count 156 → 157).
-
-  assertEquals(commands.length, 157);
+  // Issue #4235 added `lib-sweep-record` (count 156 → 157). Issue #4298
+  // removed the dead `clarity-phase` command (count 157 → 156). Issue #4132
+  // added `clear-worker-gate-labels` and Issue #4046 added `egress-proxy`;
+  // each side reached 157 alone, and together the registry holds 158.
+  assertEquals(commands.length, 158);
+  assertEquals(commands.includes("clear-worker-gate-labels"), true);
   assertEquals(commands.includes("route-issue"), true);
   assertEquals(commands.includes("egress-proxy"), true);
   assertEquals(commands.includes("fleet-experiment-report"), true);
   assertEquals(commands.includes("subscription-allocation"), true);
+  assertEquals(commands.includes("lib-sweep-record"), true);
   assertEquals(commands.includes("sweep-drift"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
@@ -365,7 +369,6 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   assertEquals(commands.includes("question-processor"), true);
   assertEquals(commands.includes("credit-summary"), true);
   assertEquals(commands.includes("sync-milestone-branches"), true);
-  assertEquals(commands.includes("clarity-phase"), true);
   assertEquals(commands.includes("quality-gate-phase"), true);
   assertEquals(commands.includes("execute-claude-phase"), true);
   assertEquals(commands.includes("work-on-issue"), true);

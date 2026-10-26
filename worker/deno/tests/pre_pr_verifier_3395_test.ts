@@ -900,7 +900,7 @@ Deno.test("createDefaultDeps wires the real pre-PR verifier (an absolute summary
 
 // ---- review checklists (Issue #3594) ---------------------------------------
 
-Deno.test("parseReviewReply parses a checklist array, defaults to [] and rejects a bad verdict", () => {
+Deno.test("parseReviewReply parses a checklist array, defaults to [] and drops a bad verdict", () => {
   const base = { summary: "ok", findings: [], testChanges: "none" };
   const withList = parseReviewReply(JSON.stringify({
     ...base,
@@ -915,20 +915,23 @@ Deno.test("parseReviewReply parses a checklist array, defaults to [] and rejects
   ]);
   assertEquals(withList.checklist[1]!.note, "");
   assertEquals(parseReviewReply(JSON.stringify(base)).checklist, []);
-  assertThrows(
-    () =>
-      parseReviewReply(JSON.stringify({
-        ...base,
-        checklist: [{ checklist: "M", item: "i", verdict: "probably" }],
-      })),
-    Error,
-    "verdict",
+  const dropped = parseReviewReply(JSON.stringify({
+    ...base,
+    checklist: [
+      { checklist: "M", item: "i", verdict: "met" },
+      { checklist: "M", item: "j", verdict: "probably" },
+    ],
+  }));
+  assertEquals(dropped.checklist.map((c) => c.item), ["i"]);
+  assertEquals(
+    parseReviewReply(JSON.stringify({ ...base, checklist: "nope" })).checklist,
+    [],
   );
-  assertThrows(
-    () => parseReviewReply(JSON.stringify({ ...base, checklist: "nope" })),
-    Error,
-    "checklist",
-  );
+  const trimmed = parseReviewReply(JSON.stringify({
+    ...base,
+    checklist: [{ checklist: "M", item: "i", verdict: " Met " }],
+  }));
+  assertEquals(trimmed.checklist.map((c) => c.verdict), ["met"]);
 });
 
 const MONEY_CHECKLISTS = JSON.stringify({
@@ -1180,6 +1183,89 @@ Deno.test("met and not-applicable checklist verdicts alone do not block", () => 
     prePrVerifierBlockReason(review),
     "Pre-PR verifier found 0 blocking finding(s)",
   );
+});
+
+Deno.test("runPrePrVerifier: a partial verdict keeps the model's finding and adds a gap finding naming the item", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const reply = JSON.stringify({
+      summary: "one problem",
+      findings: [{ file: "a.ts", line: 1, problem: "wrong", fix: "right" }],
+      testChanges: "none",
+      checklist: [
+        {
+          checklist: "Money handling",
+          item: "Every money figure uses the Decimal type",
+          verdict: "met",
+        },
+        {
+          checklist: "Money handling",
+          item: "Rounding is tested",
+          verdict: "partial",
+          note: "half done",
+        },
+      ],
+    });
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["src/money/fees.ts"] }),
+      makeDeps(() => Promise.resolve(okRun({ output: reply })), []),
+    );
+    assertEquals(result.status, "checked");
+    assert(prePrVerifierBlocked(result));
+    if (result.status !== "checked") throw new Error("not checked");
+    const findings = result.review.findings;
+    assert(findings.some((x) => x.problem === "wrong"));
+    const gap = findings.find((x) =>
+      x.problem.includes("no verdict was reported")
+    );
+    assert(gap !== undefined, "a gap finding is raised for the partial item");
+    assertStringIncludes(gap.problem, "Rounding is tested");
+    assert(!gap.problem.includes("Every money figure uses the Decimal type"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: only a partial verdict and no findings still blocks, naming the item", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const reply = JSON.stringify({
+      summary: "partly done",
+      findings: [],
+      testChanges: "none",
+      checklist: [
+        {
+          checklist: "Money handling",
+          item: "Rounding is tested",
+          verdict: "partial",
+          note: "half done",
+        },
+        {
+          checklist: "Money handling",
+          item: "Every money figure uses the Decimal type",
+          verdict: "met",
+        },
+      ],
+    });
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["src/money/fees.ts"] }),
+      makeDeps(() => Promise.resolve(okRun({ output: reply })), []),
+    );
+    assertEquals(result.status, "checked");
+    assert(prePrVerifierBlocked(result));
+    if (result.status !== "checked") throw new Error("not checked");
+    const gap = result.review.findings.find((x) =>
+      x.problem.includes("no verdict was reported")
+    );
+    assert(gap !== undefined, "a gap finding is raised for the partial item");
+    assertStringIncludes(gap.problem, "Rounding is tested");
+  } finally {
+    await f.cleanup();
+  }
 });
 
 Deno.test("runPrePrVerifier: a failed run that also changed the issue checkout reports a review with an empty checklist", async () => {
@@ -1859,6 +1945,147 @@ Deno.test("a change that only edits a constant gets no existing-callers section"
     const p = await promptFor(f);
     assert(!p.includes("Existing callers"));
     assert(!p.includes("Existing callers to report"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ---- shallow checkout has no merge base until history is deepened (#4059) --
+
+/**
+ * A `--depth=1` clone of a feature branch whose base has moved past the
+ * branch point. The tips are present; their merge base is not, so a
+ * three-dot diff fails until history is deepened.
+ */
+async function makeShallowMovedBaseClone(): Promise<{
+  clone: string;
+  cleanup: () => Promise<void>;
+}> {
+  const root = await Deno.makeTempDir({ prefix: "pre-pr-4059-" });
+  const upstream = `${root}/upstream`;
+  const clone = `${root}/clone`;
+  await Deno.mkdir(upstream);
+  const g = (args: string[], cwd: string) => gitOk(args, cwd);
+  await g(["init", "--quiet", "-b", "main"], upstream);
+  await g(["config", "user.email", "t@example.com"], upstream);
+  await g(["config", "user.name", "T"], upstream);
+  await g(["config", "commit.gpgsign", "false"], upstream);
+  await Deno.mkdir(`${upstream}/lib`, { recursive: true });
+  await Deno.writeTextFile(`${upstream}/lib/helper.ts`, CALLER_HELPER_BASE);
+  await Deno.writeTextFile(
+    `${upstream}/lib/caller.ts`,
+    'import { sharedHelper } from "./helper.ts";\nexport const v = sharedHelper(1);\n',
+  );
+  await g(["add", "."], upstream);
+  await g(["commit", "--quiet", "-m", "branch point"], upstream);
+  await g(["checkout", "--quiet", "-b", "feature"], upstream);
+  await Deno.writeTextFile(`${upstream}/lib/helper.ts`, CALLER_HELPER_HEAD);
+  await g(["commit", "--quiet", "-am", "feature head"], upstream);
+  await g(["checkout", "--quiet", "main"], upstream);
+  for (let i = 1; i <= 3; i++) {
+    await Deno.writeTextFile(`${upstream}/moved.txt`, `moved ${i}\n`);
+    await g(["add", "moved.txt"], upstream);
+    await g(["commit", "--quiet", "-m", `main moved ${i}`], upstream);
+  }
+  // file:// so git honours --depth; a plain path clone hardlinks the objects.
+  await g([
+    "clone",
+    "--depth=1",
+    "--no-single-branch",
+    "--quiet",
+    `file://${upstream}`,
+    clone,
+  ], root);
+  await g(["config", "user.email", "t@example.com"], clone);
+  await g(["config", "user.name", "T"], clone);
+  await g(["config", "commit.gpgsign", "false"], clone);
+  await g(["checkout", "--quiet", "feature"], clone);
+  const shallow = await git(
+    ["rev-parse", "--is-shallow-repository"],
+    clone,
+  );
+  if (shallow.stdout.trim() !== "true") {
+    throw new Error("fixture clone is not shallow");
+  }
+  const mergeBase = await git(["merge-base", "HEAD", "origin/main"], clone);
+  if (mergeBase.code === 0) {
+    throw new Error(
+      "fixture already has a merge base; the test would pass without deepening",
+    );
+  }
+  return {
+    clone,
+    cleanup: () => Deno.remove(root, { recursive: true }),
+  };
+}
+
+Deno.test("runPrePrVerifier deepens a shallow clone so the caller list reaches the model", async () => {
+  const f = await makeShallowMovedBaseClone();
+  try {
+    let prompt = "";
+    const result = await runPrePrVerifier(
+      inputFor(
+        {
+          repo: f.clone,
+          baseSha: "",
+          headSha: "",
+          cleanup: f.cleanup,
+        },
+        {
+          repoPath: f.clone,
+          baseRef: "origin/main",
+          changedFiles: ["lib/helper.ts"],
+        },
+      ),
+      makeDeps((o) => {
+        prompt = o.prompt;
+        return Promise.resolve(
+          okRun({ output: callersReply([UNCHANGED_CALLER]) }),
+        );
+      }, []),
+    );
+    const reason = result.status === "not_checked" ? result.reason : "";
+    assert(
+      prompt.includes(CALLER_LINE),
+      `caller list did not reach the model (status=${result.status}${
+        reason ? `: ${reason}` : ""
+      })`,
+    );
+    assertEquals(result.status, "checked");
+    assert(!prePrVerifierBlocked(result));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier names a missing merge base after deepening fails", async () => {
+  const f = await makeShallowMovedBaseClone();
+  try {
+    await gitOk(["checkout", "--quiet", "--orphan", "unrelated"], f.clone);
+    await Deno.writeTextFile(`${f.clone}/orphan.ts`, "export const o = 1;\n");
+    await gitOk(["add", "orphan.ts"], f.clone);
+    await gitOk(["commit", "--quiet", "-m", "unrelated history"], f.clone);
+    let asked = false;
+    const result = await runPrePrVerifier(
+      inputFor(
+        {
+          repo: f.clone,
+          baseSha: "",
+          headSha: "",
+          cleanup: f.cleanup,
+        },
+        { repoPath: f.clone, baseRef: "origin/main" },
+      ),
+      makeDeps(() => {
+        asked = true;
+        return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+      }, []),
+    );
+    assertEquals(result.status, "not_checked");
+    if (result.status === "not_checked") {
+      assertStringIncludes(result.reason, "no merge base after deepening");
+    }
+    assert(!asked);
   } finally {
     await f.cleanup();
   }

@@ -202,7 +202,7 @@ progress and stopped on conflicts. Its contract is absolute:
   path. A reviewer audits every call from the comment, without reading the diff.
 - **A superseded change leaves the PR summary.** When the base side already
   carries part of the PR's change, the agent rewrites the branch's committed
-  `docs/archive/pr-summaries/pr-summary-*.md` so it claims only what the merged
+  `docs/archive/pr-summaries/pr-summary-<issue>.md` so it claims only what the merged
   diff still carries, stages it with the resolutions, and names the refresh in
   `.pr_response_message` (Issue #3015). After a verified push to the PR's own
   head, the worker rebuilds the PR description from `pr-summary-<N>.md` when
@@ -506,8 +506,8 @@ flowchart TD
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
   with `assessGatedHead`. Every `milestone/**` head, gated or not, looks for
   the takeover's own open fix PR (`findOpenMilestoneFixPr` with the
-  `takeover-` discriminator) and, when that one is open, reuses it — no
-  marker, no second PR. An open CI or review-feedback fix PR does not count.
+  `takeover-` discriminator) and, when that one is open, same-repository and
+  fleet-authored, reuses it — no marker, no second PR. An open CI or review-feedback fix PR does not count.
   An unreadable fix-PR listing fails loud rather than reading as "none".
 - Then posts an attempt marker `pass="takeover"` with the head sha, e.g.
   `<!-- vibe-coder:merge-conflict-attempt n="2" pass="takeover" head="abc1234" -->`,
@@ -549,7 +549,8 @@ flowchart TD
   `failed`. Both conclusions name the head the attempt
   ran against, so the next attempt is due at once on a moved head. Either way
   no new attempt runs in that call; the next takeover starts one. A fix PR
-  that is still open stands down as `fix-pr-reused`, posting nothing. An
+  that is still open, owned by the fleet and same-repository, stands down as
+  `fix-pr-reused`, posting nothing. An
   empty, unparsable or unreadable listing, or an unreadable behind count,
   throws and posts nothing. When that attempt has no such PR, it was
   disrupted, not delivered, and a fresh attempt runs. Until a later takeover
@@ -951,7 +952,7 @@ removed the last `needs-human` from the milestone conflict path:
   `needs-human` label, no second issue, no request of anyone. It records the
   default-branch tip it answered for
   (`fallbackDefaultSha` in `milestone_sync_failures.json`), and when the
-  default branch moves past that tip the branch is offered its two runs again
+  default branch moves past that tip the branch is offered its three runs again
   — the same flag collecting whatever they find. Without that re-arm a branch
   whose roll-back failed would sit out every remaining cycle for ever, which
   is only acceptable if somebody was asked to look, and nobody is.
@@ -967,6 +968,18 @@ removed the last `needs-human` from the milestone conflict path:
   number, beside the `sync_failed` and `rolled_back` events. A `sync_failed`
   with a roll-back and no `fallback_flagged` beside it is the alert that the
   record was not written.
+- Once a roll-back has been spent on a milestone branch, a spent budget is
+  offered a **rebuild** before the next roll-back (Issue #4328): the branch is
+  rebuilt from its base tip with its merged sub-PRs replayed (less those the
+  roll-back reverted, below), delivered as a
+  fast-forward (a plain push, or a sync PR when a ruleset refuses it), and never
+  force-pushed. The sub-PRs that roll-back reverted (the ledger's
+  `revertedPrs`) are left out of the replay, since their issues are re-queued
+  for a redo, and the rebuilt tree must pass the sync's own merge gate
+  (`checkMergedTree`) before it is delivered; a refused tree is a failed rebuild
+  at step `milestone-gate`, pushing and re-queuing nothing. A rebuild files no
+  `merge-fallback` flag. It emits `rebuilt` on success, or `rebuild_failed` when
+  it fails and the roll-back then follows with its own flag.
 
 ### 💥 When the attempt itself is disrupted
 
@@ -1277,7 +1290,7 @@ each carries the operands that make the decision checkable afterwards:
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
 | `repo-leased` | `deferralStreak` | An issue slot holds the repository's shared clone. The streak is the consecutive passes that have now deferred this PR without attempting it. |
 | `deferred-bound` | `bound`, `deferralStreak` | The deadline or the cap left this due PR in the queue before any attempt started. |
-| `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. |
+| `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. The run-target start gate (Issue #4243) also ends a pass as `deadline`. |
 
 Two properties are worth knowing when reading these:
 
@@ -1318,7 +1331,7 @@ The pass takes **every** conflicting PR that is due, not one per cycle
 holds new issue claims behind open PRs, so draining conflicts one per cycle —
 most of an hour once issue work is running — throttled issue throughput too.
 
-Three bounds keep the drain from becoming a monopoly:
+Three bounds keep the drain from becoming a monopoly (the run's one-hour target, Issue #4243, is a start gate on top of them: once it has passed, no further resolution starts and the pass ends as a `deadline` stop):
 
 | Bound | Value | Why |
 | --- | --- | --- |

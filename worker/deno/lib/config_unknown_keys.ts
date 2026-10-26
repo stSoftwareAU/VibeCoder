@@ -114,6 +114,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "claude_timeout",
   "claude_max_turns",
   "min_claim_runway_seconds",
+  // Run finish deadline (Issue #4242).
+  "run_finish_seconds",
   // Issue #425: `claim_require_full_execute_budget` removed — the #47 rule it
   // switched on was retired with the deadline truncation that justified it.
   // Adaptive claim floor (Issue #245)
@@ -126,6 +128,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "progress_extension_check_seconds",
   // Screenshot gate's one extra in-run agent turn (Issue #2960)
   "screenshot_retry_timeout_seconds",
+  // Pre-push gate's one extra in-run agent turn (Issue #4128)
+  "pre_push_retry_timeout_seconds",
   // Call-storm stall guard (Issue #2230)
   "call_storm_enabled",
   "call_storm_calls",

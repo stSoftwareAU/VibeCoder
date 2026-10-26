@@ -66,10 +66,10 @@
  * The module now also answers "which lines form one statement?" via
  * {@link markdownLogicalUnits} (Issue #3356): a gate over Markdown prose
  * matches per logical unit rather than per physical line, because the prose is
- * hard-wrapped. Its callers are `parseDocsSweepLine` in `docs_sweep_gate.ts`,
+ * hard-wrapped. Its callers are a removed summary gate in a removed summary gate,
  * `logicalBlocks` in `test_plan_recount.ts` (and through it
- * `summary_claim_check.ts`), and the uncaptured-line grouping of the
- * unreached-admission check in `branch_outcomes_gate.ts`. A new gate over
+ * a removed summary gate), and the uncaptured-line grouping of the
+ * unreached-admission check in a removed summary gate. A new gate over
  * Markdown prose calls it rather than splitting on "\n".
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -89,29 +89,70 @@ export interface FenceLine {
 }
 
 /**
+ * Counts characters a scan examines.
+ *
+ * Tests pass one so a linear-growth check compares step counts. The count
+ * does not move when the machine is busy, which a wall-clock ratio does
+ * (Issue #4312).
+ */
+export interface ScanMeter {
+  steps: number;
+}
+
+function tick(meter: ScanMeter | undefined): void {
+  if (meter) meter.steps++;
+}
+
+/** `$` in these patterns: end of the line, or the final newline itself. */
+function atLineEnd(line: string, index: number): boolean {
+  if (index >= line.length) return true;
+  return line.endsWith("\n") && index === line.length - 1;
+}
+
+/**
  * A line whose first non-space characters are a fence. Indent is ignored, so
  * a fence under a list item counts. CommonMark's three-space limit does not:
  * archived summaries indent list fences further than that.
  */
-export function parseFenceLine(line: string): FenceLine | null {
-  // `split` keeps the line break, and `.` does not match it, so trim first.
-  // The rest is read with `([^\n]*)` and no `$`, not `(.*)$`: `.` stops at a
-  // lone `\r` or a Unicode line/paragraph separator, so a run-length
-  // backtrack through `(.*)$` rescanned to the end on every length — O(run
-  // length × line length) on a line where one of those follows a long fence
-  // run (Issue #3351 review; same shape as Issue #3186).
-  const match = line.trim().match(/^(`{3,}|~{3,})([^\n]*)/);
-  if (!match) return null;
+export function parseFenceLine(
+  line: string,
+  meter?: ScanMeter,
+): FenceLine | null {
+  // `split` keeps the line break, so trim first. The rest is every character
+  // up to a newline, read once: a `(.*)$` tail stops at a lone `\r` and
+  // backtracked the run length over the line (Issue #3351 review; same shape
+  // as Issue #3186). One pass records a step per character it examines.
+  const trimmed = line.trim();
+  const fenceChar = trimmed[0];
+  if (fenceChar !== "`" && fenceChar !== "~") {
+    if (trimmed.length > 0) tick(meter);
+    return null;
+  }
+  let length = 0;
+  while (length < trimmed.length && trimmed[length] === fenceChar) {
+    tick(meter);
+    length++;
+  }
+  if (length < 3) return null;
+  let end = length;
+  while (end < trimmed.length && trimmed[end] !== "\n") {
+    tick(meter);
+    end++;
+  }
   return {
-    char: match[1]![0]!,
-    length: match[1]!.length,
-    rest: match[2] ?? "",
+    char: fenceChar,
+    length,
+    rest: trimmed.slice(length, end),
   };
 }
 
 /** A closer uses the opener's character, is at least as long, and has no info string. */
-export function isClosingFence(line: string, opener: FenceLine): boolean {
-  const parsed = parseFenceLine(line);
+export function isClosingFence(
+  line: string,
+  opener: FenceLine,
+  meter?: ScanMeter,
+): boolean {
+  const parsed = parseFenceLine(line, meter);
   if (!parsed) return false;
   return parsed.char === opener.char && parsed.length >= opener.length &&
     parsed.rest.trim() === "";
@@ -129,19 +170,30 @@ export function isClosingFence(line: string, opener: FenceLine): boolean {
  * is quadratic when many distinct-length unmatched runs precede many runs of
  * their own). This helper runs on untrusted issue bodies on the claim path.
  */
-function splitInlineSpans(block: string): MarkdownSegment[] {
+function splitInlineSpans(block: string, meter?: ScanMeter): MarkdownSegment[] {
   const runs: Array<{ index: number; length: number }> = [];
-  const runRe = /`+/g;
-  let found: RegExpExecArray | null;
-  while ((found = runRe.exec(block)) !== null) {
-    runs.push({ index: found.index, length: found[0].length });
+  let i = 0;
+  while (i < block.length) {
+    if (block[i] !== "`") {
+      tick(meter);
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < block.length && block[i] === "`") {
+      tick(meter);
+      i++;
+    }
+    runs.push({ index: start, length: i - start });
   }
 
   // For each run, the index of the next run with the same length, found with
-  // a single backwards pass instead of a forward re-scan per opener.
+  // a single backwards pass instead of a forward re-scan per opener. Each
+  // run examined is one step, so a nested rescan shows up as super-linear.
   const nextSameLength: number[] = new Array(runs.length).fill(-1);
   const lastSeenAt = new Map<number, number>();
   for (let k = runs.length - 1; k >= 0; k--) {
+    tick(meter);
     const seen = lastSeenAt.get(runs[k]!.length);
     nextSameLength[k] = seen ?? -1;
     lastSeenAt.set(runs[k]!.length, k);
@@ -151,6 +203,7 @@ function splitInlineSpans(block: string): MarkdownSegment[] {
   let cursor = 0;
   let r = 0;
   while (r < runs.length) {
+    tick(meter);
     const open = runs[r]!;
     if (open.index > cursor) {
       segments.push({ value: block.slice(cursor, open.index), inCode: false });
@@ -183,15 +236,61 @@ function splitInlineSpans(block: string): MarkdownSegment[] {
  * {@link parseFenceLine} — `#{1,6}` is capped, so widening the leading
  * whitespace adds no backtracking risk.
  */
-const ATX_HEADING_RE = /^[ \t]*#{1,6}(?:[ \t]|$)/;
+function isAtxHeading(line: string, meter?: ScanMeter): boolean {
+  let i = 0;
+  while (i < line.length && (line[i] === " " || line[i] === "\t")) {
+    tick(meter);
+    i++;
+  }
+  let hashes = 0;
+  while (hashes < 6 && i < line.length && line[i] === "#") {
+    tick(meter);
+    hashes++;
+    i++;
+  }
+  if (hashes === 0) return false;
+  // A seventh hash is not an ATX heading. Stop; do not walk the run again.
+  if (i < line.length && line[i] === "#") return false;
+  if (i < line.length && (line[i] === " " || line[i] === "\t")) return true;
+  return atLineEnd(line, i);
+}
 
 /**
  * A list-item marker: leading whitespace, a bullet (`-`, `*`, `+`) or an
  * ordered marker (`1.` / `1)`), then whitespace or end of line. Indentation
  * is unbounded, so a nested or tab-indented item still counts — see
- * {@link ATX_HEADING_RE}.
+ * {@link isAtxHeading}.
  */
-const LIST_ITEM_RE = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+function isListItem(line: string, meter?: ScanMeter): boolean {
+  let i = 0;
+  while (i < line.length && (line[i] === " " || line[i] === "\t")) {
+    tick(meter);
+    i++;
+  }
+  if (i >= line.length) return false;
+  const marker = line[i]!;
+  if (marker === "-" || marker === "*" || marker === "+") {
+    tick(meter);
+    i++;
+  } else if (marker >= "0" && marker <= "9") {
+    let digits = 0;
+    while (
+      digits < 9 && i < line.length && line[i]! >= "0" && line[i]! <= "9"
+    ) {
+      tick(meter);
+      digits++;
+      i++;
+    }
+    if (i < line.length && line[i]! >= "0" && line[i]! <= "9") return false;
+    if (i >= line.length || (line[i] !== "." && line[i] !== ")")) return false;
+    tick(meter);
+    i++;
+  } else {
+    return false;
+  }
+  if (i < line.length && (line[i] === " " || line[i] === "\t")) return true;
+  return atLineEnd(line, i);
+}
 
 /**
  * One or more quote-marker levels at the start of a line, plus at most one
@@ -201,7 +300,35 @@ const LIST_ITEM_RE = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
  * quantifier here can backtrack over the same characters as another one
  * (Issue #3351 review, round 3; same class of risk as Issue #3186).
  */
-const QUOTE_PREFIX_RE = /^(?:[ \t]*>)+[ \t]?/;
+/**
+ * Leading quote markers, read once. Each repetition consumes a `>`, so a
+ * run of markers is one linear pass (Issue #3351 review, round 3). At most
+ * one space or tab after the last `>` is part of the prefix.
+ */
+function quotePrefix(
+  line: string,
+  meter?: ScanMeter,
+): { end: number; depth: number } {
+  let i = 0;
+  let depth = 0;
+  while (i < line.length) {
+    let j = i;
+    while (j < line.length && (line[j] === " " || line[j] === "\t")) {
+      tick(meter);
+      j++;
+    }
+    if (j >= line.length || line[j] !== ">") break;
+    tick(meter);
+    depth++;
+    i = j + 1;
+  }
+  if (depth === 0) return { end: 0, depth: 0 };
+  if (i < line.length && (line[i] === " " || line[i] === "\t")) {
+    tick(meter);
+    i++;
+  }
+  return { end: i, depth };
+}
 
 /**
  * Strip the leading quote marker(s) from `line`, so the blank-line and
@@ -210,21 +337,19 @@ const QUOTE_PREFIX_RE = /^(?:[ \t]*>)+[ \t]?/;
  * paragraph the same way the unquoted form does. A line with no `>` prefix
  * is returned unchanged.
  */
-function stripQuotePrefix(line: string): string {
-  return line.replace(QUOTE_PREFIX_RE, "");
+function stripQuotePrefix(line: string, meter?: ScanMeter): string {
+  const prefix = quotePrefix(line, meter);
+  if (prefix.depth === 0) return line;
+  return line.slice(prefix.end);
 }
 
 /**
  * How many block-quote levels open `line`: the number of `>` characters in
- * its {@link QUOTE_PREFIX_RE} match, or 0 for an unquoted line. Counted with
- * a single linear pass over the matched prefix, so it adds no backtracking
- * risk (Issue #3351 review, round 4).
+ * its quote prefix, or 0 for an unquoted line. One linear pass (Issue #3351
+ * review, round 4).
  */
-function quoteDepth(line: string): number {
-  const prefix = QUOTE_PREFIX_RE.exec(line)?.[0] ?? "";
-  let depth = 0;
-  for (const ch of prefix) if (ch === ">") depth++;
-  return depth;
+function quoteDepth(line: string, meter?: ScanMeter): number {
+  return quotePrefix(line, meter).depth;
 }
 
 /**
@@ -232,7 +357,19 @@ function quoteDepth(line: string): number {
  * this starts an HTML block that interrupts a paragraph; the block runs to
  * the line containing `-->` (Issue #3351 review, round 3).
  */
-const HTML_COMMENT_START_RE = /^[ \t]*<!--/;
+function isHtmlCommentStart(line: string, meter?: ScanMeter): boolean {
+  let i = 0;
+  while (i < line.length && (line[i] === " " || line[i] === "\t")) {
+    tick(meter);
+    i++;
+  }
+  const marker = "<!--";
+  for (let k = 0; k < marker.length; k++) {
+    if (line[i + k] !== marker[k]) return false;
+    tick(meter);
+  }
+  return true;
+}
 
 /**
  * A GFM table row: leading whitespace, then `|`. A table row ends a
@@ -240,7 +377,18 @@ const HTML_COMMENT_START_RE = /^[ \t]*<!--/;
  * delimiter rows present — a stray backtick in one cell must not pair with
  * one in a later row.
  */
-const TABLE_ROW_RE = /^[ \t]*\|/;
+function isTableRow(line: string, meter?: ScanMeter): boolean {
+  let i = 0;
+  while (i < line.length && (line[i] === " " || line[i] === "\t")) {
+    tick(meter);
+    i++;
+  }
+  if (i < line.length && line[i] === "|") {
+    tick(meter);
+    return true;
+  }
+  return false;
+}
 
 /**
  * A setext heading underline (`===` / `---`) or a thematic break (`---`,
@@ -253,7 +401,36 @@ const TABLE_ROW_RE = /^[ \t]*\|/;
  * only space/tab, so there is no catastrophic backtracking on a long run
  * (Issue #3351 review; same class of risk as Issue #3186).
  */
-const SETEXT_OR_THEMATIC_BREAK_RE = /^[ \t]*([=*_-])\1*[ \t]*(?:\r?\n)?$/;
+function isMarkerChar(char: string | undefined): boolean {
+  return char === "=" || char === "*" || char === "_" || char === "-";
+}
+
+function isSetextOrThematicBreak(line: string, meter?: ScanMeter): boolean {
+  let i = 0;
+  while (i < line.length && (line[i] === " " || line[i] === "\t")) {
+    tick(meter);
+    i++;
+  }
+  const marker = line[i];
+  if (!isMarkerChar(marker)) return false;
+  while (i < line.length && line[i] === marker) {
+    tick(meter);
+    i++;
+  }
+  while (i < line.length && (line[i] === " " || line[i] === "\t")) {
+    tick(meter);
+    i++;
+  }
+  if (line[i] === "\r" && line[i + 1] === "\n") {
+    tick(meter);
+    tick(meter);
+    i += 2;
+  } else if (line[i] === "\n") {
+    tick(meter);
+    i++;
+  }
+  return i === line.length;
+}
 
 /**
  * Does `line` start a new CommonMark block that a paragraph never continues
@@ -265,9 +442,9 @@ const SETEXT_OR_THEMATIC_BREAK_RE = /^[ \t]*([=*_-])\1*[ \t]*(?:\r?\n)?$/;
  * caller, since consecutive `>` lines form one quoted paragraph rather than
  * each ending it.
  */
-function startsNewBlock(line: string): boolean {
-  return ATX_HEADING_RE.test(line) || LIST_ITEM_RE.test(line) ||
-    TABLE_ROW_RE.test(line) || SETEXT_OR_THEMATIC_BREAK_RE.test(line);
+function startsNewBlock(line: string, meter?: ScanMeter): boolean {
+  return isAtxHeading(line, meter) || isListItem(line, meter) ||
+    isTableRow(line, meter) || isSetextOrThematicBreak(line, meter);
 }
 
 /**
@@ -279,7 +456,10 @@ function startsNewBlock(line: string): boolean {
  *
  * The returned segments concatenate back to `text` exactly.
  */
-export function splitMarkdownCode(text: string): MarkdownSegment[] {
+export function splitMarkdownCode(
+  text: string,
+  meter?: ScanMeter,
+): MarkdownSegment[] {
   const segments: MarkdownSegment[] = [];
   const lines = (text ?? "").split(/(?<=\n)/); // keep line terminators attached
   let i = 0;
@@ -306,7 +486,7 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
 
   function flushParagraph() {
     if (paragraph.length === 0) return;
-    for (const segment of splitInlineSpans(paragraph)) {
+    for (const segment of splitInlineSpans(paragraph, meter)) {
       pushSegment(segment.value, segment.inCode);
     }
     paragraph = "";
@@ -314,7 +494,7 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
 
   while (i < lines.length) {
     const line = lines[i]!;
-    const fenceMatch = parseFenceLine(line);
+    const fenceMatch = parseFenceLine(line, meter);
     if (fenceMatch && !inFence) {
       flushParagraph();
       currentQuoteDepth = 0;
@@ -324,7 +504,7 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
       i++;
       continue;
     }
-    if (inFence && opener && isClosingFence(line, opener)) {
+    if (inFence && opener && isClosingFence(line, opener, meter)) {
       fenceCursor += line;
       pushSegment(fenceCursor, true);
       fenceCursor = "";
@@ -354,7 +534,7 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     // with any `>` prefix stripped — a quoted blank line, list item,
     // heading, table row or break must end the paragraph the same way the
     // unquoted form does (Issue #3351 review, round 3).
-    const content = stripQuotePrefix(line);
+    const content = stripQuotePrefix(line, meter);
     // A blank line ends the paragraph, so a code span cannot cross it.
     if (content.trim() === "") {
       flushParagraph();
@@ -370,14 +550,14 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     // interrupts the outer paragraph (round 4). A shallower line could be a
     // CommonMark lazy continuation, but flushing there too is the safe
     // direction: it can only stop a span pairing, never hide prose.
-    const lineQuoteDepth = quoteDepth(line);
+    const lineQuoteDepth = quoteDepth(line, meter);
     if (lineQuoteDepth !== currentQuoteDepth) {
       flushParagraph();
       currentQuoteDepth = lineQuoteDepth;
     }
     // A line starting an HTML comment ends the paragraph; the comment runs
     // to the line holding `-->`, which may be this same line (round 3).
-    if (HTML_COMMENT_START_RE.test(content)) {
+    if (isHtmlCommentStart(content, meter)) {
       flushParagraph();
       paragraph += line;
       if (line.includes("-->")) {
@@ -391,12 +571,12 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     // A heading, list item, table row or setext/thematic-break line also
     // ends the paragraph, the same way a blank line does (Issue #3351
     // review).
-    if (startsNewBlock(content)) {
+    if (startsNewBlock(content, meter)) {
       flushParagraph();
       paragraph += line;
       // An ATX heading has no continuation line, so it never merges with
       // whatever follows it.
-      if (ATX_HEADING_RE.test(content)) flushParagraph();
+      if (isAtxHeading(content, meter)) flushParagraph();
       i++;
       continue;
     }
@@ -536,7 +716,7 @@ export function markdownLogicalUnits(
       flush();
       openDepth = depth;
     }
-    if (HTML_COMMENT_START_RE.test(content)) {
+    if (isHtmlCommentStart(content)) {
       flush();
       const idx = [i];
       let closed = line.includes("-->");
@@ -549,14 +729,14 @@ export function markdownLogicalUnits(
       units.push(make("html", idx));
       continue;
     }
-    if (ATX_HEADING_RE.test(content)) {
+    if (isAtxHeading(content)) {
       single("heading", i);
-    } else if (SETEXT_OR_THEMATIC_BREAK_RE.test(content)) {
+    } else if (isSetextOrThematicBreak(content)) {
       single("break", i);
-    } else if (LIST_ITEM_RE.test(content)) {
+    } else if (isListItem(content)) {
       flush();
       open = { kind: "list-item", lines: [i] };
-    } else if (TABLE_ROW_RE.test(content)) {
+    } else if (isTableRow(content)) {
       single("table-row", i);
     } else if (
       open && (open.kind === "paragraph" || open.kind === "list-item")

@@ -21,6 +21,7 @@ import {
   type CreateIssuesResult,
   type RoutedImprovement,
 } from "../lib/github.ts";
+import type { AlertDedupAuthorOptions } from "../lib/alert_dedup_authors.ts";
 import { validateSuggestImprovementsArgs } from "../lib/command_args.ts";
 import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
 import { plural } from "../lib/codebase_map.ts";
@@ -204,6 +205,8 @@ export interface SuggestImprovementsData {
 export interface SuggestImprovementsDeps {
   ghCommandFn?: (args: string[]) => Promise<string>;
   now?: () => Date;
+  /** Fleet author set for the owned-artefact checks; omitted means configured identity. */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 /**
@@ -261,6 +264,7 @@ export function createSuggestImprovementsCommand(
           extraReservedLabels: customLabelPromptLabels(config),
           ghCommandFn: deps.ghCommandFn,
           now: deps.now,
+          ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
         },
       );
 
@@ -277,13 +281,20 @@ export function createSuggestImprovementsCommand(
         : `Created ${plural(created, "improvement issue")} and reused ${
           plural(reused, "existing issue")
         }, routed from ${repo}`;
+      // A same-titled match that is not owned and open suppresses the filing.
+      const suppressed = count("suppressed");
+      const suppressedMsg = suppressed > 0
+        ? `; ${
+          plural(suppressed, "improvement")
+        } not filed, because a same-titled issue or PR exists that is not reused`
+        : "";
       const failureMsg = result.failures.length > 0
         ? ` (${result.failures.length} failed)`
         : "";
 
       return {
         success: result.failures.length === 0,
-        message: summary + failureMsg,
+        message: summary + suppressedMsg + failureMsg,
         data: {
           improvements,
           createdIssues: result.createdIssues,

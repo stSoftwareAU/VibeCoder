@@ -34,6 +34,8 @@ import {
   buildAbandonPrComment,
   buildNoIssueAbandonPrComment,
   buildRestartIssueComment,
+  buildStalledAbandonPrComment,
+  buildStalledRestartIssueComment,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
   describeConcludedAttempts,
@@ -582,6 +584,39 @@ Deno.test("abandonAndRestart - a stalled request with no failures is not decline
 
   assertEquals(outcome.outcome, "abandoned");
   assertEquals(callsMatching(fake, "pr", "close").length, 1);
+});
+
+Deno.test("abandonAndRestart - a spent CI-fix cap abandons and says the CI-fix lane tried, not the stall pass (Issue #4304)", async () => {
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({
+      prComments: [],
+      reason: {
+        kind: "stalled",
+        detail: "has a failing `build` check that 3 automatic fix attempts " +
+          "did not clear",
+        tried: "ci-fix-cap",
+      },
+    }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assertEquals(outcome.outcome, "abandoned");
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+  for (
+    const body of [
+      bodyOfCall(fake, "pr", "comment"),
+      bodyOfCall(fake, "issue", "comment"),
+    ]
+  ) {
+    assertStringIncludes(
+      body,
+      "The CI-fix lane already spent every automatic fix attempt",
+    );
+    assertEquals(body.includes("stall-repair pass"), false, body);
+    assertEquals(body.includes("needs-human"), false, body);
+  }
 });
 
 Deno.test("renderAttemptTable - rows, unknown time, and a zero-attempt PR", () => {
@@ -1934,14 +1969,19 @@ function milestoneRequest(
 function recordingLogger(): Logger & {
   warnings: Array<{ message: string; context?: LogContext }>;
   errors: Array<{ message: string; context?: LogContext }>;
+  infos: Array<{ message: string; context?: LogContext }>;
 } {
+  const infos: Array<{ message: string; context?: LogContext }> = [];
   const warnings: Array<{ message: string; context?: LogContext }> = [];
   const errors: Array<{ message: string; context?: LogContext }> = [];
   const noop = () => {};
   return {
     warnings,
     errors,
-    info: noop,
+    infos,
+    info: (message: string, context?: LogContext) => {
+      infos.push({ message, ...(context ? { context } : {}) });
+    },
     warn: (message: string, context?: LogContext) => {
       warnings.push({ message, ...(context ? { context } : {}) });
     },
@@ -2209,6 +2249,47 @@ Deno.test(
   },
 );
 
+// Issue #4328: a milestone branch with no milestone PR is announced through the
+// escalation target, so no `gh pr comment` is made for it.
+Deno.test(
+  "abandonAndRebuildMilestone - with announce the notice goes through it and no PR comment is made (Issue #4328)",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: [
+        subPrRow({
+          number: 11,
+          headRefName: "issue-1-a",
+          mergedAt: "2026-01-01T00:00:00Z",
+          sha: SHA_11,
+        }),
+      ],
+      issueStates: {},
+    });
+    const gitFake = makeMilestoneGit({ failingCherryPicks: new Set() });
+    const announced: string[] = [];
+
+    const outcome = await abandonAndRebuildMilestone(
+      milestoneRequest({ prNumber: 0 }),
+      {
+        gh: ghFake.gh,
+        git: gitFake.git,
+        announce: (body) => {
+          announced.push(body);
+          return Promise.resolve();
+        },
+      },
+    );
+
+    assertEquals(outcome.outcome, "milestone-rebuilt");
+    assertEquals(announced.length, 1);
+    assertStringIncludes(announced[0]!, "sub-issue #1");
+    const prComments = ghFake.calls.filter((a) =>
+      a[0] === "pr" && a[1] === "comment"
+    );
+    assertEquals(prComments, []);
+  },
+);
+
 Deno.test("buildMilestoneRebuildPrComment - a rebuild restarts the shared budget, so the redo gets its own (Issue #3036)", () => {
   const rebuilt: MilestoneRebuilt = {
     outcome: "milestone-rebuilt",
@@ -2319,6 +2400,180 @@ Deno.test(
     assertEquals(outcome.step, "milestone-push");
     assert(!outcome.message.toLowerCase().includes("needs-human"));
     assertEquals(Object.keys(ghFake.issueComments).length, 0);
+  },
+);
+
+/** Two sub-PRs, #11 (issue 1) and #12 (issue 2), merged in that order. */
+function twoSubPrListing() {
+  return [
+    subPrRow({
+      number: 11,
+      headRefName: "issue-1-a",
+      mergedAt: "2026-01-01T00:00:00Z",
+      sha: SHA_11,
+    }),
+    subPrRow({
+      number: 12,
+      headRefName: "issue-2-b",
+      mergedAt: "2026-01-02T00:00:00Z",
+      sha: SHA_12,
+    }),
+  ];
+}
+
+Deno.test(
+  "abandonAndRebuildMilestone - sub-PRs an earlier roll-back reverted are not replayed, skipped or re-queued (PR #4344 review)",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: twoSubPrListing(),
+      issueStates: {},
+    });
+    const gitFake = makeMilestoneGit();
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+      excludePrNumbers: [11],
+    });
+
+    assert(outcome.outcome === "milestone-rebuilt");
+    assertEquals(outcome.replayed.map((r) => r.prNumber), [12]);
+    assertEquals(outcome.skipped, []);
+    const picked = gitFake.calls.filter((c) => c[0] === "cherry-pick").map((
+      c,
+    ) => c[c.length - 1]);
+    assertEquals(
+      picked,
+      [SHA_12],
+      "the reverted sub-PR's merge is never picked",
+    );
+    assertEquals(
+      Object.keys(ghFake.issueComments).length,
+      0,
+      "its issue was re-queued by the roll-back, not again here",
+    );
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - logs the left-out sub-PRs only when some were left out (PR #4344 review)",
+  async () => {
+    for (const exclude of [[11], []]) {
+      const logger = recordingLogger();
+      const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+        gh: makeMilestoneGh({
+          subPrListing: twoSubPrListing(),
+          issueStates: {},
+        }).gh,
+        git: makeMilestoneGit().git,
+        logger,
+        excludePrNumbers: exclude,
+      });
+      assert(outcome.outcome === "milestone-rebuilt");
+      const leftOut = logger.infos.filter((i) =>
+        i.message.includes("leaves out")
+      );
+      assertEquals(leftOut.length, exclude.length);
+      if (exclude.length > 0) {
+        assertStringIncludes(
+          leftOut[0]?.message ?? "",
+          "leaves out 1 sub-PR(s)",
+        );
+      }
+    }
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a gate that refuses the rebuilt tree stops it before the push and the re-queues (PR #4344 review)",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: twoSubPrListing(),
+      issueStates: { 1: { state: "CLOSED", labels: ["idle-task"] } },
+    });
+    const gitFake = makeMilestoneGit({
+      failingCherryPicks: new Set([SHA_11]),
+    });
+    let gateRuns = 0;
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+      gate: () => {
+        gateRuns++;
+        return Promise.resolve({
+          status: "failed",
+          detail: "deno check failed",
+          output: "TS2304: Cannot find name 'scan'",
+        });
+      },
+    });
+
+    assertEquals(gateRuns, 1);
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-gate");
+    assertStringIncludes(outcome.message, "deno check failed");
+    assertStringIncludes(outcome.message, "TS2304: Cannot find name 'scan'");
+    assertEquals(
+      gitFake.calls.some((c) => c[0] === "push"),
+      false,
+      "an unverified tree is never pushed",
+    );
+    assertEquals(
+      gitFake.calls.filter((c) => c[0] === "reset").length,
+      2,
+      "the failed cherry-pick's reset, then the clone is cleaned after the refusal",
+    );
+    assertEquals(
+      Object.keys(ghFake.issueComments).length,
+      0,
+      "a refused rebuild re-queues nothing",
+    );
+    assertEquals(ghFake.reopened, []);
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a gate that cannot be run refuses the rebuild too (PR #4344 review)",
+  async () => {
+    const gitFake = makeMilestoneGit();
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: makeMilestoneGh({ subPrListing: twoSubPrListing(), issueStates: {} })
+        .gh,
+      git: gitFake.git,
+      gate: () => Promise.reject(new Error("deno is not installed")),
+    });
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-gate");
+    assertStringIncludes(outcome.message, "deno is not installed");
+    assertEquals(gitFake.calls.some((c) => c[0] === "push"), false);
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a gate that passes, or finds nothing to check, delivers the rebuild (PR #4344 review)",
+  async () => {
+    for (const status of ["passed", "skipped"] as const) {
+      const gitFake = makeMilestoneGit();
+      const logger = recordingLogger();
+      const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+        gh: makeMilestoneGh({
+          subPrListing: twoSubPrListing(),
+          issueStates: {},
+        }).gh,
+        git: gitFake.git,
+        logger,
+        gate: () =>
+          Promise.resolve({ status, detail: `gate ${status}`, output: "" }),
+      });
+      assert(outcome.outcome === "milestone-rebuilt", status);
+      assertEquals(gitFake.calls.some((c) => c[0] === "push"), true, status);
+      assertEquals(
+        logger.warnings.some((w) => w.message.startsWith("UNGATED rebuild")),
+        status === "skipped",
+        status,
+      );
+    }
   },
 );
 
@@ -2437,3 +2692,47 @@ Deno.test(
     assertEquals(gitFake.calls.length, 0);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #4304: the base-integrity and closed-route abandons say what was tried
+// ---------------------------------------------------------------------------
+
+Deno.test("stalled comments - a moved-base and a closed-route abandon name what the worker tried, not the stall-repair pass (Issue #4304)", () => {
+  const request: AbandonRestartRequest = {
+    repo: "o/r",
+    prNumber: 9,
+    branchName: "issue-5-x",
+    baseBranch: "milestone/x",
+  };
+  const label = planRequeueLabel(["work-on"]);
+  const moved = buildStalledAbandonPrComment({
+    request,
+    detail: "was moved onto the default branch `main` after it was opened",
+    tried: "retarget-back",
+    issueNumber: 5,
+    label,
+  });
+  assertStringIncludes(moved, "the base it was opened against");
+  assertEquals(moved.includes("stall-repair pass"), false);
+
+  const closed = buildStalledAbandonPrComment({
+    request,
+    detail: "targets `milestone/x`, which has no route to the default branch",
+    tried: "route-closed-hold",
+    issueNumber: 5,
+    label,
+  });
+  assertEquals(closed.includes("stall-repair pass"), false);
+  // The redo must not be sent back to the closed route's branch.
+  assertEquals(closed.includes("off `milestone/x`"), false);
+  assert(!/a human|by hand|manually/i.test(closed));
+
+  const issue = buildStalledRestartIssueComment({
+    request,
+    detail: "targets `milestone/x`, which has no route to the default branch",
+    tried: "route-closed-hold",
+    label,
+    restartNumber: 1,
+  });
+  assertEquals(issue.includes("stall-repair pass"), false);
+});

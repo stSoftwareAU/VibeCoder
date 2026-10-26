@@ -115,7 +115,8 @@ function makeGh(
     capture?.(args);
     const json = (value: unknown) => Promise.resolve(JSON.stringify(value));
     const [noun] = args;
-    const path = args[1] ?? "";
+    // `gh api --paginate` puts the path after the flag, so it is not args[1].
+    const path = args.find((arg) => arg.startsWith("repos/")) ?? args[1] ?? "";
 
     if (noun === "pr" && args[1] === "list") {
       const author = flagValue(args, "--author");

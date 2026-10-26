@@ -20,10 +20,12 @@
  *
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, plus the sweep
- *    ledger `sweptAt` ancestry check), whatever the repo's own pre-flight list
- *    says and whatever the run budget — these checks are cheap and are never
- *    skipped.
+ *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, and the Floci
+ *    CloudFormation deploy test
+ *    when the push changes `infra/cloudformation/` and the repo tracks its
+ *    script), whatever the repo's own pre-flight list says and whatever the
+ *    run budget — these checks are never skipped for budget; all but the Floci
+ *    deploy test are cheap.
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
@@ -37,7 +39,6 @@ import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
-import { checkSweptAtAncestry } from "./pre_push_sweep_check.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -295,6 +296,18 @@ const MARKDOWNLINT_CONFIGS = [
   ".markdownlint.yml",
 ];
 
+/**
+ * The Floci CloudFormation deploy test `.github/workflows/floci.yml` runs in
+ * CI (Issue #3727). A push that changes a file under its directory runs it,
+ * so a deterministic deploy error is caught before the push. The script fails
+ * closed when Floci cannot be started, when the `aws` CLI is missing or when a
+ * stack misses `CREATE_COMPLETE`; with no Docker socket (the worker container)
+ * it prints `SKIPPED (needs Docker): <template>` for a template that creates an
+ * `AWS::EC2::Instance` and leaves that template to CI.
+ */
+const FLOCI_TEST_SCRIPT = "infra/cloudformation/test-floci.sh";
+const FLOCI_TEST_DIR = "infra/cloudformation/";
+
 function hasExtension(path: string, extensions: readonly string[]): boolean {
   const lower = path.toLowerCase();
   return extensions.some((ext) => lower.endsWith(ext));
@@ -469,6 +482,17 @@ export function planChangedFileChecks(
       cwd: opts.repoRoot,
       command:
         `${binary} --no-progress --no-summary --no-must-find-files ${config}${quoted.value}`,
+    });
+  }
+
+  if (
+    tracked.includes(FLOCI_TEST_SCRIPT) &&
+    changed.some((p) => p.startsWith(FLOCI_TEST_DIR))
+  ) {
+    checks.push({
+      label: "floci cloudformation",
+      cwd: opts.repoRoot,
+      command: `bash ${FLOCI_TEST_SCRIPT}`,
     });
   }
 
@@ -681,8 +705,8 @@ async function findBinary(
  * Run the pre-push gate: the always-on changed-file checks first, then the
  * repo's pre-flight commands. `checksRun` lists the changed-file commands run.
  * The changed-file checks run whatever the run
- * budget — they are fast and never skipped. Any git, parse or planning error
- * is an `Err`, never a pass.
+ * budget — they are never skipped; all but the Floci deploy test are fast. Any
+ * git, parse or planning error is an `Err`, never a pass.
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -693,8 +717,6 @@ export async function runPrePushGate(opts: {
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
-  /** Default branch ref for the sweptAt check; resolved from origin/HEAD when absent. */
-  defaultRef?: string;
   /**
    * Check every non-merge commit ahead of this ref instead of only commits on
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
@@ -763,18 +785,6 @@ export async function runPrePushGate(opts: {
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
   });
   if (!plan.ok) return fail(plan.error);
-
-  const sweep = await checkSweptAtAncestry({
-    cwd: opts.cwd,
-    changed: changed.value,
-    git,
-    defaultRef: opts.defaultRef,
-  });
-  if (!sweep.ok) {
-    return sweep.infrastructure
-      ? infrastructureFail(sweep.error)
-      : fail(sweep.error);
-  }
 
   const checksRun: string[] = [];
   for (const check of plan.value) {

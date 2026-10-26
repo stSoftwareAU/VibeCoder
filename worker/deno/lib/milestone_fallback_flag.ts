@@ -33,6 +33,7 @@ import type {
 } from "./merge_fallback_issue.ts";
 import type { RollbackOutcome } from "./milestone_rollback.ts";
 import type { ConflictAttemptRecord } from "./milestone_sync_streak.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Runs `gh`, returning stdout; throws on failure. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -123,8 +124,10 @@ export async function readBehindSince(
     const date = out.trim();
     return date && date !== "null" ? { behindSince: date } : {};
   } catch (err) {
-    log(
-      `WARNING: Could not read when '${defaultBranch}' in ${repo} moved past ` +
+    logAt(
+      log,
+      "warn",
+      `Could not read when '${defaultBranch}' in ${repo} moved past ` +
         `${lastSyncedDefaultSha}: ${
           err instanceof Error ? err.message : String(err)
         } — the merge-fallback flag records it as unknown (Issue #2311)`,
@@ -239,8 +242,10 @@ export async function fileFallbackFlag(
   });
 
   if (!filed.ok) {
-    log(
-      `WARNING: Could not file the merge-fallback flag for ` +
+    logAt(
+      log,
+      "warn",
+      `Could not file the merge-fallback flag for ` +
         `'${branch.milestoneBranch}' in ${repo}: ${filed.error.message} — ` +
         `the fallback still ran, but nothing durable records it ` +
         `(Issue #2311)`,

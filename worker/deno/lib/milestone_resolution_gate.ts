@@ -40,6 +40,10 @@ import {
 } from "./milestone_merge_gate.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  CARGO_BUILD_SKIPPED_FOR_MERGE,
+  shouldSkipEphemeralCargoBuild,
+} from "./heavy_build_gate.ts";
 
 /**
  * How long the whole verification may run before it is given up on.
@@ -219,6 +223,13 @@ export async function verifyResolvedTree(
   typeCheck: MergeGateFn = checkMergedTree,
   /** Reads the clock. Injected in tests so the budget is deterministic. */
   now: () => number = () => Date.now(),
+  /**
+   * Whether the ephemeral cargo build must not run (Issue #4326).
+   * Defaults to a fresh read of the host-disk budget. A mixed tree's type
+   * check still passes, so the detail string is not where this is decided.
+   */
+  skipCargoBuild: () => Promise<boolean> = () =>
+    shouldSkipEphemeralCargoBuild(repoDir),
 ): Promise<MergeGateOutcome> {
   // A tree that cannot be read is a verification that could not be run.
   try {
@@ -251,12 +262,26 @@ export async function verifyResolvedTree(
       status: "skipped",
       detail: `${typed.detail} — the Issue #974 type check did not run`,
       output: typed.output,
+      ...(typed.cargoSkipped ? { cargoSkipped: true } : {}),
     };
   }
 
   const ran: string[] = [typed.detail];
   let unitSuiteRan = false;
-  for (const project of await findProjectManifests(repoDir)) {
+  // Re-read the budget. A mixed tree's type check returns `passed` after it
+  // skips cargo, and parsing that detail would miss a budget that flipped
+  // between the two gates (Issue #4326).
+  const projects = await findProjectManifests(repoDir);
+  const skipCargo = projects.some((project) => project.kind === "cargo") &&
+    await skipCargoBuild();
+  let skippedCargoSuite = false;
+  for (const project of projects) {
+    if (project.kind === "cargo" && skipCargo) {
+      // `cargo test` fills the same ephemeral target the type check declined
+      // to fill. The suite waits for CI.
+      skippedCargoSuite = true;
+      continue;
+    }
     // Issue #2138: a Cargo workspace's unit suite is `cargo test`; a Deno
     // project's is whichever of its tasks resolutionTasksFor names.
     const planned: ResolutionTask[] = project.kind === "cargo"
@@ -326,7 +351,11 @@ export async function verifyResolvedTree(
     }
   }
 
-  if (!unitSuiteRan && await hasQualityScript(repoDir)) {
+  // `quality.sh` runs cargo. It is not a substitute for a suite the budget
+  // just skipped, and a `skipped` verdict would refuse the resolution that
+  // budget exists to let land (Issue #4326).
+  const cargoSkippedAsOnlySuite = !unitSuiteRan && skippedCargoSuite;
+  if (!unitSuiteRan && !skippedCargoSuite && await hasQualityScript(repoDir)) {
     // Issue #2388: no manifest names a unit suite, but the repository has its
     // own quality gate — run that, inside whatever budget is left.
     const step: ResolutionTask = {
@@ -368,7 +397,7 @@ export async function verifyResolvedTree(
     unitSuiteRan = true;
   }
 
-  if (!unitSuiteRan) {
+  if (!unitSuiteRan && !cargoSkippedAsOnlySuite) {
     // Choosing a side compiles perfectly while dropping the other side's
     // behaviour, so the type check alone does not verify a resolution.
     return {
@@ -380,5 +409,15 @@ export async function verifyResolvedTree(
     };
   }
 
-  return { status: "passed", detail: `${ran.join("; ")} passed`, output: "" };
+  const cargoLeftToCi = skippedCargoSuite || typed.cargoSkipped === true;
+  const cargoNote = cargoLeftToCi &&
+      !typed.detail.includes(CARGO_BUILD_SKIPPED_FOR_MERGE)
+    ? `; ${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`
+    : "";
+  return {
+    status: "passed",
+    detail: `${ran.join("; ")} passed${cargoNote}`,
+    output: "",
+    ...(cargoLeftToCi ? { cargoSkipped: true } : {}),
+  };
 }

@@ -16,12 +16,13 @@
  * vibe-allow-conflict-markers
  */
 
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { recordPrFollowOnFromGithub } from "../lib/lifecycle_follow_on.ts";
 import {
-  assert,
-  assertEquals,
-  assertStrictEquals,
-  assertStringIncludes,
-} from "@std/assert";
+  lifecycleLedgerPath,
+  readLifecycleLedger,
+} from "../lib/lifecycle_ledger.ts";
+import type { RunStats } from "../lib/run_stats.ts";
 import {
   buildAttemptComment,
   buildFailedComment,
@@ -36,7 +37,6 @@ import {
   parseUnmergedPaths,
   processMergeConflict,
 } from "../lib/pr_merge_conflict_processor.ts";
-import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -588,7 +588,9 @@ function makeClaude(
   resultOverrides?: Partial<ClaudeRunResult>,
 ): Partial<ClaudeDeps> {
   return {
-    runClaudeWithRetry: (async (options: { prompt?: string }) => {
+    runClaudeWithRetry: (async (
+      options: { prompt?: string; captureInvocationStats?: boolean },
+    ) => {
       captured.agentRuns++;
       captured.agentPrompts.push(options?.prompt ?? "");
       captured.events.push("agent:run");
@@ -604,6 +606,11 @@ function makeClaude(
           exitCode: 0,
           timedOut: false,
           ...resultOverrides,
+          // Stats exist only when the caller asked to keep every invocation
+          // (Issue #4153). A run that forgets the flag records no priced cost.
+          ...(options.captureInvocationStats
+            ? {}
+            : { invocationStats: undefined, runStats: undefined }),
         },
       };
     }) as unknown as ClaudeDeps["runClaudeWithRetry"],
@@ -647,6 +654,13 @@ async function runProcessor(
     threadComments?: { body: string; author: string }[];
     /** Error `gh pr comment` rejects with (Issue #2278). */
     commentPostError?: string;
+    /**
+     * Reuse one work root so two runs share a lifecycle ledger
+     * (Issue #4153). Absent, a fresh directory is created.
+     */
+    workRoot?: string;
+    /** Wire the real follow-on recorder instead of the no-op mock. */
+    recordFollowOn?: boolean;
   },
 ): Promise<{
   captured: Captured;
@@ -692,9 +706,15 @@ async function runProcessor(
     crashHandling: opts?.crashHandling,
   });
 
+  if (opts?.recordFollowOn) {
+    deps.infrastructure.recordPrFollowOn = (input) =>
+      recordPrFollowOnFromGithub(input, deps.github.runGhCommand);
+  }
+
   // Issue #1660: the work root and the clone are separate directories, so a
   // heartbeat written into the clone is visible as a wrong location.
-  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  const workRoot = opts?.workRoot ??
+    await Deno.makeTempDir({ prefix: "vibe-work-root-" });
   const workDir = await Deno.makeTempDir({ prefix: "vibe-merge-conflict-" });
   for (const [path, content] of Object.entries(opts?.workDirFiles ?? {})) {
     await Deno.writeTextFile(`${workDir}/${path}`, content);
@@ -844,6 +864,94 @@ Deno.test("processMergeConflict - a clean merge needs no agent", async () => {
   assertEquals(result.value.merged, true);
   assertEquals(captured.agentRuns, 0);
   assertEquals(captured.commitAndPushCalls, 1);
+});
+
+const CONFLICT_HEAD = "1111111111111111111111111111111111111111";
+
+/** A priced conflict-fix invocation, so the ledger can record a known cost. */
+function pricedConflictRun(): RunStats {
+  return {
+    servedModels: ["claude-opus-4-6"],
+    requestedModel: "claude-opus-4-6",
+    provider: "claude",
+    wallClockMs: 1,
+    tokenUsage: {
+      inputTokens: 1_000,
+      outputTokens: 100,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    },
+  };
+}
+
+Deno.test("processMergeConflict - a conflict-fix run records one deduplicated follow-on cost (Issue #4153)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-conflict-ledger-" });
+  const stats = pricedConflictRun();
+  const run = (attemptCount: number) =>
+    runProcessor(
+      makeInput({ attemptCount }),
+      makeGitScript(),
+      undefined,
+      {
+        recordFollowOn: true,
+        workRoot,
+        claudeResult: { invocationStats: [stats], runStats: stats },
+      },
+    );
+  try {
+    const first = await run(0);
+    assert(first.result.ok, JSON.stringify(first.result));
+    assertEquals(first.captured.agentRuns, 1);
+    const second = await run(0);
+    assert(second.result.ok, JSON.stringify(second.result));
+    const ledgerPath = lifecycleLedgerPath(workRoot);
+    const replayed = await readLifecycleLedger(ledgerPath);
+    assertEquals(replayed.length, 1);
+    const event = replayed[0]!;
+    assert(event.kind === "follow_on");
+    assertEquals(event.followOn, "merge_conflict");
+    assertEquals(event.cycle, CONFLICT_HEAD);
+    assertEquals(event.attempt, 1);
+    assertEquals(event.prNumber, 48);
+    assertEquals(event.repo, "org/repo");
+    assertEquals(event.usage, "known");
+    assertEquals(event.pricing, "known");
+    assert(
+      event.estimatedApiEquivalentUsd !== undefined &&
+        event.estimatedApiEquivalentUsd > 0,
+      String(event.estimatedApiEquivalentUsd),
+    );
+
+    const later = await run(1);
+    assert(later.result.ok, JSON.stringify(later.result));
+    const attempts = await readLifecycleLedger(ledgerPath);
+    assertEquals(attempts.length, 2);
+    assert(
+      attempts.every((item) =>
+        item.kind === "follow_on" && item.followOn === "merge_conflict" &&
+        item.cycle === CONFLICT_HEAD
+      ),
+      JSON.stringify(attempts),
+    );
+    assertEquals(
+      attempts.map((item) => item.kind === "follow_on" ? item.attempt : 0),
+      [1, 2],
+    );
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+  }
+});
+
+Deno.test("processMergeConflict - a clean merge records no conflict-fix cost (Issue #4153)", async () => {
+  const { result, captured, workRoot } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+    undefined,
+    { recordFollowOn: true },
+  );
+  assert(result.ok);
+  assertEquals(captured.agentRuns, 0);
+  assertEquals(await readLifecycleLedger(lifecycleLedgerPath(workRoot)), []);
 });
 
 Deno.test("processMergeConflict - refuses to push a tree that still has conflict markers", async () => {
@@ -1819,6 +1927,32 @@ Deno.test("processMergeConflict - warns when the checkout directory is missing (
 // ---------------------------------------------------------------------------
 // A run the worker itself ended (Issue #1693)
 // ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - a finish deadline withdraws the attempt and adds no failure label (Issue #4245)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    {
+      claudeResult: {
+        finishDeadline: true,
+        timedOut: true,
+        timeoutReason: "hard-timeout",
+        exitCode: 124,
+      },
+      postedCommentId: 9001,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(
+    captured.labelsAdded ?? [],
+    [],
+    "a finish deadline must not add a failure label",
+  );
+});
 
 Deno.test("processMergeConflict - a watchdog SIGTERM withdraws the attempt instead of failing it", async () => {
   // GRQ-25, NEAT-AI-core#637: the maintenance-lane watchdog abandoned the
@@ -3288,40 +3422,6 @@ Deno.test("processMergeConflict - syncs the PR body once after a verified push",
   assertEquals(calls[0]?.prNumber, 48);
   assertEquals(calls[0]?.repo, "org/repo");
   assertEquals(calls[0]?.beforeSha, "1111111111111111111111111111111111111111");
-});
-
-Deno.test("processMergeConflict - forwards the sync follow-up filer to the PR body sync (Issue #3678)", async () => {
-  const sentinel: SyncFollowUpFiling = {
-    verifyIssueContent: () =>
-      Promise.reject(new Error("sentinel filer must not be called")),
-    ensureLabelExists: () =>
-      Promise.reject(new Error("sentinel filer must not be called")),
-    fleetAuthors: [],
-  };
-  let syncCalls = 0;
-  let forwarded: SyncFollowUpFiling | undefined;
-  const syncPrBodyFn: MergeConflictProcessorDeps["syncPrBodyFn"] = (
-    _input,
-    deps,
-  ) => {
-    syncCalls++;
-    forwarded = deps.followUpFiling;
-    return Promise.resolve({
-      ok: true,
-      value: { status: "updated", issueNumber: 42 },
-    });
-  };
-
-  const { result } = await runProcessor(
-    makeInput(),
-    makeGitScript(),
-    { syncPrBodyFn, syncFollowUpFiling: sentinel },
-  );
-
-  assert(result.ok);
-  assertEquals(result.value.merged, true);
-  assertEquals(syncCalls, 1);
-  assertStrictEquals(forwarded, sentinel);
 });
 
 Deno.test("processMergeConflict - does not sync the PR body when nothing was merged", async () => {

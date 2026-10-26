@@ -386,11 +386,25 @@ function emptyState(runToken: number): FleetState {
 
 let state: FleetState = emptyState(0);
 
+/**
+ * Pull requests raised this process with an unresolved pre-PR review record
+ * (Issue #4236). Counted on the fleet-summary line and kept off `failures`.
+ * Not persisted: a prior sidecar has no field for it, and the line only
+ * names the count once one has been recorded.
+ */
+let preprReviewChangesRequested = 0;
+
+/** Add the findings just posted on a pre-PR review record (Issue #4236). */
+export function recordPreprReviewChangesRequested(count: number): void {
+  if (count > 0) preprReviewChangesRequested += count;
+}
+
 /** Clear every accumulator and open a new accumulation window. */
 export function resetFleetTelemetry(): void {
   state = emptyState(state.runToken + 1);
   seenRejections.clear();
   seenMergedPrs.clear();
+  preprReviewChangesRequested = 0;
 }
 
 /**
@@ -545,7 +559,8 @@ export function recordHookFailure(count = 1): void {
 
 /**
  * Record the terminal outcome of a claimed issue. `failureClass` is the
- * failing phase (`setup`, `execute`, `quality_gate`, …) or `timeout`.
+ * failing phase (`setup`, `execute`, `quality_gate`, …), `timeout`, or
+ * `hard_kill` for a run the launcher watchdog killed (Issue #4254).
  */
 export function recordOutcome(
   outcome: FleetRunOutcome,
@@ -912,6 +927,11 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `idle_by_reason=${joinCounts(s.idleByReason, "s")}`,
     `failures_by_class=${joinCounts(s.failuresByClass, "")}`,
     `utilisation=${utilisation.length > 0 ? utilisation.join(",") : "none"}`,
+    // Issue #4236: omitted at zero so a fleet that raised no such record
+    // keeps the summary line it had. The count is not part of `failures`.
+    ...(preprReviewChangesRequested > 0
+      ? [`prepr_review_changes_requested=${preprReviewChangesRequested}`]
+      : []),
   ].join(" ");
 }
 

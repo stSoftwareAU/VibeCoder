@@ -46,7 +46,8 @@ Deno.test("pr_feedback - states the run's scope under its mode heading", async (
       "every other instance of the same defect",
       "only where this push made it false",
       "keeps the scope that summary states",
-      "mentions in passing goes to a follow-up issue",
+      // Issue #4304: no follow-up issue — every comment ends in this run.
+      "every comment ends fixed or answered in this run",
     ]
   ) {
     assertStringIncludes(block, required, `pr_feedback scope: ${required}`);

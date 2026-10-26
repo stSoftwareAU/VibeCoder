@@ -13,10 +13,6 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import {
-  detectFailureCategory,
-  SUMMARY_RULE_GATE_MARKER,
-} from "../lib/failure_diagnosis.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -37,6 +33,12 @@ A block with no PR ends the run instead of recovering in-run.
 
 - [ ] The first block launches one recovery invocation.
 - [ ] A second block in the same run fails as today.
+`;
+
+/** A bug report that states no acceptance criteria. */
+const ISSUE_WITHOUT_CRITERIA = `## Problem
+
+The gate ends the run instead of recovering in-run.
 `;
 
 /** The summary the agent wrote: no closure block at all. */
@@ -358,10 +360,8 @@ Deno.test(
       prompt,
       `docs/archive/pr-summaries/pr-summary-${ISSUE}.md`,
     );
-    // The comment is on the thread as well, so the shortfall is not only in
-    // this host's log.
-    assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(outcome.comments[0]!, "Acceptance-criteria closure");
+    // The recovery rewrote the summary, so nothing is left to post.
+    assertEquals(outcome.comments.length, 0);
   },
 );
 
@@ -370,23 +370,15 @@ Deno.test(
   async () => {
     const outcome = await runCompletion({ summary: SUMMARY_WITHOUT_BLOCK });
 
-    assertEquals(outcome.status, "failure");
-    // One recovery invocation, then the two bounded closure-verdict questions
-    // the worker asks when the recovery's own summary still fails the gate
-    // (Issue #2242). The recovery itself is still entered exactly once.
+    assertEquals(outcome.status, "continue");
     assertEquals(
       outcome.claudePrompts.filter((p) => p.includes("RETRY NOTICE")).length,
       1,
       "the recovery is not repeated",
     );
-    assertEquals(outcome.claudeCalls, 3, "recovery plus two verdict questions");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "Acceptance criteria");
-    assertEquals(
-      outcome.comments.length,
-      1,
-      "the same verdict is not posted twice",
-    );
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
   },
 );
 
@@ -398,12 +390,11 @@ Deno.test(
       retryInvocationFails: true,
     });
 
-    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.status, "continue");
     assertEquals(outcome.claudeCalls, 1, "launched once, no second attempt");
-    assertEquals(outcome.qualityGateRuns, 0, "nothing changed to re-gate");
-    assertEquals(outcome.prCreateCalls, 0);
-    assertStringIncludes(outcome.reason ?? "", "Acceptance criteria");
+    assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
   },
 );
 
@@ -451,7 +442,7 @@ Deno.test(
       outcome.claudePrompts[0]!,
       "Acceptance-criteria closure",
     );
-    assertStringIncludes(outcome.claudePrompts[0]!, "Docs sweep");
+    assertEquals(outcome.claudePrompts[0]!.includes("Docs sweep"), false);
   },
 );
 
@@ -496,7 +487,7 @@ Deno.test(
       outcome.claudePrompts[0]!,
       "Reproduction status missing",
     );
-    assertStringIncludes(outcome.claudePrompts[0]!, "Docs sweep");
+    assertEquals(outcome.claudePrompts[0]!.includes("Docs sweep"), false);
   },
 );
 
@@ -522,7 +513,7 @@ Deno.test(
       outcome.claudePrompts[0]!,
       "Independent review missing",
     );
-    assertStringIncludes(outcome.claudePrompts[0]!, "Docs sweep");
+    assertEquals(outcome.claudePrompts[0]!.includes("Docs sweep"), false);
   },
 );
 
@@ -552,15 +543,19 @@ Deno.test(
 Deno.test(
   "completion - an existing PR with no fix from the recovery is finalised as summary_incomplete",
   async () => {
+    // An issue with no acceptance criteria (Issue #4146: unmet criteria
+    // never take this path), blocked by the reproduction gate alone.
     const outcome = await runCompletion({
-      summary: SUMMARY_WITHOUT_BLOCK,
+      summary: BUG_SUMMARY_WITHOUT_REPRODUCTION,
+      labels: ["bug", "work-on"],
+      issueBody: ISSUE_WITHOUT_CRITERIA,
       prExistsForBranch: true,
     });
 
     // The recovery turn ran once and the retried summary still fails the
     // gate, so the second block takes the existing-PR path: the PR is
     // finalised and the run reports the shortfall against it.
-    assertEquals(outcome.status, "early_exit");
+    assertEquals(outcome.status, "continue");
     assertEquals(
       outcome.claudePrompts.filter((p) => p.includes("RETRY NOTICE")).length,
       1,
@@ -574,7 +569,9 @@ Deno.test(
   "completion - a recovery invocation that cannot be launched over an existing PR still finalises it (Issue #1140)",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITHOUT_BLOCK,
+      summary: BUG_SUMMARY_WITHOUT_REPRODUCTION,
+      labels: ["bug", "work-on"],
+      issueBody: ISSUE_WITHOUT_CRITERIA,
       prExistsForBranch: true,
       retryInvocationFails: true,
     });
@@ -583,10 +580,10 @@ Deno.test(
     // back into the claimable pool — the regression Issue #1140 exists to
     // stop. The run instead re-runs completion, whose existing-PR path
     // finalises the PR as `summary_incomplete`.
-    assertEquals(outcome.status, "early_exit");
+    assertEquals(outcome.status, "continue");
     assertEquals(outcome.claudeCalls, 1, "launched once, no second attempt");
-    assertEquals(outcome.qualityGateRuns, 0, "nothing changed to re-gate");
     assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
   },
 );
 
@@ -606,12 +603,12 @@ Deno.test(
       summary: SUMMARY_WITH_QUOTED_RUST_PATH,
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "no PR was raised");
-    const reason = outcome.reason ?? "";
-    assertStringIncludes(reason, SUMMARY_RULE_GATE_MARKER);
-    assertStringIncludes(reason, "AppError::EvaluationSummaryUnavailable");
-    assertEquals(detectFailureCategory(reason), "summary_incomplete");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertStringIncludes(
+      outcome.claudePrompts[0] ?? "",
+      "AppError::EvaluationSummaryUnavailable",
+    );
   },
 );
 

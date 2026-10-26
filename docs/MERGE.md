@@ -39,7 +39,7 @@ flowchart TD
     B -- "No (fall back)" --> E[directMergePr — backstop gate]
     E --> F{CI status?}
     F -- pending/failed --> G[Blocked: leave PR open]
-    F -- "no checks at all" --> N[Blocked: unverified —<br/>escalate to a human]
+    F -- "no checks at all" --> N[Blocked: unverified —<br/>branch update, retry next cycle]
     F -- passed --> H{behindBy > 0?}
     H -- yes --> I[Defer: branch-update maintenance<br/>merges target in, plain push →<br/>CI re-runs → retry next cycle]
     H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync, or a milestone-fix PR<br/>whose head merges the default branch)<br/>--match-head-commit &lt;checked SHA&gt;"]
@@ -302,17 +302,53 @@ GitHub's own aggregate verdict, `statusCheckRollup.state` (fetched by
 verdicts wins, so a red rollup can never be masked by check runs that
 individually look green.
 
-This matters because a workflow that failed to start (`startup_failure`) or a PR
-waiting on a manual approval (`action_required`) both report
-`status: "completed"`. Under the old denylist neither hit the failure branch nor
-the pending branch, so both fell through to `passed` and were direct-merged past
-branch protection.
+When that rollup cannot be read, `checkCiStatus()` falls back to
+`repos/{repo}/commits/{sha}/check-runs` with `per_page=100` and `--paginate`.
+`gh` applies `--jq` per page and prints one object per line; those pages are
+merged before `determineCiStatus()` runs. A page that cannot be parsed, pages
+that disagree on `total_count`, or a merged run count that does not equal
+`total_count` is a lookup failure, and the gate retries. A short page is not
+the full set, so a failed or still-running check past the first page cannot
+read as `passed`.
+
+This matters because a PR waiting on a manual approval (`action_required`)
+reports a completed check run. Under the old denylist that conclusion hit
+neither the failure branch nor the pending branch, so it fell through to
+`passed` and was direct-merged past branch protection.
+
+A workflow that fails at startup is different. When the repository's Actions
+policy rejects a `uses:` action, GitHub records a check **suite** with conclusion
+`startup_failure` and creates **no check run** at all, so a check-run rollup
+never shows it (Issue #4347). `determineCiStatus()` therefore also reads the
+head commit's check suites: a completed suite from the `github-actions` app
+whose conclusion is not on the passing allowlist makes the verdict `failed`
+only when that suite created no check run of its own. A suite that has runs is
+already judged through the latest check run, so an earlier failed or cancelled
+run of the same workflow does not fail the commit again. The suites come from
+GraphQL `checkSuites` (including `checkRuns.totalCount`) on the batched read,
+and from `repos/{repo}/commits/{sha}/check-suites`
+(`latest_check_runs_count`) on the REST fallback. Suites from other apps, and
+suites that have not finished, change nothing. The CI-fix scan reads the same
+zero-run suites: a completed `github-actions` suite with conclusion
+`startup_failure` becomes a CI-fix candidate keyed by the suite id and named
+after the workflow and file path. The run URL is carried in its annotations,
+so the agent can locate the startup refusal while the check name and failure
+signature stay stable across pushes. Without workflow metadata the name is
+`GitHub Actions workflow startup failure`. GraphQL reads the path from
+`workflowRun.file.path`; the REST fallback reads the workflow run by suite id.
+The CI-fix handoff distinguishes suite ids from job ids. A no-change repair
+re-runs the entire workflow because a startup failure has no failed job to
+re-run. Startup suites stay eligible for repair even after the local job retry
+budget is spent; the fleet-wide attempt cap still bounds them and invokes the
+existing abandon-and-restart path, including when GitHub refuses a rerun.
+
 
 ```mermaid
 flowchart TD
     A[Check-run conclusion] --> B{On the passing allowlist?<br/>success / skipped / neutral}
     B -- yes --> C[passed]
     B -- no --> D[failed — including unknown<br/>and future conclusions]
+    S[Completed github-actions suite<br/>with no check run] -- conclusion not on allowlist --> D
     C --> E{Rollup state supplied?}
     E -- no --> F[Verdict stands]
     E -- yes --> G[Worse of the two verdicts wins]
@@ -376,13 +412,17 @@ flowchart TD
 
 A head commit with **no check runs and no commit statuses** has been verified by
 nothing. `checkCiStatus()` reports it as `no_checks` — a status distinct from
-`passed` — and the gate blocks the merge with the `no_checks` reason. The
+`passed` — and the gate blocks the merge with the `no_checks` reason. A failed
+`github-actions` check suite with no check run of its own on such a head makes
+it `failed` instead, because a suite can exist with no check run
+([the allowlist](#the-ci-verdict-is-an-allowlist)). The
 direct-merge path is the one that bypasses branch protection, so it must fail
 closed here exactly as its neighbouring guards do.
 
-Waiting will not help (no check is coming), so the automated path escalates:
-`classifyMergeAttempt({ kind: "no_checks" })` returns `escalate`, which posts
-the explanatory PR comment and applies `needs-human`.
+The automated path never merges such a PR and never hands it to a human
+(Issue #4304): `classifyMergeAttempt({ kind: "no_checks" })` returns `retry`,
+which requests a branch update — a fresh head the repository's checks can run
+on — logs a warning, and tries again next cycle.
 
 The only way to land such a PR through the worker is the **explicit operator
 override** on the CLI:
@@ -636,22 +676,22 @@ omission rather than one defect (Issues #470, #1136).
 **A blocked merge is never silent.** Every outcome runs through
 `handleMergeAttempt()` in
 [`worker/deno/lib/merge_block_escalation.ts`](../worker/deno/lib/merge_block_escalation.ts),
-which maps it to exactly one of four dispositions:
+which maps it to exactly one of four dispositions. None of them hands the PR to
+a human (Issue #4304): every PR merges once it is approved and green, and the
+worker keeps working it until it does.
 
 | Outcome                                                | Disposition     | Worker behaviour                                                                                 |
 | ------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------ |
 | Merged, or native auto-merge armed                     | `landed`        | Nothing — the PR will land unattended                                                            |
-| Checks pending or failed                               | `await_checks`  | Log and wait; the CI-fix loop owns a red check and escalates on its own 3-attempt cap            |
+| Checks pending or failed                               | `await_checks`  | Log and wait; the CI-fix loop owns a red check; its 3-attempt cap closes the PR and redoes its issue (Issue #4304)           |
 | Branch behind its base                                 | `update_branch` | `PUT .../update-branch` so the checks re-run against the merged state                            |
-| No checks at all on the head commit                    | `escalate`      | Explanatory PR comment **and** `needs-human` — nothing verified the head, and no check is coming |
+| No checks at all on the head commit                    | `retry`         | Branch update requested so checks run on a fresh head; logged as a warning, retried next cycle   |
 | Head moved after its checks were read                  | `await_checks`  | Log and wait; the new head's checks are on their way and the next cycle re-evaluates             |
-| Merge refused (protection rule, conflict, unmergeable) | `escalate`      | Explanatory PR comment **and** the `needs-human` label                                           |
+| Merge refused (protection rule, conflict, unmergeable) | `retry`         | Branch update requested; logged as a warning, retried next cycle                                 |
 
-Escalation routes through the shared `escalateToHuman()` chokepoint, so the
-label can never be applied without an accompanying explanation, and it is
-deduplicated per PR so a repeating scan does not spam the thread. A failed
-branch update escalates too — a PR that cannot be brought up to date is exactly
-the stall this is meant to eliminate.
+A failed branch update is retried the same way. A PR that conflicts with its
+base is the merge-conflict ladder's, which finds it by its mergeable state; no
+comment and no `needs-human` label is ever posted by this path.
 
 Review requests are **informational**: a requested reviewer never blocks a fix
 PR. Only branch protection can require an approval, and that is a per-repo
@@ -664,34 +704,36 @@ the owner's review. Both read the decision from a call they already make — the
 sweep's live `gh pr view`, the branch-update pass's batched GraphQL state — and
 log the skip at info.
 
-A PR labelled `standing-violation` (Issue #3382) is **held** by the sweep
-(Issue #3517): it is skipped, never armed or branch-updated, and one already
-armed is disarmed with `gh pr merge --disable-auto`. The label comes from the
-sweep's live `gh pr view` read, and the hold is logged once per process.
-The CI-fix pass honours the label too: after pushing a fix to a labelled PR
-it skips re-arming auto-merge (the label comes from its claim-point live read)
-and logs the hold (Issue #3685). It does not disarm; the sweep does.
-The completion phase also applies this label when a pre-PR verifier finding
-survives its recovery turn on an existing PR (Issue #3796). It withholds
-auto-merge and posts the findings on that PR. A top-level hold comment whose
+Every fleet PR is armed for auto-merge and stays armed (Issue #4291). PRs do
+not merge until they have a review approval and CI is green, and GitHub
+enforces both. No review, finding or label withholds arming or disarms a PR;
+only the routing holds above (a closed milestone route, a retargeted base, a
+retargeted sync PR, an open-children summary PR) and a draft do.
+When a pre-PR verifier finding or a Standards violation survives its recovery
+turn on an existing PR (Issues #3382, #3796), the completion phase posts the
+findings on that PR and still arms it. A top-level findings comment whose
 first line is `<!-- vibe-pre-pr-verifier-hold -->` and whose author is a fleet
 login is actionable feedback, including when this host wrote it; a fleet
-eyes reaction prevents repeat processing (Issue #3798). The feedback pass
-does not release the label or arm auto-merge after its fix.
+eyes reaction prevents repeat processing (Issue #3798).
+
+A repository with auto-merge switched off is no exception (Issue #4304):
+`enableAutoMerge()` falls back to the same gated, SHA-pinned direct merge an
+unprotected base takes, so the PR lands once it is approved and green instead
+of carrying a "merge it manually" note.
 
 The scan lists PRs authored by the worker only, so **human-authored PRs are
-never commented on or escalated** by this path.
+never commented on or merged** by this path.
 
 ```mermaid
 flowchart TD
     A[Auto-merge scan<br/>worker-authored PR] --> B[gh pr merge --auto]
     B -- enabled --> L[landed]
-    B -- "not allowed<br/>(branch unprotected)" --> C[directMergePr — backstop gate]
+    B -- "not allowed (branch unprotected)<br/>or auto-merge off on the repo" --> C[directMergePr — backstop gate]
     B -- other failure --> E
     C -- merged --> L
     C -- "pending / failed" --> W[await_checks<br/>log and wait]
     C -- behind target --> U[update-branch<br/>checks re-run]
-    C -- refused --> E[escalate:<br/>PR comment + needs-human]
+    C -- refused --> E[retry:<br/>update-branch, warn,<br/>try again next cycle]
     U -- update fails --> E
 ```
 
@@ -901,7 +943,7 @@ flowchart TD
     G -- unreadable --> W
     G --> H{"required_status_checks<br/>or pull_request rule?"}
     H -- no --> W
-    H -- yes --> I{"Any open milestone-fix<br/>PR for this PR already?"}
+    H -- yes --> I{"Open same-repository milestone-fix<br/>PR for this PR, opened by a fleet author?"}
     I -- yes --> J["Stand down silently: no agent run,<br/>no attempt, no retry, no comment"]
     I -- no --> K["Fix on milestone-fix/pr-N-ci-n,<br/>PR into the gated head,<br/>auto-merge armed"]
     M -- review feedback --> G2[GET /rules/branches/head]
@@ -916,7 +958,7 @@ What each pass does with a `milestone/**` head:
 | Pass | On a `milestone/**` head | Marker on the comment |
 | --- | --- | --- |
 | Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head`, owner `conflict takeover` |
-| CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) only while any fix PR for this head is already open (Issue #2907) | None — the stand-down is silent; the open fix PR itself carries the explanation |
+| CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) while an open fix PR for this head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails, for example on bad JSON or a full results page (Issues #2907 and #3854) | None — the stand-down is silent; the open fix PR itself carries the explanation |
 | Review feedback | Fixes on its own `milestone-fix/<leaf>/pr-<N>-feedback-<commentId>` branch and raises an auto-merge-armed PR the same way; no pre-agent stand-down — a different comment's fix in flight does not stop this one (Issue #2907) | None |
 | Merge conflict | **Conflict takeover in the same cycle**, gated or not: opens one `milestone-fix/<leaf>/pr-<N>-takeover-<sha12>` PR into the head, or reuses the open one (Issue #3031) | None — no stand-down; the takeover's attempt and conclusion markers |
 
@@ -945,7 +987,8 @@ What each pass does with a `milestone/**` head:
   `raiseMilestoneFixPr()` (`milestone_fix_pr.ts`). A retry is spent on that
   attempt exactly as an ungated head would.
   - **CI fix stands down before the agent runs** when `findOpenMilestoneFixPr()`
-    finds *any* open `milestone-fix/pr-<N>-*` PR for that head, so a repeat CI
+    finds an open `milestone-fix/pr-<N>-*` PR for that head that the fleet
+    opened in this repository, so a repeat CI
     failure on the same PR does not spend a retry racing a fix already in
     flight.
   - **Review feedback has no such pre-check** — each comment gets its own
@@ -1058,17 +1101,18 @@ the abandoned one. Its preconditions and its exits are in
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
 constant, two consumers — so the PR ladder and the milestone ladder cannot
 drift apart. The sync pass opens and concludes an attempt around every
-conflicting merge and hands an exhausted budget to the roll-back
-(Issue #1778); nothing is posted to a comment, a label or an issue while an
+conflicting merge and hands an exhausted budget on: to a rebuild first when a
+roll-back was already spent on the branch, otherwise to the roll-back
+(Issues #1778, #4328); nothing is posted to a comment, a label or an issue while an
 automatic attempt remains.
 
 What does and does not spend an attempt:
 
 | Attempt outcome                              | Charged? | Why                                                                                       |
 | -------------------------------------------- | -------- | ----------------------------------------------------------------------------------------- |
-| **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker                                     |
+| **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker — or a clean merge produced a tree the repository's own check refuses, a conflict git could not see (Issue #4304) |
 | **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat, or the worker killing the agent at the cycle deadline; the conflict was never judged (Issues #395, #1693). An agent that runs out **its own** timeout is judged and charged (Issue #2305) |
-| **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch. Not charged is not *no consequence*: a resolution-gate refusal that repeats unchanged is counted separately as a wedge, which holds the milestone's issues back and files one worker diagnostic in VibeCoder (Issue #2388) |
+| **Not-charged** — a conclusion the branch is not answerable for | No | The resolution gate refused an agent's resolution, a ruleset refused the push, or the pass stood down before touching the branch. Not charged is not *no consequence*: a resolution-gate refusal that repeats unchanged is counted separately as a wedge, which holds the milestone's issues back and files one worker diagnostic in VibeCoder (Issue #2388). A refusal of the kind above (the rung was not offered, or the gate refused the resolution) is also counted in `refusedCycles`, and the fourth consecutive one is charged as a failure so the branch climbs to the hand-off (Issue #4328) |
 
 **A provider outage is not a conflict** (Issue #2613). When the agent's provider
 refuses the request — a spent balance (HTTP 402), a refused credential
@@ -1106,14 +1150,14 @@ default tip never refills the attempt count.
 | Required CI check **failed**                        | Backstop returns blocked; PR left open                     | Fix lands on the feature branch; CI re-runs; re-evaluated next cycle           |
 | Feature branch **behind target**                    | Backstop defers; PR left open                              | Branch-update maintenance merges the target in → CI re-runs → merge-if-green   |
 | Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate                    |
-| Green PR **refused by the merge**                   | Explanatory PR comment + `needs-human`                     | Human unblocks the merge; the worker does not retry while the label is applied |
-| **Branch update fails** on a behind PR              | Escalated the same way — never left silently open          | Human resolves the conflict on the feature branch                              |
+| Green PR **refused by the merge**                   | Branch update requested; warning logged                    | Retried every cycle (Issue #4304) — never handed to a human                    |
+| **Branch update fails** on a behind PR              | Warning logged — never left silently open                  | Retried next cycle; a conflict is resolved by the merge-conflict ladder        |
 | Push **targets default branch**                     | Push rejected with explicit error                          | Change is redirected through a feature-branch PR                               |
 | Default branch **cannot be resolved**               | Push allowed (fail-open)                                   | Feature-branch pushes are never blocked by a transient lookup failure          |
 | Ruleset write **fails for one repo**                | Logged as a non-fatal warning                              | Setup continues; the next setup run retries idempotently                       |
 | Required check is **unsatisfiable** on the repo     | Check is dropped from the required set                     | The merge is never blocked by a check that can never pass                      |
 | PR head is a **ruleset-gated** `milestone/**` branch (spelling pass) | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
-| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while any fix PR for the head is already open | The fix PR's own CI runs and it auto-merges into the gated head once green |
+| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while an open fix PR for the head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails | The fix PR's own CI runs and it auto-merges into the gated head once green |
 
 ## Related implementation
 

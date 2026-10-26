@@ -11,6 +11,7 @@
  *   1. Merged PR + open issue        — gh issue close invoked, linkPrToIssue NOT.
  *   2. Open   PR + open issue        — linkPrToIssue invoked,    gh issue close NOT.
  *   3. Merged PR + already-closed    — neither gh issue close nor linkPrToIssue (idempotent).
+ *   4. PR with surviving findings (Issue #4291) — findings posted, PR armed, never disarmed.
  *
  * Tests assert on observable behaviour (gh command args, linkPrToIssue
  * call count, phase result status) using injected WorkerDeps doubles —
@@ -26,9 +27,13 @@ import {
   mergedPrViewFor,
 } from "./fixtures/merge_landing_stub.ts";
 import { recoverAndFinaliseExistingPr } from "../lib/phases/completion_phase.ts";
-import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createMockDeps,
+  mockGitHubClient,
+} from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { WorkerConfig } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -139,7 +144,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -210,7 +215,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -260,7 +265,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -302,7 +307,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -343,12 +348,110 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {},
     );
 
     const closeCall = gh.calls.find(
       (a) => a[0] === "issue" && a[1] === "close",
     );
     assertEquals(closeCall?.[2], "11");
+  },
+);
+
+// ===========================================================================
+// Issue #4291 — surviving findings are posted, and the PR is armed, never
+// disarmed (this replaced the Issue #4075 disarm)
+// ===========================================================================
+
+const FINDINGS_PR_URL = "https://github.com/org/repo/pull/27";
+const FINDINGS_PR_BODY = "## Summary\n\nCloses #11.\n";
+
+/** Deps that record arming, PR comments and labels over a makeGh double. */
+function recordingDeps(gh: ReturnType<typeof makeGh>) {
+  const armed: number[] = [];
+  const posted: { prNumber: number; body: string }[] = [];
+  const labelCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: gh.runGhCommand,
+      createClient: () => ({
+        ...mockGitHubClient(),
+        postComment: (_repo: string, prNumber: number, body: string) => {
+          posted.push({ prNumber, body });
+          return Promise.resolve(undefined);
+        },
+      }),
+    },
+    pr: {
+      updatePrLabels: (_repo: string, _prNumber: number, labels: string[]) => {
+        labelCalls.push([...labels]);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      finalisePr: (options: { prNumber: number }) => {
+        armed.push(options.prNumber);
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "armed" },
+        });
+      },
+    },
+  });
+  return { deps, armed, posted, labelCalls };
+}
+
+Deno.test(
+  "recoverAndFinaliseExistingPr #4291 - surviving findings are posted and the PR is still armed, never disarmed",
+  async () => {
+    const gh = makeGh({ prState: "OPEN", issueState: "OPEN" });
+    const { deps, armed, posted, labelCalls } = recordingDeps(gh);
+
+    const result = await recoverAndFinaliseExistingPr(
+      FINDINGS_PR_URL,
+      makeContext(),
+      makeState(),
+      FINDINGS_PR_BODY,
+      deps,
+      { findingsComment: "- finding: unresolved" },
+    );
+
+    assertEquals(result, { status: "continue" });
+    assertEquals(armed, [27], "the CI quality gate is the only merge gate");
+    assertEquals(
+      gh.calls.some((a) => a.includes("--disable-auto")),
+      false,
+      "nothing may disarm the PR",
+    );
+    assertEquals(posted.length, 1);
+    assertEquals(posted[0]!.prNumber, 27);
+    assertStringIncludes(posted[0]!.body, "<!-- vibe-pre-pr-verifier-hold -->");
+    assertStringIncludes(posted[0]!.body, "- finding: unresolved");
+    assertEquals(posted[0]!.body.includes("Auto-merge withheld"), false);
+    assertEquals(
+      labelCalls.some((l) => l.includes("standing-violation")),
+      false,
+      "the standing-violation label is retired",
+    );
+  },
+);
+
+Deno.test(
+  "recoverAndFinaliseExistingPr #4291 - without findings the PR is armed and nothing is posted",
+  async () => {
+    const gh = makeGh({ prState: "OPEN", issueState: "OPEN" });
+    const { deps, armed, posted } = recordingDeps(gh);
+
+    const result = await recoverAndFinaliseExistingPr(
+      FINDINGS_PR_URL,
+      makeContext(),
+      makeState(),
+      FINDINGS_PR_BODY,
+      deps,
+      {},
+    );
+
+    assertEquals(result, { status: "continue" });
+    assertEquals(armed, [27]);
+    assertEquals(posted, []);
+    assertEquals(gh.calls.some((a) => a.includes("--disable-auto")), false);
   },
 );

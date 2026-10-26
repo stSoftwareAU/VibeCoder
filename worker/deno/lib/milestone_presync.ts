@@ -43,6 +43,7 @@ import { currentHost } from "./conflict_stage_timer.ts";
 import { describeConflictAnalyses } from "./milestone_fallback_flag.ts";
 import {
   conflictAttemptDue,
+  escalateRepeatedRefusal,
   escalateSyncConflict,
   type GhCommandFn,
   grantAgentRun,
@@ -72,11 +73,16 @@ import {
   countCommitsAheadRepairingBrokenRef,
 } from "./git_issue_branches.ts";
 import { syncMilestoneBranchWithDefault } from "./git_pull.ts";
-import { heavyBuildDeferral } from "./heavy_build_gate.ts";
+import {
+  type HeavyBuildAdmission,
+  heavyBuildAdmission,
+} from "./heavy_build_gate.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
+import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
+import { bindLogger, logAt } from "./log_sink.ts";
 
 /**
  * What is wrong, in the words the log line and the deferral reason share
@@ -166,12 +172,14 @@ export interface MilestonePresyncDeps {
     defaultSha: string | undefined,
   ) => Promise<GateRefusalConclusion>;
   /**
-   * Must the merge wait for host disk (Issue #3178)? The merge is verified by
-   * the repository's own build and test, and below the host floor that build
-   * is what tips the host over. A reason defers; null proceeds. Absent:
-   * nothing is gated.
+   * May the merge run its build, or must it wait for host disk or land without
+   * it (Issue #3178, Issue #4326)? The merge is verified by the repository's own
+   * build and test, and below the host floor that build is what tips the host
+   * over. `defer` waits; `merge-only` lands the merge without the build, with
+   * the reason carried as `SyncBranchOptions.mergeOnly`; `build` proceeds.
+   * Absent: nothing is gated.
    */
-  heavyBuildDeferral?: () => Promise<string | null>;
+  heavyBuildAdmission?: () => Promise<HeavyBuildAdmission>;
   log: (message: string) => void;
 }
 
@@ -299,8 +307,10 @@ export async function presyncMilestoneBranch(
   // load-bearing, not incidental.
   const tip = await deps.defaultTipSha();
   if (!tip.ok) {
-    deps.log(
-      `WARNING: Could not read the tip of '${defaultBranch}' for ` +
+    logAt(
+      deps.log,
+      "warn",
+      `Could not read the tip of '${defaultBranch}' for ` +
         `'${milestoneBranch}' (${tip.error.message}) — the ledger paces this ` +
         `branch on its deferral alone (Issue #1780)`,
     );
@@ -334,10 +344,22 @@ export async function presyncMilestoneBranch(
 
   // Issue #3178: below the host floor the merge's verification build is the
   // one thing that must not run. Checked before the ledger, so a deferral
-  // charges and paces nothing.
-  if (deps.heavyBuildDeferral) {
-    const wait = await deps.heavyBuildDeferral();
-    if (wait !== null) return deferral(wait, behindBy);
+  // charges and paces nothing. Issue #4326: over the ephemeral cargo budget
+  // cargo builds wait for CI while Deno checks remain; the reason travels with it.
+  let mergeOnly: string | undefined;
+  if (deps.heavyBuildAdmission) {
+    const admission = await deps.heavyBuildAdmission();
+    if (admission.mode === "defer") {
+      return deferral(admission.reason, behindBy);
+    }
+    if (admission.mode === "merge-only") {
+      mergeOnly = admission.reason;
+      deps.log(
+        `[HOST_DISK_BUDGET] Milestone sync for '${milestoneBranch}' in ${repo} ` +
+          `uses cargo-only build deferral; Deno projects keep their normal checks: ` +
+          `${admission.reason}`,
+      );
+    }
   }
 
   const streaks: SyncStreaks = streakPath
@@ -365,8 +387,10 @@ export async function presyncMilestoneBranch(
       await saveSyncStreaks(streakPath, streaks);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      deps.log(
-        `WARNING: The milestone sync ledger at ${streakPath} could not be ` +
+      logAt(
+        deps.log,
+        "warn",
+        `The milestone sync ledger at ${streakPath} could not be ` +
           `written while recording ${what} for '${milestoneBranch}' ` +
           `(${message}) — this attempt cannot be charged or paced ` +
           `(Issue #1780)`,
@@ -402,8 +426,10 @@ export async function presyncMilestoneBranch(
     const wedge = entry.gateRefusal;
     const tip = await deps.milestoneTipSha();
     if (!tip.ok) {
-      deps.log(
-        `WARNING: '${milestoneBranch}' in ${repo} is held back by a wedged ` +
+      logAt(
+        deps.log,
+        "warn",
+        `'${milestoneBranch}' in ${repo} is held back by a wedged ` +
           `resolution gate and its tip could not be read ` +
           `(${tip.error.message}) — the hold stands until a tip is readable ` +
           `and has moved (Issue #2388)`,
@@ -448,7 +474,12 @@ export async function presyncMilestoneBranch(
   entry = openConflictAttempt(entry, nowMs);
   await persist("the attempt marker");
 
-  const sync = await deps.syncBranch(grant);
+  // Issue #4326: a merge-only attempt is granted the disk-budget reason, so the
+  // sync defers cargo builds but retains Deno checks. The judgement below reads
+  // the original grant.
+  const sync = await deps.syncBranch(
+    mergeOnly !== undefined ? { ...grant, mergeOnly } : grant,
+  );
 
   if (sync.ok) {
     // The merge landed, but a merge that CONFLICTED landed on a resolution
@@ -459,8 +490,10 @@ export async function presyncMilestoneBranch(
     let reportedSha = entry.conflictEscalatedSha;
     if (conflict) {
       const conflictKey = conflict.defaultSha || UNRESOLVED_SHA;
-      deps.log(
-        `WARNING: The pre-cut sync of '${milestoneBranch}' in ${repo} ` +
+      logAt(
+        deps.log,
+        "warn",
+        `The pre-cut sync of '${milestoneBranch}' in ${repo} ` +
           `resolved a conflict itself before landing: ` +
           `${conflict.files.join(", ")} (Issue #1780)`,
       );
@@ -480,8 +513,10 @@ export async function presyncMilestoneBranch(
     await persist("the landed sync", false);
     const base = await deps.milestoneTipSha();
     if (!base.ok) {
-      deps.log(
-        `WARNING: '${milestoneBranch}' synced but its new tip could not be ` +
+      logAt(
+        deps.log,
+        "warn",
+        `'${milestoneBranch}' synced but its new tip could not be ` +
           `read (${base.error.message}) — the branch is still cut from ` +
           `origin/${milestoneBranch} (Issue #1780)`,
       );
@@ -499,7 +534,12 @@ export async function presyncMilestoneBranch(
   // The sweep's own judgement, so a child run and the sweep charge the same
   // failures. Only a conflict every rung the attempt was granted left
   // undecided is the branch's to answer for.
-  const verdict = judgeSyncFailure(sync.error, grant.agentAllowed);
+  // A refusal that has repeated to the ceiling climbs to the roll-back
+  // (Issue #4328), exactly as the sweep's verdict does.
+  const verdict = escalateRepeatedRefusal(
+    judgeSyncFailure(sync.error, grant.agentAllowed),
+    entry.refusedCycles ?? 0,
+  );
   const conflict = isConflictEscalation(sync.error) ? sync.error : undefined;
   // The same record the sweep writes (Issue #2311): a run charged here is a
   // run the `merge-fallback` flag reports, so it carries its host, its stage
@@ -514,6 +554,8 @@ export async function presyncMilestoneBranch(
       host: currentHost(),
       ...(conflict?.timings ? { timings: conflict.timings } : {}),
       ...(conflict ? { analysis: describeConflictAnalyses(conflict) } : {}),
+      refusal: verdict.refusal === true,
+      exhaust: verdict.exhaust === true,
     },
   );
   // Issue #2388: a gate refusal concludes `not-charged`, so the budget never
@@ -533,10 +575,13 @@ export async function presyncMilestoneBranch(
   await persist(`the ${verdict.outcome} conclusion`);
   if (verdict.outcome === "failed") {
     const attempts = entry.conflictAttempts ?? 0;
-    deps.log(
-      `WARNING: Milestone branch '${milestoneBranch}' in ${repo}: conflict ` +
+    logAt(
+      deps.log,
+      "warn",
+      `Milestone branch '${milestoneBranch}' in ${repo}: conflict ` +
         `attempt ${attempts} of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed ` +
-        `at rung ${verdict.rung}` +
+        // A merge-gate refusal is charged with no rung (Issue #4304).
+        (verdict.rung ? `at rung ${verdict.rung}` : `(${verdict.reason})`) +
         (isConflictBudgetExhausted(entry)
           ? " — the budget is now spent and the branch belongs to the roll-back"
           : "") +
@@ -544,7 +589,8 @@ export async function presyncMilestoneBranch(
     );
     return deferral(
       `conflict attempt ${attempts} of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} ` +
-        `failed at rung ${verdict.rung}: ${verdict.reason}`,
+        `failed${verdict.rung ? ` at rung ${verdict.rung}` : ""}: ` +
+        verdict.reason,
       behindBy,
     );
   }
@@ -577,10 +623,10 @@ export interface IssueRunPresyncArgs {
   /** Injected for tests; production passes the real implementations. */
   countCommitsAheadFn?: typeof countCommitsAhead;
   /**
-   * The host-disk gate on the merge's verification build (Issue #3178).
-   * Defaults to `heavyBuildDeferral` against `cwd`.
+   * The host-disk gate on the merge's verification build (Issue #3178,
+   * Issue #4326). Defaults to `heavyBuildAdmission` against `cwd`.
    */
-  heavyBuildDeferralFn?: () => Promise<string | null>;
+  heavyBuildAdmissionFn?: () => Promise<HeavyBuildAdmission>;
   syncMilestoneBranchFn?: typeof syncMilestoneBranchWithDefault;
   runAgentFn?: typeof runClaudeWithRetry;
   runGitCommandFn?: typeof runGitCommand;
@@ -787,8 +833,8 @@ export async function presyncMilestoneBranchForIssueRun(
           },
         ),
       defaultTipSha: () => readLocalDefaultTip(defaultBranch, cwd),
-      heavyBuildDeferral: args.heavyBuildDeferralFn ??
-        (() => heavyBuildDeferral(cwd)),
+      heavyBuildAdmission: args.heavyBuildAdmissionFn ??
+        (() => heavyBuildAdmission(cwd)),
       milestoneTipSha: () =>
         readRefSha(`origin/${milestoneBranch}`, cwd, gitFn),
       ...(ghFn
@@ -806,7 +852,7 @@ export async function presyncMilestoneBranchForIssueRun(
               },
               conflict,
               ghFn,
-              (message: string) => logger.info(message),
+              bindLogger(logger),
             ).then((report) => report.posted),
           reportGateWedge: (entry, conflict, tipSha) =>
             concludeGateRefusal(
@@ -815,32 +861,35 @@ export async function presyncMilestoneBranchForIssueRun(
               conflict,
               tipSha,
               nowMs,
-              { ghCommandFn: ghFn, log: (m: string) => logger.info(m) },
+              { ghCommandFn: ghFn, log: bindLogger(logger) },
             ),
         }
         : {}),
-      syncBranch: (syncGrant) =>
-        syncFn(
+      syncBranch: (syncGrant) => {
+        // The ladder's last rung, bound exactly as the sweep binds it. It is
+        // both the real agent a merge-only attempt falls back to for a tree
+        // without a cargo build (Issue #4326) and the agent of an attempt that
+        // is not merge-only.
+        const agentFn = bindMilestoneConflictAgent({
+          repo,
+          grant: syncGrant,
+          config,
+          logger,
+          runAgent,
+        });
+        // Issue #4326: a merge-only attempt swaps in the gates and agent that
+        // land the merge without the repository's build for a cargo tree.
+        return syncWithMergeOnlyBindings({
+          syncFn,
           milestoneBranch,
           defaultBranch,
-          { cwd },
-          // Issue #589: named so the sync can raise a PR when a repository
-          // rule refuses the direct push.
+          options: { cwd },
           repo,
-          // The default gates: the repository's own type check, and the
-          // stricter resolution gate derived from it.
-          undefined,
-          undefined,
-          // The ladder's last rung, bound exactly as the sweep binds it.
-          bindMilestoneConflictAgent({
-            repo,
-            grant: syncGrant,
-            config,
-            logger,
-            runAgent,
-          }),
+          mergeOnly: syncGrant.mergeOnly,
+          agentFn,
           logger,
-        ),
-      log: (message: string) => logger.info(message),
+        });
+      },
+      log: bindLogger(logger),
     }));
 }

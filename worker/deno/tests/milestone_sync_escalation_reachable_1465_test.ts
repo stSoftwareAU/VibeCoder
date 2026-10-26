@@ -16,9 +16,11 @@
  * else its oldest open child — and where neither exists the log line is the
  * whole escalation.
  *
- * These tests pin what survived: an escalation that cannot find its preferred
- * destination still reaches a human where one exists, it does so once rather
- * than every cycle, and it never files a new issue.
+ * These tests pin what survived: the streak record that cannot find its
+ * preferred destination still lands where a reader looks, it does so once
+ * rather than every cycle, and it never files a new issue. It is a record,
+ * never a request for a human (Issue #4304), and only a plain, non-conflict
+ * failure produces it now — a merge-gate refusal is the conflict ladder's.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -28,8 +30,10 @@ import {
   type MilestoneBranchSyncDeps,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
-import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
-import { milestoneSyncStreakPath } from "../lib/milestone_sync_streak.ts";
+import {
+  MILESTONE_SYNC_ESCALATION_THRESHOLD,
+  milestoneSyncStreakPath,
+} from "../lib/milestone_sync_streak.ts";
 
 /** A real milestone title from the fleet — no `#NNN` prefix. */
 const UNPREFIXED_TITLE = "Fix scan issues 20260906";
@@ -44,7 +48,7 @@ interface DepsOptions {
   log?: (message: string) => void;
 }
 
-/** Sync deps whose sync always fails the merge gate, recording gh calls. */
+/** Sync deps whose sync always fails with a plain git error, recording gh calls. */
 function gateFailingDeps(
   calls: string[][],
   streakPath: string,
@@ -83,11 +87,9 @@ function gateFailingDeps(
     syncBranchFn: () =>
       Promise.resolve({
         ok: false as const,
-        error: mergeGateFailureError(MILESTONE_BRANCH, "main", {
-          status: "failed",
-          detail: "merge conflict in 14 files",
-          output: "CONFLICT (content): Merge conflict in setup.sh",
-        }),
+        error: new Error(
+          "fatal: could not read from remote repository",
+        ),
       }),
     log: options.log ?? (() => undefined),
     streakPath,
@@ -107,22 +109,25 @@ Deno.test("milestone sync #1465 - a milestone with no #NNN title still escalates
   const dir = await Deno.makeTempDir({ prefix: "issue-1465-" });
   try {
     const calls: string[][] = [];
-    const result = await syncMilestoneBranches(
-      gateFailingDeps(calls, milestoneSyncStreakPath(dir), UNPREFIXED_TITLE, {
-        children: [
-          { number: 88, title: "A later sub-issue" },
-          { number: 41, title: "The oldest sub-issue" },
-        ],
-      }),
-    );
-    assert(result.ok);
-    assertEquals(result.value.failed, 1, "the sync is reported as failed");
+    const streakPath = milestoneSyncStreakPath(dir);
+    for (let cycle = 0; cycle < MILESTONE_SYNC_ESCALATION_THRESHOLD; cycle++) {
+      const result = await syncMilestoneBranches(
+        gateFailingDeps(calls, streakPath, UNPREFIXED_TITLE, {
+          children: [
+            { number: 88, title: "A later sub-issue" },
+            { number: 41, title: "The oldest sub-issue" },
+          ],
+        }),
+      );
+      assert(result.ok);
+      assertEquals(result.value.failed, 1, "the sync is reported as failed");
+    }
 
     const comments = commentCalls(calls);
     assertEquals(
       comments.length,
       1,
-      `a stuck sync must reach somewhere a human looks; gh calls: ${
+      `a stuck sync must be recorded somewhere a reader looks; gh calls: ${
         JSON.stringify(calls)
       }`,
     );
@@ -139,7 +144,11 @@ Deno.test("milestone sync #1465 - the escalation is posted once, not every cycle
   try {
     const all: string[][] = [];
     const streakPath = milestoneSyncStreakPath(dir);
-    for (let cycle = 0; cycle < 4; cycle++) {
+    for (
+      let cycle = 0;
+      cycle < MILESTONE_SYNC_ESCALATION_THRESHOLD + 2;
+      cycle++
+    ) {
       await syncMilestoneBranches(
         gateFailingDeps(all, streakPath, UNPREFIXED_TITLE, {
           children: [{ number: 41, title: "The oldest sub-issue" }],
@@ -149,7 +158,7 @@ Deno.test("milestone sync #1465 - the escalation is posted once, not every cycle
     assertEquals(
       commentCalls(all).length,
       1,
-      "exactly one escalation across four failing cycles",
+      "exactly one record across many failing cycles",
     );
     assertEquals(createCalls(all).length, 0);
   } finally {
@@ -163,7 +172,11 @@ Deno.test("milestone sync #1769 - no parent and no open child is one log line, n
     const calls: string[][] = [];
     const logs: string[] = [];
     const streakPath = milestoneSyncStreakPath(dir);
-    for (let cycle = 0; cycle < 2; cycle++) {
+    for (
+      let cycle = 0;
+      cycle < MILESTONE_SYNC_ESCALATION_THRESHOLD + 1;
+      cycle++
+    ) {
       await syncMilestoneBranches(
         gateFailingDeps(calls, streakPath, UNPREFIXED_TITLE, {
           children: [],
@@ -192,9 +205,12 @@ Deno.test("milestone sync #1465 - a #NNN title still comments on its tracking is
   const dir = await Deno.makeTempDir({ prefix: "issue-1465-" });
   try {
     const calls: string[][] = [];
-    await syncMilestoneBranches(
-      gateFailingDeps(calls, milestoneSyncStreakPath(dir), PREFIXED_TITLE),
-    );
+    const streakPath = milestoneSyncStreakPath(dir);
+    for (let cycle = 0; cycle < MILESTONE_SYNC_ESCALATION_THRESHOLD; cycle++) {
+      await syncMilestoneBranches(
+        gateFailingDeps(calls, streakPath, PREFIXED_TITLE),
+      );
+    }
     const comments = commentCalls(calls);
     assertEquals(comments.length, 1, "the existing path is untouched");
     assertEquals(comments[0]![2], "974", "posted on the tracking issue");

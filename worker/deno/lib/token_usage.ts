@@ -452,9 +452,13 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   // The `gpt-5` key also captures a dotted future id (`gpt-5.2`,
   // `gpt-5.3-codex`), which OpenAI prices dearer than `gpt-5` — such an id
   // costs at the `gpt-5` rate rather than at its own, so a run on one would
-  // be under-stated until it gets a row of its own. The worker routes only
-  // to the three ids priced here (`config_defaults.ts`), so add the row with
-  // the routing change rather than ahead of it.
+  // be under-stated until it gets a row of its own.
+  //
+  // The Codex tiers now route to `gpt-6-astra`, `gpt-6.1-sol` and
+  // `gpt-6-luna` (owner decision 2026-10-22, `config_defaults.ts`), which
+  // have no published API price yet. They stay unpriced on purpose — charged
+  // at UNPRICED_UPPER_BOUND_PRICING and listed as unpriced (Issue #3870) —
+  // rather than given a guessed row; add each row once its price is known.
   ["gpt-5-codex", GPT_5_CODEX_PRICING],
   ["gpt-5-mini", GPT_5_MINI_PRICING],
   ["gpt-5", GPT_5_PRICING],

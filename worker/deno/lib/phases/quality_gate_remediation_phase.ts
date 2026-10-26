@@ -35,6 +35,7 @@ import {
   isInfrastructureFailure,
 } from "../failure_diagnosis.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
+import { parkInFlightBuild } from "../heavy_build_gate.ts";
 import { isBaselineAwareQualityGateEnabled } from "../baseline_aware_gate.ts";
 import {
   decideGateBypass,
@@ -50,6 +51,8 @@ import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
+import { hostDiskInfrastructureFailure } from "../host_fault.ts";
+import { releaseRunAtFinishDeadline } from "./run_wip_preservation.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -170,11 +173,27 @@ export async function workOnIssueQualityGate(
       deps,
     );
 
+  if (
+    phaseResult.status === "failure" &&
+    phaseResult.category === "scheduled_release"
+  ) {
+    // A refused recovery is not a failed quality attempt. Do not retry the
+    // gate or audit a dependency bump after the scheduled release.
+    if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
+    return phaseResult;
+  }
+
   if (phaseResult.status === "failure" && !agentTurnLimit) {
     // Only infrastructure-category quality failures qualify for the extra
     // in-process retry — real quality-check failures are not retried.
+    // A host-disk stop is infrastructure, but another quality run would
+    // write onto a full disk (Issue #4360). The category stays
+    // internal_error so the issue is not charged failed-once.
     const category = phaseResult.category;
-    if (isInfrastructureFailure(category)) {
+    if (
+      isInfrastructureFailure(category) &&
+      hostDiskInfrastructureFailure(phaseResult.reason) === null
+    ) {
       const shouldRetry = await shouldRetryInfrastructureFailure(
         "quality_gate",
         qualityFailureMessage ?? phaseResult.reason,
@@ -206,6 +225,7 @@ export async function workOnIssueQualityGate(
   if (
     phaseResult.status === "failure" &&
     !agentTurnLimit &&
+    hostDiskInfrastructureFailure(phaseResult.reason) === null &&
     state.bumpInfo?.status === "applied"
   ) {
     const auditResult = await attemptBumpAudit(state, deps);
@@ -467,6 +487,21 @@ async function runQualityGateBody(
   const logger = deps.logger;
   const maxAttempts = 2; // Initial check + 1 fix attempt
 
+  // The gate runs the repository's own cargo or deno. Below the floor that
+  // build is the host's fault, and it is not recorded as a failed gate
+  // (Issue #4360).
+  const park = await parkInFlightBuild(state.repoPath);
+  if (park) {
+    logger.warn(park, { repo });
+    return {
+      phaseResult: {
+        category: "internal_error",
+        status: "failure",
+        reason: park,
+      },
+    };
+  }
+
   // Holds a focused Claude retry prompt when the post-Claude run only
   // introduced specific new diffable findings versus the baseline
   // (Issue #1549). When non-empty, supplied to Claude in place of the
@@ -487,9 +522,10 @@ async function runQualityGateBody(
 
   // The repo's own formatters first, before every attempt (part of #2932):
   // a formatting-only miss is fixed and committed rather than spending the
-  // agent's remediation round on it. Same files the pre-push gate checks,
-  // never Markdown; a formatter that fails or throws is logged and the gate
-  // still reports the problem.
+  // agent's remediation round on it. Same files the pre-push gate checks.
+  // Agent-authored Markdown stays unformatted; the worker's archive notes are
+  // formatted afterwards. A formatter that fails or throws is logged and the
+  // gate still reports the problem.
   const formatBase = await resolveFormatBase(state, deps);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -727,6 +763,11 @@ async function runQualityGateBody(
       },
     );
 
+    if (fixResult.ok && fixResult.value.finishDeadline) {
+      return {
+        phaseResult: await releaseRunAtFinishDeadline(ctx, state, deps),
+      };
+    }
     if (!fixResult.ok) {
       logger.warn("Claude fix attempt failed", {
         error: fixResult.error.message,
@@ -741,6 +782,11 @@ async function runQualityGateBody(
           agentTurnLimit: true,
         };
       }
+      // The fix agent was stopped because the host is out of disk. Return
+      // that infrastructure failure now: the loop's next pass would start
+      // another quality run (Issue #4360).
+      const hostDisk = hostDiskInfrastructureFailure(fixResult.error.message);
+      if (hostDisk) return { phaseResult: hostDisk };
     }
   }
 

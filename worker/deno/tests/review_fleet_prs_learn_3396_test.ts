@@ -1,9 +1,10 @@
 /**
- * The review-fleet-prs learning step (SKILL.md step 3) must assess a
- * deterministic check before it proposes prose guidance, and the issue it
- * files must record that assessment (Issue #3537, part of #3396). Prose rules
- * alone keep being broken, so each one added grows the guidance without
- * reducing the mistake.
+ * The review-fleet-prs learning step (SKILL.md step 3) serves the Vibe
+ * Coder's one goal: completing the issues it is assigned (Issue #4291). It
+ * files worker defects and proposes removing or rewording guidance that
+ * causes mistakes. It never invents a new gate, check or rule, and never
+ * anything that holds back auto-merge. The guidance ledger (Issue #3539)
+ * still retires guidance that keeps recurring.
  */
 import { assert } from "@std/assert";
 
@@ -31,60 +32,45 @@ async function learnStep(): Promise<string> {
     .replace(/\s+/g, " ");
 }
 
-Deno.test("review-fleet-prs step 3 assesses deterministic checks, in order, before any prose proposal (Issue #3537)", async () => {
+Deno.test("review-fleet-prs step 3 states the goal and that auto-merge is never held back (Issue #4291)", async () => {
   const learn = await learnStep();
-  const assess = learn.indexOf("deterministic check");
-  const prose = learn.indexOf("concrete change to VibeCoder's prompt");
-  assert(assess >= 0, "step 3 must name the deterministic-check assessment");
-  assert(prose >= 0, "step 3 must still describe the prose proposal");
   assert(
-    assess < prose,
-    "the deterministic-check assessment must come before the prose proposal",
+    learn.includes("complete the issues it is assigned"),
+    "step 3 must state the goal it serves",
   );
-
-  const order = [
-    "a worker gate",
-    "a test or lint rule",
-    "a Semgrep rule",
-    "a script or deno task",
-  ].map((kind) => {
-    const at = learn.indexOf(kind, assess);
-    assert(at >= 0, `the assessment must consider ${kind}`);
-    return at;
-  });
   assert(
-    order.every((at, i) => i === 0 || order[i - 1]! < at),
-    "the check kinds must be considered in the order the issue sets",
+    /armed for auto-merge when it is raised/.test(learn),
+    "step 3 must say every PR is armed when raised",
+  );
+  assert(
+    /Never propose anything that withholds, disarms or delays auto-merge/
+      .test(learn),
+    "step 3 must forbid proposals that hold back auto-merge",
   );
 });
 
-Deno.test("review-fleet-prs step 3 proposes prose only when no check is feasible, rewording before adding (Issue #3537)", async () => {
+Deno.test("review-fleet-prs step 3 never proposes a new gate, check or rule (Issue #4291)", async () => {
   const learn = await learnStep();
   assert(
-    /only when none of these checks is feasible/i.test(learn),
-    "prose guidance must be limited to findings no check can catch",
+    /Never propose adding a gate, check, lint rule, Semgrep rule, deno task/
+      .test(learn),
+    "step 3 must forbid inventing new gates and checks",
   );
   assert(
-    /reword(ing)?, mov(e|ing) or replac(e|ing) an existing rule/i.test(learn) &&
-      learn.includes("#3425"),
-    "a prose proposal must prefer changing an existing rule and point at #3425",
+    /removing it, simplifying it or rewording it/.test(learn),
+    "guidance proposals must only remove, simplify or reword",
   );
-});
-
-Deno.test("review-fleet-prs filed improvement issues carry a Deterministic check assessment section (Issue #3537)", async () => {
-  const learn = await learnStep();
-  assert(
-    learn.includes("`## Deterministic check assessment`"),
-    "the filed issue's required contents must include the assessment heading",
-  );
-  const contents = learn.slice(
-    learn.indexOf("`## Deterministic check assessment`"),
-  );
-  assert(
-    /checks considered/.test(contents) &&
-      /why none is feasible/.test(contents),
-    "the section must name the checks considered and the proposal or why none is feasible",
-  );
+  for (
+    const invented of [
+      "a worker gate (the worker refuses the PR or the push)",
+      "`## Deterministic check assessment`",
+    ]
+  ) {
+    assert(
+      !learn.includes(invented),
+      `step 3 must not ask for ${invented}`,
+    );
+  }
 });
 
 Deno.test("review-fleet-prs step 3 tracks filed guidance in the ledger and retires guidance that keeps recurring (Issue #3539)", async () => {

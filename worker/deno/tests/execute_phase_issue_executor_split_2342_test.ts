@@ -249,7 +249,8 @@ Deno.test("execute_phase - issue_reviewer_agents on carries both reviewer defini
     [SPEC_REVIEWER_AGENT_NAME, STANDARDS_REVIEWER_AGENT_NAME].sort(),
   );
   for (const def of Object.values(agents)) {
-    assertEquals(def.model, "sonnet");
+    // Opus does the code reviews (owner decision 2026-10-22).
+    assertEquals(def.model, "opus");
     assertEquals(def.tools, ["Read", "Grep", "Glob"]);
     assertEquals(def.disallowedTools, ["Agent"]);
   }
@@ -274,7 +275,7 @@ Deno.test("execute_phase - reviewers and the split together carry all three defi
 // The sub-agent tier (Issue #3402)
 // ---------------------------------------------------------------------------
 
-Deno.test("execute_phase - a haiku host tier carries the haiku executor, haiku standards reviewer, sonnet spec reviewer and an explorer (Issue #3402)", async () => {
+Deno.test("execute_phase - a haiku host tier carries the haiku executor, both Opus reviewers and an explorer (Issue #3402)", async () => {
   const options = await runPhase(true, undefined, true, {
     hostTier: "haiku",
   });
@@ -292,9 +293,11 @@ Deno.test("execute_phase - a haiku host tier carries the haiku executor, haiku s
   );
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "haiku");
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "high");
-  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "haiku");
+  // The tier picks the executor, never the reviewers (owner decision
+  // 2026-10-22).
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "opus");
   assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "medium");
-  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "sonnet");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "opus");
   assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
 });
 

@@ -1,4 +1,4 @@
-import { agentTranscriptDir } from "./agent_transcript.ts";
+import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
  * Production dependency wiring for the run-core main event loop.
@@ -47,6 +47,7 @@ import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 // Config & logging
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
+import { bindLogger } from "./log_sink.ts";
 import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import {
   buildDefaultWorkerConfig,
@@ -62,6 +63,7 @@ import {
   setPhaseModelConfigOverrides,
 } from "./claude_executor.ts";
 import {
+  clearRefusedCodexModels,
   setCodexPhaseEffortConfigOverrides,
   setCodexPhaseModelConfigOverrides,
 } from "./codex_executor.ts";
@@ -123,7 +125,6 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
-import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
@@ -195,7 +196,6 @@ import {
   refreshSubscriptionAllocation,
   startSubscriptionAllocationRefresh,
 } from "./subscription_allocation_runtime.ts";
-import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { reconcilePrBodyDigests as runPrBodyDigestReconcile } from "./pr_body_reconcile.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -291,7 +291,6 @@ import { workflowScopeState } from "./workflow_scope.ts";
 // `failed-once` -> `failed` ladder the planning and question routes use.
 import {
   applyCodingFailureLadder,
-  buildRepeatedFailureEscalation,
   isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
@@ -304,7 +303,7 @@ import {
   recordAdaptiveFloorDeferral,
 } from "./adaptive_floor_starvation.ts";
 import { issueClaimKey } from "./claim_runway_evidence.ts";
-import type { ClaimHardCap } from "./claim_runway.ts";
+import { anchorClaimCapToFinish, type ClaimHardCap } from "./claim_runway.ts";
 import { resolveRunHardCap } from "./run_hard_cap.ts";
 import {
   type CircuitBreakerConfig,
@@ -343,7 +342,11 @@ import {
 } from "./rate_limit_signal.ts";
 import { isHostRateLimitPauseActive } from "./provider_quota_scope.ts";
 import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
-import { deriveIdleReason, recordHookFailure } from "./fleet_telemetry.ts";
+import {
+  deriveIdleReason,
+  recordHookFailure,
+  recordOutcome,
+} from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
 import { heldProviderCredentialLabel } from "./credential_preflight.ts";
@@ -368,7 +371,11 @@ import {
 let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 
 // Liveness guard (Issue #2479)
-import { checkLivenessWindow } from "./liveness_guard.ts";
+import {
+  checkLivenessWindow,
+  formatLivenessPressureFields,
+  readLivenessTickPressure,
+} from "./liveness_guard.ts";
 
 // Crash handling
 import { cleanupInProgressIssue as crashCleanupFn } from "./crash_cleanup.ts";
@@ -414,6 +421,7 @@ import {
   buildIssueRunCallbackContext,
 } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
+import { parseCodexTranscript } from "./run_outcome_classifier.ts";
 import {
   type FleetAuthorSetInput,
   isFleetAuthor,
@@ -494,12 +502,15 @@ import {
   terminateActiveAgentRuns,
 } from "./claude_runner.ts";
 import { fileRunFailureIssue } from "./run_failure_issue.ts";
+import {
+  HARD_KILL_FAILURE_CLASS,
+  reportPendingHardKills,
+} from "./hard_kill_report.ts";
+import type { SelfDiagnosticFiling } from "./self_diagnostic_attestation.ts";
 import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
 import { runFailureDetectionResumePass } from "./failure_detection_resume.ts";
-import { ensureLabelExists as ensureLabelExistsFn } from "./label_operations.ts";
 import {
   createFeatureRegistry,
   registerBuiltinFeatures,
@@ -525,10 +536,12 @@ import {
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
-  heavyBuildDeferral,
+  heavyBuildAdmission,
+  hostDiskLaunchStopReason,
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "./heavy_build_gate.ts";
+import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
 import {
   reclaimWorkVolumeTiers,
@@ -577,6 +590,40 @@ const RESERVED_SUFFIX =
  */
 function homeDirectory(env: EnvLookup): string | undefined {
   return env("HOME") ?? env("USERPROFILE");
+}
+
+/**
+ * Codex session items for this run, when the transcript tee wrote one
+ * (Issue #4324).
+ *
+ * A missing file is the tee being off, not a fault. Any other read failure
+ * is logged and treated as no transcript, so claim release still finishes.
+ */
+async function readCodexTranscriptItems(
+  issueNumber: number,
+  env: EnvLookup,
+  log: (message: string) => void,
+): Promise<readonly unknown[] | undefined> {
+  const home = homeDirectory(env);
+  if (!home) return undefined;
+  const path = agentTranscriptPath(
+    agentTranscriptDir(home),
+    getRunId(),
+    issueNumber,
+  );
+  try {
+    const text = await Deno.readTextFile(path);
+    const items = parseCodexTranscript(text);
+    return items.length > 0 ? items : undefined;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return undefined;
+    log(
+      `Codex transcript for #${issueNumber} could not be read: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +688,24 @@ export interface ProductionDepsOptions {
    * takes its default runner.
    */
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * `gh` runner the hard-kill reporter files through (Issue #4254).
+   *
+   * Production leaves this unset and gets {@link runGhCommandRaw}. Tests inject
+   * a stub so the wiring from `reportHardKills` to its failure hook and fleet
+   * count can be driven end to end without a real `gh` call.
+   */
+  hardKillGhFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * Attestation recorder the hard-kill reporter files through (Issue #4254).
+   *
+   * Production leaves this unset and gets the module's own default, the
+   * production recorder. Tests inject a fake so a filing never appends to the
+   * host's audit journal.
+   */
+  hardKillRecordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
 
   /**
    * `gh` runner for the cross-repo open-PR prefetch (Issue #1486).
@@ -733,12 +798,21 @@ function resolveClaimHardCap(
   killAfterSeconds: number,
 ): ClaimHardCap | undefined {
   const resolution = resolveRunHardCap({ killAfterSeconds });
-  if (!resolution.capped) return undefined;
-  const { ceilingMs, startedMs } = resolution.cap;
-  return {
-    ceilingMs,
-    windowSeconds: Math.max(0, Math.round((ceilingMs - startedMs) / 1000)),
-  };
+  const base = resolution.capped
+    ? {
+      ceilingMs: resolution.cap.ceilingMs,
+      windowSeconds: Math.max(
+        0,
+        Math.round(
+          (resolution.cap.ceilingMs - resolution.cap.startedMs) / 1000,
+        ),
+      ),
+    }
+    : undefined;
+  // The timeline is published inside runCoreLoop, after this snapshot. The
+  // scan calls anchorClaimCapToFinish again at claim time, which is when the
+  // finish deadline is known. Calling it here too keeps a late reader honest.
+  return anchorClaimCapToFinish(base, killAfterSeconds);
 }
 
 /**
@@ -812,6 +886,8 @@ export async function createProductionRunCoreDeps(
   setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
   // Apply the Codex phase model/effort config overrides (Issue #363)
   setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+  // a fresh run starts with no refused Codex models (Issue #4221)
+  clearRefusedCodexModels();
   setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
   // Apply the Gemini phase model config overrides (Issue #364)
   setGeminiPhaseModelConfigOverrides(config.geminiPhaseModelOverrides);
@@ -867,7 +943,7 @@ export async function createProductionRunCoreDeps(
   let claudePool = options.claudeCredentialPool;
   function claudeCredentialPool(): NonNullable<typeof claudePool> {
     claudePool ??= createClaudeCredentialPool({
-      log: (message) => logger.info(message),
+      log: bindLogger(logger),
       provider: resolveAgentProvider(CLAUDE_PROVIDER_ID),
       env,
     });
@@ -925,7 +1001,7 @@ export async function createProductionRunCoreDeps(
       claudePool,
       config.workDir || workDir,
       {
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
       },
     );
     const held = heldProviderCredentialLabel(CLAUDE_PROVIDER_ID);
@@ -1004,13 +1080,13 @@ export async function createProductionRunCoreDeps(
   // cadence; transitions are logged with the reading.
   const slotCeiling = new SlotGovernor({
     probe: () => probeHostMemoryPressure(),
-    log: (message: string) => logger.info(message),
+    log: bindLogger(logger),
   });
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
   const hostDisk = new HostDiskMonitor({
     workDir,
-    log: (message: string) => logger.info(message),
+    log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
     // log directory — mounted read-write at `${HOME}/logs` in the container.
     refreshFile: `${env("HOME") ?? "~"}/logs/${HOST_DISK_REFRESH_FILE}`,
@@ -1058,6 +1134,53 @@ export async function createProductionRunCoreDeps(
   // GraphQL calls across the four candidate collectors. Reset by
   // `resetIterationCaches` at every iteration boundary.
   const timelineBatchRegistry = new TimelineBatchRegistry();
+
+  // Issue #4213: one copy of the claim scan's `label-author-not-allowed`
+  // rule. The idle-detect audit passes this as `untrustedLabelIssuesFn` and
+  // the census calls it for the same set. The priority filter is
+  // `isUnblockedFor` over `top-priority`, `work-on` and `low-priority`
+  // (Issue #3571); timelines go through this iteration's batch registry
+  // (PR #3963).
+  const untrustedLabelIssuesFor = async (
+    repo: string,
+    issues: readonly {
+      number: number;
+      labels: readonly string[];
+      assignees?: readonly string[];
+    }[],
+  ): Promise<Set<number>> => {
+    const priorityIssues = issues.filter((issue) =>
+      [
+        LABEL_DEFAULTS.topPriorityLabel,
+        LABEL_DEFAULTS.workOnLabel,
+        LABEL_DEFAULTS.lowPriorityLabel,
+      ].some((label) =>
+        isUnblockedFor(
+          {
+            number: issue.number,
+            labels: [...issue.labels],
+            assignees: [...(issue.assignees ?? [])],
+            milestone: "",
+          },
+          label,
+        )
+      )
+    );
+    const batchedGh = await timelineBatchRegistry.getBatchedGh(
+      repo,
+      priorityIssues.map((issue) => issue.number),
+      options.idleDetectGhCommandFn ?? runGhCommand,
+    );
+    return await censusUntrustedLabelIssues(
+      repo,
+      priorityIssues,
+      trustedAuthorsFor(config, repo),
+      batchedGh,
+      timelineCache,
+      resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+      (msg) => logger.warn(msg),
+    );
+  };
 
   // Replace heartbeat functions with machineId-bound wrappers so every
   // production heartbeat publishes a GitHub marker (Issue #1454).
@@ -1166,7 +1289,7 @@ export async function createProductionRunCoreDeps(
       machineId,
       policy: fastFailurePolicy,
       ghFn: runGhCommandRaw,
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
       warn: (message: string) => logger.warn(message),
     });
     if (decision.action === "suppressed") {
@@ -1597,6 +1720,10 @@ export async function createProductionRunCoreDeps(
   const runCoreConfig = createDefaultRunCoreConfig();
   const coreConfig: RunCoreConfig = {
     runDurationSeconds: runCoreConfig.runDurationSeconds,
+    // Issue #4242: the run's finish deadline and the agent kill-after grace,
+    // so the run timeline logs the values the run actually uses.
+    runFinishSeconds: config.runFinishSeconds ?? runCoreConfig.runFinishSeconds,
+    claudeKillAfterSeconds: config.claudeKillAfter,
     sleepInterval: config.sleepInterval ?? runCoreConfig.sleepInterval,
     maxConcurrentIssues: config.maxConcurrentIssues ??
       runCoreConfig.maxConcurrentIssues,
@@ -1778,7 +1905,7 @@ export async function createProductionRunCoreDeps(
     // never took it and must keep their behaviour.
     const runLocalHold = gateNewWork ? await loadRunLocalHolds() : undefined;
 
-    const result = await findIssuesByLabel(config, label, false, {
+    const result = await findIssuesByLabel(config, label, {
       githubUser,
       ghCommandFn: runGhCommand,
       cache: issueCache,
@@ -1881,7 +2008,7 @@ export async function createProductionRunCoreDeps(
       invitationAuthors,
       cache: issueCache,
       ghCommandFn: options.fleetPrefetchGhCommandFn ?? runGhCommand,
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
     });
     logger.info(
       `[fleet-pr-prefetch] owners=${outcome.ownersServed.length} ` +
@@ -1924,8 +2051,11 @@ export async function createProductionRunCoreDeps(
 
   // Issue #3178: maintenance that runs a repository build or test reads the
   // same monitor the claim gate does, so below the floor it waits too.
+  // `force` skips the 60 s cache so a build sees the launcher's latest
+  // file rather than a reading the worker adopted a minute ago (Issue #4360).
+  // The file itself is still as fresh as the launcher's refresh interval.
   registerHeavyBuildDiskProbe(async () => {
-    const status = await hostDisk.check();
+    const status = await hostDisk.check({ force: true });
     if (status.level === "low") hostDiskLowSeen = true;
     return {
       status,
@@ -1935,10 +2065,20 @@ export async function createProductionRunCoreDeps(
       trimRefused: hostDisk.workVolumeTrimRefused,
     };
   });
+  // Built once so a non-fault probe warning is reported once per directory,
+  // not once per cycle (Issue #3179).
+  const checkRootFs = createRootFilesystemCheck({
+    workDir,
+    ...(env("TMPDIR") ? { tmpDir: env("TMPDIR") } : {}),
+    warn: (message) => logger.warn(message),
+  });
 
   const deps: RunCoreDeps = {
+    // -- Environment (Issue #4242: the run timeline reads the hard-kill pin) --
+    env,
+
     // -- Logging --
-    log: (msg) => logger.info(msg),
+    log: bindLogger(logger),
     logError: (msg) => logger.error(msg),
     logWarn: (msg) => logger.warn(msg),
     logTiming: (op, dur) => logger.timing(op, dur),
@@ -2180,19 +2320,20 @@ export async function createProductionRunCoreDeps(
     // explicit-model health check; the first healthy one adapts this run's
     // routing. Operator pins always win (the resolver substitutes only the
     // designed defaults), and providers without the seam return
-    // { adapted: false }.
+    // { adapted: false }. (Issue #4221) Codex's alternative is the CLI default
+    // (no --model) when a ChatGPT login refuses a built-in default.
     // (Issue #2637) Rotate to a Claude credential with budget before any
     // fallback provider, and find the way back once one reopens.
     selectPreferredCredential: ({ excludeHeld }) =>
       selectPreferredClaudeCredential(excludeHeld),
     async tryModelAdaptation() {
-      const provider = activeAgentProvider();
-      const failedModel = provider.resolveModel("health");
+      const provider = activeAgentProvider({ env });
+      const failedModel = provider.resolveModel("health", env);
       const alternatives = failedModel
-        ? (provider.alternativeModels?.(failedModel) ?? [])
+        ? (provider.alternativeModels?.(failedModel, "health", env) ?? [])
         : [];
       for (const alternative of alternatives) {
-        const probe = await claudeHealthCheck(
+        const probe = await agentHealthCheck(
           30,
           logger,
           provider,
@@ -2200,7 +2341,7 @@ export async function createProductionRunCoreDeps(
           alternative,
         );
         if (probe.healthy) {
-          provider.applyModelAdaptation?.(failedModel!, alternative);
+          provider.applyModelAdaptation?.(failedModel!, alternative, "health");
           return {
             adapted: true,
             detail: `${failedModel} → ${alternative}`,
@@ -2216,10 +2357,15 @@ export async function createProductionRunCoreDeps(
     async recheckAgentAuth() {
       // Issue #4167: always a fresh probe — the cached "healthy" from the
       // cycle-start gate is exactly what a mid-cycle outage invalidates.
+      // Issue #4267: resolve the provider once and probe that same one.
+      // checkClaudeHealth keys its cache by this id, so a hard-coded
+      // "claude" clear leaves a dead Codex credential looking healthy
+      // until the TTL expires.
+      const provider = activeAgentProvider();
       try {
-        const result = await claudeHealthCheck(30, logger);
+        const result = await agentHealthCheck(30, logger, provider);
         if (!result.healthy) {
-          invalidateHealthCache(healthCacheDir, "claude");
+          invalidateHealthCache(healthCacheDir, provider.id);
         }
         return {
           authFailed: !result.healthy && result.exitCode === 2,
@@ -2430,8 +2576,6 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
           },
         );
 
@@ -2679,8 +2823,6 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
           },
         );
@@ -3115,8 +3257,6 @@ export async function createProductionRunCoreDeps(
             trustedAuthors,
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
             // Issue #3031: a milestone head is resolved through the takeover
             // in this same cycle.
@@ -3480,7 +3620,6 @@ export async function createProductionRunCoreDeps(
             runGhCommand,
             runGitCommand,
             logger,
-            followUpFiling: buildSyncFollowUpFiling(config, githubUser),
             cache: issueCache,
             inSync: prBodyDigestInSync,
           },
@@ -3541,14 +3680,6 @@ export async function createProductionRunCoreDeps(
             gh,
             log: (m: string) => logger.warn(m),
           }),
-        // Issue #3517: a standing-violation PR is disarmed, never armed.
-        disarmAutoMerge: (repo, prNumber) =>
-          disarmAutoMerge(
-            repo,
-            prNumber,
-            gh,
-            (m: string) => logger.warn(m),
-          ),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,
@@ -3600,6 +3731,10 @@ export async function createProductionRunCoreDeps(
                 ghCommandFn: runGhCommand,
               });
             },
+            // Issue #4243: this sweep sync is a new unit of work, so it is
+            // deferred once the run target has passed. The issue-run
+            // completion phase does not set this flag (its claim is active).
+            deferSyncPastRunTarget: true,
           }),
         // Issue #470: this outcome used to be discarded. A gate that
         // refused every merge in the fleet was therefore invisible —
@@ -3693,7 +3828,9 @@ export async function createProductionRunCoreDeps(
             // reopened. Only the fleet's own roll-back marker suppresses the
             // close, so the maintenance author set is what is trusted here.
             fleetAuthors: maintenanceAuthors,
-            logFn: (message: string) => logger.info(message),
+            // Issue #4175: a level-aware sink, so a rollup that cannot be
+            // created reaches logger.warn.
+            logFn: bindLogger(logger),
             // Issue #2831: a failed fetch or state save is logged, not lost.
             logger,
           },
@@ -3794,7 +3931,7 @@ export async function createProductionRunCoreDeps(
           })`,
         );
         const outcomes = await sweepSharedClones(repos, sweepWorkDir, {
-          log: (message: string) => logger.info(message),
+          log: bindLogger(logger),
           logError: (message: string) => logger.error(message),
           logsDir,
         });
@@ -3848,7 +3985,7 @@ export async function createProductionRunCoreDeps(
         try {
           const outcome = await libSweepClosedMilestones(
             { repo, workDir },
-            { gh: runGhCommand, log: (message) => logger.info(message) },
+            { gh: runGhCommand, log: bindLogger(logger) },
           );
           for (const problem of [...outcome.errors, ...outcome.failures]) {
             logger.warn(
@@ -4113,6 +4250,12 @@ export async function createProductionRunCoreDeps(
                 { maxRetries: config.maxRateLimitRetries },
               );
               if (!run.ok) throw run.error;
+              if (run.value.finishDeadline) {
+                logger.info(
+                  `Custom PR prompt for ${candidate.repo}#${candidate.prNumber} released on schedule: the finish deadline was reached`,
+                );
+                return "finish-deadline";
+              }
               if (run.value.timedOut) {
                 throw new Error(
                   run.value.timeoutReason === "no-output"
@@ -4120,6 +4263,7 @@ export async function createProductionRunCoreDeps(
                     : "the agent timed out",
                 );
               }
+              return "completed";
             },
             verifyPush: (candidate) =>
               verifyPushLanded(candidate.headRefName, {
@@ -4231,7 +4375,7 @@ export async function createProductionRunCoreDeps(
       await refreshRepoFastFailureBackOffs({
         ...fastFailureOptions,
         isIssueClosed: isDiagnosticIssueClosed,
-        log: (message: string) => logger.info(message),
+        log: bindLogger(logger),
       });
       // Issue #2955: `backedOffRepos` returns this host's sidecar plus
       // any open, fleet-authored diagnostic for the repository, so a
@@ -4429,7 +4573,7 @@ export async function createProductionRunCoreDeps(
         monitoredRepos: config.repos,
         mode: "disk-low",
         bytesNeeded: stillNeeded,
-        log: (message: string) => logger.info(message),
+        log: bindLogger(logger),
       });
       const after = await hostDisk.check({ force: true });
       // Issue #384: on a containerised host the sweep above deleted files
@@ -4489,7 +4633,7 @@ export async function createProductionRunCoreDeps(
     // Resolved by `loadConfig` (Issue #289) from `.config.json`
     // `min_claim_runway_seconds`, falling back to MIN_CLAIM_RUNWAY_SECONDS.
     // Reading the environment here was inert on a containerised host:
-    // `container_launch.ts` forwards only the five variables it sets itself,
+    // `container_launch.ts` forwards only the variables it sets itself,
     // so an operator's override never crossed the boundary and the floor
     // stayed at its default while the docs said otherwise.
     minClaimRunwaySeconds: config.minClaimRunwaySeconds,
@@ -4768,11 +4912,6 @@ export async function createProductionRunCoreDeps(
         issueBody: issueData.body ?? "",
         issueLabels: issueData.labels ?? [],
         issueComments: commentContext.issueComments,
-        // Issue #4061: the same comments with their authors, for the clarity
-        // phase's round count (Issue #1263). Left out, every issue warned
-        // "No authored comment rows", counted zero rounds, and the
-        // `maxClarificationRounds` escape could never trigger.
-        issueCommentRows: issueData.comments ?? [],
         ...(commentContext.commentBoundaryId
           ? { commentBoundaryId: commentContext.commentBoundaryId }
           : {}),
@@ -4853,12 +4992,18 @@ export async function createProductionRunCoreDeps(
       // A setup fault (Issue #2954) is released unlabelled and consumes no
       // attempt — the fault is the host's or the repository's, not the
       // issue's.
+      const transcript = await readCodexTranscriptItems(
+        issue.issueNumber,
+        env,
+        (message) => logger.info(message),
+      );
       const plan = planCodingFailure({
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
         category: result.category,
         classification: result.classification,
+        ...(transcript ? { transcript } : {}),
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
         ...(result.phase ? { phase: result.phase } : {}),
       });
@@ -4871,6 +5016,7 @@ export async function createProductionRunCoreDeps(
           failureReason: result.reason,
           category: result.category,
           classification: result.classification,
+          ...(transcript ? { transcript } : {}),
           ...(result.phase ? { failurePhase: result.phase } : {}),
           labels: {
             failedLabel: config.failedLabel,
@@ -4896,7 +5042,6 @@ export async function createProductionRunCoreDeps(
             failureClass: ladderOutcome.decision.failureClass,
             markedAsFailedOnce: ladderOutcome.ladder?.markedAsFailedOnce ??
               false,
-            markedAsFailed: ladderOutcome.ladder?.markedAsFailed ?? false,
           });
         }
       }
@@ -4981,55 +5126,16 @@ export async function createProductionRunCoreDeps(
       issueNumber: number,
       failureKind?: CooldownFailureKind,
     ) {
-      const recorded = await cooldownRecordFn(
+      // Issue #4158: the cooldown is the whole response to a repeated
+      // failure. It escalates 2 h → 6 h → 24 h, so a failing issue is
+      // retried at most daily, and never handed to a human: an assigned
+      // issue is completed, never parked.
+      await cooldownRecordFn(
         cooldownConfig,
         repo,
         issueNumber,
         failureKind,
       );
-      // Third consecutive ladder failure inside the escalation window
-      // (Issue #4304, broadened by Issue #1949): retrying stops being
-      // credible — hand the issue to a human with the attempt evidence
-      // instead of burning a fourth cycle. Best-effort: the cooldown
-      // itself already blocks re-claims for 24 h even if the escalation
-      // cannot be posted.
-      if (
-        failureKind && recorded.ok && recorded.value.consecutiveFailures >= 3
-      ) {
-        const escalation = buildRepeatedFailureEscalation(
-          failureKind,
-          recorded.value.consecutiveFailures,
-        );
-        try {
-          const ghClient = createGitHubClient(logger);
-          await escalateToHuman({
-            ghClient,
-            repo,
-            target: { kind: "issue", number: issueNumber },
-            needsHumanLabel: config.needsHumanLabel,
-            heading: escalation.heading,
-            reason: escalation.reason,
-            nextStep: escalation.nextStep,
-            // The key keeps its historical name on purpose: one hand-off per
-            // issue is the behaviour wanted, and renaming it would post a
-            // second comment on an issue a timeout escalation already
-            // covered (Issue #1949).
-            dedupKey: `timeout-escalation-${issueNumber}`,
-            githubUser,
-            deps: { github: { ensureLabelExists: ensureLabelExistsFn } },
-            logger,
-          });
-        } catch (err) {
-          logger.warn(
-            "Repeated-failure escalation handoff failed (non-fatal)",
-            {
-              repo,
-              issueNumber,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
-      }
     },
 
     // -- Circuit breaker --
@@ -5289,12 +5395,18 @@ export async function createProductionRunCoreDeps(
         // #4329), best-effort so this cannot stop claim release.
         try {
           const marker = await readMarkerState(workDir, repo, issueNumber);
+          const transcript = await readCodexTranscriptItems(
+            issueNumber,
+            env,
+            (message) => logger.info(message),
+          );
           const decision = await fileRunFailureIssue({
             report: {
               sourceRepo: repo,
               sourceIssueNumber: issueNumber,
               outcome,
               machineId,
+              ...(transcript ? { transcript } : {}),
               ...(marker?.commentId
                 ? {
                   releaseCommentUrl:
@@ -5304,7 +5416,7 @@ export async function createProductionRunCoreDeps(
             },
             ghFn: runGhCommandRaw,
             workDir,
-            log: (message) => logger.info(message),
+            log: bindLogger(logger),
           });
           if (
             decision.action === "suppressed" && decision.reason === "gh_failed"
@@ -5332,7 +5444,7 @@ export async function createProductionRunCoreDeps(
             repeat: repeatCorruption,
             policy: fastFailurePolicy,
             ghFn: runGhCommandRaw,
-            log: (message) => logger.info(message),
+            log: bindLogger(logger),
             warn: (message) => logger.warn(message),
             error: (message) => logger.error(message),
           });
@@ -5439,7 +5551,9 @@ export async function createProductionRunCoreDeps(
           // `enabled: false`.
           rtk: run.rtk ?? rtkNotRun(config.rtkOutput.enabled),
         }, {
-          runId: getRunId(),
+          // Issue #4254: a hard-kill report names the killed run's id; every
+          // other caller reports the current run.
+          runId: run.runId ?? getRunId(),
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
           ...(config.agentProvider ? { provider: config.agentProvider } : {}),
@@ -5447,7 +5561,7 @@ export async function createProductionRunCoreDeps(
           // Same fallback order the transcript writer itself uses.
           ...(homeDirectory(env) ? { home: homeDirectory(env)! } : {}),
         }),
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
         logError: (message) => logger.error(message),
       });
       // Issue #2297: the fleet summary says how many hook invocations failed
@@ -5471,7 +5585,7 @@ export async function createProductionRunCoreDeps(
         { repository: run.repo, issueNumber: run.issueNumber },
         {
           ...(hostLogDir === null ? {} : { hostLogDir }),
-          log: (message) => logger.info(message),
+          log: bindLogger(logger),
           logError: (message) => logger.error(message),
           // A streak copy that could not be read or written degrades the
           // record without stopping the run — a warning, not a fault.
@@ -5492,9 +5606,50 @@ export async function createProductionRunCoreDeps(
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
         }),
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
         logError: (message) => logger.error(message),
       });
+    },
+    /**
+     * Report the hard-kill evidence files the launcher watchdog left in the
+     * host log directory (Issue #4254). Each signature is filed once, its
+     * failure callback runs through the same `runIssueCallbacks` path as any
+     * other run, and the kill is counted in the first scan cycle's fleet
+     * summary (the cycle that runs this report). Never throws.
+     */
+    async reportHardKills() {
+      const evidenceDir = hostLogDirectory(env);
+      if (evidenceDir === null) {
+        logger.info(
+          "Hard-kill reporting skipped: no HOME, so no host log directory (Issue #4254).",
+        );
+        return;
+      }
+      try {
+        const summary = await reportPendingHardKills({
+          evidenceDir,
+          ghFn: options.hardKillGhFn ?? runGhCommandRaw,
+          runFailureCallback: async (run) => {
+            await deps.runIssueCallbacks?.(run);
+          },
+          countFailure: () => recordOutcome("failure", HARD_KILL_FAILURE_CLASS),
+          recordFiling: options.hardKillRecordFiling,
+          log: (message) => logger.info(message),
+          logError: (message) => logger.error(message),
+          logWarn: (message) => logger.warn(message),
+        });
+        if (summary.found > 0) {
+          logger.info(
+            `Hard-kill reporting: found ${summary.found}, reported ${summary.reported}, kept ${summary.kept} for the next start (Issue #4254).`,
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          `Hard-kill reporting faulted: ${
+            error instanceof Error ? error.message : String(error)
+          }. The scan cycle continues.`,
+        );
+      }
     },
     async cleanupInProgressIssue() {
       try {
@@ -5560,11 +5715,25 @@ export async function createProductionRunCoreDeps(
     // The container's scratch and state volumes, probed at the top of every
     // cycle; a read-only or I/O-faulted one ends the run for a fresh
     // container rather than failing the health check until the launch cap.
-    checkRootFilesystem: createRootFilesystemCheck({
-      workDir,
-      ...(env("TMPDIR") ? { tmpDir: env("TMPDIR") } : {}),
-      warn: (message) => logger.warn(message),
-    }),
+    checkRootFilesystem: async () => {
+      const root = await checkRootFs();
+      if (root) return root;
+      // Below the floor with the trim refused, nothing inside this container
+      // returns the bytes a build wrote. Ending the launch discards the
+      // ephemeral layer; the next launch recreates the volume if the host is
+      // still short (Issue #4360). The same status as a read-only root, so
+      // the launcher relaunches promptly, and the log names the floor.
+      const status = await hostDisk.check({ force: true });
+      const stop = hostDiskLaunchStopReason({
+        status,
+        floorBytes: status.totalBytes === undefined
+          ? undefined
+          : hostDisk.floorBytesFor(status.totalBytes),
+        trimRefused: hostDisk.workVolumeTrimRefused,
+      });
+      if (!stop) return null;
+      return { path: "host disk", detail: stop };
+    },
 
     // -- Misc --
     touchPidFile: () => Promise.resolve(),
@@ -5666,7 +5835,7 @@ export async function createProductionRunCoreDeps(
         },
         {
           cycleId: `${trustRefreshScope}:${trustRefreshCycle}`,
-          log: (message: string) => logger.info(message),
+          log: bindLogger(logger),
           warn: (message: string) => logger.warn(message),
           // Issue #1453: reuse a successful resolve for the configured
           // window instead of re-listing every monitored repo each cycle.
@@ -5950,6 +6119,10 @@ export async function createProductionRunCoreDeps(
           // idle-task-only issue is refused by a rule the fleet applied
           // deliberately — not a misclassification.
           quotaIdleDeferred: lastScanIdleDeferred,
+          // Issue #4213: the census's untrusted-label set. An issue whose
+          // priority label an untrusted author added is reported as
+          // `label_author_not_allowed`. The census calls this same closure.
+          untrustedLabelIssuesFn: untrustedLabelIssuesFor,
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -6073,34 +6246,12 @@ export async function createProductionRunCoreDeps(
             } catch {
               openMilestones = new Set<string>();
             }
-            // Issue #3571: the claim scan's `label-author-not-allowed` gate
-            // refuses an issue whose priority label an untrusted author added.
-            // The census reads that same gate (through
-            // `wasLabelAddedByAllowedAuthor`) so such an issue counts as
-            // `claim_refused`, not claimable. Best-effort per issue: a failed
+            // Issue #3571 / #4213: the claim scan's label-author gate, from
+            // the one closure the idle-detect audit also passes. A failed
             // timeline read counts the issue trusted and is logged loudly.
-            // PR #3963: skip issues the census already excludes for labels
-            // or assignment, and share the scan's iteration timeline batch.
-            const priorityIssues = issues.filter((issue) =>
-              [
-                LABEL_DEFAULTS.topPriorityLabel,
-                LABEL_DEFAULTS.workOnLabel,
-                LABEL_DEFAULTS.lowPriorityLabel,
-              ].some((label) => isUnblockedFor(issue, label))
-            );
-            const censusGh = await timelineBatchRegistry.getBatchedGh(
+            const untrustedLabelIssues = await untrustedLabelIssuesFor(
               repo,
-              priorityIssues.map((issue) => issue.number),
-              options.idleDetectGhCommandFn ?? runGhCommand,
-            );
-            const untrustedLabelIssues = await censusUntrustedLabelIssues(
-              repo,
-              priorityIssues,
-              trustedAuthorsFor(config, repo),
-              censusGh,
-              timelineCache,
-              resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
-              (msg) => logger.warn(msg),
+              issues,
             );
             return {
               repo,
@@ -6475,12 +6626,20 @@ export async function createProductionRunCoreDeps(
           );
           // Per-tick decision line so operators can confirm from the log
           // alone that the guard ran this cadence tick and what it saw.
+          // Issue #4225: the same line, and only when the guard returned
+          // ok (this branch), also carries MemAvailable and the two PSI
+          // files. A file that cannot be read is `unavailable` on that
+          // field. The read does not throw, so a missing file does not
+          // drop the tick line.
+          const pressureFields = formatLivenessPressureFields(
+            await readLivenessTickPressure(),
+          );
           logger.info(
             `[liveness] tick=${tick} alerted=${v.alerted} ` +
               `live_epoch=${v.liveEpoch ?? "none"} ` +
               `last_idle_claimed=${v.lastIdleClaimedEpoch ?? "none"} ` +
               `last_productive=${v.lastProductiveEpoch ?? "none"} ` +
-              hookFields,
+              `${hookFields} ${pressureFields}`,
           );
         } else {
           logger.warn("Liveness guard write failed (continuing)", {
@@ -6525,6 +6684,67 @@ export async function createProductionRunCoreDeps(
   return { deps, config: coreConfig, cleanup };
 }
 
+/** What {@link syncMilestoneBranchForSweep} needs for one branch. */
+export interface SweepMilestoneSyncInput {
+  repo: string;
+  milestoneBranch: string;
+  defaultBranch: string;
+  /** The cycle's grant for this branch, including any merge-only reason. */
+  syncOptions: import("./milestone_branch_sync.ts").SyncBranchOptions;
+  workDir: string;
+  config: WorkerConfig;
+  logger: Logger;
+  /** Injected for tests; production runs the real sync. */
+  syncFn?: typeof import("./git_pull.ts").syncMilestoneBranchWithDefault;
+  /** Injected for tests; production runs the real agent. */
+  runAgent?: typeof import("./claude_runner.ts").runClaudeWithRetry;
+}
+
+/**
+ * One branch of the milestone sweep: bind the agent rung, then sync with the
+ * gates and agent the cycle's budget calls for (Issue #4326).
+ *
+ * Exported so a test can drive the sweep's own binding rather than only the
+ * helper it calls.
+ */
+export async function syncMilestoneBranchForSweep(
+  input: SweepMilestoneSyncInput,
+) {
+  const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
+  const { bindMilestoneConflictAgent } = await import(
+    "./milestone_conflict_agent_binding.ts"
+  );
+  const { runClaudeWithRetry } = await import("./claude_runner.ts");
+  const { repo, syncOptions } = input;
+  // Issue #2309: every behind branch is offered the agent rung, and only the
+  // handler's remaining budget refuses one. A branch that was not granted it
+  // is handed no agent at all, so the ladder stops after the deterministic
+  // rules rather than starting a run the watchdog would kill mid-edit
+  // (Issues #1778, #1693).
+  // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so this
+  // sweep and a child run's pre-cut sync hand the ladder exactly the same
+  // rung — including the grant's own timeout.
+  const agentFn = bindMilestoneConflictAgent({
+    repo,
+    grant: syncOptions,
+    config: input.config,
+    logger: input.logger,
+    runAgent: input.runAgent ?? runClaudeWithRetry,
+  });
+  // Issue #4326: a merge-only sync swaps in the gates and agent that land the
+  // merge without the repository's build for a cargo tree.
+  return syncWithMergeOnlyBindings({
+    syncFn: input.syncFn ?? syncMilestoneBranchWithDefault,
+    milestoneBranch: input.milestoneBranch,
+    defaultBranch: input.defaultBranch,
+    options: { cwd: `${input.workDir}/${repo.split("/")[1]}` },
+    repo,
+    mergeOnly: syncOptions.mergeOnly,
+    agentFn,
+    logger: input.logger,
+  });
+}
+
 /** Helper: sync milestone branches using lib function (Issue #1238). */
 async function syncMilestoneBranchesFn(
   repos: string[],
@@ -6547,16 +6767,8 @@ async function syncMilestoneBranchesFn(
   const { selfHealMilestoneBranches } = await import(
     "./milestone_branch_self_heal.ts"
   );
-  const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
-  // Issue #1777: the sync climbs the same ladder the PR pass does, so it
-  // needs the same agent — bound here because only this layer knows the
-  // repository's instructions and the run's timeouts.
-  const { bindMilestoneConflictAgent } = await import(
-    "./milestone_conflict_agent_binding.ts"
-  );
-  const { runClaudeWithRetry } = await import("./claude_runner.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
 
@@ -6628,7 +6840,7 @@ async function syncMilestoneBranchesFn(
         return null;
       }
     },
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
   });
 
   await syncMilestoneBranches({
@@ -6636,11 +6848,11 @@ async function syncMilestoneBranchesFn(
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
     // Issue #3178: a sync that merges is verified by the repository's own
-    // build and test; below the host floor, or over the ephemeral cargo
-    // budget, it waits. The clone's ephemeral target dirs go when the pass
-    // ends rather than at the relaunch.
+    // build and test; below the host floor it waits. The clone's ephemeral
+    // target dirs go when the pass ends rather than at the relaunch. Issue
+    // #4326: over the ephemeral cargo budget the sync lands without the build.
     heavyBuildGateFn: (repo) =>
-      heavyBuildDeferral(`${workDir}/${repo.split("/")[1]}`),
+      heavyBuildAdmission(`${workDir}/${repo.split("/")[1]}`),
     releaseBuildArtefactsFn: async (repo) => {
       if (!workVolumeTrimRefusedForLaunch()) return;
       const released = await releaseCheckoutTargetDirs(
@@ -6653,39 +6865,16 @@ async function syncMilestoneBranchesFn(
         );
       }
     },
-    syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
-      // Issue #2309: every behind branch is offered the agent rung, and only
-      // the handler's remaining budget refuses one. A branch that was not
-      // granted it is handed no agent at all, so the ladder stops after the
-      // deterministic rules rather than starting a run the watchdog would
-      // kill mid-edit (Issues #1778, #1693).
-      // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
-      // this sweep and a child run's pre-cut sync hand the ladder exactly the
-      // same rung — including the grant's own timeout.
-      const agentFn = bindMilestoneConflictAgent({
+    syncBranchFn: (repo, milestoneBranch, defaultBranch, syncOptions) =>
+      syncMilestoneBranchForSweep({
         repo,
-        grant: syncOptions,
-        config,
-        logger,
-        runAgent: runClaudeWithRetry,
-      });
-      return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,
-        { cwd: `${workDir}/${repo.split("/")[1]}` },
-        // Issue #589: named so the sync can raise a PR when a repository
-        // rule refuses the direct push.
-        repo,
-        // The default gates: the repository's own type check, and the
-        // stricter resolution gate derived from it.
-        undefined,
-        undefined,
-        // Issue #1777: the last rung before a human. It runs in the very
-        // clone the merge conflicted in, against a branch target.
-        agentFn,
+        syncOptions,
+        workDir,
+        config,
         logger,
-      );
-    },
+      }),
     localCloneExistsFn,
     // Issue #2309: longest-behind first within each repository. The
     // measurement itself lives in `milestone_behind_count.ts`, where both its
@@ -6790,7 +6979,7 @@ async function syncMilestoneBranchesFn(
         );
       }
     },
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
     // Issue #1776: the cadence signal — one `git rev-parse` per repo, so a
     // cycle in which the default tip did not move syncs nothing.
     defaultTipShaFn: (repo, defaultBranch) =>
@@ -6807,6 +6996,12 @@ async function syncMilestoneBranchesFn(
     // is never started on a promise the watchdog then breaks (#1693).
     ...(deadlineEpochMs !== undefined ? { deadlineEpochMs } : {}),
     agentTimeoutMs: config.claudeTimeout * 1000,
+    // PR #4344 review: the sync's own merge gate judges a rebuilt tree in the
+    // same clone before it is delivered.
+    rebuildGateFn: async (repo) => {
+      const { checkMergedTree } = await import("./milestone_merge_gate.ts");
+      return checkMergedTree(`${workDir}/${repo.split("/")[1]}`);
+    },
     // Issue #1781: the default roll-back runs executeRollback in the
     // same clone the sync just used.
     rollbackGitFn: async (repo, args) => {
@@ -6858,7 +7053,7 @@ async function checkAndHandleMilestoneCompletionsFn(
     // passes, so the summary PR's gated direct merge on an unprotected
     // default branch can read a genuine outside approval.
     fleetAuthors,
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
   });
   // Fail loud — never let an identity mismatch (ok: false) be silently
   // dropped by ignoring the returned Result (Issue #3528).
@@ -6939,7 +7134,7 @@ async function scanStaleWorkflowIssuesFn(
           repo,
         ]);
       },
-      log: (msg: string) => logger.info(msg),
+      log: bindLogger(logger),
       now: () => Date.now(),
       nowSeconds: () => Math.floor(Date.now() / 1000),
       shouldShutdown,

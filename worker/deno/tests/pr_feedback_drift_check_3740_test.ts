@@ -19,118 +19,25 @@ import {
 } from "@std/assert";
 import {
   type DriftCheckDeps,
-  type DriftFinding,
   type DriftResidual,
   formatDriftResidual,
   runPrFeedbackDriftCheck,
 } from "../lib/pr_feedback_drift_check.ts";
+import {
+  type AgentCall,
+  commitAll,
+  git,
+  initRepo,
+  makeRunAgent,
+  makeRunGh,
+  makeRunGit,
+  noopLogger,
+  notMutationChecked,
+  verdictBlock,
+  writeFile,
+} from "./support/drift_check_fixture.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
-
-// ---------------------------------------------------------------------------
-// Test-repo scaffolding (copied from pr_feedback_drift_check_3341_test.ts;
-// these helpers are file-local there).
-// ---------------------------------------------------------------------------
-
-interface GitRunResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-async function git(dir: string, args: string[]): Promise<GitRunResult> {
-  const cmd = new Deno.Command("git", {
-    args,
-    cwd: dir,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-    env: {
-      GIT_AUTHOR_NAME: "test",
-      GIT_AUTHOR_EMAIL: "test@example.com",
-      GIT_COMMITTER_NAME: "test",
-      GIT_COMMITTER_EMAIL: "test@example.com",
-    },
-  });
-  const out = await cmd.output();
-  return {
-    code: out.code,
-    stdout: new TextDecoder().decode(out.stdout),
-    stderr: new TextDecoder().decode(out.stderr),
-  };
-}
-
-async function writeFile(dir: string, path: string, content: string) {
-  const full = `${dir}/${path}`;
-  await Deno.mkdir(full.slice(0, full.lastIndexOf("/")), { recursive: true });
-  await Deno.writeTextFile(full, content);
-}
-
-async function commitAll(dir: string, message: string) {
-  assertEquals((await git(dir, ["add", "."])).code, 0);
-  assertEquals((await git(dir, ["commit", "-m", message])).code, 0);
-}
-
-async function initRepo(): Promise<string> {
-  const dir = await Deno.makeTempDir({ prefix: "drift_check_3740_" });
-  assertEquals((await git(dir, ["init", "-b", "main"])).code, 0);
-  await git(dir, ["config", "user.name", "test"]);
-  await git(dir, ["config", "user.email", "test@example.com"]);
-  await git(dir, ["config", "commit.gpgsign", "false"]);
-  return dir;
-}
-
-/** Fake `runGit` that shells out to real git in `dir`. */
-function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
-  return async (args: string[]) => await git(dir, args);
-}
-
-/** Fake `runGh` that always answers the `baseRefName` read with `main`. */
-function makeRunGh(): DriftCheckDeps["runGh"] {
-  return async () => "main\n";
-}
-
-/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
-const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
-  kind: "not_applicable",
-  reason: "not under test",
-});
-
-type AgentResponse =
-  | { ok: true; output: string }
-  | { ok: false; error: Error };
-type AgentCall = { prompt: string; readOnly: boolean };
-
-function makeRunAgent(
-  responses: readonly (AgentResponse | ((call: AgentCall) => AgentResponse))[],
-  calls: AgentCall[],
-): DriftCheckDeps["runAgent"] {
-  let i = 0;
-  return async (req) => {
-    calls.push(req);
-    const resp = responses[i++];
-    if (!resp) {
-      throw new Error(`runAgent called more times (${i}) than expected`);
-    }
-    return typeof resp === "function" ? resp(req) : resp;
-  };
-}
-
-function noopLogger(): DriftCheckDeps["logger"] {
-  return { info: () => {}, warn: () => {}, error: () => {} };
-}
-
-const DRIFT_OPEN = "<!-- vibe-drift-verdict -->";
-const DRIFT_CLOSE = "<!-- /vibe-drift-verdict -->";
-
-function verdictBlock(findings: DriftFinding[]): string {
-  return [
-    DRIFT_OPEN,
-    "```json",
-    JSON.stringify({ findings }, null, 2),
-    "```",
-    DRIFT_CLOSE,
-  ].join("\n");
-}
+// Test-repo scaffolding lives in tests/support/drift_check_fixture.ts.
 
 // ---------------------------------------------------------------------------
 // Fixtures. The Test Plan names no test file, so the red result has no sole
@@ -207,7 +114,7 @@ const DEFAULT_INPUT = { repo: "org/repo", prNumber: 7 };
 async function setupBaseline(
   summary: string,
 ): Promise<{ dir: string; beforeSha: string }> {
-  const dir = await initRepo();
+  const dir = await initRepo("drift_check_3740_");
   await writeFile(dir, "lib/rule.ts", RULE_TS_V1);
   await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS);
   await commitAll(dir, "base");

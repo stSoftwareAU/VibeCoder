@@ -55,15 +55,14 @@ const defaultLabelConfig: LabelConfig = {
   questionLabel: "question",
 };
 
-Deno.test("getBlockingLabelReasons - detects failed label", () => {
+Deno.test("getBlockingLabelReasons - a leftover failed label is noted but not blocking (Issue #4158)", () => {
   const reasons = getBlockingLabelReasons(
     ["failed", "bug"],
     defaultLabelConfig,
   );
   assertEquals(reasons.length, 1);
   assertEquals(reasons[0]!.label, "failed");
-  assertEquals(reasons[0]!.reason, "permanently failed");
-  assertEquals(reasons[0]!.isBlocking, true);
+  assertEquals(reasons[0]!.isBlocking, false);
 });
 
 Deno.test("getBlockingLabelReasons - detects failed-once as non-blocking", () => {
@@ -186,7 +185,7 @@ Deno.test("diagnoseRepoIssue - detects assignment blocking", () => {
 
 Deno.test("diagnoseRepoIssue - detects blocking labels", () => {
   const input: RepoIssueDiagnosticInput = {
-    issue: makeIssue({ labels: ["work-on", "failed"] }),
+    issue: makeIssue({ labels: ["work-on", "needs-human"] }),
     prs: [],
     allIssues: [],
     labelConfig: defaultLabelConfig,

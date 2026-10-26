@@ -1,7 +1,9 @@
 # Diff-scoped mutation check
 
-The mutation check runs at two call points. At PR raise it is a gate
-(Issue #3393) that blocks the PR. In every review-fix (PR feedback) run it is
+The mutation check runs at two call points. At PR raise it is an advisory
+completion gate (Issue #3393, Issue #4234): the first report is one in-session
+note, and a survivor that remains is one comment on the pull request, which
+is still raised with auto-merge armed. In every review-fix (PR feedback) run it is
 part of the post-agent drift check (Issue #3750) and reports survivors in the
 PR reply without blocking the push; see
 [Review-fix runs](#review-fix-runs-issue-3750). At both it mutates only the
@@ -11,25 +13,25 @@ behaviour was changed on purpose.
 
 ## Why line coverage is not enough
 
-A test can execute a line without asserting on it. Line coverage and the
-`Branch outcomes:` list in the Test Plan both rest on the agent's own
-account of which test reaches which line. A mutation check measures the
+A test can execute a line without asserting on it. Line coverage rests on
+the agent's own account of which test reaches which line. A mutation check measures the
 outcome instead: flip the line, run the tests, and see whether anything goes
 red. A survivor is concrete evidence that no test pins that behaviour.
 
 ## Flow
 
 At PR raise, the gate runs in the issue-run completion phase, after the PR
-summary is final and before the PR is raised. It joins the other late summary gates (docs
-sweep, removed assertions, placeholders, branch outcomes, [coverage carry-over](coverage-carryover-check.md), claim check, pre-PR verifier) and
-feeds the same single recovery turn.
+summary is final and before the PR is raised. It joins the other advisory
+completion gates (placeholders, [coverage carry-over](coverage-carryover-check.md),
+the pre-PR verifier, and the acceptance, review and reproduction gates) and
+feeds the same single in-session note.
 
 ```mermaid
 flowchart TD
     A["PR summary final"] --> B{"skip_mutation_check?"}
     B -- yes --> Z["Raise PR"]
     B -- no --> D["Compute diff origin/base...HEAD"]
-    D -- "diff unavailable" --> X["Block (fail closed)"]
+    D -- "diff unavailable" --> X["Finding (fail closed)"]
     D --> C["Detect language: Deno config above a changed file, else Cargo.toml"]
     C -- "neither Deno nor Cargo" --> N["Not applicable: log the reason"]
     N --> Z
@@ -88,10 +90,13 @@ turn ran, the mutation check is re-run once.
 survivors; they are reported in the PR reply and the push still happens.
 
 A budget-exhausted or mutant-cap run is reported under that heading as such,
-as not passed, never as a pass, and does not trigger a recovery turn by itself. A runner error or an uncollectable diff is reported
-there as `mutation check failed to run (…)`. A check that is not applicable (no
-Deno project and no `Cargo.toml`, skipped, runner not wired, credentials
-unresolved, empty diff) is logged with its reason and is not reported.
+as not passed, never as a pass, and does not trigger a recovery turn by
+itself. A runner error or an uncollectable diff is reported there as
+`mutation check failed to run (…)`, and a temporary directory that could not be
+created as `mutation check could not run: …` (a worker fault, Issue #4127). A
+check that is not applicable (no Deno project and no `Cargo.toml`, skipped,
+runner not wired, credentials unresolved, empty diff) is logged with its reason
+and is not reported.
 
 **CI-fix runs are out of scope.** A CI-fix run does not run the mutation check.
 
@@ -126,9 +131,12 @@ it are run.
 For Cargo `--output` points at a fresh temporary directory outside the
 repository; the outcomes are read from its `mutants.out/outcomes.json` and the
 directory is removed afterwards, so nothing of cargo-mutants' output reaches
-the working tree (a recovery commit stages it with `git add -A`). The worker
-image ships `cargo-mutants` 27.1.0 (amd64 from the release tarball,
-checksum-verified; arm64 built with `cargo install --locked`).
+the working tree (a recovery commit stages it with `git add -A`). That
+temporary directory is created in the system temp directory (`TMPDIR`, else
+Deno's default) or, when that refuses, in a private (`0700`) `.mutation-scratch`
+directory on the work volume (`WORK_DIR`, else `$HOME/auto-issue-work`)
+(Issue #4127). The worker image ships `cargo-mutants` 27.1.0 (amd64 from the
+release tarball, checksum-verified; arm64 built with `cargo install --locked`).
 
 The run is limited to the packages the diff touches: for each changed `.rs`
 file the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
@@ -146,8 +154,9 @@ cargo-mutants logs "No mutants to filter" on stderr and exits 0 without writing
 At the budget the runner sends `SIGTERM` to cargo-mutants and `SIGKILL` only
 after a 5 second grace period, so cargo-mutants can stop its cargo process
 groups and delete its scratch copy of the tree. That scratch copy is created
-under `TMPDIR`, which the runner sets to the run's own `--output` directory, so
-removing that directory clears any copy a killed run leaves behind.
+under `TMPDIR`, which the runner sets to the run's own temporary directory (the
+`--output` directory; where that is created is described above), so removing
+that directory clears any copy a killed run leaves behind.
 
 Every path the runner writes (mutated Deno files, the Rust diff under
 `target/`) is resolved through symlinks and must stay inside the repository;
@@ -157,7 +166,7 @@ a file that escapes is skipped, and an escaping `target/` is an error.
 
 At PR raise the diff is `origin/<base>...HEAD`, falling back to
 `<base>...HEAD`. Only added or changed lines are mutated. When no diff can be
-computed the gate fails closed and blocks, rather than passing an unmeasured
+computed the gate fails closed and the finding is noted, rather than passing an unmeasured
 change. A review-fix run uses its own diff instead; see
 [Review-fix runs](#review-fix-runs-issue-3750).
 
@@ -182,7 +191,7 @@ wiring has no test that notices it is gone. They apply only to lines that a scan
 of the whole file places directly inside an object or array literal, never to a
 type, an interface, an annotation or a generic argument: mutants run with
 `--no-check`, so a mutant of a type-only line could never be caught and would
-block the PR. A file whose brackets the scan cannot balance gets none of these
+be reported rather than passed. A file whose brackets the scan cannot balance gets none of these
 three, only the kinds above. They count towards the same mutant cap, after the
 other kinds on each line.
 
@@ -215,7 +224,7 @@ mutation cap reached: T of N candidate mutants tried — U untested (past the mu
 ```
 
 Both are warnings and are never reported as a pass. Survivors found before the
-budget ran out or the cap was hit still block.
+budget ran out or the cap was hit are still reported.
 
 ## Child environment
 
@@ -224,17 +233,21 @@ after the agent has written tests. Every child process therefore starts from the
 allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
 never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
 credentials are not inherited by it (Issue #572, the same control as the quality
-gate). The only additions are the declared credentials described below and, for
-`cargo mutants`, `TMPDIR` (the run's `--output` directory, see above).
+gate). The only additions are the declared credentials described below and
+`TMPDIR`, which every child gets set to the run's own temporary directory
+(Issue #4127): for `cargo mutants` the `--output` directory, for `deno test` a
+per-run directory created before the first child runs and removed afterwards. A
+declared `TMPDIR` cannot override it.
 
 The credentials the repository declared in `quality_credentials` (Issues #573
 and #574) are resolved once per run, in the completion phase at PR raise and in
 the drift check on a review-fix run, and added to each child's environment, the
 same way the quality gate does, so tests that need them (for example minted AWS
-credentials) pass their baseline here too. Apart from `TMPDIR` for
-`cargo mutants`, only the declared variables are added. If the mint fails, the
-check is not applicable with a warning instead of running without them. At PR
-raise that is reported; on a review-fix run it is logged and not reported.
+credentials) pass their baseline here too. Apart from `TMPDIR`, which every
+child (both `deno test` and `cargo mutants`) gets set to the run's own
+temporary directory, only the declared variables are added. If the mint fails,
+the check is not applicable with a warning instead of running without them. At
+PR raise that is reported; on a review-fix run it is logged and not reported.
 
 ## Exemptions
 
@@ -245,9 +258,8 @@ line naming the location and giving a non-empty reason:
 - `worker/deno/lib/example.ts:42` — exempt (untestable): <reason>
 ```
 
-This is the same `exempt (untestable): <reason>` convention the Branch
-outcomes gate uses; an empty reason does not exempt. Every other survivor
-blocks.
+An empty reason does not exempt. Every other survivor is reported on the
+pull request, which is still raised (Issue #4234).
 
 ## Configuration
 
@@ -277,6 +289,7 @@ Both keys are per-repo options, set operator-side under
 | Completed, survivors   | At least one unexempted survivor                       | Yes                       |
 | Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
 | Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy |
+| Error (worker fault)   | The temporary directory could not be created, in the system temp directory or on the work volume (Issue #4127). Reported as `mutation check could not run` (a worker fault on this host, not a verdict on the code); at PR raise recorded as `internal_error`, never `quality_check` | Yes, no repository remedy (no `skip_mutation_check`) |
 
 In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the
 mutant cap and runner errors are reported in the PR reply instead, under the
@@ -300,3 +313,12 @@ A Rust run killed at the budget before cargo-mutants finishes its baseline is
   3600), or narrow the PR.
 - **Diff unavailable.** Make sure the base branch is fetched so
   `origin/<base>` resolves.
+- **Temporary directory not writable.** The check first creates its temporary
+  directory in the system temp directory (`TMPDIR`, else Deno's default). When
+  that is read-only (for example `Read-only file system (os error 30)`), it
+  falls back to a private `.mutation-scratch` directory on the work volume. If
+  neither works, the gate blocks, the PR comment is headed
+  `## Mutation check: could not run (worker fault)`, and no
+  `skip_mutation_check` remedy applies. The fault is the host's, not the
+  repository's: check that the work volume (`WORK_DIR`, else
+  `$HOME/auto-issue-work`) and any `TMPDIR` mount are writable (Issue #4127).

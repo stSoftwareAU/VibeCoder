@@ -89,11 +89,7 @@ committed to the repository as permanent documentation and contains:
 The worker reads this file and includes its contents in the PR body. If no PR
 summary file is created, a warning note is included in the PR body. PR
 creation records a SHA-256 digest of the summary's content in the PR body as
-a hidden marker (when the agent also wrote the optional
-`pr-summary-{issue_number}.facts.json` facts file beside the summary, the digest
-covers the facts content too, and its Branch outcomes list is rendered into the
-body's summary; with no facts file the digest is of the summary alone, so older
-digests stay valid, Issue #3535), and the sub-agent tier the issue run resolved as a second
+a hidden marker (the digest is of the summary alone, Issue #4234), and the sub-agent tier the issue run resolved as a second
 one, `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`), so a later PR
 outcome can be attributed to that tier (Issue #3403); the fleet summary's
 per-tier PR-outcome figures do this (Issue #3404). A re-sync carries the
@@ -106,7 +102,7 @@ re-syncs under the same condition, and also when it pushed nothing and has no
 commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
-file or its facts file. So the description never drifts from a summary rewritten
+file. So the description never drifts from a summary rewritten
 after creation, for as long as that run's conditions are met. Priority 1.64 also
 catches a push the worker did not make (Issue #3760), such as a review-fix
 commit pushed by hand: each cycle it re-syncs, in the repos due that cycle, an
@@ -118,29 +114,9 @@ is adopted (Issue #3804): rebuilt with the worker marker, digest and, when a
 criterion is `missing`, the withheld close (`Part of #N`). The issue run's
 completion phase adopts it at every exit, once the checkout's HEAD is the
 pushed head and the PR is open. A marker-less PR on any other branch is still left alone.
-A re-sync
-re-derives a leading `Degraded run` section from the issue's current body and
-the rebuilt summary
-rather than copying it, keeping only the original run's
-reason and follow-up number (Issue #3350). A leading `Partial delivery —
-follow-up filed` section is re-derived from the same inputs (Issue #3506): it is
-dropped, with no call to the follow-up, when no gap remains; kept as it is when
-the follow-up number cannot be read from its opening line; and, when a gap
-remains and the rebuilt section differs from the live one, rewritten to name the
-same follow-up while saying it was filed when the PR was raised and may not list
-every item. A leading `Partial delivery — handed to a human` section, which a
-healthy run on a partial-delivery follow-up carries instead of filing a nested
-one (PR #3676 review; a degraded run still files one), is rebuilt from the current gaps and dropped when none
-remains.
-Re-deriving a section the body already carries only reads the issue; it never
-edits or files the follow-up. The one case where a sync files or reuses the
-follow-up is a body with no such section whose rebuilt summary newly marks a
-criterion `partial` or `missing` (Issue #3678): the sync re-verifies the
-issue's content, then files or reuses the `idle-task` follow-up and prepends a
-`Partial delivery — follow-up filed` section, or hands a partial-delivery
-follow-up to a human. If the issue cannot be read or verified, or the filing
-fails, the sync fails and leaves the body as it was. See the degraded-run
-section of [issue-processing.md](workflows/issue-processing.md).
+A re-sync never files an issue: a criterion still `partial` or `missing`
+blocks the PR at completion instead (Issue #4146, see
+[issue-processing.md](workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run)).
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -235,43 +211,13 @@ label overrides this for specific issues.
 
 ## ❓ Clarification Phase (Handling Unclear or Complex Issues)
 
-The **clarification phase** runs before implementation and is important for
-getting good results. It does three things:
-
-1. **Is the issue clear?** If not, the worker posts questions on the issue and
-   adds the `needs-human` label (the standalone
-   `needs-clarification` label was retired in favour of the consolidated
-   worker-to-human handoff signal). You reply on the issue and remove the label;
-   the worker will re-assess on the next run.
-2. **Is it small enough for a single PR / one run?** If the issue is too large,
-   the worker posts an escalation comment asking a trusted human to add the
-   `planning` label so the issue can be broken into smaller sub-issues. The
-   worker does not add `planning` itself — see
-   [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
-3. **Is it too large for a single PR?** If the issue is clear but too complex
-   for one implementation, the worker posts an escalation comment asking a
-   trusted human to add the `planning` label — once added, the planning workflow
-   breaks it into smaller sub-issues. No code is written until the issue is
-   appropriately scoped.
-
-To skip clarification, add the `documentation` label. The worker limits
-clarification to 3 rounds (configurable) before proceeding with reasonable
-assumptions.
-
-**A masked instruction is always asked about (Issue #2390).** The worker masks
-anything secret-shaped before it publishes text, and a mask can land on the one
-value an instruction needs — `Add persist-credentials: ***REDACTED***` tells
-nobody what to set. When an issue's instructions carry a mask placeholder as
-the value of a setting, the worker does not guess and does not invoke the
-agent: it posts a `## Clarification Needed` comment naming each line and waits.
-Edit the issue to restore the value (or reply, if you would rather not edit) —
-and if the value really is a secret, describe the change without it. The
-`documentation` label does not skip this check. A secret masked in a quoted
-log, an `## Evidence` section or running prose is left alone: that is the mask
-doing its job. When the worker itself files an issue whose instructions were
-masked, the issue carries a visible notice saying so and the log carries a
-`[MASKED_INSTRUCTION_FILED]` line, so a false positive in the filter gets
-fixed at its source.
+The **clarification phase** runs before implementation. It routes an issue
+whose labels name another handler (`refine-issue`, `question`) and then runs a
+quick clarity check. An approved issue is never handed back to a human
+(Issue #4298): when the check finds it vague, the run proceeds and the agent
+states the assumptions it made in the PR summary. An issue too large for one PR
+goes to planning through the agent's `vibe-needs-planning` marker. The
+`documentation` label skips the check.
 
 For the full clarification workflow, including decision diagrams and
 configuration, see
@@ -322,27 +268,33 @@ For the full planning workflow, see
 
 ## ⚠️ Failed Issue Handling
 
-The worker uses a **two-attempt strategy** for issues that fail to process.
+An assigned issue is completed, never parked (Issue #4158). A failure is
+recorded on the issue and the worker tries again after a cooldown; it never
+applies `failed` and never hands the issue to a human.
+
+A repeat failure blocked by a worker gate (`summary-incomplete`,
+`quality-failure`, `pre-push-gate`, `security-fix-gate`, or another category
+in the worker gate registry) takes the same path: the evidence is written on
+the issue, `failed-once` stays, and the same issue is retried after the
+cooldown until it is done. Nothing is split, closed or deleted (Issue #4130
+removed).
 
 ```mermaid
 flowchart TD
-    A["🔨 Issue Attempt #1"] -->|failure| B["📝 Add comment,\nfailed-once label,\nclean stale branch"]
-    B -->|auto retry| C["🔨 Issue Attempt #2"]
-    C -->|success| D["✅ Issue resolved"]
-    C -->|failure| E["🚫 Add comment,\nfailed label,\nskip future scans"]
+    A["🔨 Issue attempt"] -->|success| D["✅ Issue resolved"]
+    A -->|failure| B["📝 Add comment,\nfailed-once label,\nclean stale branch"]
+    B --> C["⏳ Cooldown\n2 h → 6 h → 24 h"]
+    C -->|auto retry| A
 
     style A fill:#3a86ff,stroke:#023e8a,color:#fff
     style B fill:#ffbe0b,stroke:#e09f00,color:#000
-    style C fill:#3a86ff,stroke:#023e8a,color:#fff
+    style C fill:#8ecae6,stroke:#219ebc,color:#000
     style D fill:#06d6a0,stroke:#05a77d,color:#000
-    style E fill:#ef476f,stroke:#c5233c,color:#fff
 ```
 
-**First failure**: Comment added, `failed-once` label applied, stale remote
-branch deleted, issue unassigned for automatic retry.
-
-**Second failure**: Comment added, `failed` label replaces `failed-once`, issue
-skipped in future scans.
+**Every failure**: Comment added (headed *First Attempt*, then *Repeat
+Attempt*), `failed-once` label kept as the record, stale remote branch deleted,
+issue unassigned for automatic retry once its cooldown ends.
 
 **Which failures count (Issue #1949)**: a terminal coding-run failure the run
 reports enters the ladder unless it is transient infrastructure — a failed
@@ -370,33 +322,23 @@ Three groups are exempt and consume no attempt, keeping the flat retry cooldown:
   claiming it. See [SETUP.md](SETUP.md#the-workflow-scope).
 
 Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h →
-24 h) so a doomed issue cannot burn consecutive cycles while its attempts play
-out; a third consecutive ladder failure within 48 hours hands the issue to a
-human with `needs-human`.
-
-Infrastructure-category failures that do enter the ladder — a push refusal or a
-zero-output run — keep the bounded
-self-healing retries of Issue #387: they stay at `failed-once` for up to five
-attempts rather than going straight to `failed`, while still serving the
-escalating cooldown.
+24 h), so an issue that keeps failing is retried at most once a day rather than
+every cycle. It stays queued: repeated failures are a Vibe Coder defect to fix,
+not a reason to give the issue back (Issue #4158).
 
 ```mermaid
 flowchart LR
     F["🔨 Terminal run failure"] --> C{"Transient<br/>infrastructure?"}
     C -->|"account state:<br/>rate/usage limit, out of credit,<br/>interrupted, scheduled release,<br/>deadline-bound timeout<br/>host state:<br/>OOM, full disk, crash,<br/>missing tools, external kill<br/>host capability: token lacks<br/>the workflow scope"| T["⏳ Flat retry cooldown,<br/>no attempt consumed"]
-    C -->|"anything else"| L["📝 failed-once → failed<br/>+ 2 h / 6 h / 24 h cooldown"]
+    C -->|"anything else"| L["📝 failed-once record<br/>+ 2 h / 6 h / 24 h cooldown"]
 
     style F fill:#3a86ff,stroke:#023e8a,color:#fff
     style T fill:#8ecae6,stroke:#219ebc,color:#000
     style L fill:#ef476f,stroke:#c5233c,color:#fff
 ```
 
-**To retry a permanently failed issue:**
-
-1. Investigate the failure comments
-2. Address the underlying problem
-3. Remove the `failed` label
-4. The worker will pick it up again with two fresh attempts
+**A leftover `failed` label** (applied before Issue #4158) is stripped on the
+next scan, so the issue is picked up again with no action needed.
 
 **Diagnosing why issues are not being picked up:** Run the `diagnose-repo` Deno
 command to get a detailed report of blocking reasons for each issue in a
@@ -508,6 +450,14 @@ subsequent scan until a human removes the label.
 - The issue raises a product or architectural question that only a human
   stakeholder can resolve.
 
+**What is never escalated (Issue #4298):** an approved issue the worker can
+resolve itself. An analysis-only issue is closed with its analysis; a
+repository-admin finding is applied with the worker's token (or retried on the
+`failed-once` ladder when the token cannot); a dependency cycle is worked in
+issue-number order; a dead `work-on` label on a milestone tracker is stripped;
+a re-approved issue a merged PR already satisfies, and a worker diagnostic a
+merged PR fixed, are closed as completed.
+
 **To resume work:**
 
 1. Read the worker's comment to understand the blocker.
@@ -536,7 +486,8 @@ subsequent scan until a human removes the label.
 >> Those labels are controlled by humans (and, for internal state labels, by the
 >> worker's non-Claude code paths). If you see the worker stop retrying an issue
 >> with no `needs-human` label, check `worker.log` in the host log directory — it is probably in
->> cooldown or hit the `failed` threshold, not an escalation.
+>> its failure cooldown, not an escalation. The worker never parks an issue
+>> behind `failed` (Issue #4158).
 
 ## ❓ Question Clarification
 
@@ -775,8 +726,9 @@ For other reviewers:
 
 The worker will process the feedback, push fixes, and dismiss the review once
 it has settled it — not at the moment it claims the review. The dismissal
-message says how it was settled (addressed, rebutted, escalated, handed off or
-permanently failed), so only a fixed review reads as addressed. A run that dies
+message says how it was settled (addressed, rebutted, handed off, or not
+addressed after two attempts — when the PR is closed and its issue redone,
+Issue #4304), so only a fixed review reads as addressed. A run that dies
 mid-flight leaves the review undismissed rather than silently answered, so it
 is picked up again (by this host or another) once its claim lapses.
 

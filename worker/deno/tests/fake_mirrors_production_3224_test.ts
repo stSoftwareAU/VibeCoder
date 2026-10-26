@@ -10,6 +10,12 @@
  * observe-real-tool paragraph; and the issue prompt's PR Raising
  * Requirements section must require the same in-repo-port discipline for
  * Bugs/Enhancements.
+ * Issue #3900 extends the same rule to hand-faked responses from the
+ * repository's own server or service across processes and languages, not
+ * only in-repo fakes of ports: the paragraph on both surfaces carries the
+ * wire-format trigger, the golden and the CORS exposed-headers check; the
+ * issue prompt's PR Raising Requirements carries the same checks; and the
+ * operator manual's paragraph on the fake-mirrors rule carries them too.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -44,6 +50,17 @@ const KEY_PHRASES = [
   "a fake more permissive than its production implementation is a blocking self-review finding",
 ];
 
+const WIRE_FORMAT_PHRASES = [
+  "fakes a response from the repository's own server or service",
+  "across processes and languages",
+  "a golden the server's tests produce or verify",
+  "a contract test that runs the server's serialiser for that response kind",
+  "the PR adds one",
+  "a CORS exposed-headers list",
+  "name in the PR summary where that is set",
+  "a fixture the producer never emits",
+];
+
 Deno.test("both surfaces carry the fake-mirrors-production rule (Issue #3224)", async () => {
   const standards = section(
     await readRepoDoc("CODING-STANDARDS.md"),
@@ -74,6 +91,32 @@ Deno.test("both surfaces carry the fake-mirrors-production rule (Issue #3224)", 
     fakeMirrorsParagraph(guidelines, "coding_guidelines"),
     "the fake-mirrors-production rule must be identical on both surfaces",
   );
+});
+
+Deno.test("both surfaces carry the wire-format trigger, golden and exposed-headers check (Issue #3900)", async () => {
+  const standards = section(
+    await readRepoDoc("CODING-STANDARDS.md"),
+    "Test coverage expectations",
+  );
+  const guidelines = section(
+    await readRepoDoc("prompts/coding_guidelines/prompt.md"),
+    "Test Coverage Expectations",
+  );
+
+  for (
+    const [surface, text] of [
+      ["CODING-STANDARDS.md", standards],
+      ["coding_guidelines", guidelines],
+    ] as const
+  ) {
+    const paragraph = fakeMirrorsParagraph(text, surface);
+    for (const phrase of WIRE_FORMAT_PHRASES) {
+      assert(
+        paragraph.includes(phrase),
+        `${surface} is missing "${phrase}" from the wire-format fake rule: ${paragraph}`,
+      );
+    }
+  }
 });
 
 Deno.test("the fake-mirrors-production rule sits between the stub-contract and observe-real-tool paragraphs (Issue #3224)", async () => {
@@ -131,7 +174,7 @@ Deno.test("issue prompt PR Raising Requirements require production-mirroring fak
 
   assert(
     text.includes(
-      "read the production implementation first and confirm it has that property",
+      "read the production implementation first and confirm it has the property the change relies on",
     ),
     `PR Raising Requirements is missing the read-production-first requirement: ${text}`,
   );
@@ -153,4 +196,63 @@ Deno.test("issue prompt PR Raising Requirements require production-mirroring fak
     ),
     `PR Raising Requirements is missing the blocking self-review finding: ${text}`,
   );
+});
+
+const ISSUE_PROMPT_SERVER_RESPONSE_PHRASES = [
+  "a response from the repository's own server or service",
+  "across processes and languages",
+  "a golden the server's tests produce or verify",
+  "a contract test that runs the server's serialiser for that response kind",
+  "the PR adds one",
+  "a CORS exposed-headers list",
+  "where that deployed setting is set",
+  "a fixture the producer never emits",
+];
+
+Deno.test("issue prompt PR Raising Requirements carry the server-response fake checks (Issue #3900)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("prompts/issue/prompt.md"),
+      "PR Raising Requirements",
+    ),
+  );
+
+  for (const phrase of ISSUE_PROMPT_SERVER_RESPONSE_PHRASES) {
+    assert(
+      text.includes(phrase),
+      `PR Raising Requirements is missing "${phrase}" from the server-response fake checks: ${text}`,
+    );
+  }
+});
+
+const MANUAL_PARAGRAPH_START =
+  "**A fake mirrors the production implementation it stands in for (Issue";
+const MANUAL_SECTION_TITLE = "Reproduction status on a bug fix";
+const MANUAL_PHRASES = [
+  "a golden the server's tests produce or verify",
+  "a CORS exposed-headers list",
+  "a fixture the producer never emits",
+];
+
+Deno.test("operator manual fake-mirrors paragraph carries the server-response fake checks (Issue #3900)", async () => {
+  const manual = section(
+    await readRepoDoc("docs/workflows/issue-processing.md"),
+    MANUAL_SECTION_TITLE,
+  );
+  const start = manual.indexOf(MANUAL_PARAGRAPH_START);
+  assert(
+    start >= 0,
+    `could not locate the fake-mirrors paragraph in docs/workflows/issue-processing.md under "${MANUAL_SECTION_TITLE}"`,
+  );
+  const end = manual.indexOf("\n\n", start);
+  const paragraph = flat(
+    excerpt(manual, start, end >= 0 ? end : undefined),
+  ).trim();
+
+  for (const phrase of MANUAL_PHRASES) {
+    assert(
+      paragraph.includes(phrase),
+      `docs/workflows/issue-processing.md is missing "${phrase}" from the fake-mirrors paragraph: ${paragraph}`,
+    );
+  }
 });

@@ -10,7 +10,12 @@ import { pass } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 const REVIEWER = "nleck";
 
 const commits = {
-  nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }],
+  nodes: [{
+    commit: {
+      statusCheckRollup: { state: "SUCCESS" },
+      checkSuites: { nodes: [] },
+    },
+  }],
 };
 
 function dependabotPr(headRefOid = "dep-head") {
@@ -313,6 +318,9 @@ Deno.test("pass binds the version exception to findings from this PR's exact sen
         if (path.includes("/files")) return Promise.resolve("[]");
         if (path.includes("/contents/review-checklists.json")) {
           throw new Error("gh: Not Found (HTTP 404)");
+        }
+        if (args.includes("Accept: application/vnd.github.diff")) {
+          return Promise.resolve("");
         }
         throw new Error(`unexpected gh ${args.join(" ")}`);
       };

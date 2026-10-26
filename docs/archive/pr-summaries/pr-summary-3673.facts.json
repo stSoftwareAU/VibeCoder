@@ -1,0 +1,17 @@
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"worker/deno/lib/milestone_children_gate.ts","line":1271,
+   "outcome":"title and number set: the title is linked to the milestone page",
+   "test":"worker/deno/tests/milestone_children_gate_test.ts",
+   "testName":"renderRouteClosedHoldComment - names a closed milestone by title and links its page, never as #N (Issue #3673)",
+   "flipWentRed":"the test fails against the base renderer, which printed #7 and no link"},
+  {"path":"worker/deno/lib/milestone_children_gate.ts","line":1275,
+   "outcome":"title without number: the title is named in a code span with no link",
+   "test":"worker/deno/tests/milestone_children_gate_test.ts",
+   "testName":"renderRouteClosedHoldComment - names a closed milestone by title and links its page, never as #N (Issue #3673)",
+   "flipWentRed":"the test failed against the base renderer, which never named the title"},
+  {"path":"worker/deno/lib/milestone_children_gate.ts","line":1280,
+   "outcome":"no title: the comment reads 'its milestone is closed' and never prints the number",
+   "test":"worker/deno/tests/milestone_children_gate_test.ts",
+   "testName":"renderRouteClosedHoldComment - carries no bare #N apart from the rollup PR or milestone it names (Issue #3501)",
+   "flipWentRed":"the edited expectation [] goes red against the base renderer, which printed #7"}
+]}}

@@ -143,13 +143,21 @@ export interface ProgressExtensionInput {
   /**
    * Absolute epoch-ms past which no grant may move the deadline (Issue #421).
    *
-   * The supervisor's wall-clock cap (`VIBE_RUN_MAX_SECONDS`) less the
-   * shutdown reserve, resolved by `run_hard_cap.ts`. Undefined means the run
-   * is uncapped — the CLI single-issue path, tests, and any host that
-   * disabled the supervisor cap — and extensions behave exactly as they did
+   * The finish deadline less the kill grace and the WIP reserve when a
+   * timeline is set (Issue #4245); otherwise the supervisor's wall-clock cap
+   * less that same reserve. Undefined means the run is uncapped — the CLI
+   * single-issue path, tests, and any host that disabled the supervisor cap
+   * and published no timeline — and extensions behave exactly as they did
    * before this input existed.
    */
   ceilingMs?: number;
+  /**
+   * Words the clamp line uses for {@link ceilingMs}.
+   *
+   * `"the finish deadline"` when the timeline supplied the ceiling. Absent,
+   * the line keeps the run-hard-cap wording.
+   */
+  ceilingLabel?: "the finish deadline" | "the run hard cap";
 }
 
 /**
@@ -214,11 +222,17 @@ export interface ProgressExtensionOptions {
   /**
    * Absolute epoch-ms ceiling for every grant on this run (Issue #421).
    *
-   * Resolved once at run start from the supervisor's published cap
-   * (`run_hard_cap.ts`). Absent means uncapped, which is what the CLI
-   * single-issue path and the tests get.
+   * The finish deadline less the reserve when a timeline is set (Issue
+   * #4245); otherwise the supervisor's published cap (`run_hard_cap.ts`).
+   * Absent means uncapped, which is what the CLI single-issue path and the
+   * tests get when no timeline is published.
    */
   ceilingMs?: number;
+  /**
+   * Words a clamped grant uses. Set to `"the finish deadline"` when
+   * {@link ceilingMs} is that deadline. Absent keeps the run-hard-cap wording.
+   */
+  ceilingLabel?: "the finish deadline" | "the run hard cap";
   /**
    * Call-storm guard, evaluated at each interim check (Issue #2230).
    *
@@ -243,14 +257,14 @@ export type ProgressExtensionDecision =
     reason: string;
     /**
      * Set when the kill is a scheduled release rather than a stall
-     * (Issue #424, parent #397): the run was progressing and the
-     * supervisor's hard cap simply left no runway. The runner carries this
-     * to the failure reason so the issue comment says "cycle ended / hard
-     * cap reached — WIP preserved" instead of blaming the issue for running
-     * out of time. Absent means the run stalled inside its own budget: a
-     * genuine timeout.
+     * (Issue #424, parent #397): the run was progressing and the wall clock
+     * left no runway. `"finish-deadline"` is the two-hour finish (Issue
+     * #4245); `"hard-cap"` is the supervisor cap. The runner carries this to
+     * the failure reason so the issue comment names that cause instead of
+     * blaming the issue for running out of time. Absent means the run stalled
+     * inside its own budget: a genuine timeout.
      */
-    cause?: "hard-cap";
+    cause?: "hard-cap" | "finish-deadline";
   };
 
 /** Whole seconds, for operator-facing reason strings. */
@@ -443,6 +457,12 @@ export interface HandlerExtensionInput {
    * undefined when it has none — a handler wedged outside its agent.
    */
   activity?: { lastToolCallAtMs?: number; lastChunkAtMs?: number };
+  /**
+   * A post-agent landing step still running (Issue #4173): commit, the
+   * pre-commit safety gate or push of the result the agent just produced.
+   * Absent, and with no live agent, the handler is wedged.
+   */
+  landing?: { step: string };
   /** Absolute epoch-ms past which the handler is abandoned regardless. */
   ceilingMs: number;
 }
@@ -454,12 +474,15 @@ export interface HandlerExtensionInput {
  * The handler twin of {@link decideProgressExtension}, on the same policy and
  * the same liveness rule. It asks only about liveness: the handler's agent is
  * the thing it is waiting on, and that agent's own runner already applies the
- * full tree-and-descendant test to its own deadline. Bounded by an absolute
- * ceiling, so a live but endless handler is still abandoned.
+ * full tree-and-descendant test to its own deadline. Once that agent has
+ * exited, a landing step that is still committing, gating or pushing its
+ * result counts as liveness too (Issue #4173). A handler with neither is
+ * wedged. Bounded by an absolute ceiling, so a live but endless handler is
+ * still abandoned.
  *
  * Pure: same inputs, same decision, no side effects.
  *
- * @param input - Clock, the handler's agent activity and the ceiling.
+ * @param input - Clock, the handler's agent activity, landing step and ceiling.
  * @param policy - Enable flag, grant increment and stall window.
  * @returns Extend with the new deadline, or kill — each with a reason.
  */
@@ -470,18 +493,25 @@ export function decideHandlerExtension(
   if (!policy.enabled) {
     return { action: "kill", reason: "progress extension disabled" };
   }
+  let activity: string;
   if (input.activity === undefined) {
-    return { action: "kill", reason: "no live agent run of this handler" };
+    if (input.landing === undefined) {
+      return { action: "kill", reason: "no live agent run of this handler" };
+    }
+    activity = `landing step ${input.landing.step} still running`;
+  } else {
+    const liveness = assessAgentLiveness(
+      { nowMs: input.nowMs, ...input.activity },
+      policy,
+    );
+    if (!liveness.live) return { action: "kill", reason: liveness.reason };
+    activity = `${liveness.activity} (within the ` +
+      `${policy.activityStallSeconds}s window)`;
   }
-  const liveness = assessAgentLiveness(
-    { nowMs: input.nowMs, ...input.activity },
-    policy,
-  );
-  if (!liveness.live) return { action: "kill", reason: liveness.reason };
   if (input.ceilingMs - input.nowMs <= 0) {
     return {
       action: "kill",
-      reason: `absolute ceiling reached despite ${liveness.activity}`,
+      reason: `absolute ceiling reached despite ${activity}`,
     };
   }
   return {
@@ -490,8 +520,7 @@ export function decideHandlerExtension(
       input.nowMs + policy.grantSeconds * 1000,
       input.ceilingMs,
     ),
-    reason: `${liveness.activity} (within the ` +
-      `${policy.activityStallSeconds}s window)`,
+    reason: activity,
   };
 }
 
@@ -554,21 +583,29 @@ export function decideProgressExtension(
   // decides *how far*, so a stalled run is never rescued by having runway.
   if (input.ceilingMs !== undefined) {
     const runwayMs = input.ceilingMs - Math.max(input.nowMs, input.deadlineMs);
+    // The finish deadline and the supervisor cap share this clamp. The label
+    // is what the `[progress-extension]` line names; absent, the wording stays
+    // the hard-cap sentence the #421 tests pin.
+    const finish = input.ceilingLabel === "the finish deadline";
+    const label = finish ? "the finish deadline" : "the run hard cap";
     if (runwayMs <= 0) {
       return {
         action: "kill",
         // A scheduled release, not a stall (Issue #424): both progress
         // signals held and only the wall clock stopped the run.
-        cause: "hard-cap",
-        reason: `run hard cap reached — no runway left before the supervisor ` +
-          `terminates this run, so stopping now to preserve work in progress`,
+        cause: finish ? "finish-deadline" : "hard-cap",
+        reason: finish
+          ? `finish deadline reached — no runway left before the finish ` +
+            `deadline, so stopping now to preserve work in progress`
+          : `run hard cap reached — no runway left before the supervisor ` +
+            `terminates this run, so stopping now to preserve work in progress`,
       };
     }
     if (grantedDeadlineMs > input.ceilingMs) {
       return {
         action: "extend",
         newDeadlineMs: input.ceilingMs,
-        reason: `${progressing} — grant clamped to the run hard cap: ` +
+        reason: `${progressing} — grant clamped to ${label}: ` +
           `${seconds(runwayMs)}s of runway left, not the full ` +
           `${policy.grantSeconds}s`,
       };

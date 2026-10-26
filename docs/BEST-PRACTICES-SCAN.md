@@ -139,6 +139,20 @@ matching bucket guide under
   [`### Cross-bucket: verbose gate output`](#cross-bucket-verbose-gate-output-check)
   below for the fixed id, the flag table, and the filing rule.
 
+### Behavioural security-test coverage
+
+A narrow static check, using the capability guidance, looks at three
+contracts only: resource or tenant authorisation, a sensitive-field
+update, and redaction at a log or outbound sink. A gap is a
+best-practices finding. It cites the production path, the tests
+inspected, and the uncovered contract. It is not proof of an exploit;
+the security scan keeps those. A missing file named security is not
+missing coverage. A test that was not executed is not a pass. A read
+failure is unknown, never a clean scan. An open security-scan issue
+for the same path is not filed again. The finding id is `BP-` plus a
+stable hash, the severity is low, and the usual cap and
+`best-practice-ignore:` marker apply.
+
 ### Rust bug-class checks
 
 [`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) carries
@@ -312,7 +326,7 @@ sequenceDiagram
 
     Main->>Filer: idle pass — nothing claimable
     Filer->>Filer: per-repo wrapper census<br/>(which repos already hold one?)
-    Filer->>Filer: 1/19 RNG picks best-practices<br/>(uniform over the registered templates)
+    Filer->>Filer: 1/20 RNG picks best-practices<br/>(uniform over the registered templates)
     Filer->>Template: buildIssueBody(repo)
     Template->>Picker: pickBucket(detected languages)
     Picker-->>Template: BucketPick (e.g. `rust` / `general` / `design`)
@@ -352,7 +366,7 @@ flowchart TD
 
     Idle[Idle trigger<br/>run_core: nothing claimable]
 
-    Idle --> Pick{1/19 RNG over the<br/>registered idle-task templates}
+    Idle --> Pick{1/20 RNG over the<br/>registered idle-task templates}
     Pick -- best-practices --> Bucket[pickBucket — SLOC-weighted<br/>across detected languages<br/>+ general and design at dominant weight]
     Bucket --> FileWrapper[File wrapper issue<br/>title: 'Run a best-practices scan'<br/>label: idle-task<br/>no milestone — skipMilestone: true]:::output
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
@@ -458,7 +472,7 @@ to that bucket's own run.
 | `react` | `*.tsx`/`*.jsx` importing `react` | [React docs](https://react.dev/), [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks) | [buckets/react.md](../prompts/best_practices/buckets/react.md) |
 | `java` | `*.java`, `pom.xml`, `build.gradle` | Effective Java, Google Java Style | [buckets/java.md](../prompts/best_practices/buckets/java.md) |
 | `html` | `*.html`, HTML literals, and the stylesheets a page loads (visual design anti-patterns) | WAI-ARIA, WCAG, HTML living standard, web.dev CLS | [buckets/html.md](../prompts/best_practices/buckets/html.md) |
-| `aws-cloudformation` | CFN templates (YAML/JSON with `AWSTemplateFormatVersion`) | [cfn-lint](https://github.com/aws-cloudformation/cfn-lint), [AWS CFN user guide](https://docs.aws.amazon.com/AWSCloudFormation/) | [buckets/aws-cloudformation.md](../prompts/best_practices/buckets/aws-cloudformation.md) |
+| `aws-cloudformation` | CFN templates (YAML/JSON with `AWSTemplateFormatVersion`) | [cfn-lint](https://github.com/aws-cloudformation/cfn-lint), [Checkov](https://github.com/bridgecrewio/checkov), [AWS CFN user guide](https://docs.aws.amazon.com/AWSCloudFormation/) | [buckets/aws-cloudformation.md](../prompts/best_practices/buckets/aws-cloudformation.md) |
 | `terraform` | `*.tf`, `*.tfvars` | [Terraform docs](https://developer.hashicorp.com/terraform/docs), [tflint](https://github.com/terraform-linters/tflint) | [buckets/terraform.md](../prompts/best_practices/buckets/terraform.md) |
 | `general` | Repo-level hygiene (no language-specific code) | [Open Source Guides](https://opensource.guide/), [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver.org/), [SPDX](https://spdx.org/licenses/), [SLSA](https://slsa.dev/) | [buckets/general.md](../prompts/best_practices/buckets/general.md) |
 | `design` | Design smells in any language (no language idioms, no repo hygiene) | [Refactoring, ch. 3](https://martinfowler.com/books/refactoring.html), [Refactoring catalogue](https://refactoring.guru/refactoring/smells) | [buckets/design.md](../prompts/best_practices/buckets/design.md) |
@@ -834,7 +848,7 @@ the two gates are checked separately.
 | `react` | ESLint or `deno lint` | `deno check` OR `tsc --noEmit` | Same rule as `typescript`. |
 | `java` | Checkstyle / SpotBugs / PMD | `mvn compile` OR `gradle compileJava` | None of the three linters has both a config file and a CI invocation, or neither compile-gate command is invoked. |
 | `html` | `htmlhint` or `html-validate` | _compile gate not meaningful — linter-only_ | No workflow invokes either linter. |
-| `aws-cloudformation` | `cfn-lint` | _compile gate not meaningful — linter-only_ | No workflow invokes `cfn-lint`. |
+| `aws-cloudformation` | `cfn-lint` and Checkov | _compile gate not meaningful — linter-only_ | No workflow invokes `cfn-lint`, Checkov, or either; the finding names which is missing. |
 | `terraform` | `tflint` (preferred) or `terraform validate` + `terraform fmt -check` | _compile gate not meaningful — linter-only_ | Neither linter path is invoked in CI. |
 
 The three buckets marked _linter-only_ (`html`, `aws-cloudformation`,

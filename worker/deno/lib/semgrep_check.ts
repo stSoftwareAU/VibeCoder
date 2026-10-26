@@ -12,7 +12,8 @@
  * The check is deliberately narrow so it never becomes the critical path:
  *
  *   - **Changed files only.** The branch's diff against the merge-base with
- *     the remote's default branch, plus uncommitted and untracked files. A
+ *     the remote's default branch, plus uncommitted and untracked files.
+ *     Shallow history is deepened before that merge-base is resolved. A
  *     docs-only change scans nothing and returns PASSED immediately.
  *   - **Same ruleset, pinned the same way.** `p/default`, and where a
  *     container runtime already holds the CI image the scan runs inside
@@ -20,9 +21,12 @@
  *     local pass predicts a CI pass. A PATH binary on a different version is
  *     used too, with the drift named in the output.
  *   - **Skip loudly, never silently.** No semgrep, no git repository, an
- *     unreachable rule registry or an over-deadline scan all return SKIPPED
- *     with the reason spelled out; `./quality.sh --strict` promotes every
- *     SKIPPED to FAILED. A tool error that is *not* one of those is FAILED —
+ *     unresolvable diff base, an unreachable rule registry or an
+ *     over-deadline scan all return SKIPPED with the reason spelled out.
+ *     An unresolvable diff base — `origin/HEAD` unset, history that cannot
+ *     be deepened, or a merge-base that still fails — is SKIPPED, never
+ *     PASSED (Issue #4181). `./quality.sh --strict` promotes every SKIPPED
+ *     to FAILED. A tool error that is *not* one of those is FAILED —
  *     absence of findings is never read as success.
  *   - **Inside the fleet container image, no semgrep is FAILED** (Issue
  *     #3726). The image bakes semgrep in, so its absence is an image fault.
@@ -35,8 +39,17 @@
 
 import { SEMGREP_IMAGE, SEMGREP_IMAGE_TAG } from "./pinned_actions.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** A binary version probe. Seconds. A timeout is not "semgrep is absent". */
+const SEMGREP_PROBE_TIMEOUT_MS = 10_000;
 import { runningInContainerImage } from "./container_stamp.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { ensureHistoryDepth } from "./git_history.ts";
+import type { Result } from "../types.ts";
 
 /** Status of the semgrep check. */
 export type SemgrepStatus = "PASSED" | "SKIPPED" | "FAILED";
@@ -167,6 +180,28 @@ export interface GitRunResult {
 /** Runs `git` with the given arguments inside the repository. */
 export type GitRunner = (args: string[]) => Promise<GitRunResult>;
 
+/**
+ * Deepen shallow history so two refs share an ancestor (Issue #4181).
+ *
+ * The module's {@link GitRunner} is a different type from `git_history.ts`,
+ * so the real {@link ensureHistoryDepth} is injected here rather than driven
+ * through that runner. Tests supply a fake.
+ */
+export type EnsureHistory = (
+  refs: string[],
+  options: { cwd?: string },
+) => Promise<Result<void, Error>>;
+
+function defaultEnsureHistory(
+  refs: string[],
+  options: { cwd?: string },
+): Promise<Result<void, Error>> {
+  return ensureHistoryDepth(
+    refs,
+    options.cwd === undefined ? {} : { cwd: options.cwd },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Changed-file selection
 // ---------------------------------------------------------------------------
@@ -223,24 +258,48 @@ export function makeGitRunner(scriptDir: string): GitRunner {
 
 /**
  * Resolve the revision to diff against: the merge-base with the remote's
- * default branch when it can be resolved, else `HEAD` (which still catches
- * everything uncommitted). Never a hardcoded branch name — the remote's own
- * HEAD is the source of truth.
+ * default branch, after deepening shallow history so the ancestor is present.
+ *
+ * Returns a skip reason when `origin/HEAD` is unset, deepening fails, or
+ * `merge-base` still fails. There is no `HEAD` fallback — that diff sees only
+ * uncommitted files and a clean branch would be reported PASSED without a
+ * scan (Issue #4181). Never a hardcoded branch name — the remote's own HEAD
+ * is the source of truth.
  */
-async function resolveDiffBase(git: GitRunner): Promise<string> {
+async function resolveDiffBase(
+  git: GitRunner,
+  scriptDir: string | undefined,
+  ensureHistory: EnsureHistory,
+): Promise<{ base: string } | { skipReason: string }> {
   const remoteHead = await git([
     "rev-parse",
     "--abbrev-ref",
     "refs/remotes/origin/HEAD",
   ]);
-  if (remoteHead.exitCode !== 0) return "HEAD";
   const remoteRef = remoteHead.stdout.trim();
-  if (!remoteRef) return "HEAD";
+  if (remoteHead.exitCode !== 0 || !remoteRef) {
+    return {
+      skipReason: "origin/HEAD is unset, so the diff base cannot be resolved",
+    };
+  }
+
+  const deepened = await ensureHistory([remoteRef, "HEAD"], { cwd: scriptDir });
+  if (!deepened.ok) {
+    return {
+      skipReason:
+        `could not deepen history before resolving the diff base: ${deepened.error.message}`,
+    };
+  }
 
   const mergeBase = await git(["merge-base", remoteRef, "HEAD"]);
   const sha = mergeBase.stdout.trim();
-  if (mergeBase.exitCode !== 0 || !sha) return "HEAD";
-  return sha;
+  if (mergeBase.exitCode !== 0 || !sha) {
+    return {
+      skipReason:
+        `merge-base with ${remoteRef} failed after deepening, so the diff base cannot be resolved`,
+    };
+  }
+  return { base: sha };
 }
 
 /**
@@ -250,15 +309,28 @@ async function resolveDiffBase(git: GitRunner): Promise<string> {
  * to scan.
  *
  * Returns null when `scriptDir` is not a git work tree, which the caller
- * reports as a loud SKIPPED.
+ * reports as a loud SKIPPED. A `{ skipReason }` result means the diff base
+ * could not be resolved; that is also SKIPPED, never a scan against `HEAD`.
  */
 export async function collectChangedFiles(
   git: GitRunner,
-): Promise<ChangedFileSet | null> {
+  options: {
+    /** Repository the deepen step runs in. */
+    scriptDir?: string;
+    /** Inject the deepen step. Defaults to {@link ensureHistoryDepth}. */
+    ensureHistory?: EnsureHistory;
+  } = {},
+): Promise<ChangedFileSet | { skipReason: string } | null> {
   const insideWorkTree = await git(["rev-parse", "--is-inside-work-tree"]);
   if (insideWorkTree.exitCode !== 0) return null;
 
-  const base = await resolveDiffBase(git);
+  const resolved = await resolveDiffBase(
+    git,
+    options.scriptDir,
+    options.ensureHistory ?? defaultEnsureHistory,
+  );
+  if ("skipReason" in resolved) return { skipReason: resolved.skipReason };
+  const base = resolved.base;
 
   const diff = await git([
     "diff",
@@ -385,18 +457,27 @@ const TIMED_OUT: SemgrepRunResult = {
   timedOut: true,
 };
 
-/** Spawn a command with the scan deadline applied. */
-async function spawnWithDeadline(
+/**
+ * Spawn a command with the scan deadline applied. Shared with
+ * `checkov_check.ts` (Issue #3972), which passes its own `deadlineMs`; the
+ * default is the semgrep deadline, so semgrep's behaviour is unchanged. When
+ * `env` is given the child gets exactly that environment (`clearEnv`) instead
+ * of the caller's; semgrep passes none and still inherits.
+ */
+export async function spawnWithDeadline(
   binary: string,
   args: string[],
   cwd: string,
+  deadlineMs = SEMGREP_DEADLINE_MS,
+  env?: Record<string, string>,
 ): Promise<SemgrepRunResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SEMGREP_DEADLINE_MS);
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
   try {
     const command = new Deno.Command(binary, {
       args,
       cwd,
+      ...(env === undefined ? {} : { env, clearEnv: true }),
       stdout: "piped",
       stderr: "piped",
       signal: controller.signal,
@@ -418,21 +499,26 @@ async function spawnWithDeadline(
   }
 }
 
-/** Run `<binary> <probeArgs>` and return its stdout, or null if it cannot run. */
-async function probe(
+/**
+ * Run `<binary> <probeArgs>` and return its stdout, or null if it cannot run.
+ * Shared with `checkov_check.ts` (Issue #3972) so both stages probe the same way.
+ */
+export async function probe(
   binary: string,
   probeArgs: string[],
+  timeoutMs: number = SEMGREP_PROBE_TIMEOUT_MS,
 ): Promise<string | null> {
   try {
-    const command = new Deno.Command(binary, {
+    const result = await commandOutputWithTimeout(binary, {
       args: probeArgs,
       stdout: "piped",
       stderr: "null",
+      timeoutMs,
     });
-    const result = await command.output();
     if (!result.success) return null;
     return new TextDecoder().decode(result.stdout).trim();
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return null;
   }
 }
@@ -502,6 +588,11 @@ export interface SemgrepCheckOptions {
   /** Inject a git runner. */
   git?: GitRunner;
   /**
+   * Deepen shallow history before the diff base is resolved. Tests inject a
+   * fake; the default calls {@link ensureHistoryDepth}.
+   */
+  ensureHistory?: EnsureHistory;
+  /**
    * Environment lookup used to decide whether this run is inside the fleet
    * container image; defaults to the process environment.
    */
@@ -547,8 +638,8 @@ function formatFindings(
  * Run the semgrep quality check over the branch's changed files.
  *
  * Pipeline:
- *   1. Collect changed files. Not a git repository → SKIPPED; nothing
- *      scannable → PASSED.
+ *   1. Collect changed files. Not a git repository → SKIPPED; an unresolvable
+ *      diff base → SKIPPED (never PASSED); nothing scannable → PASSED.
  *   2. Detect an invocation. None → SKIPPED on a host, but FAILED inside the
  *      fleet container image, which bakes semgrep in (Issue #3726). Registry
  *      and deadline outcomes below stay SKIPPED in both places.
@@ -563,10 +654,14 @@ export async function runSemgrepCheck(
   options: SemgrepCheckOptions = {},
 ): Promise<SemgrepCheckResult> {
   const git = options.git ?? makeGitRunner(scriptDir);
-  const changed = await collectChangedFiles(git);
+  const changed = await collectChangedFiles(git, {
+    scriptDir,
+    ensureHistory: options.ensureHistory,
+  });
   if (changed === null) {
     return skipped("not a git repository — no changed-file set to scan");
   }
+  if ("skipReason" in changed) return skipped(changed.skipReason);
   if (changed.files.length === 0) {
     return {
       status: "PASSED",

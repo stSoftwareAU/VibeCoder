@@ -13,6 +13,57 @@ canonical operator manual under [`docs/`](docs/) for the full detail.
 
 ## Design Principles
 
+### An assigned issue is completed, never handed back
+
+**The Vibe Coder exists to finish work, not to create work for humans.** The
+owner assigns a batch of issues and checks in a day or so later expecting every
+one of them done (owner, 23 October 2026). Applying `work-on` is the approval
+to complete that issue; nothing more from a person is needed or wanted.
+
+- **Only "done" is success.** A merged PR that meets every acceptance criterion
+  is the only good outcome. Handing an issue back to a human (`needs-human`,
+  "analysis-only" on an implementation issue, a request for a decision) or
+  delivering only the easy parts is a **failure of the Vibe Coder**. It is
+  counted and fixed as a defect, never treated as a resolution.
+- **No partial PRs, no follow-up tickets.** A PR is raised only when every
+  criterion is met. A run that has not finished keeps working; if it runs out
+  of time, it may push a **draft** PR marked `Part of #N` and the worker
+  carries on with the same issue automatically until it is complete. It never
+  files a new issue for the remainder: a new issue needs a human to read and
+  approve it, and the original issue was already approved. "You ask for a
+  hamburger, you don't get two buns and a follow-up ticket for the patty."
+- **"Too large" is a planning defect, not an exit.** An approved issue,
+  especially one grill-me or planning wrote, that cannot be completed is a bug
+  in the Vibe Coder (owner, 24 October 2026). Planning and grill-me therefore
+  write only criteria the implementing run can meet inside the repository, and
+  split anything bigger than one PR. A step only a person can take (a
+  production deploy, a reading days later) is recorded as an owner step, never
+  as a criterion. The issue run has no escape hatch: it finishes, or it ends on
+  one of the defined markers (already resolved, blocked on an open issue,
+  deferred for data, sent to planning) and is otherwise retried.
+- **A crash is not an answer.** A run that failed, made no model turn, or
+  stopped early is retried on the normal ladder. It is never read as "nothing
+  to do".
+- **Every PR is armed for auto-merge.** A PR is armed when it is raised and
+  stays armed (owner, 25 October 2026). It merges once it has an approving
+  review and CI is green; nothing else holds it. The worker never disarms a PR
+  or skips arming it because of a finding or a label. A PR left unarmed does
+  not merge even after it is approved, and every late merge causes more
+  conflicts (Issue #4291).
+- **Requirements come from the owner.** A new gate, check, evidence
+  obligation or rule that can fail or hold back a run that delivered its issue
+  works against this principle. Fleet tooling (review learning, idle-task
+  audits) never invents one from its own findings. It proposes removing or
+  rewording guidance that causes mistakes, or files a worker defect.
+- **A failure is recorded, never parked.** Every failed run writes its
+  evidence on the issue and keeps `failed-once`, so the failure is visible and
+  countable. It is never relabelled as a hand-off, an analysis, or a partial
+  success. The worker never applies `failed` and never hands an issue to a
+  human after repeated failures (Issue #4158): the escalating cooldown
+  (2 h → 6 h → 24 h) paces the retries, at most one a day, and the issue stays
+  queued until it is done. An issue stuck in that loop is a Vibe Coder defect
+  to fix, not an issue to give up on.
+
 ### Fully unattended operation and self-healing
 
 **VibeCoder must run fully automatically on unattended machines and self-heal
@@ -582,6 +633,26 @@ suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
 [`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
+### No PR until every acceptance criterion is met
+
+"Partially completed" is never a resolution (Issue #4146). A run whose PR
+summary leaves any criterion `partial`, `missing` or unassessed raises **no
+PR**: the unmet-criteria gate (`worker/deno/lib/unmet_criteria_gate.ts`) sends
+the agent back in the same run to finish the work, round after round while
+each one makes progress, and a run that still cannot finish fails as
+`criteria_unmet` with its branch kept for the next run. No follow-up issue is
+ever filed for the remainder — the issue was approved to be done, and a new
+issue would need a human to read and approve it — and nothing is labelled
+`needs-human`. **Incomplete PRs are drafts**, so CI and code review are not
+spent on them: a PR the agent raised itself with criteria unmet, or a run that
+**times out**, keeps a draft `Part of #N` PR
+(`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so the
+next run resumes the branch and finishes. Only once every criterion is met is
+the draft marked ready with `Closes #N`, and squash auto-merge is armed in the
+same step so it merges as soon as possible. Whether the run was degraded
+changes none of this. See
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run).
+
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)
 
 The fleet runs across machines, each authenticated as a different GitHub
@@ -900,11 +971,21 @@ late: the deploy/publish workflows have already fired. Enforcement is
   `stale`, or a value GitHub adds in future — fails closed instead of falling
   through to `passed`.
 - **Zero checks is not green.** A head commit with no check runs
-  and no commit statuses reports `no_checks`, not `passed`; the gate blocks and
+  and no commit statuses reports `no_checks`, not `passed`, unless a failed
+  GitHub Actions suite applies (next bullet); the gate blocks and
   the automated path escalates to a human. Only the explicit
   `--allow-no-checks` operator override on `merge-if-checks-passed` relaxes it,
   and that command is itself gated on the monitored-repo allowlist and PR
   authorship.
+- **A failed Actions suite is red even with no check run.** A completed
+  `github-actions` check suite with no check run of its own whose conclusion
+  is off the passing allowlist
+  (typically `startup_failure`, which creates no check run) makes
+  `determineCiStatus` return `failed`. This is checked before the `no_checks`
+  return, so the `--allow-no-checks` override never relaxes it. Suites from
+  other apps and unfinished suites are ignored. The suites come from GraphQL
+  `checkSuites` (REST fallback `commits/{sha}/check-suites`), and the review
+  gate skips such a PR as `ci-failed`.
 - **The merge is pinned to the checked commit.** The gate reports
   the head SHA it read the checks for, and `directMergePr()` merges with
   `gh pr merge --squash --match-head-commit <sha>`, or with `--merge` for a
@@ -925,12 +1006,12 @@ late: the deploy/publish workflows have already fired. Enforcement is
 - **No post-merge re-run of required checks** on the default branch.
 - **Hands-off landing, loud when blocked.** Merge-path precedence is
   fixed — native auto-merge first, direct merge only when native auto-merge is
-  refused on an unprotected branch — so the worker never races a repo's own
-  `auto-merge.yml`. `handleMergeAttempt()` in
+  refused on an unprotected branch or switched off on the repository — so the
+  worker never races a repo's own `auto-merge.yml`. `handleMergeAttempt()` in
   `worker/deno/lib/merge_block_escalation.ts` then acts on the outcome: a
   behind branch is updated so its checks re-run, and a PR that cannot be landed
-  gets an explanatory comment plus `needs-human`. A merge failure is never
-  swallowed. Review requests stay informational; only branch protection can
+  is logged and retried next cycle — never handed to a human with a comment or
+  `needs-human` (Issue #4304). A merge failure is never swallowed. Review requests stay informational; only branch protection can
   require an approval.
 - **One approval before the default branch.** Setup's `repo-settings-harden`
   makes every monitored repository's default branch require one approving
@@ -1413,30 +1494,29 @@ worker defer internal-dependency fixes by filing follow-up issues.
   open a PR against; if unreachable, treat it as external (defer is then
   legitimate). The rule is general to every internal dependency and **recurses to
   transitive internal deps** — fix wherever the root cause actually lives.
-- **Defer via a follow-up issue + `needs-human` only** for: external
-  (non-`stSoftwareAU/*`) deps, genuine human-only decisions, or a cross-repo fix
-  genuinely too big for one run — and even then the worker must at minimum open a
-  **draft/WIP PR in the dependency repo**, never punt the whole fix to an issue.
-  "Too big for one run" is almost never a valid reason to *fully* defer.
+- **External (non-`stSoftwareAU/*`) dependency → work around it in the repo
+  being worked on** — pin the last good version, replace the package, or vendor
+  and patch it — and record the upstream defect in the PR summary. A cross-repo
+  fix genuinely too big for one run still opens at minimum a **draft/WIP PR in
+  the dependency repo**. No run defers to `needs-human` or a follow-up issue
+  (Issue #4304).
 
-The behaviour lives in the `prompts/issue/` and `prompts/coding_guidelines/`
-escape-hatch sections. The actual cross-repo PR plumbing, the one-follow-up
+The behaviour lives in the `prompts/coding_guidelines/` internal-dependency
+section. The actual cross-repo PR plumbing, the one-follow-up
 dedup cap, and the release-gating boundary are sibling issues under parent.
 
 ### Escape hatch for out-of-scope work
 
-When a Claude run is genuinely too large or out of scope — a PR comment
-requesting a multi-day refactor, a CI failure caused by missing infrastructure,
-an issue whose scope exploded after refinement — the prompts
-(`prompts/coding_guidelines/`, `prompts/pr_feedback/`, `prompts/ci_fix/`,
-`prompts/issue/`) instruct Claude to hand off cleanly instead of looping to the
-timeout:
-
-1. Open a follow-up issue capturing the analysis.
-2. Post **one** message naming the follow-up issue (e.g.
-   `stSoftwareAU/foo#NNN`), explaining briefly why the original cannot be
-   resolved in-line, and mentioning `needs-human` if a person should triage.
-3. Exit cleanly — do not retry the original change.
+The escape hatch was a hand-off: a run that judged its task out of scope
+filed a follow-up issue, posted one message naming it (mentioning
+`needs-human` if a person should triage) and exited. The shared
+`prompts/coding_guidelines/` and `prompts/pr_feedback/` no longer offer it
+(Issue #4304): the owner's rule (25 October 2026) is that the Vibe Coder never
+passes work back to a person and files no follow-up issues for leftover work.
+A PR-feedback run decides a product choice itself with the assumption stated,
+or rebuts a request with reasons; the issue run lost its hatch earlier
+(Issue #4227). The worker-side detection below stays as a defence, because a
+model can still write a hand-off message and file the issue it names.
 
 **Worker-side detection.** `worker/deno/lib/escape_hatch.ts` provides
 `detectEscapeHatch()`, which inspects the message body for a same-repo issue
@@ -1445,8 +1525,8 @@ issue`,
 `escape hatch`, etc.). When the escape hatch is detected,
 `pr_feedback_processor.ts` treats the run as a successful resolution: it posts
 Claude's own message as the PR reply (rather than the neutral "could not
-identify a code change" fallback), records the follow-up issue reference and
-`needs-human` flag in the run summary log, and returns a summary of the form
+identify a code change" fallback), records the follow-up issue reference in
+the run summary log, and returns a summary of the form
 `PR #N feedback handed off via escape
 hatch (org/repo#NNN)`.
 
@@ -1689,7 +1769,7 @@ guides:
 **CI-gate configuration check (linter + compile).** For language-targeted runs
 (bucket != `general`), the template inspects `.github/workflows/*.yml` for the
 standard linter invocation (Clippy, ESLint, Checkstyle, htmlhint, actionlint,
-cfn-lint, tflint) AND — for the four buckets where it is meaningful (`rust`,
+cfn-lint + Checkov, tflint) AND — for the four buckets where it is meaningful (`rust`,
 `typescript`, `react`, `java`) — the standard compile/syntax gate
 (`cargo
 check`/`cargo build`, `deno check`/`tsc --noEmit`,
@@ -2425,20 +2505,27 @@ never overlap:
   policy on the honour system — the managed repo decided whether the worker's
   own embargo applied. `worker/deno/lib/bump_age_audit.ts` now reads the
   versions the script actually wrote (from the bump diff), resolves each
-  publish time from npm/JSR, and reverts the bump as `rejected_by_quarantine`
-  when one landed inside the window. Internal `@stsoftware/*` packages are
-  exempt (0h) and an age that cannot be resolved is logged as unverified
-  rather than blocking, so an offline host still bumps.
+  publish time from npm, JSR, or crates.io, and reverts the bump as
+  `rejected_by_quarantine` when one landed inside the window. Internal
+  `@stsoftware/*` packages are exempt (0h). An npm or JSR age that cannot be
+  resolved is logged as unverified rather than blocking, so an offline host
+  still bumps. A crates.io age that cannot be resolved defers the bump to the
+  next cycle (Issue #4325): the pin is not adopted unchecked, and it is not
+  refused for good.
 
   Two failure modes, two directions. A release whose publish
-  time a registry would not serve **fails open** — an offline or rate-limited
-  host must not turn every bump into a rejection. A dependency change the
-  scanner cannot recognise at all **fails closed**: an open-ended range or tag
-  (`>=1.0.0`, `*`, `latest`) names no single release, a foreign ecosystem's
-  manifest (`Gemfile`, `go.mod`, `Cargo.toml`, `requirements.txt`) has no
-  publish time this worker can resolve, and an unreadable diff shows nothing at
-  all. The first means the embargo looked and could not see; the second means it
-  never got to look, and silence must not read as compliance.
+  time npm or JSR would not serve **fails open** — an offline or rate-limited
+  host must not turn every bump into a rejection. crates.io is the exception:
+  an unreachable crates.io API defers that bump until the next cycle. A
+  dependency change the scanner cannot recognise at all **fails closed**: an
+  open-ended range or tag (`>=1.0.0`, `*`, `latest`) names no single release,
+  a foreign ecosystem's manifest (`Gemfile`, `go.mod`, `requirements.txt`) has
+  no publish time this worker can resolve, and an unreadable diff shows nothing
+  at all. `Cargo.lock` and `Cargo.toml` pins are crates.io releases: the
+  worker reads each version's `created_at` and holds a young one back the same
+  way it holds back a young npm release. The first means the embargo looked
+  and could not see; the second means it never got to look, and silence must
+  not read as compliance.
   `worker/deno/lib/bump_diff_scan.ts` draws that line, and covers the shapes the
   first parser missed — range specifiers, `deno.lock` and the npm lockfiles.
 
@@ -2606,7 +2693,7 @@ and claim handler.
 - [`worker/deno/lib/idle_task_claim_handler.ts`](worker/deno/lib/idle_task_claim_handler.ts)
   — Routes claimed `idle-task` issues to the template's `runTask()`.
 - [`worker/deno/lib/idle_task_templates/`](worker/deno/lib/idle_task_templates/)
-  — Per-template implementations. Nineteen production templates:
+  — Per-template implementations. Twenty production templates:
   `security_scan_template.ts` (#1, security audit), `best_practices_template.ts`
   (#2, bucket-scoped best-practices review — see
   [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md)),
@@ -2663,9 +2750,14 @@ and claim handler.
   tool the gate skips with a warning while CI installs and runs it — the drift
   that let NEAT-AI-core PR 597 pass locally and fail in CI; suppressed for a
   tool `container/tools.json` already pins for that repository — see
-  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md)).
-  The idle-task filer picks uniformly at random (1/19 each) between the
-  nineteen on every idle pass.
+  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md));
+  and `ponytail_debt_template.ts` (#20, native weekly report that lists every
+  `// SIMPLE-ON-PURPOSE:` marker with its path, line, ceiling and upgrade
+  condition, flags a marker with no `upgrade when`, and posts or refreshes one
+  ledger issue without committing or opening a pull request — see
+  [`docs/PONYTAIL-DEBT-SCAN.md`](docs/PONYTAIL-DEBT-SCAN.md)).
+  The idle-task filer picks uniformly at random (1/20 each) between the
+  twenty on every idle pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
@@ -2681,7 +2773,7 @@ claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
 full canonical GitHub label set to the target repo, configures the
-default-branch protection "wall", seeds all nineteen idle-task wrappers
+default-branch protection "wall", seeds all twenty idle-task wrappers
 in the target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
@@ -2710,7 +2802,7 @@ in the target repo, then comments and closes the add-repo issue.
   (through `escalateToHuman`), and the repo is **not** added.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
-  is delegated to the nineteen idle tasks. Visibility gating (which idle checks fire
+  is delegated to the twenty idle tasks. Visibility gating (which idle checks fire
   on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only
@@ -2759,7 +2851,6 @@ backstop) pick the issue up immediately and keeps the recovery scan quiet.
 copy-paste a bespoke unassign block into a new processor. The helper centralises
 the try/log/return-boolean shape; every self-assigning processor
 ([`grill_me_processor.ts`](worker/deno/lib/grill_me_processor.ts) —,
-[`clarity_phase.ts`](worker/deno/lib/clarity_phase.ts),
 [`planning_processor.ts`](worker/deno/lib/planning_processor.ts),
 [`refinement_processor.ts`](worker/deno/lib/refinement_processor.ts),
 [`question_processor.ts`](worker/deno/lib/question_processor.ts),
@@ -2774,47 +2865,44 @@ See
 [`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#-1-worker-run-loop-and-process-lifecycle)
 for where this sits in the claim/heartbeat lifecycle.
 
-### Analysis-only / no-PR hand-off for `work-on`
+### Analysis-only / no-PR issues under `work-on`
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
 deliverable is analysis — a gap analysis, coverage matrix, or
 "populate the issue" recommendation posted as a comment — produces no PR, so the
 "no PR" outcome reads as "not done" and the issue is re-picked-up and re-run
 indefinitely (the loop, which re-posted the same matrix plus an "unable to
-make code changes" note about five times). The worker now detects an
-analysis-only / no-PR issue from **two signals** and hands it off cleanly to
-`needs-human`:
+make code changes" note about five times).
 
-- **(a) Up-front body marker** — `<!-- analysis-only -->` in the issue body. The
-  worker hands off **before** cloning the repo or running Claude.
-- **(b) Post-run signal** — Claude made no code changes but produced useful text
-  (the existing "unable to make code changes" partial-answer path). The worker
-  posts the partial answer, then hands off.
+An issue whose body carries `<!-- analysis-only -->` (or `<!-- no-pr -->`) is
+run like any other: the analysis is the deliverable, so the agent must produce
+it. A run that ends with no code changes and useful text posts the analysis
+and **closes the issue as completed** (Issue #4298). It used to be handed to a
+human to read and decide; that hand-off — up front before Claude ran, and after
+the run — is gone, because handing an issue back is a failure, not an
+outcome. An approved issue without the marker is retried as not finished
+instead (Issue #4227). The loop guard for the remaining case (no changes
+**and** no useful output) is the `failed-once` record and its escalating
+cooldown in [`label_failure.ts`](worker/deno/lib/label_failure.ts), so
+`work-on` re-runs the same issue at most once a day, and never parks it
+(Issue #4158). The image gate still wins: when an untrusted author's image sat
+in front of an agent that reported the issue already fixed, nothing it said
+closes the issue, marked or not (Issue #1385).
 
-Both route through the shared
-[`escalateToHuman`](worker/deno/lib/needs_human_escalation.ts) chokepoint, which
-applies `needs-human` + a paired explanation comment and (via
-`stripDiscoveryLabelsOnEscalation`) drops the `work-on` label server-side so the
-issue leaves discovery. A clean hand-off is **not** a `failed` outcome — the task
-did its job. The fallback loop guard for the remaining case (no changes **and**
-no useful output) is the existing `failed-once` → `failed` / `needs-human` ladder
-in [`label_failure.ts`](worker/deno/lib/label_failure.ts), so `work-on` never
-re-runs the same issue indefinitely.
-
-**Implementation:** [`analysis_only_handoff.ts`](worker/deno/lib/analysis_only_handoff.ts)
-(`hasAnalysisOnlyMarker`, `handOffAnalysisOnly`), wired into
-[`issue_worker.ts`](worker/deno/lib/issue_worker.ts) (signal a) and
+**Implementation:** [`analysis_only.ts`](worker/deno/lib/analysis_only.ts)
+(`hasAnalysisOnlyMarker`) and
 [`phases/handle_no_changes_phase.ts`](worker/deno/lib/phases/handle_no_changes_phase.ts)
-(signal b). See
+(`finishOrRetry`). See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
-Analysis-only / no-PR hand-off for the operator detail.
+Analysis-only / no-PR issues for the operator detail.
 
 ### Blocked on a dependency is a deferral, not a closure
 
-A `work-on` run that produces no code changes has three possible endings, not
-two. "Already complete" closes the issue; "analysis-only" hands it to a human.
-The third — the run read the code and found the work genuinely blocked on
-another issue — had no ending at all, so it fell through to the analysis-only
+A `work-on` run that produces no code changes can close as already complete,
+close an explicitly marked analysis-only issue with its analysis (Issue #4298),
+defer on an open dependency, or retry as not finished (Issue #4227).
+Historically, a run that read the code and found the work genuinely blocked
+on another issue had no ending, so it fell through to the analysis-only
 branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
 "## Blocked: `creature_validate` …" answer was described as
 "analysis-only / recommendation-only", escalated to `needs-human`, and closed as
@@ -2825,17 +2913,16 @@ changes" either — a `declared_handoff` phase runs after execute and before
 `bump_deps` / the quality gate / completion. On that path a `## Blocked:`
 heading defers only when its `Depends on` or `Blocked by` line names a
 dependency the worker reads as open. A closed dependency, a missing `state`,
-or a lookup that fails does not defer; the committed run hands off to a
-human (`needs-human`) and raises no PR. A dependency filed during this run
+or a lookup that fails does not defer; the committed run is retried as not
+finished and raises no PR (Issue #4227). A dependency filed during this run
 does not defer either, on either path: the worker reads that from the
 issue, when its author is this host's login or another fleet author and
 its `createdAt` is at or after the whole run started. A later execute
-attempt does not move that start. A committed run hands off to a human and
-raises no PR; a no-changes run hands off the same way, straight to the
-analysis-only hand-off — bypassing the usage-limit and interrupted-run
-retries, the described-code-change retry, and the short-output failure,
-each of which would otherwise return a `failure` with no `needs-human` and
-leave the next run to defer onto a follow-up nothing picks up (Issue #3146). Wording such as "out of scope" does not turn an
+attempt does not move that start. A committed run is retried and raises no
+PR; a no-changes run is retried the same way, straight away — bypassing the
+usage-limit and interrupted-run checks, the described-code-change retry, and
+the short-output failure, so the next run never defers onto a follow-up nothing
+picks up (Issues #3146, #4227). Wording such as "out of scope" does not turn an
 older open dependency into that case. A bullet, or a heading with no
 `Depends on` / `Blocked by` line, still continues and raises its PR. A time
 deferral or a planning marker is still honoured after a commit, so the worker
@@ -2876,9 +2963,9 @@ References quoted inside code fences are ignored, matching
 marker naming the dependency, and a run that reports the *same* dependency again
 does not defer a second time — the gate plainly did not hold (the dependency
 closed and the work is still reported blocked, or the record was lost), and
-re-deferring would spend a full agent run on every scan. The repeat falls
-through to the analysis-only hand-off, so a human sees it; it is still never
-closed. The marker is looked up in the issue's full comment thread (fetched via
+re-deferring would spend a full agent run on every scan. The repeat returns
+a not-finished failure on the normal retry ladder; it is still never closed
+(Issue #4227). The marker is looked up in the issue's full comment thread (fetched via
 the GitHub client, every author), not the budgeted prompt comments (20
 comments / 12,000 characters): on a busy issue that budget could drop the
 marker, so the guard never fired and the same dependency was re-deferred on
@@ -2899,7 +2986,9 @@ flowchart TD
     D --> G["Dependency gate skips it<br/>until the dependency closes"]
     B -- no --> C{"Verified already resolved,<br/>citing a commit / PR?"}
     C -- yes --> X["Close as complete,<br/>evidence in the comment"]
-    C -- no --> A["Analysis-only hand-off<br/>(needs-human)"]
+    C -- no --> A{"Issue marked analysis-only?"}
+    A -- yes --> H["Post the analysis,<br/>close as completed (#4298)"]
+    A -- no --> R["Not finished: retry on the failure ladder (#4227)"]
 ```
 
 ### A time-gated analysis run is parked, not escalated (Issue #2873)
@@ -2923,7 +3012,7 @@ then re-runs it — the same single-issue suppression the dependency wait uses,
 never a whole repo or tier. After three deferrals on one issue
 (`MAX_TIME_DEFERRALS`) the next marker is not honoured: the worker posts
 `## Deferral limit reached` with the deferral history and falls back to the
-existing analysis-only `needs-human` hand-off (#2834) instead. Only a time
+not-finished retry on the normal failure ladder (#4227) instead. Only a time
 wait is supported; there is no run-count variant.
 
 **Implementation:** [`worker_record_block.ts`](worker/deno/lib/worker_record_block.ts)
@@ -3034,9 +3123,8 @@ deterministically like `vibe-cross-repo-pr` — with the broadened keyword list
 kept as a fallback for agents that phrase it in prose.
 
 **Closing requires cited evidence.** A commit and/or PR reference, plus (on the
-marker path) how the fix was verified. Without it the run falls back to the
-analysis-only hand-off, which is deliberately tighter than the keyword path it
-replaces: that path closed on a plain "already fixed" claim. The evidence is
+marker path) how the fix was verified. Without it the run is retried as not
+finished, which is deliberately tighter than the keyword path it replaces: that path closed on a plain "already fixed" claim. The evidence is
 recorded in the close comment, so the closure is auditable from the issue alone,
 and it is what keeps this from recreating the failure of closing an issue by
 inference from a PR that merely references it — the agent must verify the code
@@ -3112,21 +3200,18 @@ permanently-red test stops being read.
 case is `timeout`), **work done, summary incomplete** (`summary_incomplete`), and
 everything the existing outcomes already covered. A run that raised a mergeable
 PR is never recorded `failure` for a summary-format shortfall alone, and its
-issue stays attached to that PR instead of going back in the queue. With **no**
-PR the gate blocks exactly as before: that is what a pre-PR gate is for.
+issue stays attached to that PR instead of going back in the queue.
 
 The run's first summary-rule block gets the one in-run recovery turn whether
 or not the agent already raised the PR itself from inside the execute phase
 (Issue #3163): a PR the agent raised itself is not finalised or auto-merged
 until that turn has run. A block that survives that turn — the run's
-second — finalises an existing PR as before, unless the claim check alone is
-still blocking on the summary's own sentences (a doc finding never qualifies,
-since that turn can only rewrite the summary): that block first gets one
-summary-only correction turn (Issue #3324), and only a block that survives it
-finalises the PR. A standing Standards violation on the branch's own lines is
+second — does not fail the run (Issue #4234). The pull request is raised or
+finalised and auto-merge stays armed, and whatever remains is one comment
+for the reviewer. A standing Standards violation on the branch's own lines is
 a defect in the change, not a documentation shortfall, so that recovery turn
 may fix the code for it, and an existing PR finalised with one still standing
-is labelled `standing-violation` rather than auto-merged (Issue #3382).
+has it posted on the PR for the next run to fix (Issues #3382, #4291).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

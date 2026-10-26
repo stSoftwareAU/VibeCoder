@@ -179,7 +179,13 @@ export function getBlockingLabelReasons(
 
   for (const label of labels) {
     if (label === config.failedLabel) {
-      reasons.push({ label, reason: "permanently failed", isBlocking: true });
+      // Issue #4158: the worker no longer applies `failed` and strips a
+      // leftover one on its next scan, so it never blocks discovery.
+      reasons.push({
+        label,
+        reason: "leftover failed label — stripped on the next scan",
+        isBlocking: false,
+      });
     } else if (label === config.failedOnceLabel) {
       reasons.push({
         label,

@@ -289,12 +289,16 @@ export async function releaseMilestoneBranchRefusalLabels(
       // Only the comment AUTHOR is authenticated: a failure record is
       // plain Markdown anyone who can comment on the repository may write,
       // and here a forged one REMOVES a `failed` label and puts the issue
-      // back in the queue. Filter every comment through the fleet identity
-      // before it is read as a record (the `alert_dedup_authors.ts`
-      // chokepoint). Fail direction: an unresolvable fleet set discards
-      // every comment, so no record is found and the label is kept.
+      // back in the queue. The failure-record heading is applied first,
+      // then the fleet identity (the `alert_dedup_authors.ts` chokepoint),
+      // so the discard log names a forged record and not an ordinary
+      // comment (Issue #4357). Fail direction: an unresolvable fleet set
+      // discards every record, so no record is found and the label is kept.
+      const records = parseCommentRows(raw).filter((row) =>
+        FAILURE_RECORD_RE.test(row.body)
+      );
       const rows = await selectFleetAuthoredComments(
-        parseCommentRows(raw),
+        records,
         `milestone-branch refusal release ${repo}#${issueNumber}`,
         options.authorOptions ?? {},
         log,

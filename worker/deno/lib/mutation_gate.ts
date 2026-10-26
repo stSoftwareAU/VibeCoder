@@ -55,6 +55,14 @@ export type MutationCheckResult =
   }
   | { kind: "error"; reason: string };
 
+/**
+ * Worker-written opening of a runner `error` reason when the run's own
+ * temporary directory could not be created (Issue #4127): a fault of this
+ * host, not a verdict on the code under check.
+ */
+export const MUTATION_TEMP_DIR_UNWRITABLE =
+  "the mutation check's temporary directory is not writable";
+
 export interface MutationGateVerdict {
   blocked: boolean;
   reason: string;
@@ -62,6 +70,11 @@ export interface MutationGateVerdict {
   exempted: Mutant[];
   budgetExhausted: boolean;
   note: string;
+  /**
+   * The check could not run because of a host fault (its temporary directory),
+   * so the comment reports a worker fault rather than judging the code.
+   */
+  workerFault?: true;
 }
 
 export const DEFAULT_MUTATION_BUDGET_SECONDS = 300;
@@ -750,6 +763,550 @@ function wiringCandidates(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Operand mutants (Issue #3901)
+// ---------------------------------------------------------------------------
+//
+// Negating a whole `if` or ternary stays green when any one operand is tested.
+// These mutants drop a single operand of a top-level `||` or `&&` chain,
+// replacing it with the chain's identity (`false` for `||`, `true` for `&&`),
+// so the covering tests have to reach that operand. A parenthesised group is
+// one operand; the chain inside it is visited only when the group is the whole
+// expression, or when it spans lines and each inner operand sits on its own
+// line. Operators inside strings, comments and template text are not operators.
+
+interface CodeTok {
+  kind: "word" | "op" | "assign" | "punct";
+  text: string;
+  start: number;
+  end: number;
+  paren: number;
+  brace: number;
+  bracket: number;
+}
+
+interface OperandHit {
+  start: number;
+  end: number;
+  op: "||" | "&&";
+}
+
+interface CodeScan {
+  tokens: CodeTok[];
+  /** Index of the `)` matching a `(` token, or -1. */
+  matchOf: number[];
+}
+
+function isSpaceChar(c: string): boolean {
+  return c === " " || c === "\t" || c === "\n" || c === "\r";
+}
+
+/**
+ * Tokens of `source` outside strings, comments and template text, or null when
+ * a bracket, string, comment, template or regex is left open. Linear in the
+ * source length. Depths are recorded before each token takes effect, so a `)`
+ * carries the depth of the tokens inside its pair.
+ */
+function tokeniseCode(source: string): CodeScan | null {
+  const tokens: CodeTok[] = [];
+  let paren = 0;
+  let brace = 0;
+  let bracket = 0;
+  let prevSig = "";
+  let prevWord = "";
+  const frames: Array<"code" | "template"> = ["code"];
+  const braceKinds: Array<"block" | "interp"> = [];
+  const push = (
+    kind: CodeTok["kind"],
+    text: string,
+    start: number,
+    end: number,
+  ) => {
+    tokens.push({ kind, text, start, end, paren, brace, bracket });
+    prevSig = text.charAt(text.length - 1);
+    prevWord = kind === "word" ? text : "";
+  };
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i] ?? "";
+    if (frames[frames.length - 1] === "template") {
+      if (c === "\\") {
+        i++;
+        continue;
+      }
+      if (c === "`") {
+        frames.pop();
+        prevSig = "`";
+        prevWord = "";
+        continue;
+      }
+      if (c === "$" && source[i + 1] === "{") {
+        frames.push("code");
+        braceKinds.push("interp");
+        brace++;
+        i++;
+      }
+      continue;
+    }
+    if (isSpaceChar(c)) continue;
+    if (c === "/" && source[i + 1] === "/") {
+      const nl = source.indexOf("\n", i);
+      i = nl < 0 ? source.length : nl;
+      continue;
+    }
+    if (c === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      if (end < 0) return null;
+      i = end + 1;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== c && source[j] !== "\n") {
+        if (source[j] === "\\") j += 2;
+        else j++;
+      }
+      if (source[j] !== c) return null;
+      prevSig = c;
+      prevWord = "";
+      i = j;
+      continue;
+    }
+    if (c === "`") {
+      frames.push("template");
+      continue;
+    }
+    if (
+      c === "/" &&
+      (prevSig === "" || REGEX_PRECEDERS.includes(prevSig) ||
+        prevWord === "return" || prevWord === "typeof")
+    ) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < source.length && source[j] !== "\n") {
+        const d = source[j];
+        if (d === "\\") j++;
+        else if (d === "[") inClass = true;
+        else if (d === "]") inClass = false;
+        else if (d === "/" && !inClass) break;
+        j++;
+      }
+      if (source[j] !== "/") return null;
+      prevSig = "/";
+      prevWord = "";
+      i = j;
+      continue;
+    }
+    if (c === "|" && source[i + 1] === "|") {
+      if (source[i + 2] === "=") {
+        push("punct", "||=", i, i + 3);
+        i += 2;
+      } else {
+        push("op", "||", i, i + 2);
+        i++;
+      }
+      continue;
+    }
+    if (c === "&" && source[i + 1] === "&") {
+      if (source[i + 2] === "=") {
+        push("punct", "&&=", i, i + 3);
+        i += 2;
+      } else {
+        push("op", "&&", i, i + 2);
+        i++;
+      }
+      continue;
+    }
+    if (c === "=") {
+      if (source[i + 1] === ">") {
+        push("punct", "=>", i, i + 2);
+        i++;
+      } else if (source[i + 1] === "=") {
+        const third = source[i + 2] === "=" ? 3 : 2;
+        push("punct", "=".repeat(third), i, i + third);
+        i += third - 1;
+      } else push("assign", "=", i, i + 1);
+      continue;
+    }
+    if (c === "!") {
+      if (source[i + 1] === "=") {
+        const third = source[i + 2] === "=" ? 3 : 2;
+        push("punct", "!" + "=".repeat(third - 1), i, i + third);
+        i += third - 1;
+      } else push("punct", "!", i, i + 1);
+      continue;
+    }
+    if (c === "<" || c === ">") {
+      if (source[i + 1] === "=") {
+        push("punct", c + "=", i, i + 2);
+        i++;
+      } else push("punct", c, i, i + 1);
+      continue;
+    }
+    if (c === "?") {
+      if (source[i + 1] === ".") {
+        push("punct", "?.", i, i + 2);
+        i++;
+      } else if (source[i + 1] === "?") {
+        const eq = source[i + 2] === "=" ? 3 : 2;
+        push("punct", eq === 3 ? "??=" : "??", i, i + eq);
+        i += eq - 1;
+      } else push("punct", "?", i, i + 1);
+      continue;
+    }
+    if (IDENT_CHAR.test(c)) {
+      let j = i;
+      while (j + 1 < source.length && IDENT_CHAR.test(source[j + 1] ?? "")) j++;
+      push("word", source.slice(i, j + 1), i, j + 1);
+      i = j;
+      continue;
+    }
+    if (c === "(") {
+      push("punct", "(", i, i + 1);
+      paren++;
+    } else if (c === ")") {
+      if (paren === 0) return null;
+      push("punct", ")", i, i + 1);
+      paren--;
+    } else if (c === "[") {
+      push("punct", "[", i, i + 1);
+      bracket++;
+    } else if (c === "]") {
+      if (bracket === 0) return null;
+      push("punct", "]", i, i + 1);
+      bracket--;
+    } else if (c === "{") {
+      push("punct", "{", i, i + 1);
+      braceKinds.push("block");
+      brace++;
+    } else if (c === "}") {
+      const kind = braceKinds.pop();
+      if (kind === undefined || brace === 0) return null;
+      if (kind === "interp") {
+        brace--;
+        frames.pop();
+        prevSig = "}";
+        prevWord = "";
+      } else {
+        push("punct", "}", i, i + 1);
+        brace--;
+      }
+    } else push("punct", c, i, i + 1);
+  }
+  if (
+    frames.length !== 1 || paren !== 0 || brace !== 0 || bracket !== 0 ||
+    braceKinds.length !== 0
+  ) return null;
+  const matchOf = new Array<number>(tokens.length).fill(-1);
+  const stack: number[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const text = tokens[i]?.text;
+    if (text === "(") stack.push(i);
+    else if (text === ")") {
+      const open = stack.pop();
+      if (open === undefined) return null;
+      matchOf[open] = i;
+    }
+  }
+  if (stack.length !== 0) return null;
+  return { tokens, matchOf };
+}
+
+function trimSpan(
+  source: string,
+  start: number,
+  end: number,
+): { start: number; end: number } | null {
+  while (start < end && isSpaceChar(source[start] ?? "")) start++;
+  while (end > start && isSpaceChar(source[end - 1] ?? "")) end--;
+  if (start >= end) return null;
+  return { start, end };
+}
+
+/** True when `eq` is the `=` of a type alias rather than a value assignment. */
+function isTypeAliasAssign(tokens: readonly CodeTok[], eq: number): boolean {
+  for (let j = eq - 1; j >= 0; j--) {
+    const t = tokens[j];
+    if (t === undefined) break;
+    if (t.text === ";" || t.text === "{" || t.text === "}") return false;
+    if (t.kind !== "word") continue;
+    if (t.text === "const" || t.text === "let" || t.text === "var") {
+      return false;
+    }
+    if (t.text !== "type" && t.text !== "interface" && t.text !== "enum") {
+      continue;
+    }
+    const prev = tokens[j - 1];
+    if (
+      prev === undefined || prev.text === "export" || prev.text === "declare" ||
+      prev.text === ";" || prev.text === "{" || prev.text === "}"
+    ) return true;
+  }
+  return false;
+}
+
+function statementEnd(
+  tokens: readonly CodeTok[],
+  start: number,
+  origin: CodeTok,
+): number {
+  for (let i = start; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === undefined) break;
+    if (
+      t.paren === origin.paren && t.brace === origin.brace &&
+      t.bracket === origin.bracket &&
+      (t.text === ";" || t.text === "}")
+    ) return i;
+    if (
+      t.paren < origin.paren || t.brace < origin.brace ||
+      t.bracket < origin.bracket
+    ) return i;
+  }
+  return tokens.length;
+}
+
+function precededByDot(tokens: readonly CodeTok[], i: number): boolean {
+  const prev = tokens[i - 1]?.text ?? "";
+  return prev === "." || prev.endsWith(".");
+}
+
+/**
+ * Parenthesis depth of the `{` block that contains `assign`, or 0 at file
+ * scope. A statement inside an arrow passed as an argument shares that
+ * block's depth (`withLock(async () => { const keep = a && b; })`). A
+ * default parameter and a `for (...)` header are deeper than the block, so
+ * comparing against this depth keeps them excluded.
+ */
+function enclosingBlockParen(
+  tokens: readonly CodeTok[],
+  assign: number,
+): number {
+  let closed = 0;
+  for (let j = assign - 1; j >= 0; j--) {
+    const t = tokens[j];
+    if (t === undefined) break;
+    if (t.text === "}") closed++;
+    else if (t.text === "{") {
+      if (closed === 0) return t.paren;
+      closed--;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Source spans of operands to drop. `visit` walks an expression token range;
+ * the seen set keeps a nested group from being entered twice.
+ */
+function collectOperandHits(source: string): OperandHit[] {
+  const scanned = tokeniseCode(source);
+  if (scanned === null) return [];
+  const { tokens, matchOf } = scanned;
+  const hits: OperandHit[] = [];
+  const seen = new Set<string>();
+  const visit = (lo: number, hi: number) => {
+    if (lo >= hi || lo < 0 || hi > tokens.length) return;
+    const key = `${lo}:${hi}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    splitExpression(tokens, lo, hi, source, matchOf, visit, hits);
+  };
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === undefined || precededByDot(tokens, i)) continue;
+    if ((t.text === "if" || t.text === "while") && t.kind === "word") {
+      const open = i + 1;
+      if (tokens[open]?.text === "(") {
+        const close = matchOf[open] ?? -1;
+        if (close > open) visit(open + 1, close);
+      }
+    } else if (
+      (t.text === "return" || t.text === "yield") && t.kind === "word"
+    ) {
+      visit(i + 1, statementEnd(tokens, i + 1, t));
+    } else if (
+      t.kind === "assign" && t.bracket === 0 &&
+      t.paren === enclosingBlockParen(tokens, i) &&
+      !isTypeAliasAssign(tokens, i)
+    ) {
+      visit(i + 1, statementEnd(tokens, i + 1, t));
+    }
+  }
+  hits.sort((a, b) => a.start - b.start || a.end - b.end);
+  const unique: OperandHit[] = [];
+  for (const hit of hits) {
+    const prev = unique[unique.length - 1];
+    if (
+      prev !== undefined && prev.start === hit.start && prev.end === hit.end
+    ) {
+      continue;
+    }
+    unique.push(hit);
+  }
+  return unique;
+}
+
+type VisitRange = (lo: number, hi: number) => void;
+
+function atDepth(t: CodeTok, base: CodeTok): boolean {
+  return t.paren === base.paren && t.brace === base.brace &&
+    t.bracket === base.bracket;
+}
+
+function splitExpression(
+  tokens: readonly CodeTok[],
+  lo: number,
+  hi: number,
+  source: string,
+  matchOf: readonly number[],
+  visit: VisitRange,
+  hits: OperandHit[],
+): void {
+  const base = tokens[lo];
+  if (base === undefined) return;
+  const seps: number[] = [];
+  for (let i = lo; i < hi; i++) {
+    const t = tokens[i];
+    if (t === undefined || !atDepth(t, base)) continue;
+    if (
+      t.text === "?" || t.text === ":" || t.text === "," || t.text === "=>" ||
+      t.kind === "assign"
+    ) seps.push(i);
+  }
+  let prev = lo;
+  const parts: Array<[number, number]> = [];
+  for (const sep of seps) {
+    parts.push([prev, sep]);
+    prev = sep + 1;
+  }
+  parts.push([prev, hi]);
+  for (const [a, b] of parts) {
+    chainInPart(tokens, a, b, source, matchOf, visit, hits, base);
+  }
+}
+
+function chainInPart(
+  tokens: readonly CodeTok[],
+  a: number,
+  b: number,
+  source: string,
+  matchOf: readonly number[],
+  visit: VisitRange,
+  hits: OperandHit[],
+  base: CodeTok,
+): void {
+  if (a >= b) return;
+  const ops: number[] = [];
+  for (let i = a; i < b; i++) {
+    const t = tokens[i];
+    if (t !== undefined && t.kind === "op" && atDepth(t, base)) ops.push(i);
+  }
+  if (ops.length === 0) {
+    unwrapGroups(tokens, a, b, source, matchOf, visit, base);
+    return;
+  }
+  // `&&` binds tighter than `||`, so a mixed chain drops `||` operands only.
+  const hasOr = ops.some((i) => tokens[i]?.text === "||");
+  const chosen = ops.filter((i) => tokens[i]?.text === (hasOr ? "||" : "&&"));
+  const op = (hasOr ? "||" : "&&") as "||" | "&&";
+  const bounds = [a, ...chosen, b];
+  for (let k = 0; k < bounds.length - 1; k++) {
+    const left = k === 0 ? a : (bounds[k] ?? a) + 1;
+    const right = bounds[k + 1] ?? b;
+    if (left >= right || tokens[left] === undefined) continue;
+    const rawEnd = right < tokens.length
+      ? (tokens[right]?.start ?? source.length)
+      : source.length;
+    const span = trimSpan(source, tokens[left]!.start, rawEnd);
+    if (span === null) continue;
+    const text = source.slice(span.start, span.end);
+    if (text.includes("\n")) {
+      visit(left, right);
+      continue;
+    }
+    const identity = op === "||" ? "false" : "true";
+    if (text === identity) continue;
+    hits.push({ start: span.start, end: span.end, op });
+  }
+}
+
+/** Enter a parenthesised group when it is the whole part, or spans lines. */
+function unwrapGroups(
+  tokens: readonly CodeTok[],
+  a: number,
+  b: number,
+  source: string,
+  matchOf: readonly number[],
+  visit: VisitRange,
+  base: CodeTok,
+): void {
+  if (a >= b) return;
+  const first = tokens[a];
+  if (first?.text === "(" && (matchOf[a] ?? -1) === b - 1) {
+    visit(a + 1, b - 1);
+    return;
+  }
+  for (let i = a; i < b; i++) {
+    const t = tokens[i];
+    if (t === undefined || t.text !== "(" || !atDepth(t, base)) continue;
+    const close = matchOf[i] ?? -1;
+    if (close < 0 || close >= b) continue;
+    const innerStart = tokens[i + 1]?.start ?? t.end;
+    const innerEnd = tokens[close]?.start ?? innerStart;
+    if (source.slice(innerStart, innerEnd).includes("\n")) visit(i + 1, close);
+    i = close;
+  }
+}
+
+function lineIndexAt(lineStarts: readonly number[], offset: number): number {
+  let lo = 0;
+  let hi = lineStarts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if ((lineStarts[mid] ?? 0) <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * Operand-dropping mutants keyed by 1-based line. Each value is the full
+ * replacement line and its recovery description.
+ */
+function operandMutantsByLine(
+  lines: readonly string[],
+): Map<number, Array<[string, string]>> {
+  const source = lines.join("\n");
+  const map = new Map<number, Array<[string, string]>>();
+  if (!source.includes("||") && !source.includes("&&")) return map;
+  const lineStarts: number[] = [0];
+  for (let i = 0; i < source.length; i++) {
+    if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
+  }
+  for (const hit of collectOperandHits(source)) {
+    const line = lineIndexAt(lineStarts, hit.start);
+    const lineEnd = line + 1 < lineStarts.length
+      ? (lineStarts[line + 1] ?? source.length) - 1
+      : source.length;
+    if (hit.end > lineEnd) continue;
+    const origin = lineStarts[line] ?? 0;
+    const col = hit.start - origin;
+    const endCol = hit.end - origin;
+    const original = lines[line] ?? "";
+    const name = original.slice(col, endCol);
+    const identity = hit.op === "||" ? "false" : "true";
+    if (name === "" || name === identity || name.includes("\n")) continue;
+    const text = original.slice(0, col) + identity + original.slice(endCol);
+    const list = map.get(line + 1) ?? [];
+    list.push([
+      text,
+      `dropped operand \`${name}\` (replaced with ${identity})`,
+    ]);
+    map.set(line + 1, list);
+  }
+  return map;
+}
+
 /** Mutants generated for one file, and how many candidates were not generated. */
 export interface DenoMutantGeneration {
   mutants: DenoMutant[];
@@ -766,6 +1323,7 @@ export interface DenoMutantGeneration {
  * mutation kind per line, ordered by line then kind, stopping at `cap`; the
  * candidates past `cap` and the over-long lines are counted in `dropped`
  * rather than silently lost. Test files and comment lines yield nothing.
+ * Operand mutants (Issue #3901) follow the other kinds and share the cap.
  */
 export function generateDenoMutantsDetailed(
   file: string,
@@ -778,7 +1336,15 @@ export function generateDenoMutantsDetailed(
   if (isDenoTestFile(file)) return { mutants: out, dropped };
   const lines = source.split("\n");
   // Issue #3601: computed once per file; null disables only the wiring kinds.
+  // The same failure disables operand mutants: an untrustworthy bracket scan
+  // must not invent a chain.
   const contexts = lineContexts(source);
+  const strippedLines = lines.map((raw) =>
+    raw.endsWith("\r") ? raw.slice(0, -1) : raw
+  );
+  const operandByLine = contexts === null
+    ? null
+    : operandMutantsByLine(strippedLines);
   const sorted = [...new Set(addedLines)].sort((a, b) => a - b);
   for (const n of sorted) {
     if (n < 1 || n > lines.length) continue;
@@ -817,6 +1383,7 @@ export function generateDenoMutantsDetailed(
       candidates.push(
         ...wiringCandidates(line, contexts[n - 1] ?? "other", lines, n),
       );
+      candidates.push(...(operandByLine?.get(n) ?? []));
     }
 
     for (const [text, description] of candidates) {
@@ -901,6 +1468,20 @@ export function evaluateMutationGate(
     };
   }
   if (result.kind === "error") {
+    if (result.reason.startsWith(MUTATION_TEMP_DIR_UNWRITABLE)) {
+      // Still blocks (fail closed), but names the host fault rather than
+      // suggesting a skip (Issue #4127).
+      return {
+        blocked: true,
+        reason:
+          `mutation check could not run: ${result.reason} — a worker fault on this host, not a verdict on the code`,
+        survivors: [],
+        exempted: [],
+        budgetExhausted: false,
+        note: "",
+        workerFault: true,
+      };
+    }
     return {
       blocked: true,
       reason:
@@ -956,7 +1537,12 @@ function mdSafe(s: string): string {
 
 /** Markdown feedback for the agent when the gate blocks. */
 export function buildMutationGateComment(verdict: MutationGateVerdict): string {
-  const out: string[] = ["## Mutation check: changed lines are not pinned", ""];
+  const out: string[] = [
+    verdict.workerFault
+      ? "## Mutation check: could not run (worker fault)"
+      : "## Mutation check: changed lines are not pinned",
+    "",
+  ];
   out.push(verdict.reason ? mdSafe(verdict.reason) + "." : "");
   out.push("");
   if (verdict.survivors.length > 0) {

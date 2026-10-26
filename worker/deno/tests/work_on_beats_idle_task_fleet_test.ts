@@ -365,7 +365,6 @@ Deno.test(
       },
     ];
     const filtered = filterAndSort(issues, {
-      failedLabel: "failed",
       needsRevisionLabel: "needs-revision",
       refineIssueLabel: "refine-issue",
       planningLabel: "planning",

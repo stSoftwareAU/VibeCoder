@@ -23,6 +23,7 @@ import {
 
 const REPO = "org/repo";
 const MILESTONE = "milestone/523-idle-task-scans";
+const FLEET = "fleet-bot";
 
 /** The `--jq` expression of a `gh api` call. */
 const jqOf = (args: string[]): string | undefined =>
@@ -142,15 +143,28 @@ Deno.test("findOpenMilestoneFixPr - finds a matching open fix PR", async () => {
   const { gh, calls } = fakeGh({
     list: () =>
       JSON.stringify([
-        { number: 5, url: "https://x/pr/5", headRefName: "unrelated" },
+        {
+          number: 5,
+          url: "https://x/pr/5",
+          headRefName: "unrelated",
+          state: "OPEN",
+          author: { login: FLEET },
+          isCrossRepository: false,
+        },
         {
           number: 901,
           url: "https://x/pr/901",
           headRefName: `${prefix}review-feedback`,
+          state: "OPEN",
+          author: { login: FLEET },
+          isCrossRepository: false,
         },
       ]),
   });
-  const result = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, { gh });
+  const result = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, {
+    gh,
+    fleetAuthors: [FLEET],
+  });
   assert(result.ok);
   assertEquals(result.value?.number, 901);
   assertEquals(result.value?.opened, false);
@@ -166,20 +180,29 @@ Deno.test("findOpenMilestoneFixPr - a takeover discriminator ignores a CI fix PR
           number: 901,
           url: "https://x/pr/901",
           headRefName: `${prefix}ci-abc`,
+          state: "OPEN",
+          author: { login: FLEET },
+          isCrossRepository: false,
         },
         {
           number: 902,
           url: "https://x/pr/902",
           headRefName: `${prefix}takeover-abc`,
+          state: "OPEN",
+          author: { login: FLEET },
+          isCrossRepository: false,
         },
       ]),
   });
-  const anyFix = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, { gh });
+  const anyFix = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, {
+    gh,
+    fleetAuthors: [FLEET],
+  });
   const takeover = await findOpenMilestoneFixPr(
     REPO,
     MILESTONE,
     42,
-    { gh },
+    { gh, fleetAuthors: [FLEET] },
     "takeover-",
   );
   assert(anyFix.ok && takeover.ok);
@@ -189,7 +212,10 @@ Deno.test("findOpenMilestoneFixPr - a takeover discriminator ignores a CI fix PR
 
 Deno.test("findOpenMilestoneFixPr - returns null when nothing matches", async () => {
   const { gh } = fakeGh({ list: () => "[]" });
-  const result = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, { gh });
+  const result = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, {
+    gh,
+    fleetAuthors: [FLEET],
+  });
   assert(result.ok);
   assertEquals(result.value, null);
 });
@@ -197,7 +223,10 @@ Deno.test("findOpenMilestoneFixPr - returns null when nothing matches", async ()
 Deno.test("findOpenMilestoneFixPr - fails loud on a gh failure, never returns null", async () => {
   const gh = (_args: string[]): Promise<string> =>
     Promise.reject(new Error("gh exploded"));
-  const result = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, { gh });
+  const result = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, {
+    gh,
+    fleetAuthors: [FLEET],
+  });
   assert(!result.ok);
   assertStringIncludes(result.error.message, "gh exploded");
 });

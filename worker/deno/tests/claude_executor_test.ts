@@ -307,10 +307,23 @@ Deno.test("claude executor - detectRateLimit detects '429' as primary", () => {
   assertEquals(result.isPrimary, true);
 });
 
-Deno.test("claude executor - detectRateLimit detects 'try again' as secondary", () => {
-  const result = detectRateLimit("Please try again later");
-  assertEquals(result.isRateLimited, true);
-  assertEquals(result.isPrimary, false);
+Deno.test("claude executor - detectRateLimit ignores bare 'try again' / 'retry' / 'limit' (Issue #4114)", () => {
+  // The agent's own words: the old secondary match walked ordinary exit-1
+  // runs down the model ladder.
+  for (
+    const text of [
+      "Please try again later",
+      "Added a retry with backoff",
+      "gh pr list --limit 30",
+    ]
+  ) {
+    assertEquals(detectRateLimit(text).isRateLimited, false, text);
+  }
+});
+
+Deno.test("claude executor - detectRateLimit names the line that matched (Issue #4114)", () => {
+  const result = detectRateLimit("starting\nHTTP 429 Too Many Requests\ndone");
+  assertEquals(result.matchedLine, "HTTP 429 Too Many Requests");
 });
 
 Deno.test("claude executor - detectRateLimit returns false for normal output", () => {
@@ -380,10 +393,8 @@ Deno.test("claude executor - detectOutOfMemory ignores 'heap limit' rate-limit o
   const output =
     "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory";
   assertEquals(detectOutOfMemory(output), true);
-  // The rate-limit detector also (wrongly) fires on "limit" — the run loop
-  // must consult detectOutOfMemory first.
-  assertEquals(detectRateLimit(output).isRateLimited, true);
-  assertEquals(detectRateLimit(output).isPrimary, false);
+  // The rate-limit detector no longer fires on a bare "limit" (Issue #4114).
+  assertEquals(detectRateLimit(output).isRateLimited, false);
 });
 
 Deno.test("claude executor - detectOutOfMemory returns false for normal output", () => {

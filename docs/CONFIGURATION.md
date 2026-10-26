@@ -39,7 +39,6 @@ to all users unless explicitly overridden.
   "pr_reviewers": ["reviewer1", "reviewer2", "reviewer3"],
   "repos": ["your-org/repo1", "your-org/repo2"],
   "authorized_commenters": ["your-github-username", "github-copilot[bot]"],
-  "claude_model": "opus",
   "claude_timeout": 7200,
   "sleep_interval": 60
 }
@@ -461,7 +460,7 @@ explicitly overridden.
 
 | Setting                      | Default                   | Description                                                                                                                                                                                                                                                                                      |
 | ---------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `failed_label`               | `failed`                  | Label applied after second failure (issue permanently failed)                                                                                                                                                                                                                                    |
+| `failed_label`               | `failed`                  | Retired label: never applied, and a leftover one is stripped (Issue #4158)                                                                                                                                                                                                                       |
 | `failed_once_label`          | `failed-once`             | Label applied after first failure (issue will be retried)                                                                                                                                                                                                                                        |
 | `refine_issue_label`         | `refine-issue`            | Label for collaborative issue refinement                                                                                                                                                                                                                                                         |
 | `planning_label`             | `planning`                | Label for planning mode (task breakdown instead of implementation)                                                                                                                                                                                                                               |
@@ -470,18 +469,18 @@ explicitly overridden.
 | `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
 | `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
 | `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
-| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` offers `frozen` as its default answer to a host being configured, and `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
+| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` and `setup.ps1` offer whatever `update_mode` the config already holds (so a host that says `frozen` is offered `frozen` on a re-run); when the key is absent they offer `frozen` only if no `.config.json` existed before the setup run, and `dynamic` for an existing config with no `update_mode`. `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
 | `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `copilot_code_review` | `leave` | Whether setup's `repo-settings-harden` turns Copilot code review `on` or `off` on every monitored repository, or leaves each as it is (`leave`, the default — an absent key means the same, so an existing host changes nothing). Copilot code review is **billed per review, never free — even on a public repository**: GitHub charges each automatic review to the PR author's Copilot plan, or to the organisation. `off` removes the `copilot_code_review` rule from every repository ruleset, deleting a ruleset it leaves empty; an organisation ruleset is reported, never edited. `on` makes sure a review rule applies to the default branch, creating a `Vibe Coder Copilot review` ruleset when none does. `./setup.sh` and `setup.ps1` ask the question (Issue #2701). Any other value fails loudly at config load, naming the accepted values. |
-| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` selects the provider on a host whose file states none; since 1.4.0 it no longer overrides the file (Issue #1032 — see [Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)). An unsupported id fails loudly at startup, naming the supported providers. A per-repo pin (`repo_config.<repo>.agent_provider`, Issue #2048) scopes the choice to one repository: it binds when an invocation carries no explicit provider of its own, and wins over this global key and over `auto` ranking for that repo — Claude's behaviour is unchanged wherever no repo pins a provider. |
+| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` selects the provider on a host whose file states none; since 1.4.0 it no longer overrides the file (Issue #1032 — see [Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)). An unsupported id fails loudly at startup, naming the supported providers. A per-repo pin (`repo_config.<repo>.agent_provider`, Issue #2048) scopes the choice to one repository: it binds when an invocation carries no explicit provider of its own, and wins over this global key and over `auto` ranking for that repo — Claude's behaviour is unchanged wherever no repo pins a provider. An `issue` run on `codex`, `gemini` or `deepseek` that carries sub-agent definitions is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has its split, reviewers and sub-agent definitions dropped with a warning otherwise (Issue #4109; see `issue_executor_split`). When the provider is a repository pin, the run is stripped and kept (Issue #4346). |
 | `agent_provider_mode` | `pinned` | Provider-selection strategy. `pinned` preserves the historical `agent_provider` behaviour. `auto` opts a mixed host into quota-aware selection before each work item; `agent_provider` becomes the preference tie-break and only enabled credentials proved to use fixed-price subscriptions are candidates. Explicit per-invocation selection remains absolute. While auto is enabled, `VIBE_AGENT_PROVIDER` is an emergency per-process pin and must name an enabled provider. If all eligible subscriptions are exhausted or unavailable, the worker waits rather than selecting metered or unknown billing. Currently Claude OAuth subscriptions and Codex ChatGPT subscriptions have status adapters; other providers are excluded from auto mode. See [Provider parity](PROVIDER-PARITY.md#routing-and-fallback). |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) applies when the file states no set; since 1.4.0 it no longer overrides the file (Issue #1032). The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
 | `agent_provider_fallback` | `[]` | Opt-in ordered alternatives when the preferred provider has a classified outage (subscription exhausted, transient rate limit, or model unavailable). With Claude preferred, the health gate first rotates to another Claude credential in the pool that still has budget, and switches to an alternative only once **every** credential is exhausted on its five-hour window or its weekly limit, switching back when one reopens; the weekly pace projection never moves work to an alternative (Issue #2637). Omitted or `[]` pins `agent_provider` — no substitution. Every id must already be in `agent_providers`; an unconfigured or uninstalled provider fails loudly at startup. Ordinary task failures and authentication/configuration errors never trigger a switch. This list is **not** restricted to fixed-price subscriptions: an alternative that bills per token is honoured as written, and the health gate logs `billing=<mode>` plus a loud line naming the metered credential variable before switching (Issue #1923). Leave it empty to keep the never-metered guarantee end to end. **Not enabled on the production fleet by default** (Issue #1700). See [Provider parity](PROVIDER-PARITY.md). |
 | `egress_allow_hosts` | `[]` | Extra hosts the worker container may reach, beyond the built-in list (GitHub, the package registries and each enabled provider's API hosts). Each entry is a hostname or `*.hostname`, port 443 only (e.g. `"llm-gateway.example.com"`, `"*.example.org"`). Validated at config load — a bad entry fails startup, naming the entry. Not enforced for the container until the container is routed through the egress proxy (Issue #4047). See [CONTAINMENT.md — egress allowlist](CONTAINMENT.md#egress-allowlist). |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it — absolute, `~`-anchored, newline-bearing and `..`-escaping values are all refused — so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md). |
 | `container_extension` | _(none)_ | A private image layer this deployment builds on top of the standard one — for services and toolchains a declarative archive install cannot express. An object of `path` (absolute host directory holding the extension, never the home directory or an ancestor of it), optional `containerfile` (default `Containerfile`) and optional `start`, the last two **relative to `path`**. The operator syncs their own private repository into `path`; the Vibe Coder clones nothing. The Containerfile must derive `FROM ${VIBE_BASE_IMAGE}`, the extension is copied to the fixed in-image prefix `/opt/vibe-extension/`, and the image tag is a content hash of the whole directory, so changing any file rebuilds. A declared `start` runs before the worker and aborts the sandbox start with exit 76 if it fails. A malformed block fails loudly at config load, naming the field. See [Container Extension](CONTAINER-EXTENSION.md). |
-| `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
+| `claude_model`               | unset                     | Host-wide Claude model for every phase. Unset, each phase uses its own default (the `issue` manager runs on `sonnet`). Setting it overrides the per-phase defaults, so leave it unset unless every phase should run on one model (Issue #4117). |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_tiers` | `{}` | Shared phase-to-tier overrides: `best`, `standard` or `fast`, independent of provider. See [Shared model policy](MODEL-AND-CACHING.md#model-selection). |
 | `provider_model_tiers` | `{}` | Each provider's concrete model ids for `best`, `standard` and `fast`. Explicit provider phase overrides take precedence. |
@@ -491,9 +490,9 @@ explicitly overridden.
 | `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
-| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Haiku at `high` effort by default, or Sonnet at `medium` effort when `issue_sub_agent_tier` resolves `"sonnet"` (Issues #3402, #3473) — while the advisor — the main session — keeps the phase's own model and effort. Off, no executor definitions are built; `--agents` is still passed when `issue_reviewer_agents` is on or `issue_sub_agent_tier` resolves `"haiku"` (which adds the read-only explorer), and only with the split and the reviewers off and a tier other than `"haiku"` is no `--agents` argument passed and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` (which runs the same Claude binary against its own endpoint but strips `--agents`) an `issue` run that carries any `--agents` definition is refused before the agent starts, with an error naming the provider and the rollback (Issue #4010): set `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The advisor's own run-record files are the one exception: it may still write the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` and the PR-feedback reply file `.pr_response_message`. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and every model the run served — the advisor's and each sub-agent's (executors and reviewers) — is costed from the CLI's per-model `modelUsage` breakdown at its own rate, one cost sub-bullet per model, in both the comment and the callback telemetry (Issue #3603); a run that served several models but recorded no readable breakdown says `sub-agents: not costed` instead of presenting the advisor-only figure as the run's cost. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
-| `issue_sub_agent_tier` | `"haiku"` | Model tier for the `issue`-phase executor and Standards-reviewer sub-agents, and for whether the run carries the read-only explorer sub-agent (Issue #3402). `"haiku"` is the default since the owner's decision on Issue #3473, under a Sonnet `issue` manager. `"sonnet"` leaves the `--agents` JSON byte-identical to before the key existed. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and the Standards reviewer (when `issue_reviewer_agents` is on) to Haiku at `medium` effort, and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"haiku"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403). |
-| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Sonnet at `high` since Issue #3473). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`haiku`, `medium` effort by default — Sonnet at `low` effort when `issue_sub_agent_tier` resolves `"sonnet"`, Issues #3402, #3473; the Spec reviewer stays `sonnet`/`medium` at every tier), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` a run carrying the definitions is refused before the agent starts (Issue #4010) — see `issue_executor_split`. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
+| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Haiku at `high` effort by default, or Sonnet at `medium` effort when `issue_sub_agent_tier` resolves `"sonnet"` (Issues #3402, #3473) — while the advisor — the main session — keeps the phase's own model and effort. Off, no executor definitions are built; `--agents` is still passed when `issue_reviewer_agents` is on or `issue_sub_agent_tier` resolves `"haiku"` (which adds the read-only explorer), and only with the split and the reviewers off and a tier other than `"haiku"` is no `--agents` argument passed and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` (which runs the same Claude binary against its own endpoint but strips `--agents`) an `issue` run that carries any `--agents` definition is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, and otherwise has its split, reviewers and sub-agent definitions dropped with a warning before the agent starts (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346); a run on a health-gate fallback provider (`agent_provider_fallback`) is dropped, never rerouted back to the exhausted Claude pool. The runner's refusal of such a run (Issue #4010) is a backstop: it still fires for a caller that bypasses the planner, and when the retry ladder switches to `agent_provider_fallback` and keeps the definitions (Issue #4034). On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The advisor's own run-record files are the one exception: it may still write the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` and the PR-feedback reply file `.pr_response_message`. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and every model the run served — the advisor's and each sub-agent's (executors and reviewers) — is costed from the CLI's per-model `modelUsage` breakdown at its own rate, one cost sub-bullet per model, in both the comment and the callback telemetry (Issue #3603); a run that served several models but recorded no readable breakdown says `sub-agents: not costed` instead of presenting the advisor-only figure as the run's cost. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
+| `issue_sub_agent_tier` | `"haiku"` | Model tier for the `issue`-phase executor sub-agent, and for whether the run carries the read-only explorer sub-agent (Issue #3402). It never moves the reviewers: both run on Opus at every tier (owner decision 2026-10-22). `"haiku"` is the default since the owner's decision on Issue #3473, under a Sonnet `issue` manager. `"sonnet"` puts the executor on Sonnet at `medium` effort. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"haiku"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). Under `codex`, `gemini` or `deepseek` the run's definitions are rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or dropped with a warning otherwise (Issue #4109; see `issue_executor_split`). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403). |
+| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Sonnet at `high` since Issue #3473). On, the invocation carries a `spec-reviewer` and a `standards-reviewer`, both `opus` at `medium` effort at every `issue_sub_agent_tier` (owner decision 2026-10-22: Opus does the code reviews; they were Sonnet, and the Standards reviewer Haiku on the Haiku tier, under Issues #3402 and #3473), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` a run carrying the definitions is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them dropped with a warning otherwise (Issue #4109) — see `issue_executor_split`. When the provider is a repository pin, the run is stripped and kept (Issue #4346). Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
 | `external_orchestration` | `false` | Opt into independent manager/executor/reviewer CLI calls for issue runs. A repository boolean overrides this host value; setting it to `false` restores native dispatch. See [Role configuration](ROLE-CONFIGURATION.md). |
 | `subscription_allocation` | absent | Optional dry-run-first allocation policy: explicit `auto_routing`, trial arms, fixed-subscription provider budgets, host capacities/weights, complete lifecycle ledger paths and measured capacity evidence. Applies to main-loop issue runs; no subscription changes or metered access. See [Subscription allocation](SUBSCRIPTION-ALLOCATION.md) for schema, defaults, sequential uncertainty, rollout and reset. |
 | `external_orchestration_settings` | `{}` | Validated role selections (`manager`, `executor`, `reviewer`: `provider`, `model`, `effort`, `cli_adapter`) and call limits (`max_retries`, `max_concurrency`, `max_invocations`, `max_cost_usd`). Repository settings override individual host fields. Read only for opted-in issue runs; all named providers must be enabled in `agent_providers`. See [Role configuration](ROLE-CONFIGURATION.md). |
@@ -567,11 +566,11 @@ flowchart LR
 ### ⚖️ Idle-Task Template Weights
 
 When no claimable work exists, the worker files a background **idle-task**
-issue. It picks which template to run from the nineteen registered templates by
+issue. It picks which template to run from the twenty registered templates by
 a random draw — the authoritative list lives in the
 [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry), which this page
 deliberately does not restate. By default the draw is **uniform** — each
-template has a 1/19 chance, so only ~2/19 of idle runs are
+template has a 1/20 chance, so only ~2/20 of idle runs are
 supply-chain-relevant.
 
 Set `idle_task_template_weights` to bias the draw toward the templates you care
@@ -862,7 +861,7 @@ flowchart LR
   `unassign_on_pr_created` hands the issue back unassigned, so without a gate
   the next cycle re-ran the whole pipeline against the still-open PR. The scan
   therefore applies the same gates the claim scan applies to `work-on`: a
-  blocking label (`failed` among them), the retry cooldown, milestone
+  blocking label (never `failed`, Issue #4158), the retry cooldown, milestone
   occupancy, a closed or merged fleet PR, an open fleet PR, and an open
   dependency. A run that produces no work puts the issue into the retry
   cooldown, so a persistently failing issue backs off. The label-removing
@@ -1056,23 +1055,29 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 
 ### 🧊 Update Mode
 
-`update_mode` names how a host tracks Vibe Coder releases. `frozen` — the
-default answer `./setup.sh` offers a host being configured (Issue #692) —
-holds the host at a pinned checkout with pinned tool versions. `dynamic`
-follows the latest, and is both the deliberate opt-in answer at setup and what
-an **absent** `update_mode` resolves to at config load.
+`update_mode` names how a host tracks Vibe Coder releases. `dynamic` follows
+the latest, and is what an **absent** `update_mode` resolves to at config load.
+`frozen` holds the host at a pinned checkout with pinned tool versions. Setup
+offers whatever `update_mode` the config already holds, so a host that already
+says `frozen` is offered `frozen` on a re-run. With no `update_mode` key, setup
+offers `frozen` only when no `.config.json` existed before the setup run — a
+fresh host (Issue #692). A `.config.json` that already exists with no
+`update_mode` is read as `dynamic`, the mode the host already runs, and setup
+keeps it, interactive or not.
 
-**Two different defaults, deliberately.** The setup conversation defaults to
-`frozen`, because a new host should reproduce a released, tested combination.
-The *load-time* default for a missing key stays `dynamic`, because an existing
-host carries no pins and frozen is all-or-nothing — resolving an absent key to
-`frozen` would fail that host's config validation at its very next launch. So:
-a `.config.json` with no `update_mode` loads as `dynamic` with no warning and
-no new pin requirement, whatever setup would offer a fresh host.
+**Two different defaults, deliberately.** The setup conversation offers
+`frozen` to a fresh host, because a new host should reproduce a released,
+tested combination. The *load-time* default for a missing key stays `dynamic`,
+because an existing host carries no pins and frozen is all-or-nothing —
+resolving an absent key to `frozen` would fail that host's config validation at
+its very next launch. So: a `.config.json` with no `update_mode` loads as
+`dynamic` with no warning and no new pin requirement, and setup keeps it as
+`dynamic`, whether or not a terminal is attached. A non-interactive setup run on
+such a config writes no pins.
 
 | Field | Accepted values | Default | Read in |
 | --- | --- | --- | --- |
-| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent; `"frozen"` is the answer setup offers a host being configured | both modes |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent, including an existing config with no key; setup offers the value the config already holds; with the key absent it offers `"frozen"` only on a fresh host (no `.config.json` before the run) and `"dynamic"` otherwise | both modes |
 | `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
 | `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
 
@@ -1140,9 +1145,11 @@ because an absent `update_mode` resolves to `dynamic`:
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
-- **Setup asks for all of it, and defaults to `frozen`.** `./setup.sh` runs
-  `setup update-mode`, which asks for the mode — defaulting to `frozen` on a
-  fresh host and, on a re-run, to whatever the host already says — and then,
+- **Setup asks for all of it, and defaults only a new config to `frozen`.**
+  `./setup.sh` and `setup.ps1` run `setup update-mode`, which asks for the mode — defaulting to
+  the mode the host already has; with no `update_mode` key it defaults to
+  `frozen` when no `.config.json` existed before the run, and to `dynamic`
+  for an existing config — and then,
   under `frozen`, for the pinned ref and one exact version per tool. The ref
   defaults to the latest release tag and is validated by resolving it in the
   worker checkout after a fetch, so a ref that does not resolve is rejected by
@@ -1152,12 +1159,16 @@ because an absent `update_mode` resolves to `dynamic`:
   resolvable manifest the defaults fall back to what `dynamic` mode would
   install today and setup says so in one line. Blank accepts the default
   everywhere, so a re-run that presses Enter throughout leaves `.config.json`
-  unchanged — on a `dynamic` host as well as a frozen one. A run with no
-  terminal never asks: existing values are left alone, and a fresh config is
-  pinned to the latest release when it resolves with a manifest, or left
-  `dynamic` with one warning line when it does not. `setup.ps1` does not ask yet —
-  a Windows host sets these keys by hand, and the Windows counterpart is a
-  follow-up. The prompts in the order they are asked are
+  unchanged on a host whose config already says `dynamic` or `frozen`. On a
+  config that exists with no `update_mode`, Enter writes
+  `"update_mode": "dynamic"` — the mode the host already ran. A run with no
+  terminal never asks: an existing `.config.json` is left alone — a host with no
+  `update_mode` stays `dynamic` and gets no pins — and a fresh config is pinned
+  to the latest release when it resolves with a manifest, or left `dynamic` with
+  one warning line when it does not. `setup.ps1` asks the same questions: it
+  notes whether `.config.json` existed before the run and passes that to
+  `setup update-mode` as `--config-existed`, exactly as `setup.sh` does. The
+  prompts in the order they are asked are
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
 - **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
   see the resolved mode without re-parsing `.config.json`.
@@ -1169,7 +1180,7 @@ because an absent `update_mode` resolves to `dynamic`:
   content, a frozen checkout holds the image steady too.
 - **Frozen says when it is behind.** A pin holds the host still; it does not
   hide that the world moved on. When a release newer than `pinned_ref` exists,
-  each launch prints one notice line naming both versions and the command that
+  each launch logs one WARNING line naming both versions and the command that
   installs the new one (Issue #690) — see
   [New-Release Notice](#-new-release-notice).
 
@@ -1249,7 +1260,7 @@ happens at the launch you choose to make.
 flowchart TD
     L["Launch — ./run.sh"] --> C["release check:<br/>newest release vs pinned_ref"]
     C -->|"dynamic host, SHA pin,<br/>already newest, or check failed"| S["silent — the launch continues"]
-    C -->|"frozen and behind"| N["one notice line on stderr<br/>and in run_core.log"]
+    C -->|"frozen and behind"| N["one WARNING line on stderr<br/>and in run_core.log"]
     N --> U["./run.sh upgrade — rewrites pinned_ref<br/>and all three pinned_tool_versions"]
     U --> W["nothing installed,<br/>no checkout moved"]
     W --> X["Next launch: checkout onto the new pinned_ref,<br/>claude, gh and deno at the pinned versions"]
@@ -1257,7 +1268,9 @@ flowchart TD
 ```
 
 1. **The launch tells you.** A frozen host pinned behind the newest release
-   prints one line per launch, to stderr and `run_core.log`:
+   logs one line per launch at WARNING: on stderr as `[run.sh] WARNING: …`, and
+   in `run_core.log` as `WARNING: …`. The host is degraded but continuing on its
+   pin. The line reads:
 
    ```text
    A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1329,8 +1342,9 @@ releases recorded their tool versions, an unreachable GitHub or a value that
 fails the config validator is a loud refusal with `.config.json` left exactly
 as it was, never a fresh `pinned_ref` beside stale tool versions.
 
-Windows hosts move their pins by hand for now; `run.ps1 upgrade` is a
-follow-up, exactly as `setup.ps1`'s update-mode prompts are.
+Windows hosts move their pins by hand for now: `run.ps1 upgrade` is still a
+follow-up. `setup.ps1` already runs the same `setup update-mode` prompts as
+`setup.sh`, passing `--config-existed`.
 
 #### Moving a pin by hand
 
@@ -1508,8 +1522,9 @@ flowchart TD
 ### 🔔 New-Release Notice
 
 Beside the checkout update, each launch asks whether this host is pinned behind
-the newest release (Issue #690). When it is, one line goes to stderr and to
-`run_core.log`:
+the newest release (Issue #690). When it is, the launcher logs one line at
+WARNING — `[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on Windows) on stderr
+and `WARNING: …` in `run_core.log` — and the host is degraded but continuing on its pin. The notice wording is:
 
 ```text
 A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1545,9 +1560,16 @@ deno run --allow-env --allow-read --allow-run \
   same constant the upgrade command registers under
   ([`worker/deno/lib/upgrade_command.ts`](../worker/deno/lib/upgrade_command.ts)),
   so the wording cannot drift from the command that exists.
-- **Windows is a follow-up.** `run.ps1` does not print the notice yet; the
-  logic living in the Deno command is what keeps that a port rather than a
-  rewrite.
+- **Windows prints it too.** `run.ps1` runs the same `release-notice` command
+  after its checkout update (Issue #4119): the notice is one
+  `[run.ps1] WARNING: …` line on stderr and one `WARNING: …` line in
+  `run_core.log`, and a failed check is a
+  `[run.ps1] warning: could not check for a newer release …` line with a
+  `release-notice: failed …` line in `run_core.log`, and the launch continues.
+  `run.ps1` has no outer 120 s bound; it relies on the command's own bound on
+  each `gh` call. The notice names `./run.sh upgrade` on every platform, and
+  `run.ps1 upgrade` does not exist yet: a Windows host moves its pin by hand —
+  see [Moving a pin by hand](#moving-a-pin-by-hand).
 
 ```mermaid
 flowchart TD
@@ -1558,7 +1580,7 @@ flowchart TD
     L --> C{"pinned_ref vs latest"}
     C -->|"commit SHA — not orderable"| S
     C -->|"already newest"| S
-    C -->|"behind"| N["one notice line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
+    C -->|"behind"| N["one WARNING line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
 ```
 
 ### 🧠 Phase Model Overrides
@@ -1585,7 +1607,7 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 | `revision` | `opus` | Rewriting issues from review feedback — planning-shaped, effort `high` |
 | `question` | `opus` | Answering codebase questions — planning-shaped, effort `high` |
 | `clarification` | `opus` | Assessing whether an issue has sufficient detail — planning-shaped, effort `high` |
-| `implementation` | `opus` (base) | Core work — uses the base `claude_model` setting (`issue` phase, effort `high`) |
+| `implementation` | `sonnet` | Core work — the `issue` phase manager (effort `high`); a host-wide `claude_model` overrides it |
 | `ci_fix`         | `sonnet`      | Fixing CI failures from structured error messages (effort `high`, Issue #2812) |
 | `quality_fix`    | `sonnet`      | Fixing quality check failures (lint, test errors) (effort `high`, Issue #2812) |
 | `pr_feedback`    | `sonnet`      | Applying targeted fixes from reviewer comments (effort `high`, Issue #2812) |
@@ -1818,6 +1840,7 @@ unless explicitly overridden.
 | Poll cadence, park tier | `poll_cadence_park_cycles` | `10` | Cycles between polls of a repo with `nice >= quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle. |
 | Quota-poll idle floor | `quota_poll_idle_floor` | `500` | GraphQL points remaining below which idle-task collection is deferred fleet-wide for the cycle — the scan's idle collector and the idle-task filer's repo walk both stand down (Issue #3628). Whole number of points, at least `0` and no greater than `quota_poll_park_floor`; `0` disables the idle tier. |
 | Screenshot retry timeout | `screenshot_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive. |
+| Pre-push retry timeout | `pre_push_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn given to a run whose push the pre-push gate blocked (Issue #4128). Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -1835,7 +1858,7 @@ unless explicitly overridden.
 | Question kill-after            | `question_kill_after`            | `10`       | Grace period after question timeout                                                                                                                                                                  |
 | Clarification timeout          | `clarification_timeout`          | `120`      | Timeout for clarification requests (2 minutes)                                                                                                                                                       |
 | Clarification kill-after       | `clarification_kill_after`       | `10`       | Grace period after clarification timeout                                                                                                                                                             |
-| Max clarification rounds       | `max_clarification_rounds`       | `3`        | Maximum clarification rounds before auto-proceeding                                                                                                                                                  |
+| Max clarification rounds       | `max_clarification_rounds`       | `3`        | Retired (Issue #4298): the worker no longer asks clarifying questions on an approved issue, so the value is accepted and ignored                                                                       |
 | Grill-me timeout | `grill_me_timeout` | `3600` | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md). |
 | Grill-me kill-after            | `grill_me_kill_after`            | `10`       | Grace period after `grill_me_timeout` before force-kill                                                                                                                                              |
 | Max grill-me rounds | `max_grill_me_rounds` | `20` | Runaway ceiling on grill-me rounds since the latest Ready comment ([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)). The stall guard normally stops grilling first; the ceiling-th round is itself the forced final round |
@@ -1866,7 +1889,8 @@ unless explicitly overridden.
 | ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 1.4.0 this key wins when both are set (Issue #1032). |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
-| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway a new implementation claim must have; `0` disables the floor. When a run timeline is set the floor measures to the two-hour finish deadline (Issue #4245); otherwise to the supervisor hard cap (`VIBE_RUN_MAX_SECONDS`). A claim taken below it would be ended before it could finish setup. Measured against that instant, not the one-hour cycle: the target does not truncate an active claim, but the session budget is bounded by the finish less the kill grace and WIP reserve — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with neither a timeline nor a hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
+| Run finish deadline | `run_finish_seconds` | `7200` | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start. When a timeline is set, agent sessions, extension grants, the claim floor and the drain read this finish (Issues #4244, #4245, #4246). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 | Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
 | Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
@@ -1876,7 +1900,8 @@ unless explicitly overridden.
 > `container_launch.ts` forwards only the
 > variables it sets itself (the base directory, the config path, the host id,
 > the host-disk reading and — when `loop.sh` published them — the run cap pair
-> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`), so it does not reach a
+> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`, and the launcher's hard-kill
+> instant `VIBE_HARD_KILL_AT_EPOCH`), so it does not reach a
 > containerised worker —
 > the default run mode. Use the `.config.json` keys above, which are read from
 > the config mounted at `CONFIG_PATH`. A config key always wins over the
@@ -1889,7 +1914,7 @@ unless explicitly overridden.
 | Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction).                                                                                             |
 | Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                            |
 | Context budget error %         | `context_budget_error_percent`   | `80`       | Usage percentage that triggers a budget error. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                              |
-| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — the execution phase stops and escalates at or above this usage (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring).                               |
+| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — at or above this usage the execution phase trims the comment and CI-log history and retries, then hands the issue to planning (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring). |
 | Max total comment chars | `max_total_comment_chars` | `20000` | Maximum total characters across all comments included in the prompt |
 | Max untrusted comment chars | `max_untrusted_comment_chars` | `2000` | Maximum characters per untrusted comment before truncation |
 | Max untrusted comment count | `max_untrusted_comment_count` | `5` | Maximum number of untrusted comments to include in the prompt |
@@ -1898,8 +1923,8 @@ unless explicitly overridden.
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
 | Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
-| RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. The rewrite hook is a Claude-CLI feature, so a run routed to **Codex, Gemini or DeepSeek** records RTK as `unsupported` and proceeds without it. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
-| Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
+| RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. Codex receives the same worker-authored hook through per-spawn `-c hooks.PreToolUse` configuration with `features.hooks=true` and `--dangerously-bypass-hook-trust`, without writing the operator's `~/.codex`. Codex normalises shell input to `Bash` with a string `command`, so RTK needs no shim. Support is declared by the provider seam's `supportsPreToolUseHooks` capability: Claude and Codex can report `ok` and a saved-token delta; **Gemini and DeepSeek** record `unsupported` and proceed without it. When the switch is off, Codex receives no RTK hook configuration or hook-trust flag. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
+| Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker closes the PR and redoes its issue (Issue #4304). See [Auto-fix attempt cap](#-auto-fix-attempt-cap). |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog repairs it (sync and rerun once, then abandon and redo), or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
 
@@ -2411,44 +2436,66 @@ demonstrably progressing.
 
 Five stages, in the order a claim meets them:
 
-1. **The claim gate is soft.** Past the deadline a slot takes **no new claim**
-   (`slotShouldStop` returns `deadline`); nothing already running is touched.
-   The [claim-runway floor](#-adaptive-claim-floor) refuses a claim for the
-   other reason, and it now measures runway to the supervisor hard cap rather
-   than to the deadline (`hard-cap`, Issue #425) — a claim the cap would kill
-   before it finished setup is the only claim worth refusing early.
-2. **An in-flight claim keeps its full budget.** The execute phase does **not**
-   truncate `claude_timeout` to the runway left (Issue #420). A claim taken at
-   any point inside the cycle gets the whole budget, and the cycle overruns to
-   let it finish.
+1. **The claim gate is soft.** Past the one-hour target a slot takes **no new
+   claim** (`slotShouldStop` returns `deadline`); nothing already running is
+   touched (Issue #4243). The [claim-runway floor](#-adaptive-claim-floor)
+   refuses a claim for the other reason. When a run timeline is set it
+   measures runway to the two-hour finish deadline (Issue #4245); otherwise
+   it measures to the supervisor hard cap (Issue #425). A claim that deadline
+   would end before setup finished is the only claim worth refusing early.
+2. **An in-flight claim keeps its configured budget when the finish leaves
+   room.** The execute phase does **not** truncate `claude_timeout` to the
+   runway left in the one-hour cycle (Issue #420). A claim taken at minute 59
+   has 61 minutes before the two-hour finish. With the default 30 s kill grace
+   and 120 s WIP reserve, its effective session budget is at most 58 minutes
+   30 seconds before preparation (Issue #4245). The requested timeout stays
+   unchanged; the runner uses the smaller of that request and finish − now −
+   the kill grace − 120 s, and the user prompt
+   states the finish deadline (Issue #4244). The runner refreshes that budget
+   after preparation, refuses to spawn below the 120 s minimum, and caps the
+   watchdog at the absolute finish less the kill grace and WIP reserve.
+   A quality, security, summary, screenshot or pre-push recovery released at that
+   deadline preserves its WIP and ends as a scheduled release without
+   another gate run or an issue-failure charge. A custom-label PR run posts
+   that outcome on the PR and asks the developer to re-apply its consumed
+   label next run.
 3. **Extensions re-arm that budget while the run is progressing.** On by
    default (Issue #422) — see
    [Progress-extended deadline](#-progress-extended-deadline) for the two
    signals and the grant size.
-4. **The supervisor's wall-clock cap is the only place a progressing agent is
-   killed.** `VIBE_RUN_MAX_SECONDS` is the ceiling every grant is measured
-   against, less a reserve for the kill grace and the WIP commit-and-push, so
-   the worker's own kill lands *before* the supervisor's SIGTERM — see
+4. **The two-hour finish bounds every grant.** A progress-extension grant is
+   clamped to the finish less the kill grace and the 120 s WIP reserve. A
+   grant that would pass that ceiling is clamped to it, and the
+   `[progress-extension]` line says `grant clamped to the finish deadline`.
+   With no runway left the run is a **scheduled release** because the finish
+   deadline was reached: the WIP commit is kept, and no `failed-once` label,
+   timeout cooldown or worker-fault filing is applied (Issue #4245). The
+   supervisor cap (`VIBE_RUN_MAX_SECONDS`, default 10800 s) remains the outer
+   kill of the process — see
    [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).
-   Work in progress is committed and pushed, the next cycle resumes it, and the
-   issue is reported as a **scheduled release** rather than a failure
-   (Issue #424) — the fleet stopped the agent, not the other way round.
-5. **The drain waits.** `drainSlots` lets a slot that started before the
-   deadline finish, however long that takes. Only a SIGTERM *shutdown* bounds
-   the wait with a grace; a deadline drain does not.
+5. **The drain stops at the finish plus a bounded grace.** The default serial
+   claim uses the same bound as pooled claims. `drainSlots` and
+   the maintenance-lane drain wait no later than the finish plus the kill
+   grace and the 120 s WIP reserve (Issue #4246). At the finish they terminate
+   in-flight agents so the execute path can commit and push; a slot still
+   running when the grace ends has its claim released, and one line names
+   each abandoned item. The run then exits through `Run duration complete.
+   Exiting for refresh.`, and the cycle heartbeat and the success and always
+   run hooks fire as they do on any other end. A SIGTERM shutdown still bounds
+   its own wait with `slotDrainGraceSeconds`.
 
 ```mermaid
 flowchart TD
     S[Slot wants a claim] --> G{Past the deadline,<br/>or inside the runway floor?}
     G -->|yes| D[No new claim — drain]
-    G -->|no| C[Claim taken:<br/>full claude_timeout, never truncated]
+    G -->|no| C[Claim taken:<br/>full budget when the<br/>finish leaves room]
     C --> P{Budget expired?}
     P -->|no| C
     P -->|yes| E{Still progressing?}
     E -->|no| K[Kill — the run ends here]
-    E -->|yes| H{Runway left before<br/>the run hard cap?}
+    E -->|yes| H{Runway left before<br/>finish minus reserve?}
     H -->|yes| X[Extend and keep going] --> C
-    H -->|no| W[Commit and push WIP,<br/>stop before the supervisor does]
+    H -->|no| W[Clamp the grant,<br/>commit and push WIP]
     W --> R[Next cycle resumes the work]
     D --> R
     style W fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -2597,32 +2644,86 @@ but there is one on wall clock, below.
 
 #### The run hard cap bounds every grant
 
-`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 10800 s —
-3 h — `0` disables it) and now exports that cap with the run's start epoch, so
-the worker can see the deadline it is running towards (Issue #421). The cap is
-the outer bound on a cycle that *finishes* the work it started rather than "one
-run plus a margin": with claims no longer truncated at the cycle deadline
-(Issue #397), a claim taken at minute 59 runs its full budget and its progress
-extensions inside it (Issue #423). It sits 600 s under the launcher's container
-watchdog (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host
-never reaps a container this supervisor would still allow to run. The cap is
-the last stage of [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model): the
-only place a still-progressing agent is stopped. Extensions are bounded by it:
+A run has three instants. The **target** is one hour after the start
+(`runDurationSeconds`, 3600 s): past it, nothing new starts (Issue #4243). The
+**finish** is two hours after the start (`run_finish_seconds`, 7200 s): agent
+sessions, progress-extension grants and the claim floor are measured to it
+(Issues #4244, #4245), and the drain stops at the finish plus the kill grace
+and the 120 s WIP reserve (Issue #4246). The **hard cap** is three hours
+(`VIBE_RUN_MAX_SECONDS`, default 10800 s, `0` disables it): the supervisor's
+outer kill of the process (Issue #421).
 
-- The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
-  `claude_kill_after` plus 120 s for the WIP commit-and-push. The worker's own
-  kill therefore lands before the supervisor's SIGTERM, leaving
-  work-in-progress committed and pushed for the next cycle to resume.
-- A grant that would cross the ceiling is **clamped to it**, not refused: a run
-  with 200 s of runway left gets 200 s, and the line says so
-  (`grant clamped to the run hard cap: 200s of runway left, not the full
-  900s`).
+`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` and exports that
+cap with the run's start epoch, so the worker can see the deadline it is
+running towards. The cap sits 600 s under the launcher's container watchdog
+(`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host never
+reaps a container this supervisor would still allow to run. A claim taken at
+minute 59 has 61 minutes before the finish: with the default 150 s combined
+kill grace and WIP reserve, at most 58 minutes 30 seconds remain for its
+session before preparation. The one-hour target does not truncate the request;
+the finish-minus-reserve ceiling bounds the session and every extension grant.
+
+When a timeline is set, extensions are bounded by the finish:
+
+- The **ceiling** is the finish, less `claude_kill_after` plus 120 s for the
+  WIP commit-and-push. A grant that would cross it is **clamped to it**, and
+  the `[progress-extension]` line says `grant clamped to the finish deadline`.
+- With no runway left the check refuses and the run is a scheduled release:
+  `the finish deadline was reached`. The WIP commit is kept. No `failed-once`
+  is added.
+- The claim floor measures runway to the finish itself, which is the reserve
+  later than the ceiling. A claim whose runway is shorter than the floor is
+  refused.
+
+When no timeline is set, the supervisor cap is the ceiling, exactly as before:
+
+- The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less the same reserve.
+  A grant that would cross it is clamped, and the line says
+  `grant clamped to the run hard cap: 200s of runway left, not the full 900s`.
 - With no runway left the check refuses and the run is killed with
   `run hard cap reached`.
 - With `VIBE_RUN_MAX_SECONDS=0`, or the variables absent (a CLI single-issue
-  run, or `run.sh` invoked outside `loop.sh`), there is **no ceiling** and
-  extensions behave exactly as they did before. The run-start `Run hard cap:`
-  line says which of the two applies.
+  run, or `run.sh` invoked outside `loop.sh`), and no timeline, there is **no
+  ceiling** and extensions behave exactly as they did before. The run-start
+  `Run hard cap:` line says which applies.
+
+The launch plan also forwards `VIBE_HARD_KILL_AT_EPOCH` into the container: the
+epoch-seconds at which the launcher watchdog kills it (the plan's time plus the
+watchdog seconds, a conservative bound because an image build may run in
+between). The worker's run timeline (`lib/run_timeline.ts`) reads it as the
+hard-kill deadline, falling back to the `VIBE_RUN_MAX_SECONDS` /
+`VIBE_RUN_STARTED_EPOCH` pair. When it is absent the worker falls back to the
+pair, and only when that pair is also unusable does the run-start `Run timeline:`
+log line say `hard-kill=none (<reason>)`. The same line gives the run's target
+(1 h, `runDurationSeconds`) and finish (2 h, `run_finish_seconds`) as instants.
+The finish and the hard kill are logged and published through
+`lib/run_timeline.ts`. Agent sessions, extension grants, the claim floor and
+the drain read the finish from that publication. The one-hour target remains
+the start gate and is not the finish.
+
+The one-hour target is a start gate (Issue #4243). Once it has passed, nothing
+new starts. The Priority ladder defers the handler it reached, and every one
+after it, to the next cycle, logging one
+`stop reason=deadline — <handler> and any after it defer to the next cycle.`
+line; that covers milestone branch sync and the merge-conflict pass, which are
+ladder handlers. Past the target, the per-item loops take nothing new either,
+in those two handlers and in the Auto-Merge sweep: the merge-conflict drain
+starts no further resolution (one `Merge-conflict drain stopping: the run
+target has passed...` line, reported as a deadline stop), the milestone branch
+sync starts no further repository or milestone (one `Milestone sync stopped
+before ... the run target has passed...` line, and the sync cursor resumes
+there next cycle), and the Auto-Merge sweep's in-cycle milestone sync is
+deferred (one `In-cycle milestone sync deferred for <repo>#<n>: the run target
+has passed...` line; the PR is still armed). An issue run that completes a PR it
+has already claimed still syncs its milestone past the target, because that
+claim is already active. The issue scan takes no new claim,
+on its first pass as on later ones, and the Priority 2 slot pool and the
+maintenance lane refuse a new claim or pass past the target too. The idle-task
+filer is refused as well, logging one line for each refused observation (each
+slot plus the outer-cycle observer), with no permit spent and no transcript,
+audit or census call made. A handler already
+running is not interrupted at the target; it keeps its budget until the
+finish deadline, when the drain terminates it so the checkpoint can land.
 
 #### The agent is told to wind down before the cap (Issue #508)
 
@@ -2722,13 +2823,13 @@ release**, not as the issue defeating the agent:
 - The release comment therefore never says "Claude ran out of time" and never
   advises splitting the issue into sub-issues — that diagnosis is reserved for
   a run that genuinely exhausted its own `claude_timeout`.
-- A scheduled release does **not** enter the `failed-once` → `failed` ladder,
+- A scheduled release does **not** enter the `failed-once` ladder,
   does **not** feed the escalating timeout cooldown, and is **not** auto-filed
   as a worker fault. It is also not classed as an infrastructure failure: the
   bounded in-process retry exists to re-run a transient blip, and a run
   released at the cap has no runway to retry into.
 - The preserved work lands in a `wip:` commit whose subject names the real
-  cause (`wip: execute was released on schedule (cycle ended or run hard cap
+  cause (`wip: execute was released on schedule (cycle ended, finish deadline reached, or run hard cap
   reached) after …`), so the next claimant reads what actually happened.
 - The release comment carries a **Work in progress** line naming the branch
   that work is on, and links the handover file when one exists (Issue #770).
@@ -3790,15 +3891,18 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
 - **A resumed conversation is compacted before the issue's first phase**
   (Issue #2337), because it has carried every issue of the stream so far and
   left alone it is the *next* issue that fills the context window. Claude and
-  DeepSeek — one CLI, so one pair of levers — send `/compact` as the prompt of
-  a `--resume` print run, then **measure** the session's transcript file under
-  `CLAUDE_CONFIG_DIR`: smaller means it worked, and the run logs
-  `compaction: /compact`. Anything short of that proof — an unchanged or larger
-  transcript, a non-zero `/compact` run, a transcript that cannot be measured,
-  a spawn that failed — is treated as uncompacted, and every agent run of the
-  issue instead carries `--autocompact 100000` (the smallest window the CLI
-  accepts, so its own compaction happens earliest), logged as
-  `compaction: autocompact 100000`. A `new` or `reset` stream session has no
+  DeepSeek — one CLI, so one lever — send `/compact` as the prompt of a
+  `--resume` print run, then **verify** it in the session's transcript under
+  `CLAUDE_CONFIG_DIR`: the transcript is append-only, so a working `/compact`
+  grows the file and adds a `compact_boundary` record. A new boundary means it
+  worked, and the run logs `compaction: /compact` (Issue #4116). Anything short
+  of that proof — no new boundary, a non-zero `/compact` run, a transcript that
+  cannot be read, a spawn that failed — starts the issue on a **new session**
+  instead of resuming the uncompacted one, logged as
+  `compaction: fresh session`; the stream carries on from that conversation.
+  (The earlier fallback, `--autocompact 100000`, set the CLI's compaction
+  trigger below the size of the issue prompt itself, so runs aborted with
+  "Autocompact is thrashing".) A `new` or `reset` stream session has no
   conversation to compact and logs `compaction skipped: new stream session`
   without spending a CLI call, and Codex and Gemini expose no compaction
   control at all, so they carry the full transcript and log
@@ -4006,7 +4110,7 @@ performance, or failures.
 | ------------------ | -------------------------------- | ------- | ------------------------------------------------------------------------------------------ |
 | Warning threshold  | `context_budget_warning_percent` | `50`    | Usage percentage that triggers a warning in the budget log                                 |
 | Error threshold    | `context_budget_error_percent`   | `80`    | Usage percentage that triggers an error in the budget log                                  |
-| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase stops and escalates at or above this usage |
+| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase trims history, retries, then hands the issue to planning |
 
 ```json
 {
@@ -4026,11 +4130,15 @@ performance, or failures.
    id such as `claude-haiku-4-5`).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
-4. If usage reaches `context_budget_block_percent`, the check fails closed
-  : the execution phase stops **before** the billed Claude
-   invocation, applies `needs-human`, and posts an explanation comment. Warning
-   and error thresholds remain observational — only the blocking threshold
-   stops work.
+4. If usage reaches `context_budget_block_percent`, the check fails closed:
+   the execution phase stops **before** the billed Claude invocation. It never
+   hands the issue to a human (Issue #4298). It rebuilds the prompt with the
+   comment history (and, on the CLI path, the CI log and recent activity)
+   trimmed and checks again. A prompt that still does not fit goes to planning
+   through the `vibe-needs-planning` hand-off, which splits the issue into
+   sub-issues; when planning cannot take it, the run fails and the issue is
+   retried on the normal `failed-once` ladder. Warning and error thresholds
+   remain observational — only the blocking threshold stops work.
 5. Budget entries are written to a daily JSON log file for operational
    visibility.
 
@@ -4051,9 +4159,9 @@ The budget log records each invocation's token breakdown, enabling operators to:
 - **Raise `context_budget_error_percent`** (e.g., to `90`) if you are
   comfortable operating closer to the context limit.
 - **Set `context_budget_block_percent` to `0`** to disable the hard ceiling and
-  restore warn-only behaviour. Raising it instead of splitting the issue only
-  defers the truncation — an issue that reaches 95% of the window will not
-  converge by retrying.
+  restore warn-only behaviour. Raising it only defers the truncation — an
+  issue that reaches 95% of the window will not converge by retrying, which
+  is why the worker sends it to planning.
 - The monitoring is lightweight (< 10 ms overhead). The warning and error
   thresholds are observational; the blocking threshold is the only one that
   stops a phase.
@@ -4448,7 +4556,7 @@ when nothing else is queued) avoids burning premium tokens.
 | `phase_model_overrides` | object | Per-repo per-phase model map (e.g. `{ "issue": "fable" }`). Same shape as the global `phase_model_overrides`.       |
 | `phase_effort_overrides`| object | Per-repo per-phase effort map (e.g. `{ "issue": "xhigh" }`). Same shape as the global `phase_effort_overrides`.     |
 | `codex_model`           | string | Per-repo base **Codex** model tier overriding the Codex phase defaults for every phase in this repo — the Codex counterpart of `claude_model`. |
-| `codex_phase_model_overrides` | object | Per-repo per-phase **Codex** model map (e.g. `{ "issue": "gpt-5-mini" }`). Same shape as the global `codex_phase_model_overrides`. |
+| `codex_phase_model_overrides` | object | Per-repo per-phase **Codex** model map (e.g. `{ "issue": "gpt-6-luna" }`). Same shape as the global `codex_phase_model_overrides`. |
 | `codex_phase_effort_overrides`| object | Per-repo per-phase **Codex** effort map (e.g. `{ "issue": "medium" }`). Same shape as the global `codex_phase_effort_overrides`. |
 | `gemini_model`          | string | Per-repo base **Gemini** model tier overriding the Gemini phase defaults for every phase in this repo — the Gemini counterpart of `claude_model`. |
 | `gemini_phase_model_overrides` | object | Per-repo per-phase **Gemini** model map (e.g. `{ "issue": "gemini-2.5-flash-lite" }`). Same shape as the global `gemini_phase_model_overrides`. |
@@ -4644,7 +4752,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `deepseek_model`        | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `deepseek_phase_model_overrides` | object | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `issue_executor_split` | boolean | Per-repo issue-executor split, overriding the host-wide `issue_executor_split` for this repository. Set `false` here to opt one repository out of a host that enables it (the default since Issue #2812), or `true` to opt one repository in on a host that does not. Omitted, the host-wide value stands. Only the `issue` phase is affected. The per-host counters behind the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) do not separate repositories, so a per-repo opt-out blurs them. |
-| `issue_sub_agent_tier` | string | Per-repo model tier for the `issue`-phase executor and Standards-reviewer sub-agents and the read-only explorer (Issue #3402), overriding the host-wide `issue_sub_agent_tier` for this repository. `"sonnet"` or `"haiku"` — see the host-wide key above for what each tier does. It is also the tier that repository's issue runs count under in the fleet summary's per-tier figures and record in the PR body's hidden `vibe-sub-agent-tier` marker (Issue #3403). Omitted, the host-wide value stands. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the host-wide value stands. |
+| `issue_sub_agent_tier` | string | Per-repo model tier for the `issue`-phase executor sub-agent and the read-only explorer (Issue #3402; the reviewers are Opus at every tier), overriding the host-wide `issue_sub_agent_tier` for this repository. `"sonnet"` or `"haiku"` — see the host-wide key above for what each tier does. It is also the tier that repository's issue runs count under in the fleet summary's per-tier figures and record in the PR body's hidden `vibe-sub-agent-tier` marker (Issue #3403). Omitted, the host-wide value stands. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the host-wide value stands. |
 
 **Use cases:**
 
@@ -4795,8 +4903,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and sweep ledger `sweptAt`
-ancestry) still run and can fail the run. Unlike Step 1b, the completion gate
+fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
+test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
@@ -4811,7 +4919,15 @@ remote lookup that fails (a network error, a timeout) is not reported as the
 branch failing its checks: it fails the run as a push failure, which is retried
 in-run (PR #3716 review). In Step 1b the pre-flight commands
 re-run only when Step 1 committed nothing; in the completion phase they run
-before every push.
+before every push. A verdict block (not an infrastructure failure) on the first
+block of a run resumes the agent session for exactly one extra turn
+(`worker/deno/lib/pre_push_gate_retry.ts`, timeout
+`pre_push_retry_timeout_seconds`) with the gate output in the prompt; the worker
+then re-runs the formatters and the same gate, and pushes only if it passes. A
+second block in the same run, including one after push recovery, gets no further
+turn and fails with category `pre-push-gate` quoting the latest gate output. An
+invocation error or timeout of that extra turn fails the run with the original
+gate output. The gate is never bypassed.
 
 Before each of those completion-phase gate runs, and before every quality-gate
 attempt (`./quality.sh`), the issue run first runs the repository's own
@@ -4823,8 +4939,14 @@ round. The formatters cover exactly what the gate's format checks would flag:
 `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
 `.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
 `include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
-files changed. Markdown is never formatted: `deno fmt` re-wraps whole documents
-and trips markdownlint MD018, so a Markdown miss is left to the check to report.
+files changed. Markdown outside `docs/archive/pr-summaries/` and
+`docs/archive/handover/` is never formatted: `deno fmt` re-wraps whole documents
+and trips markdownlint MD018, so a Markdown miss there is left to the check to
+report. Those two directories are the worker's own notes, and `docs/archive/`
+is excluded from the markdownlint globs. After the repository formatters,
+`formatBeforeGate` runs `deno fmt` on the Markdown and JSON the branch changed
+under them and commits that too. A missing formatter or a write failure is
+logged, and the gate still runs.
 Only the formatted paths are staged. A formatter that is missing, fails or
 throws never fails the run on its own: it is logged, and the gate that follows
 still runs every check and reports what was left unfixed.
@@ -4845,7 +4967,9 @@ The hook runs two stages:
    completion phase widens the range to every non-merge commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
-   config would check, see below):
+   config would check, see below). The one exception is the Floci deploy test
+   below: a changed file only triggers it, and it is passed no files, so it
+   deploys every template in `infra/cloudformation/`, changed or not:
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
      ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
@@ -4879,15 +5003,21 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
-   - **sweep ledger `sweptAt` ancestry**, only when the push changes
-     `docs/audits/lib-sweep-coverage.json` or a
-     `docs/audits/lib-sweep-coverage/top-up-*.json`: it checks that the
-     `sweptAt` of just the slices those files contribute is an ancestor of the
-     default branch (`origin/HEAD`, resolved with
-     `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
-     "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
-     `sweptAt` is caught before the push. A shallow clone is deepened first.
-     When no ledger file changed, this check makes no git calls.
+   - **Floci CloudFormation deploy test** (Issue #3727), only when the push
+     adds or modifies a file whose path starts with `infra/cloudformation/` and
+     the repo tracks `infra/cloudformation/test-floci.sh`: it runs
+     `bash infra/cloudformation/test-floci.sh` from the repo root, after the
+     other changed-file checks. That is the same script
+     `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
+     creates an `AWS::EC2::Instance` when there is no Docker socket is printed
+     `SKIPPED (needs Docker): <template>` and left to CI. When every template
+     is skipped the script exits 0 there, before it checks for the `aws` CLI
+     or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
+     and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
+     answers there. The worker container has no Docker socket and no `aws`
+     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
+     the container this check skips it, exits 0 and never starts `floci`; only
+     a host with Docker and the `aws` CLI exercises it.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -4897,10 +5027,10 @@ It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
-does not); a changed sweep ledger file whose default branch
-cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
-is not on the default branch refuses the push; a missing hook module, spec or
-`deno` binary refuses the push. Refusals print lines starting
+does not); a Floci deploy test that exits
+non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+a deployable template, refuses the push; a missing hook module, spec or `deno`
+binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 
@@ -4931,9 +5061,13 @@ git commands.
 A hands-off fetch → diagnose → fix → merge loop on an **unfixable** failure
 would otherwise burn model spend indefinitely and flood the PR with
 near-identical "attempted fix" comments. After `max_auto_fix_attempts`
-(default `3`) attempts at the *same* failure, the worker stops, applies
-`needs-human`, and posts **one** consolidated summary of every attempt —
-never a fourth "I tried again" note.
+(default `3`) attempts at the *same* failure, the worker stops, closes the
+PR and re-queues its originating issue through the stall-repair rung
+(`abandonAndRestart`) — never a fourth "I tried again" note, and never
+`needs-human` (Issue #4304). Every attempt's diagnosis stays on the closed
+PR's thread. Between attempts, a run that pushes nothing re-runs the failed
+jobs itself (`gh run rerun <run-id> --failed`) rather than asking a reviewer
+to, and a repeat failure on the same head is retried from that diagnosis.
 
 **The budget is the fleet's, not the host's.** The tally lives on the pull
 request itself, as a fleet-authored marker inside each comment the lane posts
@@ -5199,18 +5333,21 @@ the next cycle — and climbs a two-trip ladder:
   red CI, it counts for three thresholds (6 hours by default), which covers the
   CI rerun the first trip's sync starts; a red-CI marker days old belongs to an
   earlier stall.
-- **Auto-fix cap** — a PR carrying the
+- **Auto-fix cap** — a PR carrying the legacy
   [auto-fix attempt cap](#-auto-fix-attempt-cap) marker skips the rerun (its
-  lane has already given up) and goes straight to the second trip.
+  lane has already given up) and goes straight to the second trip. Since
+  Issue #4304 the CI-fix lane abandons a capped PR itself, so no new marker
+  is written.
 - **Human-authored PRs** — only a PR a push-capable fleet login authored is
   repaired or abandoned. Anyone else's stalled PR is logged and left alone.
-- **A `needs-human` PR is left alone.** Before the lease is even taken, a
-  fleet PR carrying `needs_human_label` — hand-applied by a reviewer, or
-  applied by a lane's own escalation (e.g. the CI-fix lane's "log fetch
-  blocked by credentials" hand-off, which leaves the PR red but posts no
-  auto-fix-cap marker) — is skipped with no comment, no sync and no lane
-  rerun. A human already owns the PR; the same veto the merge-conflict
-  watchdog applies (`docs/workflows/merge-conflicts.md`).
+- **A `needs-human` PR is repaired, not parked (Issue #4304).** A fleet PR
+  carrying `needs_human_label` — a legacy escalation, or one hand-applied —
+  has the label removed under the lease and then takes the same two-trip
+  repair as any other stalled PR. The one exception is a PR held for a
+  credential rotation: when its thread carries the fleet's
+  `history-rewrite:` escalation marker (a secret already in the base
+  branch's history), it is skipped with no comment, no sync and no lane
+  rerun, because no repair can clear it.
 
 Only fleet-authored marker comments count, so an outsider cannot trip the
 ladder by pasting a marker.

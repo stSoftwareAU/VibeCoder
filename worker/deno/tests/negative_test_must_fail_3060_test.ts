@@ -3,11 +3,13 @@
  * Issue #3060 — fleet PRs were sent back for negative tests whose fixture
  * never held the forbidden value, so the test passed with or without the
  * guard it was meant to protect. CODING-STANDARDS.md and the
- * coding_guidelines prompt must both carry the same "a negative test must be
- * able to fail" rule, inside the test-coverage section, word for word once
- * wrapping is ignored; the "Choosing assertions" section must point back to
- * it; and the issue prompt's Test Plan step must require seeing the guard's
- * red run before counting a negative test.
+ * coding_guidelines prompt must both carry the same rule, inside the
+ * test-coverage section, word for word once wrapping is ignored. The rule is
+ * now named "A test must be able to fail on the wrong input" (renamed by
+ * Issue #3851; it was "A negative test must be able to fail"). The
+ * "Choosing assertions" section must point back to it; and the issue prompt's
+ * Test Plan step must require seeing the guard's red run before counting a
+ * negative test.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -21,7 +23,7 @@ import {
   section,
 } from "./support/markdown_docs.ts";
 
-const PARAGRAPH_START = "**A negative test must be able to fail.**";
+const PARAGRAPH_START = "**A test must be able to fail on the wrong input.**";
 
 function negativeTestParagraph(sectionText: DocSection, what: string): string {
   const start = sectionText.indexOf(PARAGRAPH_START);
@@ -76,7 +78,7 @@ Deno.test("Choosing assertions points back at the negative-test rule (Issue #306
   );
 
   assert(
-    text.includes("A negative test must be able to fail"),
+    text.includes("A test must be able to fail on the wrong input"),
     `Choosing assertions is missing the back-reference: ${text}`,
   );
   assert(

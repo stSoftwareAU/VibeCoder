@@ -1,10 +1,13 @@
 /**
  * Batched check-runs + status fetcher (Issue #1806).
  *
- * Replaces the per-PR pair of REST calls — `commits/{sha}/check-runs` +
- * `commits/{sha}/status` — with a single GraphQL `statusCheckRollup`
- * query. The query batches many PRs per repo via aliases (mirrors
- * `timeline_batch.ts`), reducing N PRs from 2N REST calls to
+ * Replaces the per-PR REST reads — `commits/{sha}/check-runs`,
+ * `commits/{sha}/status` and `commits/{sha}/check-suites` — with a single
+ * GraphQL query per batch: `statusCheckRollup` for check runs and commit
+ * statuses, and `checkSuites` for the head commit's check suites (Issue
+ * #4347: a suite such as a `startup_failure` can carry no check run at all).
+ * The query batches many PRs per repo via aliases (mirrors
+ * `timeline_batch.ts`), reducing N PRs from 3N REST calls to
  * `ceil(N / CHECK_RUNS_BATCH_SIZE)` GraphQL calls.
  *
  * Provides adapters back to the legacy REST shapes
@@ -21,6 +24,7 @@ import { runGhCommand } from "./github.ts";
 import type {
   CheckRun,
   CheckRunsResponse,
+  CheckSuite,
   CombinedStatusResponse,
   CommitStatus,
 } from "./direct_merge.ts";
@@ -49,7 +53,37 @@ export interface RollupStatusContext {
   state: string;
 }
 
-/** Aggregate rollup for a single PR (check-runs + commit statuses). */
+/**
+ * A GitHub Actions check suite (or any other app's suite) on the head commit,
+ * as returned by the GraphQL `checkSuites` connection (Issue #4347).
+ *
+ * A suite exists even when it runs no check run: a workflow that fails at
+ * startup is recorded as a completed suite with conclusion `startup_failure`
+ * and zero check runs, so the check-run rollup alone cannot see it.
+ */
+export interface RollupCheckSuite {
+  /** The suite's database id; null when the response did not carry one. */
+  id: number | null;
+  /** The app's slug (e.g. "github-actions"); null when the app is unknown. */
+  appSlug: string | null;
+  /** Lowercased to match REST conventions (e.g. "completed", "queued"). */
+  status: string;
+  /** Lowercased (e.g. "success", "startup_failure"); null when not finished. */
+  conclusion: string | null;
+  /**
+   * Check runs this suite created (`checkRuns.totalCount`). Zero means the
+   * suite is invisible to the rollup (Issue #4347).
+   */
+  checkRunCount: number;
+  /** Workflow name from `workflowRun.workflow`, when the suite has a run. */
+  workflowName?: string | null;
+  /** Workflow file path, for example `.github/workflows/actionlint.yml`. */
+  workflowPath?: string | null;
+  /** HTML URL of the workflow run, when GitHub returned one. */
+  runUrl?: string | null;
+}
+
+/** Aggregate rollup for a single PR (check-runs + commit statuses + check suites). */
 export interface PrRollup {
   /** GraphQL rollup state (uppercase) or null when no rollup is present. */
   rollupState: string | null;
@@ -62,6 +96,13 @@ export interface PrRollup {
   headSha: string | null;
   checkRuns: RollupCheckRun[];
   statusContexts: RollupStatusContext[];
+  /**
+   * The head commit's check suites, read from the GraphQL `checkSuites`
+   * connection. Empty when the response carried no commit node; a response
+   * whose commit lacks the connection is malformed and is never read as an
+   * empty list (Issue #4347).
+   */
+  checkSuites: RollupCheckSuite[];
 }
 
 /** Result of a batched rollup fetch. */
@@ -91,8 +132,9 @@ function parseRepo(repo: string): { owner: string; name: string } {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a single GraphQL query that pulls `statusCheckRollup` for a
- * batch of PRs using aliases (`n0`, `n1`, ...).
+ * Build a single GraphQL query that pulls `statusCheckRollup` and the
+ * head commit's `checkSuites` for a batch of PRs using aliases (`n0`,
+ * `n1`, ...).
  */
 export function buildCheckRunsBatchQuery(
   owner: string,
@@ -105,6 +147,7 @@ export function buildCheckRunsBatchQuery(
         `n${i}: pullRequest(number: ${num}) {
           commits(last: 1) { nodes { commit {
             oid
+            checkSuites(first: 100) { nodes { databaseId app { slug } status conclusion checkRuns(first: 1) { totalCount } workflowRun { url file { path } workflow { name } } } }
             statusCheckRollup {
               state
               contexts(first: 100) { nodes {
@@ -139,6 +182,9 @@ interface BatchPrNode {
 interface BatchCommitWrapper {
   commit?: {
     oid?: string | null;
+    checkSuites?: {
+      nodes?: Array<BatchCheckSuiteNode | null> | null;
+    } | null;
     statusCheckRollup?: {
       state?: string | null;
       contexts?: {
@@ -160,12 +206,80 @@ interface BatchContextNode {
   state?: string | null;
 }
 
+interface BatchCheckSuiteNode {
+  databaseId?: number | null;
+  app?: { slug?: string | null } | null;
+  status?: string | null;
+  conclusion?: string | null;
+  checkRuns?: { totalCount?: number | null } | null;
+  workflowRun?: {
+    url?: string | null;
+    file?: { path?: string | null } | null;
+    workflow?: { name?: string | null } | null;
+  } | null;
+}
+
+/**
+ * Decode the head commit's `checkSuites` connection (Issue #4347).
+ *
+ * No commit node means no suites. A present commit node must carry
+ * `checkSuites.nodes` as an array — GraphQL selects the connection and its
+ * documented empty state is `nodes: []` — so a missing key, or a null entry,
+ * is a malformed response. It throws rather than defaulting to an empty list,
+ * because an unread suite could be the failed one.
+ */
+function decodeCheckSuites(
+  commit: BatchCommitWrapper["commit"],
+  prNumber: number,
+): RollupCheckSuite[] {
+  if (!commit) return [];
+  const nodes = commit.checkSuites?.nodes;
+  if (!Array.isArray(nodes)) {
+    throw new Error(
+      `GraphQL response for PR #${prNumber} lacks commit.checkSuites.nodes`,
+    );
+  }
+  return nodes.map((node) => {
+    if (!node) {
+      throw new Error(
+        `GraphQL response for PR #${prNumber} has a null checkSuites node`,
+      );
+    }
+    const slug = node.app?.slug;
+    const count = node.checkRuns?.totalCount;
+    if (typeof count !== "number") {
+      throw new Error(
+        `GraphQL response for PR #${prNumber} lacks checkSuites.checkRuns.totalCount`,
+      );
+    }
+    const workflow = node.workflowRun?.workflow;
+    const workflowPath = node.workflowRun?.file?.path;
+    const runUrl = node.workflowRun?.url;
+    return {
+      id: typeof node.databaseId === "number" ? node.databaseId : null,
+      appSlug: typeof slug === "string" ? slug : null,
+      status: typeof node.status === "string" ? node.status.toLowerCase() : "",
+      conclusion: typeof node.conclusion === "string"
+        ? node.conclusion.toLowerCase()
+        : null,
+      checkRunCount: count,
+      workflowName: typeof workflow?.name === "string" ? workflow.name : null,
+      workflowPath: typeof workflowPath === "string" ? workflowPath : null,
+      runUrl: typeof runUrl === "string" ? runUrl : null,
+    };
+  });
+}
+
 /**
  * Convert one batch GraphQL response into per-PR `PrRollup` records.
  *
  * Takes the already-narrowed `data.repository` node — the caller has
  * verified it is present — so the converter needs no non-null
  * assertion and the invariant is encoded in the signature.
+ *
+ * Throws when a present commit node carries a malformed `checkSuites`
+ * connection (see {@link decodeCheckSuites}); the caller turns that into an
+ * error result.
  */
 function convertBatch(
   repoNode: Record<string, BatchPrNode | null>,
@@ -176,17 +290,16 @@ function convertBatch(
     const num = prNumbers[i];
     if (num === undefined) continue;
     const prNode = repoNode[`n${i}`];
-    const rollup: PrRollup = {
-      rollupState: null,
-      headSha: null,
-      checkRuns: [],
-      statusContexts: [],
-    };
-
     const commitNodes = prNode?.commits?.nodes ?? [];
     const wrapper = commitNodes[0] ?? null;
     const oid = wrapper?.commit?.oid;
-    rollup.headSha = typeof oid === "string" && oid !== "" ? oid : null;
+    const rollup: PrRollup = {
+      rollupState: null,
+      headSha: typeof oid === "string" && oid !== "" ? oid : null,
+      checkRuns: [],
+      statusContexts: [],
+      checkSuites: decodeCheckSuites(wrapper?.commit ?? null, num),
+    };
     const checkRollup = wrapper?.commit?.statusCheckRollup ?? null;
     if (checkRollup) {
       rollup.rollupState = checkRollup.state ?? null;
@@ -222,10 +335,11 @@ function convertBatch(
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch `statusCheckRollup` for many PRs in a single repo using batched
- * GraphQL calls. Returns a map keyed by PR number with the rollup data
- * in a normalised shape. On any failure (network, parse, malformed
- * response, GraphQL errors) returns an error result so the caller can
+ * Fetch `statusCheckRollup` and the head commit's `checkSuites` for many PRs
+ * in a single repo using batched GraphQL calls. Returns a map keyed by PR
+ * number with the rollup data in a normalised shape. On any failure (network,
+ * parse, malformed response — including a commit whose `checkSuites` is
+ * missing — or GraphQL errors) returns an error result so the caller can
  * fall back to the per-PR REST path.
  */
 export async function fetchCheckRunsBatch(
@@ -307,7 +421,15 @@ export async function fetchCheckRunsBatch(
       };
     }
 
-    const batchMap = convertBatch(repoNode, slice);
+    let batchMap: Map<number, PrRollup>;
+    try {
+      batchMap = convertBatch(repoNode, slice);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err : new Error(String(err)),
+      };
+    }
     for (const [num, rollup] of batchMap) {
       merged.set(num, rollup);
     }
@@ -322,7 +444,8 @@ export async function fetchCheckRunsBatch(
 
 /**
  * Convert a rollup to the legacy `CheckRunsResponse` shape used by
- * `direct_merge.determineCiStatus`.
+ * `direct_merge.determineCiStatus`, including the head commit's check suites
+ * as the REST `check_suites` shape (Issue #4347).
  */
 export function rollupToCheckRunsResponse(rollup: PrRollup): CheckRunsResponse {
   const check_runs: CheckRun[] = rollup.checkRuns.map((cr) => ({
@@ -331,7 +454,14 @@ export function rollupToCheckRunsResponse(rollup: PrRollup): CheckRunsResponse {
     status: cr.status,
     conclusion: cr.conclusion,
   }));
-  return { total_count: check_runs.length, check_runs };
+  const check_suites: CheckSuite[] = rollup.checkSuites.map((s) => ({
+    ...(s.id === null ? {} : { id: s.id }),
+    app_slug: s.appSlug,
+    status: s.status,
+    conclusion: s.conclusion,
+    check_run_count: s.checkRunCount,
+  }));
+  return { total_count: check_runs.length, check_runs, check_suites };
 }
 
 /**
@@ -393,6 +523,87 @@ export function rollupToFailedCheckRuns(
     }));
 }
 
+/** The app slug of GitHub Actions (Issue #4347). */
+export const ACTIONS_APP_SLUG = "github-actions";
+
+/** Conclusion of an Actions suite whose workflow was rejected at startup. */
+export const STARTUP_FAILURE_CONCLUSION = "startup_failure";
+
+/**
+ * The CI-fix scan's view of the head commit's startup-failed Actions suites
+ * (Issue #4347). A workflow rejected at startup is a completed
+ * `github-actions` suite with conclusion `startup_failure` and no check run,
+ * so {@link rollupToFailedCheckRuns} never sees it. Each such suite becomes a
+ * synthetic entry keyed by the suite id — a suite has no check-run id — so the
+ * scan raises a CI-fix task for it instead of leaving it to a review round trip.
+ */
+/**
+ * Name and location of the workflow run behind a startup-failed suite.
+ * Absent fields keep a stable generic entry name.
+ */
+export interface StartupFailedWorkflow {
+  name?: string | null;
+  path?: string | null;
+  htmlUrl?: string | null;
+}
+
+/**
+ * The CI-fix candidate for one startup-failed suite (Issue #4347).
+ *
+ * The name carries the workflow and its file path when the run could be
+ * looked up. Run-specific details go into annotations so the check name and
+ * retry signature remain stable across pushes.
+ */
+export function startupFailedSuiteEntry(
+  suiteId: number,
+  workflow?: StartupFailedWorkflow,
+): CheckRunEntry {
+  const path = workflow?.path ?? null;
+  const name = workflow?.name ?? null;
+  const url = workflow?.htmlUrl ?? null;
+  let label = "GitHub Actions workflow startup failure";
+  if (path) {
+    const title = name && name.length > 0 ? name : "GitHub Actions";
+    label = `${title} (${path})`;
+  } else if (name && name.length > 0) {
+    label = name;
+  }
+  return {
+    id: suiteId,
+    checkSuiteId: suiteId,
+    name: label,
+    status: "completed",
+    conclusion: STARTUP_FAILURE_CONCLUSION,
+    annotations: [{
+      path: path ?? "(workflow path unavailable)",
+      start_line: 1,
+      message: "GitHub Actions rejected this workflow before any job started." +
+        (url ? ` Workflow run: ${url}` : ""),
+    }],
+  };
+}
+
+/** See {@link startupFailedSuiteEntry}. */
+export function rollupToStartupFailedSuites(
+  rollup: PrRollup,
+): CheckRunEntry[] {
+  const entries: CheckRunEntry[] = [];
+  for (const suite of rollup.checkSuites) {
+    if (
+      suite.id === null || suite.appSlug !== ACTIONS_APP_SLUG ||
+      suite.status !== "completed" ||
+      suite.conclusion !== STARTUP_FAILURE_CONCLUSION ||
+      suite.checkRunCount !== 0
+    ) continue;
+    entries.push(startupFailedSuiteEntry(suite.id, {
+      name: suite.workflowName,
+      path: suite.workflowPath,
+      htmlUrl: suite.runUrl,
+    }));
+  }
+  return entries;
+}
+
 // ---------------------------------------------------------------------------
 // fetchFailedCheckRunsBatch — convenience helper for pr_maintenance
 // ---------------------------------------------------------------------------
@@ -410,6 +621,10 @@ export function rollupToFailedCheckRuns(
  * @param prNumbers - List of PR numbers to query
  * @param ghCommandFn - Injectable gh runner (defaults to runGhCommand)
  * @param conclusions - Conclusions to keep (default `["failure"]`)
+ * @param observe - Called with each PR's rollup before it is reduced
+ * @param includeStartupFailedSuites - Also return the head commit's
+ *   startup-failed Actions suites, which carry no check run (Issue #4347);
+ *   only the CI-fix scan sets it
  * @returns Map of failed check runs per PR, or null on failure
  */
 export async function fetchFailedCheckRunsBatch(
@@ -418,6 +633,7 @@ export async function fetchFailedCheckRunsBatch(
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   conclusions: readonly string[] = ["failure"],
   observe?: (prNumber: number, rollup: PrRollup) => Promise<void>,
+  includeStartupFailedSuites = false,
 ): Promise<Map<number, CheckRunEntry[]> | null> {
   if (prNumbers.length === 0) return new Map();
   const result = await fetchCheckRunsBatch(repo, prNumbers, ghCommandFn);
@@ -425,7 +641,12 @@ export async function fetchFailedCheckRunsBatch(
   const out = new Map<number, CheckRunEntry[]>();
   for (const [num, rollup] of result.rollups) {
     await observe?.(num, rollup);
-    out.set(num, rollupToFailedCheckRuns(rollup, conclusions));
+    out.set(num, [
+      ...rollupToFailedCheckRuns(rollup, conclusions),
+      ...(includeStartupFailedSuites
+        ? rollupToStartupFailedSuites(rollup)
+        : []),
+    ]);
   }
   return out;
 }

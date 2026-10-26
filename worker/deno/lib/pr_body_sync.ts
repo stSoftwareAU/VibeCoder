@@ -3,18 +3,11 @@
  *
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
- * sections — evidence, milestone, the leading degraded-run or
- * partial-delivery section, bump note, footer). That leading section is
- * re-derived at sync time from the current issue and summary rather than
- * copied forward (Issue #3350, #3506), except that a partial-delivery section
- * whose follow-up number cannot be read is kept as it is. Re-deriving a
- * section the live body already carries only reads the issue and never writes
- * to the follow-up (PR #3676 review). When the live body has no leading
- * section and the rebuilt summary newly marks a criterion `partial` or
- * `missing`, the sync files or reuses the follow-up (or, on a partial-delivery
- * follow-up, hands the issue to a human) through `pr_body_sync_follow_up.ts`,
- * from issue content that passed the pickup content-integrity check, and fails
- * loudly if it cannot (Issue #3678). Before Issue #3089, a review-fix run that
+ * sections — evidence, milestone, bump note, footer). A sync never files an
+ * issue: a criterion still `partial` or `missing` blocks the PR at completion
+ * instead (Issue #4146), so the degraded-run and partial-delivery sections and
+ * the follow-up filing they carried (Issues #3350, #3506, #3678) are gone.
+ * Before Issue #3089, a review-fix run that
  * rewrote that summary file and pushed new commits never touched the PR body
  * again, so a reviewer reading the description kept seeing the original summary
  * while the diff underneath it changed.
@@ -38,9 +31,8 @@
  * overwrites the body when the summary file was deleted — a missing file is
  * treated as "nothing to refresh", not as "blank the body".
  *
- * Issue #3535: the structured Branch outcomes facts file beside the summary is
- * rendered into the rebuilt body and its content is part of the digest input,
- * so a push changing only the facts still refreshes the body.
+ * The digest is of the summary alone (Issue #4234). A facts file beside the
+ * summary is not part of the digest and is not rendered into the body.
  *
  * Issue #3760: the digest-reconcile pass in `pr_body_reconcile.ts` is a further
  * caller, whoever pushed the PR head. It compares the digest the live body
@@ -77,12 +69,6 @@ import { buildWorkerFooter } from "./worker_identity.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
 import {
-  applyBranchOutcomesFacts,
-  prSummaryDigestInput,
-  prSummaryFactsPath,
-  resolveBranchOutcomesFacts,
-} from "./pr_summary_facts.ts";
-import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
 } from "./screenshot_validation.ts";
@@ -93,25 +79,16 @@ import {
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
 import {
-  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
-  rederiveDegradedSection,
-  rederiveFollowUpChainStopSection,
-  rederiveReportedGapSection,
-  REPORTED_GAP_SECTION_HEADING,
-} from "./degraded_delivery.ts";
-import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
+import { GITHUB_ISSUE_BODY_MAX_CHARS } from "./idle_task_body_limit.ts";
 import {
-  addReportedGapSectionOnSync,
-  parseSyncParentIssue,
-  summaryReportsGap,
-  SYNC_PARENT_ISSUE_FIELDS,
-  type SyncFollowUpFiling,
-  type SyncParentIssue,
-} from "./pr_body_sync_follow_up.ts";
+  degradePrBodyToGitHubLimit,
+  isGitHubBodyTooLongMessage,
+  prSummaryFilePath,
+} from "./pr_body_length.ts";
 
 /** Relative path of the PR summary file inside a repo checkout. */
 function prSummaryPath(issueNumber: number): string {
@@ -320,12 +297,6 @@ export interface SyncPrBodyDeps {
   /** Runs a `git` command. */
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
-  /**
-   * Files the follow-up when the rebuilt summary newly reports a gap on a body
-   * with no leading section (Issue #3678). `undefined` means not wired, and
-   * such a sync then fails loudly rather than filing nothing.
-   */
-  followUpFiling: SyncFollowUpFiling | undefined;
 }
 
 /** Outcome of a sync attempt. */
@@ -382,34 +353,169 @@ function extractBumpSkipNote(body: string): string {
     : "";
 }
 
+/** Metadata shared by candidate verification and publication. */
+export type PrBodyCandidateView = Pick<
+  PrViewJson,
+  "body" | "files" | "headRefName"
+>;
+
+export type SyncedPrBodyCandidate =
+  | { kind: "candidate"; body: string; issueNumber: number; adopting: boolean }
+  | { kind: "ineligible"; reason: string };
+
 /**
- * The leading section PR creation prepends under `heading`: the degraded-run
- * section (Issue #2562) or a healthy run's partial-delivery section
- * (Issue #3506).
- *
- * It exists only on the live body — the summary file does not carry it — so
- * this only locates it; the caller re-derives its content from current state
- * rather than copying it forward (Issue #3350), keeping a partial-delivery
- * section as it is when its follow-up number cannot be read. Only a block that opens the
- * body counts; a later mention is the summary quoting the phrase.
+ * Build the description for the checkout without publishing or uploading images.
+ * Verification always rebuilds; publication retains its existing staleness checks.
+ * Both paths share ownership, adoption, facts rendering and body assembly (#3982).
  */
-function extractLeadingSection(body: string, heading: string): string {
-  const start = body.indexOf(heading);
-  if (start === -1) return "";
-  if (body.slice(0, start).trim().length > 0) return "";
-  // Stop at the next heading of any level. Archived summaries open with an
-  // H1 (`# PR Summary — …`) before `## Summary`, and cutting only at `\n## `
-  // carried that title — and one more copy of it on every later sync.
-  const lines = body.slice(start).split("\n");
-  let end = lines.length;
-  for (let i = 1; i < lines.length; i++) {
-    if (/^#{1,6} /.test(lines[i] ?? "")) {
-      end = i;
-      break;
+export async function buildSyncedPrBodyCandidate(
+  input: SyncPrBodyInput,
+  deps: Pick<SyncPrBodyDeps, "logger" | "runGitCommand">,
+  view: PrBodyCandidateView,
+  skipUnchanged = false,
+): Promise<Result<SyncedPrBodyCandidate>> {
+  const { logger } = deps;
+  let issueNumber = issueNumberFromMarker(view.body ?? "");
+  if (issueNumber !== undefined && input.adoptOnly) {
+    return {
+      ok: true,
+      value: { kind: "ineligible", reason: "worker marker present" },
+    };
+  }
+
+  // Issue #3804: an agent that raised its own PR with `gh pr create` wrote a
+  // marker-less body. Adopt it when its head is this run's own worker branch.
+  let adopting = false;
+  if (issueNumber === undefined) {
+    const branchIssue = view.headRefName === input.branchName
+      ? issueNumberFromBranch(input.branchName)
+      : null;
+    if (branchIssue === null) {
+      return {
+        ok: true,
+        value: { kind: "ineligible", reason: "no worker marker" },
+      };
+    }
+    issueNumber = branchIssue;
+    adopting = true;
+    logger.info(
+      "Adopting an agent-raised PR body on the run's own branch (Issue #3804)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        branch: input.branchName,
+        issueNumber,
+      },
+    );
+  }
+
+  // The draft was never built from the summary, so an adopted body has no
+  // digest to compare and no before-push SHA to diff against: always rebuild.
+  const recordedDigest = adopting
+    ? undefined
+    : summaryDigestFromBody(view.body ?? "");
+
+  if (skipUnchanged && recordedDigest === undefined && !adopting) {
+    // Legacy body, built before the summary-digest marker existed (Issue
+    // #3315): fall back to the original before-push-SHA diff.
+    if (!input.beforeSha) {
+      logger.warn(
+        "No before-push SHA available — skipping PR body sync (Issue #3089)",
+      );
+      return {
+        ok: true,
+        value: { kind: "ineligible", reason: "no before-push sha" },
+      };
+    }
+
+    const summaryRelPath = prSummaryPath(issueNumber);
+    const diffResult = await deps.runGitCommand(
+      [
+        "diff",
+        "--name-only",
+        input.beforeSha,
+        "HEAD",
+        "--",
+        summaryRelPath,
+      ],
+      { cwd: input.repoPath },
+    );
+    if (!diffResult.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to diff ${summaryRelPath}: ${diffResult.error.message}`,
+        ),
+      };
+    }
+    if (diffResult.value.stdout.trim().length === 0) {
+      return {
+        ok: true,
+        value: { kind: "ineligible", reason: "summary unchanged" },
+      };
     }
   }
-  const block = lines.slice(0, end).join("\n").trimEnd();
-  return block ? `${block}\n\n` : "";
+
+  const summaryResult = await loadPrSummary(input.repoPath, issueNumber);
+  if (!summaryResult.ok) {
+    return { ok: false, error: summaryResult.error };
+  }
+  if (summaryResult.value.source === "not_found") {
+    return {
+      ok: true,
+      value: { kind: "ineligible", reason: "summary file deleted" },
+    };
+  }
+
+  const changedFiles = (view.files ?? []).map((f) => f.path);
+  const summaryContent = summaryResult.value.content;
+  // Must equal the digest completion_phase records at PR creation.
+  const currentDigest = await prSummaryDigest(summaryContent);
+
+  if (
+    skipUnchanged && recordedDigest !== undefined &&
+    recordedDigest === currentDigest
+  ) {
+    return {
+      ok: true,
+      value: { kind: "ineligible", reason: "summary unchanged" },
+    };
+  }
+
+  let extraSections = "";
+  const branchEvidence = findBranchEvidenceImages(changedFiles);
+  if (
+    branchEvidence.length > 0 &&
+    findScreenshotReferences(summaryContent).length === 0
+  ) {
+    extraSections += formatBranchEvidenceSection(branchEvidence);
+  }
+  extraSections += extractMilestoneSection(view.body ?? "");
+  extraSections += extractBumpSkipNote(view.body ?? "");
+
+  const footer = buildWorkerFooter({
+    workerName: input.workerName,
+    githubUser: input.githubUser,
+    runId: input.runId,
+  });
+
+  // Issue #3403: carry over the tier marker the PR was created with, so a
+  // review-fix refresh never drops the attribution a later outcome needs.
+  // A legacy body with no marker (never carried a tier) gets none added.
+  const body = assemblePrBody({
+    summaryContent,
+    issueNumber,
+    extraSections,
+    footer,
+    summaryDigest: currentDigest,
+    subAgentTier: subAgentTierFromBody(view.body ?? ""),
+    assignmentId: assignmentIdFromBody(view.body ?? ""),
+  });
+
+  return {
+    ok: true,
+    value: { kind: "candidate", body, issueNumber, adopting },
+  };
 }
 
 /**
@@ -430,8 +536,8 @@ function extractLeadingSection(body: string, heading: string): string {
  *   refreshed;
  * - the summary file was not deleted (a deleted summary means "nothing to
  *   refresh", not "blank the body");
- * - the summary actually changed (Issue #3535: the facts file beside it counts
- *   as part of the summary, in both the digest and the legacy diff):
+ * - the summary actually changed (the digest is of the summary alone,
+ *   Issue #4234):
  *   - when the live body carries a summary-digest marker (Issue #3315), that
  *     recorded digest differs from the digest of the summary at HEAD; or
  *   - for a legacy body with no digest marker, a before-push SHA is
@@ -497,135 +603,16 @@ export async function syncPrBodyFromSummary(
     };
   }
 
-  let issueNumber = issueNumberFromMarker(view.body ?? "");
-  if (issueNumber !== undefined && input.adoptOnly) {
+  const candidate = await buildSyncedPrBodyCandidate(input, deps, view, true);
+  if (!candidate.ok) return candidate;
+  if (candidate.value.kind === "ineligible") {
     return {
       ok: true,
-      value: { status: "skipped", reason: "worker marker present" },
+      value: { status: "skipped", reason: candidate.value.reason },
     };
   }
-
-  // Issue #3804: an agent that raised its own PR with `gh pr create` wrote a
-  // marker-less body. Adopt it when its head is this run's own worker branch.
-  let adopting = false;
-  if (issueNumber === undefined) {
-    const branchIssue = view.headRefName === input.branchName
-      ? issueNumberFromBranch(input.branchName)
-      : null;
-    if (branchIssue === null) {
-      return {
-        ok: true,
-        value: { status: "skipped", reason: "no worker marker" },
-      };
-    }
-    issueNumber = branchIssue;
-    adopting = true;
-    logger.info(
-      "Adopting an agent-raised PR body on the run's own branch (Issue #3804)",
-      {
-        repo: input.repo,
-        prNumber: input.prNumber,
-        branch: input.branchName,
-        issueNumber,
-      },
-    );
-  }
-
-  // The draft was never built from the summary, so an adopted body has no
-  // digest to compare and no before-push SHA to diff against: always rebuild.
-  const recordedDigest = adopting
-    ? undefined
-    : summaryDigestFromBody(view.body ?? "");
-
-  if (recordedDigest === undefined && !adopting) {
-    // Legacy body, built before the summary-digest marker existed (Issue
-    // #3315): fall back to the original before-push-SHA diff.
-    if (!input.beforeSha) {
-      logger.warn(
-        "No before-push SHA available — skipping PR body sync (Issue #3089)",
-      );
-      return {
-        ok: true,
-        value: { status: "skipped", reason: "no before-push sha" },
-      };
-    }
-
-    // Issue #3535: the facts file is a second pathspec so a facts-only change
-    // is not skipped.
-    const summaryRelPath = prSummaryPath(issueNumber);
-    const factsRelPath = prSummaryFactsPath(issueNumber);
-    const diffResult = await deps.runGitCommand(
-      [
-        "diff",
-        "--name-only",
-        input.beforeSha,
-        "HEAD",
-        "--",
-        summaryRelPath,
-        factsRelPath,
-      ],
-      { cwd: input.repoPath },
-    );
-    if (!diffResult.ok) {
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to diff ${summaryRelPath} and ${factsRelPath}: ${diffResult.error.message}`,
-        ),
-      };
-    }
-    if (diffResult.value.stdout.trim().length === 0) {
-      return {
-        ok: true,
-        value: { status: "skipped", reason: "summary unchanged" },
-      };
-    }
-  }
-
-  const summaryResult = await loadPrSummary(input.repoPath, issueNumber);
-  if (!summaryResult.ok) {
-    return { ok: false, error: summaryResult.error };
-  }
-  if (summaryResult.value.source === "not_found") {
-    return {
-      ok: true,
-      value: { status: "skipped", reason: "summary file deleted" },
-    };
-  }
-
-  const changedFiles = (view.files ?? []).map((f) => f.path);
-  const rawSummary = summaryResult.value.content;
-  // Issue #3535: fail loud on an invalid facts file; never rebuild without it.
-  const factsOutcome = await resolveBranchOutcomesFacts(
-    input.repoPath,
-    issueNumber,
-  );
-  if (factsOutcome.kind === "error") {
-    return { ok: false, error: new Error(factsOutcome.reason) };
-  }
-  // Must equal the digest completion_phase records at PR creation.
-  const currentDigest = await prSummaryDigest(
-    prSummaryDigestInput(
-      rawSummary,
-      factsOutcome.kind === "valid" ? factsOutcome.content : null,
-    ),
-  );
-  let summaryContent = rawSummary;
-  if (factsOutcome.kind === "valid") {
-    const rendered = applyBranchOutcomesFacts(
-      rawSummary,
-      factsOutcome.rendered,
-    );
-    if (!rendered.ok) return rendered;
-    summaryContent = rendered.value;
-  }
-
-  if (recordedDigest !== undefined && recordedDigest === currentDigest) {
-    return {
-      ok: true,
-      value: { status: "skipped", reason: "summary unchanged" },
-    };
-  }
+  const { issueNumber, adopting } = candidate.value;
+  let body = candidate.value.body;
 
   // PR #3353 review: a caller that measured "nothing left unpushed" has only
   // shown this checkout is not AHEAD of the remote — it can still be
@@ -689,169 +676,33 @@ export async function syncPrBodyFromSummary(
     );
   }
 
-  let extraSections = "";
-  const branchEvidence = findBranchEvidenceImages(changedFiles);
-  if (
-    branchEvidence.length > 0 &&
-    findScreenshotReferences(summaryContent).length === 0
-  ) {
-    extraSections += formatBranchEvidenceSection(branchEvidence);
-  }
-  extraSections += extractMilestoneSection(view.body ?? "");
-  extraSections += extractBumpSkipNote(view.body ?? "");
-
-  const footer = buildWorkerFooter({
-    workerName: input.workerName,
-    githubUser: input.githubUser,
-    runId: input.runId,
-  });
-
-  // Issue #3403: carry over the tier marker the PR was created with, so a
-  // review-fix refresh never drops the attribution a later outcome needs.
-  // A legacy body with no marker (never carried a tier) gets none added.
-  let body = assemblePrBody({
-    summaryContent,
-    issueNumber,
-    extraSections,
-    footer,
-    summaryDigest: currentDigest,
-    subAgentTier: subAgentTierFromBody(view.body ?? ""),
-    assignmentId: assignmentIdFromBody(view.body ?? ""),
-  });
-
   body = await finalisePrBodyImages(
     body,
     { repoPath: input.repoPath, githubRepo: input.repo, headSha },
     logger,
   );
 
-  // Issue #3350: re-derive the degraded-run section from the current issue and
-  // summary. Copying the live one forward left a banner that had become false
-  // (for example "states no acceptance criteria") uncorrectable. A healthy
-  // run's partial-delivery section is re-derived the same way (Issue #3506).
-  const liveDegraded = extractLeadingSection(
-    view.body ?? "",
-    "## ⚠️ Degraded run —",
-  );
-  const liveReportedGap = liveDegraded ? "" : extractLeadingSection(
-    view.body ?? "",
-    REPORTED_GAP_SECTION_HEADING,
-  );
-  // PR #3676 review: a healthy run on a partial-delivery follow-up carries
-  // the chain-stop section instead, re-derived from the current gaps. A
-  // degraded run on one still files its own follow-up.
-  const liveChainStop = liveDegraded || liveReportedGap
-    ? ""
-    : extractLeadingSection(
-      view.body ?? "",
-      FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
-    );
-  const liveSection = liveDegraded || liveReportedGap || liveChainStop;
-  if (liveSection) {
-    const sectionName = liveDegraded
-      ? "degraded-run section"
-      : liveChainStop
-      ? "chain-stop section"
-      : "partial-delivery section";
-    let issueBody: string;
-    try {
-      const raw = await deps.runGhCommand([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        input.repo,
-        "--json",
-        "body",
-      ]);
-      const parsed = JSON.parse(raw) as { body?: unknown };
-      if (typeof parsed.body !== "string") {
-        throw new Error("issue body missing from gh output");
-      }
-      issueBody = parsed.body;
-    } catch (err) {
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to read issue #${issueNumber} to re-derive the ${sectionName} of PR #${input.prNumber}: ${
-            (err as Error).message
-          }`,
-        ),
-      };
-    }
-    const rederived = liveChainStop
-      ? rederiveFollowUpChainStopSection({
-        issueNumber,
-        issueBody,
-        prBody: body,
-      })
-      : (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
-        liveSection,
-        issueBody,
-        prBody: body,
-      });
-    if (rederived !== liveSection) {
-      logger.info(
-        liveDegraded
-          ? "Re-derived the degraded-run section (Issue #3350)"
-          : liveChainStop
-          ? "Re-derived the chain-stop section (PR #3676 review)"
-          : "Re-derived the partial-delivery section (Issue #3506)",
-        {
-          repo: input.repo,
-          prNumber: input.prNumber,
-          issueNumber,
-          dropped: rederived === "",
-        },
-      );
-    }
-    // PR #3676 review: a kept chain-stop section keeps the PR from closing
-    // the follow-up it hands to a human.
-    body = rederived +
-      (liveChainStop && rederived !== ""
-        ? withholdIssueClose(body, issueNumber)
-        : body);
-  } else if (summaryReportsGap(body)) {
-    // Issue #3678: a fix run that newly marks a criterion partial or missing
-    // on a body with no leading section files or reuses the follow-up the
-    // completion phase would, rather than rebuilding the body with the gap
-    // recorded nowhere. The issue is re-verified before any of its text is
-    // written (see pr_body_sync_follow_up.ts).
-    let parentIssue: SyncParentIssue;
-    try {
-      const raw = await deps.runGhCommand([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        input.repo,
-        "--json",
-        SYNC_PARENT_ISSUE_FIELDS,
-      ]);
-      parentIssue = parseSyncParentIssue(raw);
-    } catch (err) {
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to read issue #${issueNumber} to file the follow-up for PR #${input.prNumber}: ${
-            (err as Error).message
-          }`,
-        ),
-      };
-    }
-    const filed = await addReportedGapSectionOnSync({
-      repo: input.repo,
+  // Issue #4359: `gh pr edit` rejects a body over the same limit as create.
+  // The summarise turn runs in completion, which commits the rewritten
+  // summary this edit then reads. A body that is still over the limit is
+  // shortened and published — the edit is not failed for length.
+  if (body.length > GITHUB_ISSUE_BODY_MAX_CHARS) {
+    const shortened = degradePrBodyToGitHubLimit(body, {
+      summaryPath: prSummaryFilePath(issueNumber),
       issueNumber,
-      prNumber: input.prNumber,
-      body,
-      issue: parentIssue,
-      filing: deps.followUpFiling,
-      gh: deps.runGhCommand,
-      runId: input.runId ?? "",
-      logger,
     });
-    if (!filed.ok) return filed;
-    body = filed.value;
+    logger.warn(
+      "Pull request body is over GitHub's limit — publishing a mechanically " +
+        "shortened body (Issue #4359)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        issueNumber,
+        originalLength: shortened.originalLength,
+        publishedLength: shortened.body.length,
+      },
+    );
+    body = shortened.body;
   }
 
   if (body.trim() === (view.body ?? "").trim()) {
@@ -868,15 +719,51 @@ export async function syncPrBodyFromSummary(
       suffix: ".md",
     });
     await Deno.writeTextFile(tmpPath, body);
-    await deps.runGhCommand([
-      "pr",
-      "edit",
-      String(input.prNumber),
-      "--repo",
-      input.repo,
-      "--body-file",
-      tmpPath,
-    ]);
+    try {
+      await deps.runGhCommand([
+        "pr",
+        "edit",
+        String(input.prNumber),
+        "--repo",
+        input.repo,
+        "--body-file",
+        tmpPath,
+      ]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A length rejection means the pre-check was not enough (GitHub counted
+      // differently). Shorten once more and retry this edit. Any other gh
+      // failure is returned to the caller.
+      if (!isGitHubBodyTooLongMessage(message)) throw err;
+      const tighter = Math.max(
+        1,
+        Math.min(body.length, GITHUB_ISSUE_BODY_MAX_CHARS) - 1,
+      );
+      body = degradePrBodyToGitHubLimit(body, {
+        summaryPath: prSummaryFilePath(issueNumber),
+        issueNumber,
+        maxChars: tighter,
+      }).body;
+      logger.warn(
+        "GitHub rejected the pull request body as too long — retrying the " +
+          "edit with a shortened body (Issue #4359)",
+        {
+          repo: input.repo,
+          prNumber: input.prNumber,
+          publishedLength: body.length,
+        },
+      );
+      await Deno.writeTextFile(tmpPath, body);
+      await deps.runGhCommand([
+        "pr",
+        "edit",
+        String(input.prNumber),
+        "--repo",
+        input.repo,
+        "--body-file",
+        tmpPath,
+      ]);
+    }
   } catch (err) {
     return {
       ok: false,

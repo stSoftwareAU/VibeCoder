@@ -126,6 +126,8 @@ interface Outcome {
   claudePrompts: string[];
   qualityGateRuns: number;
   prCreateCalls: number;
+  /** `gh issue create` argument lists — the gate-bug filing (Issue #4298). */
+  issueCreates: string[][];
   comments: string[];
   labels: string[];
 }
@@ -140,6 +142,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const recorded: Recorded = { comments: [], labels: [] };
   let prCreateCalls = 0;
+  const issueCreates: string[][] = [];
   let claudeCalls = 0;
   let qualityGateRuns = 0;
   const claudePrompts: string[] = [];
@@ -173,7 +176,23 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     github: {
       createClient: () => stubClient(recorded),
       runGhCommand: (args: string[]) => {
+        // This scenario files from a verified public source (Issue #4318).
+        if (
+          args[0] === "api" && args[1] === `repos/${REPO}` &&
+          args.includes(".visibility")
+        ) {
+          return Promise.resolve("public");
+        }
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
+        // The gate-bug filing (Issue #4298): no open issue to dedupe onto,
+        // so one is created.
+        if (args[0] === "issue" && args[1] === "list") {
+          return Promise.resolve("[]");
+        }
+        if (args[0] === "issue" && args[1] === "create") {
+          issueCreates.push(args);
+          return Promise.resolve(`https://github.com/${REPO}/issues/4400`);
+        }
         return Promise.resolve(`https://github.com/${REPO}/pull/99`);
       },
     },
@@ -268,6 +287,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     claudePrompts,
     qualityGateRuns,
     prCreateCalls,
+    issueCreates,
     comments: recorded.comments,
     labels: recorded.labels,
   };
@@ -380,7 +400,7 @@ Deno.test(
 );
 
 Deno.test(
-  "completion - the second consecutive blocked run hands the issue to a human",
+  "completion - the second consecutive blocked run files a gate bug and stays on the retry ladder (Issue #4298)",
   async () => {
     await withWorkDir(async (workDir, stateDir) => {
       // One blocked run already on record for this issue.
@@ -393,18 +413,33 @@ Deno.test(
         workDir,
       });
 
+      // Still a gate failure, so `failed-once` and the retry apply.
       assertEquals(outcome.status, "failure");
+      assertEquals(
+        detectFailureCategory(outcome.reason ?? ""),
+        "security_fix_gate",
+      );
       assertEquals(
         (await readSecurityFixGateBlock(stateDir, REPO, ISSUE))?.blockCount,
         2,
       );
-      assertEquals(outcome.labels.includes("needs-human"), true);
-      const escalation = outcome.comments.find((body) =>
-        body.includes("Needs human attention") ||
-        body.includes("blocked this issue twice")
+      // Never handed to a human.
+      assertEquals(outcome.labels.includes("needs-human"), false);
+      assertEquals(
+        outcome.comments.some((body) =>
+          body.includes("Needs human attention") ||
+          body.includes("blocked this issue twice")
+        ),
+        false,
       );
-      assertStringIncludes(escalation ?? "", "consecutive runs");
-      assertStringIncludes(escalation ?? "", "test-identifier-in-diff");
+      // A Vibe Coder gate-bug issue carries the evidence instead.
+      assertEquals(outcome.issueCreates.length, 1);
+      const args = outcome.issueCreates[0]!;
+      assertEquals(args[args.indexOf("--repo") + 1], "stSoftwareAU/VibeCoder");
+      const body = args[args.indexOf("--body") + 1] ?? "";
+      assertStringIncludes(body, "VIBE_RUN_FAILURE:security-fix-gate-blocked");
+      assertStringIncludes(body, `${REPO}#${ISSUE}`);
+      assertStringIncludes(body, "test-identifier-in-diff");
     });
   },
 );
@@ -447,9 +482,10 @@ Deno.test(
         "The in-run gate retry could not be launched",
       );
       // The issue still hears the verdict, but a CLI failure is not a gate
-      // verdict, so it must not consume the hand-off budget.
+      // verdict, so it must not count towards the gate-bug filing.
       assertEquals(outcome.comments.length, 1);
       assertEquals(outcome.labels.includes("needs-human"), false);
+      assertEquals(outcome.issueCreates, []);
       assertEquals(
         (await readSecurityFixGateBlock(stateDir, REPO, ISSUE))?.blockCount,
         0,

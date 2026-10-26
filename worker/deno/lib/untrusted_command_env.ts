@@ -35,6 +35,13 @@
  */
 
 import { runGitArgv } from "./git_timeout.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** `id` and `sudo` probes. Seconds. A timeout must not look like "no agent account". */
+const UNTRUSTED_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Variables a build legitimately needs, by name.
@@ -62,6 +69,10 @@ export const ALLOWED_ENV_NAMES: readonly string[] = [
   "DENO_DIR",
   "DENO_INSTALL_ROOT",
   "CARGO_HOME",
+  // Cargo's job cap. The container entrypoint sets it (Issue #4225); this
+  // list only forwards a value the parent already has. It does not choose
+  // the number, and a host run that never set it stays uncapped.
+  "CARGO_BUILD_JOBS",
   // Where cargo writes its build output. On a runtime that refuses to trim
   // the work volume the worker points this at the container's own ephemeral
   // layer (Issue #2247); an operator who sets it keeps it.
@@ -224,18 +235,29 @@ export async function canRunAsUntrustedUser(
  *
  * Issue #1553: the binary is the head of the argv, so a `git` probe is
  * delegated to the chokepoint rather than spawned here without a timeout.
+ * A timeout is thrown: returning false would drop the untrusted account and
+ * run the repository's command as the worker.
  */
-async function defaultProbe(cmd: string[]): Promise<boolean> {
+export async function probeCommandSuccess(
+  cmd: string[],
+  timeoutMs: number = UNTRUSTED_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
   if (cmd[0] === "git") return (await runGitArgv(cmd)).success;
   try {
-    const output = await new Deno.Command(cmd[0]!, {
+    const output = await commandOutputWithTimeout(cmd[0] ?? "", {
       args: cmd.slice(1),
       stdout: "null",
       stderr: "null",
       stdin: "null",
-    }).output();
+      timeoutMs,
+    });
     return output.success;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return false;
   }
+}
+
+async function defaultProbe(cmd: string[]): Promise<boolean> {
+  return await probeCommandSuccess(cmd);
 }

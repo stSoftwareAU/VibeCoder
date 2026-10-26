@@ -227,6 +227,12 @@ async function buildWithCache(
       ...(dynamicResult.value.templateSource !== undefined
         ? { templateSource: dynamicResult.value.templateSource }
         : {}),
+      ...(dynamicResult.value.capabilitySecurityRecord !== undefined
+        ? {
+          capabilitySecurityRecord:
+            dynamicResult.value.capabilitySecurityRecord,
+        }
+        : {}),
       promptSha: sha,
       cacheHit,
     },
@@ -250,6 +256,11 @@ async function buildWithoutCache(
       prompt: fullResult.value.prompt,
       ...(fullResult.value.templateSource !== undefined
         ? { templateSource: fullResult.value.templateSource }
+        : {}),
+      ...(fullResult.value.capabilitySecurityRecord !== undefined
+        ? {
+          capabilitySecurityRecord: fullResult.value.capabilitySecurityRecord,
+        }
         : {}),
       promptSha: sha,
       cacheHit: false,

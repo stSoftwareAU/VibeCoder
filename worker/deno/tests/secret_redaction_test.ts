@@ -206,6 +206,181 @@ Deno.test("redactSecrets - a git SHA beside an AWS key is left alone", () => {
   assertEquals(out.includes("AKIAIOSFODNN7EXAMPLE"), false);
 });
 
+Deno.test("redactSecrets - an AWS secret starting with / after a comma is masked (Issue #4103)", () => {
+  // Issue #4103: `\b` never fires between a comma and `/`, so a secret whose
+  // first character is `/` escaped the rule while its id was masked.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE";
+  assertEquals(secret.length, 40);
+  const out = redactSecrets(`svc,${id},${secret}`);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - an AWS secret ending in + at end of text is masked (Issue #4103)", () => {
+  // Issue #4103: `\b` never fires after a trailing `+` at end of text.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE+";
+  assertEquals(secret.length, 40);
+  const out = redactSecrets(`${id} ${secret}`);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - an AWS secret ending in / before a comma is masked and the comma survives (Issue #4103)", () => {
+  // Issue #4103: `\b` never fires between a trailing `/` and a comma.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE/";
+  assertEquals(secret.length, 40);
+  const out = redactSecrets(`${id} ${secret}, next`);
+  assertEquals(out.includes(secret), false);
+  assertStringIncludes(out, ", next");
+});
+
+Deno.test("redactSecrets - an AWS secret starting with + after a colon is masked (Issue #4103)", () => {
+  // Issue #4103: `\b` never fires between a space and a leading `+`.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "+wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE";
+  assertEquals(secret.length, 40);
+  const out = redactSecrets(`${id}: ${secret}`);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)", () => {
+  // The 40-character secret is a valid candidate on its own. A word,
+  // underscore, slash or plus run glued to either end makes it part of a longer
+  // token, so the rule must leave the whole run alone.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  assertEquals(secret.length, 40);
+  for (
+    const text of [
+      `${id} ${secret}abc`,
+      `${id} abc${secret}`,
+      `${id} ${secret}/`,
+      `${id} /${secret}`,
+      `${id} +${secret}`,
+      `${id} ${secret}+`,
+      `${id} ${secret}_`,
+      `${id} _${secret}`,
+    ]
+  ) {
+    assertEquals(
+      redactSecrets(text),
+      text.replace(id, REDACTION_PLACEHOLDER),
+      `glued run must not be masked: ${text}`,
+    );
+  }
+});
+
+Deno.test("redactSecrets - equals separators after an AWS key stay intact (Issue #4103)", () => {
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  for (const length of [40, 70, 120]) {
+    const separator = "=".repeat(length);
+    assertEquals(
+      redactSecrets(`${id}\n${separator}`),
+      `${REDACTION_PLACEHOLDER}\n${separator}`,
+    );
+  }
+});
+
+Deno.test("redactSecrets - a line starting with equals after an AWS key stays intact (Issue #4103)", () => {
+  // Each line holds an alphanumeric, so the punctuation-only guard accepts it
+  // and only the leading `(?!=)` guard rejects it.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  for (
+    const line of [
+      `=${"a1B2".repeat(9)}c3D`,
+      `${"=".repeat(20)}${"a".repeat(20)}`,
+    ]
+  ) {
+    assertEquals(line.length, 40);
+    assertEquals(
+      redactSecrets(`${id}\n${line}`),
+      `${REDACTION_PLACEHOLDER}\n${line}`,
+    );
+  }
+  // Positive control: `==` followed by a real secret is still masked.
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  assertEquals(
+    redactSecrets(`${id}==${secret}`),
+    `${REDACTION_PLACEHOLDER}==${REDACTION_PLACEHOLDER}`,
+  );
+});
+
+Deno.test("redactSecrets - punctuation-only lines after an AWS key stay intact (Issue #4103)", () => {
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const lines = [
+    `+${"=".repeat(40)}`,
+    `//${"=".repeat(40)}`,
+    "/".repeat(40),
+    "+".repeat(40),
+  ];
+  for (const line of lines) {
+    assertEquals(
+      redactSecrets(`${id}\n${line}`),
+      `${REDACTION_PLACEHOLDER}\n${line}`,
+    );
+  }
+  // Positive control: a 40-character candidate with alphanumerics is masked.
+  assertEquals(
+    redactSecrets(`${id}\n+${"=".repeat(20)}${"a".repeat(19)}`),
+    `${REDACTION_PLACEHOLDER}\n${REDACTION_PLACEHOLDER}`,
+  );
+});
+
+Deno.test("redactSecrets - a JSON-encoded AWS key pair has its secret masked (Issue #3857)", () => {
+  // Issue #3857: JSON encoding puts a literal backslash-n before the secret, so there is no word boundary.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(JSON.stringify({ creds: `${id}\n${secret}` }));
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - a secret after a literal backslash-t escape is masked (Issue #3857)", () => {
+  // Issue #3857: a literal backslash-t escape abuts the secret, so `\b` never fires.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id}\\t${secret}`);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - a secret after a literal backslash-r escape is masked (Issue #3857)", () => {
+  // Issue #3857: a literal backslash-r escape abuts the secret, so `\b` never fires.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id}\\r${secret}`);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - a git SHA after a literal backslash-n escape is left alone (Issue #3857)", () => {
+  // Issue #3857: the escape lookbehind must not unmask a commit SHA beside a key.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const sha = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+  const out = redactSecrets(`${id}\\n${sha}`);
+  assertStringIncludes(out, sha);
+});
+
+Deno.test("redactSecrets - a word glued to the secret with no backslash is not masked (Issue #3857)", () => {
+  // Issue #3857: the lookbehind needs a backslash escape, not any letter before the secret.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id} token${secret}`);
+  assertStringIncludes(out, `token${secret}`);
+});
+
+Deno.test("redactSecrets - a backslash before a non-escape letter does not unmask as an escape (Issue #3857)", () => {
+  // Issue #3857: only \n, \r and \t are accepted, so a backslash-x before the secret is not a match.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id} \\x${secret}`);
+  assertStringIncludes(out, `\\x${secret}`);
+});
+
 Deno.test("redactSecrets - a 40-character blob with no AWS key nearby is ordinary text", () => {
   const blob = "d1JhbmRvbUJhc2U2NGRhdGFoZXJlMTIzNDU2Nzg5MA";
   assertStringIncludes(redactSecrets(`payload: ${blob}`), blob);

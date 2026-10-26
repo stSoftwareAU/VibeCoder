@@ -69,7 +69,10 @@ export type WipPreservationCause =
   | "killed"
   /** A SIGTERM the worker never requested (Issue #46). */
   | "external-sigterm"
-  /** The cycle ended or the supervisor's hard cap was reached (Issue #424). */
+  /**
+   * The cycle ended, the finish deadline was reached, or the supervisor's
+   * hard cap was reached (Issues #424, #4245).
+   */
   | "scheduled-release"
   /**
    * The subscription's usage window ran out mid-run (Issue #1670). Not a
@@ -85,7 +88,7 @@ const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
   "killed": "was killed (SIGKILL, no watchdog)",
   "external-sigterm": "was killed by an external SIGTERM",
   "scheduled-release":
-    "was released on schedule (cycle ended or run hard cap reached)",
+    "was released on schedule (cycle ended, finish deadline reached, or run hard cap reached)",
   "usage-limit": "hit the Claude subscription usage limit",
 };
 

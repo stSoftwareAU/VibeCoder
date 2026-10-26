@@ -11,13 +11,14 @@
  * Uses Australian English throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiCheckScanOptions,
   findFailedCiChecks,
 } from "../lib/pr_maintenance.ts";
 import {
   classifyRedChecks,
+  rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "../lib/ci_infrastructure_rerun.ts";
 import type { FleetCiFixMarkers } from "../lib/ci_fix_attempt_markers.ts";
@@ -248,7 +249,7 @@ async function scan(
 // findFailedCiChecks — scan-level tests
 // ---------------------------------------------------------------------------
 
-Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to CI-fix, bounded once per head fleet-wide", async () => {
+Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to CI-fix, one marker per head fleet-wide (Issue #4304)", async () => {
   const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
   try {
     const reruns: string[][] = [];
@@ -286,8 +287,9 @@ Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to C
       "the marker must ride in a PR comment",
     );
 
-    // Second scan, a different host (fresh state directory), same head —
-    // the bound still holds, because the record lives on the PR.
+    // Second scan, a different host (fresh state directory), same head and
+    // still cancelled. Issue #4304: it is re-run again rather than left for a
+    // person, and the marker already on the PR is not posted a second time.
     const stateDir2 = await Deno.makeTempDir({ prefix: "ci-infra-host2-" });
     try {
       const reruns2: string[][] = [];
@@ -308,10 +310,11 @@ Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to C
       });
       const found2 = await scan(ghFn2, logger2, stateDir2);
       assertEquals(found2, null);
-      assertEquals(reruns2.length, 0);
-      assert(
-        logger2.warns.some((w) => w.includes("already re-run once")),
-        "the second host must say why it skipped",
+      assertEquals(reruns2.map((r) => r[2]).sort(), ["900", "901"]);
+      assertEquals(posted.length, 1, "one marker per head, never a second");
+      assertEquals(
+        logger2.warns.filter((w) => w.includes("a human needs")),
+        [],
       );
     } finally {
       await Deno.remove(stateDir2, { recursive: true });
@@ -824,4 +827,300 @@ Deno.test("rerunInfrastructureChecks - an unevaluable fleet bound stands the rer
       logger.errors.join(" | ")
     }`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Startup-failed Actions suites (Issue #4347)
+// ---------------------------------------------------------------------------
+
+const SUITE_ID = 77;
+
+/** The `pr list` answer every scan below starts from. */
+const PR_LIST = JSON.stringify([{
+  number: PR_NUMBER,
+  headRefName: "issue-1-fix",
+  headRefOid: HEAD_SHA,
+  baseRefName: "main",
+}]);
+
+Deno.test("findFailedCiChecks - a green run plus a zero-run startup_failure suite is handed to CI-fix (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-gql-" });
+  try {
+    const { gh: graphqlGh } = fakeGithubGraphQL({
+      owner: "org",
+      name: "repo",
+      pullRequests: {
+        [PR_NUMBER]: {
+          headOid: HEAD_SHA,
+          rollupState: "SUCCESS",
+          contexts: [{
+            kind: "checkRun",
+            databaseId: 1,
+            name: "build",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          }],
+          checkSuites: [{
+            databaseId: SUITE_ID,
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "STARTUP_FAILURE",
+          }],
+        },
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) return graphqlGh(args);
+      return Promise.resolve("[]");
+    };
+
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(found.checkId, `suite-${SUITE_ID}`);
+    assertEquals(
+      found.checkName,
+      "GitHub Actions workflow startup failure",
+    );
+    assertEquals(found.prNumber, PR_NUMBER);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a startup_failure suite is named after its workflow file (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-named-" });
+  try {
+    const { gh: graphqlGh } = fakeGithubGraphQL({
+      owner: "org",
+      name: "repo",
+      pullRequests: {
+        [PR_NUMBER]: {
+          headOid: HEAD_SHA,
+          rollupState: "SUCCESS",
+          contexts: [],
+          checkSuites: [{
+            databaseId: SUITE_ID,
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "STARTUP_FAILURE",
+            workflowName: "actionlint",
+            workflowPath: ".github/workflows/actionlint.yml",
+            runUrl: "https://github.com/org/repo/actions/runs/99",
+          }],
+        },
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) return graphqlGh(args);
+      return Promise.resolve("[]");
+    };
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(
+      found.checkName,
+      "actionlint (.github/workflows/actionlint.yml)",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      "https://github.com/org/repo/actions/runs/99",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      ".github/workflows/actionlint.yml",
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - the REST fallback also hands a zero-run startup_failure suite to CI-fix (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-rest-" });
+  try {
+    const calls: string[] = [];
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      calls.push(key);
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) {
+        return Promise.reject(new Error("GraphQL error"));
+      }
+      if (key.includes("/check-suites")) {
+        return Promise.resolve(`[${SUITE_ID}]`);
+      }
+      return Promise.resolve("[]");
+    };
+
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(found.checkId, `suite-${SUITE_ID}`);
+    assertEquals(
+      found.checkName,
+      "GitHub Actions workflow startup failure",
+    );
+    const suiteCall = singleCall(calls, "/check-suites");
+    assertEquals(
+      suiteCall,
+      `api repos/${REPO}/commits/issue-1-fix/check-suites?per_page=100 --jq ` +
+        `[.check_suites[] | select(.app.slug == "github-actions" and ` +
+        `.status == "completed" and .conclusion == "startup_failure" and ` +
+        `.latest_check_runs_count == 0) | .id]`,
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - the REST fallback names the suite after the workflow run (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-rest-name-" });
+  try {
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) {
+        return Promise.reject(new Error("GraphQL error"));
+      }
+      if (key.includes("/check-suites")) {
+        return Promise.resolve(`[${SUITE_ID}]`);
+      }
+      if (key.includes("actions/runs")) {
+        return Promise.resolve(JSON.stringify({
+          name: "actionlint",
+          path: ".github/workflows/actionlint.yml",
+          html_url: "https://github.com/org/repo/actions/runs/99",
+        }));
+      }
+      return Promise.resolve("[]");
+    };
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(
+      found.checkName,
+      "actionlint (.github/workflows/actionlint.yml)",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      "https://github.com/org/repo/actions/runs/99",
+    );
+    assertStringIncludes(
+      atob(found.encodedAnnotations),
+      ".github/workflows/actionlint.yml",
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a green run and no startup-failed suite yields nothing (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-none-" });
+  try {
+    const { gh: graphqlGh } = fakeGithubGraphQL({
+      owner: "org",
+      name: "repo",
+      pullRequests: {
+        [PR_NUMBER]: {
+          headOid: HEAD_SHA,
+          rollupState: "SUCCESS",
+          contexts: [],
+          checkSuites: [{
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          }],
+        },
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) return graphqlGh(args);
+      return Promise.resolve("[]");
+    };
+    assertEquals(await scan(ghFn, makeRecordingLogger(), stateDir), null);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+/** The single recorded call containing `needle`. */
+function singleCall(calls: string[], needle: string): string {
+  const matches = calls.filter((c) => c.includes(needle));
+  assertEquals(matches.length, 1);
+  return matches[0] as string;
+}
+
+Deno.test("findFailedCiChecks - an exhausted startup suite still reaches the fleet-wide repair cap (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${stateDir}/org_repo_suite-77.retries`, "3");
+    const calls: string[] = [];
+    const found = await scan(
+      (args) => {
+        const key = args.join(" ");
+        calls.push(key);
+        if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+        if (key.includes("api graphql")) {
+          return Promise.reject(new Error("REST fallback"));
+        }
+        if (key.includes("/check-suites")) return Promise.resolve("[77]");
+        if (key.includes("actions/runs")) {
+          return Promise.resolve(JSON.stringify({
+            name: "actionlint",
+            path: ".github/workflows/actionlint.yml",
+            html_url: "https://github.com/org/repo/actions/runs/99",
+          }));
+        }
+        return Promise.resolve("[]");
+      },
+      makeRecordingLogger(),
+      stateDir,
+    );
+    assert(
+      found !== null,
+      "a suite with no replacement job must remain actionable",
+    );
+    assertEquals(found.checkId, "suite-77");
+    assertEquals(calls.filter((c) => c.includes("actions/jobs/77")), []);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("startup suite rerun - unavailable workflows and rejected reruns never fall back to a job id (Issue #4347)", async () => {
+  for (const unavailable of [true, false]) {
+    const calls: string[][] = [];
+    const run = await rerunFailedJobsOfCheck({
+      repo: REPO,
+      checkId: "suite-77",
+      logger: makeRecordingLogger(),
+      ghCommandFn: (args) => {
+        calls.push(args);
+        if (
+          args[0] === "api" &&
+          args[1] === `repos/${REPO}/actions/runs?check_suite_id=77`
+        ) {
+          return Promise.resolve(
+            JSON.stringify({
+              workflow_runs: unavailable
+                ? []
+                : [{ id: 99, check_suite_id: 77 }],
+            }),
+          );
+        }
+        return Promise.reject(new Error("rerun unavailable"));
+      },
+    });
+    assertEquals(run, null);
+    assertEquals(
+      calls.some((args) => args.some((arg) => arg.includes("actions/jobs/"))),
+      false,
+    );
+    assertEquals(
+      calls.filter((args) => args[0] === "run"),
+      unavailable ? [] : [["run", "rerun", "99", "--repo", REPO]],
+    );
+  }
 });

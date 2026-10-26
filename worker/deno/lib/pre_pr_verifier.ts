@@ -46,6 +46,7 @@ import {
   runClaudeWithRetry,
 } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { ensureHistoryDepth, type GitRunner } from "./git_history.ts";
 import {
   buildBoundaryIntegrityInstruction,
   fenceUntrustedIssueText,
@@ -87,6 +88,18 @@ import {
   type EarlierVerdict,
   parseEarlierVerdicts,
 } from "./earlier_findings.ts";
+import {
+  applyCapabilityJudgement,
+  CAPABILITY_BUNDLE_PATH,
+  capabilityContextFromChange,
+  type CapabilityLoad,
+  capabilityLoadFromGitShow,
+  effectiveCapabilityLoad,
+  judgeCapabilityFixtures,
+  loadTrustedCapabilityBundle,
+  mergeCapabilityReview,
+  renderCapabilityReview,
+} from "./capability_security_guidance.ts";
 
 /** Prompt directory name of the review brief shared with the fleet reviewer. */
 export const REVIEW_BRIEF_PROMPT_NAME = "pr_review_brief";
@@ -298,6 +311,8 @@ export interface PrePrVerifierDeps {
     retryOptions?: RetryOptions,
   ) => Promise<Result<ClaudeRunResult>>;
   loadBrief: () => Promise<Result<string>>;
+  /** Trusted capability bundle. Defaults to the copy shipped with the worker. */
+  loadTrustedCapabilityBundle?: () => Promise<CapabilityLoad>;
   makeTempDir: () => Promise<string>;
   removeDir: (path: string) => Promise<void>;
 }
@@ -309,6 +324,7 @@ export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
   },
   ask: runClaudeWithRetry,
   loadBrief: () => loadPrompt(REVIEW_BRIEF_PROMPT_NAME),
+  loadTrustedCapabilityBundle: loadTrustedCapabilityBundle,
   makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-pre-pr-verifier-" }),
   removeDir: (path) => Deno.remove(path, { recursive: true }),
 };
@@ -485,6 +501,29 @@ function summaryPathProblem(path: string): string | null {
 }
 
 /**
+ * Adapt the verifier's git runner to the history helper. A spawn failure is
+ * an error, the same way the rest of this module treats a null git result.
+ */
+function historyRunner(runGit: PrePrVerifierDeps["runGit"]): GitRunner {
+  return async (args, options) => {
+    const cwd = options?.cwd;
+    if (cwd === undefined) {
+      return {
+        ok: false,
+        error: new Error(
+          "history deepen was asked to run git without a directory",
+        ),
+      };
+    }
+    const ran = await runGit(args, cwd);
+    if (ran === null) {
+      return { ok: false, error: new Error("git could not be spawned") };
+    }
+    return { ok: true, value: ran };
+  };
+}
+
+/**
  * Run the verifier. Every failure to run yields `not_checked` with a reason;
  * a change the verifier made to the issue checkout yields a checked review
  * with a synthetic blocking finding.
@@ -529,6 +568,20 @@ export async function runPrePrVerifier(
   }
   const headSha = head.stdout.trim();
   const baseSha = base.stdout.trim();
+
+  // Issue #4059: a shallow checkout whose base has moved past the fetched
+  // history has no merge base for the caller-list three-dot diff. Deepen
+  // before the disposable clone: `git clone --shared` copies the source
+  // shallow file at clone time, so a later deepen would not reach it.
+  const depth = await ensureHistoryDepth(["HEAD", input.baseRef], {
+    cwd: input.repoPath,
+    gitRunner: historyRunner(deps.runGit),
+  });
+  if (!depth.ok) {
+    return notChecked(
+      `no merge base after deepening: ${depth.error.message}`,
+    );
+  }
 
   const before = await snapshotCheckout(deps, input.repoPath);
   if (!before) return notChecked("cannot snapshot the issue checkout");
@@ -763,6 +816,71 @@ async function verifyInCheckout(
     input.changedFiles,
   );
   const checklistExpected = checklistState(checklists, input.changedFiles);
+  const bundleTouched = input.changedFiles === null ||
+    input.changedFiles.includes(CAPABILITY_BUNDLE_PATH);
+  const baseBundle = capabilityLoadFromGitShow(
+    await deps.runGit(
+      ["show", `${baseSha}:${CAPABILITY_BUNDLE_PATH}`],
+      checkout,
+    ),
+  );
+  if (baseBundle.kind === "fetch_failed") {
+    return notChecked(
+      `could not read ${CAPABILITY_BUNDLE_PATH} at the base ref: ${baseBundle.reason}`,
+    );
+  }
+  const headBundle = bundleTouched
+    ? capabilityLoadFromGitShow(
+      await deps.runGit(
+        ["show", `${headSha}:${CAPABILITY_BUNDLE_PATH}`],
+        checkout,
+      ),
+    )
+    : null;
+  if (headBundle?.kind === "fetch_failed") {
+    return notChecked(
+      `could not read ${CAPABILITY_BUNDLE_PATH} at the head ref: ${headBundle.reason}`,
+    );
+  }
+  const trustedBundle = await (deps.loadTrustedCapabilityBundle ??
+    loadTrustedCapabilityBundle)();
+  const capabilityLoad = effectiveCapabilityLoad(
+    baseBundle,
+    headBundle,
+    trustedBundle,
+  );
+  const diffResult = await deps.runGit(
+    ["diff", `${baseSha}...${headSha}`],
+    checkout,
+  );
+  if (!diffResult || diffResult.code !== 0) {
+    return notChecked(
+      `could not read the diff for capability guidance${
+        diffResult ? `: ${clip(diffResult.stderr, 300)}` : ""
+      }`,
+    );
+  }
+  const capabilityJudgement = judgeCapabilityFixtures(diffResult.stdout);
+  const capabilityReview = renderCapabilityReview(
+    capabilityLoad,
+    capabilityContextFromChange({
+      title: input.issueTitle,
+      body: input.issueBody,
+      paths: input.changedFiles ?? [],
+      diff: diffResult.stdout,
+    }),
+  );
+  if (capabilityReview.retry) {
+    return notChecked(
+      capabilityReview.retryReason ??
+        "capability security guidance was not checked",
+    );
+  }
+  const mergedChecks = mergeCapabilityReview(
+    reviewChecklists,
+    checklistExpected,
+    capabilityReview,
+  );
   const metItems = metClosureItems(input.summaryContent);
   // Every existing caller of a changed function owes a verdict (Issue #3779).
   const callers = await collectCallerChecks(
@@ -787,7 +905,7 @@ async function verifyInCheckout(
     headSha,
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
-    reviewChecklists,
+    reviewChecklists: mergedChecks.markdown,
     closureItems: metItems,
     previousFindings: input.previousFindings,
     callerChecks: callers.state,
@@ -827,7 +945,7 @@ async function verifyInCheckout(
     // (Issue #3766), and for an existing caller left without a verdict or
     // marked regressed (Issue #3779).
     const gaps = [
-      ...checklistGapFindings(checklistExpected, parsed.checklist),
+      ...checklistGapFindings(mergedChecks.state, parsed.checklist),
       ...closureGapFindings(metItems, parsed.closure, input.summaryPath),
       ...earlierFindingGaps(
         input.previousFindings ?? [],
@@ -835,11 +953,12 @@ async function verifyInCheckout(
       ),
       ...callerGapFindings(callers.state, callerVerdicts),
     ];
+    const withGaps = gaps.length === 0
+      ? parsed
+      : { ...parsed, findings: [...parsed.findings, ...gaps] };
     return {
       status: "checked",
-      review: gaps.length === 0
-        ? parsed
-        : { ...parsed, findings: [...parsed.findings, ...gaps] },
+      review: applyCapabilityJudgement(withGaps, capabilityJudgement),
       run,
     };
   } catch (error) {

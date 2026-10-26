@@ -12,6 +12,7 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { setRunProviderOverride } from "../lib/agent_provider.ts";
 import { createDefaultRunCoreConfig, runCoreLoop } from "../lib/run_core.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { enableInFlightHostDiskGate } from "../lib/heavy_build_gate.ts";
 import type { RootFilesystemFault } from "../lib/root_filesystem_fault.ts";
 import {
   formatBuildBanner,
@@ -149,6 +150,9 @@ export const runCoreCommand: Command = {
         githubUser,
         config: _config,
       });
+      // Armed here, not inside the deps factory: unit tests build those deps
+      // and must not park every other test's agent (Issue #4360).
+      enableInFlightHostDiskGate(true);
 
       const result = await runCoreLoop(coreConfig, deps);
 

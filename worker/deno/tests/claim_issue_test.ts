@@ -1102,11 +1102,12 @@ Deno.test("claim issue - checkClaimChurn escalates at threshold", async () => {
     assertEquals(result.value.escalated, true);
   }
 
-  // Should post comment, add failed label (via REST API - Issue #976), and unassign
+  // Should post the churn record and unassign — and never park the issue
+  // behind a `failed` label (Issue #4158).
   assertEquals(wasCalledWith(calls, "issue comment"), true);
   assertEquals(
     wasCalledWith(calls, "api -X POST repos/org/repo/issues/42/labels"),
-    true,
+    false,
   );
   assertEquals(wasCalledWith(calls, "--remove-assignee testuser"), true);
 });
@@ -1252,172 +1253,6 @@ Deno.test("claim issue - checkClaimChurn uses default threshold of 3", async () 
   if (result.ok) {
     assertEquals(result.value.escalated, true);
   }
-});
-
-// ---------------------------------------------------------------------------
-// checkClaimChurn — @mentions allowed authors in escalation comment (Issue #999)
-// ---------------------------------------------------------------------------
-
-Deno.test("claim issue - checkClaimChurn mentions allowed authors in escalation comment", async () => {
-  const recentTime1 = new Date(Date.now() - 55 * 60 * 1000).toISOString();
-  const recentTime2 = new Date(Date.now() - 40 * 60 * 1000).toISOString();
-  const recentTime3 = new Date(Date.now() - 25 * 60 * 1000).toISOString();
-  const events = JSON.stringify([
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime1,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime2,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime3,
-    },
-  ]);
-
-  const calls: string[][] = [];
-  const mockGh = async (args: string[]): Promise<string> => {
-    calls.push(args);
-    if (args.join(" ").includes("/events")) return events;
-    return "";
-  };
-
-  await checkClaimChurn({
-    repo: "org/repo",
-    issueNumber: 42,
-    githubUser: "testuser",
-    threshold: 3,
-    allowedAuthors: ["alice", "bob"],
-    ghCommandFn: mockGh,
-  });
-
-  // Find the comment call and check for @mentions
-  const commentCall = calls.find((c) => c.join(" ").includes("issue comment"));
-  const commentBody = commentCall?.find((arg) =>
-    arg.includes("Claim Churn Detected")
-  );
-  assertEquals(
-    commentBody !== undefined,
-    true,
-    "Should post escalation comment",
-  );
-  assertEquals(commentBody!.includes("@alice"), true, "Should mention alice");
-  assertEquals(commentBody!.includes("@bob"), true, "Should mention bob");
-  assertEquals(
-    commentBody!.includes("planning"),
-    true,
-    "Should ask for planning label",
-  );
-});
-
-Deno.test("claim issue - checkClaimChurn works without allowedAuthors (backward compatible)", async () => {
-  const recentTime1 = new Date(Date.now() - 55 * 60 * 1000).toISOString();
-  const recentTime2 = new Date(Date.now() - 40 * 60 * 1000).toISOString();
-  const recentTime3 = new Date(Date.now() - 25 * 60 * 1000).toISOString();
-  const events = JSON.stringify([
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime1,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime2,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime3,
-    },
-  ]);
-
-  const calls: string[][] = [];
-  const mockGh = async (args: string[]): Promise<string> => {
-    calls.push(args);
-    if (args.join(" ").includes("/events")) return events;
-    return "";
-  };
-
-  const result = await checkClaimChurn({
-    repo: "org/repo",
-    issueNumber: 42,
-    githubUser: "testuser",
-    threshold: 3,
-    // No allowedAuthors — backward compatibility
-    ghCommandFn: mockGh,
-  });
-
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.escalated, true);
-  }
-
-  // Should still post a comment even without mentions
-  assertEquals(wasCalledWith(calls, "issue comment"), true);
-});
-
-// ---------------------------------------------------------------------------
-// Issue #978 — Label-add failure resilience
-// ---------------------------------------------------------------------------
-
-Deno.test("claim issue - checkClaimChurn succeeds even when label-add fails", async () => {
-  const recentTime1 = new Date(Date.now() - 55 * 60 * 1000).toISOString();
-  const recentTime2 = new Date(Date.now() - 40 * 60 * 1000).toISOString();
-  const recentTime3 = new Date(Date.now() - 25 * 60 * 1000).toISOString();
-  const events = JSON.stringify([
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime1,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime2,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime3,
-    },
-  ]);
-
-  const calls: string[][] = [];
-  const mockGh = async (args: string[]): Promise<string> => {
-    calls.push(args);
-    const joined = args.join(" ");
-    if (joined.includes("/events")) return events;
-    // Both REST API and CLI label-add fail
-    if (joined.includes("api -X POST") && joined.includes("labels")) {
-      throw new Error("REST API 403");
-    }
-    if (joined.includes("--add-label")) {
-      throw new Error("CLI permission denied");
-    }
-    return "";
-  };
-
-  const result = await checkClaimChurn({
-    repo: "org/repo",
-    issueNumber: 42,
-    githubUser: "testuser",
-    threshold: 3,
-    ghCommandFn: mockGh,
-  });
-
-  // Must still succeed — label failure is non-fatal
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.escalated, true);
-  }
-  // Comment should still have been posted
-  assertEquals(wasCalledWith(calls, "issue comment"), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -1715,77 +1550,6 @@ Deno.test("claim issue - releaseClaimWithCooldown succeeds even when cooldown po
 // ---------------------------------------------------------------------------
 // checkClaimChurn — escalation applies the churn label to the issue (Issue #1215)
 // ---------------------------------------------------------------------------
-
-Deno.test("claim issue - checkClaimChurn escalation applies the churn label to the issue (Issue #1215)", async () => {
-  const recentTime1 = new Date(Date.now() - 55 * 60 * 1000).toISOString();
-  const recentTime2 = new Date(Date.now() - 40 * 60 * 1000).toISOString();
-  const recentTime3 = new Date(Date.now() - 25 * 60 * 1000).toISOString();
-  const events = JSON.stringify([
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime1,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime2,
-    },
-    {
-      event: "unassigned",
-      assignee: { login: "testuser" },
-      created_at: recentTime3,
-    },
-  ]);
-
-  const callOrder: string[] = [];
-  const mockGh = async (args: string[]): Promise<string> => {
-    const joined = args.join(" ");
-    if (joined.includes("/events")) return events;
-    // Label creation (ensureLabelExists) — POST repos/{owner}/{repo}/labels
-    if (
-      joined.includes("api") && joined.includes("-X") &&
-      joined.includes("POST") && joined.includes("repos/org/repo/labels")
-    ) {
-      callOrder.push("ensureLabelExists");
-      return "";
-    }
-    // Label add to issue (addLabelToIssue) — POST repos/{owner}/{repo}/issues/42/labels
-    if (
-      joined.includes("api") && joined.includes("-X") &&
-      joined.includes("POST") && joined.includes("issues/42/labels")
-    ) {
-      callOrder.push("addLabelToIssue");
-      return "";
-    }
-    return "";
-  };
-
-  const result = await checkClaimChurn({
-    repo: "org/repo",
-    issueNumber: 42,
-    githubUser: "testuser",
-    threshold: 3,
-    ghCommandFn: mockGh,
-  });
-
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.escalated, true);
-  }
-
-  // Assert the observable outcome: escalation applied the churn label to the
-  // issue. We check that the label-application call against issues/42/labels
-  // happened, but deliberately do not constrain the order or number of
-  // underlying gh calls (e.g. whether the label is pre-created, auto-created,
-  // or applied via a single GraphQL mutation) — that is an implementation
-  // detail, not behaviour.
-  assertEquals(
-    callOrder.includes("addLabelToIssue"),
-    true,
-    "escalation must apply the churn label to the issue",
-  );
-});
 
 // ---------------------------------------------------------------------------
 // claimIssue — combined claim + heartbeat comment (Issue #1628)

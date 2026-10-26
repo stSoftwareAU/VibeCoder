@@ -18,7 +18,6 @@ import type { Logger, Result } from "../types.ts";
 import type { runGitCommand as runGitCommandType } from "./git_timeout.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
-import type { SyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { prNumberFromUrl } from "./run_outcome.ts";
 
 /** Inputs for {@link adoptAgentRaisedPrBody}. */
@@ -47,8 +46,6 @@ export interface AdoptAgentPrDeps {
   runGhCommand: (args: string[]) => Promise<string>;
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
-  /** Records any newly reported gap through the shared, content-verified filer. */
-  followUpFiling: SyncFollowUpFiling | undefined;
 }
 
 /**
@@ -155,7 +152,6 @@ export async function adoptAgentRaisedPrBody(
         runGhCommand: deps.runGhCommand,
         runGitCommand: deps.runGitCommand,
         logger,
-        followUpFiling: deps.followUpFiling,
       },
       syncFn,
     );

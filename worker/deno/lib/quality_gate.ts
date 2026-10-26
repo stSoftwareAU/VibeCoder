@@ -37,6 +37,14 @@ import {
   GIT_SPAWN_SCAN_DIRS,
   scanDirectoriesForGitSpawn,
 } from "./git_spawn_chokepoint_check.ts";
+import {
+  scanDirectoriesForSpawnTimeout,
+  SPAWN_TIMEOUT_SCAN_DIRS,
+} from "./spawn_timeout_check.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
 import { scanDirectoriesForRedactInversion } from "./redact_truncate_order_check.ts";
 import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
@@ -52,6 +60,7 @@ import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
+import { runCheckovCheck } from "./checkov_check.ts";
 import { checkReleaseTagRuleset } from "./release_tag_ruleset_check.ts";
 import {
   RELEASE_TAG_RULESET_PATH,
@@ -173,6 +182,9 @@ export interface QualityGateConfig {
   onProgress?: QualityProgressReporter;
 }
 
+/** One gate subprocess. Minutes, so a hang fails the gate instead of the run. */
+export const QUALITY_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+
 /**
  * Run a subprocess command and capture output.
  *
@@ -186,21 +198,38 @@ export interface QualityGateConfig {
  * mid-flight and reported `gh command failed (exit 143)` as a code failure.
  * `clearEnv` makes the omission mean what the caller wrote.
  *
- * Returns the exit code and combined stdout/stderr.
+ * Returns the exit code and combined stdout/stderr. A timeout is exit 124,
+ * never a zero exit.
  */
 export async function runCommand(
   cmd: string[],
-  options?: { cwd?: string; env?: Record<string, string> },
+  options?: {
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+  },
 ): Promise<{ exitCode: number; output: string }> {
-  const command = new Deno.Command(cmd[0]!, {
-    args: cmd.slice(1),
-    cwd: options?.cwd,
-    ...(options?.env === undefined ? {} : { env: options.env, clearEnv: true }),
-    stdout: "piped",
-    stderr: "piped",
-  });
+  const timeoutMs = options?.timeoutMs ?? QUALITY_COMMAND_TIMEOUT_MS;
+  const executable = cmd[0] ?? "";
+  let result: Deno.CommandOutput;
+  try {
+    result = await commandOutputWithTimeout(executable, {
+      args: cmd.slice(1),
+      cwd: options?.cwd,
+      ...(options?.env === undefined
+        ? {}
+        : { env: options.env, clearEnv: true }),
+      stdout: "piped",
+      stderr: "piped",
+      timeoutMs,
+    });
+  } catch (error) {
+    if (isCommandTimeoutError(error)) {
+      return { exitCode: 124, output: error.message };
+    }
+    throw error;
+  }
 
-  const result = await command.output();
   const stdout = new TextDecoder().decode(result.stdout);
   const stderr = new TextDecoder().decode(result.stderr);
   const output = stdout + (stderr ? "\n" + stderr : "");
@@ -705,6 +734,64 @@ async function runGitSpawnChokepointCheck(
 }
 
 /**
+ * Run the spawn-timeout check (Issue #4248).
+ *
+ * A `new Deno.Command` with no `signal`, outside the chokepoint modules, or a
+ * `runWithTimeout` call with no `timeoutMs`, fails the gate.
+ */
+async function runSpawnTimeoutCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "spawn timeout";
+  const relDirs = SPAWN_TIMEOUT_SCAN_DIRS;
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForSpawnTimeout(
+    config.scriptDir,
+    relDirs,
+  );
+
+  if (result.offences.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output: `spawn timeout: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.offences.map(
+      (offence) =>
+        `VIOLATION: ${offence.file}:${offence.line}: ${offence.text}`,
+    ),
+    "",
+    "A subprocess spawn has no explicit timeout (Issue #4248). Pass `signal`",
+    "to `new Deno.Command`, or `timeoutMs` to `runWithTimeout`.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `spawn timeout: FAILED\n${output}`,
+  };
+}
+
+/**
  * Run the host work-dir guard check (Issue #135, parent #118).
  *
  * Scans the Deno source tree (tests excluded — fixtures legitimately build
@@ -1112,7 +1199,7 @@ async function runSourceTargetCheck(
 
       if (!exists) {
         errors.push(
-          `ERROR: ${file}:${lineno} sources '${target}' which does not exist`,
+          `${file}:${lineno} sources '${target}' which does not exist`,
         );
         failures++;
       }
@@ -1190,6 +1277,19 @@ async function runSemgrepQualityCheck(
 ): Promise<CheckExecutionResult> {
   const result = await runSemgrepCheck(config.scriptDir);
   return { name: "semgrep", status: result.status, output: result.output };
+}
+
+/**
+ * Local Checkov scan (Issue #3972) — the same CI-pinned CloudFormation scan
+ * the blocking `checkov.yml` PR check runs, so a template finding is met before
+ * the push rather than after it. SKIPPED loudly, with the reason, when no
+ * pinned checkov is reachable; strict mode promotes that to FAILED.
+ */
+async function runCheckovQualityCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const result = await runCheckovCheck(config.scriptDir);
+  return { name: "checkov", status: result.status, output: result.output };
 }
 
 /**
@@ -1696,6 +1796,10 @@ export async function runQualityGate(
   // unavoidable.
   note(await runGitSpawnChokepointCheck(config));
 
+  // spawn timeout (Issue #4248) — any subprocess with no explicit timeout
+  // fails the gate.
+  note(await runSpawnTimeoutCheck(config));
+
   // redact before truncate (Issue #1257) — a size cap may not run inside a
   // redaction call, or the cut splits the credential the rules key on.
   note(await runRedactTruncateOrderCheck(config));
@@ -1770,6 +1874,14 @@ export async function runQualityGate(
   // SAST finding is met before the push rather than after it. Skipped loudly
   // when semgrep is unavailable.
   mainChecks.push(() => runSemgrepQualityCheck(config));
+
+  // Local Checkov scan (Issue #3972) — only where the blocking `checkov.yml`
+  // workflow exists, so the stage mirrors a check the repo actually runs.
+  if (
+    await payloadExists(`${config.scriptDir}/.github/workflows/checkov.yml`)
+  ) {
+    mainChecks.push(() => runCheckovQualityCheck(config));
+  }
 
   // Release-tag ruleset reconciliation (Issue #1049) — only in a checkout that
   // carries the committed payload, so the worker's gate over a monitored repo

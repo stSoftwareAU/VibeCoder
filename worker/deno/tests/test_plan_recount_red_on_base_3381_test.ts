@@ -9,7 +9,7 @@ import {
 } from "../lib/test_plan_recount.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
-const GATE_TEST = "worker/deno/tests/branch_outcomes_gate_test.ts";
+const GATE_TEST = "worker/deno/tests/example_gate_test.ts";
 const FOO_TEST = "worker/deno/tests/foo_test.ts";
 
 function counts(
@@ -24,10 +24,10 @@ function counts(
 // file has 80 runnable tests, so "77 passed, 2 failed" (79) is stale.
 const STALE_PR_3372 = `## Test Plan
 
-All tests are in \`worker/deno/tests/branch_outcomes_gate_test.ts\`.
+All tests are in \`worker/deno/tests/example_gate_test.ts\`.
 
 **Red on base.** I swapped in the base copy of
-\`worker/deno/lib/branch_outcomes_gate.ts\` (commit \`8958b3c3\`) and ran the
+\`worker/deno/lib/example_gate.ts\` (commit \`8958b3c3\`) and ran the
 suite. Result: 77 passed, 2 failed. The two failures:
 
 - \`validateBranchOutcomes - a prose mention separated by a blank line still does not hide the real header's inline citation\`
@@ -35,12 +35,12 @@ suite. Result: 77 passed, 2 failed. The two failures:
 
 **Changed assertion.**
 
-- Removed from \`worker/deno/tests/branch_outcomes_gate_test.ts\`: \`assertEquals(namedTestPaths(record), []);\` — it is replaced by \`assertEquals(namedTestPaths(record), ["worker/deno/tests/unrelated_test.ts"]);\`.
+- Removed from \`worker/deno/tests/example_gate_test.ts\`: \`assertEquals(namedTestPaths(record), []);\` — it is replaced by \`assertEquals(namedTestPaths(record), ["worker/deno/tests/unrelated_test.ts"]);\`.
 
 ### PR #3372 review round — heading-form headers
 
 **Red on base (this round).** I swapped in this round's pre-fix copy of
-\`worker/deno/lib/branch_outcomes_gate.ts\` (HEAD before this round, commit
+\`worker/deno/lib/example_gate.ts\` (HEAD before this round, commit
 \`9a3e30f8\`) and ran the suite: 78 passed, 2 failed.
 `;
 

@@ -20,9 +20,13 @@ import {
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
+import { planCodingFailure } from "../lib/coding_failure_ladder.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { MutationCheckResult } from "../lib/mutation_gate.ts";
+import {
+  MUTATION_TEMP_DIR_UNWRITABLE,
+  type MutationCheckResult,
+} from "../lib/mutation_gate.ts";
 import type { MutationRunInput } from "../lib/mutation_runner.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
@@ -94,6 +98,8 @@ interface Scenario {
 interface Outcome {
   status: string;
   reason?: string;
+  category?: string;
+  categories?: readonly string[];
   claudeCalls: number;
   prompts: string[];
   prCreateCalls: number;
@@ -247,6 +253,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     reason: result.status === "failure" || result.status === "early_exit"
       ? result.reason
       : undefined,
+    category: result.status === "failure" || result.status === "early_exit"
+      ? result.category
+      : undefined,
+    categories: result.status === "failure" ? result.categories : undefined,
     claudeCalls: prompts.length,
     prompts,
     prCreateCalls,
@@ -265,19 +275,19 @@ const completed = (survivors: typeof SURVIVOR[]): MutationCheckResult => ({
   total: 3,
 });
 
-Deno.test("completion - a surviving mutant blocks the PR and names file:line and the mutation", async () => {
+Deno.test("completion - a surviving mutant is noted and the PR is still raised", async () => {
   const outcome = await runCompletion({ mutation: completed([SURVIVOR]) });
 
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
   assertEquals(outcome.runnerInputs.length >= 1, true);
-  assertStringIncludes(outcome.reason ?? "", "survived");
-  assertEquals(outcome.claudeCalls, 1, "one in-run recovery turn");
+  assertEquals(outcome.claudeCalls, 1, "one in-session note");
   assertStringIncludes(outcome.prompts[0]!, `${CHANGED_FILE}:42`);
   assertStringIncludes(outcome.prompts[0]!, "negated if condition");
   assertEquals(outcome.comments.length, 1);
   assertStringIncludes(outcome.comments[0]!, `${CHANGED_FILE}:42`);
   assertStringIncludes(outcome.comments[0]!, "negated if condition");
+  assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
 });
 
 Deno.test("completion - the runner is given the PR diff and the default budget", async () => {
@@ -338,34 +348,94 @@ Deno.test("completion - budget exhausted with no survivor raises the PR and warn
   );
 });
 
-Deno.test("completion - a runner error blocks the PR (fail closed)", async () => {
+Deno.test("completion - a runner error is noted and the PR is still raised", async () => {
   const outcome = await runCompletion({
     mutation: { kind: "error", reason: "cargo mutants crashed" },
   });
 
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0);
-  assertStringIncludes(outcome.reason ?? "", "cargo mutants crashed");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertStringIncludes(outcome.comments[0] ?? "", "cargo mutants crashed");
 });
 
-Deno.test("completion - a throwing runner blocks the PR (fail closed)", async () => {
+Deno.test("completion - a throwing runner is noted and the PR is still raised", async () => {
   const outcome = await runCompletion({ mutation: new Error("boom") });
 
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0);
-  assertStringIncludes(outcome.reason ?? "", "boom");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertStringIncludes(outcome.comments[0] ?? "", "boom");
 });
 
-Deno.test("completion - an uncollectable PR diff blocks the PR and the runner is not called", async () => {
+Deno.test("completion - an unwritable mutation temp dir is noted as a worker fault, not a quality failure, and the PR is still raised", async () => {
+  // Issue #4127 classifies an unwritable temp directory as a worker fault.
+  // Issue #4319 then notes a completion-gate finding and still raises the
+  // pull request, so the issue is not failed as a quality failure.
+  const outcome = await runCompletion({
+    mutation: {
+      kind: "error",
+      reason:
+        `${MUTATION_TEMP_DIR_UNWRITABLE}: Permission denied (os error 13): tmpdir`,
+    },
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(outcome.category, undefined);
+  assertEquals(outcome.claudeCalls, 1, "one in-session note");
+  assertEquals(outcome.comments.length, 1);
+  assertStringIncludes(
+    outcome.comments[0]!,
+    "## Mutation check: could not run (worker fault)",
+  );
+  assertStringIncludes(outcome.comments[0]!, MUTATION_TEMP_DIR_UNWRITABLE);
+  assertEquals(
+    outcome.comments[0]!.includes(
+      "## Mutation check: changed lines are not pinned",
+    ),
+    false,
+  );
+  assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
+});
+
+Deno.test("completion - a read-only mutation filesystem stops as infrastructure without charging the issue", async () => {
+  // Issue #4360 stops on host-disk fallout before the informational mutation
+  // path from #4127/#4319. A generic temp-directory permission error still
+  // takes that informational path in the preceding test.
+  const reason =
+    `${MUTATION_TEMP_DIR_UNWRITABLE}: Read-only file system (os error 30): tmpdir`;
+  const outcome = await runCompletion({ mutation: { kind: "error", reason } });
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.category, "internal_error");
+  assertEquals(outcome.reason, reason);
+  assertEquals(outcome.prCreateCalls, 0);
+  assertEquals(outcome.claudeCalls, 0);
+  assertEquals(outcome.comments, []);
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    category: "internal_error",
+    reason,
+  });
+  assertEquals(
+    plan.applyLadder,
+    false,
+    "host-disk fallout must not charge the issue",
+  );
+});
+
+Deno.test("completion - an uncollectable PR diff is noted and the runner is not called", async () => {
   const outcome = await runCompletion({
     mutation: completed([]),
     fullDiffFails: true,
   });
 
-  assertEquals(outcome.status, "failure");
-  assertEquals(outcome.prCreateCalls, 0);
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
   assertEquals(outcome.runnerInputs.length, 0);
-  assertStringIncludes(outcome.reason ?? "", "could not collect the PR diff");
+  assertStringIncludes(
+    outcome.comments[0] ?? "",
+    "could not collect the PR diff",
+  );
 });
 
 Deno.test("completion - skip_mutation_check never calls the runner", async () => {
@@ -390,16 +460,19 @@ Deno.test("completion - an unwired runner does not block", async () => {
   );
 });
 
-Deno.test("completion - a mutation survivor is folded into an earlier gate's block", async () => {
-  // Branch-outcomes list missing AND a mutant survives: one block, both named.
+Deno.test("completion - a mutation survivor is named on the pull request", async () => {
   const outcome = await runCompletion({
     mutation: completed([SURVIVOR]),
     summary: SUMMARY.replace("**Branch outcomes:** none added\n", ""),
   });
 
-  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
   assertEquals(outcome.comments.length, 1);
-  assertStringIncludes(outcome.comments[0]!, "Branch outcomes not recorded");
+  assertEquals(
+    outcome.comments[0]!.includes("Branch outcomes not recorded"),
+    false,
+  );
   assertStringIncludes(outcome.comments[0]!, `${CHANGED_FILE}:42`);
 });
 
@@ -421,20 +494,6 @@ Deno.test("completion - a survivor folded into another gate's block still lets t
 
   assertStringIncludes(outcome.prompts[0]!, "adding or strengthening tests");
   assertEquals(outcome.prompts[0]!.includes("so do not change it."), false);
-});
-
-Deno.test("completion - a summary-only block keeps the documentation-only recovery prompt", async () => {
-  const outcome = await runCompletion({
-    mutation: completed([]),
-    summary: SUMMARY.replace("**Branch outcomes:** none added\n", ""),
-  });
-
-  assertEquals(outcome.claudeCalls, 1);
-  assertStringIncludes(outcome.prompts[0]!, "so do not change it.");
-  assertEquals(
-    outcome.prompts[0]!.includes("adding or strengthening tests"),
-    false,
-  );
 });
 
 Deno.test("completion - a not-applicable mutation check is logged with its reason", async () => {

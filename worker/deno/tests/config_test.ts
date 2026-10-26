@@ -831,9 +831,10 @@ Deno.test("config - getEnvNumberOrDefault handles negative numbers", () => {
   assertEquals(result, -5);
 });
 
-// =============================================================================
+// ======================================================================});
+
 // getEnvArrayOrDefault tests (Issue #218)
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - getEnvArrayOrDefault returns env var as array when set", () => {
   const result = getEnvArrayOrDefault(
@@ -889,9 +890,11 @@ Deno.test("config - getEnvArrayOrDefault handles single value", () => {
   assertEquals(result, ["onlyone"]);
 });
 
-// =============================================================================
+// ======================================================================});
+
 // The injected environment seam itself (Issue #956)
-// =============================================================================
+// ======================================================================});
+
 //
 // The readers above are now driven with a fixed map rather than by mutating
 // `Deno.env`, which is what removes this file from `PROCESS_STATE_MUTATORS`.
@@ -982,9 +985,10 @@ Deno.test("config - loadConfig reads its overrides through the injected lookup (
   });
 });
 
-// =============================================================================
+// ======================================================================});
+
 // isAllowedAuthor tests (Issue #218)
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - isAllowedAuthor returns true for allowed user", () => {
   const config: WorkerConfig = buildDefaultWorkerConfig({
@@ -1018,9 +1022,10 @@ Deno.test("config - isAllowedAuthor is case-insensitive, as GitHub logins are (I
   assertEquals(isAllowedAuthor(config, "mallory"), false);
 });
 
-// =============================================================================
+// ======================================================================});
+
 // validateConfig additional edge cases (Issue #218)
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - validateConfig rejects invalid username format", () => {
   const config: WorkerConfig = buildDefaultWorkerConfig({
@@ -1086,9 +1091,10 @@ Deno.test("config - validateConfig accepts multiple allowed authors", () => {
   validateConfig(config);
 });
 
-// =============================================================================
+// ======================================================================});
+
 // The single trust source — collaborators minus the Vibe Coders (Issue #1066)
-// =============================================================================
+// ======================================================================});
 
 function captureConsoleWarn(fn: () => void): string[] {
   const warnings: string[] = [];
@@ -1237,9 +1243,10 @@ Deno.test("config - loadConfig warns that local logins no longer grant trust (Is
   });
 });
 
-// =============================================================================
+// ======================================================================});
+
 // loadConfig allowed_authors array (Issue #218)
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - allowed_authors seeds only the default PR reviewer (Issue #1066)", async () => {
   const testConfig: ConfigFile = {
@@ -1305,9 +1312,10 @@ Deno.test("config - loadConfig defaults authorisedCommenters to the known bots (
   });
 });
 
-// =============================================================================
+// ======================================================================});
+
 // Claude Model Configuration (Issue #260)
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - loadConfig loads claude_model from config file", async () => {
   const testConfig: ConfigFile = {
@@ -1322,7 +1330,7 @@ Deno.test("config - loadConfig loads claude_model from config file", async () =>
   });
 });
 
-Deno.test("config - loadConfig defaults claudeModel to opus when not configured", async () => {
+Deno.test("config - loadConfig leaves claudeModel empty when not configured, so phases route (Issue #4117)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo"],
@@ -1330,7 +1338,7 @@ Deno.test("config - loadConfig defaults claudeModel to opus when not configured"
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.claudeModel, "opus");
+    assertEquals(config.claudeModel, "");
   });
 });
 
@@ -1350,9 +1358,10 @@ Deno.test("config - loadConfig uses config file claude_model, ignores env (Issue
   });
 });
 
-// =============================================================================
+// ======================================================================});
+
 // Operational Configuration from .config.json (Issue #277)
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - loadConfig uses default operational values when not in config file (Issue #277)", async () => {
   const testConfig: ConfigFile = {
@@ -1621,9 +1630,10 @@ Deno.test("config - loadConfig normalises per-repo issue_executor_split (Issue #
   });
 });
 
-// =============================================================================
+// ======================================================================});
+
 // Issue #1296: repo_config snake_case to camelCase normalisation
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - loadConfig normalises repo_config snake_case keys to camelCase (Issue #1296)", async () => {
   const testConfig: ConfigFile = {
@@ -1750,9 +1760,10 @@ Deno.test("config - loadConfig round-trips repo_config nice through normaliseRep
   });
 });
 
-// =============================================================================
+// ======================================================================});
+
 // Issue #1334: Unknown config key detection at startup
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - loadConfig warns about unknown keys in config file (Issue #1334)", async () => {
   // Write a config file with an unknown camelCase key
@@ -2053,6 +2064,103 @@ Deno.test("config - a stall window equal to the check interval is accepted (Issu
   });
 });
 
+// ── Issue #4128: pre_push_retry_timeout_seconds ──────────────────────────
+
+Deno.test("config - the pre-push retry timeout defaults to 600s (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.prePushRetryTimeoutSeconds, 600);
+  });
+});
+
+Deno.test("config - the pre-push retry timeout is read from the file (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: 900,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.prePushRetryTimeoutSeconds, 900);
+  });
+});
+
+Deno.test("config - a zero pre-push retry timeout is rejected (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: 0,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "pre_push_retry_timeout_seconds must be a positive finite number, got 0",
+    );
+  });
+});
+
+Deno.test("config - a negative pre-push retry timeout is rejected (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: -30,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "pre_push_retry_timeout_seconds must be a positive finite number, got -30",
+    );
+  });
+});
+
+Deno.test("config - a non-number pre-push retry timeout is rejected (Issue #4128)", async () => {
+  const testConfig = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: "600",
+  } as unknown as ConfigFile;
+
+  await withTempConfig(testConfig, async (configPath) => {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      `pre_push_retry_timeout_seconds must be a positive finite number, got "600"`,
+    );
+  });
+});
+
+Deno.test("config - an infinite pre-push retry timeout is rejected (Issue #4128)", async () => {
+  // JSON.stringify writes Infinity as null, so the file is written as text:
+  // the literal `1e999` parses to Infinity, which the finiteness check must
+  // reject. The message renders the value with JSON.stringify, hence `null`.
+  const tempDir = await Deno.makeTempDir();
+  const configPath = `${tempDir}/.config.json`;
+  await Deno.writeTextFile(
+    configPath,
+    '{"allowed_authors":["testuser"],"repos":["org/repo1"],' +
+      '"pre_push_retry_timeout_seconds":1e999}',
+  );
+  try {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "pre_push_retry_timeout_seconds must be a positive finite number, got null",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
 // ── Issue #1453: trusted_authors_cache_hours ─────────────────────────────
 
 Deno.test("config - trusted_authors_cache_hours defaults to one hour (Issue #1453)", async () => {
@@ -2099,9 +2207,10 @@ Deno.test("config - trusted_authors_cache_hours outside 0..24 is rejected (Issue
   }
 });
 
-// =============================================================================
+// ======================================================================});
+
 // repos is one repository per name, whatever the casing (Issue #1546)
-// =============================================================================
+// ======================================================================});
 
 Deno.test("config - loadConfig collapses a case-variant repos entry, keeping the first spelling", async () => {
   _resetDuplicateRepoWarning();
@@ -2326,4 +2435,113 @@ Deno.test("config - a non-boolean rtk_output.enabled fails the load (Issue #2380
     );
     assertStringIncludes(error.message, "rtk_output.enabled");
   });
+});
+
+// ======================================================================});
+
+// run_finish_seconds tests (Issue #4242)
+// ======================================================================});
+
+Deno.test("config - run_finish_seconds defaults to two hours when absent (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  }, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.runFinishSeconds, 7200);
+  });
+});
+
+Deno.test("config - an explicit run_finish_seconds loads (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: 10800,
+  }, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.runFinishSeconds, 10800);
+  });
+});
+
+Deno.test("config - run_finish_seconds just past the one-hour target is accepted (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: 3601,
+  }, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.runFinishSeconds, 3601);
+  });
+});
+
+Deno.test("config - run_finish_seconds equal to the one-hour target is rejected (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: 3600,
+  }, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(
+      error.message,
+      "run_finish_seconds must be greater than the run duration target (3600), got 3600",
+    );
+  });
+});
+
+Deno.test("config - a non-number run_finish_seconds is rejected (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: "soon",
+  } as unknown as ConfigFile, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    // The structural check in validation.ts refuses it before the finish
+    // check in config.ts runs.
+    assertStringIncludes(
+      error.message,
+      "has invalid structure: run_finish_seconds - Expected number, got string",
+    );
+  });
+});
+
+Deno.test("config - a run_finish_seconds that parses to Infinity is refused as not finite (Issue #4242)", async () => {
+  // JSON.stringify cannot write Infinity, so the file is written as raw text:
+  // `1e999` parses to Infinity, which validation.ts accepts as a number and
+  // the finite check in config.ts then refuses.
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const configPath = `${tempDir}/.config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      '{"allowed_authors":["testuser"],"repos":["org/repo1"],' +
+        '"run_finish_seconds": 1e999}',
+    );
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(
+      error.message,
+      "run_finish_seconds must be a finite number",
+    );
+    assertStringIncludes(error.message, "got Infinity");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("config - the pre-push retry timeout key is a known config key, not flagged as unknown (Issue #4128)", async () => {
+  const { detectUnknownConfigKeys } = await import(
+    "../lib/config_unknown_keys.ts"
+  );
+  assertEquals(
+    detectUnknownConfigKeys({ pre_push_retry_timeout_seconds: 600 }),
+    [],
+  );
 });

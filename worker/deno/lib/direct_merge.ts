@@ -10,6 +10,7 @@
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import {
+  ACTIONS_APP_SLUG,
   fetchCheckRunsBatch,
   rollupToCheckRunsResponse,
   rollupToCombinedStatusResponse,
@@ -251,10 +252,34 @@ export interface CheckRun {
   conclusion: string | null;
 }
 
+/** GitHub check suite on a commit (REST `commits/{sha}/check-suites` shape). */
+export interface CheckSuite {
+  /** The suite's id; absent when the source did not carry one. */
+  id?: number;
+  /** The app's slug, e.g. "github-actions"; null when the app is unknown. */
+  app_slug: string | null;
+  status: string;
+  conclusion: string | null;
+  /**
+   * Check runs this suite created (`latest_check_runs_count` on REST,
+   * `checkRuns.totalCount` on GraphQL). A suite with runs is already judged
+   * through the latest-run filter, so only a count of zero is a suite signal
+   * (Issue #4347).
+   */
+  check_run_count: number;
+}
+
 /** GitHub check-runs API response shape. */
 export interface CheckRunsResponse {
   total_count: number;
   check_runs: CheckRun[];
+  /**
+   * The head commit's check suites (REST `commits/{sha}/check-suites`). Every
+   * production producer sets it — the GraphQL adapter and the REST fallback.
+   * Absent means "not read", not "no suites": the suite rule in
+   * {@link determineCiStatus} then has nothing to act on (Issue #4347).
+   */
+  check_suites?: CheckSuite[];
 }
 
 /** GitHub commit status entry. */
@@ -274,15 +299,93 @@ export interface CombinedStatusResponse {
 /** Injectable function type for running gh commands (enables testing). */
 export type GhCommandFn = (args: string[]) => Promise<string>;
 
+/**
+ * One page of the check-runs REST read, as `--jq` prints it.
+ *
+ * `gh api --paginate` applies `--jq` to each page, so the payload is one
+ * JSON object per line rather than a single document.
+ */
+const CHECK_RUNS_PAGE_JQ =
+  "{total_count, check_runs: [.check_runs[] | {id, name, status, conclusion}]}";
+
+/**
+ * Merge every check-runs page from a paginated REST read (Issue #4370).
+ *
+ * A missing page, a page that does not parse, pages that disagree on
+ * `total_count`, or a merged run count other than `total_count` throws.
+ * The caller treats that as a failed lookup and does not judge CI from the
+ * runs it happened to see.
+ */
+function mergeCheckRunPages(raw: string): CheckRunsResponse {
+  const pages: CheckRunsResponse[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    pages.push(readCheckRunsPage(trimmed));
+  }
+  const first = pages[0];
+  if (first === undefined) {
+    throw new Error("check-runs lookup returned no pages");
+  }
+  const total = first.total_count;
+  for (const page of pages) {
+    if (page.total_count !== total) {
+      throw new Error(
+        `check-runs pages disagree on total_count (${page.total_count} vs ${total})`,
+      );
+    }
+  }
+  const check_runs = pages.flatMap((page) => page.check_runs);
+  if (check_runs.length !== total) {
+    throw new Error(
+      `check-runs pagination incomplete: read ${check_runs.length} of ${total}`,
+    );
+  }
+  return { total_count: total, check_runs };
+}
+
+/** Parse one check-runs page. Throws when the page cannot be trusted. */
+function readCheckRunsPage(line: string): CheckRunsResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`check-runs page was not JSON: ${message}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("check-runs page was not a check-runs object");
+  }
+  const page = parsed as Record<string, unknown>;
+  if (typeof page.total_count !== "number") {
+    throw new Error("check-runs page has no numeric total_count");
+  }
+  if (!Array.isArray(page.check_runs)) {
+    throw new Error("check-runs page has no check_runs array");
+  }
+  for (const run of page.check_runs) {
+    if (typeof run !== "object" || run === null) {
+      throw new Error("check-runs page contained a non-object run");
+    }
+  }
+  return {
+    total_count: page.total_count,
+    check_runs: page.check_runs as CheckRun[],
+  };
+}
+
 // =============================================================================
 // checkCiStatus
 // =============================================================================
 
 /**
- * Query the GitHub API for the PR's check runs and commit statuses.
+ * Query the GitHub API for the PR's check runs, commit statuses and check
+ * suites (Issue #4347).
  *
  * Returns a Result indicating whether all checks have passed, are still
- * pending, or have failed.
+ * pending, or have failed. When the GraphQL rollup cannot be read, the REST
+ * fallback requests every check run (`per_page=100`, `--paginate`). A page
+ * set that cannot be completed is a lookup failure, not a green verdict.
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - Pull request number
@@ -316,7 +419,9 @@ export async function checkCiStatus(
     }
   }
 
-  // Fallback: REST check-runs + status pair, keyed by head SHA.
+  // Fallback: REST check-runs, status and check-suites, keyed by head SHA.
+  // Issue #4370: the unpaginated call returns 30 runs, and `total_count`
+  // only says whether any exist, so a failed run past page one read as passed.
   let prJson: string;
   try {
     prJson = await ghCommandFn([
@@ -354,12 +459,14 @@ export async function checkCiStatus(
 
   let checkRunsJson: string;
   let combinedStatusJson: string;
+  let checkSuitesJson: string;
   try {
     checkRunsJson = await ghCommandFn([
       "api",
-      `repos/${repo}/commits/${headSha}/check-runs`,
+      `repos/${repo}/commits/${headSha}/check-runs?per_page=100`,
+      "--paginate",
       "--jq",
-      "{total_count, check_runs: [.check_runs[] | {id, name, status, conclusion}]}",
+      CHECK_RUNS_PAGE_JQ,
     ]);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -386,10 +493,38 @@ export async function checkCiStatus(
     };
   }
 
+  try {
+    checkSuitesJson = await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${headSha}/check-suites?per_page=100`,
+      "--jq",
+      "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion, check_run_count: (.latest_check_runs_count // -1)}]}",
+    ]);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to fetch check suites for PR #${prNumber}: ${message}`,
+      ),
+    };
+  }
+
   let checkRuns: CheckRunsResponse;
+  try {
+    checkRuns = mergeCheckRunPages(checkRunsJson);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to read every check run for PR #${prNumber}: ${message}`,
+      ),
+    };
+  }
+
   let combinedStatus: CombinedStatusResponse;
   try {
-    checkRuns = JSON.parse(checkRunsJson) as CheckRunsResponse;
     combinedStatus = JSON.parse(combinedStatusJson) as CombinedStatusResponse;
   } catch {
     return {
@@ -398,12 +533,29 @@ export async function checkCiStatus(
     };
   }
 
+  // A suite that created no check run is seen only here, so an unreadable
+  // suite list is an error — never read as "no suites" (Issue #4347).
+  let checkSuites: unknown;
+  try {
+    checkSuites = (JSON.parse(checkSuitesJson) as { check_suites?: unknown })
+      .check_suites;
+  } catch {
+    checkSuites = undefined;
+  }
+  if (!Array.isArray(checkSuites)) {
+    return {
+      ok: false,
+      error: new Error(`Failed to parse check suites for PR #${prNumber}`),
+    };
+  }
+  checkRuns.check_suites = checkSuites as CheckSuite[];
+
   const status = determineCiStatus(checkRuns, combinedStatus);
   return { ok: true, value: { status, headSha } };
 }
 
 /**
- * Check-run conclusions that count as passing (Issue #3945).
+ * Check-run and check-suite conclusions that count as passing (Issue #3945).
  *
  * This is an **allowlist**: only these conclusions let a merge through.
  * `skipped` and `neutral` are included by explicit policy — a check that
@@ -412,7 +564,27 @@ export async function checkCiStatus(
  * `startup_failure`, `stale`, and any value GitHub adds in future) fails
  * closed.
  */
-const PASSING_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
+export const PASSING_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
+
+/**
+ * Whether a check suite is a completed GitHub Actions suite whose conclusion
+ * is not on the passing allowlist and which created no check run (Issue
+ * #4347). A workflow that fails at startup, such as one whose `uses:` action
+ * the Actions policy rejects, is recorded that way. A suite that did create
+ * runs is already judged through the check-run rollup, which keeps only the
+ * latest run of each name, so an earlier failed or cancelled run of the same
+ * workflow must not fail the commit again. Suites from other apps, and suites
+ * that have not finished, do not count. Status and conclusion are compared
+ * case-folded so this agrees with the review gate's copy.
+ */
+export function isFailedActionsSuite(suite: CheckSuite): boolean {
+  const conclusion = suite.conclusion?.toLowerCase() ?? null;
+  return suite.app_slug === ACTIONS_APP_SLUG &&
+    suite.status.toLowerCase() === "completed" &&
+    conclusion !== null &&
+    !PASSING_CONCLUSIONS.has(conclusion) &&
+    suite.check_run_count === 0;
+}
 
 /** Commit-status states that count as passing (Issue #3945). */
 const PASSING_STATUS_STATES = new Set(["success"]);
@@ -447,6 +619,8 @@ function rollupStateToCiStatus(
  * Determine the aggregate CI status from check runs and combined status.
  *
  * Logic:
+ * - If a completed GitHub Actions check suite created no check run and has a
+ *   conclusion off the passing allowlist → failed (Issue #4347).
  * - If no checks exist at all → no_checks (unverified, not green — #3705).
  * - If any check run's conclusion is not on the passing allowlist → failed.
  * - If the combined status state is not `success`/`pending` → failed.
@@ -468,6 +642,12 @@ export function determineCiStatus(
 ): CiStatus {
   const hasCheckRuns = checkRuns.total_count > 0;
   const hasCommitStatuses = combinedStatus.statuses.length > 0;
+
+  // A zero-run GitHub Actions suite fails the commit whatever else is present
+  // (Issue #4347). A suite that has runs is left to the check-run rule.
+  if ((checkRuns.check_suites ?? []).some(isFailedActionsSuite)) {
+    return "failed";
+  }
 
   // No checks at all — nothing verified this commit, so it is not "passed"
   // (Issue #3705). The caller decides whether an operator override applies.
@@ -951,6 +1131,9 @@ export async function directMergePr(
   // Pre-merge backstop gate (Issue #2582): CI must be green and branch current.
   const gate = await gateFn(repo, prNumber, ghCommandFn, {
     allowNoChecks: options.allowNoChecks === true,
+    ...(options.decideMilestoneBaseFn
+      ? { decideMilestoneBaseFn: options.decideMilestoneBaseFn }
+      : {}),
   });
   if (!gate.ok) {
     return {

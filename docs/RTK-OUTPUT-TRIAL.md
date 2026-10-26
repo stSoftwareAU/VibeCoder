@@ -39,7 +39,8 @@ itself is a pinned container toolchain fragment
 ([#2381](https://github.com/stSoftwareAU/VibeCoder/issues/2381)), so every host
 running a given image runs the same RTK version.
 
-On a switched-on Claude host the run is prepared like this:
+Claude Code and Codex support the hook. On a switched-on Claude host the run
+is prepared like this:
 
 ```mermaid
 sequenceDiagram
@@ -58,15 +59,21 @@ sequenceDiagram
 Three details decide what a run is worth comparing against:
 
 - The hook reaches the agent through **`--settings`** alone — a `PreToolUse`
-  entry whose matcher is `Bash` and whose command is `rtk hook claude`. Nothing
-  is written to a shared settings file, so a run with the switch off is spawned
-  with byte-identical settings to a host that never had the switch.
+  entry whose matcher is `Bash` and whose command is `rtk hook claude`, for
+  Claude. Codex translates the same entry into `-c hooks.PreToolUse=…`, enables
+  `features.hooks` and passes `--dangerously-bypass-hook-trust` for the
+  worker-authored hook. Neither route writes a shared settings file or the
+  operator's `~/.codex`; an off run emits no RTK configuration or trust flag.
 - The prompt line is **appended**, never injected into the template, so the
   prompt cache is untouched and the line sits outside the untrusted issue
   fences.
-- Only Claude Code takes per-spawn `PreToolUse` settings. A Codex, Gemini or
-  DeepSeek run on a switched-on host reports `unsupported` rather than claiming
-  a filtering that never happened.
+- Support comes from the provider descriptor's `supportsPreToolUseHooks`
+  capability. Claude Code and Codex report `ok` after a successful RTK preflight
+  and record the saved-token delta from the same gain store. Gemini and DeepSeek
+  report `unsupported`. Codex presents its shell calls to hooks as `Bash` with
+  a string `tool_input.command`, which RTK reads directly; no payload shim or
+  AGENTS.md instruction is needed. The spike and its execution-environment
+  limitation are recorded in the [implementation evidence](archive/pr-summaries/pr-summary-4121.md).
 
 ## 2. 📼 Motivation, not evidence
 
@@ -147,8 +154,11 @@ Two exclusions and one inclusion carry the rule:
 
 - A run from **before 1.7.0** carries no `- **RTK:**` line at all. It is
   excluded from both sides rather than assumed to be a control run.
-- An `unsupported` run is excluded: it is a Codex, Gemini or DeepSeek run whose
-  cost profile is not comparable with a Claude run either way.
+- An `unsupported` run is excluded: it is a Gemini or DeepSeek run whose
+  cost profile is not comparable with a Claude run either way. Codex runs
+  report `ok` (Issue #4121) and so fall in the enabled population; the trial's
+  baseline population is Claude-only, so compare Codex runs separately by
+  provider rather than pooling them with Claude runs.
 - A **`failed`** run stays in, on the enabled side. It cost what an enabled host
   really costs when the binary is missing or the store is unreadable, and hiding
   that cost would flatter the candidate.
@@ -213,9 +223,9 @@ trial is run with that stated rather than discovered:
 - Its telemetry is disabled image-wide (`RTK_TELEMETRY_DISABLED=1`; RTK does not
   honour `DO_NOT_TRACK`), so no run's command output leaves the container by
   this path. `RTK_SUPPRESS_HOOK_WARNING=1` is set beside it to keep the daily
-  missing-hook warning off stderr — v0.49.0 reads no such variable, so it is
-  declared and **inert** until a release honours it, and the warning is
-  cosmetic either way.
+  missing-hook warning off stderr — v0.49.0 read no such variable; the 1.0.1
+  binary the image now pins does reference it, and the warning is cosmetic
+  either way.
 - Nothing here can fail a run. Every failure logs exactly one
   `[RTK_UNAVAILABLE] <reason>` line and records `failed`; the run then proceeds
   with an unchanged prompt and no hook.

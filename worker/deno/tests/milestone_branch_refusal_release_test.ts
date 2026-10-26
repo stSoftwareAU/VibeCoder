@@ -27,7 +27,6 @@ import {
 } from "../lib/milestone_branch_rejection.ts";
 import {
   handleIssueFailure,
-  markIssueAsFailed,
   markIssueAsFailedOnce,
 } from "../lib/label_failure.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
@@ -47,6 +46,10 @@ import {
   releaseMilestoneBranchRefusalLabels,
   resetMilestoneBranchRefusalSweepsForTest,
 } from "../lib/milestone_branch_refusal_release.ts";
+
+/** A repeat failure's record (Issue #4158 replaced the old second-failure path). */
+const markRepeatFailure: typeof markIssueAsFailedOnce = (options, deps) =>
+  markIssueAsFailedOnce({ ...options, repeat: true }, deps);
 
 /** The exact GH013 message from the issue report. */
 const GH013 = [
@@ -162,7 +165,6 @@ Deno.test("refusal release - handleIssueFailure adds no failed-once/failed label
   assert(result.ok);
   assertEquals(result.value.failureCategory, "repo_config");
   assertEquals(result.value.markedAsFailedOnce, false);
-  assertEquals(result.value.markedAsFailed, false);
   assertEquals(result.value.isInfrastructure, false);
 
   const flat = gh.calls.map((c) => c.join(" "));
@@ -494,6 +496,52 @@ Deno.test("releaseMilestoneBranchRefusalLabels - a refusal record written outsid
   assertEquals(gh.byNumber.get(200)?.labels, ["failed"]);
 });
 
+Deno.test("releaseMilestoneBranchRefusalLabels - an ordinary owner comment is not a forged marker; a non-fleet failure record still is (Issue #4357)", async () => {
+  resetMilestoneBranchRefusalSweepsForTest();
+  const warnings: string[] = [];
+  const issues: FakeIssue[] = [
+    {
+      number: 4357,
+      labels: ["failed-once"],
+      comments: [
+        REFUSAL_COMMENT,
+        { body: "I'll take a look at this.", author: "nleck" },
+      ],
+    },
+    {
+      number: 4358,
+      labels: ["failed-once"],
+      comments: [{ body: REFUSAL_COMMENT, author: "drive-by-account" }],
+    },
+  ];
+  const gh = fakeGh(issues);
+  await releaseMilestoneBranchRefusalLabels({
+    repo: REPO,
+    milestoneTitle: MILESTONE,
+    milestoneBranch: BRANCH,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+    log: (message) => warnings.push(message),
+  });
+
+  const markerWarnings = warnings.filter((w) =>
+    w.includes("ignored") && w.includes("marker match")
+  );
+  assertEquals(
+    markerWarnings.filter((w) => w.includes("#4357")),
+    [],
+    `ordinary owner comment was logged as a marker: ${
+      markerWarnings.join(" | ")
+    }`,
+  );
+  assert(
+    markerWarnings.some((w) =>
+      w.includes("#4358") && w.includes("ignored 1 marker match")
+    ),
+    `non-fleet failure record was not logged: ${markerWarnings.join(" | ")}`,
+  );
+});
+
 Deno.test("releaseMilestoneBranchRefusalLabels - an unresolvable fleet keeps every label (Issue #2220)", async () => {
   // Fail direction: when the fleet identity cannot be resolved no comment can
   // be attributed, so no record is recognised and nothing is released.
@@ -602,7 +650,7 @@ Deno.test("refusalIsMostRecentFailure - a marked summary-gate refusal quoting th
     `repository rule violations)`;
   // At failure time the marker wins: the refusal is `summary_incomplete`.
   assertEquals(detectFailureCategory(reason), "summary_incomplete");
-  for (const write of [markIssueAsFailedOnce, markIssueAsFailed]) {
+  for (const write of [markIssueAsFailedOnce, markRepeatFailure]) {
     let body = "";
     await write({
       repo: REPO,
@@ -678,7 +726,6 @@ Deno.test("applyCodingFailureLadder - a milestone refusal comments and labels no
       }),
   });
   assertEquals(outcome.error, undefined);
-  assertEquals(outcome.ladder?.markedAsFailed, false);
   assertEquals(outcome.ladder?.markedAsFailedOnce, false);
   assert(
     !calls.some((c) => c.includes("--add-label")),

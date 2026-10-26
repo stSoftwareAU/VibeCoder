@@ -1468,6 +1468,13 @@ main() {
             ;;
     esac
 
+    # Whether .config.json predates this run, for update-mode (Issue #4119).
+    # Taken before any step below, all of which run before the config step.
+    local config_existed=false
+    if [[ -f "$CONFIG_FILE" ]]; then
+        config_existed=true
+    fi
+
     # Prerequisites check via Deno
     if [[ "${auto_install}" == "true" ]]; then
         run_setup_cli prerequisites --auto-install
@@ -1532,7 +1539,7 @@ main() {
     # worker-checkout-update; this script keeps no mode logic of its own. It
     # runs after write_interactive_config so a single setup run leaves one
     # coherent config file, and it never prompts without a terminal.
-    run_setup_cli update-mode
+    run_setup_cli update-mode --config-existed="$config_existed"
 
     # Ask whether repo-settings-harden turns Copilot code review on, off, or
     # leaves it (Issue #2701). Each automatic review is billed to the PR

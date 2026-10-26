@@ -9,7 +9,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildDriftQuestionPrompt,
   buildDriftRecoveryPrompt,
@@ -20,6 +25,27 @@ import {
   runPrFeedbackDriftCheck,
 } from "../lib/pr_feedback_drift_check.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
+
+Deno.test("buildDriftQuestionPrompt opens the base only for a parity sentence (Issue #4223)", () => {
+  const shared = {
+    repo: "org/repo",
+    prNumber: 7,
+    beforeSha: "a".repeat(40),
+    files: ["docs/manual.md"],
+  };
+  const withBase = buildDriftQuestionPrompt({ ...shared, baseRef: "main" });
+  assertStringIncludes(withBase, "git show origin/main:");
+  assertStringIncludes(withBase, "as before");
+  assertStringIncludes(withBase, "file:line");
+  assertFalse(withBase.includes("not against the base"));
+  assertFalse(withBase.includes("git show undefined:"));
+
+  const noBase = buildDriftQuestionPrompt({ ...shared, baseRef: undefined });
+  assertFalse(noBase.includes("git show"));
+  assertStringIncludes(noBase, "as before");
+  assertStringIncludes(noBase, "file:line");
+  assertFalse(noBase.includes("not against the base"));
+});
 
 // ---------------------------------------------------------------------------
 // Test-repo scaffolding — a real git checkout per test.
@@ -567,57 +593,6 @@ No tests changed.
   }
 });
 
-Deno.test("runPrFeedbackDriftCheck - a code push with a Docs-sweep-less summary carries the problem into the recovery prompt", async () => {
-  const summaryNoDocsSweep = `## Summary
-
-Closes #7.
-
-Some unrelated prose.
-`;
-  const dir = await initRepo();
-  await writeFile(dir, "lib/rule.ts", RULE_TS_V1);
-  await commitAll(dir, "base");
-  assertEquals(
-    (await git(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"])).code,
-    0,
-  );
-  assertEquals((await git(dir, ["checkout", "-b", "issue-7-fix"])).code, 0);
-  await writeFile(dir, SUMMARY_PATH, summaryNoDocsSweep);
-  await commitAll(dir, "docs: add PR summary");
-  const rev = await git(dir, ["rev-parse", "HEAD"]);
-  const beforeSha = rev.stdout.trim();
-
-  try {
-    await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
-
-    const calls: AgentCall[] = [];
-    const runAgent = makeRunAgent(
-      [
-        { ok: true, output: verdictBlock([]) },
-        { ok: true, output: "did nothing" },
-      ],
-      calls,
-    );
-
-    const outcome = await runPrFeedbackDriftCheck(
-      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      {
-        runGit: makeRunGit(dir),
-        runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
-        runAgent,
-        logger: noopLogger(),
-      },
-    );
-
-    assertEquals(calls.length, 2);
-    assertStringIncludes(calls[1]!.prompt, "Docs sweep");
-    assertEquals(outcome.status, "reported");
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
 // ---------------------------------------------------------------------------
 // Worker-owned state files must never be treated as a code change
 // (Issue #3143 review): `.pr_response_message`, written by the agent at the
@@ -734,6 +709,41 @@ Deno.test("runPrFeedbackDriftCheck - nothing changed since beforeSha is skipped 
 
     assertEquals(calls.length, 0);
     assertEquals(outcome.status, "skipped");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runPrFeedbackDriftCheck - a push that changed nothing is logged at info (Issue #4361)", async () => {
+  const { dir, beforeSha } = await setupBaseline();
+  try {
+    const lines: { level: string; message: string }[] = [];
+    const calls: AgentCall[] = [];
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent: makeRunAgent([], calls),
+        logger: {
+          info: (message) => lines.push({ level: "info", message }),
+          warn: (message) => lines.push({ level: "warn", message }),
+          error: (message) => lines.push({ level: "error", message }),
+        },
+      },
+    );
+
+    assertEquals(outcome.status, "skipped");
+    assertEquals(calls.length, 0);
+    const skipped = lines.filter((line) =>
+      line.message === "Drift check skipped — this push changed nothing"
+    );
+    assertEquals(
+      skipped.map((line) => line.level),
+      ["info"],
+      "nothing to check is the correct outcome, not a degradation",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

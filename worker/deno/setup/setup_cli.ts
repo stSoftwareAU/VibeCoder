@@ -27,7 +27,8 @@
  *   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
  *   repo-settings-harden  Harden every monitored repo's GitHub settings (drift only)
  *   repos              List monitored repositories; --add / --remove one (Issue #672)
- *   update-mode        Ask for the update mode, pinned ref and tool versions (Issue #626)
+ *   update-mode        Ask for the update mode, pinned ref and tool versions (Issue #626;
+ *                      needs --config-existed=true|false, Issue #4119)
  *   copilot-review-mode  Ask whether Copilot code review is on, off or left as is (Issue #2701)
  *   hooks              Install pre-commit hook and git exclude patterns
  *   all                Run full setup (default)
@@ -119,7 +120,10 @@ import { resolveSetupAgentProviderIds } from "./agent_providers.ts";
 import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { loadExistingConfig, resolveCodeownersOwners } from "./config_setup.ts";
 import { syncCodeowners } from "./codeowners_sync.ts";
-import { runUpdateModeSetup } from "./update_mode_setup.ts";
+import {
+  runUpdateModeSetup,
+  type UpdateModeSetupDeps,
+} from "./update_mode_setup.ts";
 import { runCopilotReviewSetup } from "./copilot_review_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { runGhOrThrow } from "../lib/gh_spawn.ts";
@@ -436,19 +440,47 @@ async function runCopilotReviewMode(configPath: string): Promise<boolean> {
 }
 
 /**
+ * Read `--config-existed=true|false` from the argv (Issue #4119): whether
+ * `.config.json` existed before `setup.sh` ran. Returns `undefined` when the
+ * flag is absent or carries any other value, so `update-mode` refuses to guess
+ * which default a host should get.
+ */
+export function parseConfigExistedFlag(
+  args: readonly string[],
+): boolean | undefined {
+  const flag = args.find((arg) => arg.startsWith("--config-existed="));
+  if (flag === "--config-existed=true") return true;
+  if (flag === "--config-existed=false") return false;
+  return undefined;
+}
+
+/**
  * `update-mode`: ask whether this host follows the tip or is frozen at a pin,
  * and record the answer in `.config.json` (Issue #626).
  *
  * `setup.sh` delegates the whole conversation here and keeps no mode logic of
- * its own, in the same shape as `run.sh` → `worker-checkout-update`.
+ * its own, in the same shape as `run.sh` → `worker-checkout-update`. The caller
+ * states whether the config existed before this run (`--config-existed`), since
+ * only a config this run creates defaults to `frozen` (Issue #4119).
  */
-async function runUpdateMode(
+export async function runUpdateMode(
   scriptDir: string,
   configPath: string,
+  configExisted: boolean | undefined,
+  deps?: Partial<UpdateModeSetupDeps>,
 ): Promise<boolean> {
+  if (configExisted === undefined) {
+    printError(
+      "update-mode needs --config-existed=true or --config-existed=false " +
+        "(whether .config.json existed before this run).",
+    );
+    return false;
+  }
   const result = await runUpdateModeSetup({
     repoDir: scriptDir,
     configPath,
+    configExisted,
+    deps,
   });
   if (!result.ok) {
     printError(result.error.message);
@@ -1849,9 +1881,9 @@ export function dryRunRefusal(subcommand: string): string | undefined {
     `${DRY_RUN_SUBCOMMANDS.join(", ")}.`;
 }
 
-function usage(): void {
-  console.log(
-    `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
+/** The `--help` text: every subcommand and the flags each one takes. */
+export const SETUP_CLI_USAGE =
+  `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
 
 Subcommands:
   prerequisites   Check all prerequisites (--auto-install consents in advance
@@ -1880,7 +1912,9 @@ Subcommands:
   backfill-idle-task-labels  Apply idle-task label to existing security-scan wrappers
   repos           List monitored repositories (--add owner/repo, --remove owner/repo)
   update-mode     Ask for the update mode (dynamic/frozen) and, when frozen,
-                  the pinned ref and the exact Claude CLI / gh / Deno versions
+                  the pinned ref and the exact Claude CLI / gh / Deno versions.
+                  Needs --config-existed=true|false: whether .config.json
+                  existed before this run (only a new config defaults to frozen)
   copilot-review-mode  Ask whether repo-settings-harden turns Copilot code
                   review on, off, or leaves it (billed per review — Issue #2701)
   hooks           Install pre-commit hook and git exclude patterns
@@ -1888,8 +1922,11 @@ Subcommands:
   all             Run full setup (default)
 
 --dry-run is refused by every subcommand that does not support it: it would
-write for real.`,
-  );
+write for real.`;
+
+/** Print the `--help` text on stdout. */
+export function usage(): void {
+  console.log(SETUP_CLI_USAGE);
 }
 
 if (import.meta.main) {
@@ -2020,7 +2057,11 @@ if (import.meta.main) {
         ok = await runRepos(configPath, addRepo, removeRepo);
         break;
       case "update-mode":
-        ok = await runUpdateMode(scriptDir, configPath);
+        ok = await runUpdateMode(
+          scriptDir,
+          configPath,
+          parseConfigExistedFlag(args),
+        );
         break;
       case "copilot-review-mode":
         ok = await runCopilotReviewMode(configPath);

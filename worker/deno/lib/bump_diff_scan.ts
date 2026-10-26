@@ -33,8 +33,9 @@
  * `unknown` is a lockfile entry that names a package and version but not
  * the registry it came from (a bare `"@std/yaml@1.9.9"` key in
  * `deno.lock`); the audit resolves those by trying JSR then npm.
+ * `crates` is a Cargo pin whose publish time comes from crates.io.
  */
-export type BumpRegistry = "npm" | "jsr" | "unknown";
+export type BumpRegistry = "npm" | "jsr" | "unknown" | "crates";
 
 /** An external `name@version` a bump introduced. */
 export interface BumpedSpecifier {
@@ -144,7 +145,6 @@ const FOREIGN_MANIFESTS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^Gemfile(\.lock)?$/, "RubyGems"],
   [/\.gemspec$/, "RubyGems"],
   [/^go\.(mod|sum)$/, "Go module"],
-  [/^Cargo\.(toml|lock)$/, "crates.io"],
   [
     /^(?:requirements[A-Za-z0-9._-]*\.txt|Pipfile(?:\.lock)?|poetry\.lock|pyproject\.toml|setup\.py)$/,
     "PyPI",
@@ -173,6 +173,8 @@ const MAX_QUOTED_LINE = 200;
 export type ScannedFileKind =
   | { kind: "package-json" }
   | { kind: "lock"; registry: BumpRegistry }
+  | { kind: "cargo-lock" }
+  | { kind: "cargo-toml" }
   | { kind: "foreign"; ecosystem: string }
   | { kind: "other" };
 
@@ -180,6 +182,8 @@ export type ScannedFileKind =
 export function classifyBumpFile(path: string): ScannedFileKind {
   const base = path.split("/").pop() ?? path;
   if (base === "package.json") return { kind: "package-json" };
+  if (base === "Cargo.lock") return { kind: "cargo-lock" };
+  if (base === "Cargo.toml") return { kind: "cargo-toml" };
   const registry = LOCKFILES[base];
   if (registry) return { kind: "lock", registry };
   for (const [pattern, ecosystem] of FOREIGN_MANIFESTS) {
@@ -294,6 +298,177 @@ function addLockEntry(
   );
 }
 
+/** One Cargo.lock `[[package]]` block while the diff is scanned. */
+interface CargoPackageDraft {
+  name?: string;
+  version?: string;
+  versionLine?: string;
+  versionAdded: boolean;
+  source?: string;
+}
+
+/** `name = "serde"` in a Cargo.lock package block. */
+const CARGO_LOCK_NAME_RE = /^name = "([^"]+)"$/;
+
+/** `version = "1.0.210"` in a Cargo.lock package block. */
+const CARGO_LOCK_VERSION_RE = /^version = "([^"]+)"$/;
+
+/** `source = "registry+https://github.com/rust-lang/crates.io-index"`. */
+const CARGO_LOCK_SOURCE_RE = /^source = "([^"]+)"$/;
+
+/**
+ * Cargo.toml keys that carry text but are not a dependency on a
+ * published crate: the package's own identity and its metadata.
+ */
+const CARGO_TOML_SKIP_KEYS = new Set([
+  "name",
+  "version",
+  "edition",
+  "license",
+  "authors",
+  "description",
+  "homepage",
+  "repository",
+  "documentation",
+  "readme",
+  "publish",
+  "resolver",
+  "keywords",
+  "categories",
+  "autobins",
+  "autoexamples",
+  "autotests",
+  "autobenches",
+  "workspace",
+  "rust-version",
+]);
+
+/** `serde = "1.0.210"` in a Cargo.toml dependency table. */
+const CARGO_TOML_SIMPLE_RE = /^([A-Za-z0-9_-]+) = "([^"]*)"$/;
+
+/** `serde = { version = "1.0.210", features = ["derive"] }`. */
+const CARGO_TOML_INLINE_RE = /^([A-Za-z0-9_-]+) = \{[^}]*\bversion = "([^"]*)"/;
+
+function emptyCargoDraft(): CargoPackageDraft {
+  return { versionAdded: false };
+}
+
+/**
+ * The `https` URL inside a Cargo.lock registry source (`registry+` or
+ * `sparse+`). Git and path sources are not registry indexes.
+ */
+function cargoRegistryUrl(source: string): URL | undefined {
+  let rest: string | undefined;
+  if (source.startsWith("registry+")) {
+    rest = source.slice("registry+".length);
+  } else if (source.startsWith("sparse+")) {
+    rest = source.slice("sparse+".length);
+  }
+  if (rest === undefined) return undefined;
+  try {
+    return new URL(rest);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when `source` names the official crates.io index.
+ *
+ * The host must be `index.crates.io` or `crates.io`, or `github.com` with
+ * the path `/rust-lang/crates.io-index` (the git index Cargo still records).
+ * Equality on the parsed host rejects a lookalike such as
+ * `crates.io.evil.example`.
+ */
+function isCratesIoIndexSource(source: string): boolean {
+  const url = cargoRegistryUrl(source);
+  if (!url || url.protocol !== "https:") return false;
+  const host = url.hostname;
+  if (host === "index.crates.io" || host === "crates.io") return true;
+  if (host !== "github.com") return false;
+  const path = url.pathname.length > 1 && url.pathname.endsWith("/")
+    ? url.pathname.slice(0, -1)
+    : url.pathname;
+  return path === "/rust-lang/crates.io-index";
+}
+
+/**
+ * Emit a crates.io specifier when this package block's version was added
+ * and the source is the crates.io index. Path and git packages have no
+ * crates.io publish time, so they are left alone.
+ */
+function flushCargoDraft(
+  draft: CargoPackageDraft,
+  path: string,
+  out: Collector,
+): CargoPackageDraft {
+  if (
+    draft.versionAdded && draft.name && draft.version &&
+    draft.source !== undefined && isCratesIoIndexSource(draft.source)
+  ) {
+    const version = pinnedVersion(draft.version);
+    if (version) {
+      out.add({ registry: "crates", name: draft.name, version });
+    } else {
+      out.flag(
+        draft.versionLine ?? draft.version,
+        `\`${draft.name}@${draft.version}\` in \`${path}\` does not pin a ` +
+          `single release, so its publish time cannot be checked against ` +
+          `the quarantine.`,
+      );
+    }
+  }
+  return emptyCargoDraft();
+}
+
+/** Fold one Cargo.lock line (added or context) into the open package. */
+function absorbCargoLockLine(
+  line: string,
+  added: boolean,
+  draft: CargoPackageDraft,
+  path: string,
+  out: Collector,
+): CargoPackageDraft {
+  const trimmed = line.trim();
+  if (trimmed === "[[package]]") return flushCargoDraft(draft, path, out);
+  const name = CARGO_LOCK_NAME_RE.exec(trimmed);
+  if (name) {
+    draft.name = name[1];
+    return draft;
+  }
+  const version = CARGO_LOCK_VERSION_RE.exec(trimmed);
+  if (version) {
+    draft.version = version[1];
+    draft.versionLine = line;
+    if (added) draft.versionAdded = true;
+    return draft;
+  }
+  const source = CARGO_LOCK_SOURCE_RE.exec(trimmed);
+  if (source) draft.source = source[1];
+  return draft;
+}
+
+/** Record one Cargo.toml dependency pin, or refuse an unpinnable one. */
+function scanCargoToml(line: string, path: string, out: Collector): void {
+  const trimmed = line.trim();
+  const match = CARGO_TOML_INLINE_RE.exec(trimmed) ??
+    CARGO_TOML_SIMPLE_RE.exec(trimmed);
+  if (!match) return;
+  const name = match[1]!;
+  const raw = match[2]!;
+  if (CARGO_TOML_SKIP_KEYS.has(name)) return;
+  const version = pinnedVersion(raw);
+  if (version) {
+    out.add({ registry: "crates", name, version });
+    return;
+  }
+  out.flag(
+    line,
+    `\`${name} = "${raw}"\` in \`${path}\` does not pin a single release, ` +
+      `so its publish time cannot be checked against the quarantine.`,
+  );
+}
+
 /** Lockfile entries: quoted keys, bare keys, and resolved tarball URLs. */
 function scanLockfile(
   line: string,
@@ -383,15 +558,43 @@ export function scanBumpDiff(diff: string): BumpDiffScan {
     },
   };
 
+  // Cargo.lock names the crate on its own line, often as diff context, and
+  // the version on the next. The open package is flushed at the next header.
+  let cargo = emptyCargoDraft();
+  const endCargo = (): void => {
+    cargo = flushCargoDraft(cargo, path, out);
+  };
+
   for (const raw of diff.split("\n")) {
     if (raw.startsWith("+++ ")) {
+      endCargo();
       path = diffPath(raw);
       file = classifyBumpFile(path);
       continue;
     }
-    if (raw.startsWith("--- ") || !raw.startsWith("+")) continue;
+    if (raw.startsWith("--- ")) continue;
+    if (file.kind === "cargo-lock") {
+      if (
+        raw.startsWith("+") || raw.startsWith(" ") || raw.startsWith("\t")
+      ) {
+        cargo = absorbCargoLockLine(
+          raw.slice(1),
+          raw.startsWith("+"),
+          cargo,
+          path,
+          out,
+        );
+      }
+      continue;
+    }
+    if (!raw.startsWith("+")) continue;
+    if (file.kind === "cargo-toml") {
+      scanCargoToml(raw.slice(1), path, out);
+      continue;
+    }
     scanAddedLine(raw.slice(1), path, file, out);
   }
+  endCargo();
 
   return { specifiers: dropRedundantUnknown(specifiers), unverifiable };
 }

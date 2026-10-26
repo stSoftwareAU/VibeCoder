@@ -131,7 +131,7 @@ Deno.test(
   "census untrusted label issues - a read failure is trusted and warned, naming the issue (Issue #3571 e)",
   async () => {
     const gh = stubGh({}, [7]);
-    const logged: string[] = [];
+    const logged: Array<{ message: string; level: string }> = [];
     const untrusted = await censusUntrustedLabelIssues(
       REPO,
       [{ number: 7, labels: ["work-on"] }],
@@ -139,15 +139,20 @@ Deno.test(
       gh.fn,
       undefined,
       [],
-      (msg) => logged.push(msg),
+      (msg, level = "info") => logged.push({ message: msg, level }),
     );
     assertEquals([...untrusted], []);
     assertEquals(logged.length, 1, `expected one warning, got ${logged}`);
-    const warning = logged[0] ?? "";
-    assert(warning.includes("WARNING"), warning);
-    assert(warning.includes(`${REPO}#7`), warning);
+    const warning = logged[0];
+    assert(warning, "expected one warning");
+    assertEquals(warning.level, "warn");
+    assert(warning.message.includes("[idle-census]"), warning.message);
+    assert(warning.message.includes(`${REPO}#7`), warning.message);
     // The error's own message, not `String(err)` ("Error: HTTP 503 …").
-    assert(warning.includes("(HTTP 503: service unavailable);"), warning);
+    assert(
+      warning.message.includes("(HTTP 503: service unavailable);"),
+      warning.message,
+    );
   },
 );
 

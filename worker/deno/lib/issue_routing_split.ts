@@ -9,10 +9,10 @@
  *
  * - A part that already exists is reused, so a re-run after a part-way
  *   failure completes the set without filing a part twice. "Exists" means an
- *   open issue in the part's repository with the same title that carries this
- *   tool's `<!-- issue-routing owner=<part repo> … kind=cross-repo -->`
- *   marker; any other same-titled issue or PR (closed, or filed by someone
- *   else) fails that part and is left unedited.
+ *   open, fleet-authored issue in the part's repository with the same title
+ *   that carries this tool's `<!-- issue-routing owner=<part repo> … kind=cross-repo -->`
+ *   marker. Any other same-titled issue or PR (closed, unmarked, or filed by
+ *   someone else) fails that part and is left unedited.
  * - A part that fails is reported with its error; the remaining parts are
  *   still filed, and siblings are linked only once every part exists.
  * - Labels apply only to the part in the drafting repository; no labels or
@@ -38,7 +38,9 @@ import type {
   IssueRoutingGithubDeps,
 } from "./issue_routing_github.ts";
 import { defaultLogger } from "./logger.ts";
+import { verifyOwnedOpenIssue } from "./owned_open_artefact.ts";
 import { isValidRepoSlug } from "./repo_slug.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 
 /** One codebase's share of the work. */
 export interface SplitPart {
@@ -75,6 +77,8 @@ export interface SplitOptions extends IssueRoutingGithubDeps {
   context: IssueRoutingContext;
   dryRun?: boolean;
   extraReservedLabels?: readonly string[];
+  /** Fleet author set for the owned-artefact checks; omitted means configured identity. */
+  authors?: AlertDedupAuthorOptions;
   logger?: Logger;
 }
 
@@ -176,37 +180,29 @@ function hasPartMarker(body: string, part: SplitPart): boolean {
 
 /**
  * Refuse to reuse (and later edit) a same-titled issue that is not this
- * tool's open part: the title search also returns PRs, issues closed in the
- * last 30 days and unrelated issues.
+ * tool's open, fleet-authored part, checked by verifyOwnedOpenIssue.
  *
- * @throws Error naming the issue when it is closed or lacks the marker
+ * @throws Error naming the issue and the failed check when it is not reusable
  */
 async function requireReusablePart(
   gh: GhCommandFn,
   part: SplitPart,
   number: number,
+  authors: AlertDedupAuthorOptions | undefined,
 ): Promise<void> {
-  const raw = await gh([
-    "issue",
-    "view",
-    String(number),
-    "--repo",
-    part.repo,
-    "--json",
-    "body,state",
-  ]);
-  const parsed = JSON.parse(raw) as { body?: unknown; state?: unknown };
-  const open = typeof parsed.state === "string" &&
-    parsed.state.toUpperCase() === "OPEN";
-  const marked = typeof parsed.body === "string" &&
-    hasPartMarker(parsed.body, part);
-  if (!open || !marked) {
+  const verdict = await verifyOwnedOpenIssue({
+    repo: part.repo,
+    number,
+    marker: "<!-- issue-routing",
+    accept: (body) => hasPartMarker(body, part),
+    ghCommandFn: gh,
+    authors,
+  });
+  if (!verdict.ok) {
     throw new Error(
       `${part.repo}#${number} has the same title but is not an open issue ` +
-        `filed by route-issue --part for ${part.repo} (it is ${
-          open ? "open" : "closed"
-        }, ${marked ? "with" : "without"} the issue-routing marker); left ` +
-        `unchanged, not reused. Close or retitle it, or choose another part title`,
+        `filed by route-issue --part for ${part.repo} (${verdict.reason}); ` +
+        `left unchanged, not reused. Close or retitle it, or choose another part title`,
     );
   }
 }
@@ -273,13 +269,22 @@ export async function fileSplitIssues(
           logger,
           ghCommandFn: gh,
           now: opts.now,
+          authors: opts.authors,
         },
       );
+      if (filed.action === "suppressed") {
+        throw new Error(
+          `${part.repo}#${filed.number} has the same title but is not an ` +
+            `open issue filed by route-issue --part for ${part.repo} (it is ` +
+            `closed, a pull request, or not this tool's fleet-authored issue); ` +
+            `left unchanged, not reused. Close or retitle it, or choose another part title`,
+        );
+      }
       if (
         filed.number !== null &&
         (filed.action === "reused" || filed.action === "would-reuse")
       ) {
-        await requireReusablePart(gh, part, filed.number);
+        await requireReusablePart(gh, part, filed.number, opts.authors);
       }
       results.push({ ...part, action: filed.action, number: filed.number });
     } catch (error) {

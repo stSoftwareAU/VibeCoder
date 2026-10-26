@@ -21,10 +21,7 @@ import {
   repairSharedObjectStore,
   resetObjectStoreRepairsForTest,
 } from "../lib/object_store_repair.ts";
-import {
-  OBJECT_STORE_NEXT_STEP,
-  workOnIssueSetupBranch,
-} from "../lib/phases/setup_branch_phase.ts";
+import { workOnIssueSetupBranch } from "../lib/phases/setup_branch_phase.ts";
 import {
   createMockDeps,
   mockGitHubClient,
@@ -299,7 +296,7 @@ Deno.test(
 );
 
 Deno.test(
-  "#1093 - a repair that does not resolve the corruption escalates with the repository named",
+  "#4298 - a repair that does not resolve the corruption fails for the retry, naming the repository, and never hands off",
   async () => {
     resetObjectStoreRepairsForTest();
     const workDir = await Deno.makeTempDir({ prefix: "issue1093-escalate-" });
@@ -345,17 +342,14 @@ Deno.test(
           result.reason.includes("inflate: data stream error"),
         JSON.stringify(result),
       );
-      assertEquals(comments.length, 1, JSON.stringify(comments));
-      const comment = comments[0]!;
-      assertStringIncludes(comment, "Corrupt git object store");
-      assertStringIncludes(comment, "stSoftwareAU/VibeCoder");
-      assertStringIncludes(comment, OBJECT_STORE_NEXT_STEP);
-      // Deduplicated per repository, so the marker names the repo.
-      assertStringIncludes(
-        comment,
-        "object-store-corrupt-stSoftwareAU/VibeCoder",
-      );
-      assertEquals(labels, [ctx.config.needsHumanLabel]);
+      // The clone-corrupt failure names the repository, so the host-fault
+      // release and the next run's repair find it.
+      assertStringIncludes(result.reason, "stSoftwareAU/VibeCoder");
+      assertEquals(result.category, "clone_corrupt");
+      // Issue #4298: nothing is handed to a human. The next run claims the
+      // repair again and re-clones; no comment and no `needs-human`.
+      assertEquals(comments, []);
+      assertEquals(labels, []);
 
       if (state.heartbeatHandle) stopHeartbeat(state.heartbeatHandle);
     } finally {

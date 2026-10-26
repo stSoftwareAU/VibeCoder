@@ -31,6 +31,10 @@
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { stripJsonc } from "./jsonc.ts";
+import {
+  CARGO_BUILD_SKIPPED_FOR_MERGE,
+  shouldSkipEphemeralCargoBuild,
+} from "./heavy_build_gate.ts";
 
 /** How long the merged-tree type check may run before it is killed. */
 export const MERGE_GATE_TIMEOUT_MS = 300_000;
@@ -100,6 +104,19 @@ export interface MergeGateOutcome {
    * caller must not spend a repair round on it.
    */
   toolchainGap?: RustToolchainGap;
+  /**
+   * Set only by a merge-only gate (Issue #4326) on a `skipped` verdict: the
+   * host cannot afford the build, so a conflict the deterministic rules
+   * settled is pushed unverified with the `UNGATED:` note rather than refused
+   * as a resolution nothing verified (Issue #1559).
+   */
+  landUnverified?: boolean;
+  /**
+   * Set when a cargo project was left to CI (Issue #4326). A `passed` outcome
+   * with this set has verified only the Deno half; the report must not claim
+   * the cargo half passed. A `skipped` outcome with this set verified nothing.
+   */
+  cargoSkipped?: boolean;
 }
 
 /**
@@ -207,8 +224,8 @@ async function manifestsIn(dir: string): Promise<ProjectManifest[]> {
       break;
     }
   }
-  // Issue #2138: a Cargo workspace is a project too. Its members are covered
-  // by `--workspace`, so a directory that holds a Cargo.toml is not descended.
+  // Issue #2138: a Cargo workspace is a project too. Its Cargo members are
+  // covered by `--workspace`, but nested Deno projects still need discovery.
   const cargo = `${dir}/Cargo.toml`;
   if (await isFile(cargo)) found.push({ dir, manifest: cargo, kind: "cargo" });
   return found;
@@ -256,9 +273,10 @@ export interface ProjectManifest {
  * `worker/deno` clean — a gate that passes everything, which is the state
  * Issue #974 exists to end.
  *
- * A directory that holds a manifest is not descended into: its own project
- * covers what lies beneath it. Each level is sorted, so the same tree yields
- * the same order on every host.
+ * A manifest covers nested projects of its own toolchain only. Keep looking
+ * for the other toolchain: Cargo cannot verify a nested Deno project, nor
+ * Deno a nested Cargo workspace. Each level is sorted, so the same tree
+ * yields the same order on every host.
  *
  * Shared by the type-check gate (Issue #974) and the conflict-resolution gate
  * (Issue #1559) so both judge the same set of projects.
@@ -270,21 +288,27 @@ export async function findProjectManifests(
   repoDir: string,
 ): Promise<ProjectManifest[]> {
   const found: ProjectManifest[] = [];
-  let level = [repoDir];
+  let level: { dir: string; covered: ReadonlySet<ProjectKind> }[] = [
+    { dir: repoDir, covered: new Set() },
+  ];
   for (let depth = 0; depth <= MERGE_GATE_MAX_DEPTH && level.length; depth++) {
-    const next: string[] = [];
-    for (const dir of level.sort()) {
+    const next: typeof level = [];
+    for (
+      const { dir, covered } of level.sort((a, b) =>
+        a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0
+      )
+    ) {
       const manifests = await manifestsIn(dir);
-      if (manifests.length > 0) {
-        found.push(...manifests);
-        continue;
-      }
+      found.push(...manifests.filter((project) => !covered.has(project.kind)));
+      const childCoverage = new Set(covered);
+      for (const project of manifests) childCoverage.add(project.kind);
+      if (childCoverage.has("cargo") && childCoverage.has("deno")) continue;
       if (depth === MERGE_GATE_MAX_DEPTH) continue;
       try {
         for await (const entry of Deno.readDir(dir)) {
           if (!entry.isDirectory) continue;
           if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue;
-          next.push(`${dir}/${entry.name}`);
+          next.push({ dir: `${dir}/${entry.name}`, covered: childCoverage });
         }
       } catch {
         // An unreadable subdirectory simply contributes no candidates; an
@@ -477,6 +501,12 @@ const spawnTypeCheck: TypeCheckRunner = async (project) => {
 export async function checkMergedTree(
   repoDir: string,
   runner: TypeCheckRunner = spawnTypeCheck,
+  /**
+   * Whether the ephemeral cargo build must not run (Issue #4326).
+   * Defaults to the host-disk budget. A merge still lands; CI builds it.
+   */
+  skipCargoBuild: () => Promise<boolean> = () =>
+    shouldSkipEphemeralCargoBuild(repoDir),
 ): Promise<MergeGateOutcome> {
   // A tree that cannot be read is a check that could not be run, not a
   // repository without one — refuse rather than wave it through as "skipped".
@@ -508,7 +538,16 @@ export async function checkMergedTree(
   }
 
   const checked: string[] = [];
+  const skipCargo = await skipCargoBuild();
+  let skippedCargo = false;
   for (const project of projects) {
+    if (project.kind === "cargo" && skipCargo) {
+      // The host is above its floor and short of cargo headroom, and
+      // pruning freed nothing. Running cargo here is what would take free
+      // space through the floor, so the merge lands and CI builds it.
+      skippedCargo = true;
+      continue;
+    }
     const where = `${describeProject(project)} in ${project.dir}`;
     let result: { code: number; output: string };
     try {
@@ -544,10 +583,23 @@ export async function checkMergedTree(
     checked.push(where);
   }
 
+  if (checked.length === 0 && skippedCargo) {
+    return {
+      status: "skipped",
+      detail: `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`,
+      output: "",
+      cargoSkipped: true,
+    };
+  }
+
+  const cargoNote = skippedCargo
+    ? `; ${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`
+    : "";
   return {
     status: "passed",
-    detail: `${checked.join("; ")} passed`,
+    detail: `${checked.join("; ")} passed${cargoNote}`,
     output: "",
+    ...(skippedCargo ? { cargoSkipped: true } : {}),
   };
 }
 
@@ -577,37 +629,4 @@ export function mergeGateFailureError(
 /** Whether an error is the merge-gate refusal. */
 export function isMergeGateFailure(err: unknown): boolean {
   return err instanceof Error && err.name === MILESTONE_MERGE_GATE_ERROR;
-}
-
-/** Everything the escalation comment names. */
-export interface MergeGateEscalation {
-  repo: string;
-  milestoneBranch: string;
-  defaultBranch: string;
-  /** The refusal message, including the check output. */
-  reason: string;
-}
-
-/**
- * Body of the needs-human comment posted on the milestone's tracking issue.
- *
- * The merge is named, the check output travels with it, and the comment says
- * plainly that nothing was pushed — so the reader knows the branch is intact
- * and what has to be resolved before it moves.
- */
-export function buildMergeGateEscalationComment(
-  e: MergeGateEscalation,
-): string {
-  return `## Milestone sync merge fails the repo's own check — needs a human\n\n` +
-    `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
-    `\`${e.repo}\` produced a tree that fails the repository's own check ` +
-    `(a type error, or whatever else that check enforces — a stale lockfile ` +
-    `under \`--frozen\`, say), so it was **not pushed** and the local merge ` +
-    `was discarded (Issue #974).\n\n` +
-    `Git reported no conflict: both sides were internally consistent and ` +
-    `only their combination is not, which is how the same wiring was lost ` +
-    `three times before this gate existed (#928, #796).\n\n` +
-    `Check output:\n\n\`\`\`\n${e.reason}\n\`\`\`\n\n` +
-    `Resolve the merge by hand on \`${e.milestoneBranch}\`. The sync will ` +
-    `keep refusing to push until the merged tree compiles.`;
 }

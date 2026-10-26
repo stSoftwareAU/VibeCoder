@@ -11,7 +11,6 @@
 import { assertEquals } from "@std/assert";
 import {
   applyCodingFailureLadder,
-  buildRepeatedFailureEscalation,
   classifyCodingFailure,
   isSetupFault,
   planCodingFailure,
@@ -301,6 +300,27 @@ Deno.test("planCodingFailure - a non-transient failure steps the ladder and the 
   assertEquals(plan.cooldownKind, "non_transient");
 });
 
+Deno.test("planCodingFailure - an infra tool-missing failure recorded as criteria-unmet does not cool the issue (Issue #4362)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    category: "criteria_unmet",
+    reason: "the run did not meet every acceptance criterion",
+    transcript: [
+      { type: "function_call", name: "shell", status: "completed" },
+      {
+        type: "error",
+        message:
+          "Code Mode is unavailable because failed to spawn code-mode host /usr/local/bin/codex-code-mode-host: host executable was not found.",
+      },
+    ],
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+  assertEquals(plan.decision?.disposition, "transient");
+  assertEquals(plan.decision?.failureClass, "tool-runtime");
+});
+
 Deno.test("planCodingFailure - a transient failure steps neither", () => {
   const plan = planCodingFailure({
     success: false,
@@ -428,28 +448,6 @@ Deno.test("isSetupFault - an ordinary execute failure is not a setup fault", () 
       reason: "No code changes and no useful output from Claude",
     }),
     false,
-  );
-});
-
-// ---------------------------------------------------------------------------
-// buildRepeatedFailureEscalation
-// ---------------------------------------------------------------------------
-
-Deno.test("buildRepeatedFailureEscalation - a timeout keeps the Issue #4304 wording", () => {
-  const escalation = buildRepeatedFailureEscalation("timeout", 3);
-  assertEquals(escalation.heading, "Repeated execute timeouts");
-  assertEquals(escalation.reason.includes("3 times in a row"), true);
-  assertEquals(escalation.nextStep.includes("timeout budget"), true);
-});
-
-Deno.test("buildRepeatedFailureEscalation - a non-transient failure points at the failure comments", () => {
-  const escalation = buildRepeatedFailureEscalation("non_transient", 4);
-  assertEquals(escalation.heading, "Repeated run failures");
-  assertEquals(escalation.reason.includes("4 times in a row"), true);
-  assertEquals(escalation.reason.includes("timing out"), false);
-  assertEquals(
-    escalation.nextStep.includes("per-attempt failure comments"),
-    true,
   );
 });
 

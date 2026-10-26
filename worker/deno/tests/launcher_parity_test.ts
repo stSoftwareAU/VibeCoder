@@ -523,10 +523,12 @@ Deno.test({
     const powershell = await invocationOf(POWERSHELL_LAUNCHER!);
 
     /**
-     * Normalise the two run-specific values away: each harness gets its own
-     * temporary host directory, each launch its own container name, and each
-     * `container-launch-plan` its own live `df` reading. Available bytes
-     * drift by tens of kilobytes between sequential launches once `df`
+     * Normalise the run-specific values away: each harness gets its own
+     * temporary host directory, each launch its own container name, each
+     * `container-launch-plan` its own live `df` reading, and each plan its
+     * own clock-derived hard-kill instant (Issue #4242, checked above).
+     * Available bytes drift by tens of kilobytes between sequential launches
+     * once `df`
      * stdout is actually captured (Issue #345); the parity this test
      * cares about is that both launchers pass the env vars, not that the
      * host's free space stayed still for a few seconds.
@@ -544,6 +546,10 @@ Deno.test({
             /^VIBE_HOST_DISK_TOTAL_BYTES=\d+$/,
             "VIBE_HOST_DISK_TOTAL_BYTES=<bytes>",
           )
+          .replace(
+            /^VIBE_HARD_KILL_AT_EPOCH=\d+$/,
+            "VIBE_HARD_KILL_AT_EPOCH=<epoch>",
+          )
       );
 
     const hostDiskEnvPresent = (name: string, args: string[]) => {
@@ -558,6 +564,34 @@ Deno.test({
     };
     hostDiskEnvPresent("run.sh", bash.args);
     hostDiskEnvPresent("run.ps1", powershell.args);
+
+    // The hard-kill instant is the plan's epoch plus the watchdog deadline
+    // (Issue #4242). The plan epoch is read from the clock when the plan is
+    // built, so it differs between the two launches by a second or three and
+    // is normalised below. Each launcher must still pass it, and it must be
+    // plausible: the harness launches with a clear environment, so the
+    // watchdog is the default 11400 s (the 3 h worker maximum plus the 600 s
+    // margin). The window is a generous value check against Date.now at
+    // assert time, not a timing threshold on the test.
+    const hardKillEpochPresent = (name: string, args: string[]) => {
+      const arg = args.find((a) => a.startsWith("VIBE_HARD_KILL_AT_EPOCH="));
+      assert(
+        arg !== undefined,
+        `${name} must pass the watchdog's hard-kill instant (Issue #4242)`,
+      );
+      const value = Number(arg.slice("VIBE_HARD_KILL_AT_EPOCH=".length));
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const stubbedWatchdogSeconds = 11_400;
+      const low = nowSeconds - 60 + stubbedWatchdogSeconds;
+      const high = nowSeconds + 60 + stubbedWatchdogSeconds;
+      assert(
+        Number.isInteger(value) && value >= low && value <= high,
+        `${name} hard-kill epoch ${arg} is not within 60 s of ` +
+          `now + ${stubbedWatchdogSeconds} (${low}..${high})`,
+      );
+    };
+    hardKillEpochPresent("run.sh", bash.args);
+    hardKillEpochPresent("run.ps1", powershell.args);
 
     assertEquals(
       normalise(powershell),

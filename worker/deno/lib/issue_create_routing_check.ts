@@ -90,10 +90,6 @@ export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
       "#2577 seeds the standard idle-task wrapper issues into a freshly monitored repo; repo-scoped template filing; not yet routed",
     ],
     [
-      "worker/deno/lib/degraded_delivery.ts",
-      "#2562 degraded-run delivery issue, filed in the repo the run was delivering to; not yet routed",
-    ],
-    [
       "worker/deno/lib/idle_inversion_streak.ts",
       "#321/#459 idle-inversion escalation, filed in the worker's own repo by design (IDLE_INVERSION_TARGET_REPO); fleet-health diagnostic; not yet routed",
     ],
@@ -120,6 +116,10 @@ export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
     [
       "worker/deno/lib/idle_task_templates/gate_skip_drift_template.ts",
       "#1597 gate-skip drift idle-task template; files into the scanned repository; not yet routed",
+    ],
+    [
+      "worker/deno/lib/idle_task_templates/ponytail_debt_template.ts",
+      "#4027 ponytail-debt idle-task template; posts or refreshes one ledger issue in the scanned repository; not yet routed",
     ],
     [
       "worker/deno/lib/idle_task_templates/github_actions_audit_template.ts",

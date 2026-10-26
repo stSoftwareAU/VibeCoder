@@ -8,7 +8,7 @@
 
 import { assertEquals } from "@std/assert";
 import { loadPrSummary } from "../lib/pr_summary_loader.ts";
-import { normaliseSummaryVersionBumps } from "../lib/pr_summary_facts.ts";
+import { normaliseSummaryVersionBumps } from "../lib/pr_summary_loader.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers

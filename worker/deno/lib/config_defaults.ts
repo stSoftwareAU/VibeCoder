@@ -22,6 +22,7 @@ import type {
 } from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
+import { DEFAULT_RUN_FINISH_SECONDS } from "./run_timeline.ts";
 import { DEFAULT_CALL_STORM_NOVEL_SHARE } from "./call_storm.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { DEFAULT_CADENCE_POLICY } from "./idle_task_cadence.ts";
@@ -215,6 +216,12 @@ export const OPERATIONAL_DEFAULTS = {
    */
   minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
   /**
+   * Run finish deadline in seconds from run start (Issue #4242): two hours.
+   * Must exceed the one-hour run target. The single definition lives in
+   * `run_timeline.ts`.
+   */
+  runFinishSeconds: DEFAULT_RUN_FINISH_SECONDS,
+  /**
    * Re-armable hard deadline for issue work (Issue #4296, part of #4290).
    *
    * **On by default** (Issue #422, parent #397): killing a claim that is
@@ -250,6 +257,11 @@ export const OPERATIONAL_DEFAULTS = {
    * (Issue #2960) — long enough to navigate, screenshot and commit.
    */
   screenshotRetryTimeoutSeconds: 600,
+  /**
+   * Timeout for the pre-push gate's one extra in-run agent turn (Issue #4128)
+   * — long enough to fix, re-check and commit.
+   */
+  prePushRetryTimeoutSeconds: 600,
   /** A tool call older than this is no longer evidence of activity (#4296). */
   progressExtensionStallSeconds: 300,
   /**
@@ -949,9 +961,11 @@ export const DEFAULT_CLAUDE_EFFORT_HEALTH = "low" as const;
  *   `max` bump is reserved for the #3217 pre-flight reroute, which fires only
  *   when a phase has been pinned back to Fable and Fable is unavailable)
  * - issue → high (thorough reasoning for implementation)
- * - ci_fix / pr_feedback / quality_fix → high (reactive tasks, run on Sonnet
- *   since Issue #2812 so they take the deeper effort at half the Opus rate)
- * - spelling_fix / summarise / health → low (trivial, mechanical tasks)
+ * - ci_fix / pr_feedback / quality_fix / merge_conflict → high (reactive
+ *   tasks, run on Sonnet since Issue #2812 so they take the deeper effort at
+ *   half the Opus rate; merge_conflict is the same class, Issue #4174)
+ * - spelling_fix / summarise / health / compaction → low (trivial or
+ *   summarising tasks; compaction is the fast tier, Issue #4174)
  */
 export const PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   planning: DEFAULT_CLAUDE_EFFORT_PLANNING,
@@ -965,12 +979,16 @@ export const PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   ci_fix: DEFAULT_CLAUDE_EFFORT_CI_FIX,
   pr_feedback: DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK,
   quality_fix: DEFAULT_CLAUDE_EFFORT_QUALITY_FIX,
+  // Issue #4174: the merge engineer, same effort as the other reactive phases.
+  merge_conflict: DEFAULT_CLAUDE_EFFORT_QUALITY_FIX,
   refinement: DEFAULT_CLAUDE_EFFORT_REFINEMENT,
   revision: DEFAULT_CLAUDE_EFFORT_REVISION,
   clarification: DEFAULT_CLAUDE_EFFORT_CLARIFICATION,
   spelling_fix: DEFAULT_CLAUDE_EFFORT_SPELLING_FIX,
   summarise: DEFAULT_CLAUDE_EFFORT_SUMMARISE,
   health: DEFAULT_CLAUDE_EFFORT_HEALTH,
+  // Issue #4174: a summarising /compact turn, same effort as summarise.
+  compaction: DEFAULT_CLAUDE_EFFORT_SUMMARISE,
 } as const;
 
 /**
@@ -1261,26 +1279,37 @@ export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
 // ---------------------------------------------------------------------------
 
 /**
- * Top Codex model tier — the coding-tuned flagship (Issue #363).
+ * Top Codex model tier — Codex's Opus (Issue #363; owner decision
+ * 2026-10-22).
  *
- * Reserved for the planning-shaped phases, where the Vibe Coder interprets the
- * user's words into an implementable state and a better interpretation
- * compounds across every downstream sub-issue and PR.
+ * `gpt-6-astra`, "frontier intelligence for the most demanding work" in the
+ * account's Codex models catalogue. Reserved for the planning-shaped phases
+ * and the reviewer role, where a better judgement compounds across every
+ * downstream sub-issue and PR. The `gpt-5*` ids this replaced were refused by
+ * the ChatGPT login (Issue #4019).
  */
-export const DEFAULT_CODEX_MODEL_TOP_TIER = "gpt-5-codex" as const;
+export const DEFAULT_CODEX_MODEL_TOP_TIER = "gpt-6-astra" as const;
 
 /**
- * Base Codex model tier (Issue #363) — the general-purpose flagship every
- * non-extreme phase runs on, differentiated by effort rather than by tier.
+ * Base Codex model tier — Codex's Sonnet (Issue #363; owner decision
+ * 2026-10-22).
+ *
+ * `gpt-6.1-sol`, the catalogue's "latest workhorse model". The `issue`
+ * manager and every non-extreme phase run on it, differentiated by effort
+ * rather than by tier.
  */
-export const DEFAULT_CODEX_MODEL = "gpt-5" as const;
+export const DEFAULT_CODEX_MODEL = "gpt-6.1-sol" as const;
 
 /**
- * Cheap Codex model tier (Issue #363) — the small model the three trivial
- * phases (`spelling_fix`, `summarise`, `health`) run on, mirroring Claude's
- * Haiku tier. The flagship premium buys nothing on a typo fix.
+ * Cheap Codex model tier — Codex's Haiku (Issue #363; owner decision
+ * 2026-10-22).
+ *
+ * `gpt-6-luna`, the catalogue's "fast and affordable model for easier
+ * tasks". The executor role and the three trivial phases (`spelling_fix`,
+ * `summarise`, `health`) run on it. The flagship premium buys nothing on a
+ * typo fix.
  */
-export const DEFAULT_CODEX_MODEL_CHEAP_TIER = "gpt-5-mini" as const;
+export const DEFAULT_CODEX_MODEL_CHEAP_TIER = "gpt-6-luna" as const;
 
 /**
  * Reasoning-effort levels the Codex CLI accepts for
@@ -1317,8 +1346,8 @@ export const CODEX_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
  *
  * Same phase keys and the same tiering as {@link PHASE_EFFORT_DEFAULTS},
  * clamped to the four levels Codex accepts: the planning-shaped phases and
- * `issue` run at `high`, the reactive phases at `medium`, and the trivial trio
- * at `low`.
+ * `issue` run at `high`, the reactive phases (including `merge_conflict`) at
+ * `medium`, and the trivial phases plus `compaction` at `low`.
  */
 export const CODEX_PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   planning: CODEX_EFFORT_LEVELS.high,
@@ -1333,9 +1362,13 @@ export const CODEX_PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   ci_fix: CODEX_EFFORT_LEVELS.medium,
   pr_feedback: CODEX_EFFORT_LEVELS.medium,
   quality_fix: CODEX_EFFORT_LEVELS.medium,
+  // Issue #4174: reactive code, so medium like ci_fix, not the issue manager's high.
+  merge_conflict: CODEX_EFFORT_LEVELS.medium,
   spelling_fix: CODEX_EFFORT_LEVELS.low,
   summarise: CODEX_EFFORT_LEVELS.low,
   health: CODEX_EFFORT_LEVELS.low,
+  // Issue #4174: a summarising turn, low like summarise.
+  compaction: CODEX_EFFORT_LEVELS.low,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -1558,6 +1591,7 @@ export function buildDefaultWorkerConfig(
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
     claudeMaxTurns: OPERATIONAL_DEFAULTS.claudeMaxTurns,
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
+    runFinishSeconds: OPERATIONAL_DEFAULTS.runFinishSeconds,
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
     progressExtensionEnabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,

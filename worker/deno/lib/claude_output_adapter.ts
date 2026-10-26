@@ -243,15 +243,17 @@ function classifyClaudeFailure(
   const cliSurface = `${structuredText}\n${stderr}`.trim();
   // The CLI's *error* surface, never the agent's answer: a failed run whose
   // prose merely quotes "429" or "usage limit reached" is quoting, not
-  // refusing (Issue #1695). The answer is consulted only when the CLI
-  // produced neither a structured error nor stderr — the compatibility path,
-  // where a refusal is all stdout ever carried — and never when the CLI's own
-  // `result` line called the run a success.
+  // refusing (Issue #1695). Stdout is consulted only when the CLI produced
+  // neither a structured error nor stderr **and** it was not the CLI's event
+  // stream at all — the compatibility path, where a refusal is all stdout
+  // ever carried. A stream of events with no error in it is the agent
+  // talking: an exit-1 run cut off mid-turn while discussing retries or a
+  // quota is not a refusal (Issue #4114).
   const surface = cliSurface
     ? cliSurface
-    : decoded.status === "completed"
-    ? ""
-    : decoded.text;
+    : decoded.status === "unknown"
+    ? decoded.text
+    : "";
   const evidenceText = redactedEvidence(surface);
   const httpStatus = extractHttpStatus(surface);
   const say = (headline: string) => failureMessage(headline, evidenceText);

@@ -93,6 +93,8 @@ function makeInput(overrides?: Partial<CiFixInput>): CiFixInput {
 
 interface ProcessorRig {
   capturedPrompts: string[];
+  /** Every `gh` argv the run issued. */
+  ghCalls: string[][];
   dispatcherCallCount: number;
   logger: CapturingLogger;
   processorDeps: CiProcessorDeps;
@@ -106,6 +108,7 @@ async function makeRig(opts: {
 }): Promise<ProcessorRig> {
   const tmpDir = await Deno.makeTempDir();
   const capturedPrompts: string[] = [];
+  const ghCalls: string[][] = [];
   let dispatcherCallCount = 0;
 
   const mockClaude: Partial<ClaudeDeps> = {
@@ -119,7 +122,10 @@ async function makeRig(opts: {
     }) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: openPrGh(),
+    runGhCommand: openPrGh((args) => {
+      ghCalls.push(args);
+      return Promise.resolve("");
+    }),
   };
   const deps = createMockDeps({
     claude: mockClaude,
@@ -162,6 +168,7 @@ async function makeRig(opts: {
 
   return {
     capturedPrompts,
+    ghCalls,
     get dispatcherCallCount() {
       return dispatcherCallCount;
     },
@@ -252,6 +259,62 @@ Deno.test("processCiFailure - all-errors dispatcher result is logged but does no
       w.message.includes("All configured PR failure actions errored")
     );
     assert(warned, "all-errors warning should be emitted");
+  } finally {
+    await rig.cleanup();
+  }
+});
+
+Deno.test("processCiFailure - a refused CI log provider falls back to the Actions log and still fixes (Issue #4304)", async () => {
+  // A 401/403/404 from a configured provider used to stop the run with
+  // `needs-human` and a "fix the credentials" comment. The worker now falls
+  // back to the built-in Actions log and the annotations, and carries on.
+  const repoConfigs: Record<string, RepoConfig> = {
+    "stSoftwareAU/example": {
+      ciProviders: [{ provider: "example-ci", jobPath: "foo/job/Develop" }],
+    } as unknown as RepoConfig,
+  };
+  let actionsLogCalls = 0;
+  const actionsLogFn = (() => {
+    actionsLogCalls++;
+    return Promise.resolve({
+      kind: "excerpt" as const,
+      providerId: "github-actions" as const,
+      jobId: 456,
+      excerpt: "error: deno test failed — 2 failing",
+    });
+  }) as unknown as typeof fetchGithubActionsLogExcerpt;
+
+  const rig = await makeRig({
+    repoConfigs,
+    dispatcherResult: [
+      {
+        providerId: "example-ci",
+        ok: false,
+        error: "example-ci request failed: HTTP 401 Unauthorized",
+      },
+    ],
+    actionsLogFn,
+  });
+
+  try {
+    const result = await processCiFailure(makeInput(), rig.processorDeps);
+    assert(result.ok);
+    assertEquals(rig.dispatcherCallCount, 1);
+    assertEquals(actionsLogCalls, 1, "the built-in provider is the fallback");
+    assertEquals(rig.capturedPrompts.length, 1, "the fix still runs");
+    assert(
+      rig.capturedPrompts[0]!.includes("error: deno test failed — 2 failing"),
+      "the fallback excerpt reaches the prompt",
+    );
+    assert(
+      !rig.ghCalls.some((args) => args.join(" ").includes("needs-human")),
+      `no needs-human hand-back; got ${JSON.stringify(rig.ghCalls)}`,
+    );
+    // The operator still sees the refusal in the log.
+    assert(
+      rig.logger.warns.some((w) => w.context?.accessStatus === "unauthorised"),
+      "the access failure is logged",
+    );
   } finally {
     await rig.cleanup();
   }

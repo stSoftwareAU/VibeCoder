@@ -140,7 +140,7 @@ Deno.test("every builder renders with no unfilled placeholder", async () => {
   }
 });
 
-Deno.test("issue prompt - REPO is substituted into the escape-hatch commands", async () => {
+Deno.test("issue prompt - ships no literal {{REPO}} token (Issue #4227 removed the escape-hatch commands that used it)", async () => {
   const result = await buildIssuePrompt({
     repo: "stSoftwareAU/VibeCoder",
     issueNumber: "42",
@@ -153,10 +153,6 @@ Deno.test("issue prompt - REPO is substituted into the escape-hatch commands", a
   assertEquals(result.ok, true);
   if (!result.ok) return;
 
-  assertStringIncludes(
-    result.value.prompt,
-    "gh issue create --repo stSoftwareAU/VibeCoder",
-  );
   assertEquals(
     result.value.prompt.includes("{{REPO}}"),
     false,

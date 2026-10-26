@@ -1,5 +1,6 @@
-// Tests for the manual/prompt prose scope and question shared by the
-// first-run claim check and the review-fix drift check (Issue #3347).
+// Tests for the manual and prompt prose helpers the review-fix drift check
+// uses: path selection, the file cap, and the prose-against-code question
+// (Issue #3347). The first-run claim check was removed (Issue #4234).
 // Uses Australian English throughout.
 
 import {
@@ -12,6 +13,7 @@ import {
 import { collectDocProseScope } from "../lib/doc_prose_scope.ts";
 import {
   docProseClaimInstruction,
+  docProseParityRule,
   isManualProsePath,
   selectManualProseFiles,
 } from "../lib/doc_prose_claims.ts";
@@ -94,6 +96,42 @@ Deno.test("selectManualProseFiles splits at the cap", () => {
 Deno.test("selectManualProseFiles rejects an invalid cap", () => {
   assertThrows(() => selectManualProseFiles(["a.md"], -1));
   assertThrows(() => selectManualProseFiles(["a.md"], 1.5));
+});
+
+Deno.test("docProseParityRule names the base ref, or drops git show when there is none (Issue #4223)", () => {
+  const withRef = docProseParityRule("origin/main");
+  assertStringIncludes(withRef, "git show origin/main:");
+  assertStringIncludes(withRef, "as before");
+  assertStringIncludes(withRef, "file:line");
+  assertFalse(withRef.includes("\n"));
+  assertFalse(withRef.includes("  "));
+
+  const missing = docProseParityRule(undefined);
+  assertFalse(missing.includes("git show"));
+  assertFalse(missing.includes("undefined"));
+  assertStringIncludes(missing, "as before");
+  assertStringIncludes(missing, "other path");
+  assertStringIncludes(missing, "not reported");
+  assertStringIncludes(missing, "file:line");
+});
+
+Deno.test("docProseClaimInstruction asks about a parity sentence on both sides (Issue #4223)", () => {
+  const withRef = docProseClaimInstruction("this branch's diff", "origin/main");
+  assertStringIncludes(withRef, "git show origin/main:");
+  assertStringIncludes(withRef, "as before");
+  assertStringIncludes(withRef, "file:line");
+  assertFalse(withRef.includes("\n"));
+  assertFalse(withRef.includes("  "));
+
+  const missing = docProseClaimInstruction("this push's change", undefined);
+  assertFalse(missing.includes("git show"));
+  assertFalse(missing.includes("git show :"));
+  assertFalse(missing.includes("git show undefined:"));
+  assertStringIncludes(missing, "as before");
+  assertStringIncludes(missing, "other path");
+  assertStringIncludes(missing, "file:line");
+  assertFalse(missing.includes("\n"));
+  assertFalse(missing.includes("  "));
 });
 
 Deno.test("docProseClaimInstruction substitutes the change phrase", () => {
@@ -204,6 +242,25 @@ Deno.test("prose scope follows named sections and source basenames into untouche
       s.includes("docs/operator.md:2-3") &&
       s.includes("not checked, never passed")
     ),
+  );
+  // Section-cap overflow is also recorded in capOverflow, not only notChecked.
+  assert(capped.capOverflow.length > 0);
+  assert(capped.capOverflow.every((s) => s.includes("-section cap")));
+  assert(capped.capOverflow.every((s) => capped.notChecked.includes(s)));
+  assertFalse(scope.capOverflow.length > 0);
+  const fileCapped = await collectDocProseScope({
+    changedFiles: ["src/gate.ts"],
+    trackedFiles: [...files.keys()],
+    summaryContent: "",
+    diff: "+++ b/src/gate.ts\n@@ -2,0 +3,1 @@\n+third();\n",
+    readFile: async (p) => files.get(p),
+    fileCap: 1,
+  });
+  assertEquals(fileCapped.contents.size, 1);
+  assert(fileCapped.capOverflow.length > 0);
+  assert(fileCapped.capOverflow.every((s) => s.includes("1-file cap")));
+  assert(
+    fileCapped.capOverflow.every((s) => fileCapped.notChecked.includes(s)),
   );
 });
 

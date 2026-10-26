@@ -23,12 +23,7 @@ import {
 import { postMilestoneProgressComment } from "./milestone_progress.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
-import {
-  findMissingCriteria,
-  hasFollowUpChainStop,
-  holdFollowUpOpenForHuman,
-  holdIssueOpenForMissingCriteria,
-} from "./missing_criterion_close_guard.ts";
+import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 import {
   foreignMergedPrComment,
   mergedPrCompletesThisRun,
@@ -391,61 +386,22 @@ export async function ensureIssueClosedIfPrMerged(
     }
 
     // Issue #3177: the merged PR's own closure block marks a criterion
-    // missing, so the merge does not complete the issue. Leave it open for a
-    // human, naming what is missing, instead of closing it as completed.
+    // missing, so the merge does not complete the issue. Keep its existing
+    // labels so another run can finish the original assignment.
     const missing = findMissingCriteria(prState.body ?? "");
     if (missing.length > 0) {
-      const held = await holdIssueOpenForMissingCriteria({
-        repo,
-        issueNumber,
-        prNumber,
-        baseRefName: landing.baseRefName,
-        missing,
-        issueLabels: (issueData.labels ?? []).map((l) => l.name),
-        ghCommandFn,
-      });
       logger.warn(
         "Not closing the issue: the merged PR marks acceptance criteria " +
           "missing (Issue #3177)",
-        { repo, issueNumber, prNumber, missing: missing.length, held },
+        { repo, issueNumber, prNumber, missing },
       );
-      if (held === "held") {
-        await invalidatePostMutation(deps.cache, repo, issueNumber);
-      }
       return {
         ok: true,
         value: {
           closed: false,
           reason: `PR #${prNumber} merged, but its own summary marks ` +
             `${missing.length} acceptance criteria missing — issue left ` +
-            `open for a human (Issue #3177)`,
-        },
-      };
-    }
-
-    // PR #3676 review: the merged PR worked a partial-delivery follow-up and
-    // left gaps no further follow-up holds, so it leaves the issue open.
-    if (hasFollowUpChainStop(prState.body ?? "")) {
-      const held = await holdFollowUpOpenForHuman({
-        repo,
-        issueNumber,
-        issueLabels: (issueData.labels ?? []).map((l) => l.name),
-        ghCommandFn,
-      });
-      logger.warn(
-        "Not closing the issue: the merged PR worked a partial-delivery " +
-          "follow-up and left gaps (PR #3676 review)",
-        { repo, issueNumber, prNumber, held },
-      );
-      if (held === "held") {
-        await invalidatePostMutation(deps.cache, repo, issueNumber);
-      }
-      return {
-        ok: true,
-        value: {
-          closed: false,
-          reason: `PR #${prNumber} merged, but it worked a partial-delivery ` +
-            `follow-up and left gaps — issue left open for a human`,
+            `queued for completion (Issue #3177): ${missing.join("; ")}`,
         },
       };
     }

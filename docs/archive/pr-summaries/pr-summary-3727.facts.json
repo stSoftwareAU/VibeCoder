@@ -1,0 +1,11 @@
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"worker/deno/lib/pre_push_gate.ts","line":490,"outcome":"both operands true (script tracked, a changed path under infra/cloudformation/): the Floci deploy test is planned and a failing run blocks the push",
+   "test":"worker/deno/tests/pre_push_gate_test.ts","testName":"runPrePushGate: a failing Floci deploy test blocks the push",
+   "flipWentRed":"deleting the whole if-block turned it red, with the two plan tests that expect the check"},
+  {"path":"worker/deno/lib/pre_push_gate.ts","line":490,"outcome":"operand `tracked.includes(FLOCI_TEST_SCRIPT)` false: no Floci check is planned",
+   "test":"worker/deno/tests/pre_push_gate_test.ts","testName":"planChangedFileChecks: no Floci deploy test when the repo does not track the script",
+   "flipWentRed":"deleting that operand alone turned it red: the check was planned"},
+  {"path":"worker/deno/lib/pre_push_gate.ts","line":491,"outcome":"operand `changed.some((p) => p.startsWith(FLOCI_TEST_DIR))` false (infra/host/, infra/cloudformation-old/, docs/): no Floci check is planned",
+   "test":"worker/deno/tests/pre_push_gate_test.ts","testName":"planChangedFileChecks: no Floci deploy test outside infra/cloudformation/",
+   "flipWentRed":"dropping the trailing slash from the prefix turned it red: infra/cloudformation-old/x.yaml planned the check"}
+]}}

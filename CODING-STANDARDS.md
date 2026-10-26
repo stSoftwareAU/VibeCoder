@@ -80,7 +80,12 @@ the fault immediately rather than swallowing it into a green result.
   non-zero exit code. If you catch, handle it meaningfully or re-raise with
   context.
 - **Absence of a success marker is not success** — a result is successful only
-  when success is positively confirmed.
+  when success is positively confirmed. A parsed response is no exception: when
+  the format guarantees a key is present (GraphQL selects it, a brief or schema
+  requires it) and its documented empty state is `null` or `[]`, treat only that
+  explicit value as empty. A missing key is a malformed response: reject it with
+  the field name, and test the omitted-key case as a rejection, never as the
+  empty state.
 - **Prefer loud, early failure** over continuing in a degraded or partial state
   that hides the problem downstream.
 - **A failure reason names the cause, not just the failure** — when a recorded
@@ -272,16 +277,7 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    edited test files). Each one needs an issue requirement that makes it
    untrue, recorded in the PR summary. An assertion removed without one is a
    blocking self-review finding: restore it, or move it to a test that still
-   covers the behaviour and say where. The worker enforces this at PR
-   creation (`removed_assertion_gate.ts`, Issues #3131, #3739): each removed
-   assertion has its own Test Plan list entry, with `Required by: "<quote>"`
-   quoting at least 5 words verbatim from the linked issue's title or body
-   (not comments), or `Moved to: <path>` naming the file where the same
-   assertion is added with its guards and coverage preserved. A replacement
-   also carries `Replaced by:` naming the new assertions in inline code;
-   each must be added in the same test file. The Standards reviewer identifies replacements from the diff, rejects
-   omitted `Replaced by:` entries, compares each pair and rejects lost
-   checks that still hold. The requirement
+   covers the behaviour and say where. The Test Plan table that used to block the pull request for this was removed (Issue #4234). The requirement
    shows the new value is right, not that the edited test still checks
    anything: each edited
    expectation also owes the red-check in **An edited expectation must
@@ -685,10 +681,11 @@ each moved check in its own section instead. A test that only pins current
 behaviour — the fault was unreproduced or already fixed, and no production
 change was made — is expected green on base, and the Test Plan says so.
 **A test named for one step must reach that step** below is this rule for a
-change that adds the same handling at more than one step, **A negative test
-must be able to fail** below is this rule for an assertion that something does
-*not* happen, and **An edited expectation must still go red without its
-guard** below is this rule for a test the diff edits rather than adds.
+change that adds the same handling at more than one step, **A test must be
+able to fail on the wrong input** below is this rule for an assertion that
+something does *not* happen or for which of two similar values the code reads,
+and **An edited expectation must still go red without its guard** below is
+this rule for a test the diff edits rather than adds.
 
 **A test named for one step must reach that step.** When a change adds the
 same handling at more than one step of a path — a deadline checked up front
@@ -729,15 +726,23 @@ check to a test that still covers it and name that test. Record the
 red-check result per edited expectation in the Test Plan. An edited test
 that stays green without its guard is a blocking self-review finding.
 
-**A negative test must be able to fail.** An assertion that something does
-*not* happen — not leaked, not carried over, not exported, not called, null
-rather than stale — needs a fixture that contains the forbidden thing: a real
-token to leak, an earlier value to carry over, a caller that would otherwise
-run. A new guard has no base-branch red run to lean on, so before raising the
-PR break the guard on purpose (remove the filter, invert the check, or fill
-from the wrong source), run the test, confirm it goes red, then restore the
-guard. A negative test that stays green without its guard is a blocking
-self-review finding.
+**A test must be able to fail on the wrong input.** An assertion that
+something does *not* happen — not leaked, not carried over, not exported, not
+called, null rather than stale — needs a fixture that contains the forbidden
+thing: a real token to leak, an earlier value to carry over, a caller that
+would otherwise run. A new guard has no base-branch red run to lean on, so
+before raising the PR break the guard on purpose (remove the filter, invert
+the check, or fill from the wrong source), run the test, confirm it goes red,
+then restore the guard. A negative test that stays green without its guard is
+a blocking self-review finding. The same holds for a test that pins which of
+two similar values the code uses, or that two figures agree (two bases, two
+parallel records, a displayed and a derived figure): its fixture gives the
+candidates different values, and the break is to read the sibling value.
+Reverting the whole change does not show this, because the test then goes red
+for want of the code under test, not for the value it reads. Record the
+sibling break in the Test Plan as you would a negative test's, for example
+`reads base B instead of A → red`. A fixture where the candidates are equal is
+a blocking self-review finding.
 
 **A refusal test must be refused by the rule it names.** A test that
 expects an input to be refused, rejected or answered with `false` or an
@@ -815,13 +820,14 @@ above cannot find this caller, because the diff never changed it and there
 is nothing to revert. List the callers and siblings checked in the PR summary
 (Issue #3253).
 
-**A new state on an existing screen re-reads that screen's existing text.**
-When a change adds a state or mode to a screen that already exists (an
-earlier date, a paged or partial load, a fallback, an empty or error case),
-list every message the screen already renders: notes, empty-state text,
-warnings, badges and labels. For each one, say whether it is still true in
-the new state. If it is not, reword it, hide it or mark it, so the new
-state never shows a message written for another state. Add a test that
+**A new case re-reads the text it now reaches.** When a change sends a new
+case to text that already exists — a widened condition, a new arm or allowed
+value, a newly called function or component, or a new state on a screen that
+already exists (an earlier date, a paged or partial load, a fallback, an empty
+or error case) — list every message the screen already renders: notes,
+empty-state text, warnings, badges and labels. For each one, say whether it
+is still true in the new state. If it is not, reword it, hide it or mark it,
+so the new state never shows a message written for another state. Add a test that
 renders the new state and asserts each message that differs in that state,
 or is absent from it. A test that renders only the new rows stays green
 while an old message is wrong, and **Every changed call site needs a test
@@ -869,25 +875,10 @@ it or forcing it to the value that lets the other operands decide, and name a
 test that goes red for each one. Reverting the whole change, or deleting the
 whole condition, does not show which operand a test reaches. An outcome with
 no test, or one whose flip leaves the suite green, is a blocking self-review
-finding: add a test for it. When the run writes or refreshes a PR summary,
-record the enumeration as structured facts in
-`docs/archive/pr-summaries/pr-summary-<N>.facts.json` beside it — one entry
-per outcome naming `path:line`, the outcome, the test that reaches it, and that
-flipping it went red, or `"noneAdded": true` when the diff adds no branch — and
-leave the `<!-- vibe-branch-outcomes -->` marker in its
-Test Plan, where the worker renders that record as the `Branch outcomes:` list
-(`CODING-STANDARDS.md` → **Branch outcomes facts file** gives the schema); every
-test it names must exist at the head (see **A named test must exist**). Without
-a facts file, the worker still reads a `Branch outcomes:` list written in the
-Test Plan, or `Branch outcomes: none added`. A `Branch outcomes:` line for a
-compound condition names the operand it covers, and its flip is that operand's
-flip (Issue #3376). An entry that admits no test reaches its outcome is work
-still to do, not a record: add the test that goes red, or remove the branch.
-Only an outcome the issue puts out of scope, or one production can reach but a
-test cannot stage, may stand, written `exempt (out of scope): <reason>` or
-`exempt (untestable): <reason>` (in the facts file, an `exempt` object of kind
-`out-of-scope` or `untestable` with that reason); an issue run's branch-outcomes
-gate blocks PR creation on any other admission (Issue #3288). An outcome no
+finding: add a test for it. Every test the summary names must exist at the
+head (see **A named test must exist**). The test plan names the operand it covers. A compound condition's flip is that
+operand's flip (Issue #3376). An outcome no test reaches is work still to do:
+add the test that goes red, or remove the branch. An outcome no
 input can reach is dead code: remove it, never exempt it. `exempt (untestable)`
 is for an outcome production can reach but a test cannot stage, such as a
 permission or I/O fault the suite cannot stage portably; its reason names what
@@ -895,69 +886,12 @@ blocks staging and the harness search — the test files that already call the
 enclosing function or script (a grep of the test tree for its name), each with
 why it cannot reach the outcome. "No existing harness" with no search named is
 not a reason. An outcome the linked issue asks a test for, in its acceptance
-criteria or Definition of done, cannot be `exempt (untestable)`. The gate checks
-only that an exemption gives a reason of three or more words, so the search must
-be named for a reviewer to check it (Issue #3428). The diff-scoped mutation
-check (Issue #3393, `docs/mutation-check.md`) blocks the PR on any added line
-whose mutation the tests do not catch, exempt only by the same
-`exempt (untestable): <reason>` record naming `path:line`. A fix to an existing
-PR re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the facts file (or, without one, the list) to the
-head.
-
-**Branch outcomes facts file.** The facts file is JSON of this shape: top level
-`{"version": 1, "branchOutcomes": {"noneAdded": <boolean>, "entries": [...]}}`;
-unknown keys are rejected and only version 1 is accepted. `noneAdded: true`
-requires an empty `entries`; `false` requires at least one entry. Every entry
-has `path` (repo-relative, characters `[A-Za-z0-9_.-/]` only, no `..` or empty
-segment, at most 300 chars), `line` (a positive integer), an optional `endLine`
-(not less than `line`) and `outcome`. Each entry then gives either `test` (a
-test file path), `testName` and `flipWentRed`, or `exempt:
-{"kind": "out-of-scope" | "untestable", "reason": "..."}` — never both, never
-neither; the reason needs at least 3 words. Text fields are single-line,
-non-empty and at most 1,000 chars. Caps: the raw file at most 100,000 chars
-(checked before parsing), at most 100 entries, and each rendered entry at most
-4,000 chars. It fails closed: a facts file that cannot be read or fails any
-rule blocks PR creation with the field path and reason (for example
-`branchOutcomes.entries[0].exempt.reason: needs at least 3 words`); it is never
-treated as absent. The worker renders the list at the first
-`<!-- vibe-branch-outcomes -->` marker and owns the block through
-`<!-- /vibe-branch-outcomes -->`. Re-rendering replaces that block idempotently.
-Structured facts are authoritative: safely identified legacy lists are replaced,
-with unrelated narrative preserved. Ambiguous ownership and unreached-outcome
-admissions block rather than being discarded. Write the facts and marker, not a
-second independently maintained list. The rendered list is
-then checked like a prose one, including that each named test exists at the
-head. With no facts file, the `Branch outcomes:` list in the Test Plan is read
-as before.
-
-```json
-{
-  "version": 1,
-  "branchOutcomes": {
-    "noneAdded": false,
-    "entries": [
-      {
-        "path": "worker/deno/lib/example.ts",
-        "line": 42,
-        "outcome": "returns the fail-closed default when the file is absent",
-        "test": "worker/deno/tests/example_test.ts",
-        "testName": "example fails closed when the file is absent",
-        "flipWentRed": "returned the lenient value; the test went red"
-      },
-      {
-        "path": "worker/deno/lib/example.ts",
-        "line": 57,
-        "outcome": "retries after a disk fault",
-        "exempt": {
-          "kind": "untestable",
-          "reason": "the suite cannot stage a disk fault portably"
-        }
-      }
-    ]
-  }
-}
-```
+criteria or Definition of done, cannot be `exempt (untestable)`. Name the
+search so a reviewer can check it (Issue #3428). The diff-scoped mutation
+check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
+mutation the tests do not catch; it does not stop the pull request. A fix to
+an existing PR re-checks every branch its own commits add, not only those a
+review finding named.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -1052,35 +986,45 @@ the PR summary with a source link to the callee's code or docs.
 
 **A fake mirrors the production implementation it stands in for.** The stub
 rule above covers another repository's binary; this covers the repository's
-own ports. When a test double replaces one of the repository's own ports (a
-trait or interface with a production implementation) and the change relies
-on a property of that port, read the production implementation first and
-confirm it has that property. Examples of such properties: which rows a read
-returns, a filter, ordering or paging, which value types a write accepts, or
-whether a conditional write can lose. If the fake behaves differently, fix
-whichever side is wrong. Then pin the two together with one contract test
-that runs against both, or against the production adapter's parsing of a
-recorded response, or test the behaviour at the production adapter itself. A
-fix to the fake is still held to **A red run counts only against the base
-branch**. In the PR summary, name the production implementation each
-load-bearing fake stands in for and the property the change relies on. A
-change whose only proof is a fake more permissive than its production
-implementation is a blocking self-review finding.
+own producers. It applies when a test double replaces one of the repository's
+own ports (a trait or interface with a production implementation), and
+equally when a test fakes a response from the repository's own server or
+service by hand: an HTTP body, status or header, a queue message, or a file
+the other side writes. It applies across processes and languages, not only
+to in-process traits or interfaces. When the change relies on a property of
+that port or response, read the production implementation first and confirm
+it has that property. Examples of such properties: which rows a read returns,
+a filter, ordering or paging, which value types a write accepts, or whether a
+conditional write can lose. If the fake behaves differently, fix whichever side
+is wrong. Then pin the two together with one contract test that runs against
+both, or against the production adapter's parsing of a recorded response,
+or test the behaviour at the production adapter itself. For a faked response,
+take the fixture from the producer's real output: a golden the server's tests
+produce or verify, or a contract test that runs the server's serialiser for
+that response kind. When the repository has no golden for that response kind
+yet, the PR adds one. Check a header the client depends on against what the
+deployed configuration lets the client read (for example a CORS exposed-headers
+list), and name in the PR summary where that is set. A fix to the fake is
+still held to **A red run counts only against the base branch**. In the PR
+summary, name the production implementation each load-bearing fake stands in
+for and the property the change relies on. A change whose only proof is a fake
+more permissive than its production implementation is a blocking self-review
+finding, and so is one whose only proof is a fixture the producer never emits.
 
 **A test of a third-party tool's input uses that tool's semantics.** The
-fake rule above covers the repository's own ports; this covers a pattern or
-config that an external tool reads — Renovate `matchStrings` or
-`managerFilePatterns`, Actions `branches` or `paths` filters, linter or
-scanner configs. When the tool's own validator or engine can run in the
-repository's CI (for example `renovate-config-validator`, or RE2 for a
-Renovate regex), run the test through it. When it cannot, test the in-repo
-stand-in against cases taken from the tool's documentation: the exact case
-the change relies on, and at least one input the tool rejects or does not
-match. For example, GitHub's `*/*` branch filter matches `milestone/foo`,
-and RE2 rejects a negative look-ahead that JavaScript's `RegExp` accepts.
-Name that documentation in the PR summary. A stand-in more permissive or
-more restrictive than the tool, so a test passes on input the tool rejects
-or fails on input it accepts, is a blocking self-review finding.
+fake rule above covers the repository's own ports and server responses;
+this covers a pattern or config that an external tool reads — Renovate
+`matchStrings` or `managerFilePatterns`, Actions `branches` or `paths`
+filters, linter or scanner configs. When the tool's own validator or engine
+can run in the repository's CI (for example `renovate-config-validator`,
+or RE2 for a Renovate regex), run the test through it. When it cannot, test
+the in-repo stand-in against cases taken from the tool's documentation: the
+exact case the change relies on, and at least one input the tool rejects
+or does not match. For example, GitHub's `*/*` branch filter matches
+`milestone/foo`, and RE2 rejects a negative look-ahead that JavaScript's
+`RegExp` accepts. Name that documentation in the PR summary. A stand-in more
+permissive or more restrictive than the tool, so a test passes on input the
+tool rejects or fails on input it accepts, is a blocking self-review finding.
 
 **Observe the real tool before you rely on it.** When a decision depends on
 how git, `gh`, the GitHub API or another external tool behaves in a
@@ -1115,20 +1059,25 @@ third-party tool's input uses that tool's semantics**.
 
 ### Writing a gate over text
 
-A deterministic gate over text — a PR summary, a Markdown file, a diff, a
-closure entry, or source code it counts or scans — fails in two ways its own
-tests rarely show: the matcher misses a realistic variant of the thing it
-exists to catch (or fires on a look-alike it should ignore), and input it
-cannot handle is skipped while the gate reports a clean pass. Fleet PRs have
-shipped both. VibeCoder#3148 counted a commented-out assertion as "moved"
-because its text was a substring of an added block. VibeCoder#3132 recognised
-only column-0 fences and paired inline code spans one line at a time, which a
-run over `docs/archive/pr-summaries/` would have exposed. VibeCoder#3134
-skipped every non-matching closure entry with `continue`, including the
-`partial`/`missing` entries that were the run's own evidence of a gap.
-VibeCoder#3157 counted `Deno.test(` inside string literals and counted
-`Deno.test.ignore` declarations, so it flagged correct Test Plan counts as
-stale. Before calling a gate done (Issue #3149):
+A deterministic gate over text — any text a matcher reads: a PR summary or other
+Markdown file, a diff, a closure entry, source code it counts or scans, or a
+config or CI workflow file (YAML, JSON, TOML) — fails in two ways its own tests
+rarely show: the matcher misses a realistic variant of the thing it exists to
+catch (or fires on a look-alike it should ignore), and input it cannot handle is
+skipped while the gate reports a clean pass. Fleet PRs have shipped both.
+VibeCoder#3148 counted a commented-out assertion as "moved" because its text was
+a substring of an added block. VibeCoder#3132 recognised only column-0 fences
+and paired inline code spans one line at a time, which a run over
+`docs/archive/pr-summaries/` would have exposed. VibeCoder#3134 skipped every
+non-matching closure entry with `continue`, including the `partial`/`missing`
+entries that were the run's own evidence of a gap. VibeCoder#3157 counted
+`Deno.test(` inside string literals and counted `Deno.test.ignore` declarations,
+so it flagged correct Test Plan counts as stale. VibeCoder#3716 decided whether
+a repo's CI runs cspell with a per-line regex over workflow YAML, so the
+`run: |` form with the command on the next line passed with no notice, and a
+stale version-comment checker in a fleet repo read only the line directly above
+`uses:`, missing a comment block of several lines and a `- name:` line before it
+(Issue #3929). Before calling a gate done (Issue #3149):
 
 1. **Evasion table.** For each thing the gate must catch, add a test per
    nearby variant an agent or human would plausibly produce — commented out,
@@ -1160,11 +1109,22 @@ stale. Before calling a gate done (Issue #3149):
    splits the matched phrase or claim itself across a line break, not only a
    nearby code span, and uses a real wrapped shape from the corpus, not an
    invented fixture.
-2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
-   recent PR diffs, closure-verdict logs, the PR's own test files — run the
-   matcher across it and report the false-positive and false-negative counts
-   in the Test Plan. A counting gate compares its count with the tool's own
-   (the number of tests `deno test` reports it ran).
+
+   A gate over config or CI workflow YAML reads the structure, not one physical
+   line or only the line above: a `run: |` block scalar with the command on the
+   next line, a comment block of several lines above a step, and a `- name:`
+   line before `uses:` are layouts the policed files already use, and each gets
+   an evasion test (VibeCoder#3716, Issue #3929).
+2. **Corpus run.** Run the matcher over every file it polices, as it stands on
+   the base branch and at head — for a gate over workflow or config files,
+   those files themselves (`.github/workflows/*.yml`) — and report the
+   false-positive and false-negative counts in the Test Plan. When the PR also
+   fixes instances by hand, the matcher must report each line the fix changes
+   on the base copy, for every reason the PR's docs say it checks. Then add the
+   other corpora where they apply — `docs/archive/pr-summaries/`, recent PR
+   diffs, closure-verdict logs, the PR's own test files. A counting gate
+   compares its count with the tool's own (the number of tests `deno test`
+   reports it ran).
 3. **No silent pass on unread input.** Input the gate truncates, filters out,
    cannot parse, or skips with `continue` either fails closed or is logged and
    reported as not checked (for example `testDiffKnown=false`) — never a clean
@@ -1279,10 +1239,12 @@ Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an
 explicit contract or leave it out. Ask a negative assertion the opposite
 question too: would it fail if the guard it protects were removed? If not,
-its fixture lacks the forbidden value — see **A negative test must be able to
-fail** above. Ask every new test the same question of its change: would it
-fail if only that change were removed? See **A new test must go red without
-its change** above. See Playwright's
+its fixture lacks the forbidden value — see **A test must be able to fail on
+the wrong input** above. Ask a test that pins which of two similar values the
+code reads whether it would fail if the code read the sibling value; if not,
+its fixture gives the candidates equal values. Ask every new test the same
+question of its change: would it fail if only that change were removed? See
+**A new test must go red without its change** above. See Playwright's
 [user-visible testing guidance](https://playwright.dev/docs/best-practices)
 and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
 
@@ -1481,10 +1443,7 @@ there is a real signal and must be read; it is not the gate.
 **One named exception, and it is the prerequisite that moved, not the rule**
 (Issue #1598). The container image now ships PowerShell 7 (Issue #1596), so
 the three `run.ps1` launcher suites have their interpreter wherever the worker
-runs its gate. They are named in `IN_GATE_SCRIPT_SUITES`, each with a reason
-and its measured cost, and the gate runs them — about 97s for the Windows
-containment boundary being verified before the push rather than in a job that
-cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
+runs its gate. They are named, with the other launcher suites, in `IN_GATE_SCRIPT_SUITES`, each with a reason and its measured cost, and the gate runs them — about 125s across the map's four entries (about 87s of it for `run_ps1_launcher_test.ts` alone) for the Windows containment boundary being verified before the push rather than in a job that cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
 host without PowerShell rather than letting those suites report "ignored"
 while the gate reports green. The `setup.ps1` suites stay excluded. An entry
 there is an exception a change has to argue for, never a place to move a slow
@@ -1558,14 +1517,15 @@ Never background it behind a `sleep`/`pgrep` poll loop
 check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented in Deno
 TypeScript (`worker/deno/quality.ts`) and runs benchmark-audit, markdownlint,
-semgrep, the release-tag ruleset reconciliation, `deno test`,
-`deno lint`, `deno check`, and `deno fmt --check`. The semgrep stage runs the same
+semgrep, Checkov (where `checkov.yml` exists), the release-tag ruleset
+reconciliation, `deno test`, `deno lint`, `deno check`, and
+`deno fmt --check`. The semgrep stage runs the same
 `p/default` ruleset as the blocking `semgrep.yml` PR check, over the branch's
 changed files only, so a SAST finding is met before the push rather than after
 it (Issue #559). Shellcheck is deliberately not run here —
 bash linting is owned by each repo's own CI. See
 [CONTRIBUTING.md → Local quality gate](CONTRIBUTING.md) for how to install the
-optional checks (`markdownlint-cli2`, `semgrep`).
+optional checks (`markdownlint-cli2`, `semgrep`, `checkov`).
 
 **A quality run executes the unit suite only** — no benchmarks, and no
 integration tests beyond the three `run.ps1` launcher suites
@@ -1860,9 +1820,8 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
   the same change, or is reworded so it no longer reads as complete. Name the
-  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
-  double-quoted, or write `siblings: none — <why no existing set gained a
-  member>`; fleet PRs that grepped only the new name left a list one short
+  siblings you grepped in the PR summary; fleet PRs that grepped only the new
+  name left a list one short
   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
@@ -1873,9 +1832,8 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
 - Grep for the **stem** of a behavioural claim, not one inflection
   (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
   final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited. Each
-  remaining hit goes in the Docs sweep line by `file:line` with the reason it
-  is still true.
+  mentions the changed surface, not only the section you edited. Name each
+  remaining hit in the PR summary by `file:line` with the reason it is still true.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item
@@ -1941,34 +1899,18 @@ for every PR summary — containing:
 3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
-   Always add a one-line **Docs sweep** — the grep terms searched, the doc
-   files updated, the manual `section:` read for the changed surface, and the
-   `siblings:` part (the existing sibling members grepped for each set the
-   change adds a member to, or `siblings: none — <why>`), or `no hits` (see
-   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
-   worker refuses to raise a PR whose diff changes code with no such line, or
-   whose line has no real `section:` or `siblings:` part, or whose grep field
-   has no quoted term and no explained `grep: none — <why>` negative. It re-runs the quoted
-   sibling terms as it re-runs the grep terms.
-   Re-run the grep on the final head and list each hit you leave in place as
-   `file:line — still true because …`, so the worker and the reviewer can
-   check it: the worker re-runs the line's quoted terms over the head's docs
-   and the comment lines of its source files, and posts a hit outside the
-   diff that the line does not name as an advisory PR comment for the
-   reviewer, rather than blocking the PR.
+   Name the manual section you read and the doc files you updated (see
+   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)).
+   The docs-sweep line and the gate that refused a pull request for it were
+   removed (Issue #4234).
 4. **Test Plan** — Tests added or modified.
 
 In this repository, `deno task pr-summary-check --base <base-branch>
-<summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-summary at either stage: a draft before the PR is raised, or the archived
-summary once it is open. A gate it reports as not checked is not a pass. For a
-summary named `pr-summary-<N>.md` it also reads
-`docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
-root, as the worker does (it takes only `<N>` from the summary's file name):
-the Branch outcomes gate sees the list rendered at the
-`<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
-block ownership or unresolved evidence; a safely identified legacy duplicate is
-regenerated from the facts.
+<summary-file>` from `worker/deno` reports the summary gates that remain:
+closure, independent review, reproduction status and result placeholders.
+A finding there is advice for the reviewer (Issue #4234). The check does not
+read a facts file. A result reported as not checked is not a pass; name the
+check that could not run and its reason.
 
 `deno task pr-summary-check`
 (`worker/deno/lib/pr_summary_check.ts`) is the twin of the completion phase's
@@ -1996,9 +1938,9 @@ CI runs the same gates on every push to a pull request: the `PR summary
 freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
 `deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
 (Issue #3768). On an `issue-<N>-…` head branch whose diff carries
-`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+`pr-summary-<N>.md`, it fails when the PR's newest non-merge
 commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
-commit changing that summary or its facts file. Rewrite the summary for the head
+commit changing that summary. The digest is of the summary alone. Rewrite the summary for the head
 in that push, whoever makes it. The step then runs the `pr-summary-check` gates
 and fails on a blocked one; gates needing the issue body or labels are reported
 as not checked. A PR carrying no summary passes with a log line. On a head
@@ -2010,9 +1952,8 @@ run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
 (reproduction status, test results, "known defect" notes, named functions and
 files) matches the head — an illustrative example ("for example `X`") is a
-claim too. The worker also checks this named-code rule on the first-run
-summary before the PR is raised, and blocks a false claim it confirms
-(Issue #3257).
+claim too. The first-run claim check that blocked a false claim before the
+pull request was raised was removed (Issue #4234).
 Every file or behaviour the summary says the PR changes
 must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
 from the base branch can supersede the change — and an abandoned iteration's
@@ -2034,7 +1975,8 @@ The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
 whose `## Acceptance Criteria` block marks any criterion `missing` is raised
 as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
-the issue open, labels it `needs-human` and names the missing criteria.
+the issue open and queued, with its existing labels, so a later run finishes
+the missing criteria (Issue #4304).
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits
@@ -2045,10 +1987,9 @@ line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
 or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
 (`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
-branch is red. The Escape Hatch
-in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
-honoured on a committed PR branch when `.pr_response_message` names a
-follow-up issue. Any later commit on the branch — a
+branch is red. A PR-feedback or CI-fix hand-off in `.pr_response_message`
+that names a follow-up issue is still recognised on a committed PR branch,
+although `prompts/pr_feedback/prompt.md` no longer offers one (Issue #4304). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
@@ -2111,23 +2052,15 @@ not imply an automatic patch policy. Exact release/build evidence belongs in
 Evidence with its final commit or release provenance. Preserve dependency pins,
 historical reproduction versions, migration examples and changelog entries.
 
-The worker checks this mechanically too (Issues #3347, #3715, #3731).
-Whenever a PR summary was loaded, the first-run claim check asks a read-only
-model, before the PR is raised, about added or edited manual/prompt Markdown,
-changed source comments, and unchanged module headers or doc comments attached
-to changed declarations. It also checks heading-bounded manual sections named
-by the Docs sweep entry or mentioning a changed source path, basename or
-exported declaration; this extra manual scope excludes `docs/archive/`.
-The prose scope is capped at 20 files and 40 affected manual sections; anything
-past a cap is logged as not checked, never passed. For unchanged prose the
-question is whether this change makes it false, and sets without one code list
-require a grep of the whole head tree for other members. A confirmed
-contradiction is a summary-rule block: on the run's first summary-rule block
-the run gets one recovery turn to rewrite the sentence, and a block that
-survives it fails the run or, when a PR already exists, finalises it as
-`summary_incomplete`. On a review-fix push the drift check builds the same
-prose scope and gives one recovery turn before reporting what remains. This
-enforces the rule above; it does not replace it.
+The first-run claim check that used to ask this before the pull request was
+raised was removed (Issue #4234). A review-fix push still asks the shared
+doc-prose question through the drift check's model pass (Issues #3347, #3715,
+#3731), over changed comments, unchanged attached headers and heading-bounded
+manual sections the summary names or that mention a changed source path. That
+scope excludes `docs/archive/` and is capped at 20 files and 40 manual
+sections; anything past a cap is logged as not checked, never passed. A
+finding that remains is reported on the pull request. This does not replace
+the rule above.
 
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling
@@ -2252,6 +2185,11 @@ gate if a model-generation name reappears in this document.
   risk that remains. Write "none" when nothing was; never leave the reader to
   infer that everything was checked. An unverified claim is reported as
   unverified, not as fact.
+- **Give every shell command its own timeout.** Every shell command carries
+  its own `timeout`, sized to that command: seconds for `git` and `gh`,
+  minutes for a build. Builds and test suites run one at a time, in the
+  foreground, and never with `run_in_background`. Save and push the work in
+  hand before the finish deadline the prompt states.
 - **Prefer positive instructions over negative ones.** "Use Australian English
   spelling" is more effective than "Do not use American English spelling".
 - **Structure prompts with clear sections** — headings and bullet points aid

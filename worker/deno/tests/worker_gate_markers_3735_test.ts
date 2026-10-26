@@ -26,15 +26,16 @@ import {
   releaseHostFaultFailureLabels,
   resetHostFaultReleaseSweepsForTest,
 } from "../lib/host_fault_release.ts";
-import {
-  markIssueAsFailed,
-  markIssueAsFailedOnce,
-} from "../lib/label_failure.ts";
+import { markIssueAsFailedOnce } from "../lib/label_failure.ts";
 import { shouldRetryInfrastructureFailure } from "../lib/infra_retry.ts";
 import { refusalIsMostRecentFailure } from "../lib/milestone_branch_refusal_release.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
 import type { PhaseState } from "../lib/issue_worker_types.ts";
 import type { Logger } from "../types.ts";
+
+/** A repeat failure's record (Issue #4158 replaced the old second-failure path). */
+const markRepeatFailure: typeof markIssueAsFailedOnce = (options, deps) =>
+  markIssueAsFailedOnce({ ...options, repeat: true }, deps);
 
 const REPO = "stSoftwareAU/GRQ-FX-validation";
 const FLEET_AUTHOR = "VibeCoderST";
@@ -163,7 +164,7 @@ async function hostFaultSweepReleases(body: string): Promise<boolean> {
 
 /**
  * The comment bodies the real label writers post for `reason`: the first
- * attempt (`markIssueAsFailedOnce`) and the second (`markIssueAsFailed`).
+ * attempt (`markIssueAsFailedOnce`) and the second (`markRepeatFailure`).
  */
 async function postedBodies(
   reason: string,
@@ -184,7 +185,7 @@ async function postedBodies(
     category,
   };
   await markIssueAsFailedOnce(options, { ghCommandFn });
-  await markIssueAsFailed(options, { ghCommandFn });
+  await markRepeatFailure(options, { ghCommandFn });
   return bodies;
 }
 

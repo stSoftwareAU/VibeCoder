@@ -1330,6 +1330,15 @@ Multiple limits prevent context window exhaustion:
 
 ### 4. Delimiter Hardening
 
+The [prompt fence coverage suite](docs/EXTENDING.md#prompt-fence-coverage-milestone-130)
+renders every exported prompt builder with distinct untrusted-input canaries.
+It requires matched boundary ids and checks every occurrence, including copies
+outside the main fenced block. The completeness check prevents a new exported
+builder from silently missing coverage. Existing leaks are tracked explicitly
+by `knownLeakRow` and open bug references; a passing baseline is not a claim
+that all production prompt paths are fenced. Those rows must become normal
+assertions when their linked repairs land.
+
 Prompt boundary markers are hardened against spoofing:
 - **Randomised boundaries**: Per-invocation randomised delimiter strings replace predictable markers
 - **Per-comment delimiters**: Each comment is individually wrapped with author and trust-level metadata
@@ -1356,9 +1365,9 @@ Operational labels that affect worker behaviour (`planning`, `question`, `needs-
 - Ignored in processing decisions
 - Logged with a `[SECURITY] [UNTRUSTED_LABEL_CHANGE]` audit event
 
- extended the verified set to the three **blocking-only** labels — `refine-issue`, `failed`, `failed-once`. These block pickup in every discovery tier but were never trust-verified, so an untrusted triage actor could park an issue indefinitely: exactly the starvation this check exists to prevent. Two carve-outs keep the extension safe:
+ extended the verified set to the three **blocking-only** labels — `refine-issue`, `failed`, `failed-once`. These block pickup in every discovery tier but were never trust-verified, so an untrusted triage actor could park an issue indefinitely: exactly the starvation this check exists to prevent. Since [#4158](https://github.com/stSoftwareAU/VibeCoder/issues/4158) `failed` no longer blocks pickup at all — the worker never applies it and strips a leftover one — so the starvation risk it carried is gone; `failed-once` records a failure but does not park the issue either, and its escalating cooldown is per host. Two carve-outs keep the extension safe:
 
-- **Worker-owned failure marks.** `failed` / `failed-once` applied by a fleet worker stay trusted — they drive the consecutive-failure circuit breaker, and stripping them would re-pick a persistently failing issue forever.
+- **Worker-owned failure marks.** `failed-once` applied by a fleet worker stays trusted — it is the record behind the escalating 2 h → 6 h → 24 h cooldown, which is what bounds a persistently failing issue to one attempt a day (#4158).
 - **Unverifiable authorship keeps the label.** For blocking-only labels, *stripping* is the fail-open direction (it hands a known-failing issue back for another billed run). A missing `labeled` event, a null actor, or an unreadable timeline therefore leaves the label in place; only a named untrusted adder strips it. The permissive labels keep their original fail-closed behaviour.
 
 [#1521](https://github.com/stSoftwareAU/VibeCoder/issues/1521) closed a drift between this list and `operationalDispatchLabels()` in [`operational_dispatch_labels.ts`](worker/deno/lib/operational_dispatch_labels.ts), which resolves the privileged dispatch set the phase gate uses. `grill-me` sat in that set but not in `OPERATIONAL_LABEL_NAMES`, so the discovery collectors never authorship-checked it: the phase gate still refused an untrusted dispatch, but the label survived on the in-memory issue record and no `[SECURITY]` audit event recorded the attempt. `grill-me` is now verified like `planning` — permissive, so an unverifiable adder fails closed — and a drift test asserts every label `operationalDispatchLabels()` returns under the default config is trust-verified here, so a future dispatch label cannot be added to one list alone.
@@ -1722,7 +1731,9 @@ label the worker may apply, and it is narrowed five ways:
   no human step, so, like the already-resolved close, it is withheld when an
   untrusted author's body carried an image. `gatePlanningHandoff`
   (`image_conclusion_gate.ts`) logs a `[SECURITY]` audit line with the image
-  count, and the run falls through to the analysis-only hand-off.
+  count, and the run is retried as not finished. A withheld hand-off also
+  withholds the analysis-only close (Issue #4298), so a marked issue stays
+  open too.
 
 ```mermaid
 flowchart TD
@@ -1847,6 +1858,7 @@ flowchart TD
 The subprocess/argv sweep of every `worker/deno/lib` module that spawns a process (Issue #1214, parent #1209) surfaced two classes, both fixed. The swept paths are recorded in [`docs/audits/security-sweep-1214-subprocess-argv.md`](docs/audits/security-sweep-1214-subprocess-argv.md).
 
 - **`git` has a chokepoint too, and it is now enforced.** `runGitCommand` (`worker/deno/lib/git_timeout.ts`) owns three controls no caller may skip: the `AbortController` timeout, the audit journal for git mutations, and the work-volume fault detector. Seven modules had grown their own `new Deno.Command("git", …)` and skipped all three — including the stale-work-dir rescue, which ran `git push origin <branch>` untimed and unjournalled, so an unresponsive remote hung the worker outright rather than timing out. All seven now route through `runGitCommand`, and the `git spawn chokepoint` quality check (`git_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `git_timeout.ts` — the same architectural invariant `gh_spawn_chokepoint_check.ts` enforces for `gh`, sharing its scanner via `spawn_chokepoint_scan.ts`. Three further modules reached `git` through a **variable** binary the literal pattern could not see — `benchmark.ts`, `dependency_lock_regen.ts` and `security_tree_sweep.ts` — and now route through `runGitCommand` as well (Issue #1227). For the benchmark harness that check was blind twice over: its fixture repositories are built through `runGitCommand` too (Issue #1396), which is what lets a benchmark step failing with `Input/output error` record the work-volume fault the claim guards read rather than being reported as a slow benchmark.
+- **Every other subprocess spawn carries an explicit timeout.** The `spawn timeout` quality check (`spawn_timeout_check.ts`, Issue #4248) fails the build when `worker/deno/lib` or `worker/deno/commands` constructs `new Deno.Command` with no `signal`, outside the chokepoint modules (`gh_spawn.ts`, `git_timeout.ts`, `subprocess_timeout.ts`), or calls `runWithTimeout` with no `timeoutMs`. `runWithTimeout` requires `timeoutMs`; there is no implicit default and no baseline of known gaps (Issue #4252).
 - **Repository-supplied code runs with a BUILT environment, never an inherited one.** `untrusted_command_env.ts` exists because the worker executes code it did not write, and an inherited environment hands that code every credential the run holds. The control was wired into the quality-gate spawn only; three sibling spawns of repository-supplied code inherited the worker's whole environment — the pre-flight gate (whose scripts are, by documented design, supplied by the target repo), the per-repo `bump-deps.sh`, and the lock-file regeneration tools that run `npm install` / `deno install` / `cargo update` / `go mod tidy` over a manifest the repository controls. `echo $CLAUDE_CODE_OAUTH_TOKEN` in any of those was the whole exploit. All three now build the child environment from `buildUntrustedCommandEnv()` with `clearEnv: true`, so only allowlisted names — `PATH`, `HOME`, the toolchain caches — are in scope. A fourth sibling, the per-repo `pre_setup_command` that runs the repository's own dependency setup (`runPreSetupCommand`), was the last spawn still inheriting the worker's environment and now builds it the same way, layering only `REPO_PATH` and `REPO_NAME` on top (Issue #1285).
 
 The chokepoint sweep of Issue #1217 then found the same asymmetry one level up: the `git` chokepoint existed but redacted nothing, and the agent had no `git` wrapper at all. Both halves are now closed (Issue #1284).

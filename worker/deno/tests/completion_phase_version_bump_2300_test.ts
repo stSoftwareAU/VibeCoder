@@ -182,12 +182,14 @@ Deno.test("completion - a version bump in index.html is not a UI change, so a ba
   assert(prCreated, "the PR is created");
 });
 
-Deno.test("completion - a real edit beside the bump is still a UI change and is gated (Issue #2300)", async () => {
+Deno.test("completion - a real edit beside the bump still receives screenshot advice (Issue #2300)", async () => {
   const { result, posted, prCreated } = await run(INDEX_HTML_RESTYLED);
-  assertEquals(result.status, "failure", JSON.stringify(result));
+  assertEquals(result.status, "continue", JSON.stringify(result));
   assert(
     posted.some((p) => p.includes("Screenshot Evidence Required")),
-    "a restyled page without evidence is gated as before",
+    `a restyled page without evidence must retain screenshot advice: ${
+      JSON.stringify(posted)
+    }`,
   );
-  assert(!prCreated, "no PR is created");
+  assert(prCreated, "screenshot advice must not prevent the PR");
 });
