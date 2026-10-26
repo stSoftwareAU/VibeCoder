@@ -83,6 +83,7 @@ async function fixture(
       [ -f "$HOME/release-error" ] && { echo "release: boom (HTTP 500)" >&2; exit 1; }
       echo '{"released":1}'; exit 0 ;;
     esac
+    [ -f "$HOME/claim-slow" ] && sleep 1
     echo claim >> "$HOME/order"
     [ -f "$HOME/claim-lost" ] && { echo '{"won":false,"id":2}'; exit 0; }
     [ -f "$HOME/claim-error" ] && { echo "claim: boom (HTTP 403)" >&2; exit 1; }
@@ -1001,6 +1002,9 @@ Deno.test("run.sh tells the gate this host, so the gate can skip a PR claimed el
 
 Deno.test("run.sh claims a PR before its round's container starts (Issue #4398)", async () => {
   const home = await fixture(READY);
+  // The claim answers slowly, so a round started before it would be recorded
+  // first, whatever the scheduling.
+  await Deno.writeTextFile(`${home}/claim-slow`, "");
   const { code, output } = await run(home, "--once");
   assertEquals(code, 0, output);
   assertEquals(await recorded(home, "order"), "claim\nround\n");

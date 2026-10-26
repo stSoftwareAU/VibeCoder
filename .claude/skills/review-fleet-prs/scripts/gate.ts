@@ -9,9 +9,9 @@
 // leave their own diff unchanged apart from a strict version re-bump.
 // At most --limit (default 5) PRs are
 // reported per pass, counted after every other skip, so a red, approved or
-// claimed PR never takes a slot and the rest come back next pass (Issue #3225). It never
-// posts anything itself; a red dependency audit CI-fix could not clear is
-// reported in `auditBlocked` with a ready-made review for post.ts (Issue
+// claimed PR never takes a slot and the rest come back next pass (Issue #3225).
+// It never posts anything itself; a red dependency audit CI-fix could not clear
+// is reported in `auditBlocked` with a ready-made review for post.ts (Issue
 // #3142).
 //
 // One GraphQL search (about 2 points a page) covers every repo, so polling

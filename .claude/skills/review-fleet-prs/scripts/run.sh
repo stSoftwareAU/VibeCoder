@@ -502,16 +502,6 @@ start_review() {
   repo=$(jq -r .repo <<<"$entry")
   number=$(jq -r .number <<<"$entry")
   sha=$(jq -r .headSha <<<"$entry")
-  dir=$(round_dir "$(jq -r '"\(.repo)-\(.number)"' <<<"$entry")")
-  mkdir -p "$dir"
-  jq -c '{ready: [.]}' <<<"$entry" >"$dir/gate.json"
-  ROUND_NAME="review-fleet-prs-$(basename "$dir")"
-  if ! round_container "$ROUND_NAME"; then
-    ROUND_ERROR="$LAST_ERROR"
-    log "$key: round not started: $ROUND_ERROR"
-    release_claim "$repo" "$number"
-    return 1
-  fi
   # Claimed before any round work, so only one host reviews this PR (Issue
   # #4398). A failed claim is an error: the round is not started.
   claim_json=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh claim.ts claim \
@@ -538,6 +528,16 @@ start_review() {
     return 1
     ;;
   esac
+  dir=$(round_dir "$(jq -r '"\(.repo)-\(.number)"' <<<"$entry")")
+  mkdir -p "$dir"
+  jq -c '{ready: [.]}' <<<"$entry" >"$dir/gate.json"
+  ROUND_NAME="review-fleet-prs-$(basename "$dir")"
+  if ! round_container "$ROUND_NAME"; then
+    ROUND_ERROR="$LAST_ERROR"
+    log "$key: round not started: $ROUND_ERROR"
+    release_claim "$repo" "$number"
+    return 1
+  fi
   C_DIR="$C_STATE_DIR/rounds/$(basename "$dir")"
   # The round runs in the container, so every path it is given is the
   # container's; the prompt is a file in the round's own directory.
