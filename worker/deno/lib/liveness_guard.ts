@@ -472,7 +472,7 @@ export async function readLivenessTickPressure(
   readFile: (path: string) => Promise<string> = (path) =>
     Deno.readTextFile(path),
 ): Promise<LivenessTickPressure> {
-  let memAvailableMib: number | "unavailable" = "unavailable";
+  let memAvailableMib: number | "unavailable";
   try {
     memAvailableMib = memAvailableMibFromProcMeminfo(
       await readFile(LIVENESS_MEMINFO_PATH),

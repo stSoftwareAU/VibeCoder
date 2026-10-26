@@ -65,7 +65,12 @@ function searchPr(title: string, body = ""): SearchPr {
     },
     author: { login: "VibeCoderST" },
     commits: {
-      nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }],
+      nodes: [{
+        commit: {
+          statusCheckRollup: { state: "SUCCESS" },
+          checkSuites: { nodes: [] },
+        },
+      }],
     },
     reviews: { nodes: [] },
   };

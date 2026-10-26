@@ -250,6 +250,11 @@ export const OPERATIONAL_DEFAULTS = {
    * (Issue #2960) — long enough to navigate, screenshot and commit.
    */
   screenshotRetryTimeoutSeconds: 600,
+  /**
+   * Timeout for the pre-push gate's one extra in-run agent turn (Issue #4128)
+   * — long enough to fix, re-check and commit.
+   */
+  prePushRetryTimeoutSeconds: 600,
   /** A tool call older than this is no longer evidence of activity (#4296). */
   progressExtensionStallSeconds: 300,
   /**

@@ -177,6 +177,7 @@ import { staleWorkflowDetectorCommand } from "./commands/stale_workflow_detector
 import { batchApiCommand } from "./commands/batch_api.ts";
 import { selfHealSummaryCommand } from "./commands/self_heal_summary.ts";
 import { analyseFailedOnceCommand } from "./commands/analyse_failed_once.ts";
+import { clearWorkerGateLabelsCommand } from "./commands/clear_worker_gate_labels.ts";
 import { auditHeartbeatRecoveriesCommand } from "./commands/audit_heartbeat_recoveries.ts";
 import { callbackConformanceCommand } from "./commands/callback_conformance.ts";
 import { checkMermaidCommand } from "./commands/check_mermaid.ts";
@@ -381,6 +382,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(batchApiCommand);
   registry.register(selfHealSummaryCommand);
   registry.register(analyseFailedOnceCommand);
+  registry.register(clearWorkerGateLabelsCommand);
   registry.register(auditHeartbeatRecoveriesCommand);
   registry.register(callbackConformanceCommand);
   registry.register(checkMermaidCommand);
@@ -622,6 +624,7 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "milestone-health",
       "sync-milestone-branches",
       "analyse-failed-once",
+      "clear-worker-gate-labels",
       // An extension author proves the callback contract in a checkout that
       // may carry no config at all (Issue #807).
       "callback-conformance",
@@ -756,6 +759,7 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "milestone-health",
       "sync-milestone-branches",
       "analyse-failed-once",
+      "clear-worker-gate-labels",
       // An extension author proves the callback contract in a checkout that
       // may carry no config at all (Issue #807).
       "callback-conformance",

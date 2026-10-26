@@ -239,7 +239,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #4298 removed the dead `clarity-phase` command, whose only purpose
   // was to hand a vague issue back to a human (count 157 → 156).
 
-  assertEquals(commands.length, 156);
+  // Issue #4132 added the one-off worker-gate label cleanup command.
+  assertEquals(commands.length, 157);
+  assertEquals(commands.includes("clear-worker-gate-labels"), true);
   assertEquals(commands.includes("route-issue"), true);
   assertEquals(commands.includes("fleet-experiment-report"), true);
   assertEquals(commands.includes("subscription-allocation"), true);
