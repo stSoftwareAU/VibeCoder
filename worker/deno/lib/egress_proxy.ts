@@ -7,12 +7,12 @@
  * exactly the first address it checked. Allowed tunnels are piped byte for
  * byte; the payload is never logged.
  *
- * #3699's credential broker is planned to extend this module through `routes`;
- * it will add no second outbound proxy (not yet delivered). A route claims an
- * allowlisted host and receives the client connection instead of an upstream
- * dial ({@link EgressRoute}). On Apple `container` (#4051) the launch runs this
- * proxy as a sidecar. On Docker and Podman the container is not routed through
- * this proxy yet (#4047).
+ * No credential broker is delivered. The `routes` option is the seam one could
+ * attach through: a route claims an allowlisted host and receives the client
+ * connection instead of an upstream dial ({@link EgressRoute}). The
+ * `egress-proxy` command registers no routes. On Apple `container` (#4051) the
+ * launch runs this proxy as a sidecar. On Docker and Podman the container is not
+ * routed through this proxy yet (#4047).
  *
  * Imports are local only; nothing is fetched from a remote registry.
  * Australian English spelling used throughout (behaviour, sanitise).
@@ -53,8 +53,8 @@ export type EgressConnector = (
 ) => Promise<Deno.Conn>;
 
 /**
- * Takes over an allowlisted tunnel (the seam #3699 is planned to use). The
- * proxy replies `200 Connection Established` first; the route then owns the
+ * Takes over an allowlisted tunnel (the seam a credential broker could attach
+ * through; none is delivered). The proxy replies `200 Connection Established` first; the route then owns the
  * client connection, including its idle policy. The proxy dials nothing for a
  * route.
  */

@@ -31,8 +31,8 @@ import {
   BASH_LAUNCHER,
   denoInvocationOrder,
   type Harness,
-  launchPhaseMarker,
   type LaunchOutcome,
+  launchPhaseMarker,
   recorded,
   REPO_ROOT,
   runCoreLog,
@@ -150,7 +150,9 @@ Deno.test("run.sh - apple-egress exit 0 splices its arguments after run, ahead o
     assertEquals(
       args.slice(0, 1 + SPLICED.length),
       ["run", ...SPLICED],
-      `the containment arguments must sit straight after run: ${args.join(" ")}`,
+      `the containment arguments must sit straight after run: ${
+        args.join(" ")
+      }`,
     );
     assertEquals(args[1 + SPLICED.length], "--rm");
     assertEquals(args.at(-1), IMAGE, "the image reference stays last");

@@ -615,25 +615,29 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "switch",
     note:
       "the Apple egress mode, `auto`, `internal` or `advisory` (Issue #4051); " +
-      "an operator escape hatch read per launch, with no `.config.json` key",
+      "an operator escape hatch read per launch by `apple-egress` " +
+      "(`resolveAppleEgressSettings`), with no `.config.json` key",
   },
   VIBE_APPLE_EGRESS_RECOVERY_ATTEMPTS: {
     role: "switch",
     note:
       "bounded recovery attempts for a failed Apple egress bring-up step, 0 to 5 " +
-      "(Issue #4051); read per launch, with no `.config.json` key",
+      "(Issue #4051); read per launch by `apple-egress` " +
+      "(`resolveAppleEgressSettings`), with no `.config.json` key",
   },
   VIBE_APPLE_EGRESS_READY_TRIES: {
     role: "switch",
     note:
       "how many proxy readiness checks the Apple egress launch makes before it " +
-      "refuses (Issue #4051); read per launch, with no `.config.json` key",
+      "refuses (Issue #4051); read per launch by `apple-egress` " +
+      "(`resolveAppleEgressSettings`), with no `.config.json` key",
   },
   VIBE_APPLE_EGRESS_READY_INTERVAL: {
     role: "switch",
     note:
       "seconds between Apple egress proxy readiness checks (Issue #4051); read " +
-      "per launch, with no `.config.json` key",
+      "per launch by `apple-egress` (`resolveAppleEgressSettings`), with no " +
+      "`.config.json` key",
   },
   VIBE_CONTAINMENT_IMAGE: {
     role: "switch",

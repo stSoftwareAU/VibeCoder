@@ -337,8 +337,9 @@ leaves `${HOME}` untouched.
   rejected by the plan builder before the arguments are returned.
 - The network boundary does not filter hosts on Docker or Podman. The
   [egress proxy](#egress-proxy) exists (#4046), but those containers are not
-  routed through it until #4047 (open). On Apple the proxy is the intended route
-  out, and the measured exceptions are listed under
+  routed through it until #4047 (open). On Apple `container` in
+  `internal-network` mode the worker's outbound traffic is meant to go through
+  the proxy, and the measured exceptions are listed under
   [accepted gaps](#accepted-gaps-and-regressions). Per-host allowlisting is the
   job of the [egress allowlist](#egress-allowlist) below.
 
@@ -405,9 +406,9 @@ ships, run by the `egress-proxy` command. It is a CONNECT proxy: it accepts
 only `CONNECT host:443` for an allowlisted host, and it dials that host itself
 after checking where the name resolves.
 
-**The container is not routed through it yet on Docker or Podman.** Issue #4046
-adds the proxy. On Apple `container` the launch runs this same command as a
-sidecar (#4051, see
+**The container is not routed through it yet on Docker or Podman.** The proxy is
+the `egress-proxy` command in this module (#4046). On Apple `container` the launch
+runs this same command as a sidecar (#4051, see
 [Apple container: partial egress containment](#apple-container-partial-egress-containment)).
 Routing Docker and Podman containers through it is #4047 (open), so until then
 those containers reach the network directly and the proxy enforces nothing for
@@ -490,17 +491,25 @@ is capped at 64 characters; the detail is sanitised the same way and capped at
 
 **Per-host routes.** The `routes` option maps an allowlisted host to a handler
 that receives the accepted client connection after the proxy has replied
-`200 Connection Established`; the proxy dials nothing for a route. This is the
-seam #3699's credential broker will attach to. **#3699 will extend this proxy
-through this seam (not yet delivered); it adds no second outbound proxy.**
+`200 Connection Established`; the proxy dials nothing for a route. A credential
+broker could attach through this seam, but none is delivered, and the
+`egress-proxy` command registers no routes.
 
 ## Apple container: partial egress containment
 
-On macOS, when the worker runs on Apple's `container` runtime, `run.sh` runs the
-`apple-egress` command just before the worker starts. The result is **partial
-containment**: direct outbound is restricted to what each launch measures, and
-the worker's traffic is meant to go through the allowlist proxy. It is not a
-deny-by-default boundary. The host gateway, DNS and the LAN sit outside what it
+On macOS, when the worker runs on Apple's `container` runtime, `run.sh` runs
+`mod.ts apple-egress --action up` just before the worker starts, and
+`--action down` from its EXIT trap. Only the bash launcher (`run.sh`) enforces
+this. `run.ps1` does not, because Apple `container` is macOS-only.
+
+`--action up` exits 10 for any other runtime, does nothing, and the launch is
+unchanged. It exits 0 when containment is up, and exits 1 when containment could
+not be brought up. Exit 2 means bad arguments or settings. `run.sh` refuses the
+launch on any status other than 0 or 10. `--action down` always exits 0.
+
+The result is **partial containment**: direct outbound is restricted to what
+each launch measures, and the worker's traffic is meant to go through the
+allowlist proxy. It is not a deny-by-default boundary. The host gateway, DNS and the LAN sit outside what it
 promises. Docker and Podman are unchanged by this section: their containers stay
 on the runtime's bridge network, as described under
 [the network boundary](#the-network-boundary).
@@ -514,16 +523,19 @@ In mode `internal-network`, `apple-egress` does the following, in order:
    `--internal`, and a `container run --help` that advertises `--network`. The
    macOS version and the `container` CLI version are measured and recorded.
    Neither is assumed.
-2. **Sweeps stale resources.** It removes only networks named exactly
-   `vibe-egress-<pid>` and proxies named `vibe-coder-egress-proxy-<pid>` whose
-   launcher pid is dead.
+2. **Sweeps stale resources.** For each network named exactly
+   `vibe-egress-<pid>` whose launcher pid is dead, it deletes that launcher's
+   proxy `vibe-coder-egress-proxy-<pid>` (when one exists) and then the network.
+   A proxy with no such network is not swept, and neither are the probe
+   containers of a launcher that died.
 3. **Creates a per-launch internal network**, `vibe-egress-<pid>`, with
    `container network create --internal`. Apple describes `--internal` as
    "Restrict to host-only network".
 4. **Starts the egress proxy as a sidecar**, `vibe-coder-egress-proxy-<pid>`,
    from the same worker image, running the [`egress-proxy`](#egress-proxy)
-   command. It is attached to the built-in outbound `default` network and to the
-   internal network. It publishes no port and mounts no credentials; only
+   command. In `internal-network` mode it is attached to the built-in outbound
+   `default` network and to the internal network; in `advisory-proxy` mode, to
+   the default network only. It publishes no port and mounts no credentials; only
    `worker/deno` is mounted, read-only, for the code. Its allowlist is the output
    of `resolveEgressAllowlist`, passed in `VIBE_EGRESS_ALLOW_HOSTS`.
 5. **Runs unattended probes.** Two short probe containers run with no agent
