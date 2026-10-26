@@ -34,4 +34,4 @@ Backend/shell change, no UI. Tests:
 - Red check: replacing `cause=$(first_line "$outfile")` with `cause=""` turned the stdout test red (shows `host disk`); the fallback test stays green by design and guards the empty-stdout path. The existing `(Issue #3293)` test is unchanged and passes.
 - Removed assertions: none.
 - Caller check: `round_container` is called from the paths that set `errfile` before the call; all 51 tests pass.
-- Quality gate: see the note at the end of this file.
+- Quality gate `./quality.sh < /dev/null` on the final code: every stage PASSED (deno tests, lint, type check, fmt, markdownlint, mermaid, spawn timeout, completeness) except semgrep, which reported `FAILED (exit 2, unreadable report)` with `semgrep produced no JSON report on stdout`. This sandbox cannot reach the rule registry (`curl https://semgrep.dev/c/p/default` returns `CONNECT tunnel failed, response 403`), so the scan could not fetch `p/default`; it is an environment fault, not a finding. checkov was skipped (not installed). CI runs both and is authoritative.
