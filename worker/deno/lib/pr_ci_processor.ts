@@ -154,7 +154,7 @@ import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { resolvePreFlightSpec, unstageStateAndAssertSafe } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
@@ -2838,7 +2838,9 @@ interface PostClaudeQualityResult {
  * 2. Run `./quality.sh` (via {@link runQualityGateCheck}) to verify the fix.
  * 3. On a fixable failure, give Claude a single retry with the failure output.
  * 4. Stage and commit any remaining uncommitted changes so the push step
- *    includes them.
+ *    includes them. Worker-owned state files (e.g. `.pr_response_message`) are
+ *    unstaged and the pre-commit safety gate runs before the commit (Issue
+ *    #4394).
  *
  * Errors here are logged but do not abort the CI fix — the push logic that
  * follows will surface any real problems.
@@ -2996,6 +2998,25 @@ async function _runPostClaudeQualityCheck(
     logger.warn("Failed to stage remaining post-Claude changes", {
       error: err,
     });
+    return { committedChanges: false };
+  }
+
+  // Issue #4394: worker-owned state files must not reach the commit, and the
+  // pre-commit safety gate must still see what is staged. On failure the
+  // working tree is left alone — `.pr_response_message` must stay on disk for
+  // `readPrResponseMessage`, which reads it after the push.
+  const stateResult = await unstageStateAndAssertSafe({ cwd });
+  if (!stateResult.ok) {
+    logger.warn(
+      "Failed to unstage worker state / safety gate for post-Claude changes",
+      { error: stateResult.error.message },
+    );
+    return { committedChanges: false };
+  }
+  if (stateResult.value.remainingStaged === 0) {
+    logger.debug(
+      "Only worker-owned state files changed after Claude — nothing to commit",
+    );
     return { committedChanges: false };
   }
 

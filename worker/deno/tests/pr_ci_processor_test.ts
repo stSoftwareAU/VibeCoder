@@ -1336,6 +1336,48 @@ Deno.test("processCiFailure - reports no changes when Claude does nothing (Issue
  * Helper to build a runGitCommand mock that returns a scripted git status
  * response and records all calls. Non-status commands return code 0.
  */
+/**
+ * Issue #4394: the pre-commit inspection runs real git against the working
+ * directory, so a tmpDir the post-Claude step commits from must be a real repo
+ * with a real staged file. Asserts the staged path is visible (positive
+ * control) so a silently empty index cannot make the test pass.
+ */
+async function initRepoWithStagedFile(
+  dir: string,
+  relPath: string,
+): Promise<void> {
+  const decoder = new TextDecoder();
+  const run = async (args: string[]): Promise<string> => {
+    const out = await new Deno.Command("git", {
+      args,
+      cwd: dir,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    if (!out.success) {
+      throw new Error(
+        `git ${args.join(" ")} failed: ${decoder.decode(out.stderr)}`,
+      );
+    }
+    return decoder.decode(out.stdout);
+  };
+  await run(["init", "-q"]);
+  await Deno.mkdir(`${dir}/${relPath.slice(0, relPath.lastIndexOf("/"))}`, {
+    recursive: true,
+  });
+  await Deno.writeTextFile(`${dir}/${relPath}`, "export const value = 1;\n");
+  await run(["add", "--", relPath]);
+  const staged = (await run(["diff", "--cached", "--name-only"]))
+    .split("\n")
+    .filter((line) => line.length > 0);
+  assertEquals(
+    staged.includes(relPath),
+    true,
+    `positive control: ${relPath} should be staged; got: ${staged.join(", ")}`,
+  );
+}
+
 function makeGitMock(porcelainOutputs: string[]): {
   runGitCommand: GitDeps["runGitCommand"];
   calls: string[][];
@@ -1439,6 +1481,7 @@ Deno.test("processCiFailure - skips quality check when no uncommitted changes (I
 Deno.test("processCiFailure - runs quality check and commits uncommitted changes (Issue #1456)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
+    await initRepoWithStagedFile(tmpDir, "src/file.ts");
     let qualityFnCalled = false;
     let claudeCallCount = 0;
 
@@ -1532,6 +1575,7 @@ Deno.test("processCiFailure - runs quality check and commits uncommitted changes
 Deno.test("processCiFailure - retries Claude when quality check fails (Issue #1456)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
+    await initRepoWithStagedFile(tmpDir, "src/broken.ts");
     let claudeCallCount = 0;
     const claudePrompts: string[] = [];
 
