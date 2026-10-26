@@ -46,6 +46,8 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 errors() { tee -a "$LOG" >&2; }
 # The last non-blank line of a captured stderr file: a one-line failure gist.
 last_error_line() { grep -v '^$' "$1" 2>/dev/null | tail -n1; }
+# A failed command's cause is its stdout's first line; stderr's last is often a note.
+first_line() { grep -v '^$' "$1" 2>/dev/null | head -n1; }
 
 # Running for ever means the log and round files must not grow for ever.
 housekeep() {
@@ -134,19 +136,24 @@ EOF
 # C_STATE_DIR (this state directory inside it). Returns non-zero, with
 # LAST_ERROR set, when the plan or the image is not usable.
 round_container() {
-  local name=$1 planfile token key value i arg src
+  local name=$1 planfile outfile token key value i arg src cause
   local exists_args=() ensure_dirs=() volumes=() run_args=()
   planfile="$STATE_DIR/round-plan"
+  outfile="$errfile.out"
   RUNTIME="" ROUND_ARGS=() C_BASE="" C_STATE_DIR=""
   if ! (cd "$CHECKOUT" && deno run --frozen --lock=worker/deno/deno.lock \
     --allow-env --allow-read --allow-run \
     --allow-sys=hostname,systemMemoryInfo \
     --allow-write="$planfile,$planfile.Containerfile,$HOME/.vibe-coder/run-config" \
     worker/deno/mod.ts container-launch-plan --base-dir "$CHECKOUT" \
-    --container-name "$name" --out "$planfile" </dev/null >/dev/null \
+    --container-name "$name" --out "$planfile" </dev/null >"$outfile" \
     2>"$errfile"); then
     errors <"$errfile"
-    LAST_ERROR="worker container plan failed: $(last_error_line "$errfile")"
+    # The command's failure message (its cause) is on stdout, logged in full.
+    [[ -s $outfile ]] && errors <"$outfile"
+    cause=$(first_line "$outfile")
+    [[ -n $cause ]] || cause=$(last_error_line "$errfile")
+    LAST_ERROR="worker container plan failed: $cause"
     return 1
   fi
   while IFS= read -r -d '' token; do

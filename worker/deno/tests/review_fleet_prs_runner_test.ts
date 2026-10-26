@@ -59,10 +59,11 @@ async function fixture(
   *post.ts*) echo "$*" >> "$HOME/post-args"
     for a in "$@"; do case "$a" in --input=*) cat "\${a#--input=}" >> "$HOME/post-inputs"; echo >> "$HOME/post-inputs" ;; esac; done
     echo '{"posted":true,"outcome":"changes_requested"}'; exit 0 ;;
-  *container-launch-plan*) out=""; prev=""
+  *"mod.ts container-launch-plan"*) out=""; prev=""
     for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done
     echo "$*" > "$HOME/plan-args"
     [ -f "$HOME/no-plan" ] && { echo "Cannot launch: no config" >&2; exit 1; }
+    [ -f "$HOME/no-plan-stdout" ] && { echo "container-launch-plan: host disk 77.2 GB free of 460.4 GB at /home/x" >&2; echo "Cannot launch: /home/x/.vibe does not exist. Run ./setup.sh to provision the Vibe credentials"; exit 1; }
     printf '%s\\000' runtime=fake-runtime image=vibe-coder:test \
       exists=image exists=inspect exists=vibe-coder:test \
       "ensure=$HOME/ensured" volume=vibe-work volume-resettable=vibe-work \
@@ -545,6 +546,37 @@ Deno.test("run.sh fails a pass whose worker launch plan fails (Issue #3293)", as
   assertStringIncludes(
     (await recorded(home, "escalate-args"))!,
     "worker container plan failed",
+  );
+});
+
+// Issue #4409: the plan prints its cause on stdout, and stderr's last line is
+// an informational note (the host's disk), which must not be the reason given.
+Deno.test("run.sh names the plan's cause from its stdout, not its informational stderr line (Issue #4409)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/no-plan-stdout`, "");
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 1, output);
+  assertEquals(await claudeArgs(home), null);
+  const escalated = (await recorded(home, "escalate-args"))!;
+  assertStringIncludes(
+    escalated,
+    "Cannot launch: /home/x/.vibe does not exist",
+  );
+  assertEquals(escalated.includes("host disk"), false, escalated);
+  assertStringIncludes(
+    await runnerLog(home),
+    "Cannot launch: /home/x/.vibe does not exist",
+  );
+});
+
+Deno.test("run.sh names the plan's stderr last line when its stdout is empty (Issue #4409)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/no-plan`, "");
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 1, output);
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "worker container plan failed: Cannot launch: no config",
   );
 });
 
