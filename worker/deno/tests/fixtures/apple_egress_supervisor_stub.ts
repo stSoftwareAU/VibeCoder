@@ -25,5 +25,8 @@ const checkParent = () => {
 };
 checkParent();
 setInterval(checkParent, 200);
-await Deno.writeTextFile(readyFile, `${plan.run.join("\0")}\0`);
+await Deno.writeTextFile(`${readyFile}.tmp`, `${plan.run.join("\0")}\0`, {
+  mode: 0o600,
+});
+await Deno.rename(`${readyFile}.tmp`, readyFile);
 await new Promise<void>(() => {});

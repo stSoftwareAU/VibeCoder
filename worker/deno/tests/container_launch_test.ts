@@ -12,6 +12,7 @@
 
 import {
   assert,
+  assertArrayIncludes,
   assertEquals,
   assertStringIncludes,
   assertThrows,
@@ -693,15 +694,18 @@ Deno.test("buildContainerLaunchPlan - Docker and Podman run behind the egress pr
     }
     assertEquals(plan.networkCreateArgs.includes("--internal"), true);
     assertEquals(plan.networkCreateArgs.at(-1), "vibe-coder-4242-net");
-    assert(
-      plan.proxyRunArgs.some((arg) =>
-        arg.startsWith("VIBE_EGRESS_ALLOW_HOSTS=")
-      ),
-      "the proxy must receive the resolved allowlist",
+    const allowlistPrefix = "VIBE_EGRESS_ALLOW_HOSTS=";
+    const allowlistArg = plan.proxyRunArgs.find((arg) =>
+      arg.startsWith(allowlistPrefix)
     );
     assert(
-      plan.proxyRunArgs.some((arg) => arg.includes("api.github.com")),
-      "the resolved allowlist includes api.github.com",
+      allowlistArg,
+      "the proxy must receive the resolved allowlist",
+    );
+    assertArrayIncludes(
+      allowlistArg.slice(allowlistPrefix.length).split(","),
+      ["api.github.com"],
+      "the resolved allowlist includes the exact api.github.com host",
     );
   }
 
