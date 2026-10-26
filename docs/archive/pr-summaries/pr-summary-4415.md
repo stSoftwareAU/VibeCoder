@@ -169,9 +169,9 @@ Red checks (each mutation restored; results from the guard executor's run):
   test fails
 - mutation-check survivors (`static_scan_guard.ts` lines 80, 83–85, 101,
   103–107, 123–131, 141–145: separators `|` `)` `{` `}`, shell keywords, `sudo`
-  and `xargs` option arguments) → each element deleted in turn; the new
-  `DENIED` entries in `static_scan_guard_test.ts` fail for every one, and the
-  suite passes unmutated (109 passed)
+  and `xargs` option arguments) → each element deleted in turn; the new `DENIED`
+  entries in `static_scan_guard_test.ts` fail for every one, and the suite
+  passes unmutated (109 passed)
 
 Callers checked for `defaultRunScan` (now takes `runClaudeFn`):
 `best_practices_template.ts` is the only caller; the other templates keep their
