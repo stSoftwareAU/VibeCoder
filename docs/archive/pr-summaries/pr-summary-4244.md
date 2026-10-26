@@ -83,3 +83,21 @@ The milestone resurrection gate found `codex_resume_sandbox_4333_test.ts`, which
 Preserved both finish-deadline clamping and the newly merged in-flight host-disk admission check before agent launch. Retained both the timeline-release and exhausted startup-suite rerun regressions after combining their shared test fixture parameters.
 
 CI integration repair: the capability-security review fixture now supplies the explicit empty `checkSuites` collection required by the startup-failure gate merged in #4350. All existing review assertions are retained.
+
+## Independent review repairs for PR #4382
+
+The runner now refreshes the session budget and prompt after asynchronous
+preparation, checks the admission floor immediately before spawning, and caps
+the hard watchdog at the absolute finish less the shared kill/WIP reserve.
+Two regressions advance the clock by 60 seconds during prompt-file allocation:
+the 300-second case refuses the resulting 90-second session, and the
+600-second case starts with a 390-second timeout and an updated prompt. Both
+failed against the previous head and now pass.
+
+The default serial claim now shares the pooled finish drain. Its hung-claim
+regression also failed before the repair and passes afterwards. Validation:
+all 7 session-deadline tests, 76 serial/pool/callback/release tests, 13 stdin
+and provider-invocation tests, and 866 manifest checks pass (one manifest test
+ignored). Formatting and lint pass on the four changed TypeScript files.
+The reserve calculation remains shared through `finishSessionReserveSeconds`;
+serial and pooled claims both use `finishDrainBound` and `drainSlots`.

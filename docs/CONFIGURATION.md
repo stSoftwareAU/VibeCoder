@@ -2447,7 +2447,9 @@ Five stages, in the order a claim meets them:
    has at least 61 minutes before the two-hour finish, so a 60-minute budget
    still fits (Issue #4245). The agent session itself is the smaller of that
    budget and finish − now − the kill grace − 120 s, and the user prompt
-   states the finish deadline (Issue #4244).
+   states the finish deadline (Issue #4244). The runner refreshes that budget
+   after preparation, refuses to spawn below the 120 s minimum, and caps the
+   watchdog at the absolute finish less the kill grace and WIP reserve.
 3. **Extensions re-arm that budget while the run is progressing.** On by
    default (Issue #422) — see
    [Progress-extended deadline](#-progress-extended-deadline) for the two
@@ -2462,7 +2464,8 @@ Five stages, in the order a claim meets them:
    supervisor cap (`VIBE_RUN_MAX_SECONDS`, default 10800 s) remains the outer
    kill of the process — see
    [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).
-5. **The drain stops at the finish plus a bounded grace.** `drainSlots` and
+5. **The drain stops at the finish plus a bounded grace.** The default serial
+   claim uses the same bound as pooled claims. `drainSlots` and
    the maintenance-lane drain wait no later than the finish plus the kill
    grace and the 120 s WIP reserve (Issue #4246). At the finish they terminate
    in-flight agents so the execute path can commit and push; a slot still

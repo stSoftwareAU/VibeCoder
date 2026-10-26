@@ -2984,7 +2984,14 @@ async function runIssueScanLoop(
     let processResult;
     try {
       tracker.recordClaimAttempt();
-      processResult = await deps.processIssue(issue, endTime, "serial");
+      processResult = await processSerialIssueWithFinishDrain(
+        issue,
+        endTime,
+        config,
+        deps,
+        callbackGuard,
+      );
+      if (processResult === undefined) return { exitOuterLoop: false };
     } catch (thrown) {
       // Issue #1222: a throw is a terminal run, so it releases its claim —
       // the same unassign-and-clear the ordinary failure path makes. Without
@@ -3662,6 +3669,41 @@ async function releaseClosedReservations(
   return undefined;
 }
 
+/** Await the default serial claim under the same finish bound as pooled claims. */
+async function processSerialIssueWithFinishDrain(
+  issue: DiscoveredIssue,
+  endTime: number,
+  config: RunCoreConfig,
+  deps: RunCoreDeps,
+  callbackGuard: IssueCallbackGuard,
+): Promise<Awaited<ReturnType<RunCoreDeps["processIssue"]>> | undefined> {
+  const finish = finishDrainBound(config.claudeKillAfterSeconds);
+  if (!finish) return await deps.processIssue(issue, endTime, "serial");
+  // This registry describes the one serial claim for the shared drain. It
+  // does not change serial selection or introduce concurrent processing.
+  const registry = new InFlightRepoRegistry(deps.now);
+  registry.tryAcquire(issue.repo, issue.issueNumber, "serial", {
+    milestone: issue.milestoneTitle,
+  });
+  let result: Awaited<ReturnType<RunCoreDeps["processIssue"]>> | undefined;
+  const processing = trackSlotRun((async () => {
+    result = await deps.processIssue(issue, endTime, "serial");
+  })());
+  try {
+    const abandoned = await drainSlots([processing], deps, {
+      registry,
+      callbackGuard,
+      draining: false,
+      // Preserve serial shutdown timing; only the new finish contract bounds
+      // this claim. The outer serial loop still handles ordinary shutdown.
+      shouldShutdown: () => false,
+    }, finish);
+    return abandoned ? undefined : result;
+  } finally {
+    registry.release(issue.repo, issue.milestoneTitle);
+  }
+}
+
 /** Finish instant plus the kill grace and the WIP reserve (Issue #4246). */
 function finishDrainBound(killAfterSeconds: number): {
   finishMs: number;
@@ -3971,9 +4013,12 @@ async function runIssueScanPool(
 async function drainSlots(
   slots: Promise<void>[],
   deps: RunCoreDeps,
-  pool: SlotPoolState,
+  pool: Pick<
+    SlotPoolState,
+    "registry" | "callbackGuard" | "draining" | "shouldShutdown"
+  >,
   finish?: { finishMs: number; drainAtMs: number },
-): Promise<void> {
+): Promise<boolean> {
   // Issue #1815: settle EVERY slot before surfacing a rejection. With
   // `Promise.all` a slot that threw rejected the drain at once and the
   // siblings ran on unawaited — their agents were then terminated at run
@@ -4041,9 +4086,13 @@ async function drainSlots(
     }
     return "drained" as const;
   })();
-  const outcome = await Promise.race([all, watch]);
-  settled = true;
-  if (timer !== undefined) clearTimeout(timer);
+  let outcome;
+  try {
+    outcome = await Promise.race([all, watch]);
+  } finally {
+    settled = true;
+    if (timer !== undefined) clearTimeout(timer);
+  }
   if (outcome === "finish-elapsed" || outcome === "grace-elapsed") {
     // Slot holds only (Issue #213): the maintenance lane's hold is a PR, not
     // a claim to release, and the lane frees its own lease in a `finally`.
@@ -4104,6 +4153,7 @@ async function drainSlots(
       );
     }
   }
+  return outcome !== "drained";
 }
 
 /**

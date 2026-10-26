@@ -310,3 +310,75 @@ Deno.test({
     assertEquals(withTimeline, SYSTEM_PROMPT);
   },
 });
+
+for (const remainingSeconds of [300, 600]) {
+  Deno.test({
+    name:
+      `runClaudeWithTimeout - preparation consumes the finish budget (${remainingSeconds}s remaining)`,
+    permissions: { run: true, read: true, write: true, env: true },
+    ignore: Deno.build.os === "windows",
+    async fn() {
+      resetRunTimelineForTests();
+      const clock = fakeClock(STARTED_MS);
+      const finishMs = STARTED_MS + remainingSeconds * 1000;
+      publishTimeline(finishMs);
+      const lines: string[] = [];
+      const agent = await createAgentStub(recordingStubBody("prepared"), {
+        prefix: "finish_prepare_",
+      });
+      const makeTempFile = Deno.makeTempFile;
+      let preparationDelayed = false;
+      Deno.makeTempFile = async (options) => {
+        const path = await makeTempFile(options);
+        if (options?.prefix === "vibe-agent-prompt-") {
+          preparationDelayed = true;
+          await clock.advance(60_000);
+        }
+        return path;
+      };
+      try {
+        const result = await runClaudeWithTimeout({
+          prompt: USER_PROMPT,
+          systemPrompt: SYSTEM_PROMPT,
+          timeoutSeconds: REQUESTED_TIMEOUT_SECONDS,
+          killAfterSeconds: KILL_AFTER_SECONDS,
+          clock,
+          agentBinaryPath: agent.path,
+          logger: capturingLogger(lines),
+        });
+        assert(
+          preparationDelayed,
+          "the async prompt-file setup must consume time",
+        );
+        assert(result.ok);
+        if (!result.ok) return;
+        if (remainingSeconds === 300) {
+          assertEquals(result.value.finishDeadline, true);
+          assertEquals(result.value.timedOut, true);
+          let spawned = false;
+          try {
+            await Deno.stat(`${agent.dir}/prepared.argv`);
+            spawned = true;
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+          assertEquals(
+            spawned,
+            false,
+            "90 usable seconds is below the session floor",
+          );
+        } else {
+          const running = lines.find((line) => line.startsWith("Running ")) ??
+            "";
+          assertStringIncludes(running, "with 390s timeout");
+          const prompt = await Deno.readTextFile(`${agent.dir}/prepared.stdin`);
+          assertStringIncludes(prompt, "540 seconds remaining");
+        }
+      } finally {
+        Deno.makeTempFile = makeTempFile;
+        await agent.dispose();
+        resetRunTimelineForTests();
+      }
+    },
+  });
+}

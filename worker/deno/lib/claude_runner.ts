@@ -34,6 +34,7 @@ import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import {
   appendFinishDeadlinePrompt,
   clampTimeoutToFinishDeadline,
+  finishSessionReserveSeconds,
   getRunTimeline,
   MIN_AGENT_SESSION_SECONDS,
 } from "./run_timeline.ts";
@@ -1208,7 +1209,7 @@ async function runClaudeWithTimeoutBody(
   // asked. The line is appended to the user prompt only — the system prompt
   // is the cached prefix and is not touched.
   const timeline = getRunTimeline();
-  const finishClamp = timeline
+  let finishClamp = timeline
     ? clampTimeoutToFinishDeadline({
       requestedTimeoutSeconds: timeoutSeconds,
       killAfterSeconds,
@@ -1216,27 +1217,30 @@ async function runClaudeWithTimeoutBody(
       timeline,
     })
     : undefined;
-  const userPrompt = finishClamp
+  let userPrompt = finishClamp
     ? appendFinishDeadlinePrompt(prompt, finishClamp)
     : prompt;
-  const sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
-  if (finishClamp?.belowFloor) {
+  let sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
+  const finishRefusal = () => {
     logger?.info(
-      `claude_timeout=${sessionTimeoutSeconds} (clamped to finish deadline ${finishClamp.finishIso}) — ` +
+      `claude_timeout=${sessionTimeoutSeconds} (clamped to finish deadline ${
+        finishClamp!.finishIso
+      }) — ` +
         `below ${MIN_AGENT_SESSION_SECONDS}s, not spawning the agent`,
     );
     return {
-      ok: true,
+      ok: true as const,
       value: {
         exitCode: TIMEOUT_EXIT_CODE,
         output: "",
         stderr: "",
         timedOut: true,
-        timeoutReason: "hard-timeout",
+        timeoutReason: "hard-timeout" as const,
         finishDeadline: true,
       },
     };
-  }
+  };
+  if (finishClamp?.belowFloor) return finishRefusal();
 
   // An agent in a checkout runs cargo and deno. Below the floor it does not
   // start (Issue #4360). No checkout means there is no build to bound, and
@@ -1309,7 +1313,7 @@ async function runClaudeWithTimeoutBody(
       options.settingsJson ? JSON.parse(options.settingsJson) : undefined,
     ),
   };
-  const args = provider.buildInvocation({
+  let args = provider.buildInvocation({
     ...invocationRequest,
     promptViaStdin,
   });
@@ -1340,11 +1344,11 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   }
-  const stdinPayload = promptViaStdin
+  let stdinPayload = promptViaStdin
     ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
     : userPrompt;
 
-  const timeoutMs = sessionTimeoutSeconds * 1000;
+  let timeoutMs = sessionTimeoutSeconds * 1000;
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
 
   let timedOut = false;
@@ -1459,6 +1463,34 @@ async function runClaudeWithTimeoutBody(
     }
     prePushHook = hookOutcome.value;
 
+    if (promptViaStdin) {
+      promptFilePath = await Deno.makeTempFile({
+        prefix: "vibe-agent-prompt-",
+        suffix: ".md",
+      });
+    }
+    // Setup can consume the remaining runway. Refresh only after every
+    // awaited preparation step, then render the invocation from that budget.
+    finishClamp = timeline
+      ? clampTimeoutToFinishDeadline({
+        requestedTimeoutSeconds: timeoutSeconds,
+        killAfterSeconds,
+        nowMs: clock.now(),
+        timeline,
+      })
+      : undefined;
+    sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
+    timeoutMs = sessionTimeoutSeconds * 1000;
+    if (finishClamp?.belowFloor) return finishRefusal();
+    userPrompt = finishClamp
+      ? appendFinishDeadlinePrompt(prompt, finishClamp)
+      : prompt;
+    invocationRequest.prompt = userPrompt;
+    args = provider.buildInvocation({ ...invocationRequest, promptViaStdin });
+    stdinPayload = promptViaStdin
+      ? (provider.stdinBody?.(invocationRequest) ?? userPrompt)
+      : userPrompt;
+
     // Issue #324: run the agent at a lower scheduler priority.
     //
     // On 2026-08-22 two agents each wrote an unbounded bash busy-wait — one
@@ -1536,15 +1568,10 @@ async function runClaudeWithTimeoutBody(
     // Wall-clock start for per-run stats (Issue #2647). Measured around the
     // whole subprocess lifetime; used as the duration fallback when the CLI
     // result line does not report its own `duration_ms`.
-    if (promptViaStdin) {
-      // Written before the spawn so the file exists for the whole run; a
-      // kill mid-stream leaves it for post-mortem when the transcript tee
-      // is on, otherwise it is removed with the run.
-      promptFilePath = await Deno.makeTempFile({
-        prefix: "vibe-agent-prompt-",
-        suffix: ".md",
-      });
-      await Deno.writeTextFile(promptFilePath, stdinPayload);
+    if (promptViaStdin && promptFilePath) {
+      // Finalise the already allocated file without an await between the
+      // refreshed budget and spawn. It remains inspectable for the run.
+      Deno.writeTextFileSync(promptFilePath, stdinPayload);
       logger?.info(
         `Prompt file: ${promptFilePath} (${
           new TextEncoder().encode(stdinPayload).length
@@ -1552,6 +1579,21 @@ async function runClaudeWithTimeoutBody(
       );
     }
     const startMs = clock.now();
+    // Even synchronous prompt I/O can consume time. Refuse if it crossed the
+    // admission floor; the absolute deadline below also bounds shorter delays.
+    if (timeline) {
+      const spawnClamp = clampTimeoutToFinishDeadline({
+        requestedTimeoutSeconds: timeoutSeconds,
+        killAfterSeconds,
+        nowMs: startMs,
+        timeline,
+      });
+      if (spawnClamp.belowFloor) {
+        finishClamp = spawnClamp;
+        sessionTimeoutSeconds = spawnClamp.timeoutSeconds;
+        return finishRefusal();
+      }
+    }
     const child = spawnCommandWithTimeout(spawnBinary, {
       args: spawnArgs,
       cwd,
@@ -1800,7 +1842,13 @@ async function runClaudeWithTimeoutBody(
     // The hard deadline, epoch-ms (Issue #4296). Without the opt-in it is
     // `startMs + timeoutMs` for the whole run and every figure below reduces
     // to what it was; with it, each granted extension moves it forward.
-    let deadlineMs = startMs + timeoutMs;
+    let deadlineMs = Math.min(
+      startMs + timeoutMs,
+      timeline
+        ? timeline.finishMs -
+          finishSessionReserveSeconds(killAfterSeconds) * 1000
+        : Infinity,
+    );
     let extensionsGranted = 0;
     let extensionInFlight = false;
     const extension = options.progressExtension;

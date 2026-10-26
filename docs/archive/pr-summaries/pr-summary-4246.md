@@ -51,3 +51,18 @@ Version bump: not applicable — no `deno.json` version change.
 - `worker/deno/tests/run_core_slot_pool_test.ts` filtered to `Issue #4246` — 2 passed, 0 failed, including the `waiting up to 0s` tail and no sleep of 300 s or more. The two existing `shutdown grace` tests in the same file passed (2 passed, 0 failed).
 - Twins: `drainSlots` and `raceShutdownGrace` in `worker/deno/lib/run_core.ts`, both calling `finishDrainBound`. The abandon callback uses `result: "success"`; the shutdown callback still uses `result: "failure"`. The checkpoint the drain waits for is `startWipCheckpoints` in `worker/deno/lib/wip_checkpoint.ts`, which the resume test calls directly because `processIssue` is mocked.
 - `worker/deno/lib/vibe_env_registry.ts` keeps a single `VIBE_HARD_KILL_AT_EPOCH` entry, the Issue #4247 note. The second entry from the milestone merge is removed. It does not change the drain.
+
+## Independent review repair for PR #4382
+
+The original finish watcher covered pooled claims but missed the default
+single-claim path. The serial path now awaits its claim through the shared
+bounded drain, while retaining serial selection and ordinary shutdown timing.
+At the finish it terminates the agent, releases a claim still running after
+grace, fires the success/always hooks once, and reaches the normal cycle exit.
+The shared drain also clears its watcher if processing rejects.
+
+The hung-claim regression now covers slot counts 1 and 2 with all existing
+release, callback, heartbeat and zero-tail-grace assertions. The serial case
+failed against the previous head and passes after the repair. All 76
+slot-pool, thrown-release and callback tests pass, as do the 866 manifest
+checks (one ignored). Formatting and lint pass.
