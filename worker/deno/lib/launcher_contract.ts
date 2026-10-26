@@ -52,6 +52,17 @@ export const LAUNCH_PLAN_KEYS: readonly ContainerLaunchPlanKey[] = [
   // would run the standard image under the extension's tag on a deployment
   // that configures one — the same parity fault as dropping any other key.
   "extension-build",
+  // The egress sidecar (Issue #4047). A launcher that drops one of these
+  // either starts the worker on the open network or refuses a plan it cannot
+  // read. Both are parity faults.
+  "egress-enforced",
+  "network-create",
+  "network-remove",
+  "network-connect",
+  "proxy-run",
+  "proxy-stop",
+  "proxy-name",
+  "proxy-bundle",
   "run",
 ];
 

@@ -44,6 +44,19 @@ import {
   RUN_MODE_ENV,
   RUN_MODES,
 } from "../lib/run_mode.ts";
+import {
+  BUILTIN_EGRESS_RULES,
+  IMGBB_EGRESS_RULES,
+  PROVIDER_EGRESS_RULES,
+} from "../lib/egress_allowlist.ts";
+import { EGRESS_ALLOW_HOSTS_ENV } from "../commands/egress_proxy.ts";
+import { formatEgressDenial } from "../lib/egress_proxy.ts";
+import {
+  assertPins,
+  flat,
+  readRepoDoc,
+  section as docSection,
+} from "./support/markdown_docs.ts";
 
 // tests/ → worker/deno/ → worker/ → repo root
 function repoPath(relative: string): URL {
@@ -234,6 +247,210 @@ Deno.test("CONTAINMENT.md's network boundary matches the launch plan", () => {
     assert(
       body.toLowerCase().includes(claim),
       `the network-boundary section must cover "${claim}"`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// docs/CONTAINMENT.md — the egress allowlist (Issue #4045)
+// ---------------------------------------------------------------------------
+
+/** Hosts in the first column of the section's table rows: lines starting `| \`host\``. */
+function documentedEgressHosts(body: string): Set<string> {
+  const hosts = new Set<string>();
+  for (const line of body.split("\n")) {
+    const host = line.match(/^\| `([^`]+)`/)?.[1];
+    if (host !== undefined) hosts.add(host);
+  }
+  return hosts;
+}
+
+Deno.test("CONTAINMENT.md's egress allowlist lists exactly the module's hosts", () => {
+  const moduleHosts = new Set<string>([
+    ...BUILTIN_EGRESS_RULES.map((rule) => rule.host),
+    ...Object.values(PROVIDER_EGRESS_RULES).flat().map((rule) => rule.host),
+    ...IMGBB_EGRESS_RULES.map((rule) => rule.host),
+  ]);
+  const docHosts = documentedEgressHosts(
+    section(read("docs/CONTAINMENT.md"), "Egress allowlist"),
+  );
+  const missingFromDoc = [...moduleHosts].filter((host) => !docHosts.has(host))
+    .sort();
+  const missingFromModule = [...docHosts].filter((host) =>
+    !moduleHosts.has(host)
+  ).sort();
+  assert(
+    missingFromDoc.length === 0 && missingFromModule.length === 0,
+    `egress allowlist drift — hosts missing from docs/CONTAINMENT.md: ` +
+      `[${missingFromDoc.join(", ")}]; hosts missing from ` +
+      `worker/deno/lib/egress_allowlist.ts: [${missingFromModule.join(", ")}]`,
+  );
+});
+
+Deno.test("CONTAINMENT.md enforces the egress allowlist on Docker and Podman (Issue #4050)", () => {
+  const body = section(read("docs/CONTAINMENT.md"), "Egress allowlist");
+  const network = section(read("docs/CONTAINMENT.md"), "network boundary");
+  const whole = read("docs/CONTAINMENT.md");
+  assert(
+    body.includes("#4047"),
+    "the egress-allowlist section must name #4047 as the launch that routes the container through the proxy",
+  );
+  assert(
+    body.includes("#4051"),
+    "the egress-allowlist section must describe Apple partial containment",
+  );
+  assert(
+    !body.includes("nothing enforces it yet"),
+    "the egress-allowlist section must not say the list is unenforced",
+  );
+  assert(
+    !whole.includes(
+      "Fine-grained outbound allowlisting is deliberately out of scope",
+    ),
+    "CONTAINMENT.md must not call outbound allowlisting out of scope",
+  );
+  assert(
+    !network.toLowerCase().includes("out of scope"),
+    "the network boundary must not call filtering out of scope",
+  );
+  assert(
+    network.includes("#4051"),
+    "the network boundary must describe Apple partial containment",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// docs/CONTAINMENT.md — the egress proxy (Issue #4046)
+// ---------------------------------------------------------------------------
+
+/** The egress proxy module the section names, as a repo-relative path. */
+const EGRESS_PROXY_DOC_PATH = "worker/deno/lib/egress_proxy.ts";
+
+/**
+ * The denial marker the docs quote, taken from the module: everything before
+ * the host in a denial line, which is `[EGRESS_DENIED] host=`.
+ */
+const EGRESS_DENIAL_MARKER = (() => {
+  const sample = formatEgressDenial("docs.example", 443, "method");
+  return sample.slice(0, sample.indexOf("docs.example"));
+})();
+
+Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 will extend", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  for (
+    const phrase of [
+      "#3699",
+      "no second outbound proxy",
+      EGRESS_DENIAL_MARKER,
+      EGRESS_ALLOW_HOSTS_ENV,
+      EGRESS_PROXY_DOC_PATH,
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must include "${phrase}"`,
+    );
+  }
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section routes Docker and Podman through the proxy (Issue #4050)", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  for (
+    const phrase of [
+      "#4047",
+      "Docker and Podman route the worker through this proxy",
+      "#4051",
+      "measured partial containment",
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must describe the Docker/Podman route and the Apple gap (missing "${phrase}")`,
+    );
+  }
+  assert(
+    !body.includes("The container is not routed through it yet"),
+    "the egress-proxy section must not say no container is routed through the proxy",
+  );
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section states the proxy opens no files, keeps no cache and needs --allow-read --allow-env --allow-net", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  for (
+    const phrase of [
+      "opens no files and keeps no cache",
+      "--allow-read --allow-env --allow-net",
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must state "${phrase}" (missing from the section)`,
+    );
+  }
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section names a module that exists", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  assert(
+    body.includes(EGRESS_PROXY_DOC_PATH),
+    `the egress-proxy section must name "${EGRESS_PROXY_DOC_PATH}"`,
+  );
+  const info = await Deno.stat(repoPath(EGRESS_PROXY_DOC_PATH));
+  assert(info.isFile, `"${EGRESS_PROXY_DOC_PATH}" must be a file`);
+});
+
+Deno.test("CONTAINMENT.md describes #3699 as planned, not delivered", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  assertPins(body, [
+    "#3699 will extend this proxy through this seam",
+    "not yet delivered",
+    "no second outbound proxy",
+    "seam #3699's credential broker will attach to",
+  ]);
+  assert(
+    !flat(body).includes("#3699 extends this proxy"),
+    "the egress-proxy section must not present #3699 as having extended the proxy",
+  );
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section says which refusals get a 403 and how idle connections close", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  assertPins(body, [
+    "Every refusal except `idle-timeout` is also answered with HTTP `403`",
+    "An `idle-timeout` refusal closes the socket without a 403",
+    "Idle before the upstream is dialled gets the `idle-timeout` line and no 403",
+    "An idle established tunnel is closed on both ends with no log line",
+    "A route that takes a client after `200` owns that connection, so this idle guard does not bound it",
+    "the proxy dials nothing for a route",
+  ]);
+  const rows = tableRows(body).filter((cells) => cells[0] !== "Reason class");
+  assert(rows.length > 0, "the egress-proxy section must carry a reason table");
+  for (const cells of rows) {
+    const expected = cells[0] === "`idle-timeout`"
+      ? "no, the socket is closed"
+      : "yes";
+    assertEquals(
+      cells[2],
+      expected,
+      `the 403 column for ${cells[0]} must read "${expected}"`,
     );
   }
 });

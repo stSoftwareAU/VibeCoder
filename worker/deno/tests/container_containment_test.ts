@@ -1,3 +1,4 @@
+import { appleWorkerArgs } from "../lib/apple_egress_launch.ts";
 /**
  * Containment integration tests (Issue #4071, parent #4060).
  *
@@ -62,6 +63,10 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { GH_CREDENTIAL_SUBDIR } from "../lib/credential_preflight.ts";
 import { isAtOrAbove } from "../lib/host_path_style.ts";
+import {
+  startEgressSidecar,
+  stopEgressSidecar,
+} from "../lib/egress_sidecar.ts";
 
 const REPO_ROOT = new URL(import.meta.url).pathname.replace(
   /\/worker\/deno\/tests\/[^/]+$/,
@@ -537,6 +542,9 @@ async function buildHostFixture(
     hostPaths,
     volumes,
     customPromptPaths: [customPromptFile],
+    // The fixture checkout is synthetic and has no worker/deno. The proxy
+    // sidecar packs the real repository (Issue #4047).
+    repoRoot: REPO_ROOT,
   });
 
   // The volume lifecycle, exactly as run.sh performs it: create what is
@@ -974,6 +982,19 @@ Deno.test({
       await Deno.writeTextFile(scriptPath, PROBE_SCRIPT);
       await Deno.chmod(scriptPath, 0o755);
 
+      // The worker container joins the internal network, so the proxy has to
+      // be up first. Apple returns its inspected proxy address (#4051).
+      const proxyAddress = await startEgressSidecar(fixture.plan);
+      if (proxyAddress) {
+        const proxy = `http://${proxyAddress.address}:3128`;
+        fixture.plan.runArgs = appleWorkerArgs(fixture.plan.runArgs, {
+          HTTP_PROXY: proxy,
+          HTTPS_PROXY: proxy,
+          http_proxy: proxy,
+          https_proxy: proxy,
+        });
+      }
+
       const probeRun = await runRuntime(
         context.descriptor.executable,
         runArgsWithProbe(
@@ -1207,6 +1228,10 @@ Deno.test({
         },
       );
     } finally {
+      const sidecarProblems = await stopEgressSidecar(fixture.plan);
+      for (const problem of sidecarProblems) {
+        console.warn(`egress sidecar cleanup: ${problem}`);
+      }
       for (const name of fixture.volumeNames) {
         const removed = await runRuntime(
           context.descriptor.executable,

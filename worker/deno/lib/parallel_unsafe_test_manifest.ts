@@ -283,6 +283,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // source lines and diffs; only a growth measurement separates their linear
   // patterns from a backtracking one (Issue #3779).
   "tests/caller_checks_3779_test.ts",
+  // The egress allowlist validator matches host patterns against untrusted
+  // config entries; only a growth measurement separates those linear
+  // patterns from a backtracking one on hostile runs (#4045).
+  "tests/egress_allowlist_test.ts",
   // A grandchild that holds the output pipes must not hold the call past its
   // timeout; only the elapsed time against the timeout shows the pipes were
   // cancelled rather than drained (Issue #4247).
