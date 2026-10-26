@@ -599,6 +599,9 @@ meanings.
 
 ### Files written per launch
 
+A launch that gets as far as its probes writes the following. A bring-up failure
+before the probes run can leave no report, and the launcher's error says why.
+
 - `egress-controls.json` in the log directory: the schema, the launch, the
   runtime (executable, version and macOS), `selectedMode`, `effectiveMode`, the
   `controls`, `regressions`, `acceptedGaps` and the `outcome`, which is

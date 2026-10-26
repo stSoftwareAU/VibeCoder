@@ -1177,7 +1177,7 @@ export async function bringUpAppleEgress(
     }
 
     const { report } = result;
-    if (report.regressions.length === 0 || attempt === total) {
+    if (report.regressions.length === 0) {
       await persistReport(deps, options.reportDir, report, "launched");
       for (const line of formatStartupReport(report)) deps.log(line);
       deps.log(summariseEgressControls(report));
