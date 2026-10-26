@@ -474,7 +474,7 @@ for arg in "\$@"; do
     */apple_egress_launch_main.ts)
       # Keep generic launcher tests inside the stubbed runtime boundary.
       # Preserve the real parsed worker argv for the parity assertions.
-      exec "\${VIBE_REAL_DENO}" run --allow-read --allow-write --allow-env \
+      exec "\${VIBE_REAL_DENO}" run --allow-read --allow-write --allow-env --allow-run \
         "${appleSupervisor}" "\${@: -4}"
       ;;
     worker-checkout-update)

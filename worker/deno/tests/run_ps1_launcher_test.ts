@@ -35,6 +35,7 @@ import { formatReleaseNotice } from "../lib/release_notice.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
+import { appleChildOutput } from "../lib/apple_egress_launch.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   buildCount,
@@ -387,7 +388,9 @@ Deno.test({
       // The launcher is still alive while the container runs — it did not
       // replace itself with the runtime — so terminating it is observable.
       child.kill("SIGTERM");
-      const output = await child.output();
+      // The supervisor must also release inherited pipes after parent death.
+      // A leaked fixture must fail this assertion instead of hanging the gate.
+      const output = await appleChildOutput(child, undefined, 15_000);
 
       assert(
         output.code !== 0,
