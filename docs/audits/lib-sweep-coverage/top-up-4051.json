@@ -1,0 +1,13 @@
+{
+  "issue": 4051,
+  "chunk": "top-up-4051",
+  "title": "Apple measured egress controls and lifecycle adapter",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4051",
+  "definition": "Apple egress control results require matching reachable negative controls; unknown probes stay unknown. The launch adapter validates capabilities, isolates own resource names, selects explicit modes, and bounds retries without falling back. Shared allowlist, proxy, subprocess timeout and startup gate are reused. No credential mounts, model calls or GitHub writes.",
+  "status": "claimed",
+  "sweptAt": "1a51ee04adbfc05cf50bdfc8e2b97a1f63b3e7fd",
+  "paths": [
+    "worker/deno/lib/apple_egress_controls.ts",
+    "worker/deno/lib/apple_egress_launch.ts"
+  ]
+}

@@ -39,15 +39,15 @@ flowchart LR
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-The diagram is the Docker and Podman path after G2. Apple container is not
-enforced yet (#4051) and is not drawn here.
+The diagram is the Docker and Podman path after G2. Apple container uses
+the same proxy with measured partial containment and a host/LAN gap (#4051).
 
 ## Mapping
 
 | Harness capability                                                 | VibeCoder status                                                                                        | Where                                                           |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | Hardware-virtualised sandbox, one microVM per agent                | Partial: hardened container on Docker/Podman; own VM only on Apple `container`. No escape test recorded | `container_runtime.ts`, `container_launch.ts`, THREAT-MODEL C22 |
-| Egress denied by default, with an allowlist                        | Delivered on Docker and Podman. Apple container is not yet enforced (#4051)                            | `container_runtime.ts`, `container_launch.ts`, `egress_proxy.ts` |
+| Egress denied by default, with an allowlist                        | Delivered on Docker and Podman. Apple container has measured partial containment and a host/LAN gap (#4051)                            | `container_runtime.ts`, `container_launch.ts`, `egress_proxy.ts` |
 | No credential-bearing mounts; credential added by an outside proxy | Gap: credentials are readable in the container                                                          | THREAT-MODEL R9, R11                                            |
 | Auto permission mode as an extra check                             | Skipped: the container is the permission boundary                                                       | `agent_provider.ts:604`                                         |
 | Turn and run-time limits                                           | Partial: run-time limit only                                                                            | `config.ts:604-605`                                             |
@@ -108,8 +108,8 @@ enforced yet (#4051) and is not drawn here.
 - **Delivered:** Docker and Podman attach the worker to an internal network
   and route it through the allowlist proxy (`container_launch.ts`,
   `container_runtime.ts`, `egress_proxy.ts`, `egress_selfcheck.ts`; Issues
-  #4045, #4046, #4047 and #4048). Apple container is not yet enforced (#4051).
-- **Verdict:** delivered for Docker and Podman. Apple remains open (#4051).
+  #4045, #4046, #4047 and #4048). Apple container has measured partial containment and a host/LAN gap (#4051).
+- **Verdict:** delivered for Docker and Podman. Apple partial containment is delivered with measured residual gaps (#4051); it is not complete default-deny enforcement.
   The parent follow-up was #3698.
 
 ### G3 — Credentials — **ADOPT**
@@ -190,7 +190,7 @@ Both risks stay related to G2, and R9 and R11 stay open until #3699.
    containment validation must be automated and unattended; coverage remains
    unproven until actual evidence is recorded.
 3. G2 Network — DELIVERED for Docker and Podman: default-deny egress through
-   the allowlist proxy. Apple container is not yet enforced (#4051).
+   the allowlist proxy. Apple container has measured partial containment and a host/LAN gap (#4051).
 4. G3 Credentials — ADOPT: keep credentials out of the agent's reach (#3699).
 5. G4 Permissions — SKIP: the container is the permission boundary.
 6. G5 Run limits — ADOPT: per-run turn cap (#3701).

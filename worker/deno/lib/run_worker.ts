@@ -797,9 +797,10 @@ ${credentialFailure}`);
     // Step 4.56: Prove egress before the first claim (Issue #4048). An
     // enforcing runtime that cannot show the policy is holding exits before
     // the prompt check and before GitHub user resolution, so nothing is
-    // claimed. Apple container warns and continues (Issue #4051).
+    // claimed. Apple enforces its selected partial promises and reports accepted
+    // host/DNS gaps separately (Issue #4051).
     const egress = await deps.checkEgress({ env });
-    await appendRunCoreLogLine(logDir, egress.record);
+    await appendRunCoreLogLine(logDir, egress.record, egress.requireRecord);
     if (egress.warning) deps.logError(`[run-worker] ${egress.warning}`);
     if (egress.exitCode !== 0) {
       const reason = egress.marker ??

@@ -280,7 +280,7 @@ function Start-EgressSidecar {
     $script:EgressNetworkCreated = $true
     & $Runtime @($ProxyStopArgs) *> $null
     $script:EgressProxyBundleFile = Join-Path ([System.IO.Path]::GetTempPath()) "vibe-egress-$PID.tar"
-    & tar -C $ProxyBundle -cf $script:EgressProxyBundleFile worker/deno
+    & tar -C $ProxyBundle --no-xattrs --exclude=worker/deno/tests --exclude=._* -cf $script:EgressProxyBundleFile worker/deno
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine(
             "Error: could not pack the egress proxy source - refusing to launch")
@@ -333,6 +333,14 @@ function Get-VibeVar {
 }
 
 function Remove-EgressSidecar {
+    $appleProcess = Get-VibeVar AppleEgressProcess
+    if ($appleProcess) {
+        if (-not $appleProcess.HasExited) {
+            & /bin/kill -TERM $appleProcess.Id 2>$null
+            if (-not $appleProcess.WaitForExit(60000)) { $appleProcess.Kill() }
+        }
+        Remove-Item -LiteralPath "$PlanFile.apple-ready" -Force -ErrorAction SilentlyContinue
+    }
     $runtime = Get-VibeVar Runtime
     $proxyName = Get-VibeVar ProxyName
     $logDir = Get-VibeVar LogDir_
@@ -379,6 +387,7 @@ function Exit-Launcher {
     # The comment-stripped Containerfile beside the plan file (Issue #4393)
     # must not outlive the launcher on any exit path.
     if ($PlanFile) {
+        Remove-Item -LiteralPath $PlanFile -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath "$PlanFile.Containerfile" -Force -ErrorAction SilentlyContinue
     }
     # Removed after the record, never before it: the recorder quotes this
@@ -839,7 +848,10 @@ try {
         }
     }
 } finally {
-    Remove-Item -LiteralPath $PlanFile -Force -ErrorAction SilentlyContinue
+    # The Apple supervisor consumes the same plan immediately before launch.
+    if (-not ($EgressEnforced -eq "false" -and $ProxyName)) {
+        Remove-Item -LiteralPath $PlanFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if (-not $Runtime -or -not $Image -or -not $KeepImages -or
@@ -1571,6 +1583,32 @@ try {
 # fallback onto the runtime's open network (Issue #4047).
 if ($EgressEnforced -eq "true") {
     Start-EgressSidecar
+} elseif ($ProxyName) {
+    $appleInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $appleInfo.FileName = $DenoCmd
+    $appleInfo.UseShellExecute = $false
+    foreach ($argument in @(
+        "run", "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+        "--allow-env", "--allow-read", "--allow-write", "--allow-run", "--allow-net", "--allow-sys",
+        "$BaseDir/worker/deno/apple_egress_launch_main.ts",
+        $PlanFile, "$PlanFile.apple-ready", $LogDir_, "$PID"
+    )) { [void]$appleInfo.ArgumentList.Add($argument) }
+    $script:AppleEgressProcess = [System.Diagnostics.Process]::Start($appleInfo)
+    for ($i = 0; $i -lt 1500; $i++) {
+        if (Test-Path -LiteralPath "$PlanFile.apple-ready") { break }
+        if ($script:AppleEgressProcess.HasExited) {
+            [Console]::Error.WriteLine("Error: Apple egress setup failed; refusing to launch")
+            Exit-Launcher 90
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    if (-not (Test-Path -LiteralPath "$PlanFile.apple-ready")) {
+        [Console]::Error.WriteLine("Error: Apple egress setup timed out; refusing to launch")
+        Exit-Launcher 90
+    }
+    $RunArgs.Clear()
+    $readyArgs = [System.IO.File]::ReadAllText("$PlanFile.apple-ready").Split([char]0)
+    for ($i = 0; $i -lt $readyArgs.Length - 1; $i++) { $RunArgs.Add($readyArgs[$i]) }
 }
 
 $runInfo = [System.Diagnostics.ProcessStartInfo]::new()

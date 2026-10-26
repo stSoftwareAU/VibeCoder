@@ -41,8 +41,10 @@ the implementation reference for each control the model names.
 
 Network egress (threat-model control C35) is default-deny on Docker and
 Podman: the worker reaches the network only through the allowlist proxy. The
-gap-analysis item G2 is delivered for those runtimes. Apple container is not
-yet enforced (Issue #4051). C12 and C13 are gh-write controls only; they do
+gap-analysis item G2 is delivered for those runtimes. Apple container has
+measured partial containment (Issue #4051), including the shared proxy and
+actual-worker startup checks. Host/LAN access remains a gap; unavailable
+IPv6/DNS probes remain unknown. It is never labelled fully enforced. C12 and C13 are gh-write controls only; they do
 not control general egress.
 
 The GhostCommit image-injection surface has its own pair of reports: the
@@ -2084,7 +2086,7 @@ What follows is what an **operator** does about them:
 | Worker-token compromise includes trust resolution (R8) | Scope the token to the monitored repos; add `read:org` only when `exclusion_team` is set; rotate on suspicion. A fetch failure skips the cycle (it does not widen trust), but a successful fetch as the attacker does. |
 | The agent guard is containment, not a sandbox (R1) | Watch for `[WRITE_REPO_BLOCKED]` and `[GH_GUARD_SHIM_UNAVAILABLE]` in the security log; never set `VIBE_ALLOW_UNGUARDED_AGENT_GH` on a host that processes public repositories |
 | A stale checkout can still run a removed host mode (R5) | Keep every fleet host on current code: container is the only run mode (Issue #4), a configuration naming `native` or `seatbelt` fails loud, and the green-gate report flags any host-mode launch record |
-| Repository-supplied build scripts execute (R6) | Only monitor repositories whose quality gate you are willing to run on your host. On Docker and Podman the worker's network is the allowlist proxy (C35); Apple container is not yet enforced (Issue #4051) |
+| Repository-supplied build scripts execute (R6) | Only monitor repositories whose quality gate you are willing to run on your host. On Docker and Podman the worker's network is the allowlist proxy (C35); Apple container has measured partial containment with a host/LAN gap (Issue #4051) |
 | A readable credential can still leave through an allowlisted host (R9, R11) | General egress is default-deny on Docker and Podman. The credential files are still readable. Treat gists, comments, pushes, package registries and an allowlisted `storage.googleapis.com` as paths a stolen token can use until #3699 removes that access |
 | Context window pressure from trusted comments | Keep discussion focused; use separate channels for extended conversations about implementation details |
 

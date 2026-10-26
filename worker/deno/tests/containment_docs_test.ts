@@ -297,7 +297,7 @@ Deno.test("CONTAINMENT.md enforces the egress allowlist on Docker and Podman (Is
   );
   assert(
     body.includes("#4051"),
-    "the egress-allowlist section must say Apple container is not yet enforced",
+    "the egress-allowlist section must describe Apple partial containment",
   );
   assert(
     !body.includes("nothing enforces it yet"),
@@ -315,7 +315,7 @@ Deno.test("CONTAINMENT.md enforces the egress allowlist on Docker and Podman (Is
   );
   assert(
     network.includes("#4051"),
-    "the network boundary must say Apple container is not yet enforced",
+    "the network boundary must describe Apple partial containment",
   );
 });
 
@@ -366,7 +366,7 @@ Deno.test("CONTAINMENT.md's egress proxy section routes Docker and Podman throug
       "#4047",
       "Docker and Podman route the worker through this proxy",
       "#4051",
-      "not routed through it yet",
+      "measured partial containment",
     ]
   ) {
     assert(

@@ -291,7 +291,7 @@ Deno.test("the enforced network paths table names every path, including Apple (I
       "worker/deno/tests/container_egress_probe.ts",
       "Image builds",
       "Apple container",
-      "Not yet enforced",
+      "Measured partial containment",
       "#4051",
     ]
   ) {
@@ -311,8 +311,8 @@ Deno.test("gap analysis G2 is delivered for Docker and Podman and not for Apple 
   );
   assert(body.includes("#4051"), "G2 must keep Apple container open");
   assert(
-    read("SECURITY.md").includes("Apple container is not yet enforced"),
-    "SECURITY.md must not claim Apple containment",
+    read("SECURITY.md").includes("measured partial containment"),
+    "SECURITY.md must distinguish Apple partial containment",
   );
 });
 

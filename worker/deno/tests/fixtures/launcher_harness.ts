@@ -452,6 +452,9 @@ function denoStubSource(full: boolean): string {
   const planMutator = decodeURIComponent(
     new URL("./egress_plan_mutator.ts", import.meta.url).pathname,
   );
+  const appleSupervisor = decodeURIComponent(
+    new URL("./apple_egress_supervisor_stub.ts", import.meta.url).pathname,
+  );
   return `#!/bin/bash
 set -u
 record_dir="\${VIBE_STUB_RECORD}"
@@ -468,6 +471,12 @@ ${
 done
 for arg in "\$@"; do
   case "\${arg}" in
+    */apple_egress_launch_main.ts)
+      # Keep generic launcher tests inside the stubbed runtime boundary.
+      # Preserve the real parsed worker argv for the parity assertions.
+      exec "\${VIBE_REAL_DENO}" run --allow-read --allow-write --allow-env \
+        "${appleSupervisor}" "\${@: -4}"
+      ;;
     worker-checkout-update)
       # Never really git-reset this repository (Issue #512).
       printf '%s\\0' "\$@" > "\${record_dir}/worker-checkout-update.args"

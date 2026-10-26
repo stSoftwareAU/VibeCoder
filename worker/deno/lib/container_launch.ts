@@ -1081,9 +1081,10 @@ function runtimeVersionToken(raw: string | undefined): string {
  *
  * An enforcing dialect with no outbound network, or an allowlist that cannot
  * be passed as one environment value, refuses the launch. Apple container
- * gets the enforcement flag and nothing else (Issue #4051).
+ * uses the same proxy and an inspected address without a full-enforcement claim
+ * (Issue #4051).
  */
-function buildEgressLaunch(input: {
+export function buildEgressLaunch(input: {
   descriptor: ContainerRuntimeDescriptor;
   containerName: string;
   image: string;
@@ -1097,7 +1098,8 @@ function buildEgressLaunch(input: {
     [EGRESS_RUNTIME_KIND_ENV, input.descriptor.kind],
     [EGRESS_RUNTIME_VERSION_ENV, version],
   ];
-  if (!input.descriptor.dialect.egressEnforced) {
+  const apple = input.descriptor.kind === "apple-container";
+  if (!input.descriptor.dialect.egressEnforced && !apple) {
     return {
       egressEnforced: false,
       networkCreateArgs: [],
@@ -1114,7 +1116,7 @@ function buildEgressLaunch(input: {
   if (
     dialect.internalNetworkCreateArgs.length === 0 ||
     dialect.networkRemoveArgs.length === 0 ||
-    dialect.networkConnectArgs.length === 0 ||
+    (!apple && dialect.networkConnectArgs.length === 0) ||
     dialect.outboundNetwork === undefined ||
     dialect.outboundNetwork.trim() === ""
   ) {
@@ -1158,7 +1160,11 @@ function buildEgressLaunch(input: {
       "Refusing to launch: no repository root to pack into the egress proxy.",
     );
   }
-  const proxyUrl = `http://${proxyName}:${EGRESS_PROXY_PORT}`;
+  // Apple custom networks do not resolve bare container names. The host
+  // lifecycle replaces this token with the inspected internal address.
+  const proxyUrl = `http://${
+    apple ? "VIBE_EGRESS_PROXY_ADDRESS" : proxyName
+  }:${EGRESS_PROXY_PORT}`;
   const proxyRunArgs = [
     "run",
     "-i",
@@ -1166,11 +1172,11 @@ function buildEgressLaunch(input: {
     proxyName,
     "--cap-drop",
     "ALL",
-    "--security-opt",
-    "no-new-privileges",
+    ...(apple ? [] : ["--security-opt", "no-new-privileges"]),
     "--read-only",
     "--network",
     dialect.outboundNetwork,
+    ...(apple ? ["--network", networkName] : []),
     "--env",
     `VIBE_EGRESS_ALLOW_HOSTS=${hosts.join(",")}`,
     "--env",
@@ -1185,16 +1191,16 @@ function buildEgressLaunch(input: {
   ];
   assertRunArgumentsContained(proxyRunArgs, true, []);
   return {
-    egressEnforced: true,
+    egressEnforced: !apple,
     networkCreateArgs: [...dialect.internalNetworkCreateArgs, networkName],
     networkRemoveArgs: [...dialect.networkRemoveArgs, networkName],
-    networkConnectArgs: [
+    networkConnectArgs: apple ? [] : [
       ...dialect.networkConnectArgs,
       networkName,
       proxyName,
     ],
     proxyRunArgs,
-    proxyStopArgs: ["rm", "--force", proxyName],
+    proxyStopArgs: [apple ? "delete" : "rm", "--force", proxyName],
     proxyName,
     proxyBundle: bundle,
     workerNetwork: networkName,
@@ -1205,7 +1211,13 @@ function buildEgressLaunch(input: {
       ["http_proxy", proxyUrl],
       ["NO_PROXY", EGRESS_NO_PROXY],
       ["no_proxy", EGRESS_NO_PROXY],
-      [EGRESS_ENFORCED_ENV, "true"],
+      [EGRESS_ENFORCED_ENV, apple ? "false" : "true"],
+      ...(apple
+        ? [["VIBE_APPLE_EGRESS_MODE", "internal"], [
+          "VIBE_EGRESS_ALLOW_HOSTS",
+          hosts.join(","),
+        ]] as const
+        : []),
       ...identity,
     ],
   };
@@ -1374,8 +1386,8 @@ export function buildContainerLaunchPlan(
   }
 
   // Docker and Podman: the worker joins an internal network and the proxy is
-  // the only path out (Issue #4047). Apple container is unchanged on the
-  // network (Issue #4051) and only learns that egress is not enforced.
+  // the only path out (Issue #4047). Apple uses the same proxy with explicit
+  // measured gaps and a host lifecycle that resolves its address (#4051).
   const egress = buildEgressLaunch({
     descriptor,
     containerName,
@@ -1713,6 +1725,9 @@ export interface ParsedContainerLaunchPlan {
   claimFloorOrigin: string;
   exists: string[];
   build: string[];
+  /** The runtime's builder helper stop arguments, when applicable. */
+  builderStop: string[];
+  builderAbsent: string[];
   /** The operator's private layer build, empty when none is configured. */
   extensionBuild: string[];
   /** `true` or `false`. Absent on a plan rendered before Issue #4047. */
@@ -1814,6 +1829,8 @@ export function parseContainerLaunchPlanText(
     claimFloorOrigin: "",
     exists: [],
     build: [],
+    builderStop: [],
+    builderAbsent: [],
     extensionBuild: [],
     egressEnforced: "",
     networkCreate: [],
@@ -1882,6 +1899,12 @@ export function parseContainerLaunchPlanText(
         break;
       case "build":
         parsed.build.push(value);
+        break;
+      case "builder-stop":
+        parsed.builderStop.push(value);
+        break;
+      case "builder-absent":
+        parsed.builderAbsent.push(value);
         break;
       case "extension-build":
         parsed.extensionBuild.push(value);

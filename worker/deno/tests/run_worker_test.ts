@@ -38,6 +38,7 @@ import {
 import { CONTAINER_IMAGE_STAMP_ENV } from "../lib/container_stamp.ts";
 import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "../lib/toolchain_selfcheck.ts";
 import {
+  checkEgressPolicy,
   EGRESS_NOT_ENFORCED_MARKER,
   EGRESS_SELFCHECK_EXIT_STATUS,
   EGRESS_SELFCHECK_FAILURE_MARKER,
@@ -1214,4 +1215,50 @@ Deno.test("runWorker - a non-enforcing dialect warns and still claims (Issue #40
     warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
     warnings.join("\n"),
   );
+});
+
+Deno.test("runWorker records actual Apple controls before claiming and refuses a broken proxy", async () => {
+  const home = await Deno.makeTempDir({ prefix: "apple-startup-" });
+  try {
+    for (const broken of [true, false]) {
+      const rec = newRecorder();
+      const options = {
+        ...baseOptions(),
+        env: (name: string) =>
+          ({ HOME: home, PATH: "/bin", WORK_DIR: "/work" })[name],
+      };
+      const result = await runWorker(
+        options,
+        stubDeps(rec, {
+          checkEgress: () =>
+            checkEgressPolicy({
+              env: (name) =>
+                ({
+                  VIBE_EGRESS_ENFORCED: "false",
+                  VIBE_RUNTIME_KIND: "apple-container",
+                  VIBE_APPLE_EGRESS_MODE: "internal",
+                  VIBE_RUNTIME_VERSION: "1.2.2",
+                  VIBE_EGRESS_MACOS_VERSION: "27.0.1",
+                })[name],
+              probes: {
+                directCloudflare: "refused",
+                directGithub: "not_checked",
+                proxyDenied: "denied",
+                proxyAllowed: broken ? "failed" : "succeeded",
+              },
+              appleObserved: { ipv4: "refused", host: "connected" },
+              appleControl: { ipv4: "connected", host: "connected" },
+            }),
+        }),
+      );
+      assertEquals(result.exitCode, broken ? EGRESS_SELFCHECK_EXIT_STATUS : 0);
+      assertEquals(rec.calls.includes("loop"), !broken);
+      const log = await Deno.readTextFile(`${home}/logs/run_core.log`);
+      assert(log.includes('"hostLan":"reachable"'));
+      assert(log.includes('"directInternetV6":"unknown"'));
+      assert(log.includes('"macOS":"27.0.1"'));
+    }
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
 });

@@ -709,14 +709,42 @@ Deno.test("buildContainerLaunchPlan - Docker and Podman run behind the egress pr
     inputs({ descriptor: descriptorFor("apple-container") }),
   );
   assertEquals(apple.egressEnforced, false);
-  assertEquals(apple.runArgs.includes("--network"), false);
-  assertEquals(apple.proxyRunArgs.length, 0);
-  assertEquals(apple.networkCreateArgs.length, 0);
+  assertEquals(apple.networkCreateArgs, [
+    "network",
+    "create",
+    "--internal",
+    "vibe-coder-4242-net",
+  ]);
+  assertEquals(apple.networkRemoveArgs, [
+    "network",
+    "delete",
+    "vibe-coder-4242-net",
+  ]);
+  assertEquals(apple.networkConnectArgs, []);
+  assert(apple.runArgs.includes("vibe-coder-4242-net"));
+  assertEquals(
+    apple.proxyRunArgs.filter((arg) => arg === "--network").length,
+    2,
+  );
+  assertEquals(apple.proxyRunArgs.includes("--volume"), false);
+  assertEquals(apple.proxyRunArgs.includes("--publish"), false);
   const appleJoined = apple.runArgs.join(" ");
-  assertEquals(appleJoined.includes("HTTPS_PROXY="), false);
-  assertEquals(appleJoined.includes("HTTP_PROXY="), false);
-  assertEquals(appleJoined.includes("https_proxy="), false);
-  assertEquals(appleJoined.includes("http_proxy="), false);
+  assertEquals(
+    appleJoined.includes("HTTPS_PROXY=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
+  assertEquals(
+    appleJoined.includes("HTTP_PROXY=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
+  assertEquals(
+    appleJoined.includes("https_proxy=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
+  assertEquals(
+    appleJoined.includes("http_proxy=http://VIBE_EGRESS_PROXY_ADDRESS:3128"),
+    true,
+  );
 });
 
 Deno.test("buildContainerLaunchPlan - omits flags the runtime does not support", () => {
@@ -727,7 +755,7 @@ Deno.test("buildContainerLaunchPlan - omits flags the runtime does not support",
   assertEquals(plan.runArgs.includes("--cap-drop"), false);
   assertEquals(plan.runArgs.includes("--security-opt"), false);
   assertEquals(plan.runArgs.includes("--tmpfs"), false);
-  assertEquals(plan.runArgs.includes("--network"), false);
+  assertEquals(plan.runArgs.includes("--network"), true);
   // The mount set is identical regardless of runtime.
   assertEquals(mountValues(plan.runArgs).length, 8);
   // Singular `image`, verified against Apple container 1.2.2 on a real host:
@@ -1278,6 +1306,14 @@ Deno.test("buildContainerLaunchPlan - carries the builder-stop arguments only fo
   assertEquals(
     rendered.includes("builder-stop=builder\0builder-stop=stop\0"),
     true,
+  );
+  assertEquals(parseContainerLaunchPlanText(rendered).builderStop, [
+    "builder",
+    "stop",
+  ]);
+  assertEquals(
+    parseContainerLaunchPlanText(rendered).builderAbsent,
+    apple.builderAbsentPatterns,
   );
 });
 

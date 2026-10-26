@@ -1,3 +1,4 @@
+import { appleWorkerArgs } from "../lib/apple_egress_launch.ts";
 /**
  * Containment integration tests (Issue #4071, parent #4060).
  *
@@ -982,9 +983,17 @@ Deno.test({
       await Deno.chmod(scriptPath, 0o755);
 
       // The worker container joins the internal network, so the proxy has to
-      // be up first. On Apple container the plan does not enforce and this
-      // is a no-op (Issue #4051).
-      await startEgressSidecar(fixture.plan);
+      // be up first. Apple returns its inspected proxy address (#4051).
+      const proxyAddress = await startEgressSidecar(fixture.plan);
+      if (proxyAddress) {
+        const proxy = `http://${proxyAddress.address}:3128`;
+        fixture.plan.runArgs = appleWorkerArgs(fixture.plan.runArgs, {
+          HTTP_PROXY: proxy,
+          HTTPS_PROXY: proxy,
+          http_proxy: proxy,
+          https_proxy: proxy,
+        });
+      }
 
       const probeRun = await runRuntime(
         context.descriptor.executable,

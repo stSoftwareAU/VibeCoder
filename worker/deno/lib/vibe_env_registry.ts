@@ -373,6 +373,33 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the launcher-generated run identifier",
   },
+  VIBE_APPLE_EGRESS_MODE: {
+    role: "switch",
+    note:
+      "explicit Apple mode: auto, internal or advisory; selected guarantees never silently downgrade",
+  },
+  VIBE_EGRESS_HOST_TARGETS: {
+    role: "launch_plumbing",
+    note: "bounded controlled host listener addresses for startup measurement",
+  },
+  VIBE_EGRESS_HOST_BANNER: {
+    role: "launch_plumbing",
+    note:
+      "non-secret random banner identifying this launch controlled test endpoint",
+  },
+  VIBE_EGRESS_NEGATIVE_CONTROL: {
+    role: "launch_plumbing",
+    note: "observations from a credential-free default-network probe container",
+  },
+  VIBE_EGRESS_MACOS_VERSION: {
+    role: "launch_plumbing",
+    note: "measured host macOS version for the per-start egress record",
+  },
+  VIBE_EGRESS_PROXY_ADDRESS: {
+    role: "marker",
+    note:
+      "placeholder replaced with the inspected Apple proxy address before launch",
+  },
   VIBE_EGRESS_ALLOW_HOSTS: {
     role: "launch_plumbing",
     note:

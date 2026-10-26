@@ -315,7 +315,7 @@ start_egress_sidecar() {
     echo "Error: could not create the egress proxy archive - refusing to launch" >&2
     exit 1
   }
-  if ! tar -C "${PROXY_BUNDLE}" -cf "${EGRESS_PROXY_BUNDLE_FILE}" worker/deno; then
+  if ! tar -C "${PROXY_BUNDLE}" --no-xattrs --exclude=worker/deno/tests --exclude=._* -cf "${EGRESS_PROXY_BUNDLE_FILE}" worker/deno; then
     echo "Error: could not pack the egress proxy source - refusing to launch" >&2
     exit 1
   fi
@@ -352,6 +352,11 @@ start_egress_sidecar() {
 # Only reached through on_exit (the EXIT trap), so shellcheck sees no caller.
 # shellcheck disable=SC2317,SC2329
 cleanup_egress_sidecar() {
+  if [[ -n "${APPLE_EGRESS_PID:-}" ]]; then
+    kill -TERM "${APPLE_EGRESS_PID}" 2>/dev/null || true
+    wait "${APPLE_EGRESS_PID}" || true
+    rm -f "${PLAN_FILE}.apple-ready"
+  fi
   if [[ "${EGRESS_PROXY_STARTED:-}" == "1" && -n "${RUNTIME:-}" &&
     -n "${PROXY_NAME:-}" ]]; then
     if [[ -n "${RUN_CORE_LOG_DIR:-}" ]]; then
@@ -2022,6 +2027,28 @@ RUN_DRAIN_SECONDS=10
 # fallback onto the runtime's open network (Issue #4047).
 if [[ "${EGRESS_ENFORCED}" == "true" ]]; then
   start_egress_sidecar
+elif [[ -n "${PROXY_NAME}" ]]; then
+  # Apple uses its own measured lifecycle and the shared policy/proxy. The
+  # manager keeps the controlled host endpoint alive until this launch exits.
+  "${DENO_CMD}" run --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write --allow-run --allow-net --allow-sys \
+    "${BASE_DIR}/worker/deno/apple_egress_launch_main.ts" \
+    "${PLAN_FILE}" "${PLAN_FILE}.apple-ready" "${RUN_CORE_LOG_DIR}" "$$" &
+  APPLE_EGRESS_PID=$!
+  for _ in {1..1500}; do
+    [[ -f "${PLAN_FILE}.apple-ready" ]] && break
+    if ! kill -0 "${APPLE_EGRESS_PID}" 2>/dev/null; then
+      echo "Error: Apple egress setup failed; refusing to launch" >&2
+      exit 90
+    fi
+    sleep 0.2
+  done
+  if [[ ! -f "${PLAN_FILE}.apple-ready" ]]; then
+    echo "Error: Apple egress setup timed out; refusing to launch" >&2
+    exit 90
+  fi
+  run_args=()
+  while IFS= read -r -d '' token; do run_args+=("${token}"); done <"${PLAN_FILE}.apple-ready"
 fi
 
 # Capture the client's stderr while it still reaches the console (Issue #711).
@@ -2058,6 +2085,7 @@ else
     "start will be reported without the runtime's own explanation" \
     "(Issue #711)" >&2
 fi
+
 
 LAUNCH_IN_FLIGHT=1
 if [[ -n "${RUN_LOG}" ]]; then
