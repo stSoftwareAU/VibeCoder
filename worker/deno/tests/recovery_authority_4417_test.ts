@@ -14,7 +14,19 @@
  *   restart state, a launch log, rewritten credential bytes, a removed
  *   credential directory, an edited configuration file), relaunches, and checks
  *   the new plan against the plan from before the failure. The launcher's shell
- *   side is covered by the run.sh tests in `run_sh_launcher_test.ts`, not here.
+ *   side is covered by the run.sh tests in `worker/deno/tests/run_sh_launcher_test.ts`,
+ *   not here.
+ *
+ *   The denial and network-unavailable log and restart state these tests inject
+ *   are not read by `buildLaunchPlanForCommand`: the command does not open the
+ *   launch log or the restart state. The guarantee the tests make is that the
+ *   command's output is unchanged by them. Each relaunch is compared with the
+ *   plan from before the failure, so the injected state is a realistic
+ *   precondition, not an input the command consumes.
+ *
+ *   Every environment read the command makes goes through the injected `env`
+ *   record, so these tests never mutate the process environment, which the
+ *   repository forbids for unit tests.
  * - The pure plan builder (`buildContainerLaunchPlan`) takes no failure input.
  *   That is a structural guarantee of its signature: a failure cannot reach it.
  *   The pure tests here check its output for given configured inputs only.
@@ -63,7 +75,6 @@ import {
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
   ENABLED_AGENT_PROVIDERS_ENV,
-  IMAGE_AGENT_PROVIDERS_ENV,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { GH_CREDENTIAL_SUBDIR } from "../lib/credential_preflight.ts";
@@ -464,22 +475,14 @@ function configured(
   };
 }
 
-/**
- * A throwaway deployment root, run as the host launcher runs: outside a
- * container image. Provider selection checks the process environment's
- * installed-provider stamp, and a worker container carries one (this one
- * installs only claude), so the stamp is cleared for the run and restored after.
- */
+/** A throwaway deployment root, removed after the run. */
 async function withRoot(
   run: (root: string) => void | Promise<void>,
 ): Promise<void> {
   const root = await Deno.makeTempDir({ prefix: "vibe_recovery_authority_" });
-  const stamp = Deno.env.get(IMAGE_AGENT_PROVIDERS_ENV);
-  Deno.env.delete(IMAGE_AGENT_PROVIDERS_ENV);
   try {
     await run(root);
   } finally {
-    if (stamp !== undefined) Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, stamp);
     await Deno.remove(root, { recursive: true });
   }
 }
@@ -531,6 +534,8 @@ function insertBeforeImage(
 
 /** The host state one deployment's launches read and write, rooted in `root`. */
 interface Deployment {
+  /** The environment record the launch reads. Mutable, so a test can change it. */
+  environment: Record<string, string>;
   /** Environment reader the launch is given. */
   env: (name: string) => string | undefined;
   configFile: string;
@@ -539,6 +544,12 @@ interface Deployment {
   logDir: string;
 }
 
+/**
+ * The deployment's environment record. It carries no image stamp
+ * (`IMAGE_AGENT_PROVIDERS_ENV`): these are host launches, which is the state
+ * the stamp's absence describes, so provider selection reads the configuration
+ * alone unless a test adds `ENABLED_AGENT_PROVIDERS_ENV` to the record.
+ */
 function deploymentAt(root: string): Deployment {
   const environment: Record<string, string> = {
     HOME: `${root}/home`,
@@ -547,6 +558,7 @@ function deploymentAt(root: string): Deployment {
     WORK_DIR: `${root}/work`,
   };
   return {
+    environment,
     env: (name) => environment[name],
     configFile: `${root}/config.json`,
     credentialDir: `${root}/credentials`,
@@ -631,8 +643,8 @@ async function digestOf(path: string): Promise<string> {
 
 /**
  * One launch, as `run.sh` invokes the command for each attempt. The plan clock
- * is fixed; the provider selection is read from the process environment, and
- * the rest from the injected one.
+ * is fixed, and every environment read (provider selection and the image
+ * stamp included) goes through the deployment's injected `env`.
  */
 function launch(d: Deployment): Promise<ContainerLaunchPlan> {
   return buildLaunchPlanForCommand(REPO_ROOT, CONTAINER, {
@@ -815,50 +827,41 @@ Deno.test("recovery authority - a legitimate provider rotation keeps the mounts 
   await withRoot(async (root) => {
     const d = deploymentAt(root);
     // No `agent_providers` key: the environment selects the enabled set, and
-    // the command reads that from the process environment.
+    // the command reads that from the injected environment record.
     await provision(d, {
       agent_provider: CLAUDE_PROVIDER_ID,
       log_dir: `${root}/logs`,
       egress_allow_hosts: [],
     });
     const configBytes = await digestOf(d.configFile);
-    const saved = Deno.env.get(ENABLED_AGENT_PROVIDERS_ENV);
     const both = `${CLAUDE_PROVIDER_ID},${CODEX_PROVIDER_ID}`;
-    try {
-      Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, both);
-      const pool = authorityOf(await launch(d));
-      assertEquals(pool.credentialDirs, [
-        CLAUDE_PROVIDER_ID,
-        CODEX_PROVIDER_ID,
-        GH_CREDENTIAL_SUBDIR,
-      ]);
+    d.environment[ENABLED_AGENT_PROVIDERS_ENV] = both;
+    const pool = authorityOf(await launch(d));
+    assertEquals(pool.credentialDirs, [
+      CLAUDE_PROVIDER_ID,
+      CODEX_PROVIDER_ID,
+      GH_CREDENTIAL_SUBDIR,
+    ]);
 
-      // Rotation: codex is disabled for the next launch.
-      Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, CLAUDE_PROVIDER_ID);
-      const rotated = authorityOf(await launch(d));
-      assertEquals(rotated.credentialDirs, [
-        CLAUDE_PROVIDER_ID,
-        GH_CREDENTIAL_SUBDIR,
-      ]);
-      assertEquals(
-        rotated.credentialDirs.filter((sub) =>
-          !pool.credentialDirs.includes(sub)
-        ),
-        [],
-      );
-      assertEquals(withinAuthority(pool, rotated), []);
+    // Rotation: codex is disabled for the next launch.
+    d.environment[ENABLED_AGENT_PROVIDERS_ENV] = CLAUDE_PROVIDER_ID;
+    const rotated = authorityOf(await launch(d));
+    assertEquals(rotated.credentialDirs, [
+      CLAUDE_PROVIDER_ID,
+      GH_CREDENTIAL_SUBDIR,
+    ]);
+    assertEquals(
+      rotated.credentialDirs.filter((sub) =>
+        !pool.credentialDirs.includes(sub)
+      ),
+      [],
+    );
+    assertEquals(withinAuthority(pool, rotated), []);
 
-      // Enabled again: the authority is the pool's again, unchanged.
-      Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, both);
-      assertEquals(authorityOf(await launch(d)), pool);
-      assertEquals(await digestOf(d.configFile), configBytes);
-    } finally {
-      if (saved === undefined) {
-        Deno.env.delete(ENABLED_AGENT_PROVIDERS_ENV);
-      } else {
-        Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, saved);
-      }
-    }
+    // Enabled again: the authority is the pool's again, unchanged.
+    d.environment[ENABLED_AGENT_PROVIDERS_ENV] = both;
+    assertEquals(authorityOf(await launch(d)), pool);
+    assertEquals(await digestOf(d.configFile), configBytes);
   });
 });
 
