@@ -1345,7 +1345,11 @@ or `deno` is running, polling stops the child only when the host crosses the
 floor. The 25 GB is admission headroom that the running work may consume;
 requiring it afresh on every poll killed admitted agents at 66.4 GB free on
 a host with a 46 GB floor (Issue #4390). The next build step still needs the
-full admission budget. Active polling does not prune other checkouts.
+admission budget, less what the checkout's own target directories already
+hold (capped at the 25 GB, so the floor is never relaxed): its build is
+incremental, and a run that was admitted and built is not refused a later
+step for the space its own build used (Issue #4423). Active polling does not
+prune other checkouts.
 
 A recognised host-disk failure is released with its original cause and is
 not retried in-process: repeating the agent invocation cannot replenish the
@@ -1574,6 +1578,9 @@ build artefacts.
   agent, quality, mutation or discrimination step, the same holds in a
   checkout that holds a cargo project; a checkout with no cargo project is
   held to the floor only, and nothing is pruned for its step (Issue #4413).
+  The cargo checkout's own target directories count towards the headroom for
+  such a step, up to the 25 GB (Issue #4423); a maintenance build gets no
+  such credit.
   Short of the headroom, other checkouts' target directories are pruned,
   largest first, skipping any written to in the last 20 minutes and the
   building checkout's own incremental cache. If the build is still not covered,
