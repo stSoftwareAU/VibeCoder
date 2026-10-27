@@ -194,9 +194,13 @@ Before reviewing any code:
 
 ### Behavioural security-test coverage
 
-Three contracts are checked narrowly, from the capability guidance:
-resource or tenant authorisation, a sensitive-field update, and
-redaction at a log or outbound sink. The worker files a gap itself,
+Four contracts are checked narrowly, from the capability guidance:
+resource or tenant authorisation, a sensitive-field update,
+redaction at a log or outbound sink, and recovery. A retry, restart
+or recovery path that alters credentials, mounts or execution identity
+must have a test that the recovered run is no broader than the
+configured authority and that a permitted operation still succeeds.
+The worker files a gap itself,
 as a best-practices issue, before this prompt runs. Do not file a
 second issue for the same production path, and do not describe the
 gap as an exploit. The security scan owns exploit findings. A missing

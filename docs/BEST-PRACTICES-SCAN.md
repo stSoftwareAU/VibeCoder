@@ -157,10 +157,75 @@ matching bucket guide under
 
 ### Behavioural security-test coverage
 
-A narrow static check, using the capability guidance, looks at three
+A narrow static check, using the capability guidance, looks at four
 contracts only: resource or tenant authorisation, a sensitive-field
-update, and redaction at a log or outbound sink. A gap is a
-best-practices finding. It cites the production path, the tests
+update, redaction at a log or outbound sink, and the recovery boundary.
+The recovery boundary applies when a retry, restart, recovery, fallback,
+relaunch or reconnect line sits within 25 lines of an authority line, in
+either order.
+
+Trigger lines are read as code. Comments are removed with the shared
+`stripLineAndBlockComments` helper: `/* ... */` blocks, including ones that
+span lines, and a trailing `// ...`. `#` is not a comment marker, so a
+TypeScript private field such as `#token = ...` is code. The words of a line
+are read with string-literal contents blanked (`"..."`, `'...'` and template
+literals), so prose in a logger message does not trigger. Flags are the
+exception: they are read inside string literals, because argv flags are
+written as literals. Camel case is split before the word rules, so
+`swapCredential` reads as `swap Credential` and `retryWithBackoff` as
+`retry With Backoff`.
+
+The recovery words, matched whole-word and case-insensitively, are: retry,
+retries, retrying; restart, restarts, restarted, restarting; recover,
+recovery, recoveries, recovered, recovering, recovers; fall back, fall-back
+or fallback, but not `fallback=` or `fallback:` (a UI prop); relaunch,
+relaunches, relaunched, relaunching; reconnect, reconnects, reconnected,
+reconnecting.
+
+An authority line is one of two things:
+
+- A launch or identity flag, matched in the literal text: `--volume`,
+  `--mount`, `--user` when not followed by a hyphen or word character (so
+  `--user-agent` is not a flag), `--network`, `--privileged`, `--uid`,
+  `--gid`, `runArgs`, `setuid`, `setgid`, `sudo` as a whole word, and `su -`
+  with `su` as a whole word. `user.uid` is not a flag.
+- A noun with an alteration verb on the same line. The nouns, matched
+  whole-word, are `credential` or `credentials`, `token` or `tokens`, and
+  `mount` or `mounts`, or `allowed`, an optional space, underscore or hyphen,
+  then `repositories`, `repos` or `scope`. The verbs, matched whole-word and
+  case-insensitively, with the regular endings `e`, `es`, `ed`, `ing` or `s`,
+  are: swap (also `swapped` and `swapping`), rotate, replace, switch, refresh,
+  reload, reread or re-read, remount or re-mount, append, push, override,
+  escalate, elevate, widen, broaden and broader. Two phrases also count:
+  `fall back to`, and `use a`, `use the`, `uses a` or `uses the` followed by
+  `different`, `other` or `broader`.
+
+The verb does not count in these look-alikes:
+
+- A method call on a token or credential, such as `tokens.push(x)` or
+  `token.replace("Bearer ", "")`, including the indexed form `tokens[0].push(`.
+  A method on a mount list, such as `mounts.push("/")`, still counts.
+- `switch (`, which is the keyword rather than the verb.
+
+An ordinary authenticated HTTP retry that only sends a token in a header does
+not apply. Its contract is that after a denial, authentication refresh or
+proxy/startup failure, the retry or restart keeps the configured
+repositories, credential scope, mounts and network guarantee (no
+broader), and a permitted operation still succeeds on the recovered
+run. A test counts as covering it only when the related tests together
+show each of the three groups on some line: a failure (a line containing
+denied, denial, fail, fails, failure or injected); non-widening (a line
+containing no broader, not broaden, not widen, never widen, within the
+configured, same scope, scope unchanged, does not widen, or preserve the
+configured, same or existing, or preserves the configured, same or
+existing); and resumption (a line containing succeed, resum, completes,
+permitted operation or runs the worker). Generic words such as retry,
+restart, recover or succeed do not count as a failure.
+
+A file that carries the marker `recovery-scope-change: authorised` inside a
+`//` or `/* */` comment is exempt. The same text inside a string literal,
+or outside any comment, does not exempt it. A gap is a best-practices
+finding. It cites the production path, the tests
 inspected, and the uncovered contract. It is not proof of an exploit;
 the security scan keeps those. A missing file named security is not
 missing coverage. A test that was not executed is not a pass. A read

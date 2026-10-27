@@ -167,6 +167,7 @@ export async function buildLaunchPlanForCommand(
     await readConfiguredAgentProviderSet(
       hostPaths.configFile,
       manifest.installedProviders,
+      env,
     );
 
   // The launcher runs on the host, before the worker loads its configuration,
