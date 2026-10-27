@@ -12,7 +12,11 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
 
 1. Read the linked issue and the repo's `AGENTS.md` / `CODING-STANDARDS.md`
    if they exist.
-2. Check that the change does what the issue asks and nothing unrelated.
+2. Check that the change does what the issue asks and nothing unrelated. A
+   change that clears a dependency audit that is red on this PR is not
+   unrelated: every PR red on an advisory fixes it itself, even when another
+   PR carries the same fix (`prompts/ci_fix/prompt.md`, "Dependency
+   audit failures"). Review it for correctness like any other change.
 3. Look for correctness bugs, unhandled edge cases, security problems
    (injection, secrets, unsafe permissions in workflows), race conditions
    and regressions for existing callers.
