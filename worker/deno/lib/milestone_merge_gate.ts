@@ -112,6 +112,24 @@ export interface MergeGateOutcome {
    * the cargo half passed. A `skipped` outcome with this set verified nothing.
    */
   cargoSkipped?: boolean;
+  /**
+   * Set on a `passed` outcome when a Deno task could not fetch its remote
+   * modules because the host is offline or blocked (Issue #4422). It names the
+   * task and the cause. That task did not run, so the report must not claim it
+   * passed; the milestone PR's CI runs it.
+   */
+  suiteLeftToCi?: string;
+}
+
+/**
+ * A Deno task that could not fetch a remote module because the host cannot
+ * reach the module host (Issue #4422).
+ */
+export interface RemoteModuleGap {
+  /** The `http(s)` URL the failed import named. */
+  url: string;
+  /** The trimmed output line that names the connection-class cause. */
+  cause: string;
 }
 
 /**
@@ -366,6 +384,53 @@ export function describeRustToolchainGap(
     `${gap.packages.join(", ")} require(s) — raise the container's Rust pin ` +
     `(container/tools.json) to at least ${gap.required}; a workspace ` +
     "package requires it, so no change to the resolution can fix this";
+}
+
+/**
+ * Import-failure line naming a remote module, e.g.
+ * `error: Import 'https://esm.sh/x' failed`. Anchored on the literal prefix;
+ * `[^'\s]+` is disjoint from the closing quote, so the match is linear.
+ */
+const REMOTE_IMPORT_FAILED_RE = /^error: Import '(https?:\/\/[^'\s]+)' failed/;
+
+/**
+ * A connection-class cause: the host could not open a route to the module
+ * host. Literal alternatives only, so the match is linear in the line length.
+ */
+const REMOTE_FETCH_CAUSE_RE =
+  /error sending request for url|unsuccessful tunnel|dns error|client error \(Connect\)|connection (refused|reset|timed out)/i;
+
+/**
+ * Detect a Deno task that could not fetch a remote module because the host
+ * cannot reach the module host (Issue #4422).
+ *
+ * An unreachable host is an environment fault, like the Rust toolchain gap of
+ * Issue #3255, not a bad resolution: a repair round cannot fix it. A gap is
+ * reported only when an import-failure line names an `http(s)` URL and a
+ * connection-class cause line follows it. An import that failed for any other
+ * reason (a 404, a bad certificate, a checksum mismatch, a missing module, a
+ * type error) is an ordinary failure and returns undefined.
+ *
+ * @param output - The raw task output (untrimmed)
+ * @returns The gap, or undefined when no connection-class cause follows an
+ *   import failure
+ */
+export function detectRemoteModuleGap(
+  output: string,
+): RemoteModuleGap | undefined {
+  let importUrl: string | undefined;
+  for (const rawLine of output.split("\n")) {
+    const line = rawLine.trim().slice(0, MAX_GAP_LINE_CHARS);
+    const imported = REMOTE_IMPORT_FAILED_RE.exec(line);
+    if (imported) {
+      importUrl = imported[1];
+      continue;
+    }
+    if (importUrl !== undefined && REMOTE_FETCH_CAUSE_RE.test(line)) {
+      return { url: importUrl, cause: line };
+    }
+  }
+  return undefined;
 }
 
 /** Spawn the repository's own check with a bounded timeout. */

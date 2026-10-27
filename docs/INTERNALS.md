@@ -4278,6 +4278,7 @@ repair round is still offered.
 ```mermaid
 flowchart TD
     G["resolution gate"] -->|passed| P["push"]
+    G -->|"unreachable module host (Issue #4422)"| P
     G -->|failed| R{"not a toolchain gap,<br/>a repair round left,<br/>and budget for one?"}
     R -->|"no"| E["escalate — both gate outputs,<br/>and why no repair ran"]
     R -->|"yes"| A["agent rung<br/>(gate output + merged commits)"]
@@ -4301,10 +4302,26 @@ than the wall of `TS2304` that made #1542 nearly useless. A gate refusal is not
 a conflict the budget can retry its way out of, so it is charged nothing — and
 that is exactly why it needed its own conclusion (Issue #2388, below). A tree
 with no type check or no unit suite verified nothing and is refused the same
-way — a resolution that cannot be verified is not a resolution. The one
-exception is a merge-only cycle (Issue #4326): a host that cannot afford the
-cargo build marks its `skipped` verdict `landUnverified`, the resolution is
-pushed with the `UNGATED` note, and the report says the tree was not checked.
+way — a resolution that cannot be verified is not a resolution. There are two
+exceptions, and each names what went unchecked. The first is a merge-only
+cycle (Issue #4326): a host that cannot afford the cargo build marks its
+`skipped` verdict `landUnverified`, the resolution is pushed with the `UNGATED`
+note, and the report says the tree was not checked. The second (Issue #4422)
+is narrower: it covers only the resolution gate's Deno tasks, and the type
+check in `checkMergedTree` is unchanged. When a Deno task fails because this
+host cannot fetch a remote module, deno prints `error: Import '<url>' failed.`
+followed by a connection-class cause such as `error sending request for url`,
+`unsuccessful tunnel` or `dns error`. `detectRemoteModuleGap` in
+[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) recognises
+only that pair. A 404, a certificate, a checksum or a type error is still an
+ordinary failure and is refused. The unreachable task is not counted as passed
+and is not repaired. Every other task still runs, so a real failure elsewhere
+still refuses the resolution, and `quality.sh` is never substituted for an
+unreachable unit suite. The resolution then lands with the outcome field
+`suiteLeftToCi`, naming the task and the cause, and the escalation comment says
+that task did not run and that the milestone PR's CI runs it. The exception
+does not relax the rule for the tree: the report names the task as not run, so
+nothing reads as verified.
 What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
 ([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts));
@@ -4367,8 +4384,10 @@ flowchart TD
     T -- decided --> V
     RU -- decided --> V
     V -- red or unverifiable --> R[Reset to the pre-merge commit and escalate]
+    V -- "unreachable module host (Issue #4422)" --> PU["Push, suiteLeftToCi names the task"]
     V -- green --> P[Push]
     P --> F["Report the same cycle:<br/>decisions + both sides' commits"]
+    PU --> F
     F --> G{Parent planning issue?}
     G -- open --> H[Comment on it]
     G -- closed --> RO["Reopen it (needs-human,<br/>never a pickup label)"] --> H
@@ -4456,8 +4475,13 @@ Three properties matter:
 - **Nothing unverified is published.** A check that cannot be run — a spawn
   failure, a timeout past `MERGE_GATE_TIMEOUT_MS`, a working tree that cannot be
   read — counts as a failure, not a pass: absence of a failure is not success.
-  The one deliberate exception is the merge-only cycle of Issue #4326 on a tree
-  that holds a cargo project, described after this list.
+  The deliberate exceptions are the merge-only cycle of Issue #4326 on a tree
+  that holds a cargo project, described after this list, and one narrower case
+  in the resolution gate only (Issue #4422), described in the merge-down section
+  above: a Deno task whose remote module host this host cannot reach is reported
+  as not run, and the resolution lands with `suiteLeftToCi` naming it, rather
+  than being counted as passed or refused. The Issue #974 type check in
+  `checkMergedTree` is outside that exception and is unchanged.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
@@ -4480,8 +4504,9 @@ When the ephemeral cargo root is over its budget (Issue #4326), the sync runs
 in merge-only mode for that cycle, but only on a tree that holds a cargo
 project, because only a cargo build writes to the ephemeral cargo root. A
 repository with no cargo project keeps its own check and the normal agent. In a
-mixed tree the Deno checks and unit suites remain required; only cargo checks
-and cargo unit suites wait for CI. In a cargo-only tree, a conflict-free merge
+mixed tree the Deno checks and unit suites remain required (bar the
+unreachable-module case of Issue #4422); only cargo checks and cargo unit
+suites wait for CI. In a cargo-only tree, a conflict-free merge
 is pushed with the same `UNGATED` note, and the milestone PR's own CI builds it.
 So is a conflict the deterministic rules settle: the resolution gate reports a
 `skipped` verdict marked `landUnverified`, which `judgeResolutionVerdict` lets

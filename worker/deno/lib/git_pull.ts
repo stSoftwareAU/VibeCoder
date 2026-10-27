@@ -1365,6 +1365,9 @@ async function syncMilestoneBranchWithDefaultBody(
           : finalGate.cargoSkipped
           ? { cargoSkipped: true }
           : {}),
+        ...(finalGate.suiteLeftToCi
+          ? { suiteLeftToCi: finalGate.suiteLeftToCi }
+          : {}),
         decisions: resolved,
         ...(repaired ? { repair: repaired } : {}),
         // Issue #2306: the agent names each judgement call file by file in
