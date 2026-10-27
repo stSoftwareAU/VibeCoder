@@ -62,6 +62,11 @@ export function isRetryableError(errorMessage: string): boolean {
   // HTTP 5xx server errors
   if (/http [5]\d{2}/i.test(errorMessage)) return true;
 
+  // GitHub's GraphQL server-side failure, which `gh` reports without a status
+  if (lower.includes("something went wrong while executing your query")) {
+    return true;
+  }
+
   // HTTP 429 rate limiting
   if (lower.includes("http 429") || lower.includes("rate limit")) return true;
 
