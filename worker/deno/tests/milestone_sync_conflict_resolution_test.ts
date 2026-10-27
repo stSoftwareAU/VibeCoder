@@ -772,3 +772,60 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a gate whose Deno task was left to CI reaches the conflict report as suiteLeftToCi (Issue #4422)",
+  async () => {
+    const fx = await setup(
+      { "CHANGELOG.md": "# Changelog\n\n## Unreleased\n" },
+      {
+        files: {
+          "CHANGELOG.md":
+            "# Changelog\n\n## Unreleased\n\n- the branch's entry\n",
+        },
+        subject: "Issue #4422: the branch's entry",
+      },
+      {
+        files: {
+          "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n- main's entry\n",
+        },
+        subject: "Issue #4422: main's entry",
+      },
+    );
+    const left =
+      "deno task test in /w/web could not fetch its remote modules (0: error sending request for url (https://esm.sh/x))";
+    const leftToCi: MergeGateFn = () =>
+      Promise.resolve({
+        status: "passed" as const,
+        // The detail shape verifyResolvedTree gives a left-to-CI pass.
+        detail:
+          `deno task check passed; ${left} — left to the milestone PR's CI (Issue #4422)`,
+        output: "",
+        suiteLeftToCi: left,
+      });
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        leftToCi,
+      );
+
+      assert(
+        result.ok,
+        `expected the resolution to land: ${
+          !result.ok && result.error.message
+        }`,
+      );
+      assertEquals(result.value.conflict?.resolution, "auto");
+      assertEquals(result.value.conflict?.suiteLeftToCi, left);
+      assertEquals(result.value.conflict?.unverified, undefined);
+      // The push note names the task that did not run (Issue #4422).
+      assertStringIncludes(result.value.message, "TESTS LEFT TO CI:");
+      assertStringIncludes(result.value.message, left);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);

@@ -466,8 +466,13 @@ async function gateThenPushMilestoneBranch(
   if (!pushNote.ok) return pushNote;
   // Say when nothing verified the tree, rather than let an unchecked push
   // read exactly like a checked one.
+  // A passed tree whose Deno task could not fetch its remote modules (Issue
+  // #4422) is pushed, but that task did not run: the note says so, and the
+  // detail already carries any cargo note.
   const gateNote = outcome.status === "skipped"
     ? `UNGATED: ${outcome.detail} (Issue #974) — `
+    : outcome.suiteLeftToCi
+    ? `TESTS LEFT TO CI: ${outcome.detail} (Issue #4422) — `
     : outcome.cargoSkipped
     ? `CARGO SKIPPED: ${outcome.detail} (Issue #4326) — `
     : "";
@@ -500,7 +505,9 @@ async function readRef(
  * milestone PR's CI. A Deno-only tree and a mixed tree keep their Deno checks
  * and suites and are rolled back when red. A mixed tree whose Deno half
  * passed carries a `CARGO SKIPPED:` note, so the report does not claim the
- * cargo half passed.
+ * cargo half passed. A resolved tree whose Deno task could not fetch its
+ * remote modules (Issue #4422) carries a `TESTS LEFT TO CI:` note naming that
+ * task, so the report does not claim it passed.
  *
  * What the triage cannot decide climbs the rest of the ladder the PR pass
  * climbs (Issue #1777): the deterministic dependency rules, then the
@@ -1364,6 +1371,9 @@ async function syncMilestoneBranchWithDefaultBody(
           ? { unverified: true }
           : finalGate.cargoSkipped
           ? { cargoSkipped: true }
+          : {}),
+        ...(finalGate.suiteLeftToCi
+          ? { suiteLeftToCi: finalGate.suiteLeftToCi }
           : {}),
         decisions: resolved,
         ...(repaired ? { repair: repaired } : {}),

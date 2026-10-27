@@ -531,3 +531,160 @@ Deno.test("verifyResolvedTree - quality.sh gets only the budget that is left; no
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Issue #4422 — a Deno task whose remote modules the host cannot fetch is left
+// to the milestone PR's CI, not failed and not passed
+// ---------------------------------------------------------------------------
+
+const ESM_UNREACHABLE_URL =
+  "https://esm.sh/react@19.2.8/es2022/jsx-runtime.mjs";
+
+/** What `deno task test` prints on a host with no route to esm.sh. */
+const ESM_UNREACHABLE_OUTPUT = [
+  `Download ${ESM_UNREACHABLE_URL}`,
+  `error: Import '${ESM_UNREACHABLE_URL}' failed`,
+  `    0: error sending request for url (${ESM_UNREACHABLE_URL}): client error (Connect): unsuccessful tunnel`,
+  "    1: client error (Connect)",
+  "    2: unsuccessful tunnel",
+  "    at https://esm.sh/react@19.2.8/jsx-runtime?target=es2022:2:15",
+].join("\n");
+
+/** What `deno task test` prints when esm.sh answers 404 — a real failure. */
+const ESM_NOT_FOUND_OUTPUT = [
+  "Download https://esm.sh/react@19.2.8/missing.mjs",
+  "error: Import 'https://esm.sh/react@19.2.8/missing.mjs' failed, not found.",
+  "    at file:///work/web/main_test.ts:1:1",
+].join("\n");
+
+Deno.test("verifyResolvedTree - a test task that cannot fetch its remote modules is left to CI, and quality.sh does not stand in for it (Issue #4422)", async () => {
+  const dir = await tree({ check: "deno check", test: "deno test" });
+  try {
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\nexit 0\n");
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(dir, (task) => {
+      seen.push(task);
+      return Promise.resolve(
+        task.kind === "script"
+          ? { code: 0, output: "" }
+          : { code: 1, output: ESM_UNREACHABLE_OUTPUT },
+      );
+    }, passingTypeCheck);
+
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(
+      seen.map((task) => task.kind),
+      ["deno"],
+      "quality.sh must not run after the unit suite was left to CI",
+    );
+    assertStringIncludes(outcome.suiteLeftToCi ?? "", "deno task test");
+    assertStringIncludes(outcome.suiteLeftToCi ?? "", "error sending request");
+    assertStringIncludes(outcome.detail, "left to the milestone PR");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a manifest check the host could not fetch is left to CI while the unit suite still runs (Issue #4422)", async () => {
+  const seen: string[] = [];
+  const { outcome } = await gate(
+    {
+      "check:manifests": "deno run check_manifests.ts",
+      "test:unit": "deno test",
+    },
+    (task) => {
+      seen.push(task.task);
+      return Promise.resolve(
+        task.task === "check:manifests"
+          ? { code: 1, output: ESM_UNREACHABLE_OUTPUT }
+          : { code: 0, output: "" },
+      );
+    },
+  );
+
+  assertEquals(outcome.status, "passed", outcome.detail);
+  assertEquals(seen, ["check:manifests", "test:unit"]);
+  assertStringIncludes(
+    outcome.suiteLeftToCi ?? "",
+    "deno task check:manifests",
+  );
+  assertStringIncludes(outcome.detail, "deno task test:unit in");
+});
+
+Deno.test("verifyResolvedTree - a task that failed with a 404 import is a failure, with no CI carve-out (Issue #4422)", async () => {
+  const { outcome } = await gate(
+    { check: "deno check", test: "deno test" },
+    (task) =>
+      Promise.resolve(
+        task.task === "test"
+          ? { code: 1, output: ESM_NOT_FOUND_OUTPUT }
+          : { code: 0, output: "" },
+      ),
+  );
+
+  assertEquals(outcome.status, "failed");
+  assertStringIncludes(outcome.detail, "failed (exit 1)");
+  assertEquals(outcome.suiteLeftToCi, undefined);
+});
+
+Deno.test("verifyResolvedTree - a fetch failure in one project does not hide an ordinary failure in another (Issue #4422)", async () => {
+  // No root manifest, so the two Deno projects are found side by side.
+  const dir = await Deno.makeTempDir({ prefix: "issue-4422-gate-" });
+  try {
+    await Deno.mkdir(`${dir}/a`);
+    await Deno.mkdir(`${dir}/b`);
+    await Deno.writeTextFile(
+      `${dir}/a/deno.json`,
+      JSON.stringify({ tasks: { test: "deno test" } }),
+    );
+    await Deno.writeTextFile(
+      `${dir}/b/deno.json`,
+      JSON.stringify({ tasks: { "check:manifests": "deno run check.ts" } }),
+    );
+    const seen: string[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task.task);
+        return Promise.resolve(
+          task.task === "test"
+            ? { code: 1, output: ESM_UNREACHABLE_OUTPUT }
+            : { code: 1, output: "FAILED check_manifests" },
+        );
+      },
+      passingTypeCheck,
+    );
+
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertEquals(seen, ["test", "check:manifests"]);
+    assertStringIncludes(outcome.detail, "deno task check:manifests");
+    assertEquals(outcome.suiteLeftToCi, undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a Cargo task with the same fetch text is a failure, not a gap (Issue #4422)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4422-gate-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve({ code: 1, output: ESM_UNREACHABLE_OUTPUT });
+      },
+      passingTypeCheck,
+      undefined,
+      () => Promise.resolve(false),
+    );
+
+    assertEquals(seen.map((task) => task.kind), ["cargo"]);
+    assertEquals(outcome.status, "failed");
+    assertStringIncludes(outcome.detail, "failed (exit 1)");
+    assertEquals(outcome.suiteLeftToCi, undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

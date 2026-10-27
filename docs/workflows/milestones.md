@@ -380,6 +380,7 @@ flowchart TD
     G -- yes --> X["Abort the merge — nothing pushed —<br/>escalate naming the failed rung, with both<br/>sides' exports, test names and the difference"]
     G -- no --> V["Commit each file's rung, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
     V -- green --> P["Push"]
+    V -- "unreachable module host (Issue #4422)" --> PU["Push, suiteLeftToCi names the task"]
     V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate with both halves<br/>(cargo-only merge-only cycle, Issue #4326:<br/>pushed UNGATED, CI builds it;<br/>a mixed tree's red Deno check still rolls back)"]
 ```
 
@@ -475,12 +476,24 @@ budget so the sync cannot block the event loop. A red tree is reset to the
 pre-merge commit and escalated — with both halves: what the verification said
 *and* both sides prepared. A tree with no type check or no unit suite is
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
-it is refused the same way. The one exception is a merge-only cycle
-(Issue #4326) on a cargo-only tree: when the host cannot afford the cargo
-build, a resolution is pushed with the `UNGATED` note and the milestone PR's
-CI builds it. A Deno-only tree and a mixed tree keep their Deno checks and
-suites and are rolled back when red. A mixed tree whose Deno half passed notes
-that cargo was left to CI; the report does not claim the cargo half passed.
+it is refused the same way. There are two exceptions, and each names what went
+unchecked. The first is a merge-only cycle (Issue #4326) on a cargo-only tree:
+when the host cannot afford the cargo build, a resolution is pushed with the
+`UNGATED` note and the milestone PR's CI builds it. The second (Issue #4422)
+applies only to the resolution gate's Deno tasks, not to the Issue #974 type
+check. When a Deno task fails because this host cannot reach a remote module
+host, deno prints `error: Import '<url>' failed.` followed by a connection-class
+cause such as `error sending request for url`, `unsuccessful tunnel` or
+`dns error`. The task is neither counted as passed nor repaired. Every other
+task still runs, so a real failure elsewhere still refuses the resolution. A
+404, a certificate, a checksum or a type error is an ordinary failure and is
+refused. `quality.sh` is never substituted for an unreachable unit suite. The
+resolution lands with the outcome `suiteLeftToCi`, naming the task and the
+cause, and the report says that task did not run and that the milestone PR's
+CI runs it. A Deno-only tree and a mixed tree keep their Deno checks and suites
+and are rolled back when red, except for that unreachable-module case. A mixed
+tree whose Deno half passed notes that cargo was left to CI; the report does not
+claim the cargo half passed.
 
 ### A conflict is reported only once the landing is confirmed
 

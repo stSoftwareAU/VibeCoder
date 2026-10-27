@@ -24,6 +24,12 @@
  * resolution rather than a host limit (Issue #3255). A dependency-only
  * refusal stays an ordinary failure a repair round may answer.
  *
+ * A Deno task that cannot fetch a remote module (an `https://` import the host
+ * has no route to) is an environment fault the same way (Issue #4422). The
+ * task did not run, so it is reported as left to the milestone PR's CI rather
+ * than as passed, and it is not failed: a tree that passes every other task is
+ * still pushed. A failure of any other kind still refuses the resolution.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -31,6 +37,7 @@ import {
   checkMergedTree,
   collapseRepeatedLines,
   describeRustToolchainGap,
+  detectRemoteModuleGap,
   detectRustToolchainGap,
   findProjectManifests,
   type MergeGateFn,
@@ -213,8 +220,11 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
  *
  * @param repoDir - Root of the merged working tree (the clone's cwd)
  * @param runner - Override the spawned task (tests)
- * @returns `passed` only when every task that ran passed; `skipped` when the
- *   tree defines nothing to run, which the caller must treat as a refusal
+ * @returns `passed` when every task that ran passed. A task left to CI because
+ *   the host could not fetch its remote modules (Issue #4422) is not run, so
+ *   the passed outcome names it in `suiteLeftToCi` and in its detail. `skipped`
+ *   when the tree defines nothing to run, which the caller must treat as a
+ *   refusal
  */
 export async function verifyResolvedTree(
   repoDir: string,
@@ -267,7 +277,10 @@ export async function verifyResolvedTree(
   }
 
   const ran: string[] = [typed.detail];
+  // Tasks the host could not run for want of remote modules (Issue #4422).
+  const leftToCi: string[] = [];
   let unitSuiteRan = false;
+  let unitSuiteLeftToCi = false;
   // Re-read the budget. A mixed tree's type check returns `passed` after it
   // skips cargo, and parsing that detail would miss a budget that flipped
   // between the two gates (Issue #4326).
@@ -326,6 +339,19 @@ export async function verifyResolvedTree(
         };
       }
       if (result.code !== 0) {
+        // Issue #4422: a Deno task that could not fetch a remote module ran on
+        // a host with no route to the module host. That is an environment
+        // fault, so the task is left to CI rather than failed or passed.
+        const remote = step.kind === "deno"
+          ? detectRemoteModuleGap(result.output)
+          : undefined;
+        if (remote) {
+          leftToCi.push(
+            `${where} could not fetch its remote modules (${remote.cause})`,
+          );
+          if (isUnitSuite(task)) unitSuiteLeftToCi = true;
+          continue;
+        }
         // Issue #3255: `cargo test` fails the same way `cargo check` does
         // when the host's rustc is older than the tree's rust-version — an
         // environment fault, not a bad resolution, so it is named as such.
@@ -355,7 +381,13 @@ export async function verifyResolvedTree(
   // just skipped, and a `skipped` verdict would refuse the resolution that
   // budget exists to let land (Issue #4326).
   const cargoSkippedAsOnlySuite = !unitSuiteRan && skippedCargoSuite;
-  if (!unitSuiteRan && !skippedCargoSuite && await hasQualityScript(repoDir)) {
+  // A unit suite the host could not fetch (Issue #4422) is not replaced by
+  // quality.sh either: the script runs the same suite and hits the same host
+  // limit, so the suite stays left to CI.
+  if (
+    !unitSuiteRan && !skippedCargoSuite && !unitSuiteLeftToCi &&
+    await hasQualityScript(repoDir)
+  ) {
     // Issue #2388: no manifest names a unit suite, but the repository has its
     // own quality gate — run that, inside whatever budget is left.
     const step: ResolutionTask = {
@@ -397,7 +429,10 @@ export async function verifyResolvedTree(
     unitSuiteRan = true;
   }
 
-  if (!unitSuiteRan && !cargoSkippedAsOnlySuite) {
+  // A unit suite left to CI for want of remote modules is not "nothing ran the
+  // cases" either: it was not run because the host could not, and the report
+  // names it (Issue #4422).
+  if (!unitSuiteRan && !cargoSkippedAsOnlySuite && !unitSuiteLeftToCi) {
     // Choosing a side compiles perfectly while dropping the other side's
     // behaviour, so the type check alone does not verify a resolution.
     return {
@@ -414,10 +449,14 @@ export async function verifyResolvedTree(
       !typed.detail.includes(CARGO_BUILD_SKIPPED_FOR_MERGE)
     ? `; ${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`
     : "";
+  const suiteNote = leftToCi.length > 0
+    ? `; ${leftToCi.join("; ")} — left to the milestone PR's CI (Issue #4422)`
+    : "";
   return {
     status: "passed",
-    detail: `${ran.join("; ")} passed${cargoNote}`,
+    detail: `${ran.join("; ")} passed${cargoNote}${suiteNote}`,
     output: "",
     ...(cargoLeftToCi ? { cargoSkipped: true } : {}),
+    ...(leftToCi.length > 0 ? { suiteLeftToCi: leftToCi.join("; ") } : {}),
   };
 }

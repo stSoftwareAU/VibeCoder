@@ -127,6 +127,12 @@ export interface MilestoneSyncConflict {
    */
   cargoSkipped?: boolean;
   /**
+   * Set when a Deno task could not fetch its remote modules because the host
+   * is offline or blocked (Issue #4422). The task did not run, so the report
+   * names it instead of claiming it passed; the milestone PR's CI runs it.
+   */
+  suiteLeftToCi?: string;
+  /**
    * What the triage decided, file by file (Issue #1559). Present only for an
    * `auto` resolution, and the reason each decision was safe to take.
    */
@@ -339,6 +345,15 @@ export function buildConflictEscalationComment(
         `merged tree was NOT checked before it landed (Issue #4326): the ` +
         `milestone PR's CI builds it, and a red build there is a resolution ` +
         `to revisit.`
+      : e.conflict.suiteLeftToCi
+      ? `The repository's type check passed, but ${e.conflict.suiteLeftToCi}: ` +
+        `the host could not reach the module host, so that task did NOT run ` +
+        `and this report does not claim it passed (Issue #4422). The ` +
+        `milestone PR's CI runs it, and a red run there is a resolution to ` +
+        `revisit.` +
+        (e.conflict.cargoSkipped
+          ? ` Cargo was not run either (Issue #4326).`
+          : "")
       : e.conflict.cargoSkipped
       ? `Deno checks passed before the merge landed. Cargo was not run, so ` +
         `this report does not claim the cargo half passed: the milestone ` +

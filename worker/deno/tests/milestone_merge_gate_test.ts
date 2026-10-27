@@ -14,6 +14,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   checkMergedTree,
   collapseRepeatedLines,
+  detectRemoteModuleGap,
   detectRustToolchainGap,
   findTypeCheckProjects,
   isMergeGateFailure,
@@ -490,4 +491,91 @@ Deno.test("findTypeCheckProjects - toolchain coverage cannot hide a nested proje
       );
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4422 — a host with no route to a remote module host is an environment
+// fault, not a bad resolution
+// ---------------------------------------------------------------------------
+
+const ESM_UNREACHABLE_URL =
+  "https://esm.sh/react@19.2.8/es2022/jsx-runtime.mjs";
+
+/** What `deno task test` prints on a host with no route to esm.sh. */
+const ESM_UNREACHABLE_OUTPUT = [
+  `Download ${ESM_UNREACHABLE_URL}`,
+  `error: Import '${ESM_UNREACHABLE_URL}' failed.`,
+  `    0: error sending request for url (${ESM_UNREACHABLE_URL}): client error (Connect): unsuccessful tunnel`,
+  "    1: client error (Connect)",
+  "    2: unsuccessful tunnel",
+  "    at https://esm.sh/react@19.2.8/jsx-runtime?target=es2022:2:15",
+].join("\n");
+
+Deno.test("detectRemoteModuleGap - an import that failed to connect names its URL and the cause line (Issue #4422)", () => {
+  const gap = detectRemoteModuleGap(ESM_UNREACHABLE_OUTPUT);
+  assertEquals(gap?.url, ESM_UNREACHABLE_URL);
+  assertStringIncludes(gap!.cause, "error sending request for url");
+});
+
+Deno.test("detectRemoteModuleGap - an import that returned 404 is an ordinary failure, not a gap (Issue #4422)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "Download https://esm.sh/x\n" +
+        "error: Import 'https://esm.sh/x' failed, not found.\n" +
+        "    at file:///work/test.ts:1:1\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - a bad certificate on a fetched import is an ordinary failure, not a gap (Issue #4422)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "error: Import 'https://esm.sh/x' failed.\n" +
+        "    0: invalid peer certificate: UnknownIssuer\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - connection words with no import failure are not a gap (Issue #4422)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "    0: error sending request for url (https://esm.sh/x)\n" +
+        "    1: unsuccessful tunnel\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - a cause line before the import line is not a gap (Issue #4422)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "    0: unsuccessful tunnel\n" +
+        "error: Import 'https://esm.sh/x' failed.\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - a 200000-character line is capped and the output is still read correctly (Issue #4422)", () => {
+  const hostile = "' ".repeat(100_000);
+  assertEquals(hostile.length, 200_000);
+  const gap = detectRemoteModuleGap(`${hostile}\n${ESM_UNREACHABLE_OUTPUT}`);
+  assertEquals(gap?.url, ESM_UNREACHABLE_URL);
+  assertEquals(detectRemoteModuleGap(hostile), undefined);
+});
+
+Deno.test("detectRemoteModuleGap - a 50000-line output is read in linear time to the right result (Issue #4422)", () => {
+  const filler = Array.from({ length: 50_000 }, () => "    at frame");
+  const gap = detectRemoteModuleGap(
+    [...filler, ...ESM_UNREACHABLE_OUTPUT.split("\n")].join("\n"),
+  );
+  assertEquals(gap?.url, ESM_UNREACHABLE_URL);
+  // The same volume of connection words with no import failure is no gap.
+  const noImport = Array.from(
+    { length: 50_000 },
+    () => "    0: unsuccessful tunnel",
+  );
+  assertEquals(detectRemoteModuleGap(noImport.join("\n")), undefined);
 });
