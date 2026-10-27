@@ -187,7 +187,7 @@ export function globMatch(pattern: string, value: string): boolean {
   let starP = -1;
   let starV = 0;
   while (vi < v.length) {
-    if (pi < p.length && (p[pi] === "?" || p[pi] === v[vi])) {
+    if (p[pi] === "?" || p[pi] === v[vi]) {
       pi++;
       vi++;
     } else if (pi < p.length && p[pi] === "*") {
