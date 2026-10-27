@@ -1209,6 +1209,27 @@ function deniedOn(
   return { denied, possible };
 }
 
+/**
+ * Conditions of the conditioned Deny statements of `role` that cover `action`
+ * on `target`. Such a Deny does not remove the chain, but it may narrow when
+ * it applies, so its conditions are recorded on the assessment.
+ */
+function conditionedDenyConditions(
+  role: RoleIr,
+  action: string,
+  target: TargetRef,
+  fromFile: string,
+): string[] {
+  const out: string[] = [];
+  for (const d of expandGrants(role.policies, "Deny")) {
+    if (!d.stmt.conditioned || !actionCovers(d.action, action)) continue;
+    if (classify(d.res, target, fromFile) === "match") {
+      out.push(...d.stmt.conditions);
+    }
+  }
+  return out;
+}
+
 /** Whether `role`'s resolved boundary allows `action` on `target`. */
 function boundaryAllows(
   role: RoleIr,
@@ -1543,6 +1564,7 @@ function assumeChains(
         conditions: [
           ...matched.flatMap((g) => g.stmt.conditions),
           ...trust.conditions,
+          ...conditionedDenyConditions(c, action, t, c.file),
         ],
         unresolved: unresolved.filter((u) => u.length > 0),
         fix: assumeFix(c, t, extras),

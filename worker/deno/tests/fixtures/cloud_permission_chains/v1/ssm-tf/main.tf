@@ -43,7 +43,7 @@ resource "aws_iam_role_policy" "app_admin" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = "iam:*"
+      Action   = "iam:*"  # nosemgrep: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure, terraform.lang.security.iam.no-iam-priv-esc-funcs.no-iam-priv-esc-funcs, terraform.lang.security.iam.no-iam-priv-esc-other-users.no-iam-priv-esc-other-users, terraform.lang.security.iam.no-iam-resource-exposure.no-iam-resource-exposure -- deliberately over-privileged scanner fixture
       Resource = "*"
     }]
   })

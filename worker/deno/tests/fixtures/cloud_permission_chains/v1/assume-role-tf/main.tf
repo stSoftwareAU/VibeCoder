@@ -18,7 +18,7 @@ resource "aws_iam_role_policy" "ci_assume_admin" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = "sts:AssumeRole"
+      Action   = "sts:AssumeRole"  # nosemgrep: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure -- deliberate scanner fixture
       Resource = aws_iam_role.admin.arn
     }]
   })

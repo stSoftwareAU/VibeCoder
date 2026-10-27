@@ -31,6 +31,13 @@ const FIXTURES = new URL(
   import.meta.url,
 ).pathname;
 
+/** Element `i` of `xs`, failing the test (not the type-checker) when absent. */
+function at<T>(xs: readonly T[], i: number): T {
+  const value = xs[i];
+  assert(value !== undefined, `element ${i} missing`);
+  return value;
+}
+
 /** Assert each hop of `a` cites a line that contains the matching token. */
 async function assertHopsCited(
   dir: string,
@@ -71,7 +78,7 @@ function assertNoChain(assessments: ChainAssessment[]): void {
 Deno.test("assume-role-cfn: CiRole chains to AdminRole through every hop", async () => {
   const result = await scanCloudPermissionChains(`${FIXTURES}assume-role-cfn`);
   assertEquals(result.assessments.length, 1);
-  const [a] = result.assessments;
+  const a = at(result.assessments, 0);
   assertEquals(a.kind, "assume-role-escalation");
   assertEquals(a.status, "chain");
   assertEquals(a.caller, "CiRole");
@@ -91,7 +98,7 @@ Deno.test("assume-role-cfn: CiRole chains to AdminRole through every hop", async
 Deno.test("assume-role-tf: the same escalation in Terraform", async () => {
   const result = await scanCloudPermissionChains(`${FIXTURES}assume-role-tf`);
   assertEquals(result.assessments.length, 1);
-  const [a] = result.assessments;
+  const a = at(result.assessments, 0);
   assertEquals(a.kind, "assume-role-escalation");
   assertEquals(a.status, "chain");
   assertEquals(a.caller, "aws_iam_role.ci");
@@ -108,7 +115,7 @@ Deno.test("passrole-lambda-cfn: PassRole plus CreateFunction runs as a privilege
     `${FIXTURES}passrole-lambda-cfn`,
   );
   assertEquals(result.assessments.length, 1);
-  const [a] = result.assessments;
+  const a = at(result.assessments, 0);
   assertEquals(a.kind, "passrole-compute");
   assertEquals(a.status, "chain");
   assertEquals(a.signature, "passrole-compute|CiRole|RuntimeRole");
@@ -125,7 +132,7 @@ Deno.test("passrole-lambda-tf: the same PassRole chain in Terraform", async () =
     `${FIXTURES}passrole-lambda-tf`,
   );
   assertEquals(result.assessments.length, 1);
-  const [a] = result.assessments;
+  const a = at(result.assessments, 0);
   assertEquals(a.kind, "passrole-compute");
   assertEquals(a.status, "chain");
   assertEquals(
@@ -143,7 +150,7 @@ Deno.test("passrole-lambda-tf: the same PassRole chain in Terraform", async () =
 Deno.test("ssm-cfn: SendCommand to an instance whose role is more privileged", async () => {
   const result = await scanCloudPermissionChains(`${FIXTURES}ssm-cfn`);
   assertEquals(result.assessments.length, 1);
-  const [a] = result.assessments;
+  const a = at(result.assessments, 0);
   assertEquals(a.kind, "ssm-send-command");
   assertEquals(a.status, "chain");
   assertEquals(a.signature, "ssm-send-command|CiRole|AppInstance");
@@ -157,7 +164,7 @@ Deno.test("ssm-cfn: SendCommand to an instance whose role is more privileged", a
 Deno.test("ssm-tf: the same SSM chain in Terraform", async () => {
   const result = await scanCloudPermissionChains(`${FIXTURES}ssm-tf`);
   assertEquals(result.assessments.length, 1);
-  const [a] = result.assessments;
+  const a = at(result.assessments, 0);
   assertEquals(a.kind, "ssm-send-command");
   assertEquals(a.status, "chain");
   assertEquals(
@@ -203,7 +210,7 @@ Deno.test("permissions-boundary: a resolvable boundary removes the grant; an ext
   // assumption of BoundedRole yields nothing. The external boundary on
   // ExternalBoundedCi leaves its chain to AdminRole incomplete.
   assertEquals(result.assessments.length, 1);
-  const [a] = result.assessments;
+  const a = at(result.assessments, 0);
   assertEquals(a.status, "incomplete");
   assertEquals(a.caller, "ExternalBoundedCi");
   assertEquals(a.target, "AdminRole");
@@ -249,7 +256,7 @@ Deno.test("unparseable template is listed as not checked, never clean", () => {
   }]);
   assertEquals(result.assessments, []);
   assertEquals(result.notChecked.length, 1);
-  assertStringIncludes(result.notChecked[0], "broken.yaml");
+  assertStringIncludes(at(result.notChecked, 0), "broken.yaml");
 });
 
 Deno.test("a broken Terraform file is listed as not checked", () => {
@@ -259,7 +266,7 @@ Deno.test("a broken Terraform file is listed as not checked", () => {
   }]);
   assertEquals(result.assessments, []);
   assertEquals(result.notChecked.length, 1);
-  assertStringIncludes(result.notChecked[0], "broken.tf");
+  assertStringIncludes(at(result.notChecked, 0), "broken.tf");
 });
 
 // ---------------------------------------------------------------------------
@@ -438,10 +445,10 @@ ${TRUST_CODEBUILD}      Policies:
 `;
   const result = evaluateCloudPermissionChains([{ path: "t.yaml", text }]);
   assertEquals(result.assessments.length, 1);
-  assertEquals(result.assessments[0].status, "chain");
-  assertEquals(result.assessments[0].conditions.length, 1);
+  assertEquals(at(result.assessments, 0).status, "chain");
+  assertEquals(at(result.assessments, 0).conditions.length, 1);
   assertStringIncludes(
-    result.assessments[0].conditions[0],
+    at(at(result.assessments, 0).conditions, 0),
     "aws:RequestedRegion",
   );
 });
@@ -488,14 +495,14 @@ Deno.test("renderChainCandidates: ids match SEC-<12 hex> and the line shape", as
   });
   assertEquals(rendered.lines.length, 1);
   assertEquals(rendered.ids.length, 1);
-  assertMatch(rendered.ids[0], /^SEC-[0-9a-f]{12}$/);
+  assertMatch(at(rendered.ids, 0), /^SEC-[0-9a-f]{12}$/);
   assertStringIncludes(
-    rendered.lines[0],
-    `\`${rendered.ids[0]}\` cloud-permission-chain assume-role-escalation`,
+    at(rendered.lines, 0),
+    `\`${at(rendered.ids, 0)}\` cloud-permission-chain assume-role-escalation`,
   );
-  assertStringIncludes(rendered.lines[0], "— boundary:");
-  assertStringIncludes(rendered.lines[0], "— smallest fix:");
-  assertStringIncludes(rendered.lines[0], "hop 1:");
+  assertStringIncludes(at(rendered.lines, 0), "— boundary:");
+  assertStringIncludes(at(rendered.lines, 0), "— smallest fix:");
+  assertStringIncludes(at(rendered.lines, 0), "hop 1:");
   assertEquals(rendered.omitted, 0);
 });
 
@@ -506,7 +513,7 @@ Deno.test("renderChainCandidates: suppressed and known-open ids drop chain lines
     suppressedIds: [],
     knownOpenFindingIds: [],
   });
-  const id = open.ids[0];
+  const id = at(open.ids, 0);
   const suppressed = await renderChainCandidates(result, {
     repo: "owner/repo",
     suppressedIds: [id],
@@ -547,7 +554,7 @@ Deno.test("renderChainCandidates: max caps chain lines, unconditioned first, and
       "conditioned chain must be the one omitted",
     );
   }
-  assertStringIncludes(rendered.lines[0], "conditions: none visible");
+  assertStringIncludes(at(rendered.lines, 0), "conditions: none visible");
 });
 
 Deno.test("renderChainCandidates: repo text is sanitised and truncated", async () => {
@@ -562,7 +569,7 @@ Deno.test("renderChainCandidates: repo text is sanitised and truncated", async (
     { assessments: [hostile], filesRead: 1, notChecked: [] },
     { repo: "owner/repo", suppressedIds: [], knownOpenFindingIds: [] },
   );
-  const [line] = rendered.lines;
+  const line = at(rendered.lines, 0);
   assert(!line.includes("\n"), "no newlines in a rendered line");
   assert(!line.includes("Evil`Role"), "backticks stripped from repo text");
   assert(!line.includes("a".repeat(201)), "hop text truncated to 200");

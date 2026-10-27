@@ -1,0 +1,13 @@
+{
+  "issue": 4416,
+  "chunk": "top-up-4416",
+  "title": "top-up: cloud permission-chain scan and its Terraform HCL subset parser",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4416",
+  "definition": "Reviewed the static cloud permission-chain scan and the HCL subset parser it reads Terraform through. The scan parses CloudFormation and Terraform as text, never executes, interpolates or sends them anywhere, and reports three chains (assume-role escalation, PassRole to compute, SSM send-command) only when every hop is resolved; an unknown value stays unknown and yields an incomplete assessment, never a chain or a clean result. Repository text that reaches rendered output is sanitised and truncated. The parser is pure, bounded in input size and nesting depth, and returns problems rather than throwing.",
+  "status": "claimed",
+  "sweptAt": "db4d81db789d856b889d90d61e49460bfc03a011",
+  "paths": [
+    "worker/deno/lib/cloud_permission_chains.ts",
+    "worker/deno/lib/hcl_subset.ts"
+  ]
+}
