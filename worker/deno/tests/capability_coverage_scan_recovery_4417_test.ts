@@ -374,6 +374,129 @@ Deno.test("an authority line exactly at the window bound before the recovery sti
   assert(altersAuthorityOnRecovery(text));
 });
 
+/** Each look-alike has a retry on line 1, so only the look-alike line could make it apply. */
+const LOOK_ALIKE_NEGATIVES: Array<[string, string]> = [
+  ["tokens.push(x)", ["await retry(run);", "tokens.push(x);"].join("\n")],
+  [
+    "switch (token.kind)",
+    ["await retry(run);", "switch (token.kind) {", "  default:", "}"].join(
+      "\n",
+    ),
+  ],
+  [
+    'token.replace("Bearer ", "")',
+    ["await retry(run);", 'const raw = token.replace("Bearer ", "");'].join(
+      "\n",
+    ),
+  ],
+  ["user.uid", ["await retry(run);", "const id = user.uid;"].join("\n")],
+  [
+    "curl --user-agent",
+    ["await retry(run);", 'const args = ["curl", "--user-agent", url];'].join(
+      "\n",
+    ),
+  ],
+  [
+    'React fallback= prop near credentials: "include"',
+    [
+      "export function Panel(url: string) {",
+      "  return (",
+      "    <Boundary fallback={<Spinner />}>",
+      '      {fetch(url, { credentials: "include" })}',
+      "    </Boundary>",
+      "  );",
+      "}",
+    ].join("\n"),
+  ],
+  [
+    "retry word in a logger string literal",
+    [
+      "export function report(token: string) {",
+      '  logger.info("retry after token refresh");',
+      "}",
+    ].join("\n"),
+  ],
+  [
+    "multi-line block comment holding the signals",
+    [
+      "await retry(run);",
+      "/*",
+      " * swap the token, add --mount and reload the mounts",
+      " * for a broader credential",
+      " */",
+      "export const ready = true;",
+    ].join("\n"),
+  ],
+];
+
+for (const [name, text] of LOOK_ALIKE_NEGATIVES) {
+  Deno.test(`a look-alike is not applicable: ${name}`, () => {
+    assertEquals(altersAuthorityOnRecovery(text), false);
+  });
+}
+
+/** Real triggers that must still apply after the word and comment rules. */
+const REAL_TRIGGER_POSITIVES: Array<[string, string]> = [
+  [
+    "swapCredential( on a retry",
+    ["await retry(run);", "swapCredential(session);"].join("\n"),
+  ],
+  [
+    "useBroaderCredential on a retry",
+    ["await retry(run);", "const session = useBroaderCredential(config);"].join(
+      "\n",
+    ),
+  ],
+  [
+    "credential = broaderCredential on a retry",
+    ["await retry(run);", "credential = broaderCredential;"].join("\n"),
+  ],
+  [
+    "a TS private field #token = ... is code, not a comment",
+    ["await retry(run);", "  #token = await refresh();"].join("\n"),
+  ],
+  [
+    "a --user flag on a retry",
+    ["await retry(run);", 'const args = ["--user", "1000:1000"];'].join("\n"),
+  ],
+  [
+    "runArgs mutation on restart",
+    [
+      "export async function restart(session: { runArgs: string[] }) {",
+      "  session.runArgs.push(extra);",
+      "  return retry(() => launch(session));",
+      "}",
+    ].join("\n"),
+  ],
+];
+
+for (const [name, text] of REAL_TRIGGER_POSITIVES) {
+  Deno.test(`a real trigger is applicable: ${name}`, () => {
+    assert(altersAuthorityOnRecovery(text));
+  });
+}
+
+// Operands of the marker test: present before comment stripping (in a comment)
+// and absent after it. Each operand has its own case.
+Deno.test("an authorised marker inside a block comment turns the recovery check off", async () => {
+  const scan = await scanCapabilityCoverageFiles([{
+    path: RESTART_PATH,
+    text:
+      `/* recovery-scope-change: authorised, the operator widened the mounts */\n${WIDENING_RESTART}`,
+  }]);
+  assertEquals(scan.status, "none");
+  assertEquals(scan.findings, []);
+});
+
+Deno.test("an authorised marker outside any comment or string does not exempt the file", () => {
+  const text = [
+    "recovery-scope-change: authorised, the operator widened the mounts",
+    "await retry(run);",
+    "const token = await refresh();",
+  ].join("\n");
+  assert(altersAuthorityOnRecovery(text));
+});
+
 Deno.test("a suppression marker with the real id removes the recovery finding", async () => {
   const id = await coverageFindingId(RECOVERY_KIND, RESTART_PATH);
   const scan = await scanCapabilityCoverageFiles([{
@@ -439,71 +562,88 @@ export function update(request: { body: { role: string; tenantId: string } }) {
   assertEquals(recoveryFindingsOf(logging.findings), []);
 });
 
+// Each hostile test checks two things: the 200k run alone is rejected, and the
+// same run with a real trigger at its end is applied. The second assertion
+// shows the pattern under test actually ran over the long line.
+
 Deno.test("hostile input: the retry signal pattern rejects a 200k run without hanging", () => {
-  const text = `${"x".repeat(200_000)}\nretry`;
-  assertEquals(altersAuthorityOnRecovery(text), false);
+  const head = "const token = await refresh();\n";
+  const run = "retr".repeat(50_000);
+  assertEquals(altersAuthorityOnRecovery(`${head}${run}`), false);
+  assert(altersAuthorityOnRecovery(`${head}${run} retry`));
 });
 
 Deno.test("hostile input: the authority flag pattern rejects a 200k run without hanging", () => {
-  const text = `retry on denial\n${"x".repeat(200_000)}`;
-  assertEquals(altersAuthorityOnRecovery(text), false);
+  const head = "retry on denial\n";
+  const run = "x".repeat(200_000);
+  assertEquals(altersAuthorityOnRecovery(`${head}${run}`), false);
+  assert(altersAuthorityOnRecovery(`${head}${run} --mount`));
 });
 
 Deno.test("hostile input: the authority noun pattern rejects a 200k run without hanging", () => {
-  const text = `retry on denial\n${"token ".repeat(33_334)}`;
-  assertEquals(altersAuthorityOnRecovery(text), false);
+  const head = "retry on denial\n";
+  const run = "tokex ".repeat(33_334);
+  assertEquals(altersAuthorityOnRecovery(`${head}${run}`), false);
+  assert(altersAuthorityOnRecovery(`${head}${run}token swap`));
 });
 
 Deno.test("hostile input: the authority verb pattern rejects a 200k run without hanging", () => {
-  const text = `retry on denial\n${"swap ".repeat(40_000)}`;
-  assertEquals(altersAuthorityOnRecovery(text), false);
+  const head = "retry on denial\n";
+  const run = "swapx ".repeat(40_000);
+  assertEquals(altersAuthorityOnRecovery(`${head}token ${run}!`), false);
+  assert(altersAuthorityOnRecovery(`${head}token ${run}swap`));
 });
 
 Deno.test("hostile input: the authorised-marker pattern rejects a 200k run without hanging", () => {
-  const text = `retry on denial, token refresh\n// recovery-scope-change:${
-    " ".repeat(200_000)
-  }x`;
-  assertEquals(altersAuthorityOnRecovery(text), true);
+  const head = "retry on denial, token refresh\n// recovery-scope-change:";
+  const spaces = " ".repeat(200_000);
+  assertEquals(altersAuthorityOnRecovery(`${head}${spaces}x`), true);
+  assertEquals(altersAuthorityOnRecovery(`${head}${spaces}authorised`), false);
 });
 
-Deno.test("hostile input: the failure-term pattern rejects a 200k run without hanging", async () => {
-  const scan = await scanCapabilityCoverageFiles([
+/** Scan the refresh production file with one test file whose text is `testText`. */
+async function scanRefreshWithTest(testText: string) {
+  return await scanCapabilityCoverageFiles([
     { path: REFRESH_PATH, text: SAME_SCOPE_REFRESH },
     {
       path: REFRESH_TEST_PATH,
-      text:
-        `import "../src/session/refresh.ts";\nDeno.test("retry, restart and recover keep the same scope, the permitted operation succeeds", () => {});\n${
-          "x".repeat(200_000)
-        }`,
+      text: `import "../src/session/refresh.ts";\n${testText}`,
     },
   ]);
-  assertEquals(recoveryFindingsOf(scan.findings).length, 1);
+}
+
+Deno.test("hostile input: the failure-term pattern rejects a 200k run without hanging", async () => {
+  const run = "x".repeat(200_000);
+  const hostile = await scanRefreshWithTest(
+    `Deno.test("retry, restart and recover keep the same scope, the permitted operation succeeds", () => {});\n${run}`,
+  );
+  assertEquals(recoveryFindingsOf(hostile.findings).length, 1);
+  const reached = await scanRefreshWithTest(
+    `Deno.test("retry, restart and recover keep the same scope, the permitted operation succeeds", () => {});\n${run} denied`,
+  );
+  assertEquals(recoveryFindingsOf(reached.findings).length, 0);
 });
 
 Deno.test("hostile input: the non-widening pattern rejects a 200k run without hanging", async () => {
-  const scan = await scanCapabilityCoverageFiles([
-    { path: REFRESH_PATH, text: SAME_SCOPE_REFRESH },
-    {
-      path: REFRESH_TEST_PATH,
-      text:
-        `import "../src/session/refresh.ts";\nDeno.test("after a denial, preserves the permitted operation succeeds", () => {});\n${
-          "x".repeat(200_000)
-        }`,
-    },
-  ]);
-  assertEquals(recoveryFindingsOf(scan.findings).length, 1);
+  const run = "x".repeat(200_000);
+  const hostile = await scanRefreshWithTest(
+    `Deno.test("after a denial, preserves the permitted operation succeeds", () => {});\n${run}`,
+  );
+  assertEquals(recoveryFindingsOf(hostile.findings).length, 1);
+  const reached = await scanRefreshWithTest(
+    `Deno.test("after a denial, preserves the permitted operation succeeds", () => {});\n${run} preserves the same scope`,
+  );
+  assertEquals(recoveryFindingsOf(reached.findings).length, 0);
 });
 
 Deno.test("hostile input: the resumption pattern rejects a 200k run without hanging", async () => {
-  const scan = await scanCapabilityCoverageFiles([
-    { path: REFRESH_PATH, text: SAME_SCOPE_REFRESH },
-    {
-      path: REFRESH_TEST_PATH,
-      text:
-        `import "../src/session/refresh.ts";\nDeno.test("after a denial, keeps the same scope", () => {});\n${
-          "x".repeat(200_000)
-        }`,
-    },
-  ]);
-  assertEquals(recoveryFindingsOf(scan.findings).length, 1);
+  const run = "x".repeat(200_000);
+  const hostile = await scanRefreshWithTest(
+    `Deno.test("after a denial, keeps the same scope", () => {});\n${run}`,
+  );
+  assertEquals(recoveryFindingsOf(hostile.findings).length, 1);
+  const reached = await scanRefreshWithTest(
+    `Deno.test("after a denial, keeps the same scope", () => {});\n${run} succeeds`,
+  );
+  assertEquals(recoveryFindingsOf(reached.findings).length, 0);
 });

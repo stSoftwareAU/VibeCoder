@@ -6,8 +6,10 @@
  * authorisation, sensitive-field updates, redaction at a log or outbound
  * sink, and the recovery boundary (a retry, restart or fallback line near a
  * credential, mount or identity alteration keeps the configured authority).
- * A missing test of that contract is a best-practices finding. It is not
- * proof of an exploit — the security scan owns those.
+ * The recovery trigger is described by `for example` lists; the full lists
+ * live in `docs/BEST-PRACTICES-SCAN.md`. A missing test of that contract is a
+ * best-practices finding. It is not proof of an exploit — the security scan
+ * owns those.
  *
  * A file named security is not what the check looks for. A test that was
  * not executed is not a pass. A read failure is unknown, never a clean scan.
@@ -18,6 +20,7 @@
  */
 
 import { cap } from "./best_practices_capper.ts";
+import { stripLineAndBlockComments } from "./spawn_chokepoint_scan.ts";
 
 /** Findings kept in one best-practices run. Matches the template's cap. */
 export const COVERAGE_FILING_CAP = 6;
@@ -124,16 +127,31 @@ function leaksToSink(text: string): boolean {
 
 /** A line-local window: a recovery signal and an authority signal this many lines apart still count, in either order. */
 const RECOVERY_WINDOW_LINES = 25;
+/**
+ * `fall back` is a recovery word unless it is a `fallback=` or `fallback:`
+ * prop, which is UI markup rather than a retry.
+ */
 const RECOVERY_SIGNAL =
-  /\b(?:retr(?:y|ies|ying)|restart(?:s|ed|ing)?|recover(?:y|ies|ed|ing|s)?|fall[- ]?back|relaunch(?:es|ed|ing)?|reconnect(?:s|ed|ing)?)\b/i;
-/** Launch or identity flags that alter the authority by themselves. */
+  /\b(?:retr(?:y|ies|ying)|restart(?:s|ed|ing)?|recover(?:y|ies|ed|ing|s)?|fall[- ]?back(?!\s*[=:])|relaunch(?:es|ed|ing)?|reconnect(?:s|ed|ing)?)\b/i;
+/**
+ * Launch or identity flags that alter the authority by themselves. These are
+ * matched in string literals too, because argv flags are written as literals.
+ * `--user-agent` and `user.uid` are not flags.
+ */
 const AUTHORITY_FLAG_SIGNAL =
-  /--volume|--mount|--user\b|--network|--privileged|runArgs|setuid|\bsudo\b|\buid\b|\bgid\b/i;
+  /--volume|--mount|--user\b(?![-\w])|--network|--privileged|runArgs|setuid|setgid|--uid\b|--gid\b|\bsudo\b|\bsu\b -/i;
 /** Nouns naming authority. They count only with an alteration verb on the same line. */
 const AUTHORITY_NOUN_SIGNAL =
   /\bcredentials?\b|\btokens?\b|\bmounts?\b|allowed[ _-]?(?:repositories|repos|scope)/i;
+/**
+ * An alteration verb as a whole word, read after {@link splitCamel}. It is
+ * not a method on a token or credential (`tokens.push(`, `token.replace(`),
+ * and `switch (` is the keyword rather than the verb. `(?<![\w$])` keeps it
+ * from being the tail of a longer identifier.
+ */
 const AUTHORITY_ALTER_VERB =
-  /swap|rotat|replac|switch|refresh|reload|re-?read|re-?mount|append|push|override|escalat|elevat|widen|broaden|fall(?:s)? ?back to|use(?:s)? (?:a|the) (?:different|other|broader)/i;
+  /(?<![\w$])(?<!\b(?:credentials?|tokens?)(?:\[\w*\])?\.)(?!switch\s*\()(?:swapp?|rotat|replac|switch|refresh|reload|re-?read|re-?mount|append|push|overrid|escalat|elevat|widen|broaden|broader)(?:e|es|ed|ing|s)?\b|(?<![\w$])fall(?:s)? ?back to\b|(?<![\w$])use(?:s)? (?:a|the) (?:different|other|broader)\b/i;
+/** Read from comments only: present once string literals are blanked, gone once comments are stripped. */
 const AUTHORISED_SCOPE_CHANGE = /recovery-scope-change:\s*authorised/i;
 const RECOVERY_FAILURE_TERM = /denied|denial|fail(?:s|ure)?|injected/i;
 const RECOVERY_NON_WIDENING_TERM =
@@ -146,48 +164,56 @@ function anyLineMatches(text: string, pattern: RegExp): boolean {
   return text.split("\n").some((line) => pattern.test(line));
 }
 
-/** True when a line is a comment: it starts, once indented, with `//`, `/*`, `*` or `#`. */
-function isCommentLine(line: string): boolean {
-  const trimmed = line.trimStart();
-  return trimmed.startsWith("//") || trimmed.startsWith("/*") ||
-    trimmed.startsWith("*") || trimmed.startsWith("#");
+/** Split camelCase so `swapCredential` reads as `swap Credential` for the whole-word rules. */
+function splitCamel(line: string): string {
+  return line.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
 }
 
-/** The code part of a line: a comment line is empty and a trailing ` // ...` is cut. */
-function stripLineComment(line: string): string {
-  if (isCommentLine(line)) return "";
-  const cut = line.indexOf(" // ");
-  return cut === -1 ? line : line.slice(0, cut);
+/**
+ * A string literal, quotes included. `"` and `'` literals end on their own
+ * line; a template literal may span lines.
+ */
+const STRING_LITERAL =
+  /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+
+/** The text with each string literal blanked to spaces. Newlines are kept so line numbers still align. */
+function blankStringLiterals(text: string): string {
+  return text.replace(STRING_LITERAL, (match) => match.replace(/[^\n]/g, " "));
 }
 
-/** An authority line is a launch or identity flag, or a noun with an alteration verb on the same line. */
-function isAuthorityLine(code: string): boolean {
-  if (AUTHORITY_FLAG_SIGNAL.test(code)) return true;
-  return AUTHORITY_NOUN_SIGNAL.test(code) && AUTHORITY_ALTER_VERB.test(code);
+/**
+ * An authority line is a launch or identity flag (read from the literal text),
+ * or a noun with an alteration verb on the same line (read from the words
+ * with string literals and comments removed).
+ */
+function isAuthorityLine(words: string, literal: string): boolean {
+  if (AUTHORITY_FLAG_SIGNAL.test(literal)) return true;
+  return AUTHORITY_NOUN_SIGNAL.test(words) && AUTHORITY_ALTER_VERB.test(words);
 }
 
 /**
  * True when a retry, restart, recovery, fallback, relaunch or reconnect line
  * sits within {@link RECOVERY_WINDOW_LINES} of an authority line, in either
- * order. An authorised scope change marker on a comment line turns the check
- * off. Comment lines are not matched. Each line is tested once, so the scan is
- * linear in the text length.
+ * order. An authorised scope change marker inside a comment turns the check
+ * off. Comments are removed with the shared `stripLineAndBlockComments`, and
+ * string literal contents are blanked so prose inside a literal is not read as
+ * code. Each line is tested once, so the scan is linear in the text length.
  */
 export function altersAuthorityOnRecovery(text: string): boolean {
-  const lines = text.split("\n");
-  if (
-    lines.some((line) =>
-      isCommentLine(line) && AUTHORISED_SCOPE_CHANGE.test(line)
-    )
-  ) {
-    return false;
-  }
+  const blanked = blankStringLiterals(text);
+  const words = stripLineAndBlockComments(blanked).split("\n");
+  const literal = stripLineAndBlockComments(text).split("\n");
+  const authorised = blanked.split("\n").some((line, index) =>
+    AUTHORISED_SCOPE_CHANGE.test(line) &&
+    !AUTHORISED_SCOPE_CHANGE.test(words[index] ?? "")
+  );
+  if (authorised) return false;
   let lastRecovery = -Infinity;
   let lastAuthority = -Infinity;
-  for (const [index, raw] of lines.entries()) {
-    const code = stripLineComment(raw);
+  for (const [index, raw] of words.entries()) {
+    const code = splitCamel(raw);
     const isRecovery = RECOVERY_SIGNAL.test(code);
-    const isAuthority = isAuthorityLine(code);
+    const isAuthority = isAuthorityLine(code, literal[index] ?? "");
     if (isRecovery) {
       if (index - lastAuthority <= RECOVERY_WINDOW_LINES) return true;
       lastRecovery = index;
