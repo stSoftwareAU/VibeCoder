@@ -9,6 +9,7 @@
 
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
+import { resolveBaseMergeQueued } from "./merge_queue_runtime.ts";
 import {
   ACTIONS_APP_SLUG,
   fetchCheckRunsBatch,
@@ -96,7 +97,13 @@ export type MergeBlockedReason =
    * The milestone's route to the default branch could not be *read*
    * (Issue #477) — a transient deferral, not a refusal.
    */
-  | "milestone_route_unreadable";
+  | "milestone_route_unreadable"
+  /**
+   * The base requires a merge queue (Issue #4424). The queue, not the worker,
+   * lands the PR: it tests the PR against its future head, which a direct
+   * merge would bypass. A deliberate hold, not a fault.
+   */
+  | "merge_queue";
 
 /**
  * A head commit younger than this is not merged (Issue #4375). After a
@@ -234,6 +241,16 @@ export interface DirectMergeOptions extends PreMergeGateOptions {
    * refusal exactly as it was for every other call site.
    */
   approvedDefaultBranch?: ApprovedDefaultBranchPolicy;
+  /**
+   * Whether the PR's base requires a merge queue (Issue #4424). Defaults to
+   * {@link resolveBaseMergeQueued} through the passed gh runner. `null` is
+   * "not queued", so a failed lookup proceeds as before.
+   */
+  isBaseMergeQueuedFn?: (
+    repo: string,
+    baseRefName: string,
+    ghCommandFn: GhCommandFn,
+  ) => Promise<boolean | null>;
 }
 
 /** Injectable pre-merge gate function type (enables testing). */
@@ -1043,6 +1060,10 @@ export async function enforcePreMergeRequirements(
  * typed deferral (`blocked: "default_branch_unapproved"`), so the PR is held
  * and the hold is logged rather than retried as a failure forever.
  *
+ * Merge queue (Issue #4424): a default branch whose effective rules include a
+ * merge queue is landed by that queue, never by a direct merge. Such a PR is
+ * a typed deferral (`blocked: "merge_queue"`) with no gate and no merge call.
+ *
  * Pre-merge backstop (Issue #2582): before merging, {@link
  * enforcePreMergeRequirements} re-fetches CI status and branch freshness and
  * refuses to merge unless CI is green and the branch is current. A blocked
@@ -1125,6 +1146,40 @@ export async function directMergePr(
         ok: true,
         value: { merged: false, blocked: "default_branch_unapproved" },
       };
+    }
+  }
+
+  // Issue #4424: only the default branch can be queued, so the question is
+  // asked only for a default-branch target. A queued base is landed by its
+  // merge queue, which tests the PR against its future head; a direct merge
+  // would bypass that, so it never reaches the gate or the merge call.
+  if (guard.value) {
+    let baseRefName: string;
+    try {
+      baseRefName = (await ghCommandFn([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "baseRefName",
+        "--jq",
+        ".baseRefName",
+      ])).trim();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        error: new Error(
+          `Refusing to direct-merge PR #${prNumber} in ${repo}: its base branch could not be read to check for a merge queue (${message}). Failing closed; will retry on the next maintenance scan (Issue #4424).`,
+        ),
+      };
+    }
+    const queued = await (options.isBaseMergeQueuedFn ??
+      resolveBaseMergeQueued)(repo, baseRefName, ghCommandFn);
+    if (queued === true) {
+      return { ok: true, value: { merged: false, blocked: "merge_queue" } };
     }
   }
 

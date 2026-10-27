@@ -107,6 +107,12 @@ export interface SweepAutoMergeOptions {
    */
   updateBranchFn: (repo: string, prNumber: number) => Promise<Result<void>>;
   /**
+   * Whether a base branch is behind a GitHub merge queue (Issue #4424). An
+   * armed, behind PR on a queued base is not sent to `updateBranchFn`: the
+   * queue tests it against its future head, and auto-merge is already armed.
+   */
+  isMergeQueueBase: (repo: string, baseRefName: string) => Promise<boolean>;
+  /**
    * Re-check the PR's base before any arming or branch update (Issue #3433).
    * `hold` records the outcome and skips the PR; `proceed` with `disarmed`
    * means auto-merge was just disarmed, so the PR is treated as unarmed.
@@ -174,6 +180,7 @@ export async function sweepAutoMerge(
     listOpenPrs,
     prLiveState,
     updateBranchFn,
+    isMergeQueueBase,
     checkBaseIntegrity,
     attemptMerge,
     recordOutcome,
@@ -188,6 +195,19 @@ export async function sweepAutoMerge(
     prsSkippedNotOpen: 0,
   };
   const authors = fleetAuthors.join(", ");
+  // Issue #4424: a base whose queue state cannot be read, or a PR with no
+  // base ref, is "not queued" — today's behaviour.
+  const isBaseQueued = async (
+    repo: string,
+    pr: SweepablePr,
+  ): Promise<boolean> => {
+    if (!pr.baseRefName) return false;
+    try {
+      return await isMergeQueueBase(repo, pr.baseRefName);
+    } catch {
+      return false;
+    }
+  };
   // Issue #1515: one quota exhaustion is one line, not one per repository.
   const quota = new RepoLoopQuotaStop(
     "Auto-merge sweep",
@@ -301,6 +321,11 @@ export async function sweepAutoMerge(
         // until the review is answered, so the update unblocks nothing — and
         // on GRQ#5032 it moved the head underneath the owner's review. The
         // merge attempt is skipped too: auto-merge is already armed.
+        //
+        // Issue #4424: nor is one on a base behind a merge queue. The queue
+        // tests the PR against its future head, so an update only moves that
+        // head; the queue lands the PR once it is green. The merge attempt is
+        // skipped too: auto-merge is already armed.
         if (
           armedNow && reading.behind === true &&
           reading.changesRequested === true
@@ -309,6 +334,19 @@ export async function sweepAutoMerge(
             "Auto-merge sweep: armed PR is behind its base, but a reviewer " +
               "requested changes (CHANGES_REQUESTED) — no branch update " +
               "until the review is answered (Issue #2702)",
+            { repo, prNumber: pr.number },
+          );
+          continue;
+        }
+        if (
+          armedNow && reading.behind === true &&
+          reading.mergeable !== "CONFLICTING" &&
+          await isBaseQueued(repo, pr)
+        ) {
+          logger.info(
+            "Auto-merge sweep: armed PR is behind its base, which is behind a " +
+              "GitHub merge queue — no branch update; the queue tests the PR " +
+              "against its future head and lands it (Issue #4424)",
             { repo, prNumber: pr.number },
           );
           continue;

@@ -275,6 +275,8 @@ export function blockedReason(reason: MergeBlockedReason | undefined): string {
       return "milestone_rollup_merged";
     case "milestone_route_unreadable":
       return "milestone_route_unreadable";
+    case "merge_queue":
+      return "merge_queue";
     default:
       // Exhaustiveness guard: a new MergeBlockedReason must be handled here
       // explicitly rather than silently mapped to "checks_pending" (#2794).

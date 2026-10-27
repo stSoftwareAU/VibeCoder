@@ -98,6 +98,12 @@ export type MergeAttemptOutcome =
    */
   | { kind: "default_branch_unapproved" }
   /**
+   * The PR's default-branch base requires a merge queue (Issue #4424). The
+   * queue, not the worker, lands the PR, so the direct merge is withheld — a
+   * deliberate hold, not a fault, and nothing to escalate.
+   */
+  | { kind: "merge_queue" }
+  /**
    * A milestone summary PR whose milestone still has open children (#3909).
    * Deliberately deferred, not a fault — the gate has already explained
    * itself on the PR, and the merge is retried once the children close.
@@ -210,6 +216,10 @@ export function classifyMergeAttempt(
     case "default_branch_unapproved":
       // The guard is holding the PR for a review (Issue #1082). The
       // blocking-PR stall watchdog reports the repo if the hold lasts.
+      return "await_checks";
+    case "merge_queue":
+      // The base's merge queue lands the PR (Issue #4424). Nothing for the
+      // worker to do, and nothing a human needs to see.
       return "await_checks";
     case "behind_target":
       return "update_branch";
