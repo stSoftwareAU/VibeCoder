@@ -119,3 +119,17 @@ export async function resolveBaseMergeQueued(
   }
   return read;
 }
+
+/**
+ * Build the production `isMergeQueueBase` dep for the branch-update scan and
+ * the auto-merge sweep (Issue #4424): {@link resolveBaseMergeQueued} through
+ * `ghCommandFn`, with a `null` read treated as "not queued".
+ *
+ * @param ghCommandFn - The gh runner the caller already uses
+ */
+export function makeIsMergeQueueBase(
+  ghCommandFn: GhCommandFn,
+): (repo: string, baseRefName: string) => Promise<boolean> {
+  return async (repo, baseRefName) =>
+    (await resolveBaseMergeQueued(repo, baseRefName, ghCommandFn)) === true;
+}

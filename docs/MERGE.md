@@ -23,8 +23,8 @@ caught by the other:
 
 | Layer        | Where                      | Mechanism                                                        | Covers                                                                            |
 | ------------ | -------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| **Wall**     | GitHub repository rulesets | Required status checks + strict "branch up to date"              | The native auto-merge path (`gh pr merge --auto`) and any human/third-party merge |
-| **Backstop** | Worker pre-merge gate      | Re-fetch CI status + branch freshness immediately before merging | The worker's direct-merge fallback used on unprotected branches                   |
+| **Wall**     | GitHub repository rulesets | Required status checks + strict "branch up to date" (strict is off when a merge queue is enabled) | The native auto-merge path (`gh pr merge --auto`) and any human/third-party merge |
+| **Backstop** | Worker pre-merge gate      | Re-fetch CI status + branch freshness immediately before merging | The worker's direct-merge fallback used on unprotected branches; never lands a PR on a merge-queued default branch (`blocked: merge_queue`) |
 
 The two layers are deliberately redundant. The ruleset is the primary defence;
 the worker backstop closes the gap on repositories where no ruleset covers the
@@ -35,9 +35,11 @@ admin rights on the repo).
 flowchart TD
     A[Worker wants to merge PR] --> B{Branch protected?}
     B -- "Yes (wall)" --> C[gh pr merge --auto]
-    C --> D[GitHub holds merge until<br/>required checks green + branch up to date]
+    C --> D["GitHub holds merge until required checks green<br/>(and branch up to date, unless a merge queue is enabled)"]
     B -- "No (fall back)" --> E[directMergePr — backstop gate]
-    E --> F{CI status?}
+    E --> Q{Default branch with<br/>a merge queue?}
+    Q -- yes --> R["Blocked: merge_queue<br/>the queue lands it; no merge call"]
+    Q -- no --> F{CI status?}
     F -- pending/failed --> G[Blocked: leave PR open]
     F -- "no checks at all" --> N[Blocked: unverified —<br/>branch update, retry next cycle]
     F -- passed --> H{behindBy > 0?}
@@ -51,7 +53,7 @@ flowchart TD
 ## Layer 1 — the GitHub ruleset "wall"
 
 The default branch's ruleset is configured **at setup time**, once per monitored
-repo, idempotently. It sets two things:
+repo, idempotently. It sets these things:
 
 - **One required check: `gate`.** The `Quality` workflow
   (`.github/workflows/quality.yml`) calls each gated workflow as a reusable
@@ -67,7 +69,12 @@ repo, idempotently. It sets two things:
 - **Require the branch to be up to date**
   (`strict_required_status_checks_policy: true`) — a stale feature branch must
   be brought current with its target before the merge is allowed, so green CI
-  results are never trusted against an out-of-date head.
+  results are never trusted against an out-of-date head. **Unless the merge
+  queue is enabled** on the default branch: then the policy is `false`, and the
+  queue tests each PR against its future head instead
+  ([Merge queue](#merge-queue)).
+- **A merge queue, where GitHub allows one** — a `merge_queue` rule on the same
+  ruleset, decided at each setup run ([Merge queue](#merge-queue)).
 
 ### Rulesets only — classic branch protection is never written
 
@@ -247,6 +254,101 @@ or delete per repo — and never runs in the per-tick main loop. A repo already
 covered by someone else's ruleset short-circuits before the direct-push
 detection and the check-name discovery.
 
+### Merge queue
+
+Where GitHub allows one, the default-branch ruleset can also carry a **merge
+queue** (Issue #4424). A queue lands approved PRs in batches and tests each one
+against the real future head of the branch, so the worker stops asking a PR to
+be current with its base before it merges. The queue is **default-branch only**.
+A `milestone/**` branch keeps its own rules, and the direct-merge fallback never
+lands a PR on a queued base.
+
+**Availability** is decided from repository and organisation metadata where that
+is conclusive, and by a probe where it is not
+([`merge_queue.ts`](../worker/deno/lib/merge_queue.ts)):
+
+| Repository                                              | Result        | Decided by |
+| ------------------------------------------------------- | ------------- | ---------- |
+| Owned by a user account                                 | unavailable   | metadata   |
+| Organisation, public                                    | available     | metadata   |
+| Organisation, private, plan `enterprise`                | available     | metadata   |
+| Organisation, private, any other named plan (e.g. Team) | unavailable   | metadata   |
+| Organisation, private, plan unreadable                  | probe decides | probe      |
+| Repository metadata unreadable                          | probe decides | probe      |
+
+The probe creates a **disabled** ruleset named `Vibe Coder merge queue probe`
+carrying a `merge_queue` rule, then deletes it straight away. GitHub's
+`422 Invalid rule 'merge_queue'` means unavailable. Any other create failure, or
+a probe that cannot be deleted, is `unknown`; a leftover probe is named in the
+output for deletion by hand. `unknown` is never treated as available.
+
+**Opt-out.** The repository topic `no-merge-queue` opts the repository out. A
+topic list that cannot be read is an error, never read as "not opted out"
+([`readMergeQueueOptOut`](../worker/deno/lib/merge_queue.ts)).
+
+**Enablement.** The queue is added only when availability is established, the
+repository is not opted out, and every required check's workflow runs on the
+`merge_group` event. Each required check is judged by
+[`merge_queue_workflows.ts`](../worker/deno/lib/merge_queue_workflows.ts), which
+refuses to enable the queue while a workflow lacks the `merge_group` trigger.
+The decision is shown below.
+
+```mermaid
+flowchart TD
+    A[Setup run: default-branch ruleset] --> B{Queue availability}
+    B -- unavailable --> X["unavailable<br/>falls back: strict kept, no queue"]
+    B -- unknown --> U["unverified<br/>nothing changed"]
+    B -- available --> C{Topic no-merge-queue?}
+    C -- yes --> O["opted-out<br/>falls back: strict kept, no queue"]
+    C -- unreadable --> U
+    C -- no --> D{Every required check's<br/>workflow has merge_group?}
+    D -- missing --> M["missing-merge-group<br/>falls back: strict kept, no queue"]
+    D -- unknown --> U
+    D -- ok --> E["enabled<br/>merge_queue rule added;<br/>strict set to false"]
+```
+
+The verdicts are:
+
+| Verdict              | Effect on the default-branch ruleset                                                 |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `enabled`            | `merge_queue` rule added; required checks kept with `strict_required_status_checks_policy: false` |
+| `opted-out`          | Falls back: no queue, strict up-to-date kept                                         |
+| `unavailable`        | Falls back: no queue, strict up-to-date kept                                         |
+| `missing-merge-group` | Falls back: no queue, strict up-to-date kept                                         |
+| `unverified`         | Nothing changes: an existing queue is never removed on an unverified read            |
+
+A definitive refusal removes a queue the worker wrote and restores
+`strict_required_status_checks_policy: true`. A queue rule a human tuned is kept.
+
+**Falling back** leaves the worker on the behaviour it has without a queue: a
+behind PR is updated, and the direct-merge gate refuses while it is behind. The
+setup run prints one line per repository with the reason for the fallback. The
+detection result is not written to `.config.json`: it is recomputed at each setup
+run, and the live ruleset is the record. (No write to `.config.json` in
+[`merge_queue.ts`](../worker/deno/lib/merge_queue.ts),
+[`merge_queue_workflows.ts`](../worker/deno/lib/merge_queue_workflows.ts) or
+[`default_branch_ruleset.ts`](../worker/deno/lib/default_branch_ruleset.ts).)
+
+**Queue parameters** come from `buildMergeQueueParameters()`
+([`merge_queue.ts`](../worker/deno/lib/merge_queue.ts)): grouping `ALLGREEN`; up
+to five entries built and five merged per batch; a minimum of one entry; a
+one-minute wait; a sixty-minute check response timeout. The merge method is
+`SQUASH` when the repository allows squash, otherwise `MERGE` when it allows
+merge commits, otherwise `REBASE` (`pickMergeMethod()`).
+
+**What a queued base changes.** On a merge-queued default branch, a PR that is
+only behind is not updated by the branch-update loop, nor by the armed-PR step of
+the auto-merge sweep; a conflicting PR still is
+([`pr_branch_update.ts`](../worker/deno/lib/pr_branch_update.ts),
+[`auto_merge_sweep.ts`](../worker/deno/lib/auto_merge_sweep.ts)). The queue tests
+the PR against its future head, and lands it once the checks pass there.
+
+**Non-default branches are unchanged.** The direct-merge queue check runs only
+for a default-branch target
+([`direct_merge.ts`](../worker/deno/lib/direct_merge.ts), the `prTargetsDefaultBranch`
+guard), and a `milestone/**` branch whose rules carry no `merge_queue` rule is
+not treated as queued ([`merge_queue_runtime.ts`](../worker/deno/lib/merge_queue_runtime.ts)).
+
 ## Layer 2 — the worker pre-merge "backstop"
 
 The native auto-merge path is covered by the ruleset. The **direct-merge
@@ -264,6 +366,15 @@ Immediately before merging, the gate:
    refuses when `behindBy > 0`, so stale CI results are never trusted.
 
 Both signals are re-fetched **at merge time**, not reused from PR-creation time.
+
+On a default branch with a merge queue, the gate is never reached.
+`directMergePr()` returns a typed deferral, `blocked: "merge_queue"`, with no
+gate and no merge call ([`direct_merge.ts`](../worker/deno/lib/direct_merge.ts),
+the return at line 1182, ahead of the gate call at line 1187). If the base cannot
+be read to decide, the merge fails closed with an error and is retried on the
+next scan. The escalation layer treats `merge_queue` as "await checks", since the
+queue lands the PR
+([`merge_block_escalation.ts`](../worker/deno/lib/merge_block_escalation.ts)).
 
 ### The merge is pinned to the SHA its checks were read for
 
@@ -449,6 +560,10 @@ Both fail closed: an unresolvable worker login or an unreadable PR author is a
 refusal, never an implied pass.
 
 ### Defer-and-retry when behind
+
+On a merge-queued default branch this section does not apply: the gate is not
+reached, and a PR that is only behind is not updated (see
+[Merge queue](#merge-queue)).
 
 When the gate blocks because the branch is behind its target, the PR is **left
 open** and a deferral is logged. The existing branch-update maintenance
@@ -733,6 +848,7 @@ flowchart TD
     C -- merged --> L
     C -- "pending / failed" --> W[await_checks<br/>log and wait]
     C -- behind target --> U[update-branch<br/>checks re-run]
+    C -- "merge-queued default branch" --> Q[await_checks<br/>the queue lands it]
     C -- refused --> E[retry:<br/>update-branch, warn,<br/>try again next cycle]
     U -- update fails --> E
 ```
@@ -1148,7 +1264,8 @@ default tip never refills the attempt count.
 | --------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Required CI check **pending**                       | Backstop returns blocked; PR left open                     | Next cycle re-checks once CI completes                                         |
 | Required CI check **failed**                        | Backstop returns blocked; PR left open                     | Fix lands on the feature branch; CI re-runs; re-evaluated next cycle           |
-| Feature branch **behind target**                    | Backstop defers; PR left open                              | Branch-update maintenance merges the target in → CI re-runs → merge-if-green   |
+| Feature branch **behind target** (no merge queue)   | Backstop defers; PR left open                              | Branch-update maintenance merges the target in → CI re-runs → merge-if-green   |
+| Default branch has a **merge queue**                | Direct-merge fallback returns `blocked: merge_queue`; a PR that is only behind is not updated | The queue tests the PR against its future head and lands it once green |
 | Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate                    |
 | Green PR **refused by the merge**                   | Branch update requested; warning logged                    | Retried every cycle (Issue #4304) — never handed to a human                    |
 | **Branch update fails** on a behind PR              | Warning logged — never left silently open                  | Retried next cycle; a conflict is resolved by the merge-conflict ladder        |

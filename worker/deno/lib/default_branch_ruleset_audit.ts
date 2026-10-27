@@ -133,9 +133,17 @@ export async function auditDefaultBranchRulesets(
       visibility: result.visibility,
       decision,
       contexts,
-      detail: plan.action === "delete"
-        ? `${plan.skipped}: ${plan.detail ?? ""} — would delete own ruleset`
-        : plan.detail ?? "",
+      detail: [
+        plan.action === "delete"
+          ? `${plan.skipped}: ${plan.detail ?? ""} — would delete own ruleset`
+          : plan.detail ?? "",
+        // The merge-queue verdict and its reason (Issue #4424), when decided.
+        plan.mergeQueue
+          ? `merge queue ${
+            plan.mergeQueue.enabled ? "enabled" : "not enabled"
+          } (${plan.mergeQueue.verdict}): ${plan.mergeQueue.reason}`
+          : "",
+      ].filter((part) => part.length > 0).join("; "),
     });
   }
   return rows;

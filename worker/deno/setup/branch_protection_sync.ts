@@ -22,7 +22,10 @@
  * `issue_finder.ts`, `idle-detect`, or any other per-tick path. Per repo it
  * spends two metadata reads (visibility + default branch), a small number of
  * ruleset/check-name reads, up to `3 + 20` direct-push-detection reads
- * (Issue #4356; usually 3), and at most one ruleset write — affordable only
+ * (Issue #4356; usually 3), a merge-queue decision (the opt-out topic, the
+ * repository and organisation metadata, and the workflow files; Issue #4424),
+ * a disabled merge-queue probe created and deleted only where the metadata
+ * cannot settle availability, and at most one ruleset write — affordable only
  * because it runs once per setup, not once per loop. A repo already covered by
  * someone else's ruleset short-circuits before the direct-push detection and
  * the check-name discovery. This mirrors the budget discipline in
@@ -39,6 +42,7 @@ import {
   ensureDefaultBranchRuleset,
   type GhExec,
   planDefaultBranchRuleset,
+  type RulesetMergeQueue,
   type RulesetPlan,
   type RulesetSkipReason,
 } from "../lib/default_branch_ruleset.ts";
@@ -98,6 +102,11 @@ export interface SyncResult {
    * demand ghost contexts forever (Issue #4163).
    */
   legacyClassicProtection?: boolean;
+  /**
+   * The merge-queue state the ruleset was written with or kept in, and why
+   * (Issue #4424). Absent when the run made no ruleset decision about it.
+   */
+  mergeQueue?: RulesetMergeQueue;
   /** Resolved visibility, when the read succeeded. */
   visibility?: RepoVisibility;
   /** Resolved default branch, when the read succeeded. */
@@ -260,6 +269,7 @@ export async function syncBranchProtectionForRepo(
     skipped: outcome.skipped,
     detail: outcome.detail,
     legacyClassicProtection: outcome.legacyClassicProtection,
+    ...(outcome.mergeQueue ? { mergeQueue: outcome.mergeQueue } : {}),
     visibility,
     branch,
   };

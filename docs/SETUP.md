@@ -160,12 +160,35 @@ background service is offered, where files land — is covered in
      default-branch ruleset. With no default-branch checks to mirror it
      carries the first two rules only. A missing ruleset is created `active`.
 
+     **The merge queue** (Issue #4424). The same step also decides whether the
+     default-branch ruleset carries a merge queue, where GitHub allows one. It
+     prints one line per repository: the queue is enabled, or the reason it
+     fell back (opted out with the `no-merge-queue` topic, unavailable, a
+     required check that cannot report on `merge_group`, or unverified). See
+     [MERGE.md → Merge queue](MERGE.md#merge-queue). Enabling it needs each
+     required check's workflow to run on `merge_group` as well as on
+     `pull_request`:
+
+     ```yaml
+     on:
+       pull_request:
+       merge_group:
+     ```
+
+     In a `merge_group` run the base and head are
+     `github.event.merge_group.base_sha` and `github.event.merge_group.head_sha`,
+     not `github.event.pull_request.*`. A job that selects work from the diff must
+     read those for a merge-group run, and when the diff cannot be read the job
+     must run everything. This repository's own workflows are not changed by
+     Issue #4424.
+
      **The owner's spec** (Issue #2684). `milestone/**`: required status
      checks must pass, the branch need **not** be up to date
      (`strict_required_status_checks_policy: false`), and there is **no**
      `pull_request` rule, so no approval is required. The default branch: at
      least one approving review, required status checks, and
-     `strict_required_status_checks_policy: true`. The milestone template
+     `strict_required_status_checks_policy: true` (`false` while a merge queue
+     is enabled, as above). The milestone template
      cannot express a strict policy or a `pull_request` rule, and aligning
      removes either from a ruleset setup owns.
 

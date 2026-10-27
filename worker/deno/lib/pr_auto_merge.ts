@@ -53,6 +53,8 @@ import {
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { logAt } from "./log_sink.ts";
+import { type QueueRemoval, readQueueRemoval } from "./merge_queue_removal.ts";
+import { resolveBaseMergeQueued } from "./merge_queue_runtime.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -236,6 +238,16 @@ export interface EnableAutoMergeOptions {
    * safe direction: the gated merge, never a blind `--auto`).
    */
   isBaseProtectedFn?: (
+    repo: string,
+    baseRefName: string,
+    ghCommandFn: (args: string[]) => Promise<string>,
+  ) => Promise<boolean | null>;
+  /**
+   * Whether the PR's base is behind a merge queue (Issue #4424). Defaults to
+   * {@link resolveBaseMergeQueued} (memoised); injectable for tests. `null`
+   * is treated as not queued.
+   */
+  isBaseMergeQueuedFn?: (
     repo: string,
     baseRefName: string,
     ghCommandFn: (args: string[]) => Promise<string>,
@@ -549,11 +561,18 @@ export interface EnableAutoMergeResult {
    * `fix-base-unreadable` is the same hold for a `milestone-fix/**` head
    * whose base could not be read (Issue #3433): it may have been moved off
    * its milestone branch, so it is not armed until the base is read.
+   *
+   * `merge-queue-removed` (Issue #4424): the base is behind a merge queue and
+   * the queue removed the PR at its current head (a failed group check or a
+   * conflict). It is not armed and not merged. The CI-fix lane treats the
+   * removal as a red check, and its push makes a new head, which re-enables
+   * arming.
    */
   deferral?:
     | "milestone-behind"
     | "sync-base-unreadable"
-    | "fix-base-unreadable";
+    | "fix-base-unreadable"
+    | "merge-queue-removed";
   /**
    * Whether a `deferred` outcome is the deliberate #4375/#1082 gated
    * direct-merge hold: an unprotected base has no required checks, so the
@@ -764,6 +783,48 @@ async function resolveBaseProtection(
   );
   baseProtectionMemo.set(memoKey, read);
   return read;
+}
+
+/**
+ * The merge-queue removal that holds arming on a queued base (Issue #4424),
+ * or `null` when the PR may be armed.
+ *
+ * Only a queued base is read, so an unqueued base costs no extra call. A
+ * removal holds the PR only when it applies to the head GitHub reports now
+ * (see `queueRemovalAppliesToHead`). A read error is logged and arming
+ * proceeds: a failed read must not hold a PR the queue never removed.
+ */
+async function mergeQueueRemovalHold(
+  repo: string,
+  prNumber: number,
+  baseRefName: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  log: (message: string) => void,
+  isBaseMergeQueuedFn?: (
+    repo: string,
+    baseRefName: string,
+    ghCommandFn: (args: string[]) => Promise<string>,
+  ) => Promise<boolean | null>,
+): Promise<QueueRemoval | null> {
+  const queued = await resolveBaseMergeQueued(
+    repo,
+    baseRefName,
+    ghCommandFn,
+    isBaseMergeQueuedFn ? { isBaseMergeQueuedFn } : {},
+  );
+  if (queued !== true) return null;
+
+  const read = await readQueueRemoval(repo, prNumber, ghCommandFn);
+  if (!read.ok) {
+    logAt(
+      log,
+      "warn",
+      `Could not read the merge queue removal for ${repo}#${prNumber} on ` +
+        `'${baseRefName}' — arming proceeds (Issue #4424): ${read.error.message}`,
+    );
+    return null;
+  }
+  return read.value;
 }
 
 /**
@@ -1313,6 +1374,28 @@ export async function enableAutoMerge(
           : `PR #${prNumber} is a milestone sync PR retargeted onto ` +
             `'${resolved.value}' and could NOT be closed — its auto-merge ` +
             `was disarmed but it is still open (Issue #1967)`,
+      };
+    }
+  }
+
+  // Issue #4424: a PR the merge queue removed at its current head is not
+  // armed or merged on a queued base. The CI-fix lane is handed the removal
+  // as a red check, and its push makes a new head, which re-enables arming.
+  if (baseRefName) {
+    const removal = await mergeQueueRemovalHold(
+      repo,
+      prNumber,
+      baseRefName,
+      ghCommandFn,
+      log,
+      options.isBaseMergeQueuedFn,
+    );
+    if (removal !== null) {
+      return {
+        result: AutoMergeResult.Deferred,
+        deferral: "merge-queue-removed",
+        message:
+          `PR #${prNumber} left on ${baseRefName}: removed from the merge queue at its current head (${removal.reason}, ${removal.removedAt}) — not armed. A new head, such as the CI-fix lane's push, re-enables arming (Issue #4424)`,
       };
     }
   }

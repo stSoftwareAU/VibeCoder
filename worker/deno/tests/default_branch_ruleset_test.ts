@@ -16,7 +16,11 @@ import {
   DIRECT_PUSH_SAMPLE_SIZE,
   NO_RULESET_MARKER_PATH,
 } from "../lib/branch_push_policy.ts";
+import { MERGE_QUEUE_PROBE_NAME } from "../lib/merge_queue.ts";
 import type { GhExec } from "../lib/repo_rulesets.ts";
+
+/** Id the fake GitHub gives the merge-queue probe ruleset (Issue #4424). */
+const FAKE_PROBE_ID = 900;
 
 // ---------------------------------------------------------------------------
 // Mock
@@ -72,6 +76,21 @@ interface RepoState {
   marker?: boolean;
   /** When set, the commit-list read fails with this message. */
   commitsError?: string;
+  /**
+   * Repository metadata (`GET repos/<slug>`). Defaults to a private
+   * user-owned repository, where GitHub allows no merge queue, so every test
+   * that predates the merge queue keeps today's behaviour (Issue #4424).
+   */
+  repoMeta?: Record<string, unknown>;
+  /** Organisation plan name (`GET orgs/<owner>`); absent = the read fails. */
+  orgPlan?: string;
+  /** Workflow files (`.github/workflows/<name>` → YAML text). */
+  workflows?: Record<string, string>;
+  /**
+   * What the merge-queue probe create does (Issue #4424): accepted (default),
+   * refused as `422 invalid rule`, or failing with a 500.
+   */
+  probe?: "accepted" | "rejected" | "failed";
 }
 
 function makeGh(state: RepoState): { gh: GhExec; calls: GhCall[] } {
@@ -82,7 +101,54 @@ function makeGh(state: RepoState): { gh: GhExec; calls: GhCall[] } {
     const endpoint = String(isVerb ? args[3] : args[1]);
     calls.push({ method, endpoint, body: stdin });
 
+    if (
+      method === "POST" && stdin?.includes(`"name":"${MERGE_QUEUE_PROBE_NAME}"`)
+    ) {
+      if (state.probe === "rejected") {
+        return Promise.reject(
+          new Error(
+            'gh failed: HTTP 422: Unprocessable Entity\n{"message":"Invalid rule \'merge_queue\': not available"}',
+          ),
+        );
+      }
+      if (state.probe === "failed") {
+        return Promise.reject(new Error("gh failed: HTTP 500: Server Error"));
+      }
+      return Promise.resolve(JSON.stringify({ id: FAKE_PROBE_ID }));
+    }
     if (method !== "GET") return Promise.resolve("");
+
+    if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
+      return Promise.resolve(
+        JSON.stringify(
+          state.repoMeta ?? { owner: { type: "User" }, private: true },
+        ),
+      );
+    }
+    if (/^orgs\/[^/]+$/.test(endpoint)) {
+      return state.orgPlan === undefined
+        ? Promise.reject(new Error("gh failed: Not Found (HTTP 404)"))
+        : Promise.resolve(JSON.stringify({ plan: { name: state.orgPlan } }));
+    }
+    if (/\/contents\/\.github\/workflows$/.test(endpoint)) {
+      return Promise.resolve(
+        JSON.stringify(
+          Object.keys(state.workflows ?? {}).map((name) => ({
+            type: "file",
+            name,
+          })),
+        ),
+      );
+    }
+    const workflowMatch = endpoint.match(
+      /\/contents\/\.github\/workflows\/([^/]+)$/,
+    );
+    if (workflowMatch) {
+      const text = state.workflows?.[workflowMatch[1]!];
+      return text === undefined
+        ? Promise.reject(new Error("gh failed: Not Found (HTTP 404)"))
+        : Promise.resolve(text);
+    }
 
     if (/\/topics$/.test(endpoint)) {
       return Promise.resolve(JSON.stringify({ names: state.topics ?? [] }));

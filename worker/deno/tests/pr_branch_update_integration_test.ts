@@ -102,6 +102,7 @@ function buildMockUpdateOpenPrBranches(options: {
       getMergeableStatus: async (_repo: string, prNumber: number) => {
         return mergeableStatus[prNumber] ?? "MERGEABLE";
       },
+      isMergeQueueBase: async () => false,
     };
 
     const scanResult = await scanPrBranchUpdates(scanDeps);
@@ -488,6 +489,7 @@ Deno.test("integration: scan + execute chain produces real results, not just log
       if (prNumber === 2) return "CONFLICTING";
       return "MERGEABLE";
     },
+    isMergeQueueBase: async () => false,
   });
 
   assertEquals(scanResult.ok, true, "Scan must succeed");

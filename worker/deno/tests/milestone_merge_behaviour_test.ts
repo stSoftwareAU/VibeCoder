@@ -341,6 +341,7 @@ async function scanFor(topology: Topology) {
     listPrs: () => Promise.resolve([pr]),
     getBehindBy: () => Promise.reject(new Error("batch path should be used")),
     getMergeableStatus: () => Promise.resolve("MERGEABLE"),
+    isMergeQueueBase: () => Promise.resolve(false),
     fetchBranchStateBatch: async (
       repo: string,
       prs: readonly PrBranchEntry[],

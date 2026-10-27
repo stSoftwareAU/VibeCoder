@@ -1398,6 +1398,24 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
           `${r.repo} (${r.visibility}, ${r.branch}): already covered by a ruleset (no change)`,
         );
       }
+      if (r.mergeQueue) {
+        // Say whether the merge queue is on and, when it is not, why the
+        // strict up-to-date policy was kept instead (Issue #4424).
+        const queue = r.mergeQueue;
+        if (queue.verdict === "enabled") {
+          printSuccess(
+            `${r.repo} (${r.visibility}, ${r.branch}): merge queue enabled (${queue.reason})`,
+          );
+        } else if (queue.enabled) {
+          printInfo(
+            `${r.repo} (${r.visibility}, ${r.branch}): merge queue left in place: ${queue.reason} — the existing queue is kept`,
+          );
+        } else {
+          printInfo(
+            `${r.repo} (${r.visibility}, ${r.branch}): merge queue not enabled: ${queue.reason} — strict up-to-date policy kept`,
+          );
+        }
+      }
       // Issue #586: the worker never writes the milestone ruleset — setup,
       // running as the operator, creates or aligns it to the template with no
       // prompt (Issue #2623), then says what is still wrong, so a

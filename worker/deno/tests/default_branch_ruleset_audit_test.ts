@@ -60,6 +60,13 @@ function makeGh(repos: Record<string, FakeRepo>): {
       .join("/");
     const repo = repos[slug] ?? {};
 
+    // Merge-queue metadata (Issue #4424): a private user-owned repo, where
+    // GitHub allows no merge queue, so no probe is made.
+    if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
+      return Promise.resolve(
+        JSON.stringify({ owner: { type: "User" }, private: true }),
+      );
+    }
     if (/\/rulesets$/.test(endpoint)) {
       const list = [];
       if (repo.own) list.push({ id: 1, name: VIBE_RULESET_NAME });

@@ -152,6 +152,13 @@ function makeGhExec(
       return Promise.reject(new Error(`unexpected write: ${endpoint}`));
     }
 
+    // Merge-queue metadata (Issue #4424): a private user-owned repo by
+    // default, where GitHub allows no merge queue, so no probe is made.
+    if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
+      return Promise.resolve(
+        JSON.stringify({ owner: { type: "User" }, private: true }),
+      );
+    }
     // Direct-push guard reads (Issue #4356).
     if (/\/topics$/.test(endpoint)) return Promise.resolve('{"names":[]}');
     if (endpoint.includes("/contents/")) {
@@ -172,6 +179,24 @@ function makeGhExec(
       return Promise.resolve("[]");
     }
 
+    // Live ruleset detail: read before any update, even a no-op (Issue #4424).
+    if (/\/rulesets\/\d+$/.test(endpoint)) {
+      const stored = rulesets.get(repo) as
+        | { rules?: Array<Record<string, unknown>> }
+        | undefined;
+      if (!stored) {
+        return Promise.reject(new Error("gh failed: Not Found (HTTP 404)"));
+      }
+      return Promise.resolve(
+        JSON.stringify({
+          id: 1,
+          name: VIBE_RULESET_NAME,
+          target: "branch",
+          enforcement: "active",
+          rules: stored.rules ?? [],
+        }),
+      );
+    }
     if (/\/rulesets$/.test(endpoint)) {
       const stored = rulesets.get(repo);
       return Promise.resolve(

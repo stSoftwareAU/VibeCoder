@@ -82,6 +82,7 @@ function harness(
       | { action: "hold"; outcome: EnableAutoMergeResult }
       | { action: "proceed"; disarmed: boolean }
     >;
+    isMergeQueueBase?: (repo: string, baseRefName: string) => Promise<boolean>;
   } = {},
 ) {
   const state: Harness = {
@@ -133,6 +134,10 @@ function harness(
         ? overrides.updateBranchFn(repo, prNumber)
         : Promise.resolve({ ok: true, value: undefined });
     },
+    isMergeQueueBase: (repo: string, baseRefName: string) =>
+      overrides.isMergeQueueBase
+        ? overrides.isMergeQueueBase(repo, baseRefName)
+        : Promise.resolve(false),
     recordOutcome: (
       repo: string,
       prNumber: number,

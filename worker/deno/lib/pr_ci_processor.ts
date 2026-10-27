@@ -141,6 +141,7 @@ import {
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { rerunFailedJobsOfCheck } from "./ci_infrastructure_rerun.ts";
+import { isMergeQueueCheckId } from "./merge_queue_check_id.ts";
 import { parseCheckSuiteId } from "./github_actions_log_fetcher.ts";
 import {
   abandonAndRestart,
@@ -863,12 +864,15 @@ async function _processCiFailureLocked(
     // jobs are re-run, so a fresh check run with a fresh retry budget comes
     // back to the lane; the fleet-wide auto-fix cap, which abandons the PR
     // and redoes its issue, bounds the whole loop.
-    await rerunFailedJobsOfCheck({
-      repo,
-      checkId: checkRunId,
-      ghCommandFn: ghFn,
-      logger,
-    });
+    // Issue #4424: a merge-queue removal has no check run to re-run.
+    if (!isMergeQueueCheckId(checkRunId)) {
+      await rerunFailedJobsOfCheck({
+        repo,
+        checkId: checkRunId,
+        ghCommandFn: ghFn,
+        logger,
+      });
+    }
 
     return {
       ok: true,
@@ -2633,7 +2637,8 @@ async function _processCiWithHeartbeat(
     // attempt cap above — which abandons and redoes the issue — bounds it.
     // The one escalation left (a secret already in the base branch's
     // history) is not something a re-run can clear.
-    if (!response.addNeedsHuman) {
+    // Issue #4424: a merge-queue removal has no check run to re-run.
+    if (!response.addNeedsHuman && !isMergeQueueCheckId(checkRunId)) {
       await rerunFailedJobsOfCheck({
         repo,
         checkId: checkRunId,
@@ -3073,6 +3078,10 @@ async function _resolveCiLogExcerpt(
   processorDeps: CiProcessorDeps,
 ): Promise<CiLogExcerptOutcome> {
   const { logger } = processorDeps;
+
+  // Issue #4424: a merge-queue removal has no Actions job or check run behind
+  // its synthetic id, so no log provider is asked for one (it would 404).
+  if (isMergeQueueCheckId(input.checkRunId)) return { excerpt: "" };
 
   const configured = await _runConfiguredPrFailureActions(
     input,
