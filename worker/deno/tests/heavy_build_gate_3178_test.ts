@@ -103,6 +103,13 @@ function fakeRoot(dirs: EphemeralTargetDir[]) {
 }
 
 Deno.test("build-step admission parks both deferred and merge-only builds (Issues #4326, #4360)", async () => {
+  // Merge-only parks only a checkout that holds a cargo project (Issue #4413),
+  // so the parked checkout is a real temp directory with a Cargo.toml.
+  const cargoCheckout = await Deno.makeTempDir({ prefix: "heavy-gate-3178-" });
+  await Deno.writeTextFile(
+    `${cargoCheckout}/Cargo.toml`,
+    '[package]\nname = "fixture"\n',
+  );
   enableInFlightHostDiskGate(true);
   try {
     for (
@@ -112,7 +119,7 @@ Deno.test("build-step admission parks both deferred and merge-only builds (Issue
       ]
     ) {
       registerHeavyBuildDiskProbe(() => Promise.resolve(current));
-      const parked = await parkInFlightBuild(CHECKOUT, fakeRoot([]).deps);
+      const parked = await parkInFlightBuild(cargoCheckout, fakeRoot([]).deps);
       assert(parked !== null);
       assertStringIncludes(parked, "Parked as infrastructure (Issue #4360).");
       assertStringIncludes(parked, "46.0 GB");
@@ -124,6 +131,7 @@ Deno.test("build-step admission parks both deferred and merge-only builds (Issue
   } finally {
     enableInFlightHostDiskGate(false);
     registerHeavyBuildDiskProbe(undefined);
+    await Deno.remove(cargoCheckout, { recursive: true });
   }
 });
 

@@ -1,0 +1,12 @@
+{
+  "issue": 4413,
+  "chunk": "top-up-4413",
+  "title": "top-up: in-flight host-disk park respects the cargo project",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4413",
+  "definition": "Reviewed the tree-manifest discovery shared by the milestone merge gate and the in-flight host-disk park. The module lists every Deno and Cargo project in a checkout, breadth-first to a fixed depth, and an unreadable directory contributes no manifest. The in-flight park uses it so that a merge-only host-disk admission parks only a checkout holding a cargo project, while a below-floor admission still parks every checkout.",
+  "status": "claimed",
+  "sweptAt": "db4d81db789d856b889d90d61e49460bfc03a011",
+  "paths": [
+    "worker/deno/lib/project_manifests.ts"
+  ]
+}
