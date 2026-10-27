@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploy role with narrowly scoped grants (legitimate)
+Resources:
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Deploys the service with narrow grants
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt NarrowRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+              - Effect: Allow
+                Action: lambda:CreateFunction
+                Resource: "*"
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt NarrowRole.Arn
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    ssm:resourceTag/Env: staging
+  NarrowRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: artefacts
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: arn:aws:s3:::artefacts/app/*
+              - Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: arn:aws:cloudformation:eu-west-1:123456789012:stack/app/*
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0123456789abcdef0
+      InstanceType: t3.micro
+      IamInstanceProfile: !Ref AppProfile
+      Tags:
+        - Key: Env
+          Value: staging
+  AppProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppInstanceRole
+  AppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: artefacts
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: arn:aws:s3:::artefacts/app/*

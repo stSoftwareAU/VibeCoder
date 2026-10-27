@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: The assume-role chain with an explicit deny on the caller
+Resources:
+  CiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Pipeline role that deploys the service
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: assume-admin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt AdminRole.Arn
+              - Effect: Deny
+                Action: sts:AssumeRole
+                Resource: "*"
+  AdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt CiRole.Arn
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: admin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: iam:*
+                Resource: "*"

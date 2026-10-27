@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: A resolvable boundary removes a grant; an external boundary stays unknown
+Resources:
+  ConstrainedBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: s3:*
+            Resource: "*"
+  CiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Pipeline role that may assume two roles
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: assume
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt BoundedRole.Arn
+  BoundedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !Ref ConstrainedBoundary
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt CiRole.Arn
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: admin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: iam:*
+                Resource: "*"
+  ExternalBoundedCi:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Pipeline role with an externally managed boundary
+      PermissionsBoundary: arn:aws:iam::123456789012:policy/ExternalBoundary
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: assume-admin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt AdminRole.Arn
+  AdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt ExternalBoundedCi.Arn
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: admin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: iam:*
+                Resource: "*"

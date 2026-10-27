@@ -507,6 +507,95 @@ logged loudly; see
 [Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)
 in the framework manual.
 
+## Cloud permission chains (AWS IaC)
+
+A deterministic, static, read-only pre-scan looks for three concrete
+permission chains in AWS IAM roles declared in CloudFormation and Terraform.
+The worker walks the checkout and lists candidates in the prompt; Claude
+confirms every cited hop before anything is filed.
+
+**Scope.** AWS CloudFormation and Terraform only; IAM roles only; in-repo
+resources only. Nothing is probed live, no credentials are tested, and
+Kubernetes and GCP resources are out of scope.
+
+```mermaid
+flowchart TD
+    Checkout[Checkout<br/>CloudFormation and Terraform files] --> Walk[Worker pre-scan walk<br/>cloud_permission_chains.ts]
+    Walk --> Eval{Evaluator<br/>files to IR via hcl_subset.ts<br/>then three chain rules}
+    Eval -- complete chain --> Render[Render candidates<br/>dedup against suppressed and known-open ids]
+    Render --> Prompt[Prompt section<br/>Cloud permission-chain candidates]
+    Prompt --> Claude[Claude confirm and triage<br/>Phase 2 and Phase 3 step 7]
+    Claude --> Issue[One exploit-chain issue<br/>one against the 6-issue cap]
+    Eval -- incomplete evidence --> Logged[Logged as not checked<br/>in the run summary; nothing filed]
+```
+
+### The three chains
+
+- **`assume-role-escalation`** — the caller role may `sts:AssumeRole` into a
+  target role through an identity-policy resource match. The target's trust
+  names the caller or the account root, and the target holds privileged
+  grants the caller lacks.
+- **`passrole-compute`** — the caller holds `iam:PassRole` on a target role
+  and a compute API that attaches or replaces a role (`lambda:CreateFunction`,
+  `lambda:UpdateFunctionConfiguration`, `ec2:RunInstances`,
+  `ec2:AssociateIamInstanceProfile`, `ecs:RunTask`,
+  `ecs:RegisterTaskDefinition`). The target's trust admits that service, and
+  the target holds privileged grants the caller lacks.
+- **`ssm-send-command`** — the caller holds `ssm:SendCommand` covering the
+  run-command document and an in-repo instance, and that instance's profile
+  role holds privileged grants the caller lacks.
+
+A lone `iam:PassRole`, `sts:AssumeRole` or `ssm:SendCommand` is never a
+finding. Each candidate line names the chain kind, the cited hops
+(`file:line`), the boundary, the conditions, the declared intent and the
+smallest fix.
+
+### Deny, boundaries, conditions and unknowns
+
+- An explicit, unconditioned `Deny` that covers a hop removes that hop.
+- A resolvable permissions boundary that excludes a hop removes that hop.
+- Conditions stay visible on the finding and do not remove a hop.
+- An unresolved external policy, boundary, trust principal or parameter makes
+  the chain `incomplete`. An incomplete chain is neither a proven exploit nor
+  a clean result: it is never filed, and it is never reported as clean.
+- Claude checks the README, `docs/` and comments for declared intent. A chain
+  whose hops are required by documented intent is dropped, with the reason
+  kept in scratch notes.
+
+### Filing
+
+Each complete chain is filed as one `exploit-chain` finding tagged `CWE-269`.
+Its id is `SEC-` from class `exploit-chain`, the entry-hop file, and the
+snippet `<kind>|<caller>|<target>`. The constituent statements are not filed
+as separate issues; the `## Exploit chain` hops cite the IaC lines. The chain
+counts as one standalone finding against the 6-issue cap.
+
+Before filing, the chain is deduplicated against the suppressed and known-open
+lists, and against open issues that already propose the same fix for the same
+role or resource. Where the checkout holds a Checkov report or SARIF for the
+same resource and defect, the finding cites its check id. The smallest fix
+scopes the target role or its resources, constrains the trust principal or its
+conditions, or removes the unneeded permission. It never recommends denying
+all deployment or SSM access.
+
+Plain wildcard and `PassRole` hygiene stays with the best-practices scan (see
+[BEST-PRACTICES-SCAN.md](BEST-PRACTICES-SCAN.md)). Issues #574 (credential
+lifetime) and #3699 (agent credential isolation) cover different risks; this
+section does not replace either.
+
+### Where it lives
+
+- [`worker/deno/lib/cloud_permission_chains.ts`](../worker/deno/lib/cloud_permission_chains.ts)
+  — the walk, the three chain rules and the candidate rendering.
+- [`worker/deno/lib/hcl_subset.ts`](../worker/deno/lib/hcl_subset.ts) — the
+  Terraform subset parser that feeds the IR.
+- Fixtures: `worker/deno/tests/fixtures/cloud_permission_chains/v1/`. The
+  CloudFormation templates are stored as `template.{yaml,json}.fixture` so the
+  repo-wide Checkov scan does not discover these deliberately over-permissive
+  roles; the test stages them under their real names before scanning.
+- Prompt: the "Cloud permission chains (AWS IaC)" subsection of Phase 2 in
+  [`prompts/security_scan/prompt.md`](../prompts/security_scan/prompt.md).
+
 ## Close-comment shape
 
 The claim handler closes the wrapper idle-task issue with one of three
@@ -567,6 +656,15 @@ to code scanning.` The failure strings return before the SARIF step, so they
 never carry one. See
 [SARIF publishing to code scanning](#sarif-publishing-to-code-scanning)
 for the full set of status lines.
+
+The close-comment summary also appends one cloud permission-chain line,
+in the shape below. `<n>` is the number of complete candidates offered to
+Claude; `<m>` is the number of incomplete chains, which are logged as not
+checked and never filed.
+
+```text
+Cloud permission chains: <n> candidate(s) offered; <m> with incomplete evidence (not checked).
+```
 
 The comment is posted by the idle-task claim handler when it closes
 the wrapper issue; it never opens a PR.
@@ -996,6 +1094,12 @@ list:
   (`deno test`, `deno lint`, `deno fmt`, `deno bundle`, `deno run`). Carve-out:
   pre-existing Node files are left alone — only growing Node-only tooling is in
   scope.
+
+- **Cloud permission chains (AWS IaC)** — an AssumeRole escalation, a
+  PassRole launch through compute, or an SSM SendCommand into a more privileged
+  instance role, traced across CloudFormation and Terraform IAM. Filed as one
+  `exploit-chain` finding (`CWE-269`). See
+  [Cloud permission chains (AWS IaC)](#cloud-permission-chains-aws-iac).
 
 ### OWASP GenAI / LLM Top 10 (2025) — LLM-using repos only
 
