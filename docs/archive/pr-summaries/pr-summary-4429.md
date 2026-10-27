@@ -9,10 +9,10 @@ filesystem failures remain code-fixable. Closes #4429.
 ### Intent and Rationale
 
 - The worker's in-flight disk guard deliberately releases work when the host
-  crosses its floor; filing that protective release as a worker defect creates
-  a false diagnostic.
-- Keep the existing host-disk protection and no-retry behaviour. Change only
-  how the intentional park affects run-failure auto-filing.
+  crosses its floor; filing that protective release as a worker defect creates a
+  false diagnostic.
+- Keep the existing host-disk protection and no-retry behaviour. Change only how
+  the intentional park affects run-failure auto-filing.
 
 ### Essential Design Decisions
 
@@ -21,9 +21,8 @@ filesystem failures remain code-fixable. Closes #4429.
 - Keep the stable `disk-full` class for diagnosis and deduplication, while
   setting intentional parks to `not_code_fixable`; genuine disk exhaustion
   remains `code_fixable`.
-- No disk measurements, cleanup or recovery state changed, so this fix does
-  not alter the floor, require a new recovery reading or touch issue retry
-  counts.
+- No disk measurements, cleanup or recovery state changed, so this fix does not
+  alter the floor, require a new recovery reading or touch issue retry counts.
 
 ### Undiscoverable Facts
 
@@ -36,8 +35,9 @@ filesystem failures remain code-fixable. Closes #4429.
 ## Evidence
 
 Backend-only change. `inFlightParkReason` in
-`worker/deno/lib/heavy_build_gate.ts` appends the park note; the regression tests
-show the classifier's prior `code_fixable` result triggered the auto-filer.
+`worker/deno/lib/heavy_build_gate.ts` appends the park note; the regression
+tests show the classifier's prior `code_fixable` result triggered the
+auto-filer.
 
 ```mermaid
 flowchart LR
@@ -50,18 +50,43 @@ flowchart LR
 
 ## Test Plan
 
-- `worker/deno/tests/run_outcome_classifier_test.ts::classify #4429 - intentional host-disk parking is not code-fixable` — the new case failed against the unchanged classifier (`code_fixable` instead of `not_code_fixable`), then passed after the fix. It also checks that genuine ENOSPC remains code-fixable, agent-quoted park text does not select the park result, and a different failure category retains its disk-fault classification.
-- `worker/deno/tests/run_failure_issue_test.ts::run failure issue - intentional host-disk park is not auto-filed` — passed; changing the park classification back to `code_fixable` made the test fail by filing an issue.
-- Condition mutation checks: forcing the category operand true made the different-category assertion fail; forcing the park-note operand true made the quoted-agent assertion fail.
-- `worker/deno/tests/host_disk_inflight_4360_test.ts` — passed; confirms the protective park remains a host fault and not a gate verdict.
-- `worker/deno/tests/issue_worker_infra_retry_test.ts` — passed; the disk stop does not sleep or increment `infraRetryCounts`.
-- `worker/deno/tests/host_disk_live_reading_test.ts`, `worker/deno/tests/host_disk_test.ts` and `worker/deno/tests/heavy_build_gate_in_flight_4423_test.ts` — passed; existing host measurement and build-admission behaviour remains covered.
-- Targeted command `deno task test:unit tests/run_outcome_classifier_test.ts tests/run_failure_issue_test.ts tests/host_disk_inflight_4360_test.ts tests/issue_worker_infra_retry_test.ts tests/host_disk_live_reading_test.ts tests/host_disk_test.ts tests/heavy_build_gate_in_flight_4423_test.ts` — 126 passed, 0 failed.
-- `deno fmt --check`, `deno lint` and `deno check` on the changed classifier and test files — passed.
-- Full `./quality.sh`: every static stage passed (lint, type check, fmt, mermaid, markdownlint, semgrep). The parallel Deno pass had 30811 passed and 3 failed, none in files this change touches: two in `worker/deno/tests/completion_phase_repo_formatters_test.ts` (also failing on the unchanged base before this issue) and `worker/deno/tests/pr_maintenance_command_test.ts` (Issue #4424), which passes when run alone (`--filter "merge queue"`, 1 passed) and so is load-sensitive. The serial pass did not run because the parallel pass failed.
+- `worker/deno/tests/run_outcome_classifier_test.ts::classify #4429 - intentional host-disk parking is not code-fixable`
+  — the new case failed against the unchanged classifier (`code_fixable` instead
+  of `not_code_fixable`), then passed after the fix. It also checks that genuine
+  ENOSPC remains code-fixable, agent-quoted park text does not select the park
+  result, and a different failure category retains its disk-fault
+  classification.
+- `worker/deno/tests/run_failure_issue_test.ts::run failure issue - intentional host-disk park is not auto-filed`
+  — passed; changing the park classification back to `code_fixable` made the
+  test fail by filing an issue.
+- Condition mutation checks: forcing the category operand true made the
+  different-category assertion fail; forcing the park-note operand true made the
+  quoted-agent assertion fail.
+- `worker/deno/tests/host_disk_inflight_4360_test.ts` — passed; confirms the
+  protective park remains a host fault and not a gate verdict.
+- `worker/deno/tests/issue_worker_infra_retry_test.ts` — passed; the disk stop
+  does not sleep or increment `infraRetryCounts`.
+- `worker/deno/tests/host_disk_live_reading_test.ts`,
+  `worker/deno/tests/host_disk_test.ts` and
+  `worker/deno/tests/heavy_build_gate_in_flight_4423_test.ts` — passed; existing
+  host measurement and build-admission behaviour remains covered.
+- Targeted command
+  `deno task test:unit tests/run_outcome_classifier_test.ts tests/run_failure_issue_test.ts tests/host_disk_inflight_4360_test.ts tests/issue_worker_infra_retry_test.ts tests/host_disk_live_reading_test.ts tests/host_disk_test.ts tests/heavy_build_gate_in_flight_4423_test.ts`
+  — 126 passed, 0 failed.
+- `deno fmt --check`, `deno lint` and `deno check` on the changed classifier and
+  test files — passed.
+- Full `./quality.sh`: every static stage passed (lint, type check, fmt,
+  mermaid, markdownlint, semgrep). The parallel Deno pass had 30811 passed and 3
+  failed, none in files this change touches: two in
+  `worker/deno/tests/completion_phase_repo_formatters_test.ts` (also failing on
+  the unchanged base before this issue) and
+  `worker/deno/tests/pr_maintenance_command_test.ts` (Issue #4424), which passes
+  when run alone (`--filter "merge queue"`, 1 passed) and so is load-sensitive.
+  The serial pass did not run because the parallel pass failed.
 
 <!-- vibe-quality-gate-skipped reason="full gate ran and failed only on tests unrelated to this change; the serial Deno pass did not run" -->
 
 ## Deno regression avoided
 
-- Used the repository's Deno test, format, lint and check tools; no Node tooling or dependency was added.
+- Used the repository's Deno test, format, lint and check tools; no Node tooling
+  or dependency was added.
