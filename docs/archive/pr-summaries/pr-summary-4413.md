@@ -1,10 +1,10 @@
 ## Summary
 
 An agent, mutation, discrimination or quality-fix step in a checkout with no
-cargo project is no longer parked for the ephemeral cargo root's 25 GB
-headroom. It is held to the host floor only, and no idle sibling target
-directories are pruned for it. A checkout that holds a cargo project behaves
-exactly as before. Closes #4413.
+cargo project is no longer parked for the ephemeral cargo root's 25 GB headroom.
+It is held to the host floor only, and no idle sibling target directories are
+pruned for it. A checkout that holds a cargo project behaves exactly as before.
+Closes #4413.
 
 Version bump: no `VERSION` change is part of this diff; the merged commit
 records the final version.
@@ -13,11 +13,13 @@ records the final version.
 
 ### Intent and Rationale
 
-- Released claims read `Claude execution failed: ephemeral cargo root over
+- Released claims read
+  `Claude execution failed: ephemeral cargo root over
   budget (67.6 GB free, floor 46.0 GB + headroom 25.0 GB) … cargo builds wait
-  for CI`. The host was above its 46 GB floor, but `parkInFlightBuild` required
-  floor + 25 GB before every agent start, so a Deno-only repo (this one) could
-  never start an agent on a host holding 52-67 GB. Each refusal was recorded as
+  for CI`.
+  The host was above its 46 GB floor, but `parkInFlightBuild` required floor +
+  25 GB before every agent start, so a Deno-only repo (this one) could never
+  start an agent on a host holding 52-67 GB. Each refusal was recorded as
   `disk-full` with no PR (about 25 recurrences in the issue thread).
 - The headroom exists because only cargo writes to the ephemeral cargo root.
   `docs/CONTAINER.md` and `docs/INTERNALS.md` already said a repository with no
@@ -47,9 +49,10 @@ records the final version.
 - The released messages were read from the release comments on #4398 and #4409
   (the issue body carries none). Hosts hold 50-67 GB free against a 71 GB
   requirement, so the refusal was permanent on them, not transient.
-- The pre-existing `merge-only e2e - root Cargo cannot hide a failing nested
-  Deno resolution suite (PR #4343)` test in
-  `worker/deno/tests/milestone_merge_only_4326_test.ts` fails on a clean
+- The pre-existing
+  `merge-only e2e - root Cargo cannot hide a failing nested
+  Deno resolution suite (PR #4343)`
+  test in `worker/deno/tests/milestone_merge_only_4326_test.ts` fails on a clean
   checkout (its fixture's unformatted `web/deno.json` is rejected by the
   pre-push `deno fmt --check`). This diff does not touch it.
 
@@ -79,11 +82,12 @@ Tests (run from `worker/deno`):
 
 New tests in `worker/deno/tests/heavy_build_gate_in_flight_4413_test.ts`:
 Deno-only merge-only reading not parked; cargo merge-only parked with the budget
-text; Deno-only below floor still parked (names 46.0 GB); nested `rust/Cargo.toml`
-counts as a cargo project; empty and missing checkouts not parked; Deno-only
-checkout leaves an idle sibling target dir unpruned (cargo checkout prunes it);
-call site through `runClaudeWithTimeout` — Deno-only cwd at 67.6 GB starts the
-agent, cargo cwd below the floor is refused with the park note.
+text; Deno-only below floor still parked (names 46.0 GB); nested
+`rust/Cargo.toml` counts as a cargo project; empty and missing checkouts not
+parked; Deno-only checkout leaves an idle sibling target dir unpruned (cargo
+checkout prunes it); call site through `runClaudeWithTimeout` — Deno-only cwd at
+67.6 GB starts the agent, cargo cwd below the floor is refused with the park
+note.
 
 One existing test edited: `worker/deno/tests/heavy_build_gate_3178_test.ts`
 "build-step admission parks both deferred and merge-only builds" — only the
@@ -122,9 +126,9 @@ rule.
 
 ## Not done
 
-- A merge-only cargo call-site test through `runClaudeWithTimeout`: it would read
-  and possibly prune the real `/var/tmp/vibe-cargo-target`, and the production
-  path takes no injected root. The cargo merge-only case is covered at
-  `parkInFlightBuild` with an injected root.
+- A merge-only cargo call-site test through `runClaudeWithTimeout`: it would
+  read and possibly prune the real `/var/tmp/vibe-cargo-target`, and the
+  production path takes no injected root. The cargo merge-only case is covered
+  at `parkInFlightBuild` with an injected root.
 - No change to the `disk-full` classification or to the claim gate: cargo
   checkouts on a host short of the headroom are still parked and still filed.
