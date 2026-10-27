@@ -1009,6 +1009,13 @@ issue's own code, carries a **Host fault:** line naming the kind:
 | `disk-full`              | The host ran out of disk space                                                                                       |
 | `container-build-failed` | The issue's container image failed to build                                                                          |
 
+A worker-authored `Parked as infrastructure (Issue #4360)` message means the
+host-disk guard deliberately stopped work after the floor was crossed. It keeps
+the `disk-full` host-fault class and does not consume an issue attempt, but it is
+not code-fixable and does not create a worker-fault diagnostic issue. An actual
+ENOSPC or read-only filesystem error remains code-fixable and can be recorded
+against the worker.
+
 A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
 clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not
 deleted — any older `.corrupt-*` sibling for that repo is removed first) and
