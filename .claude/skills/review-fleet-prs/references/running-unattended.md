@@ -10,9 +10,9 @@ over 50 minutes, and keeps one runner per machine.
 Each ready PR gets a round of its own, and up to `pr_reviewer_parallel` rounds
 (`.config.json`, default 3, see
 [CONFIGURATION.md](../../../../docs/CONFIGURATION.md#-parallel-review-rounds))
-run at once, so a quick review posts without waiting for a slow one (Issue
-#4395). The gate is told which PRs are in a round (`--in-flight`) and skips them
-as `in-flight`, so a PR is never in two rounds on one host. The loop wakes every
+run at once, so a quick review posts without waiting for a slow one
+(Issue #4395). The gate is told which PRs are in a round (`--in-flight`) and
+skips them as `in-flight`, so a PR is never in two rounds on one host. The loop wakes every
 30 seconds to collect finished rounds: after a round succeeds, or when the gate
 left PRs `over-limit`, the next gate pass runs at once to fill the free slot,
 rather than after the full 5 minutes (Issue #4396). A round that failed waits
