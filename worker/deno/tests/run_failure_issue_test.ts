@@ -127,6 +127,40 @@ async function tmp(): Promise<string> {
   return await Deno.makeTempDir({ prefix: "run-failure-issue-" });
 }
 
+Deno.test("run failure issue - intentional host-disk park is not auto-filed", async () => {
+  const dir = await tmp();
+  try {
+    const { ghFn, rec } = fakeGh();
+    const decision = await fileRunFailureIssue({
+      report: {
+        ...OOM_REPORT,
+        outcome: {
+          kind: "no_pr",
+          category: "internal_error",
+          phase: "execute",
+          elapsedSeconds: 64,
+          message:
+            "Claude execution failed: host disk below its floor — floor 46.0 GB. " +
+            "Parked as infrastructure (Issue #4360).",
+        },
+      },
+      ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+    });
+    assertEquals(decision, {
+      action: "suppressed",
+      reason: "not_code_fixable",
+      failureClass: "disk-full",
+    });
+    assertEquals(rec.calls, []);
+    assertEquals(rec.creates, []);
+    assertEquals(rec.comments, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("run failure issue - code_fixable + no existing issue → exactly one issue create in stSoftwareAU/VibeCoder whose body carries the class marker (Issue #4329)", async () => {
   const dir = await tmp();
   try {

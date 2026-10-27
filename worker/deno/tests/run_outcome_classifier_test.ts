@@ -792,6 +792,49 @@ Deno.test("classify #1658 - genuine ENOSPC still classifies as disk-full", () =>
   );
 });
 
+Deno.test("classify #4429 - intentional host-disk parking is not code-fixable", () => {
+  const parked = classifyRunFailure(
+    "internal_error",
+    "Claude execution failed: host disk below its floor — floor 46.0 GB. " +
+      "Parked as infrastructure (Issue #4360).",
+    true,
+  );
+  assertEquals(parked.failureClass, "disk-full");
+  assertEquals(parked.fixability, "not_code_fixable");
+  assert(parked.rationale.includes("intentionally parked"), parked.rationale);
+
+  const quotedPark = classifyRunFailure(
+    "internal_error",
+    formatDetailedFailureMessage("Claude execution failed", {
+      elapsedSeconds: 1,
+      outputSize: 1,
+      lastOutputSnippet: redactedTail(
+        "Parked as infrastructure (Issue #4360).",
+        500,
+      ),
+    }),
+    true,
+  );
+  assertEquals(quotedPark.failureClass, "worker-crash");
+
+  const otherCategory = classifyRunFailure(
+    "killed",
+    "Claude was killed (exit 137) after the disk park marker: " +
+      "Parked as infrastructure (Issue #4360).",
+    true,
+  );
+  assertEquals(otherCategory.failureClass, "disk-full");
+  assertEquals(otherCategory.fixability, "code_fixable");
+
+  const exhausted = classifyRunFailure(
+    "internal_error",
+    "Claude execution failed: write failed: ENOSPC: no space left on device",
+    true,
+  );
+  assertEquals(exhausted.failureClass, "disk-full");
+  assertEquals(exhausted.fixability, "code_fixable");
+});
+
 Deno.test("classify #1658 - a trigger token inside a branch-name slug is not out-of-credit, oom or worker-crash", () => {
   const credit = classifyRunFailure(
     "unknown",

@@ -102,7 +102,9 @@ const OOM_EVIDENCE_RE =
 const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
 
 /**
- * Disk exhaustion — the worker can prune, warn or size the volume.
+ * Disk exhaustion — the worker can prune, warn or size the volume. The
+ * intentional host-disk park note shares the class for diagnosis, but its
+ * protective release is not code-fixable (handled above).
  *
  * Deliberately still scanned over the *whole* message, agent output
  * included, unlike the crash patterns (Issue #249). The asymmetry is not an
@@ -124,7 +126,7 @@ const ENOSPC_RE = /(?<![\w/-])ENOSPC(?![\w/-])/;
 const DISK_FULL_PHRASE_RE =
   /\bno space left on device\b|\bdisk full\b|\bdisk is full\b|Read-only file system|\bos error 30\b|Parked as infrastructure \(Issue #4360\)/i;
 
-/** Whether `message` reports disk exhaustion in error-shaped text. */
+/** Whether `message` has disk-exhaustion evidence or the host-disk park note. */
 function isDiskFull(message: string): boolean {
   return ENOSPC_RE.test(message) || DISK_FULL_PHRASE_RE.test(message);
 }
@@ -501,6 +503,25 @@ export function classifyRunFailure(
       failureClass: "stale-lineage",
       rationale:
         "The completion phase refused to push a branch whose work a merged PR already squashed into the base (Issue #534) — the base moved on, not a worker defect.",
+    };
+  }
+
+  // The worker deliberately releases an in-flight build when its own disk
+  // monitor crosses the floor (Issue #4360). Keep the stable disk-full class
+  // for diagnosis, but do not file it as a worker defect: the release is the
+  // disk guard working as designed. Read the marker only from worker prose;
+  // the same phrase in an agent's quoted output is not a parking decision.
+  if (
+    category === "internal_error" &&
+    /Parked as infrastructure \(Issue #4360\)/.test(
+      splitAgentNarration(failureMessage ?? "").worker,
+    )
+  ) {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "disk-full",
+      rationale:
+        "The worker intentionally parked work after its host-disk floor was crossed; the protective release is not a worker defect.",
     };
   }
 

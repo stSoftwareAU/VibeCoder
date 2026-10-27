@@ -1335,7 +1335,10 @@ holds a cargo project, because only cargo writes to the ephemeral cargo root;
 a Deno-only checkout is parked only below the floor (Issue #4413). The park is
 infrastructure: the reason carries
 `Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
-gate verdict, and it does not earn `failed-once`. The same stop is not a
+gate verdict, and it does not earn `failed-once`. It keeps the `disk-full`
+diagnostic class but is not code-fixable, so the worker does not auto-file a
+worker-fault issue for a protective release; an actual ENOSPC or read-only
+filesystem failure remains code-fixable. The same stop is not a
 repository fast failure: a host below its floor would otherwise back the
 repository off after three tallies, including when the manager quotes
 `host disk below its floor` without the park note (Issue #4388). A
