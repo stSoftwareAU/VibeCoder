@@ -174,7 +174,9 @@ class Parser {
       } else if (c === "/" && this.ch(1) === "*") {
         const close = this.src.indexOf("*/", this.pos + 2);
         if (close === -1 || close + 2 > this.end) {
-          this.abort(`unterminated /* comment at line ${this.lineOf(this.pos)}`);
+          this.abort(
+            `unterminated /* comment at line ${this.lineOf(this.pos)}`,
+          );
           return;
         }
         this.pos = close + 2;
@@ -227,7 +229,9 @@ class Parser {
       if (c === "(" || c === "[" || c === "{") {
         if (depth + open.length + 1 > MAX_DEPTH) {
           this.abort(
-            `nesting deeper than ${MAX_DEPTH} levels at line ${this.lineOf(this.pos)}`,
+            `nested deeper than ${MAX_DEPTH} levels at line ${
+              this.lineOf(this.pos)
+            }`,
           );
           return;
         }
@@ -259,7 +263,9 @@ class Parser {
     const body = emptyBody();
     if (depth > MAX_DEPTH) {
       this.abort(
-        `blocks nested deeper than ${MAX_DEPTH} levels at line ${this.lineOf(this.pos)}`,
+        `blocks nested deeper than ${MAX_DEPTH} levels at line ${
+          this.lineOf(this.pos)
+        }`,
       );
       return body;
     }
@@ -288,7 +294,9 @@ class Parser {
         this.pos++;
         const value = this.parseExpr(true, depth);
         if (!closing) {
-          this.report(`attribute "${name}" at line ${line} is outside any block`);
+          this.report(
+            `attribute "${name}" at line ${line} is outside any block`,
+          );
         } else if (Object.hasOwn(body.attrs, name)) {
           this.report(`duplicate attribute "${name}" at line ${line}`);
         } else {
@@ -330,7 +338,9 @@ class Parser {
     this.skipSpace(false);
     const c = this.ch();
     if (c === "" || c === "\n" || c === "}" || IDENT_START.test(c)) return;
-    this.report(`unexpected "${c}" after a value at line ${this.lineOf(this.pos)}`);
+    this.report(
+      `unexpected "${c}" after a value at line ${this.lineOf(this.pos)}`,
+    );
     this.skipLine();
   }
 
@@ -348,7 +358,9 @@ class Parser {
   private parseExpr(attr: boolean, depth: number): HclValue {
     if (depth > MAX_DEPTH) {
       this.abort(
-        `expressions nested deeper than ${MAX_DEPTH} levels at line ${this.lineOf(this.pos)}`,
+        `expressions nested deeper than ${MAX_DEPTH} levels at line ${
+          this.lineOf(this.pos)
+        }`,
       );
       return { unknown: "" };
     }
@@ -356,7 +368,10 @@ class Parser {
     const begin = this.pos;
     const value = this.parsePrimary(attr, depth);
     this.skipSpace(!attr);
-    if (this.atTerminator(attr)) return value;
+    // In attribute context a name right after a complete value starts the next item.
+    if (this.atTerminator(attr) || (attr && IDENT_START.test(this.ch()))) {
+      return value;
+    }
     // SIMPLE-ON-PURPOSE: arithmetic and conditionals stay raw text, never evaluated — upgrade when a rule must read their value.
     this.skipTokens(attr, depth, false);
     return { unknown: this.rawFrom(begin) };
@@ -409,7 +424,11 @@ class Parser {
           splat = true;
           break;
         } else {
-          this.report(`invalid attribute access after ${word} at line ${this.lineOf(begin)}`);
+          this.report(
+            `invalid attribute access after ${word} at line ${
+              this.lineOf(begin)
+            }`,
+          );
           break;
         }
       } else if (this.ch() === "[") {
@@ -424,7 +443,9 @@ class Parser {
         break;
       }
     }
-    return splat ? { unknown: this.rawFrom(begin) } : { ref: this.rawFrom(begin) };
+    return splat
+      ? { unknown: this.rawFrom(begin) }
+      : { ref: this.rawFrom(begin) };
   }
 
   // `jsonencode(<expr>)` yields the expression's own value, so a policy built
@@ -472,7 +493,9 @@ class Parser {
       if (sep === ",") {
         this.pos++;
       } else if (sep !== "]" && sep !== "" && sep !== ")" && sep !== "}") {
-        this.report(`unexpected "${sep}" in list at line ${this.lineOf(this.pos)}`);
+        this.report(
+          `unexpected "${sep}" in list at line ${this.lineOf(this.pos)}`,
+        );
         this.skipTokens(false, depth + 1, false);
       }
     }
@@ -521,7 +544,9 @@ class Parser {
       this.skipSpace(false);
       const sep = this.ch();
       if (sep !== "=" && sep !== ":") {
-        this.report(`expected = or : after "${key}" at line ${this.lineOf(this.pos)}`);
+        this.report(
+          `expected = or : after "${key}" at line ${this.lineOf(this.pos)}`,
+        );
         this.skipTokens(false, depth + 1, false);
         continue;
       }
@@ -540,7 +565,9 @@ class Parser {
       ) {
         continue;
       }
-      this.report(`unexpected "${after}" in object at line ${this.lineOf(this.pos)}`);
+      this.report(
+        `unexpected "${after}" in object at line ${this.lineOf(this.pos)}`,
+      );
       this.skipTokens(false, depth + 1, false);
     }
   }
@@ -577,7 +604,9 @@ class Parser {
       lineStart = lineEnd + 1;
     }
     if (closeStart === -1) {
-      this.abort(`heredoc ${marker} at line ${this.lineOf(open)} is not closed`);
+      this.abort(
+        `heredoc ${marker} at line ${this.lineOf(open)} is not closed`,
+      );
       return { unknown: "" };
     }
     const indent = stripIndent ? this.commonIndent(bodyStart, closeStart) : 0;
@@ -597,7 +626,9 @@ class Parser {
       let e = this.src.indexOf("\n", p);
       if (e === -1 || e > to) e = to;
       let n = p;
-      while (n < e && (this.src.charAt(n) === " " || this.src.charAt(n) === "\t")) {
+      while (
+        n < e && (this.src.charAt(n) === " " || this.src.charAt(n) === "\t")
+      ) {
         n++;
       }
       if (n < e) min = Math.min(min, n - p);
@@ -654,7 +685,9 @@ class Parser {
         if (this.ch() === "}") {
           this.pos++;
         } else {
-          this.report(`interpolation at line ${this.lineOf(this.pos)} is not closed by }`);
+          this.report(
+            `interpolation at line ${this.lineOf(this.pos)} is not closed by }`,
+          );
           unknownPart = true;
         }
         continue;
@@ -681,7 +714,9 @@ class Parser {
     const raw = this.src.slice(bodyStart, this.pos);
     if (quoted) {
       if (this.ch() === "") {
-        this.abort(`unterminated string starting at line ${this.lineOf(start)}`);
+        this.abort(
+          `unterminated string starting at line ${this.lineOf(start)}`,
+        );
         return { unknown: raw };
       }
       this.pos++;
@@ -712,7 +747,9 @@ class Parser {
       case "U":
         return this.codePoint(8);
       default:
-        this.report(`unknown escape "\\${c}" at line ${this.lineOf(this.pos - 1)}`);
+        this.report(
+          `unknown escape "\\${c}" at line ${this.lineOf(this.pos - 1)}`,
+        );
         return c;
     }
   }
