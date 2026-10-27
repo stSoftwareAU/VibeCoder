@@ -74,6 +74,8 @@ async function upkeep(prs: SearchPr[], dir: string, refusal?: string) {
         return Promise.reject(new Error(refusal));
       }
       if (args[1]?.includes("/files")) return Promise.resolve("[]");
+      // No PR comments: gh prints an empty JSON list (Issue #4398).
+      if (args[1]?.endsWith("/comments")) return Promise.resolve("[]");
       return Promise.resolve("{}");
     },
   });
@@ -614,6 +616,8 @@ Deno.test("gate rechecks a post update written after its initial cache read (Iss
             },
           });
         }
+        // No PR comments: gh prints an empty JSON list (Issue #4398).
+        if (args[1]?.endsWith("/comments")) return "[]";
         return "{}";
       },
     });

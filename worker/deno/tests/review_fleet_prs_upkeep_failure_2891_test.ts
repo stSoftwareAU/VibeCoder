@@ -104,6 +104,10 @@ function makeGh(depPr: ReturnType<typeof dependabotPr>) {
     if (args[0] === "api" && args[1]?.includes("/files")) {
       return Promise.resolve("[]");
     }
+    // No PR comments: gh prints an empty JSON list (Issue #4398).
+    if (args[0] === "api" && args[1]?.endsWith("/comments")) {
+      return Promise.resolve("[]");
+    }
     return Promise.resolve("");
   };
   return { gh, calls };
@@ -215,6 +219,8 @@ Deno.test("pass counts a dismissed logged change-request with an unchanged diff 
       if (path.endsWith("compare/main...X")) return Promise.resolve(files);
       if (path.endsWith("compare/main...head")) return Promise.resolve(files);
       if (path.includes("/files")) return Promise.resolve("[]");
+      // No PR comments: gh prints an empty JSON list (Issue #4398).
+      if (path.endsWith("/comments")) return Promise.resolve("[]");
       throw new Error(`unexpected gh ${args.join(" ")}`);
     };
     const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
@@ -316,6 +322,8 @@ Deno.test("pass binds the version exception to findings from this PR's exact sen
           return Promise.resolve(files("1.32.5", "1.32.6"));
         }
         if (path.includes("/files")) return Promise.resolve("[]");
+        // No PR comments: gh prints an empty JSON list (Issue #4398).
+        if (path.endsWith("/comments")) return Promise.resolve("[]");
         if (path.includes("/contents/review-checklists.json")) {
           throw new Error("gh: Not Found (HTTP 404)");
         }

@@ -116,6 +116,9 @@ async function runGate(options: {
     if (args.some((arg) => arg.includes("application/vnd.github.diff"))) {
       return Promise.resolve(options.diff ?? "");
     }
+    if (args[1]?.endsWith("/comments")) {
+      return Promise.resolve("[]");
+    }
     return Promise.resolve("");
   };
   const dir = await Deno.makeTempDir();

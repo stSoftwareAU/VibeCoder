@@ -28,6 +28,8 @@ import {
 // would point somewhere else.
 // An opted-in repo (`pr_reviewer_auto_release` in .config.json) has an
 // issue-required test-change hold auto-released as an approval (Issue #3397).
+// After the review posts, the claim comments at the reviewed head are deleted,
+// whichever host made them (Issue #4398).
 // Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?,
 // branchUpdated?, branchUpdateError?, autoReleased?, autoReleaseHeld?, reason? }.
 // A failed label call leaves the review posted, is not retried, and is
@@ -66,6 +68,7 @@ import {
 import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
 import { type BranchUpdateResult, updateBranchOnce } from "./branch_update.ts";
 import { postRunInfo, recordPosted } from "./review_cost.ts";
+import { releaseClaims } from "./claim.ts";
 
 interface Input {
   pr: {
@@ -357,6 +360,24 @@ export function shouldUpdateBranch(
     mergeStateStatus === "BEHIND";
 }
 
+// Deletes every claim at the reviewed head, whichever host made it: once the
+// review is posted the gate skips the PR as already reviewed (Issue #4398). The
+// review is already posted, so a failed delete is returned for the caller to
+// report, never thrown.
+export async function releaseClaimAtHead(
+  pr: { repo: string; number: number; headSha: string },
+  runGh: RunGh,
+): Promise<{ released: number; error?: string }> {
+  try {
+    const released = await releaseClaims(runGh, pr.repo, pr.number, {
+      sha: pr.headSha,
+    });
+    return { released };
+  } catch (e) {
+    return { released: 0, error: (e as Error).message.split("\n")[0] };
+  }
+}
+
 // Exported, not just `import.meta.main`-gated, so the root-level forwarding
 // shim (Issue #3299 continuity gap — PR #3417 review) can call this same
 // body for a runner still started from the pre-move layout.
@@ -397,6 +418,7 @@ export async function main() {
       "headRefOid,state,mergeStateStatus,isDraft,mergeable",
     ]),
   );
+  // A moved head leaves its claim at the old sha: the gate ignores claims at other heads, and it expires (Issue #4398).
   if (live.headRefOid !== pr.headSha || live.state !== "OPEN") {
     console.log(
       JSON.stringify({
@@ -463,6 +485,13 @@ export async function main() {
       attempt: runInfo.attempt,
     }).catch((e) =>
       console.error(`could not record the posted review: ${e.message}`)
+    );
+  }
+
+  const claim = await releaseClaimAtHead(pr, (args) => run("gh", args));
+  if (claim.error !== undefined) {
+    console.error(
+      `could not delete the review claim on ${pr.repo}#${pr.number}: ${claim.error}`,
     );
   }
 

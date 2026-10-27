@@ -119,6 +119,10 @@ async function runPass(
     if (args[0] === "api" && args[1] === "repos/acme/app/pulls/41/files") {
       return Promise.resolve("[]");
     }
+    // Other PRs have no comments: gh prints an empty JSON list (Issue #4398).
+    if (args[0] === "api" && args[1]?.endsWith("/comments")) {
+      return Promise.resolve("[]");
+    }
     return Promise.resolve("");
   };
   const dir = await Deno.makeTempDir();
