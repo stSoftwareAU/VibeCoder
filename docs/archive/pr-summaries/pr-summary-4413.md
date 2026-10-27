@@ -76,9 +76,18 @@ flowchart TD
 ```
 
 Tests (run from `worker/deno`):
-`deno task test tests/heavy_build_gate_3178_test.ts tests/heavy_build_gate_in_flight_4413_test.ts tests/host_disk_inflight_4360_test.ts tests/claude_runner_host_disk_4390_test.ts tests/lib_sweep_coverage_test.ts`.
+`deno task test tests/heavy_build_gate_3178_test.ts tests/project_manifests_4413_test.ts tests/milestone_resolution_gate_test.ts tests/heavy_build_gate_in_flight_4413_test.ts tests/host_disk_inflight_4360_test.ts tests/claude_runner_host_disk_4390_test.ts tests/lib_sweep_coverage_test.ts`.
 
 ## Test Plan
+
+New `worker/deno/tests/project_manifests_4413_test.ts` pins the moved
+`project_manifests.ts` directly (12 tests, temp trees removed afterwards), so
+the mutation check can reach it: every `SKIP_DIRS` entry plus dot-directories
+never entered; depth 2 and no deeper; `deno.json` before `deno.jsonc`; manifest
+paths and kinds; a manifest covers nested projects of its own toolchain only;
+descent stops once both toolchains are covered; sorted, deterministic order;
+files are not directories; an unreadable subdirectory contributes nothing;
+`isFile`; and `milestone_merge_gate.ts` re-exports the same function and depth.
 
 New tests in `worker/deno/tests/heavy_build_gate_in_flight_4413_test.ts`:
 Deno-only merge-only reading not parked; cargo merge-only parked with the budget
@@ -119,6 +128,11 @@ Callers of `parkInFlightBuild` checked: `claude_runner.ts` (agent start, covered
 by the call-site test), `mutation_check_invocation.ts`,
 `security_fix_discrimination.ts`, `phases/quality_gate_remediation_phase.ts` —
 all get the same rule; the three non-agent callers have no separate new test.
+Callers of `findProjectManifests` (moved verbatim, behaviour unchanged):
+`heavy_build_gate.ts` (new, tested by the 4413 suite), `milestone_merge_gate.ts`
+(`checkMergedTree`, re-exports the name) and `milestone_resolution_gate.ts:274`
+(`verifyResolvedTree`) — all unchanged, as the function body is identical to the
+base and the new direct test pins it; `milestone_resolution_gate_test.ts` passes.
 Twinned rules: `docs/CONTAINER.md` (section "In-flight builds stop at the same
 floor", bullet "The root has a budget") and `docs/INTERNALS.md` (~3080) updated;
 `docs/INTERNALS.md` ~4478 and the HOST_DISK_BUDGET section already stated the
