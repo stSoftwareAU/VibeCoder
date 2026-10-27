@@ -8,6 +8,9 @@
  * the probe. Anything that cannot be established is `unknown` and is never
  * treated as available.
  *
+ * A read-only caller (the audit sweep) passes `allowProbe` false and is never
+ * probed: an inconclusive answer is then `unknown`.
+ *
  * This module only detects and describes. Wiring the rule into the
  * default-branch ruleset is the configurator's job
  * (`default_branch_ruleset.ts`).
@@ -298,8 +301,31 @@ async function probeMergeQueue(
 // Detection
 // ---------------------------------------------------------------------------
 
+/** Why a read-only run leaves an inconclusive availability unprobed. */
+const PROBE_SKIPPED_READ_ONLY_REASON =
+  "merge queue availability could not be read from the repository metadata, " +
+  "and the probe was skipped because the run is read-only";
+
+/**
+ * Probe GitHub, unless the run is read-only (Issue #4424). A read-only run
+ * never creates the probe ruleset; its answer is `unknown`, which the merge
+ * queue decision reports as unverified.
+ */
+async function probeOrSkip(
+  repo: string,
+  mergeMethod: MergeMethod,
+  allowProbe: boolean,
+  ghFn: GhExec,
+): Promise<MergeQueueAvailability> {
+  if (!allowProbe) {
+    return { status: "unknown", reason: PROBE_SKIPPED_READ_ONLY_REASON };
+  }
+  return await probeMergeQueue(repo, mergeMethod, ghFn);
+}
+
 async function detect(
   repo: string,
+  allowProbe: boolean,
   ghFn: GhExec,
 ): Promise<MergeQueueAvailability> {
   if (!isValidRepoSlug(repo)) {
@@ -313,7 +339,7 @@ async function detect(
   if (metadata === undefined) {
     // The metadata was unreadable or malformed, so the merge method is not
     // known. Probe with squash, the fleet's usual method.
-    return await probeMergeQueue(repo, "SQUASH", ghFn);
+    return await probeOrSkip(repo, "SQUASH", allowProbe, ghFn);
   }
 
   if (metadata.ownerType !== "Organization") {
@@ -355,22 +381,27 @@ async function detect(
   }
 
   // The plan could not be read, so GitHub itself has to answer.
-  return await probeMergeQueue(repo, metadata.mergeMethod, ghFn);
+  return await probeOrSkip(repo, metadata.mergeMethod, allowProbe, ghFn);
 }
 
 /**
  * Whether GitHub allows a merge queue on `repo`, with the merge method to use.
  *
  * Reads repository and organisation metadata first. Where that is not
- * conclusive, creates a disabled probe ruleset and deletes it again. Never
- * throws: anything that goes wrong is `unknown`, with a reason.
+ * conclusive, creates a disabled probe ruleset and deletes it again — unless
+ * `allowProbe` is false (a read-only run, Issue #4424), in which case the
+ * inconclusive answer is `unknown` and nothing is created. Never throws:
+ * anything that goes wrong is `unknown`, with a reason.
+ *
+ * @param allowProbe - Whether a probe ruleset may be created and deleted.
  */
 export async function detectMergeQueueAvailability(
   repo: string,
+  allowProbe: boolean,
   ghFn: GhExec = defaultGhExec,
 ): Promise<MergeQueueAvailability> {
   try {
-    return await detect(repo, ghFn);
+    return await detect(repo, allowProbe, ghFn);
   } catch (error) {
     return {
       status: "unknown",

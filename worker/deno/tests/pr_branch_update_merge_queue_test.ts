@@ -25,14 +25,16 @@ const PR: PrBranchEntry = {
   baseRefName: "main",
 };
 
-/** A logger that keeps its info lines for assertions. */
-function recordingLogger(infos: string[]): Logger {
+/** A logger that keeps its info and warning lines for assertions. */
+function recordingLogger(infos: string[], warns: string[]): Logger {
   const noop = () => {};
   return {
     info: (message: string) => {
       infos.push(message);
     },
-    warn: noop,
+    warn: (message: string) => {
+      warns.push(message);
+    },
     error: noop,
     debug: noop,
     security: noop,
@@ -64,6 +66,7 @@ interface ScanRun {
   behindReads: number;
   mergeableReads: number;
   infos: string[];
+  warns: string[];
 }
 
 function extractActions(actions: ActionSummary[]): ActionSummary[] {
@@ -77,12 +80,14 @@ function extractActions(actions: ActionSummary[]): ActionSummary[] {
 /** Run the real scan over one fixture and report what it asked and did. */
 async function runScan(f: ScanFixture): Promise<ScanRun> {
   const infos: string[] = [];
+  const warns: string[] = [];
   const queueQuestions: string[] = [];
   let behindReads = 0;
   let mergeableReads = 0;
+  const batch = f.batch;
   const deps: PrBranchUpdateDeps = {
     repos: [REPO],
-    logger: recordingLogger(infos),
+    logger: recordingLogger(infos, warns),
     isRepoAllowed: () => true,
     getDefaultBranch: () => Promise.resolve("main"),
     listPrs: () => Promise.resolve(f.prs ?? [PR]),
@@ -101,9 +106,9 @@ async function runScan(f: ScanFixture): Promise<ScanRun> {
       }
       return Promise.resolve(f.queued);
     },
-    ...(f.batch !== undefined
+    ...(batch !== undefined
       ? {
-        fetchBranchStateBatch: () => Promise.resolve(f.batch ?? null),
+        fetchBranchStateBatch: () => Promise.resolve(batch),
       }
       : {}),
   };
@@ -116,6 +121,7 @@ async function runScan(f: ScanFixture): Promise<ScanRun> {
     behindReads,
     mergeableReads,
     infos,
+    warns,
   };
 }
 
@@ -234,4 +240,17 @@ Deno.test("scan - a behind-only PR on a queued base is logged at info naming the
 Deno.test("scan - a failing merge-queue read is treated as not queued, so a behind PR is still updated", async () => {
   const run = await runScan({ queued: "throws" });
   assertEquals(run.actions, [{ prNumber: 42, reason: "behind", behindBy: 3 }]);
+});
+
+Deno.test("scan - a failing merge-queue read is logged at warning, naming the repo, base and cause (fail loud)", async () => {
+  const run = await runScan({ queued: "throws" });
+  assertEquals(
+    run.warns.length,
+    1,
+    `expected one warning, got: ${JSON.stringify(run.warns)}`,
+  );
+  const line = run.warns[0] ?? "";
+  assertEquals(line.includes(REPO), true);
+  assertEquals(line.includes("main"), true);
+  assertEquals(line.includes("rules endpoint down"), true);
 });

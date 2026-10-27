@@ -35,6 +35,7 @@
  */
 
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
+import { sanitiseLogField } from "./issue_finder_logger.ts";
 import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 import {
@@ -195,8 +196,9 @@ export async function sweepAutoMerge(
     prsSkippedNotOpen: 0,
   };
   const authors = fleetAuthors.join(", ");
-  // Issue #4424: a base whose queue state cannot be read, or a PR with no
-  // base ref, is "not queued" — today's behaviour.
+  // Issue #4424: a PR with no base ref is "not queued". A base whose queue
+  // lookup throws is also "not queued" — today's behaviour — but never
+  // silently: it is logged at WARNING naming the repo, the base and the cause.
   const isBaseQueued = async (
     repo: string,
     pr: SweepablePr,
@@ -204,7 +206,13 @@ export async function sweepAutoMerge(
     if (!pr.baseRefName) return false;
     try {
       return await isMergeQueueBase(repo, pr.baseRefName);
-    } catch {
+    } catch (err) {
+      logger.warn(
+        `Auto-merge sweep: merge-queue lookup for ${repo} base ${pr.baseRefName} threw — treating the base as not queued (Issue #4424): ${
+          sanitiseLogField(errorMessage(err))
+        }`,
+        { repo, baseRefName: pr.baseRefName },
+      );
       return false;
     }
   };

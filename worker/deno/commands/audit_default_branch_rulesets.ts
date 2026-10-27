@@ -5,7 +5,8 @@
  * Prints, for every repo, what the setup-time ruleset sync **would** do:
  * `create` / `update` the worker's ruleset, `delete` its own stale one, or
  * skip (`direct-push-branch`, `opted-out`, `existing-ruleset`,
- * `no-reported-checks`). Nothing is written.
+ * `no-reported-checks`). Nothing is written, and no merge-queue probe is
+ * created: the sweep plans read-only (Issue #4424).
  *
  * Usage:
  *   deno run --allow-all mod.ts audit-default-branch-rulesets \

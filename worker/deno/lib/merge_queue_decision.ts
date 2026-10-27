@@ -65,6 +65,7 @@ async function decide(
   repo: string,
   branch: string,
   requiredContexts: readonly string[],
+  allowProbe: boolean,
   ghFn: GhExec,
 ): Promise<MergeQueueDecision> {
   const optOut = await readMergeQueueOptOut(repo, ghFn);
@@ -81,7 +82,11 @@ async function decide(
     };
   }
 
-  const availability = await detectMergeQueueAvailability(repo, ghFn);
+  const availability = await detectMergeQueueAvailability(
+    repo,
+    allowProbe,
+    ghFn,
+  );
   if (availability.status === "unavailable") {
     return {
       verdict: "unavailable",
@@ -119,17 +124,20 @@ async function decide(
  * Whether the default-branch ruleset of `repo` should carry a merge queue.
  *
  * `requiredContexts` are the status checks the ruleset will require, since
- * each must report on `merge_group` for the queue to work. Never throws: any
- * failure that escapes the checks is `unverified`, with a reason.
+ * each must report on `merge_group` for the queue to work. `allowProbe` false
+ * (a read-only run, Issue #4424) makes an inconclusive availability answer
+ * `unverified` without creating the probe ruleset. Never throws: any failure
+ * that escapes the checks is `unverified`, with a reason.
  */
 export async function decideMergeQueue(
   repo: string,
   branch: string,
   requiredContexts: readonly string[],
+  allowProbe: boolean,
   ghFn: GhExec,
 ): Promise<MergeQueueDecision> {
   try {
-    return await decide(repo, branch, requiredContexts, ghFn);
+    return await decide(repo, branch, requiredContexts, allowProbe, ghFn);
   } catch (error) {
     return unverified(
       `the merge queue could not be decided: ${messageOf(error)}`,

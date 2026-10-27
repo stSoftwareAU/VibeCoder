@@ -36,6 +36,7 @@ interface SweepRun {
   attempted: number[];
   queueQuestions: string[];
   infos: string[];
+  warns: string[];
 }
 
 /** Run the real sweep over one armed PR and record what it did. */
@@ -44,6 +45,7 @@ async function runSweep(f: SweepFixture): Promise<SweepRun> {
   const attempted: number[] = [];
   const queueQuestions: string[] = [];
   const infos: string[] = [];
+  const warns: string[] = [];
   const listed: SweepablePr = f.noBaseRef === true
     ? { number: PR.number, headRefName: PR.headRefName }
     : PR;
@@ -87,10 +89,12 @@ async function runSweep(f: SweepFixture): Promise<SweepRun> {
       info: (message: string) => {
         infos.push(message);
       },
-      warn: () => {},
+      warn: (message: string) => {
+        warns.push(message);
+      },
     },
   });
-  return { updated, attempted, queueQuestions, infos };
+  return { updated, attempted, queueQuestions, infos, warns };
 }
 
 Deno.test("sweep - armed, behind PR on a queued base is not updated and not merge-attempted", async () => {
@@ -137,6 +141,19 @@ Deno.test("sweep - a PR with no base ref is not treated as queued", async () => 
   assertEquals(run.updated, [7]);
   assertEquals(run.attempted, []);
   assertEquals(run.queueQuestions, []);
+});
+
+Deno.test("sweep - a failing merge-queue read is logged at warning, naming the repo, base and cause (fail loud)", async () => {
+  const run = await runSweep({ queued: "throws" });
+  assertEquals(
+    run.warns.length,
+    1,
+    `expected one warning, got: ${JSON.stringify(run.warns)}`,
+  );
+  const line = run.warns[0] ?? "";
+  assertEquals(line.includes(REPO), true);
+  assertEquals(line.includes("main"), true);
+  assertEquals(line.includes("rules endpoint down"), true);
 });
 
 Deno.test("sweep - a failing merge-queue read is treated as not queued, so the branch is still updated", async () => {

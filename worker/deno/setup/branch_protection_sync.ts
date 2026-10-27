@@ -13,8 +13,8 @@
  * protection is never written.**
  *
  * {@link planBranchProtectionForRepo} is the read-only twin: same resolution,
- * same decision, no write — it backs the `audit-default-branch-rulesets`
- * sweep.
+ * same decision, no write and no merge-queue probe (it plans with `readOnly`)
+ * — it backs the `audit-default-branch-rulesets` sweep.
  *
  * RATE-LIMIT BUDGET — READ BEFORE WIRING THIS ANYWHERE NEW.
  * This sync must run ONLY at setup time (once per `setup.sh` invocation). It
@@ -278,7 +278,8 @@ export async function syncBranchProtectionForRepo(
 /**
  * Read-only twin of {@link syncBranchProtectionForRepo}: resolves the same
  * visibility and default branch, then returns the
- * {@link planDefaultBranchRuleset} decision **without writing** (Issue #4356).
+ * {@link planDefaultBranchRuleset} decision **without writing** (Issue #4356),
+ * and without the merge-queue probe either (Issue #4424).
  * Backs the `audit-default-branch-rulesets` sweep.
  */
 export async function planBranchProtectionForRepo(
@@ -295,9 +296,10 @@ export async function planBranchProtectionForRepo(
     };
   }
   const { visibility, branch } = context;
+  // readOnly: the audit never creates the merge-queue probe ruleset (Issue #4424).
   const planned = await planDefaultBranchRuleset(
     repo,
-    { branch, visibility },
+    { branch, visibility, readOnly: true },
     options.ghFn,
   );
   if (!planned.ok) {
@@ -355,6 +357,43 @@ async function resolveRepoContext(
   }
 
   return { ok: true, visibility, branch };
+}
+
+/** One line of the setup output for a merge-queue state (Issue #4424). */
+export interface MergeQueueLine {
+  /** `success` for an enabled queue; `info` otherwise. */
+  level: "success" | "info";
+  /** The message, without the repository prefix the printer adds. */
+  text: string;
+}
+
+/**
+ * The setup output line for a merge-queue state: enabled; left in place when
+ * an unverified read kept a live queue; or not enabled, with the fallback
+ * reason and the strict policy named (Issue #4424). Pure, so the wording is
+ * testable apart from the printer.
+ */
+export function formatMergeQueueLine(
+  mergeQueue: RulesetMergeQueue,
+): MergeQueueLine {
+  if (mergeQueue.verdict === "enabled") {
+    return {
+      level: "success",
+      text: `merge queue enabled (${mergeQueue.reason})`,
+    };
+  }
+  if (mergeQueue.enabled) {
+    return {
+      level: "info",
+      text:
+        `merge queue left in place: ${mergeQueue.reason} — the existing queue is kept`,
+    };
+  }
+  return {
+    level: "info",
+    text:
+      `merge queue not enabled: ${mergeQueue.reason} — strict up-to-date policy kept`,
+  };
 }
 
 /**

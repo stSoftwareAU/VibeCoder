@@ -56,10 +56,11 @@
  *     read: a transient failure keeps whatever queue is already live.
  *
  * The decision is separated from the write: {@link planDefaultBranchRuleset}
- * returns what *would* happen (its only write is the merge-queue probe, see
- * its doc comment), and
+ * returns what *would* happen (its only write is the merge-queue probe, which
+ * a `readOnly` plan never makes; see its doc comment), and
  * {@link ensureDefaultBranchRuleset} applies that plan. The read-only sweep
- * (`audit-default-branch-rulesets`) uses the plan alone.
+ * (`audit-default-branch-rulesets`) uses the plan alone with `readOnly` set, so
+ * it never probes.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -119,6 +120,13 @@ export interface EnsureRulesetOptions {
   visibility: CheckVisibility;
   /** Optional detected languages, forwarded to {@link getRequiredChecksForRepo}. */
   detectedLanguages?: string[];
+  /**
+   * True for a read-only plan (the audit sweep). Such a plan never creates the
+   * merge-queue probe ruleset, so it makes no non-GET call at all; an
+   * inconclusive merge-queue answer is then unverified. Default false
+   * (Issue #4424).
+   */
+  readOnly?: boolean;
 }
 
 /** Why a run made no change, when it made none. */
@@ -154,7 +162,9 @@ export interface RulesetMergeQueue {
 
 /**
  * Read-only decision for one repo — what {@link ensureDefaultBranchRuleset}
- * would do, computed without writing anything.
+ * would do, computed without writing anything. The merge-queue probe is the
+ * one exception: it is created and deleted within the plan's call, and a
+ * `readOnly` plan never makes it (Issue #4424).
  */
 export interface RulesetPlan {
   action: RulesetAction;
@@ -259,7 +269,7 @@ function effectiveMergeQueue(
   live: RulesetDetail,
 ): MergeQueueParameters | undefined {
   if (decision.verdict === "enabled") {
-    return decision.parameters;
+    return mergeQueueParametersFromDetail(live) ?? decision.parameters;
   }
   if (decision.definitive) return undefined;
   if (!liveHasMergeQueueRule(live)) return undefined;
@@ -276,16 +286,18 @@ function mergeQueueState(
 }
 
 // ---------------------------------------------------------------------------
-// Plan (read-only, bar the merge-queue probe)
+// Plan (read-only, bar the merge-queue probe unless readOnly)
 // ---------------------------------------------------------------------------
 
 /**
- * Decide, without writing, what the default-branch ruleset sync would do.
+ * Decide, without writing, what the default-branch ruleset sync would do
+ * (bar the merge-queue probe, which `readOnly` suppresses; see below).
  *
  * The one write this can make is the merge-queue probe (Issue #4424): where
  * repository metadata cannot settle whether GitHub allows a merge queue, a
  * disabled probe ruleset is created and deleted again to ask GitHub. Every
- * other read is GET-only.
+ * other read is GET-only. With `options.readOnly` set (the audit sweep) no
+ * write is made at all: the inconclusive answer is unverified instead.
  *
  * @param repo - `owner/repo` slug.
  * @param options - Branch name, visibility, and optional detected languages.
@@ -420,7 +432,13 @@ export async function planDefaultBranchRuleset(
   const contexts = [...currentContexts, ...added];
 
   // --- Merge queue (Issue #4424): on where GitHub allows it, else strict ---
-  const decision = await decideMergeQueue(repo, branch, contexts, ghFn);
+  const decision = await decideMergeQueue(
+    repo,
+    branch,
+    contexts,
+    options.readOnly !== true,
+    ghFn,
+  );
 
   if (ours === undefined) {
     return {

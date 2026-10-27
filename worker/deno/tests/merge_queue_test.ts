@@ -113,7 +113,7 @@ Deno.test("merge queue - the parameters are the worker's fixed settings", () => 
 Deno.test("merge queue - a public organisation repo is available from metadata with no ruleset write", async () => {
   const fake = routedGh({ [REPO_KEY]: repoJson({ private: false }) });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "available", via: "metadata" });
   assertEquals(fake.calls, [["api", "repos/org/repo"]]);
@@ -124,7 +124,7 @@ Deno.test("merge queue - a user-owned repo is unavailable from metadata with no 
     [REPO_KEY]: repoJson({ owner: { type: "User" }, private: true }),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "unavailable", via: "metadata" });
   assertStringIncludes(result.reason, "user account");
@@ -137,7 +137,7 @@ Deno.test("merge queue - a private organisation on the team plan is unavailable 
     [ORG_KEY]: JSON.stringify({ plan: { name: "team" } }),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "unavailable", via: "metadata" });
   assertStringIncludes(result.reason, "team");
@@ -154,7 +154,7 @@ Deno.test("merge queue - a private organisation on the enterprise plan is availa
     [ORG_KEY]: JSON.stringify({ plan: { name: "enterprise" } }),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "available", via: "metadata" });
 });
@@ -167,7 +167,7 @@ Deno.test("merge queue - a private organisation with an unreadable plan falls th
     [DELETE_KEY]: "",
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "available", via: "probe" });
   assert(fake.calls.some((args) => args.includes("POST")));
@@ -186,7 +186,7 @@ Deno.test("merge queue - a private organisation with an unreadable plan falls th
 Deno.test("merge queue - the merge method is SQUASH when squash is allowed", async () => {
   const fake = routedGh({ [REPO_KEY]: repoJson({ private: false }) });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(mergeMethodOf(result), "SQUASH");
 });
@@ -196,7 +196,7 @@ Deno.test("merge queue - the merge method is MERGE when squash is disallowed", a
     [REPO_KEY]: repoJson({ private: false, allow_squash_merge: false }),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(mergeMethodOf(result), "MERGE");
 });
@@ -210,7 +210,7 @@ Deno.test("merge queue - the merge method is REBASE when squash and merge commit
     }),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(mergeMethodOf(result), "REBASE");
 });
@@ -226,7 +226,7 @@ Deno.test("merge queue - an unreadable repo metadata probes, creating then delet
     [DELETE_KEY]: "",
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "available", via: "probe" });
   assertEquals(fake.calls, [
@@ -252,7 +252,7 @@ Deno.test("merge queue - malformed repo metadata probes rather than deciding", a
     [DELETE_KEY]: "",
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "available", via: "probe" });
 });
@@ -265,7 +265,7 @@ Deno.test("merge queue - a probe refused with 422 is unavailable and quotes the 
     ),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "unavailable", via: "probe" });
   assertStringIncludes(result.reason, "Invalid rule");
@@ -281,7 +281,7 @@ Deno.test("merge queue - a probe whose create succeeds is deleted and reports av
     [DELETE_KEY]: "",
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "available", via: "probe" });
   const deletes = fake.calls.filter((args) => args.includes("DELETE"));
@@ -300,7 +300,7 @@ Deno.test("merge queue - a probe created but not deleted is unknown and names th
     [DELETE_KEY]: new Error("gh failed: HTTP 403 Forbidden"),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "unknown" });
   assertStringIncludes(result.reason, `${PROBE_ID}`);
@@ -314,7 +314,7 @@ Deno.test("merge queue - a probe created with no readable id is unknown and says
     [CREATE_KEY]: "{}",
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "unknown" });
   assertStringIncludes(result.reason, MERGE_QUEUE_PROBE_NAME);
@@ -329,7 +329,7 @@ Deno.test("merge queue - a probe failing with a 500 is unknown and is not called
     [CREATE_KEY]: new Error("gh failed: server error (HTTP 500)"),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(summary(result), { status: "unknown" });
   assertStringIncludes(result.reason, "probe failed:");
@@ -343,7 +343,7 @@ Deno.test("merge queue - a long probe error is capped in the reason", async () =
     [CREATE_KEY]: new Error("x".repeat(1000)),
   });
 
-  const result = await detectMergeQueueAvailability("org/repo", fake.gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, fake.gh);
 
   assertEquals(result.status, "unknown");
   assert(result.reason.length <= "probe failed: ".length + 300);
@@ -356,7 +356,7 @@ Deno.test("merge queue - a long probe error is capped in the reason", async () =
 Deno.test("merge queue - an invalid repo slug is unknown with no gh call", async () => {
   const fake = routedGh({});
 
-  const result = await detectMergeQueueAvailability("bad slug", fake.gh);
+  const result = await detectMergeQueueAvailability("bad slug", true, fake.gh);
 
   assertEquals(result.status, "unknown");
   assertEquals(fake.calls, []);
@@ -367,7 +367,7 @@ Deno.test("merge queue - a gh executor that throws synchronously still yields a 
     throw new Error("boom");
   };
 
-  const result = await detectMergeQueueAvailability("org/repo", gh);
+  const result = await detectMergeQueueAvailability("org/repo", true, gh);
 
   assertEquals(result.status, "unknown");
   assertStringIncludes(result.reason, "boom");
@@ -420,4 +420,73 @@ Deno.test("merge queue - the opt-out read rejects an invalid slug with no gh cal
 
   assertFalse((await readMergeQueueOptOut("bad slug", fake.gh)).ok);
   assertEquals(fake.calls, []);
+});
+
+// ---------------------------------------------------------------------------
+// Read-only runs never probe (Issue #4424)
+// ---------------------------------------------------------------------------
+
+/** Every call that is not a GET: a create, an update or a delete. */
+function writeCalls(calls: string[][]): string[][] {
+  return calls.filter((args) => args.includes("-X"));
+}
+
+Deno.test("merge queue - a read-only run never probes an unreadable metadata read (Issue #4424)", async () => {
+  const routes: Record<string, Reply> = {
+    [REPO_KEY]: new Error("gh failed: HTTP 503: unavailable"),
+    [CREATE_KEY]: PROBE_CREATED,
+    [DELETE_KEY]: "",
+  };
+  const readOnly = routedGh(routes);
+
+  const result = await detectMergeQueueAvailability(
+    "org/repo",
+    false,
+    readOnly.gh,
+  );
+
+  assertEquals(result.status, "unknown");
+  assertStringIncludes(result.reason, "read-only");
+  assertStringIncludes(result.reason, "probe was skipped");
+  assertEquals(writeCalls(readOnly.calls), []);
+
+  // Positive control: the same metadata failure with the probe allowed does
+  // create and delete the probe ruleset, and is then available.
+  const allowed = routedGh(routes);
+  const probed = await detectMergeQueueAvailability(
+    "org/repo",
+    true,
+    allowed.gh,
+  );
+  assertEquals(summary(probed), { status: "available", via: "probe" });
+  assertEquals(writeCalls(allowed.calls).length, 2);
+});
+
+Deno.test("merge queue - a read-only run never probes an unreadable organisation plan (Issue #4424)", async () => {
+  const routes: Record<string, Reply> = {
+    [REPO_KEY]: repoJson({ private: true }),
+    [ORG_KEY]: new Error("gh failed: HTTP 404: Not Found"),
+    [CREATE_KEY]: PROBE_CREATED,
+    [DELETE_KEY]: "",
+  };
+  const readOnly = routedGh(routes);
+
+  const result = await detectMergeQueueAvailability(
+    "org/repo",
+    false,
+    readOnly.gh,
+  );
+
+  assertEquals(result.status, "unknown");
+  assertStringIncludes(result.reason, "probe was skipped");
+  assertEquals(writeCalls(readOnly.calls), []);
+
+  // Positive control: with the probe allowed the same plan is answered by it.
+  const allowed = routedGh(routes);
+  const probed = await detectMergeQueueAvailability(
+    "org/repo",
+    true,
+    allowed.gh,
+  );
+  assertEquals(summary(probed), { status: "available", via: "probe" });
 });

@@ -28,7 +28,11 @@ import {
   type GhExec,
   type MergeQueueParameters,
 } from "../lib/repo_rulesets.ts";
-import { syncBranchProtectionForRepo } from "../setup/branch_protection_sync.ts";
+import {
+  formatMergeQueueLine,
+  planBranchProtectionForRepo,
+  syncBranchProtectionForRepo,
+} from "../setup/branch_protection_sync.ts";
 import type { CommandOutput } from "../setup/branch_protection_sync.ts";
 
 // ---------------------------------------------------------------------------
@@ -787,4 +791,105 @@ Deno.test("merge queue - syncBranchProtectionForRepo carries the merge queue sta
   assertEquals(refusedResult.ok, true);
   assertEquals(refusedResult.mergeQueue?.verdict, "unavailable");
   assertEquals(refusedResult.mergeQueue?.enabled, false);
+});
+
+// ---------------------------------------------------------------------------
+// The audit path never probes (Issue #4424)
+// ---------------------------------------------------------------------------
+
+Deno.test("merge queue - the audit path makes no non-GET call where the metadata is unreadable (Issue #4424)", async () => {
+  // Read-only: the audit sweep plans with readOnly, so an inconclusive
+  // answer is unverified and nothing is created, not even the probe.
+  const audit = fakeGh({
+    metaError: true,
+    probe: "accepted",
+    workflows: WITH_MERGE_GROUP,
+  });
+  const planned = await planBranchProtectionForRepo(REPO, {
+    visibility: "public",
+    runCommand: DEFAULT_BRANCH_ONLY,
+    ghFn: audit.gh,
+  });
+  assertEquals(planned.ok, true);
+  const plan = planned.plan!;
+  assertEquals(plan.action, "create");
+  assertEquals(plan.mergeQueue?.verdict, "unverified");
+  assertEquals(plan.mergeQueue?.enabled, false);
+  assertStringIncludes(plan.mergeQueue?.reason ?? "", "read-only");
+  assertEquals(audit.calls.filter((c) => c.method !== "GET"), []);
+
+  // The same read-only plan where the plan is unreadable on a private
+  // organisation: still no write.
+  const unreadablePlan = fakeGh({
+    repoMeta: PRIVATE_ORG,
+    probe: "accepted",
+    workflows: WITH_MERGE_GROUP,
+  });
+  const planPrivate = await planDefaultBranchRuleset(
+    REPO,
+    { branch: BRANCH, visibility: "private", readOnly: true },
+    unreadablePlan.gh,
+  );
+  assertEquals(must(planPrivate).plan.mergeQueue?.verdict, "unverified");
+  assertEquals(unreadablePlan.calls.filter((c) => c.method !== "GET"), []);
+
+  // Positive control: the same input planned without readOnly probes, and
+  // the probe's acceptance enables the queue.
+  const probing = fakeGh({
+    metaError: true,
+    probe: "accepted",
+    workflows: WITH_MERGE_GROUP,
+  });
+  const planProbed = must(
+    await planDefaultBranchRuleset(
+      REPO,
+      { branch: BRANCH, visibility: "public" },
+      probing.gh,
+    ),
+  );
+  assertEquals(planProbed.plan.mergeQueue?.verdict, "enabled");
+  assertEquals(probeWrites(probing.calls).length, 1);
+  assertEquals(deletes(probing.calls).length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// The setup-output wording (Issue #4424)
+// ---------------------------------------------------------------------------
+
+Deno.test("merge queue - the setup line says enabled, left in place, or not enabled with the reason (Issue #4424)", () => {
+  const enabled = formatMergeQueueLine({
+    verdict: "enabled",
+    enabled: true,
+    reason: "public repository of an organisation",
+  });
+  assertEquals(enabled, {
+    level: "success",
+    text: "merge queue enabled (public repository of an organisation)",
+  });
+
+  // An unverified read that kept a live queue: named as kept, not as a
+  // fallback to strict (which would be false here).
+  const kept = formatMergeQueueLine({
+    verdict: "unverified",
+    enabled: true,
+    reason: "the probe failed: HTTP 500",
+  });
+  assertEquals(kept, {
+    level: "info",
+    text:
+      "merge queue left in place: the probe failed: HTTP 500 — the existing queue is kept",
+  });
+
+  // A definitive refusal with no queue: the fallback names the reason and
+  // the strict policy that was kept.
+  const fallback = formatMergeQueueLine({
+    verdict: "unavailable",
+    enabled: false,
+    reason: "owned by a user account",
+  });
+  assertEquals(fallback, {
+    level: "info",
+    text:
+      "merge queue not enabled: owned by a user account — strict up-to-date policy kept",
+  });
 });

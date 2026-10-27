@@ -768,8 +768,9 @@ export function decidePrUpdateAction(
 
 /**
  * Whether a base is behind a merge queue, read once per repo and base per
- * scan (Issue #4424). A lookup that throws is treated as "not queued", the
- * same as a `null` read — today's behaviour.
+ * scan (Issue #4424). A lookup that throws is treated as "not queued" — today's
+ * behaviour — but never silently: it is logged at WARNING naming the repo, the
+ * base and the cause, so a broken dep is seen rather than hidden.
  */
 async function isQueuedBaseForScan(
   deps: PrBranchUpdateDeps,
@@ -783,7 +784,13 @@ async function isQueuedBaseForScan(
   let queued: boolean;
   try {
     queued = await deps.isMergeQueueBase(repo, baseBranch);
-  } catch {
+  } catch (err) {
+    deps.logger.warn(
+      `Merge-queue lookup for ${repo} base ${baseBranch} threw — treating the base as not queued (Issue #4424): ${
+        sanitiseLogField(err instanceof Error ? err.message : String(err))
+      }`,
+      { repo, baseBranch },
+    );
     queued = false;
   }
   cache.set(key, queued);

@@ -5,7 +5,9 @@
  * computes what `ensureDefaultBranchRuleset()` **would** do — create/update
  * the worker's ruleset, delete its own stale one, or skip and why — via the
  * read-only {@link planBranchProtectionForRepo}, and renders the answers as a
- * Markdown table. Nothing is written: no ruleset, no comment, no label.
+ * Markdown table. Nothing is written: no ruleset, no comment, no label, and
+ * no merge-queue probe ruleset either — the plan runs with `readOnly` set, so
+ * the audit never probes (Issue #4424).
  *
  * It exists so an operator can see, before a setup run, which repos the
  * direct-push guard now protects (`direct-push-branch` / `opted-out`) and

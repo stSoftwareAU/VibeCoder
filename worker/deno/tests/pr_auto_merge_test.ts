@@ -871,6 +871,9 @@ Deno.test("pr_auto_merge - an ordinary fix PR is unaffected by the milestone gat
     headRefName: "issue-3909-block-auto-merge",
     baseRefName: "main",
     isBaseProtectedFn: async () => true,
+    // Issue #4424: the merge-queue lookup is a memoised read of its own; it is
+    // stubbed unqueued so only the gate's and the merge's calls are counted.
+    isBaseMergeQueuedFn: async () => false,
     ghCommandFn: async (args: string[]) => {
       calls.push(args);
       return "";
