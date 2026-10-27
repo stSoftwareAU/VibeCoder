@@ -3523,8 +3523,16 @@ Deno.test("run.sh - no extension leaves the launch exactly as it was (Issue #980
   }
 });
 
-async function assertEgressSidecarOrder(harness: Harness): Promise<void> {
-  const order = await invocationOrder(harness);
+/**
+ * Check the sidecar's order from the `from`-th invocation on (Issue #4417).
+ * The invocation log is cumulative across launches on one harness, so a retry
+ * passes the count taken before it started.
+ */
+async function assertEgressSidecarOrder(
+  harness: Harness,
+  from = 0,
+): Promise<void> {
+  const order = (await invocationOrder(harness)).slice(from);
   const removed = order.indexOf("network-rm");
   const created = order.indexOf("network-create");
   const proxy = order.indexOf("run-proxy");
@@ -3616,5 +3624,313 @@ Deno.test("run.sh - a failed egress network create does not start the worker (Is
   } finally {
     await harness.cleanup();
     await Deno.remove(bundle, { recursive: true });
+  }
+});
+
+/**
+ * Each way the egress sidecar fails before the worker starts (Issue #4417).
+ * The proxy case exits at once and its logs never print the listening line,
+ * so the launcher's poll gives up at "did not start listening".
+ */
+const SIDECAR_FAILURES: {
+  label: string;
+  env: Record<string, string>;
+  refusal: string;
+}[] = [
+  {
+    label: "network create refused",
+    env: { STUB_NETWORK_CREATE_EXIT: "1" },
+    refusal: "could not create the egress network",
+  },
+  {
+    label: "proxy never listening",
+    env: { STUB_PROXY_EXIT: "1", STUB_PROXY_LOGS: "[EGRESS_PROXY] booting" },
+    refusal: "egress proxy did not start listening",
+  },
+  {
+    label: "proxy not connected",
+    env: { STUB_NETWORK_CONNECT_EXIT: "1" },
+    refusal: "could not connect the egress proxy",
+  },
+];
+
+/**
+ * The environment of an egress-enforced launch (Issue #4417). Host disk is
+ * pinned so two launches read the same free space and their worker argv can
+ * be compared.
+ */
+function egressEnv(bundle: string): Record<string, string> {
+  return {
+    STUB_INJECT_EGRESS_PLAN: "1",
+    STUB_EGRESS_BUNDLE: bundle,
+    STUB_DF_TOTAL_KB: "500000000",
+    STUB_DF_AVAIL_KB: "400000000",
+  };
+}
+
+/**
+ * Remove failure knobs from a harness, so the next launch on it runs clean
+ * (Issue #4417). The launch environment is read at each spawn.
+ */
+function clearKnobs(harness: Harness, names: string[]): void {
+  for (const name of names) delete harness.env[name];
+}
+
+/**
+ * A worker `run` argv with only what is new on every launch by design
+ * replaced (Issue #4417): the random container name and the `-net`/`-proxy`
+ * names built from it, this harness's own temporary directory, and the
+ * hard-kill epoch (launch time plus watchdog). Everything else - every mount,
+ * flag, network value and environment name - is compared exactly.
+ */
+function workerArgvShape(args: string[], harness: Harness): string[] {
+  const nameAt = args.indexOf("--name");
+  const name = nameAt >= 0 ? args[nameAt + 1] ?? "" : "";
+  return args.map((arg) => {
+    let shaped = arg.split(harness.tmpDir).join("<TMP>");
+    if (name !== "") shaped = shaped.split(name).join("<NAME>");
+    return shaped.replace(
+      /^VIBE_HARD_KILL_AT_EPOCH=\d+$/,
+      "VIBE_HARD_KILL_AT_EPOCH=<EPOCH>",
+    );
+  });
+}
+
+/** The worker argv the last launch recorded, failing the test when none. */
+async function lastWorkerRun(
+  harness: Harness,
+  label: string,
+): Promise<string[]> {
+  const run = await recorded(harness, "run");
+  assert(run, `${label}: no worker run was recorded`);
+  return run;
+}
+
+/**
+ * The last launch's worker is on the network its plan gives it, and the
+ * sidecar network that launch created is internal (Issue #4417). The worker's
+ * `--network` is `<container>-net`, the name lib/container_launch.ts derives
+ * for the internal network. The injected sidecar is `vibe-test-net`, so the
+ * fixture checks the two by that convention rather than by name.
+ */
+async function assertWorkerOnInternalNetwork(
+  harness: Harness,
+  label: string,
+): Promise<void> {
+  const run = await lastWorkerRun(harness, label);
+  const at = run.indexOf("--network");
+  assert(at >= 0, `${label}: the worker run has no --network`);
+  assertEquals(
+    run[at + 1],
+    `${run[run.indexOf("--name") + 1]}-net`,
+    `${label}: the worker is not on the internal network its plan names`,
+  );
+  const create = await recorded(harness, "network-create");
+  assert(
+    create?.includes("--internal"),
+    `${label}: the sidecar network was not created --internal: ${create}`,
+  );
+}
+
+Deno.test("run.sh - a retry after the egress sidecar fails starts the worker with the argv a clean launch gets (Issue #4417)", async () => {
+  for (const failure of SIDECAR_FAILURES) {
+    const bundle = await tinyEgressBundle();
+    const clean = await setupHarness(egressEnv(bundle), { denoStub: true });
+    const harness = await setupHarness(
+      { ...egressEnv(bundle), ...failure.env },
+      { denoStub: true },
+    );
+    try {
+      const baseline = await runLauncher(clean);
+      assertEquals(baseline.code, 0, `${failure.label}: ${baseline.stderr}`);
+      const cleanRun = await lastWorkerRun(clean, `${failure.label} (clean)`);
+
+      const refused = await runLauncher(harness);
+      assert(
+        refused.code !== 0,
+        `${failure.label}: the launch must be refused`,
+      );
+      assertStringIncludes(refused.stderr, failure.refusal);
+      assert(
+        !(await invocationOrder(harness)).includes("run"),
+        `${failure.label}: a worker ran after the sidecar was refused`,
+      );
+
+      // The same harness and state; only the failure is cleared.
+      clearKnobs(harness, Object.keys(failure.env));
+      const from = (await invocationOrder(harness)).length;
+      const retried = await runLauncher(harness);
+      assertEquals(retried.code, 0, `${failure.label}: ${retried.stderr}`);
+      await assertEgressSidecarOrder(harness, from);
+      assertEquals(
+        workerArgvShape(await lastWorkerRun(harness, failure.label), harness),
+        workerArgvShape(cleanRun, clean),
+        `${failure.label}: the retried worker argv differs from a clean launch`,
+      );
+    } finally {
+      await clean.cleanup();
+      await harness.cleanup();
+      await Deno.remove(bundle, { recursive: true });
+    }
+  }
+});
+
+Deno.test("run.sh - a denied worker run and its clean retry both carry the clean launch's argv (Issue #4417)", async () => {
+  const bundle = await tinyEgressBundle();
+  const clean = await setupHarness(egressEnv(bundle), { denoStub: true });
+  const harness = await setupHarness(
+    { ...egressEnv(bundle), STUB_RUN_EXIT: "1" },
+    { denoStub: true },
+  );
+  try {
+    const baseline = await runLauncher(clean);
+    assertEquals(baseline.code, 0, baseline.stderr);
+    const cleanShape = workerArgvShape(
+      await lastWorkerRun(clean, "clean launch"),
+      clean,
+    );
+
+    const denied = await runLauncher(harness);
+    assertEquals(denied.code, 1, denied.stderr);
+    assertEquals(
+      workerArgvShape(await lastWorkerRun(harness, "denied launch"), harness),
+      cleanShape,
+      "a denied worker run changed the argv the next launch is planned from",
+    );
+
+    clearKnobs(harness, ["STUB_RUN_EXIT"]);
+    const retried = await runLauncher(harness);
+    assertEquals(retried.code, 0, retried.stderr);
+    assertEquals(
+      workerArgvShape(await lastWorkerRun(harness, "retried launch"), harness),
+      cleanShape,
+      "the retried worker argv differs from a clean launch",
+    );
+  } finally {
+    await clean.cleanup();
+    await harness.cleanup();
+    await Deno.remove(bundle, { recursive: true });
+  }
+});
+
+Deno.test("run.sh - enforcement holds through a denied run and its retry, and the worker never starts with the sidecar down (Issue #4417)", async () => {
+  const bundle = await tinyEgressBundle();
+  const harness = await setupHarness(
+    { ...egressEnv(bundle), STUB_RUN_EXIT: "1" },
+    { denoStub: true },
+  );
+  const sidecarDown = await setupHarness(
+    { ...egressEnv(bundle), STUB_NETWORK_CREATE_EXIT: "1" },
+    { denoStub: true },
+  );
+  try {
+    const denied = await runLauncher(harness);
+    assertEquals(denied.code, 1, denied.stderr);
+    await assertWorkerOnInternalNetwork(harness, "the denied launch");
+
+    clearKnobs(harness, ["STUB_RUN_EXIT"]);
+    const retried = await runLauncher(harness);
+    assertEquals(retried.code, 0, retried.stderr);
+    await assertWorkerOnInternalNetwork(harness, "the retried launch");
+
+    // Negative control: the sidecar never comes up, on either attempt.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const outcome = await runLauncher(sidecarDown);
+      assert(outcome.code !== 0, `attempt ${attempt} must be refused`);
+      assertStringIncludes(
+        outcome.stderr,
+        "could not create the egress network",
+      );
+    }
+    assertEquals(
+      await recorded(sidecarDown, "run"),
+      null,
+      "a worker ran with the sidecar down",
+    );
+    assertEquals(
+      await recorded(sidecarDown, "run-proxy"),
+      null,
+      "a proxy started with its network down",
+    );
+    assertEquals(
+      (await invocationOrder(sidecarDown)).filter((s) => s === "network-create")
+        .length,
+      2,
+      "both attempts must have tried the network",
+    );
+  } finally {
+    await harness.cleanup();
+    await sidecarDown.cleanup();
+    await Deno.remove(bundle, { recursive: true });
+  }
+});
+
+Deno.test("run.sh - a failed egress sidecar and its retry leave the work volumes alone (Issue #4417)", async () => {
+  const volumes = [
+    WORK_VOLUME_NAME,
+    APPROVAL_STATE_VOLUME_NAME,
+    AGENT_STATE_VOLUME_NAME,
+  ];
+  for (const failure of SIDECAR_FAILURES) {
+    const bundle = await tinyEgressBundle();
+    const harness = await setupHarness(
+      { ...egressEnv(bundle), ...failure.env },
+      { denoStub: true },
+    );
+    try {
+      const refused = await runLauncher(harness);
+      assert(
+        refused.code !== 0,
+        `${failure.label}: the launch must be refused`,
+      );
+      // The volumes are ensured before the sidecar starts, so the refused
+      // launch has already ensured every one of them.
+      for (const volume of volumes) {
+        assertStringIncludes(refused.stderr, `creating volume ${volume}`);
+      }
+
+      // The retry sees the volumes that now exist, as on a real host.
+      clearKnobs(harness, Object.keys(failure.env));
+      harness.env.STUB_VOLUME_INSPECT_EXIT = "0";
+      const from = (await invocationOrder(harness)).length;
+      const retried = await runLauncher(harness);
+      assertEquals(retried.code, 0, `${failure.label}: ${retried.stderr}`);
+      assertEquals(
+        retried.stderr.includes("creating volume"),
+        false,
+        `${failure.label}: the retry recreated a work volume`,
+      );
+      const retryOrder = (await invocationOrder(harness)).slice(from);
+      assertEquals(
+        retryOrder.filter((s) => s === "volume-inspect").length,
+        volumes.length,
+        `${failure.label}: the retry did not ensure every volume`,
+      );
+      assertEquals(
+        retryOrder.includes("volume-create"),
+        false,
+        `${failure.label}: the retry created a volume`,
+      );
+
+      const order = await invocationOrder(harness);
+      assertEquals(
+        order.filter((s) => /^volume-(rm|remove|delete)$/.test(s)).length,
+        0,
+        `${failure.label}: a volume delete ran`,
+      );
+      assertEquals(
+        await removedVolumes(harness),
+        [],
+        `${failure.label}: a work volume was removed`,
+      );
+      assertEquals(
+        await initCount(harness),
+        2,
+        `${failure.label}: the ownership init must run on both launches`,
+      );
+    } finally {
+      await harness.cleanup();
+      await Deno.remove(bundle, { recursive: true });
+    }
   }
 });

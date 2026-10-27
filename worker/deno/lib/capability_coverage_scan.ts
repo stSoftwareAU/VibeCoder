@@ -2,10 +2,12 @@
  * Behavioural security-test coverage scan (Issue #4367).
  *
  * A narrow, static check on top of the best-practices scan. It looks for
- * three contracts from the capability guidance: resource or tenant
- * authorisation, sensitive-field updates, and redaction at a log or
- * outbound sink. A missing test of that contract is a best-practices
- * finding. It is not proof of an exploit — the security scan owns those.
+ * four contracts from the capability guidance: resource or tenant
+ * authorisation, sensitive-field updates, redaction at a log or outbound
+ * sink, and the recovery boundary (a retry, restart or fallback that alters
+ * credentials, mounts or execution identity keeps the configured authority).
+ * A missing test of that contract is a best-practices finding. It is not
+ * proof of an exploit — the security scan owns those.
  *
  * A file named security is not what the check looks for. A test that was
  * not executed is not a pass. A read failure is unknown, never a clean scan.
@@ -31,7 +33,8 @@ export interface CoverageFinding {
   capability:
     | "capsec-resource-auth"
     | "capsec-sensitive-field"
-    | "capsec-secret-logging";
+    | "capsec-secret-logging"
+    | "capsec-recovery-boundary";
   testsInspected: string[];
   contract: string;
   title: string;
@@ -119,6 +122,51 @@ function leaksToSink(text: string): boolean {
   ) && /(?:secret|password|apiKey|api_key|token)/.test(text);
 }
 
+/** A line-local window: a recovery signal and an authority signal this many lines apart still count. */
+const RECOVERY_WINDOW_LINES = 25;
+const RECOVERY_SIGNAL =
+  /\b(?:retr(?:y|ies|ying)|restart(?:s|ed|ing)?|recover(?:y|ies|ed|ing|s)?|fall[- ]?back|relaunch(?:es|ed|ing)?|reconnect(?:s|ed|ing)?)\b/i;
+const AUTHORITY_SIGNAL =
+  /credential|token|secret[ _-]?refresh|--volume|--mount|\bmounts?\b|--user\b|\buid\b|\bgid\b|--network|runArgs|privileged|\bsudo\b|setuid|allowed[ _-]?(?:repositories|repos|scope)/i;
+const AUTHORISED_SCOPE_CHANGE = /recovery-scope-change:\s*authorised/i;
+const RECOVERY_FAILURE_TERM =
+  /denied|denial|fail(?:s|ure)?|restart|retry|recover/i;
+const RECOVERY_NON_WIDENING_TERM =
+  /no broader|not broaden|not widen|never widen|within the configured|same scope|scope unchanged|does not widen|preserves?/i;
+const RECOVERY_RESUMPTION_TERM =
+  /succeed|resum|completes|permitted operation|runs the worker/i;
+
+/** True when any line of `text` matches. Each line is tested on its own. */
+function anyLineMatches(text: string, pattern: RegExp): boolean {
+  return text.split("\n").some((line) => pattern.test(line));
+}
+
+/**
+ * True when a retry, restart, recovery, fallback or relaunch line sits within
+ * {@link RECOVERY_WINDOW_LINES} of a credential, mount or execution-identity
+ * alteration. An authorised scope change marker turns the check off. Each
+ * line is tested once, so the scan is linear in the text length.
+ */
+export function altersAuthorityOnRecovery(text: string): boolean {
+  const lines = text.split("\n");
+  if (lines.some((line) => AUTHORISED_SCOPE_CHANGE.test(line))) return false;
+  let lastRecovery = -Infinity;
+  let lastAuthority = -Infinity;
+  for (const [index, line] of lines.entries()) {
+    const isRecovery = RECOVERY_SIGNAL.test(line);
+    const isAuthority = AUTHORITY_SIGNAL.test(line);
+    if (isRecovery) {
+      if (index - lastAuthority <= RECOVERY_WINDOW_LINES) return true;
+      lastRecovery = index;
+    }
+    if (isAuthority) {
+      if (index - lastRecovery <= RECOVERY_WINDOW_LINES) return true;
+      lastAuthority = index;
+    }
+  }
+  return false;
+}
+
 function contractCovered(
   tests: string,
   kind: CoverageFinding["capability"],
@@ -130,6 +178,11 @@ function contractCovered(
   if (kind === "capsec-sensitive-field") {
     return /forbidden-field|privileged|allowlist|role/i.test(tests) &&
       /reject|unauthoris|forbidden|not allowed/i.test(tests);
+  }
+  if (kind === "capsec-recovery-boundary") {
+    return anyLineMatches(tests, RECOVERY_FAILURE_TERM) &&
+      anyLineMatches(tests, RECOVERY_NON_WIDENING_TERM) &&
+      anyLineMatches(tests, RECOVERY_RESUMPTION_TERM);
   }
   return /redact|REDACTED|does not contain|not\.toContain/i.test(tests);
 }
@@ -219,6 +272,11 @@ export async function scanCapabilityCoverageFiles(
         "capsec-secret-logging",
         leaksToSink(file.text),
         "a secret is redacted before it reaches a log or an outbound body",
+      ],
+      [
+        "capsec-recovery-boundary",
+        altersAuthorityOnRecovery(file.text),
+        "after a denial, authentication refresh or proxy/startup failure the retry or restart keeps the configured repositories, credential scope, mounts and network guarantee (no broader), and a permitted operation still succeeds on the recovered run",
       ],
     ];
     for (const [capability, applies, contract] of checks) {

@@ -1,6 +1,6 @@
 {
-  "revision": "2026-10-26.1",
-  "attribution": "Adapted from CoSAI / OASIS Project CodeGuard v1.5.0, reviewed 26 October 2026 at commit 41160d54980bab0618165485ade3cfd2ade93288. Upstream licence: CC-BY-4.0. VibeCoder rewrote the selected ideas in its own words and limited them to five capabilities. This file is not an upstream plugin, it is not downloaded at run time, and a later upstream revision is not adopted automatically.",
+  "revision": "2026-10-27.1",
+  "attribution": "Adapted from CoSAI / OASIS Project CodeGuard v1.5.0, reviewed 26 October 2026 at commit 41160d54980bab0618165485ade3cfd2ade93288. Upstream licence: CC-BY-4.0. VibeCoder rewrote the selected ideas in its own words and limited them to five capabilities. The sixth entry, capsec-recovery-boundary, is not CodeGuard material. It is VibeCoder's own adaptation of a lesson in Wiz CIRT's article (Issue #4417), and it is not a control claimed by Wiz. This file is not an upstream plugin, it is not downloaded at run time, and a later upstream revision is not adopted automatically.",
   "entries": [
     {
       "id": "capsec-resource-auth",
@@ -104,6 +104,35 @@
           ["log", "password"],
           ["tracing", "secret"],
           ["logger", "secret"]
+        ]
+      }
+    },
+    {
+      "id": "capsec-recovery-boundary",
+      "title": "Recovery stays within configured authority",
+      "advice": "When a failure triggers a retry, restart, credential refresh, provider switch or fallback, build the replacement launch or request from the same configured authority: repositories and operations, credential scope, mounted paths, network guarantee and execution identity. Derive them from the configuration, never from the failure. A refreshed token inside the configured scope is legitimate, and so is rotation inside the configured pool or a supported provider switch inside the configured set, so do not freeze token values or ban rotation. Make an explicitly authorised configuration change through the configuration, not as a side effect of an error. Keep a degraded or partial mode as the explicitly chosen mode and report its residual gap, rather than silently dropping to an unrestricted one. Continue independent eligible work and keep bounded automatic rechecks. Do not add a scheduler, a blanket quota or an approval step.",
+      "validation": "After an injected denial, authentication refresh or proxy/startup failure, the retried run uses no broader repository access, credential scope, mounts or network guarantee than configured, and a permitted operation still succeeds.",
+      "reviewCheck": "After a failure, the retried or restarted launch or request keeps the configured repositories, operations, credential scope, mounts, network guarantee and execution identity, and a permitted operation still succeeds. A stub, a deny-all, or a test that only asserts the failure does not pass. A retry that only repeats the same request (no change to credentials, mounts, identity or network) does not trigger this check.",
+      "signals": {
+        "task": [
+          "recovery path",
+          "restart path",
+          "retry path",
+          "relaunch",
+          "re-launch",
+          "credential refresh",
+          "token refresh",
+          "provider switch",
+          "fallback network",
+          "restart backoff"
+        ],
+        "imports": [],
+        "entryPoints": [],
+        "callers": [],
+        "sinks": [
+          ["retry", "credential"],
+          ["restart", "--volume"],
+          ["recover", "token"]
         ]
       }
     }

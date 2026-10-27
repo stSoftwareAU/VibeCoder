@@ -157,10 +157,22 @@ matching bucket guide under
 
 ### Behavioural security-test coverage
 
-A narrow static check, using the capability guidance, looks at three
+A narrow static check, using the capability guidance, looks at four
 contracts only: resource or tenant authorisation, a sensitive-field
-update, and redaction at a log or outbound sink. A gap is a
-best-practices finding. It cites the production path, the tests
+update, redaction at a log or outbound sink, and the recovery boundary.
+The recovery boundary applies when a retry, restart, recovery,
+fallback or relaunch line sits within 25 lines of a credential, token,
+mount, `--volume` or `--mount`, `--user`, uid or gid, `--network`,
+`runArgs`, privileged or sudo setting, or allowed-repositories scope.
+Its contract is that after a denial, authentication refresh or
+proxy/startup failure, the retry or restart keeps the configured
+repositories, credential scope, mounts and network guarantee (no
+broader), and a permitted operation still succeeds on the recovered
+run. A test counts as covering it only when the related tests together
+name a failure, assert non-widening and show resumption. A file that
+carries the marker `recovery-scope-change: authorised` is exempt. An
+ordinary HTTP retry that touches none of those is not applicable. A
+gap is a best-practices finding. It cites the production path, the tests
 inspected, and the uncovered contract. It is not proof of an exploit;
 the security scan keeps those. A missing file named security is not
 missing coverage. A test that was not executed is not a pass. A read
