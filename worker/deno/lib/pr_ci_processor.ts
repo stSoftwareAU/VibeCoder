@@ -849,8 +849,12 @@ async function _processCiFailureLocked(
   const currentRetries = await getCiCheckRetryCount(stateDir, repo, checkRunId);
   // Startup suites have no replacement job id after a rerun. Let them reach
   // the fleet-wide marker cap below, even when their local job budget is spent.
+  // Issue #4424: so does a merge-queue removal. Nothing is re-run for it, so no
+  // fresh id with a fresh budget ever follows; stopping here would strand the
+  // PR unarmed. Each pass leaves an attempt marker and the cap abandons it.
   if (
-    currentRetries >= maxCiRetries && parseCheckSuiteId(checkRunId) === null
+    currentRetries >= maxCiRetries && parseCheckSuiteId(checkRunId) === null &&
+    !isMergeQueueCheckId(checkRunId)
   ) {
     logger.warn("CI check has exceeded max retries", {
       repo,
@@ -864,15 +868,12 @@ async function _processCiFailureLocked(
     // jobs are re-run, so a fresh check run with a fresh retry budget comes
     // back to the lane; the fleet-wide auto-fix cap, which abandons the PR
     // and redoes its issue, bounds the whole loop.
-    // Issue #4424: a merge-queue removal has no check run to re-run.
-    if (!isMergeQueueCheckId(checkRunId)) {
-      await rerunFailedJobsOfCheck({
-        repo,
-        checkId: checkRunId,
-        ghCommandFn: ghFn,
-        logger,
-      });
-    }
+    await rerunFailedJobsOfCheck({
+      repo,
+      checkId: checkRunId,
+      ghCommandFn: ghFn,
+      logger,
+    });
 
     return {
       ok: true,

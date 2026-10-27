@@ -2034,51 +2034,39 @@ export async function findFailedCiChecks(
             `${repo}#${prNumber}: ${MERGE_QUEUE_CHECK_NAME} parked for a human to approve (Issue #4424)`,
           );
         } else if (!deferredNames.has(MERGE_QUEUE_CHECK_NAME)) {
-          const retryCount = await getCiCheckRetryCount(
-            stateDir,
+          // The per-id retry budget is deliberately not applied: no check run
+          // stands behind a queue removal, so nothing is re-run and no fresh
+          // id (with a fresh budget) ever follows it. Dropping it at the budget
+          // would leave the PR unarmed with nothing further done. Each pass
+          // leaves an attempt marker instead, and the fleet-wide auto-fix cap
+          // abandons the PR and redoes its issue when the removal outlives it;
+          // a new head is a new id (Issue #4424).
+          logger.info("Found failed CI check", {
             repo,
+            prNumber,
+            checkName: MERGE_QUEUE_CHECK_NAME,
             checkId,
-          );
-          if (retryCount >= maxRetries) {
-            // Nothing to re-run: no Actions job stands behind a queue removal.
-            // The fleet-wide fix cap bounds the loop when the head changes.
-            logger.warn(
-              "Merge queue removal exceeded max retries — not re-running it",
+          });
+          const failedCheck: FailedCiCheck = {
+            repo,
+            prNumber,
+            branchName,
+            checkId,
+            checkName: MERGE_QUEUE_CHECK_NAME,
+            encodedAnnotations: encodeBase64(JSON.stringify([
               {
-                repo,
-                prNumber,
-                retries: retryCount,
-                maxRetries,
+                path: "",
+                start_line: 0,
+                message: describeQueueRemoval(queueRemoval),
               },
-            );
+            ])),
+            baseRef,
+            siblingFailedCheckNames: failedCheckNames,
+          };
+          if (baseRef === defaultBranch) {
+            defaultBranchFailures.push(failedCheck);
           } else {
-            logger.info("Found failed CI check", {
-              repo,
-              prNumber,
-              checkName: MERGE_QUEUE_CHECK_NAME,
-              checkId,
-            });
-            const failedCheck: FailedCiCheck = {
-              repo,
-              prNumber,
-              branchName,
-              checkId,
-              checkName: MERGE_QUEUE_CHECK_NAME,
-              encodedAnnotations: encodeBase64(JSON.stringify([
-                {
-                  path: "",
-                  start_line: 0,
-                  message: describeQueueRemoval(queueRemoval),
-                },
-              ])),
-              baseRef,
-              siblingFailedCheckNames: failedCheckNames,
-            };
-            if (baseRef === defaultBranch) {
-              defaultBranchFailures.push(failedCheck);
-            } else {
-              otherFailures.push(failedCheck);
-            }
+            otherFailures.push(failedCheck);
           }
         }
       }

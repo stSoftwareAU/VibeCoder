@@ -196,11 +196,13 @@ Deno.test("processCiFailure - control: a real check id on the same reply path is
   assertEquals(run.actionsLogCalls, 1);
 });
 
-Deno.test("processCiFailure - a spent retry budget on the synthetic id is not re-run and names no lookup (Issue #4424)", async () => {
+Deno.test("processCiFailure - a spent retry budget on the synthetic id is not stopped, re-runs nothing and names no lookup (Issue #4424)", async () => {
   const run = await runFix(SYNTH_ID, { spentRetries: true });
 
   assertEquals(run.ok, true);
-  assert(run.summary.includes("exceeded max retries"));
+  // Stopping at the budget would strand the PR unarmed: the pass goes on to
+  // the fleet-wide cap instead.
+  assertEquals(run.summary.includes("exceeded max retries"), false);
   assertEquals(actionsOrRerunCalls(run.calls), []);
   assertEquals(
     run.calls.filter((a) => a.some((x) => x.includes(SYNTH_ID))),
@@ -209,4 +211,11 @@ Deno.test("processCiFailure - a spent retry budget on the synthetic id is not re
   // A re-run under the synthetic id would warn that it could not resolve the
   // Actions run behind that id; the warning must not appear.
   assertEquals(run.warns.filter((w) => w.includes(SYNTH_ID)), []);
+});
+
+Deno.test("processCiFailure - control: a real check id with a spent budget still stops and re-runs (Issue #4424)", async () => {
+  const run = await runFix(REAL_ID, { spentRetries: true });
+
+  assertEquals(run.ok, true);
+  assert(run.summary.includes("exceeded max retries"));
 });

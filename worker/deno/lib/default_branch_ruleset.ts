@@ -236,9 +236,10 @@ export type EnsureRulesetResult =
 /** The live ruleset's rules, dropping any entry that is not rule-shaped. */
 function liveRules(detail: RulesetDetail): OpaqueRulesetRule[] {
   const rules: unknown[] = Array.isArray(detail.rules) ? detail.rules : [];
+  // `?.` covers null and every non-object entry: a primitive has no string
+  // `type`, so one test of that field is the whole rule-shape check.
   return rules.filter((rule): rule is OpaqueRulesetRule =>
-    rule !== null && typeof rule === "object" &&
-    typeof (rule as { type?: unknown }).type === "string"
+    typeof (rule as { type?: unknown } | null)?.type === "string"
   );
 }
 

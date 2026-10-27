@@ -314,17 +314,18 @@ Deno.test("findFailedCiChecks - a failed removal read is logged with the PR and 
   assertEquals(syntheticIdCalls(calls), []);
 });
 
-Deno.test("findFailedCiChecks - a spent retry budget on the synthetic id is logged and not re-run", async () => {
+Deno.test("findFailedCiChecks - a spent retry budget on the synthetic id is still handed over, so the fleet cap can abandon the PR (Issue #4424)", async () => {
   const { found, calls, warns } = await scan(QUEUED_42, {
     spentRetries: true,
   });
 
-  assertEquals(found, null);
-  assert(
-    warns.some((w) => w.includes("Merge queue removal exceeded max retries")),
+  assertEquals(found?.checkId, SYNTH_42);
+  assertEquals(found?.prNumber, 42);
+  assertEquals(
+    warns.filter((w) => w.includes("exceeded max retries")),
+    [],
   );
-  // No re-run was attempted, and no warning names the synthetic id (a re-run
-  // under that id would log "Could not resolve the Actions run behind …").
+  // Nothing is looked up or re-run under the synthetic id.
   assertEquals(endpointCalls(calls), []);
   assertEquals(warns.filter((w) => w.includes(SYNTH_42)), []);
 });

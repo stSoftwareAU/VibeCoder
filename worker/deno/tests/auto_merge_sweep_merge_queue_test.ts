@@ -161,3 +161,10 @@ Deno.test("sweep - a failing merge-queue read is treated as not queued, so the b
   assertEquals(run.updated, [7]);
   assertEquals(run.attempted, []);
 });
+
+Deno.test("sweep - an unarmed, behind PR on a queued base is merge-attempted without asking the queue", async () => {
+  const run = await runSweep({ queued: true, reading: { armed: false } });
+  assertEquals(run.updated, []);
+  assertEquals(run.attempted, [7]);
+  assertEquals(run.queueQuestions, []);
+});

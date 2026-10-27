@@ -572,11 +572,40 @@ Deno.test("merge queue - an already-queued, consistent ruleset makes no writes (
   assertEquals(planned.plan.action, "none");
   assertEquals(planned.plan.skipped, "existing-ruleset");
   assertEquals(planned.plan.mergeQueue?.enabled, true);
+  assertEquals(planned.plan.added, []);
+  assertEquals(planned.plan.preserved, ["gitleaks"]);
+  assertEquals(planned.plan.preservedRules, []);
+  assertEquals(planned.plan.legacyClassicProtection, false);
 
   const result = must(await ensure(gh));
   assertEquals(result.changed, false);
   assertEquals(rulesetWrites(calls).length, 0);
   assertEquals(deletes(calls).length, 0);
+});
+
+Deno.test("merge queue - live rules that are not rule-shaped are ignored, never thrown on (Issue #4424)", async () => {
+  // A null, a string, a number and an object with no (or a non-string) `type`
+  // among the live rules must not stop the queue state being read: the queue
+  // rule and strict policy beside them still decide the plan.
+  const junk = [null, "junk", 5, {}, { type: 7 }] as unknown as Array<
+    Record<string, unknown>
+  >;
+  const { gh, calls } = fakeGh({
+    repoMeta: PUBLIC_ORG,
+    workflows: WITH_MERGE_GROUP,
+    ours: [...junk, statusRule(["gitleaks"], false), queueRule()],
+  });
+
+  const planned = must(
+    await planDefaultBranchRuleset(
+      REPO,
+      { branch: BRANCH, visibility: "public" },
+      gh,
+    ),
+  );
+  assertEquals(planned.plan.action, "none");
+  assertEquals(planned.plan.mergeQueue?.enabled, true);
+  assertEquals(rulesetWrites(calls).length, 0);
 });
 
 Deno.test("merge queue - a human-tuned queue is preserved when the update writes (Issue #4424)", async () => {

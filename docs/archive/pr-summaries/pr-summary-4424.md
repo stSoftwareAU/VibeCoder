@@ -61,6 +61,16 @@ flowchart TD
   reports on every PR is treated as lacking `merge_group` (fail closed: the
   queue would wait for it).
 
+- **A queue removal is never dropped when its retry budget is spent.** No check
+  run stands behind the synthetic `merge-queue-<sha12>` id, so nothing is re-run
+  and no fresh id (with a fresh budget) ever follows it. `findFailedCiChecks`
+  therefore does not apply the per-id budget to it, and `processCiFailure` goes
+  on past it to the fleet-wide marker cap instead of returning early. Each pass
+  leaves an attempt marker; after `maxAutoFixAttempts` the existing cap path
+  calls `abandonAndRestart`, so the PR is never left unarmed with nothing
+  further done. A real check id is unchanged (budget, then re-run). A new head
+  is a new id, which re-enables arming as before.
+
 ### Undiscoverable Facts
 
 - Observed against the live GraphQL API: `RemovedFromMergeQueueEvent` has
@@ -137,6 +147,27 @@ New test files (all run on the final head):
 - `worker/deno/tests/pr_maintenance_command_test.ts` — the
   `update-open-pr-branches` command takes no action on a behind-only PR behind a
   queue.
+
+Spent-budget and mutation tests added after review:
+
+- `pr_maintenance_merge_queue_test.ts` — a spent budget on the synthetic id is
+  still handed over (no "exceeded max retries" warning, no Actions call).
+- `pr_ci_processor_merge_queue_test.ts` — a spent budget is not stopped, with a
+  real-id control that still stops and re-runs.
+- `pr_ci_processor_auto_fix_cap_test.ts` — a removal with a spent budget and
+  three fleet markers reaches the cap and is abandoned (`abandonPr` called once,
+  no agent run); below the cap it gets a fix attempt.
+- `auto_merge_sweep_merge_queue_test.ts` — an unarmed, behind PR on a queued
+  base is merge-attempted without asking the queue (kills the dropped `armedNow`
+  operand, `auto_merge_sweep.ts:350`).
+- `default_branch_ruleset_merge_queue_test.ts` — the no-op plan carries `added`,
+  `preserved`, `preservedRules` and `legacyClassicProtection`
+  (`default_branch_ruleset.ts:497-500`); live rules that are `null`, a string, a
+  number, `{}` or have a non-string `type` are ignored without throwing.
+  `liveRules` was reduced to a single `?.type` test, because the `rule !== null`
+  / `typeof rule === "object"` / `typeof type === "string"` operands were
+  redundant with each other (`:240-241`); the null case is red-checked with the
+  guard removed.
 
 Existing tests edited: fixtures answer the new `repos/<slug>` read
 (`default_branch_ruleset_test.ts`, `branch_protection_sync_test.ts`,
