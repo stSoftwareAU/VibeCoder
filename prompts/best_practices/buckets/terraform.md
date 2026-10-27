@@ -74,6 +74,13 @@ Apply these checks to `*.tf` and `*.tfvars` files.
    add a `tfsec`/`trivy config`/`checkov` step to the existing
    Terraform CI job. **Severity:** `severity:medium`.
 
+Keep ordinary wildcard and `iam:PassRole` hygiene in IAM resources
+here. A concrete cross-policy exploit chain (AssumeRole, PassRole with
+compute, SendCommand) is filed by the security scan, not here. When an
+open security issue or the security-scan pre-scan already covers the
+same role or resource, file nothing; do not file a second proposal for
+the same fix.
+
 ## Cost, speed and reliability
 
 Concrete, evidence-cited checks only: skip anything you cannot tie to a
