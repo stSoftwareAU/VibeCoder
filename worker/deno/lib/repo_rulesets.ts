@@ -78,6 +78,17 @@ export interface RequiredStatusCheckBody {
 /** A ruleset's enforcement status, as GitHub accepts it. */
 export type RulesetEnforcement = "active" | "disabled" | "evaluate";
 
+/** Parameters of a `merge_queue` ruleset rule, as GitHub accepts them. */
+export interface MergeQueueParameters {
+  check_response_timeout_minutes: number;
+  grouping_strategy: "ALLGREEN" | "HEADGREEN";
+  max_entries_to_build: number;
+  max_entries_to_merge: number;
+  merge_method: "MERGE" | "SQUASH" | "REBASE";
+  min_entries_to_merge: number;
+  min_entries_to_merge_wait_minutes: number;
+}
+
 /**
  * One rule this module models and writes.
  *
@@ -99,6 +110,7 @@ export type RulesetRuleBody =
       do_not_enforce_on_create?: boolean;
     };
   }
+  | { type: "merge_queue"; parameters: MergeQueueParameters }
   | { type: "deletion" | "non_fast_forward" };
 
 /**
@@ -324,8 +336,13 @@ export function requiredContextsFromRules(rules: BranchRule[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the body for a default-branch ruleset requiring `contexts` and an
- * up-to-date branch.
+ * Build the body for a default-branch ruleset requiring `contexts`.
+ *
+ * Without `mergeQueue` the branch must also be up to date (strict). With
+ * `mergeQueue` the ruleset gains a `merge_queue` rule appended after the
+ * status-checks rule, and the strict policy is turned off: the queue itself
+ * builds each entry on top of the base, so an up-to-date requirement is not
+ * wanted alongside it.
  *
  * `~DEFAULT_BRANCH` is GitHub's built-in ref alias, so the ruleset keeps
  * tracking the default branch if it is ever renamed.
@@ -333,21 +350,26 @@ export function requiredContextsFromRules(rules: BranchRule[]): string[] {
 export function buildDefaultBranchRulesetBody(
   name: string,
   contexts: string[],
+  mergeQueue?: MergeQueueParameters,
 ): RulesetBody {
+  const rules: RulesetRuleBody[] = [
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: mergeQueue === undefined,
+        required_status_checks: contexts.map((context) => ({ context })),
+      },
+    },
+  ];
+  if (mergeQueue !== undefined) {
+    rules.push({ type: "merge_queue", parameters: mergeQueue });
+  }
   return {
     name,
     target: "branch",
     enforcement: "active",
     conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
-    rules: [
-      {
-        type: "required_status_checks",
-        parameters: {
-          strict_required_status_checks_policy: true,
-          required_status_checks: contexts.map((context) => ({ context })),
-        },
-      },
-    ],
+    rules,
   };
 }
 
@@ -367,7 +389,10 @@ export function isRequiredStatusChecksRule(
 
 /**
  * Rules of the live ruleset that {@link buildDefaultBranchRulesetBody} does
- * not model — everything except the required-status-checks rule it rewrites.
+ * not model — everything except the required-status-checks rule it rewrites
+ * and the `merge_queue` rule the configurator now owns (it is rebuilt from the
+ * `mergeQueue` argument or deliberately dropped; see
+ * {@link buildDefaultBranchRulesetUpdateBody}).
  *
  * Entries that are not rule-shaped objects are dropped: the input is an API
  * response, so it is validated before it is written back.
@@ -378,8 +403,62 @@ export function preservedRulesFromDetail(
   const rules = Array.isArray(existing.rules) ? existing.rules : [];
   return rules.filter((rule): rule is OpaqueRulesetRule =>
     rule !== null && typeof rule === "object" &&
-    typeof rule.type === "string" && rule.type !== "required_status_checks"
+    typeof rule.type === "string" &&
+    rule.type !== "required_status_checks" && rule.type !== "merge_queue"
   );
+}
+
+/**
+ * The `merge_queue` rule parameters of a live ruleset, or `undefined`.
+ *
+ * Returns the parameters only when the rule is present and all seven fields
+ * carry the right type (integers for the counts and minutes, the enum values
+ * for `grouping_strategy` and `merge_method`). Anything else — no rule, a
+ * malformed rule, a field GitHub does not accept — is `undefined`, because the
+ * response is validated before anything is read back from it.
+ */
+export function mergeQueueParametersFromDetail(
+  existing: RulesetDetail,
+): MergeQueueParameters | undefined {
+  const rules = Array.isArray(existing.rules) ? existing.rules : [];
+  const rule = rules.find((candidate) =>
+    candidate !== null && typeof candidate === "object" &&
+    candidate.type === "merge_queue"
+  );
+  const parameters: unknown = rule?.parameters;
+  if (parameters === null || typeof parameters !== "object") return undefined;
+  const p = parameters as Record<string, unknown>;
+  const isCount = (value: unknown): value is number =>
+    typeof value === "number" && Number.isInteger(value);
+  if (
+    !isCount(p.check_response_timeout_minutes) ||
+    !isCount(p.max_entries_to_build) ||
+    !isCount(p.max_entries_to_merge) ||
+    !isCount(p.min_entries_to_merge) ||
+    !isCount(p.min_entries_to_merge_wait_minutes)
+  ) {
+    return undefined;
+  }
+  if (
+    p.grouping_strategy !== "ALLGREEN" && p.grouping_strategy !== "HEADGREEN"
+  ) {
+    return undefined;
+  }
+  if (
+    p.merge_method !== "MERGE" && p.merge_method !== "SQUASH" &&
+    p.merge_method !== "REBASE"
+  ) {
+    return undefined;
+  }
+  return {
+    check_response_timeout_minutes: p.check_response_timeout_minutes,
+    grouping_strategy: p.grouping_strategy,
+    max_entries_to_build: p.max_entries_to_build,
+    max_entries_to_merge: p.max_entries_to_merge,
+    merge_method: p.merge_method,
+    min_entries_to_merge: p.min_entries_to_merge,
+    min_entries_to_merge_wait_minutes: p.min_entries_to_merge_wait_minutes,
+  };
 }
 
 /**
@@ -390,13 +469,18 @@ export function preservedRulesFromDetail(
  * force-push protection, deletion protection, bypass actors (Issue #1290).
  * This replaces only the `required_status_checks` rule and carries every other
  * rule and the bypass actors of the live ruleset through unchanged.
+ *
+ * The live `merge_queue` rule, if any, is never carried through: it is
+ * replaced by a rule built from `mergeQueue` when one is given, and dropped
+ * otherwise. So a re-run never duplicates the rule.
  */
 export function buildDefaultBranchRulesetUpdateBody(
   name: string,
   contexts: string[],
   existing: RulesetDetail,
+  mergeQueue?: MergeQueueParameters,
 ): RulesetBody {
-  const base = buildDefaultBranchRulesetBody(name, contexts);
+  const base = buildDefaultBranchRulesetBody(name, contexts, mergeQueue);
   const bypassActors = Array.isArray(existing.bypass_actors)
     ? existing.bypass_actors
     : [];
@@ -490,6 +574,63 @@ export async function createRuleset(
   } catch (error) {
     return { ok: false, error: toError(error) };
   }
+}
+
+/**
+ * The create call succeeded but its response carried no usable ruleset id.
+ *
+ * A distinct class so a caller can tell "the ruleset was not created" (a
+ * plain create error) from "it may have been created and its id is unknown".
+ */
+export class RulesetIdUnreadableError extends Error {}
+
+/**
+ * Create a repository ruleset and return the id GitHub assigned to it.
+ *
+ * Same validation and request as {@link createRuleset}; the difference is that
+ * the JSON response is parsed for its positive-integer `id`. An unparseable
+ * response, or one without a usable id, is a {@link RulesetIdUnreadableError}.
+ */
+export async function createRulesetReturningId(
+  repo: string,
+  body: RulesetBody,
+  ghFn: GhExec = defaultGhExec,
+): Promise<RulesetResult<number>> {
+  if (!isValidRepoSlug(repo)) {
+    return { ok: false, error: new Error(`Invalid repo slug: ${repo}`) };
+  }
+  let raw: string;
+  try {
+    raw = await ghFn(
+      ["api", "-X", "POST", `repos/${repo}/rulesets`, "--input", "-"],
+      JSON.stringify(body),
+    );
+  } catch (error) {
+    return { ok: false, error: toError(error) };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      ok: false,
+      error: new RulesetIdUnreadableError(
+        `Unreadable ruleset create response for ${repo}: not JSON`,
+      ),
+    };
+  }
+  const id = parsed !== null && typeof parsed === "object"
+    ? (parsed as { id?: unknown }).id
+    : undefined;
+  if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) {
+    return {
+      ok: false,
+      error: new RulesetIdUnreadableError(
+        `Unreadable ruleset create response for ${repo}: no ruleset id`,
+      ),
+    };
+  }
+  return { ok: true, value: id };
 }
 
 /** Update an existing repository ruleset in place. */

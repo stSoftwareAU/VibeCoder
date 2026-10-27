@@ -107,7 +107,10 @@ import {
   isRequiredStatusChecksRule,
   type RulesetBody,
 } from "../lib/repo_rulesets.ts";
-import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
+import {
+  formatMergeQueueLine,
+  syncBranchProtectionForAllRepos,
+} from "./branch_protection_sync.ts";
 import { runRepoSettingsHarden } from "./repo_settings_harden_sync.ts";
 import { closeFixedRepoSettingsFindings } from "./repo_settings_audit_close.ts";
 import { explainRulesetFailure } from "../lib/ruleset_failure.ts";
@@ -1397,6 +1400,14 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
         printInfo(
           `${r.repo} (${r.visibility}, ${r.branch}): already covered by a ruleset (no change)`,
         );
+      }
+      if (r.mergeQueue) {
+        // Say whether the merge queue is on and, when it is not, why the
+        // strict up-to-date policy was kept instead (Issue #4424).
+        const line = formatMergeQueueLine(r.mergeQueue);
+        const text = `${r.repo} (${r.visibility}, ${r.branch}): ${line.text}`;
+        if (line.level === "success") printSuccess(text);
+        else printInfo(text);
       }
       // Issue #586: the worker never writes the milestone ruleset — setup,
       // running as the operator, creates or aligns it to the template with no

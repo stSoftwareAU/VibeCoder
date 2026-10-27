@@ -173,6 +173,7 @@ import {
 } from "./pr_ci_nudge_scan.ts";
 import { runStallRepairPass, type StallLane } from "./stall_repair.ts";
 import { directMergePr } from "./direct_merge.ts";
+import { makeIsMergeQueueBase } from "./merge_queue_runtime.ts";
 import {
   type ConflictPrDecision,
   findConflictingPr,
@@ -2888,6 +2889,9 @@ export async function createProductionRunCoreDeps(
             ]);
             return Number(output.trim()) || 0;
           },
+          // Issue #4424: a base behind a merge queue is not updated for
+          // being behind — the queue tests the PR against its future head.
+          isMergeQueueBase: makeIsMergeQueueBase(runGhCommand),
           getMergeableStatus: async (
             repo: string,
             prNumber: number,
@@ -3671,6 +3675,9 @@ export async function createProductionRunCoreDeps(
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
           requestBranchUpdate(repo, prNumber, gh),
+        // Issue #4424: an armed PR behind a merge queue is not updated — the
+        // queue tests it against its future head and lands it.
+        isMergeQueueBase: makeIsMergeQueueBase(gh),
         // Issue #3433: auto-merge follows the base — re-read it first.
         checkBaseIntegrity: (repo, pr, armed) =>
           checkPrBaseIntegrity({

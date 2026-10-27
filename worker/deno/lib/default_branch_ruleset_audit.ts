@@ -5,7 +5,9 @@
  * computes what `ensureDefaultBranchRuleset()` **would** do — create/update
  * the worker's ruleset, delete its own stale one, or skip and why — via the
  * read-only {@link planBranchProtectionForRepo}, and renders the answers as a
- * Markdown table. Nothing is written: no ruleset, no comment, no label.
+ * Markdown table. Nothing is written: no ruleset, no comment, no label, and
+ * no merge-queue probe ruleset either — the plan runs with `readOnly` set, so
+ * the audit never probes (Issue #4424).
  *
  * It exists so an operator can see, before a setup run, which repos the
  * direct-push guard now protects (`direct-push-branch` / `opted-out`) and
@@ -133,9 +135,17 @@ export async function auditDefaultBranchRulesets(
       visibility: result.visibility,
       decision,
       contexts,
-      detail: plan.action === "delete"
-        ? `${plan.skipped}: ${plan.detail ?? ""} — would delete own ruleset`
-        : plan.detail ?? "",
+      detail: [
+        plan.action === "delete"
+          ? `${plan.skipped}: ${plan.detail ?? ""} — would delete own ruleset`
+          : plan.detail ?? "",
+        // The merge-queue verdict and its reason (Issue #4424), when decided.
+        plan.mergeQueue
+          ? `merge queue ${
+            plan.mergeQueue.enabled ? "enabled" : "not enabled"
+          } (${plan.mergeQueue.verdict}): ${plan.mergeQueue.reason}`
+          : "",
+      ].filter((part) => part.length > 0).join("; "),
     });
   }
   return rows;

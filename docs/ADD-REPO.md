@@ -132,7 +132,24 @@ The command then runs seven steps:
    (`getRequiredChecksForRepo`) never marks an unsatisfiable check (e.g.
    GHAS-only `dependency-review` on a private repo) as required. It reuses the
    idempotent `syncBranchProtectionForRepo` helper (reads + at most one ruleset
-   write; classic branch protection is never written —).
+   write; classic branch protection is never written —). The same step also
+   decides the merge queue, where GitHub allows one
+   ([MERGE.md → Merge queue](MERGE.md#merge-queue)). Settling availability may
+   create and then delete a disabled probe ruleset (`Vibe Coder merge queue
+   probe`); the read-only `audit-default-branch-rulesets` sweep never creates
+   one. Enabling it needs each
+   required check's workflow to run on `merge_group` as well as `pull_request`:
+
+   ```yaml
+   on:
+     pull_request:
+     merge_group:
+   ```
+
+   In a `merge_group` run the base and head are
+   `github.event.merge_group.base_sha` and `github.event.merge_group.head_sha`,
+   not `github.event.pull_request.*`; a job that selects work from the diff must
+   run everything when that diff cannot be read.
    **Non-fatal:** a configuration failure is reported in the summary, **not
    swallowed**, but does not abort onboarding; the idempotent setup-time
    `branch-protection-sync` will reconcile.

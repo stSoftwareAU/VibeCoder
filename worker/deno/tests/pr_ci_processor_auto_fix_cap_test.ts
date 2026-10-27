@@ -33,6 +33,8 @@ import {
   type CiFixAttemptOutcome,
 } from "../lib/ci_fix_attempt_markers.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
+import { mergeQueueCheckId } from "../lib/merge_queue_check_id.ts";
+import { recordCiCheckRetry } from "../lib/pr_ci_checks.ts";
 import type {
   AbandonRestartOutcome,
   AbandonRestartRequest,
@@ -797,6 +799,100 @@ Deno.test("processCiFailure - exhausted startup suites still reach the fleet-wid
     assert(result.ok);
     assertEquals(harness.claudeRuns, 0);
     assertEquals(harness.abandons.length, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a merge-queue removal whose retry budget is spent still reaches the fleet cap and is abandoned (Issue #4424)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const stateDir = `${tmpDir}/.ci_check_state`;
+  try {
+    const checkRunId = mergeQueueCheckId(HEAD_SHA);
+    const annotations: CheckAnnotation[] = [{
+      path: "",
+      start_line: 0,
+      message: "Removed from the merge queue (group check failed)",
+    }];
+    // The per-id budget is spent, and no fresh id can ever follow a removal.
+    for (let i = 0; i < 3; i++) {
+      await recordCiCheckRetry(stateDir, "org/repo", checkRunId);
+    }
+    const signature = computeFailureSignature({
+      repo: "org/repo",
+      locus: { kind: "pr", number: 77 },
+      checkName: "merge queue",
+      logExcerpt: `${formatCiAnnotations(annotations)}\n`,
+      workspaceRoot: tmpDir,
+    });
+    const comments = [1, 2, 3].map((attempt) => {
+      const comment = markerComment({
+        id: 30 + attempt,
+        author: FLEET_LOGIN,
+        signature,
+        attempt,
+        outcome: "no-change",
+      });
+      return {
+        ...comment,
+        body: comment.body.replaceAll('"build"', '"merge queue"'),
+      };
+    });
+    const harness = makeHarness(stateDir, tmpDir, comments);
+
+    const result = await processCiFailure(
+      {
+        ...makeInput(annotations, checkRunId),
+        checkName: "merge queue",
+        baseRef: "main",
+      },
+      harness.processorDeps,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, false);
+      assertStringIncludes(result.value.summary, "Auto-fix cap reached");
+    }
+    assertEquals(
+      harness.abandons.length,
+      1,
+      "the PR is abandoned, not stranded",
+    );
+    assertEquals(harness.claudeRuns, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a merge-queue removal whose retry budget is spent still gets a fix attempt below the fleet cap (Issue #4424)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const stateDir = `${tmpDir}/.ci_check_state`;
+  try {
+    const checkRunId = mergeQueueCheckId(HEAD_SHA);
+    for (let i = 0; i < 3; i++) {
+      await recordCiCheckRetry(stateDir, "org/repo", checkRunId);
+    }
+    const harness = makeHarness(stateDir, tmpDir, []);
+
+    const result = await processCiFailure(
+      {
+        ...makeInput(COMPILE_ANNOTATIONS, checkRunId),
+        checkName: "merge queue",
+        baseRef: "main",
+      },
+      harness.processorDeps,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(
+        result.value.summary.includes("exceeded max retries"),
+        false,
+      );
+    }
+    assertEquals(harness.claudeRuns, 1, "the agent was run on the removal");
+    assertEquals(harness.abandons.length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

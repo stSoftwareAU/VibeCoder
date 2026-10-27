@@ -51,6 +51,14 @@ import {
   getCiCheckRetryCount,
   resolveCheckFixRoute,
 } from "./pr_ci_checks.ts";
+import { mergeQueueCheckId } from "./merge_queue_check_id.ts";
+import {
+  describeQueueRemoval,
+  MERGE_QUEUE_CHECK_NAME,
+  type QueueRemoval,
+  readQueueRemoval,
+} from "./merge_queue_removal.ts";
+import { resolveBaseMergeQueued } from "./merge_queue_runtime.ts";
 import {
   fetchFailedCheckRunsBatch,
   STARTUP_FAILURE_CONCLUSION,
@@ -1606,6 +1614,45 @@ async function readJobNeedsFromClone(
 }
 
 /**
+ * The merge-queue removal that counts as a red check on a PR's current head
+ * (Issue #4424), or `null`.
+ *
+ * Only a PR whose base is behind a merge queue is read, so an ordinary PR
+ * costs no extra call. The base's queue state is asked once per repo and base
+ * per scan. A failed read is logged with the PR it was for and treated as no
+ * removal for this scan; it is never silent.
+ */
+async function readScanQueueRemoval(
+  args: {
+    repo: string;
+    prNumber: number;
+    baseRef: string | undefined;
+    headSha: string | undefined;
+    ghCommandFn: (args: string[]) => Promise<string>;
+    logger: Logger;
+    baseIsQueued: (baseRef: string) => Promise<boolean | null>;
+  },
+): Promise<QueueRemoval | null> {
+  const { repo, prNumber, baseRef, headSha, ghCommandFn, logger } = args;
+  if (baseRef === undefined || headSha === undefined || headSha === "") {
+    return null;
+  }
+  if ((await args.baseIsQueued(baseRef)) !== true) return null;
+
+  const read = await readQueueRemoval(repo, prNumber, ghCommandFn);
+  if (!read.ok) {
+    logger.warn(
+      `${repo}#${prNumber}: could not read the merge queue removal on ` +
+        `'${baseRef}' — not treated as a failed check this scan ` +
+        `(Issue #4424): ${read.error.message}`,
+      { repo, prNumber, baseRef, error: read.error.message },
+    );
+    return null;
+  }
+  return read.value;
+}
+
+/**
  * Scan open PRs for failed CI checks (excluding genuine spelling failures
  * — see {@link findFailedPrChecks} and `resolveCheckFixRoute`).
  *
@@ -1657,6 +1704,21 @@ export async function findFailedCiChecks(
   const orderedRepos = shuffleRepos ? shuffleRepos([...repos]) : [...repos];
   const defaultBranchFailures: FailedCiCheck[] = [];
   const otherFailures: FailedCiCheck[] = [];
+  // Issue #4424: each repo's base is asked whether it is queued once per scan.
+  const queuedBases = new Map<string, boolean | null>();
+  const queueStateOf = async (
+    repo: string,
+    baseRef: string,
+  ): Promise<boolean | null> => {
+    const key = `${repo}#${baseRef}`;
+    if (!queuedBases.has(key)) {
+      queuedBases.set(
+        key,
+        await resolveBaseMergeQueued(repo, baseRef, ghCommandFn),
+      );
+    }
+    return queuedBases.get(key) ?? null;
+  };
 
   for (const repo of orderedRepos) {
     if (!isRepoAllowed(repo)) continue;
@@ -1759,6 +1821,18 @@ export async function findFailedCiChecks(
       // and `siblingFailedCheckNames` carries the full picture.
       const failedCheckNames = redChecks.map((check) => check.name);
 
+      // Issue #4424: a merge-queue removal at this head is a red check too.
+      // It is read here and handled after the real checks, never classified.
+      const queueRemoval = await readScanQueueRemoval({
+        repo,
+        prNumber,
+        baseRef,
+        headSha: pr.headRefOid,
+        ghCommandFn,
+        logger,
+        baseIsQueued: (base) => queueStateOf(repo, base),
+      });
+
       if (classified.infrastructure.length > 0) {
         logger.skipReason(
           "ci-cancelled",
@@ -1799,7 +1873,8 @@ export async function findFailedCiChecks(
       // fetch. Every degraded read is logged inside and leaves the check
       // unparked — the scan never goes quiet on an error.
       const needsParkedRead = classified.infrastructure.length > 0 ||
-        failedChecks.some((check) => !aggregators.has(check.name));
+        failedChecks.some((check) => !aggregators.has(check.name)) ||
+        queueRemoval !== null;
       const parked = needsParkedRead
         ? await findParkedChecks({
           repo,
@@ -1938,6 +2013,61 @@ export async function findFailedCiChecks(
           defaultBranchFailures.push(failedCheck);
         } else {
           otherFailures.push(failedCheck);
+        }
+      }
+
+      // Issue #4424: a merge-queue removal at this head is a red check. It
+      // takes the same parking, retry count and default-branch priority as a
+      // real check, but it is never routed, annotated or re-run through
+      // GitHub: no check run exists behind its synthetic id, so the fix
+      // lane's processor is told the failure in the annotation and nothing
+      // is looked up or re-run under that id.
+      const headSha = pr.headRefOid ?? "";
+      if (queueRemoval !== null && headSha !== "") {
+        const checkId = mergeQueueCheckId(headSha);
+        if (
+          parked !== undefined &&
+          isHumanGateParkedAt(parked.markers, MERGE_QUEUE_CHECK_NAME, headSha)
+        ) {
+          logger.skipReason(
+            "ci-human-gate",
+            `${repo}#${prNumber}: ${MERGE_QUEUE_CHECK_NAME} parked for a human to approve (Issue #4424)`,
+          );
+        } else if (!deferredNames.has(MERGE_QUEUE_CHECK_NAME)) {
+          // The per-id retry budget is deliberately not applied: no check run
+          // stands behind a queue removal, so nothing is re-run and no fresh
+          // id (with a fresh budget) ever follows it. Dropping it at the budget
+          // would leave the PR unarmed with nothing further done. Each pass
+          // leaves an attempt marker instead, and the fleet-wide auto-fix cap
+          // abandons the PR and redoes its issue when the removal outlives it;
+          // a new head is a new id (Issue #4424).
+          logger.info("Found failed CI check", {
+            repo,
+            prNumber,
+            checkName: MERGE_QUEUE_CHECK_NAME,
+            checkId,
+          });
+          const failedCheck: FailedCiCheck = {
+            repo,
+            prNumber,
+            branchName,
+            checkId,
+            checkName: MERGE_QUEUE_CHECK_NAME,
+            encodedAnnotations: encodeBase64(JSON.stringify([
+              {
+                path: "",
+                start_line: 0,
+                message: describeQueueRemoval(queueRemoval),
+              },
+            ])),
+            baseRef,
+            siblingFailedCheckNames: failedCheckNames,
+          };
+          if (baseRef === defaultBranch) {
+            defaultBranchFailures.push(failedCheck);
+          } else {
+            otherFailures.push(failedCheck);
+          }
         }
       }
     }

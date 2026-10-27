@@ -8,6 +8,7 @@ import {
   buildDefaultBranchRulesetUpdateBody,
   buildMilestoneRulesetBody,
   createRuleset,
+  createRulesetReturningId,
   deleteRuleset,
   getBranchRules,
   getRuleset,
@@ -18,8 +19,11 @@ import {
   isValidBranchName,
   isValidRepoSlug,
   listRepoRulesets,
+  type MergeQueueParameters,
+  mergeQueueParametersFromDetail,
   type OpaqueRulesetRule,
   requiredContextsFromRules,
+  type RulesetDetail,
   updateRuleset,
 } from "../lib/repo_rulesets.ts";
 
@@ -408,4 +412,198 @@ Deno.test("repo_rulesets - the milestone body keeps the enforcement it is given 
     "disabled",
   );
   assertEquals(body.enforcement, "disabled");
+});
+
+// ---------------------------------------------------------------------------
+// Merge queue rule (Issue #4424)
+// ---------------------------------------------------------------------------
+
+const QUEUE: MergeQueueParameters = {
+  check_response_timeout_minutes: 60,
+  grouping_strategy: "ALLGREEN",
+  max_entries_to_build: 5,
+  max_entries_to_merge: 5,
+  merge_method: "SQUASH",
+  min_entries_to_merge: 1,
+  min_entries_to_merge_wait_minutes: 1,
+};
+
+/** A live ruleset that already carries a merge_queue rule (merge method MERGE). */
+const LIVE_WITH_QUEUE = {
+  id: 43,
+  name: "Vibe Coder default branch",
+  rules: [
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: true,
+        required_status_checks: [{ context: "gitleaks" }],
+      },
+    },
+    { type: "merge_queue", parameters: { ...QUEUE, merge_method: "MERGE" } },
+    {
+      type: "pull_request",
+      parameters: { required_approving_review_count: 2 },
+    },
+  ],
+};
+
+Deno.test("repo_rulesets - the body without a queue argument is byte-for-byte unchanged", () => {
+  assertEquals(
+    JSON.stringify(buildDefaultBranchRulesetBody("Vibe", ["quality"])),
+    '{"name":"Vibe","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"quality"}]}}]}',
+  );
+});
+
+Deno.test("repo_rulesets - a queue argument turns strict off and appends the merge_queue rule", () => {
+  const body = buildDefaultBranchRulesetBody("Vibe", ["quality"], QUEUE);
+
+  assertEquals(body.rules.map((rule) => rule.type), [
+    "required_status_checks",
+    "merge_queue",
+  ]);
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, false);
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "quality" },
+  ]);
+  assertEquals(body.rules[1], { type: "merge_queue", parameters: QUEUE });
+});
+
+Deno.test("repo_rulesets - the update body replaces a live merge_queue rule rather than duplicating it", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gitleaks"],
+    LIVE_WITH_QUEUE,
+    QUEUE,
+  );
+
+  assertEquals(body.rules.map((rule) => rule.type), [
+    "pull_request",
+    "required_status_checks",
+    "merge_queue",
+  ]);
+  assertEquals(body.rules.filter((rule) => rule.type === "merge_queue"), [
+    { type: "merge_queue", parameters: QUEUE },
+  ]);
+  // The other rules and the bypass actors still come through.
+  const pullRequest = body.rules[0] as OpaqueRulesetRule;
+  assertEquals(pullRequest.parameters?.required_approving_review_count, 2);
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, false);
+});
+
+Deno.test("repo_rulesets - the update body without a queue argument drops the live merge_queue rule", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gitleaks"],
+    LIVE_WITH_QUEUE,
+  );
+
+  assertEquals(body.rules.map((rule) => rule.type), [
+    "pull_request",
+    "required_status_checks",
+  ]);
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
+});
+
+/** A live ruleset whose only merge_queue rule carries the given parameters. */
+function detailWithQueueParameters(parameters: unknown): RulesetDetail {
+  return {
+    id: 1,
+    name: "Vibe",
+    rules: [{ type: "merge_queue", parameters }] as never,
+  };
+}
+
+Deno.test("repo_rulesets - mergeQueueParametersFromDetail returns a well-formed live rule", () => {
+  assertEquals(
+    mergeQueueParametersFromDetail(LIVE_WITH_QUEUE),
+    { ...QUEUE, merge_method: "MERGE" },
+  );
+});
+
+Deno.test("repo_rulesets - mergeQueueParametersFromDetail is undefined when there is no merge_queue rule", () => {
+  assertEquals(mergeQueueParametersFromDetail(LIVE_HARDENED), undefined);
+});
+
+Deno.test("repo_rulesets - mergeQueueParametersFromDetail rejects a malformed merge_queue rule", () => {
+  const malformed: unknown[] = [
+    null,
+    { ...QUEUE, grouping_strategy: "SOMETIMES" },
+    { ...QUEUE, merge_method: "FAST_FORWARD" },
+    { ...QUEUE, max_entries_to_build: 2.5 },
+    { ...QUEUE, min_entries_to_merge: "1" },
+    { ...QUEUE, check_response_timeout_minutes: undefined },
+  ];
+  for (const parameters of malformed) {
+    assertEquals(
+      mergeQueueParametersFromDetail(detailWithQueueParameters(parameters)),
+      undefined,
+    );
+  }
+});
+
+Deno.test("repo_rulesets - createRulesetReturningId returns the id GitHub assigned", async () => {
+  const calls: string[][] = [];
+  const stdins: Array<string | undefined> = [];
+  const gh: GhExec = (args, stdin) => {
+    calls.push(args);
+    stdins.push(stdin);
+    return Promise.resolve(JSON.stringify({ id: 12, name: "Vibe" }));
+  };
+
+  const result = await createRulesetReturningId(
+    "org/repo",
+    buildDefaultBranchRulesetBody("Vibe", ["quality"]),
+    gh,
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, 12);
+  assertEquals(calls, [
+    ["api", "-X", "POST", "repos/org/repo/rulesets", "--input", "-"],
+  ]);
+  assertEquals(JSON.parse(stdins[0] ?? "{}").name, "Vibe");
+});
+
+Deno.test("repo_rulesets - createRulesetReturningId reports an unparseable response or one without an id", async () => {
+  const body = buildDefaultBranchRulesetBody("Vibe", []);
+
+  const notJson = await createRulesetReturningId(
+    "org/repo",
+    body,
+    () => Promise.resolve("<html>"),
+  );
+  assert(!notJson.ok);
+  assert(notJson.error.message.includes("not JSON"));
+
+  for (
+    const response of ['{"name":"Vibe"}', '{"id":0}', '{"id":"12"}', "null"]
+  ) {
+    const result = await createRulesetReturningId(
+      "org/repo",
+      body,
+      () => Promise.resolve(response),
+    );
+    assert(!result.ok);
+    assert(result.error.message.includes("no ruleset id"));
+  }
+});
+
+Deno.test("repo_rulesets - createRulesetReturningId reports a rejected create as an error", async () => {
+  const gh: GhExec = () => Promise.reject(new Error("gh failed: HTTP 422"));
+
+  const result = await createRulesetReturningId(
+    "org/repo",
+    buildDefaultBranchRulesetBody("Vibe", []),
+    gh,
+  );
+
+  assert(!result.ok);
+  assert(result.error.message.includes("HTTP 422"));
 });

@@ -170,6 +170,7 @@ async function scanWith(
     listPrs,
     getBehindBy: async () => 3,
     getMergeableStatus: async () => "MERGEABLE",
+    isMergeQueueBase: async () => false,
   });
   if (!result.ok) throw result.error;
   return result.value.actions.map((a) => a.prNumber);

@@ -57,6 +57,7 @@ import { runGitCommand } from "../lib/git_timeout.ts";
 import { getWorkerUniqueId } from "../lib/worker_identity.ts";
 import { resolveRunId } from "../lib/audit_journal.ts";
 import { prBranchFailureStatePath } from "../lib/pr_branch_update_failure_streak.ts";
+import { makeIsMergeQueueBase } from "../lib/merge_queue_runtime.ts";
 
 // Re-export library functions for external use
 export {
@@ -391,6 +392,9 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
           ]);
           return output.trim();
         },
+        // Issue #4424: a base behind a merge queue is not updated for being
+        // behind — the queue tests the PR against its future head.
+        isMergeQueueBase: makeIsMergeQueueBase(runGhCommand),
         // Issue #1807: collapse 2N REST calls to one GraphQL call per
         // repo. On any failure return null so the scanner falls back
         // to the REST pair above.

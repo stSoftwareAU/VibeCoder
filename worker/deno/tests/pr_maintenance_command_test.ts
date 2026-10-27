@@ -11,6 +11,12 @@
 import { assertEquals } from "@std/assert";
 import { prMaintenanceCommand } from "../commands/pr_maintenance.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  _resetGhSpawnRunner,
+  _setGhSpawnRunner,
+  type GhSpawnRunner,
+} from "../lib/gh_spawn.ts";
+import { _resetMergeQueueMemo } from "../lib/merge_queue_runtime.ts";
 import type { WorkerConfig } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
@@ -279,6 +285,96 @@ Deno.test("pr-maintenance command - update-open-pr-branches parses comma-separat
       !result.message.includes("No repositories"),
     true,
   );
+});
+
+// ============================================================================
+// update-open-pr-branches — merge-queue base (Issue #4424)
+// ============================================================================
+
+const MERGE_QUEUE_REPO = "org/repo";
+
+/**
+ * A fake `gh` for one open, behind-only worker PR (#42, three commits behind
+ * `main`, mergeable). `rules` is the rule-type list the branch-rules endpoint
+ * reports for `main`. Every call is recorded; anything unexpected fails.
+ */
+function fakeGhBehindOnlyPr(rules: string): {
+  runner: GhSpawnRunner;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const runner: GhSpawnRunner = (args) => {
+    const joined = args.join(" ");
+    calls.push(joined);
+    const ok = (stdout: string) =>
+      Promise.resolve({ code: 0, success: true, stdout, stderr: "" });
+    const fail = (stderr: string) =>
+      Promise.resolve({ code: 1, success: false, stdout: "", stderr });
+    if (args[0] === "pr" && args[1] === "list") {
+      return ok(JSON.stringify([
+        {
+          number: 42,
+          headRefName: "issue-42-fix-bug",
+          baseRefName: "main",
+          body: "",
+        },
+      ]));
+    }
+    if (args[0] === "pr" && args[1] === "view") return ok("MERGEABLE\n");
+    if (
+      args[0] === "api" &&
+      args[1] === `repos/${MERGE_QUEUE_REPO}/compare/main...issue-42-fix-bug`
+    ) {
+      return ok("3\n");
+    }
+    if (
+      args[0] === "api" &&
+      args[1] === `repos/${MERGE_QUEUE_REPO}/rules/branches/main`
+    ) {
+      return ok(`${rules}\n`);
+    }
+    if (args[0] === "api" && args[1] === `repos/${MERGE_QUEUE_REPO}`) {
+      return ok("main\n");
+    }
+    return fail(`unexpected gh call in test: ${joined}`);
+  };
+  return { runner, calls };
+}
+
+Deno.test("pr-maintenance command - update-open-pr-branches takes no action on a behind-only PR behind a merge queue (Issue #4424)", async () => {
+  _resetMergeQueueMemo();
+  const { runner, calls } = fakeGhBehindOnlyPr("pull_request,merge_queue");
+  // A throwaway work dir: were the PR wrongly updated, the clone would land
+  // here, never in the real WORK_DIR.
+  const workDir = await Deno.makeTempDir({ prefix: "pr_maint_mq_" });
+  _setGhSpawnRunner(runner);
+  try {
+    const config = makeConfig({ repos: [MERGE_QUEUE_REPO] });
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "update-open-pr-branches",
+        "github-user": "testbot",
+        repos: MERGE_QUEUE_REPO,
+        "work-dir": workDir,
+      },
+      config,
+    );
+    // The branch-rules endpoint was consulted for the default branch...
+    assertEquals(
+      calls.some((c) => c.includes(`rules/branches/main`)),
+      true,
+      `expected a merge-queue rules read, got: ${JSON.stringify(calls)}`,
+    );
+    // ...and the behind-only PR was counted as already current, not updated.
+    assertEquals(result.success, true);
+    assertEquals(
+      result.message,
+      "PR branch update complete: 0 updated, 1 already current, 0 failed (Issue #379)",
+    );
+  } finally {
+    _resetGhSpawnRunner();
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 // ============================================================================

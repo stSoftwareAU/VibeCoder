@@ -18,9 +18,9 @@ and the **same GitHub user** (e.g. stsvcbot) is often shared by many Vibe
 Coders. The worker monitors **all open PRs by that user** — it does not act on
 other users’ PRs. It fixes **spelling** and **quality** (shellcheck, Deno
 quality checks) failures, keeps branches **up to date** with the base
-(rebase/merge), and resolves **merge conflicts** when it can. **Auto-merge** is
+(rebase/merge; on a merge-queued default branch only conflicting PRs are updated, not merely behind ones, Issue #4424), and resolves **merge conflicts** when it can. **Auto-merge** is
 turned on only when the PR is actually mergeable, and every merge first passes a
-**pre-merge gate** that re-checks CI and branch freshness. User feedback
+**pre-merge gate** that re-checks CI and branch freshness (a merge-queued default branch is landed by its queue instead). User feedback
 (comments, "Request changes") is also handled: address it, push, mark processed.
 Every comment ends with a pushed fix or a reasoned reply: feedback that turns
 on a product choice gets the agent's decision with the assumption stated, and
@@ -762,7 +762,7 @@ checks pass. The worker does the following:
    this may be the repo default branch or a milestone branch (e.g.
    `milestone/oidc`). If `baseRefName` is unavailable, the repo default branch
    is used as a fallback.
-2. **Update the branch** — If the branch is behind the base: fetch the latest
+2. **Update the branch** — If the branch is behind the base (and the base has no merge queue; on a merge-queued default branch a PR that is only behind is left alone, Issue #4424): fetch the latest
    base branch, merge it into the feature branch, and push normally — never a
    rebase and never a force-push, so a PR under review keeps its commits and
    its review comments (Issue #2807). The comparison and merge always use the
@@ -795,7 +795,8 @@ checks pass. The worker does the following:
    no extra call; the skip is logged at info.
 
 So: **PRs are always kept mergeable when possible**. If a PR is out of date, the
-branch is automatically updated and merge issues resolved; if automatic
+branch is automatically updated (unless its default branch has a merge queue, which
+tests the PR against its future head instead) and merge issues resolved; if automatic
 resolution fails, the run continues and the next cycle may retry or the user can
 intervene.
 
@@ -818,9 +819,18 @@ intervene.
   they have a review approval and CI is green, and GitHub enforces both.
 - **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
   its base gets one `update-branch` request per pass, since GitHub never
-  updates it under the strict up-to-date rule. Not when a reviewer has
+  updates it under the strict up-to-date rule. Not for a PR that is only behind
+  when its base is behind a merge queue (Issue #4424): the queue tests the PR
+  against its future head, and an update would only move that head. A
+  conflicting PR on such a base still gets the update. Not when a reviewer has
   requested changes (Issue #2702): that PR cannot merge anyway, so it gets
   neither the update nor a merge attempt, and the sweep logs why at info.
+- **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
+  current head is not armed until a new head arrives, and a queued base is
+  never merged directly (`merge-queue-removed`,
+  [`pr_auto_merge.ts`](../../worker/deno/lib/pr_auto_merge.ts)). The CI-fix lane
+  is handed the removal as a failed `merge queue` check instead
+  ([ci-fix.md](ci-fix.md#merge-queue-removals-issue-4424)).
 
 ## 🛡️ The dual-layer pre-merge gate
 
@@ -833,19 +843,27 @@ branch is held strictly **read-only**.
 - **The wall (GitHub branch protection).** Required status checks plus a strict
   "branch up to date" rule, configured once per monitored repo at setup time.
   This holds the native auto-merge path (`gh pr merge --auto`) until CI is green
-  and the branch is current. Required-check selection is visibility- and
+  and the branch is current. Where a merge queue is enabled on the default
+  branch, the strict rule is off and the queue holds the path instead
+  (Issue #4424). Required-check selection is visibility- and
   language-aware, so an unsatisfiable check (e.g. a GHAS-only check on a private
   repo) is never marked required — otherwise it would block **every** merge.
 - **The backstop (worker pre-merge gate).** For the direct-merge fallback used
   on unprotected branches, `enforcePreMergeRequirements()` re-fetches CI status
   and branch freshness **at merge time** and refuses to merge unless CI is
   `passed` and the branch is **not behind** its target. Both signals are
-  re-fetched fresh, never reused from PR-creation time.
+  re-fetched fresh, never reused from PR-creation time. On a default branch with
+  a merge queue the gate is not reached: the direct merge returns
+  `blocked: merge_queue` and the queue lands the PR.
 - **Read-only default branch.** The worker never pushes commits directly to the
   default branch — no formatting, version, or dependency bumps. Every change
   rides a feature-branch PR through the same gate.
 
 ### Defer-and-retry when the branch is behind target
+
+On a default branch with a merge queue this section does not apply: the gate is
+not reached, and a PR that is only behind is not updated (see the branch-update
+step above, and [MERGE.md → Merge queue](../MERGE.md#merge-queue)).
 
 When the gate blocks because the PR branch is **behind its target**, the worker
 does not force the merge and does not give up — it **defers and retries**:

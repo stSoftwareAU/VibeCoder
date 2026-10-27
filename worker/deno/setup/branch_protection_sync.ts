@@ -13,8 +13,8 @@
  * protection is never written.**
  *
  * {@link planBranchProtectionForRepo} is the read-only twin: same resolution,
- * same decision, no write — it backs the `audit-default-branch-rulesets`
- * sweep.
+ * same decision, no write and no merge-queue probe (it plans with `readOnly`)
+ * — it backs the `audit-default-branch-rulesets` sweep.
  *
  * RATE-LIMIT BUDGET — READ BEFORE WIRING THIS ANYWHERE NEW.
  * This sync must run ONLY at setup time (once per `setup.sh` invocation). It
@@ -22,7 +22,10 @@
  * `issue_finder.ts`, `idle-detect`, or any other per-tick path. Per repo it
  * spends two metadata reads (visibility + default branch), a small number of
  * ruleset/check-name reads, up to `3 + 20` direct-push-detection reads
- * (Issue #4356; usually 3), and at most one ruleset write — affordable only
+ * (Issue #4356; usually 3), a merge-queue decision (the opt-out topic, the
+ * repository and organisation metadata, and the workflow files; Issue #4424),
+ * a disabled merge-queue probe created and deleted only where the metadata
+ * cannot settle availability, and at most one ruleset write — affordable only
  * because it runs once per setup, not once per loop. A repo already covered by
  * someone else's ruleset short-circuits before the direct-push detection and
  * the check-name discovery. This mirrors the budget discipline in
@@ -39,6 +42,7 @@ import {
   ensureDefaultBranchRuleset,
   type GhExec,
   planDefaultBranchRuleset,
+  type RulesetMergeQueue,
   type RulesetPlan,
   type RulesetSkipReason,
 } from "../lib/default_branch_ruleset.ts";
@@ -98,6 +102,11 @@ export interface SyncResult {
    * demand ghost contexts forever (Issue #4163).
    */
   legacyClassicProtection?: boolean;
+  /**
+   * The merge-queue state the ruleset was written with or kept in, and why
+   * (Issue #4424). Absent when the run made no ruleset decision about it.
+   */
+  mergeQueue?: RulesetMergeQueue;
   /** Resolved visibility, when the read succeeded. */
   visibility?: RepoVisibility;
   /** Resolved default branch, when the read succeeded. */
@@ -260,6 +269,7 @@ export async function syncBranchProtectionForRepo(
     skipped: outcome.skipped,
     detail: outcome.detail,
     legacyClassicProtection: outcome.legacyClassicProtection,
+    ...(outcome.mergeQueue ? { mergeQueue: outcome.mergeQueue } : {}),
     visibility,
     branch,
   };
@@ -268,7 +278,8 @@ export async function syncBranchProtectionForRepo(
 /**
  * Read-only twin of {@link syncBranchProtectionForRepo}: resolves the same
  * visibility and default branch, then returns the
- * {@link planDefaultBranchRuleset} decision **without writing** (Issue #4356).
+ * {@link planDefaultBranchRuleset} decision **without writing** (Issue #4356),
+ * and without the merge-queue probe either (Issue #4424).
  * Backs the `audit-default-branch-rulesets` sweep.
  */
 export async function planBranchProtectionForRepo(
@@ -285,9 +296,10 @@ export async function planBranchProtectionForRepo(
     };
   }
   const { visibility, branch } = context;
+  // readOnly: the audit never creates the merge-queue probe ruleset (Issue #4424).
   const planned = await planDefaultBranchRuleset(
     repo,
-    { branch, visibility },
+    { branch, visibility, readOnly: true },
     options.ghFn,
   );
   if (!planned.ok) {
@@ -345,6 +357,43 @@ async function resolveRepoContext(
   }
 
   return { ok: true, visibility, branch };
+}
+
+/** One line of the setup output for a merge-queue state (Issue #4424). */
+export interface MergeQueueLine {
+  /** `success` for an enabled queue; `info` otherwise. */
+  level: "success" | "info";
+  /** The message, without the repository prefix the printer adds. */
+  text: string;
+}
+
+/**
+ * The setup output line for a merge-queue state: enabled; left in place when
+ * an unverified read kept a live queue; or not enabled, with the fallback
+ * reason and the strict policy named (Issue #4424). Pure, so the wording is
+ * testable apart from the printer.
+ */
+export function formatMergeQueueLine(
+  mergeQueue: RulesetMergeQueue,
+): MergeQueueLine {
+  if (mergeQueue.verdict === "enabled") {
+    return {
+      level: "success",
+      text: `merge queue enabled (${mergeQueue.reason})`,
+    };
+  }
+  if (mergeQueue.enabled) {
+    return {
+      level: "info",
+      text:
+        `merge queue left in place: ${mergeQueue.reason} — the existing queue is kept`,
+    };
+  }
+  return {
+    level: "info",
+    text:
+      `merge queue not enabled: ${mergeQueue.reason} — strict up-to-date policy kept`,
+  };
 }
 
 /**

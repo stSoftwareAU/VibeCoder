@@ -3,7 +3,9 @@
  *
  * Determines which open PRs need their branches updated by checking
  * how far behind the base branch they are and whether they have
- * merge conflicts.
+ * merge conflicts. A PR behind a GitHub merge queue is not updated for
+ * being behind (Issue #4424) — the queue tests it against its future head —
+ * but a conflicting one still is.
  *
  * Issue #1281: Integrates distributed locking to prevent concurrent
  * workers from updating the same PR branch simultaneously.
@@ -429,6 +431,13 @@ export interface PrBranchUpdateDeps {
     repo: string,
     prs: readonly PrBranchEntry[],
   ) => Promise<Map<number, PrBranchStateEntry> | null>;
+  /**
+   * Whether a base branch is behind a GitHub merge queue (Issue #4424). On a
+   * queued base the queue tests each PR against its real future head, so a
+   * PR is not updated merely for being behind; a conflict still is. Asked
+   * once per repo and base per scan. A `false` answer keeps today's rules.
+   */
+  isMergeQueueBase: (repo: string, baseBranch: string) => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -716,9 +725,13 @@ export async function selectBranchUpdatePrs(
  * Returns an action if the PR needs updating, or null if it can be skipped.
  *
  * Decision rules:
- * 1. If behind_by > 0 → needs update (reason: "behind")
- * 2. If behind_by == 0 and mergeable == "CONFLICTING" → needs update (reason: "conflicting")
- * 3. Otherwise → skip (already current and no conflicts)
+ * 1. If behind_by > 0 and the base is not behind a merge queue → needs update
+ *    (reason: "behind")
+ * 2. If mergeable == "CONFLICTING" → needs update (reason: "conflicting"),
+ *    carrying the real behind_by. A conflict is updated even on a queued base
+ *    (Issue #4424), because the queue cannot land a conflicting PR.
+ * 3. Otherwise → skip (already current and no conflicts, or behind a queue
+ *    that will test the PR against its future head — Issue #4424)
  */
 export function decidePrUpdateAction(
   repo: string,
@@ -726,8 +739,9 @@ export function decidePrUpdateAction(
   baseBranch: string,
   behindBy: number,
   mergeableStatus: string,
+  mergeQueued: boolean,
 ): PrBranchUpdateAction | null {
-  if (behindBy > 0) {
+  if (behindBy > 0 && !mergeQueued) {
     return {
       repo,
       prNumber: pr.number,
@@ -744,12 +758,43 @@ export function decidePrUpdateAction(
       prNumber: pr.number,
       branchName: pr.headRefName,
       baseBranch,
-      behindBy: 0,
+      behindBy,
       reason: "conflicting",
     };
   }
 
   return null;
+}
+
+/**
+ * Whether a base is behind a merge queue, read once per repo and base per
+ * scan (Issue #4424). A lookup that throws is treated as "not queued" — today's
+ * behaviour — but never silently: it is logged at WARNING naming the repo, the
+ * base and the cause, so a broken dep is seen rather than hidden.
+ */
+async function isQueuedBaseForScan(
+  deps: PrBranchUpdateDeps,
+  cache: Map<string, boolean>,
+  repo: string,
+  baseBranch: string,
+): Promise<boolean> {
+  const key = `${repo}#${baseBranch}`;
+  const known = cache.get(key);
+  if (known !== undefined) return known;
+  let queued: boolean;
+  try {
+    queued = await deps.isMergeQueueBase(repo, baseBranch);
+  } catch (err) {
+    deps.logger.warn(
+      `Merge-queue lookup for ${repo} base ${baseBranch} threw — treating the base as not queued (Issue #4424): ${
+        sanitiseLogField(err instanceof Error ? err.message : String(err))
+      }`,
+      { repo, baseBranch },
+    );
+    queued = false;
+  }
+  cache.set(key, queued);
+  return queued;
 }
 
 /**
@@ -768,6 +813,8 @@ export async function scanPrBranchUpdates(
   const actions: PrBranchUpdateAction[] = [];
   let skippedCount = 0;
   let failedCount = 0;
+  // Issue #4424: one merge-queue question per repo and base for the scan.
+  const queuedBases = new Map<string, boolean>();
 
   if (deps.repos.length === 0) {
     deps.logger.info("No repositories configured — skipping PR branch updates");
@@ -826,6 +873,14 @@ export async function scanPrBranchUpdates(
         );
         continue;
       }
+      // Issue #4424: a PR behind a merge queue is not updated for being
+      // behind; the queue tests it against its future head.
+      const mergeQueued = await isQueuedBaseForScan(
+        deps,
+        queuedBases,
+        repo,
+        baseBranch,
+      );
       if (cached) {
         behindBy = cached.behindBy;
         mergeableStatus = cached.mergeable;
@@ -845,8 +900,10 @@ export async function scanPrBranchUpdates(
           continue;
         }
 
-        // Only check mergeable status when branch appears current
-        if (behindBy === 0) {
+        // Only check mergeable status when branch appears current — or, on a
+        // queued base, when it is behind, since a conflict still needs a
+        // merge (Issue #4424).
+        if (behindBy === 0 || mergeQueued) {
           try {
             mergeableStatus = await deps.getMergeableStatus(repo, pr.number);
           } catch {
@@ -863,6 +920,7 @@ export async function scanPrBranchUpdates(
         baseBranch,
         behindBy,
         mergeableStatus,
+        mergeQueued,
       );
 
       if (action) {
@@ -875,6 +933,13 @@ export async function scanPrBranchUpdates(
         actions.push(action);
       } else {
         skippedCount++;
+        if (mergeQueued && behindBy > 0) {
+          deps.logger.info(
+            `PR #${pr.number} (${pr.headRefName}) is ${behindBy} commit(s) behind ${baseBranch}, ` +
+              `which is behind a GitHub merge queue — no branch update; the queue tests it against its future head (Issue #4424)`,
+            { repo, prNumber: pr.number },
+          );
+        }
       }
     }
   }

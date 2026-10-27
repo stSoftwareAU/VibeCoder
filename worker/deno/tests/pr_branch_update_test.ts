@@ -60,6 +60,7 @@ function makeBaseDeps(
     listPrs: async () => [],
     getBehindBy: async () => 0,
     getMergeableStatus: async () => "MERGEABLE",
+    isMergeQueueBase: async () => false,
     ...overrides,
   };
 }
@@ -79,7 +80,7 @@ function makePr(overrides?: Partial<PrBranchEntry>): PrBranchEntry {
 
 Deno.test("decidePrUpdateAction - returns behind action when PR is behind base", () => {
   const pr = makePr();
-  const action = decidePrUpdateAction("org/repo", pr, "main", 3, "");
+  const action = decidePrUpdateAction("org/repo", pr, "main", 3, "", false);
 
   assertEquals(action !== null, true);
   assertEquals(action!.reason, "behind");
@@ -92,7 +93,14 @@ Deno.test("decidePrUpdateAction - returns behind action when PR is behind base",
 
 Deno.test("decidePrUpdateAction - returns conflicting action when PR has merge conflicts", () => {
   const pr = makePr();
-  const action = decidePrUpdateAction("org/repo", pr, "main", 0, "CONFLICTING");
+  const action = decidePrUpdateAction(
+    "org/repo",
+    pr,
+    "main",
+    0,
+    "CONFLICTING",
+    false,
+  );
 
   assertEquals(action !== null, true);
   assertEquals(action!.reason, "conflicting");
@@ -101,21 +109,35 @@ Deno.test("decidePrUpdateAction - returns conflicting action when PR has merge c
 
 Deno.test("decidePrUpdateAction - returns null when PR is current and mergeable", () => {
   const pr = makePr();
-  const action = decidePrUpdateAction("org/repo", pr, "main", 0, "MERGEABLE");
+  const action = decidePrUpdateAction(
+    "org/repo",
+    pr,
+    "main",
+    0,
+    "MERGEABLE",
+    false,
+  );
 
   assertEquals(action, null);
 });
 
 Deno.test("decidePrUpdateAction - returns null when PR is current with unknown status", () => {
   const pr = makePr();
-  const action = decidePrUpdateAction("org/repo", pr, "main", 0, "UNKNOWN");
+  const action = decidePrUpdateAction(
+    "org/repo",
+    pr,
+    "main",
+    0,
+    "UNKNOWN",
+    false,
+  );
 
   assertEquals(action, null);
 });
 
 Deno.test("decidePrUpdateAction - returns null when PR is current and status is empty", () => {
   const pr = makePr();
-  const action = decidePrUpdateAction("org/repo", pr, "main", 0, "");
+  const action = decidePrUpdateAction("org/repo", pr, "main", 0, "", false);
 
   assertEquals(action, null);
 });
@@ -123,7 +145,14 @@ Deno.test("decidePrUpdateAction - returns null when PR is current and status is 
 Deno.test("decidePrUpdateAction - behind takes priority over any mergeable status", () => {
   const pr = makePr();
   // Even if mergeable status is CONFLICTING, behind_by > 0 means reason is "behind"
-  const action = decidePrUpdateAction("org/repo", pr, "main", 5, "CONFLICTING");
+  const action = decidePrUpdateAction(
+    "org/repo",
+    pr,
+    "main",
+    5,
+    "CONFLICTING",
+    false,
+  );
 
   assertEquals(action !== null, true);
   assertEquals(action!.reason, "behind");
@@ -132,7 +161,14 @@ Deno.test("decidePrUpdateAction - behind takes priority over any mergeable statu
 
 Deno.test("decidePrUpdateAction - preserves custom base branch", () => {
   const pr = makePr({ baseRefName: "milestone/v2" });
-  const action = decidePrUpdateAction("org/repo", pr, "milestone/v2", 1, "");
+  const action = decidePrUpdateAction(
+    "org/repo",
+    pr,
+    "milestone/v2",
+    1,
+    "",
+    false,
+  );
 
   assertEquals(action !== null, true);
   assertEquals(action!.baseBranch, "milestone/v2");

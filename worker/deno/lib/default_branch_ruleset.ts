@@ -47,11 +47,20 @@
  *     `required_signatures`, bypass actors — is carried through unchanged. A
  *     ruleset whose current rules cannot be read fails the sync loudly rather
  *     than being overwritten with a body built from status checks alone.
+ *   - **Merge queue where GitHub allows one** (Issue #4424). Where the
+ *     repository can carry a merge queue, every required check reports on
+ *     `merge_group`, and the repo has not opted out (topic `no-merge-queue`),
+ *     the ruleset gets a `merge_queue` rule and the strict up-to-date policy
+ *     is off, replacing the branch-up-to-date churn. Otherwise strict stays
+ *     on, as before. A queue is never written or removed on an unverified
+ *     read: a transient failure keeps whatever queue is already live.
  *
  * The decision is separated from the write: {@link planDefaultBranchRuleset}
- * is read-only and returns what *would* happen, and
+ * returns what *would* happen (its only write is the merge-queue probe, which
+ * a `readOnly` plan never makes; see its doc comment), and
  * {@link ensureDefaultBranchRuleset} applies that plan. The read-only sweep
- * (`audit-default-branch-rulesets`) uses the plan alone.
+ * (`audit-default-branch-rulesets`) uses the plan alone with `readOnly` set, so
+ * it never probes.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -61,6 +70,15 @@ import {
   getRequiredChecksForRepo,
 } from "./branch_protection_definitions.ts";
 import { assessBranchPushPolicy } from "./branch_push_policy.ts";
+import {
+  buildMergeQueueParameters,
+  MERGE_QUEUE_RULE_TYPE,
+} from "./merge_queue.ts";
+import {
+  decideMergeQueue,
+  type MergeQueueDecision,
+  type MergeQueueVerdict,
+} from "./merge_queue_decision.ts";
 import { getReportedCheckNames } from "./reported_check_names.ts";
 import {
   buildDefaultBranchRulesetBody,
@@ -75,9 +93,13 @@ import {
   isValidBranchName,
   isValidRepoSlug,
   listRepoRulesets,
+  type MergeQueueParameters,
+  mergeQueueParametersFromDetail,
+  type OpaqueRulesetRule,
   preservedRulesFromDetail,
   requiredContextsFromRules,
   type RulesetBody,
+  type RulesetDetail,
   updateRuleset,
 } from "./repo_rulesets.ts";
 
@@ -98,6 +120,13 @@ export interface EnsureRulesetOptions {
   visibility: CheckVisibility;
   /** Optional detected languages, forwarded to {@link getRequiredChecksForRepo}. */
   detectedLanguages?: string[];
+  /**
+   * True for a read-only plan (the audit sweep). Such a plan never creates the
+   * merge-queue probe ruleset, so it makes no non-GET call at all; an
+   * inconclusive merge-queue answer is then unverified. Default false
+   * (Issue #4424).
+   */
+  readOnly?: boolean;
 }
 
 /** Why a run made no change, when it made none. */
@@ -119,8 +148,23 @@ export type RulesetSkipReason =
 export type RulesetAction = "create" | "update" | "delete" | "none";
 
 /**
+ * The merge-queue state of the worker's ruleset after a create, an update, or
+ * an unchanged run (Issue #4424).
+ */
+export interface RulesetMergeQueue {
+  /** Why the queue was or was not used — see {@link MergeQueueDecision}. */
+  verdict: MergeQueueVerdict;
+  /** True when the ruleset carries a `merge_queue` rule once written. */
+  enabled: boolean;
+  /** Human sentence naming the cause; logged when the worker falls back. */
+  reason: string;
+}
+
+/**
  * Read-only decision for one repo — what {@link ensureDefaultBranchRuleset}
- * would do, computed without writing anything.
+ * would do, computed without writing anything. The merge-queue probe is the
+ * one exception: it is created and deleted within the plan's call, and a
+ * `readOnly` plan never makes it (Issue #4424).
  */
 export interface RulesetPlan {
   action: RulesetAction;
@@ -148,6 +192,11 @@ export interface RulesetPlan {
   body?: RulesetBody;
   /** Id of the worker's own ruleset, for update/delete. */
   rulesetId?: number;
+  /**
+   * Merge-queue state a create, an update, or an unchanged run of the worker's
+   * ruleset would leave in place (Issue #4424). Absent on every other exit.
+   */
+  mergeQueue?: RulesetMergeQueue;
 }
 
 /** Result of a {@link planDefaultBranchRuleset} call. */
@@ -175,15 +224,81 @@ export type EnsureRulesetResult =
     detail?: string;
     /** See {@link RulesetPlan.legacyClassicProtection}. */
     legacyClassicProtection: boolean;
+    /** See {@link RulesetPlan.mergeQueue}. */
+    mergeQueue?: RulesetMergeQueue;
   }
   | { ok: false; error: Error };
 
 // ---------------------------------------------------------------------------
-// Plan (read-only)
+// Merge queue helpers (Issue #4424)
+// ---------------------------------------------------------------------------
+
+/** The live ruleset's rules, dropping any entry that is not rule-shaped. */
+function liveRules(detail: RulesetDetail): OpaqueRulesetRule[] {
+  const rules: unknown[] = Array.isArray(detail.rules) ? detail.rules : [];
+  // `?.` covers null and every non-object entry: a primitive has no string
+  // `type`, so one test of that field is the whole rule-shape check.
+  return rules.filter((rule): rule is OpaqueRulesetRule =>
+    typeof (rule as { type?: unknown } | null)?.type === "string"
+  );
+}
+
+/** Whether the live ruleset carries a `merge_queue` rule, readable or not. */
+function liveHasMergeQueueRule(detail: RulesetDetail): boolean {
+  return liveRules(detail).some((rule) => rule.type === MERGE_QUEUE_RULE_TYPE);
+}
+
+/** The strict up-to-date policy the live status-checks rule carries. */
+function liveStrictPolicy(detail: RulesetDetail): unknown {
+  const rule = liveRules(detail).find((candidate) =>
+    candidate.type === "required_status_checks"
+  );
+  return rule?.parameters?.strict_required_status_checks_policy;
+}
+
+/**
+ * The merge queue an update of the worker's ruleset writes (Issue #4424).
+ *
+ * An enabled decision writes the live queue when there is one, so a queue a
+ * human tuned survives, and the decided parameters otherwise. A definitive
+ * refusal writes none. An unverified read keeps a live queue (the worker's
+ * defaults when its parameters are unreadable) and adds none, so a transient
+ * failure never weakens or removes enforcement.
+ */
+function effectiveMergeQueue(
+  decision: MergeQueueDecision,
+  live: RulesetDetail,
+): MergeQueueParameters | undefined {
+  if (decision.verdict === "enabled") {
+    return mergeQueueParametersFromDetail(live) ?? decision.parameters;
+  }
+  if (decision.definitive) return undefined;
+  if (!liveHasMergeQueueRule(live)) return undefined;
+  return mergeQueueParametersFromDetail(live) ??
+    buildMergeQueueParameters("SQUASH");
+}
+
+/** The merge-queue state a plan or result records for a decision. */
+function mergeQueueState(
+  decision: MergeQueueDecision,
+  enabled: boolean,
+): RulesetMergeQueue {
+  return { verdict: decision.verdict, enabled, reason: decision.reason };
+}
+
+// ---------------------------------------------------------------------------
+// Plan (read-only, bar the merge-queue probe unless readOnly)
 // ---------------------------------------------------------------------------
 
 /**
- * Decide, without writing, what the default-branch ruleset sync would do.
+ * Decide, without writing, what the default-branch ruleset sync would do
+ * (bar the merge-queue probe, which `readOnly` suppresses; see below).
+ *
+ * The one write this can make is the merge-queue probe (Issue #4424): where
+ * repository metadata cannot settle whether GitHub allows a merge queue, a
+ * disabled probe ruleset is created and deleted again to ask GitHub. Every
+ * other read is GET-only. With `options.readOnly` set (the audit sweep) no
+ * write is made at all: the inconclusive answer is unverified instead.
  *
  * @param repo - `owner/repo` slug.
  * @param options - Branch name, visibility, and optional detected languages.
@@ -314,24 +429,17 @@ export async function planDefaultBranchRuleset(
     };
   }
 
-  // Our ruleset already requires everything satisfiable — genuine no-op.
-  if (added.length === 0) {
-    return {
-      ok: true,
-      plan: {
-        action: "none",
-        skipped: "existing-ruleset",
-        added: [],
-        preserved: currentContexts,
-        preservedRules: [],
-        legacyClassicProtection,
-        rulesetId: ours?.id,
-      },
-    };
-  }
-
   // --- Converge additively (union of current and desired) ---
   const contexts = [...currentContexts, ...added];
+
+  // --- Merge queue (Issue #4424): on where GitHub allows it, else strict ---
+  const decision = await decideMergeQueue(
+    repo,
+    branch,
+    contexts,
+    options.readOnly !== true,
+    ghFn,
+  );
 
   if (ours === undefined) {
     return {
@@ -342,7 +450,15 @@ export async function planDefaultBranchRuleset(
         preserved: currentContexts,
         preservedRules: [],
         legacyClassicProtection,
-        body: buildDefaultBranchRulesetBody(VIBE_RULESET_NAME, contexts),
+        body: buildDefaultBranchRulesetBody(
+          VIBE_RULESET_NAME,
+          contexts,
+          decision.parameters,
+        ),
+        mergeQueue: mergeQueueState(
+          decision,
+          decision.parameters !== undefined,
+        ),
       },
     };
   }
@@ -350,7 +466,9 @@ export async function planDefaultBranchRuleset(
   // The update is a full-document PUT, so the live ruleset must be read before
   // it is rewritten: a body built from status checks alone silently discards
   // every other rule an admin added (Issue #1290). An unreadable ruleset fails
-  // the run loudly rather than overwriting rules the worker never saw.
+  // the run loudly rather than overwriting rules the worker never saw. The
+  // live ruleset is read even when nothing needs adding, because the merge
+  // queue state may have drifted (Issue #4424).
   const live = await getRuleset(repo, ours.id, ghFn);
   if (!live.ok) {
     return {
@@ -359,6 +477,31 @@ export async function planDefaultBranchRuleset(
         `Refusing to update ruleset ${ours.id} in ${repo}: its current rules ` +
           `could not be read (${live.error.message})`,
       ),
+    };
+  }
+
+  const queue = effectiveMergeQueue(decision, live.value);
+  const mergeQueue = mergeQueueState(decision, queue !== undefined);
+  // Drift: the queue rule is present or absent differently from what is
+  // wanted, or the queue is wanted but strict up-to-date is still on.
+  const drift = (queue !== undefined) !== liveHasMergeQueueRule(live.value) ||
+    (queue !== undefined && liveStrictPolicy(live.value) !== false);
+
+  // Our ruleset already requires everything satisfiable and carries the queue
+  // state it should — genuine no-op.
+  if (added.length === 0 && !drift) {
+    return {
+      ok: true,
+      plan: {
+        action: "none",
+        skipped: "existing-ruleset",
+        added: [],
+        preserved: currentContexts,
+        preservedRules: [],
+        legacyClassicProtection,
+        rulesetId: ours.id,
+        mergeQueue,
+      },
     };
   }
 
@@ -374,8 +517,10 @@ export async function planDefaultBranchRuleset(
         VIBE_RULESET_NAME,
         contexts,
         live.value,
+        queue,
       ),
       rulesetId: ours.id,
+      mergeQueue,
     },
   };
 }
@@ -386,8 +531,9 @@ export async function planDefaultBranchRuleset(
 
 /**
  * Idempotently ensure the default branch is covered by a ruleset requiring the
- * satisfiable status checks and an up-to-date branch — or, on a direct-push
- * branch, that the worker's own ruleset is absent.
+ * satisfiable status checks, with either an up-to-date branch or — where GitHub
+ * allows one and every required check reports on `merge_group` — a merge queue
+ * (Issue #4424). On a direct-push branch the worker's own ruleset is absent.
  *
  * @param repo - `owner/repo` slug.
  * @param options - Branch name, visibility, and optional detected languages.
@@ -410,10 +556,12 @@ export async function ensureDefaultBranchRuleset(
     detail: plan.detail,
     legacyClassicProtection: plan.legacyClassicProtection,
   };
+  // Present only when the plan decided a merge-queue state (Issue #4424).
+  const queue = plan.mergeQueue ? { mergeQueue: plan.mergeQueue } : {};
 
   switch (plan.action) {
     case "none":
-      return { ok: true, changed: false, deleted: false, ...common };
+      return { ok: true, changed: false, deleted: false, ...common, ...queue };
     case "delete": {
       const removed = await deleteRuleset(repo, plan.rulesetId!, ghFn);
       if (!removed.ok) return { ok: false, error: removed.error };
@@ -425,7 +573,7 @@ export async function ensureDefaultBranchRuleset(
         ? await updateRuleset(repo, plan.rulesetId!, plan.body!, ghFn)
         : await createRuleset(repo, plan.body!, ghFn);
       if (!written.ok) return { ok: false, error: written.error };
-      return { ok: true, changed: true, deleted: false, ...common };
+      return { ok: true, changed: true, deleted: false, ...common, ...queue };
     }
   }
 }

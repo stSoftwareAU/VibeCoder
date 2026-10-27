@@ -141,6 +141,7 @@ import {
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { rerunFailedJobsOfCheck } from "./ci_infrastructure_rerun.ts";
+import { isMergeQueueCheckId } from "./merge_queue_check_id.ts";
 import { parseCheckSuiteId } from "./github_actions_log_fetcher.ts";
 import {
   abandonAndRestart,
@@ -848,8 +849,12 @@ async function _processCiFailureLocked(
   const currentRetries = await getCiCheckRetryCount(stateDir, repo, checkRunId);
   // Startup suites have no replacement job id after a rerun. Let them reach
   // the fleet-wide marker cap below, even when their local job budget is spent.
+  // Issue #4424: so does a merge-queue removal. Nothing is re-run for it, so no
+  // fresh id with a fresh budget ever follows; stopping here would strand the
+  // PR unarmed. Each pass leaves an attempt marker and the cap abandons it.
   if (
-    currentRetries >= maxCiRetries && parseCheckSuiteId(checkRunId) === null
+    currentRetries >= maxCiRetries && parseCheckSuiteId(checkRunId) === null &&
+    !isMergeQueueCheckId(checkRunId)
   ) {
     logger.warn("CI check has exceeded max retries", {
       repo,
@@ -2633,7 +2638,8 @@ async function _processCiWithHeartbeat(
     // attempt cap above — which abandons and redoes the issue — bounds it.
     // The one escalation left (a secret already in the base branch's
     // history) is not something a re-run can clear.
-    if (!response.addNeedsHuman) {
+    // Issue #4424: a merge-queue removal has no check run to re-run.
+    if (!response.addNeedsHuman && !isMergeQueueCheckId(checkRunId)) {
       await rerunFailedJobsOfCheck({
         repo,
         checkId: checkRunId,
@@ -3073,6 +3079,10 @@ async function _resolveCiLogExcerpt(
   processorDeps: CiProcessorDeps,
 ): Promise<CiLogExcerptOutcome> {
   const { logger } = processorDeps;
+
+  // Issue #4424: a merge-queue removal has no Actions job or check run behind
+  // its synthetic id, so no log provider is asked for one (it would 404).
+  if (isMergeQueueCheckId(input.checkRunId)) return { excerpt: "" };
 
   const configured = await _runConfiguredPrFailureActions(
     input,
