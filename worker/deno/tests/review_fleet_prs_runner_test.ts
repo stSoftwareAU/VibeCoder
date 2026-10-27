@@ -636,7 +636,8 @@ Deno.test("run.sh gives a long repository's round a container name the runtime a
 // On Apple's runtime the plan's run joins an internal network that only its
 // egress proxy reaches; the worker's helper builds both for the round and
 // hands back the run to start (Issue #4409).
-const APPLE_EGRESS = "egress-enforced=false\nproxy-name=vibe-coder-plan-proxy\n";
+const APPLE_EGRESS =
+  "egress-enforced=false\nproxy-name=vibe-coder-plan-proxy\n";
 
 Deno.test("run.sh starts an Apple round on the network its egress helper built, then stops the helper (Issue #4409)", async () => {
   const home = await fixture(READY);
