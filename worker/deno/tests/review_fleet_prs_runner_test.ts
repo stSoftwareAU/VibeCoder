@@ -68,6 +68,9 @@ async function fixture(
     for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done
     echo "$*" > "$HOME/plan-args"
     [ -f "$HOME/no-plan" ] && { echo "Cannot launch: no config" >&2; exit 1; }
+    [ -f "$HOME/plan-refused" ] && {
+      echo "container-launch-plan: host disk 65.1 GB free of 460.4 GB" >&2
+      echo "Refusing to launch: container name is not a plain name"; exit 1; }
     printf '%s\\000' runtime=fake-runtime image=vibe-coder:test \
       exists=image exists=inspect exists=vibe-coder:test \
       "ensure=$HOME/ensured" volume=vibe-work volume-resettable=vibe-work \
@@ -571,6 +574,46 @@ Deno.test("run.sh fails a pass whose worker launch plan fails (Issue #3293)", as
     (await recorded(home, "escalate-args"))!,
     "worker container plan failed",
   );
+});
+
+// mod.ts reports a refusal on stdout, after its host-disk note on stderr:
+// the runner must log the refusal, not the note (Issue #4409).
+Deno.test("run.sh logs the launch plan's own refusal, not its host-disk note (Issue #4409)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/plan-refused`, "");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertStringIncludes(
+    await runnerLog(home),
+    "worker container plan failed: Refusing to launch: container name",
+  );
+});
+
+// The runtime takes a container name of at most 64 characters, and the
+// egress launch derives `<name>-proxy` from it — so a round's name stays
+// within 58 even for a long repository name (Issue #4409).
+Deno.test("run.sh gives a long repository's round a container name the runtime accepts (Issue #4409)", async () => {
+  const entry = (number: number) => ({
+    repo: "stSoftwareAU/GRQ-AutoTraderBackTesting",
+    number,
+    title: "Fix it",
+    headSha: "abc123",
+  });
+  const names: string[] = [];
+  for (const number of [230, 231]) {
+    const home = await fixture(
+      JSON.stringify({ ready: [entry(number)], skipped: {} }),
+    );
+    const { code, output } = await run(home, "--once");
+    assertEquals(code, 0, output);
+    const planArgs = (await recorded(home, "plan-args"))!;
+    const name = planArgs.match(/--container-name (\S+)/)?.[1] ?? "";
+    assert(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,57}$/.test(name), name);
+    assert(name.startsWith("review-fleet-prs-"), name);
+    names.push(name);
+  }
+  // Two PRs of one repository still get two names.
+  assert(names[0] !== names[1], names.join(" "));
 });
 
 Deno.test("run.sh kills a timed-out round's container by name (Issue #3293)", async () => {

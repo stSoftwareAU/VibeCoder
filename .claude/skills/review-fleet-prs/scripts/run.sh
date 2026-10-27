@@ -158,8 +158,8 @@ round_container() {
     --allow-sys=hostname,systemMemoryInfo \
     --allow-write="$planfile,$planfile.Containerfile,$HOME/.vibe-coder/run-config" \
     worker/deno/mod.ts container-launch-plan --base-dir "$CHECKOUT" \
-    --container-name "$name" --out "$planfile" </dev/null >/dev/null \
-    2>"$errfile"); then
+    --container-name "$name" --out "$planfile" </dev/null >"$errfile" \
+    2>&1); then
     errors <"$errfile"
     LAST_ERROR="worker container plan failed: $(last_error_line "$errfile")"
     return 1
@@ -489,6 +489,20 @@ round_dir() {
   echo "$STATE_DIR/rounds/$(date '+%Y%m%d-%H%M%S')-${1//[^A-Za-z0-9_.-]/-}"
 }
 
+# The container name for the round in directory $1 (Issue #4409). The runtime
+# takes at most 64 characters and the egress launch adds `-proxy`, so a name
+# past 58 keeps its readable start and ends in a hash of the whole, which
+# keeps two rounds' names apart.
+round_name() {
+  local name hash
+  name="review-fleet-prs-$(basename "$1")"
+  if [[ ${#name} -gt 58 ]]; then
+    hash=$(printf '%s' "$name" | cksum | cut -d' ' -f1)
+    name="${name:0:$((57 - ${#hash}))}-$hash"
+  fi
+  printf '%s\n' "$name"
+}
+
 # Starts one round for one ready PR (a gate entry). Returns non-zero, with
 # ROUND_ERROR set, when its claim or its container cannot be made. A PR another
 # host has claimed gets no round and no error (Issue #4398).
@@ -535,7 +549,7 @@ start_review() {
   dir=$(round_dir "$(jq -r '"\(.repo)-\(.number)"' <<<"$entry")")
   mkdir -p "$dir"
   jq -c '{ready: [.]}' <<<"$entry" >"$dir/gate.json"
-  ROUND_NAME="review-fleet-prs-$(basename "$dir")"
+  ROUND_NAME=$(round_name "$dir")
   if ! round_container "$ROUND_NAME"; then
     ROUND_ERROR="$LAST_ERROR"
     log "$key: round not started: $ROUND_ERROR"
@@ -590,7 +604,7 @@ start_learn() {
   ROUND_ERROR=""
   dir=$(round_dir learn)
   mkdir -p "$dir"
-  ROUND_NAME="review-fleet-prs-$(basename "$dir")"
+  ROUND_NAME=$(round_name "$dir")
   if ! round_container "$ROUND_NAME"; then
     ROUND_ERROR="learning $LAST_ERROR"
     log "learn: round not started: $LAST_ERROR"
