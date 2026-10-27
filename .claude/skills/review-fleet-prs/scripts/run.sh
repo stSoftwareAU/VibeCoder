@@ -144,15 +144,17 @@ EOF
 # its named volumes are left out, because the worker's container may hold
 # them and a round needs none of its durable state; and the reviewer App token
 # is passed by name alone (`--env GH_TOKEN`), so its value is never on a
-# command line, in a trace or on disk. Sets RUNTIME, ROUND_ARGS (everything up
-# to and including the image), C_BASE (the checkout inside the container) and
-# C_STATE_DIR (this state directory inside it). Returns non-zero, with
-# LAST_ERROR set, when the plan or the image is not usable.
+# command line, in a trace or on disk. The plan is written to the round's
+# directory $2, where the round's egress helper reads it (round_egress).
+# Sets RUNTIME, ROUND_ARGS (everything up to and including the image), C_BASE
+# (the checkout inside the container), C_STATE_DIR (this state directory
+# inside it) and ROUND_EGRESS. Returns non-zero, with LAST_ERROR set, when the
+# plan or the image is not usable.
 round_container() {
-  local name=$1 planfile token key value i arg src
-  local exists_args=() ensure_dirs=() volumes=() run_args=()
-  planfile="$STATE_DIR/round-plan"
-  RUNTIME="" ROUND_ARGS=() C_BASE="" C_STATE_DIR=""
+  local name=$1 planfile token key value arg enforced="" proxy=""
+  local exists_args=() ensure_dirs=() run_args=()
+  planfile="$2/plan"
+  RUNTIME="" ROUND_VOLUMES=() ROUND_EGRESS=""
   if ! (cd "$CHECKOUT" && deno run --frozen --lock=worker/deno/deno.lock \
     --allow-env --allow-read --allow-run \
     --allow-sys=hostname,systemMemoryInfo \
@@ -171,14 +173,26 @@ round_container() {
     runtime) RUNTIME=$value ;;
     exists) exists_args+=("$value") ;;
     ensure) ensure_dirs+=("$value") ;;
-    volume | volume-resettable) volumes+=("$value") ;;
+    volume | volume-resettable) ROUND_VOLUMES+=("$value") ;;
     run) run_args+=("$value") ;;
+    egress-enforced) enforced=$value ;;
+    proxy-name) proxy=$value ;;
     esac
   done <"$planfile"
   if [[ -z $RUNTIME || ${#run_args[@]} -eq 0 || ${#exists_args[@]} -eq 0 ]]; then
     LAST_ERROR="worker container plan is incomplete"
     return 1
   fi
+  # The plan's run joins a network only its egress proxy reaches (Issue
+  # #4409), so a round never starts on the runtime's open network. On Apple's
+  # runtime the worker's own helper builds both per round; the sidecar that
+  # docker and podman need is the root run.sh's, and a round is refused rather
+  # than started without it.
+  if [[ $enforced == true ]]; then
+    LAST_ERROR="the plan needs the $RUNTIME egress sidecar, which review rounds do not start yet"
+    return 1
+  fi
+  [[ -n $proxy ]] && ROUND_EGRESS=apple
   if ! command -v "$RUNTIME" >/dev/null; then
     LAST_ERROR="cannot run $RUNTIME: the container runtime is not on PATH"
     return 1
@@ -188,12 +202,21 @@ round_container() {
     return 1
   fi
   for arg in ${ensure_dirs[@]+"${ensure_dirs[@]}"}; do mkdir -p "$arg"; done
+  round_args "${run_args[@]}"
+}
+
+# The round's container arguments from a plan's run arguments ($@): sets
+# ROUND_ARGS, C_BASE and C_STATE_DIR, leaving out ROUND_VOLUMES. Returns
+# non-zero, with LAST_ERROR set, when the state directory is not mounted.
+round_args() {
+  local run_args=("$@") i arg src value
+  ROUND_ARGS=() C_BASE="" C_STATE_DIR=""
   # The plan's last argument is the image; the round's own go after it.
   for ((i = 0; i < ${#run_args[@]} - 1; i++)); do
     arg=${run_args[i]}
     if [[ $arg == --volume ]]; then
       src=${run_args[i + 1]%%:*}
-      if [[ " ${volumes[*]} " == *" $src "* ]]; then
+      if [[ " ${ROUND_VOLUMES[*]} " == *" $src "* ]]; then
         i=$((i + 1))
         continue
       fi
@@ -214,6 +237,42 @@ round_container() {
   [[ -n ${GH_TOKEN+set} ]] && ROUND_ARGS+=(--env GH_TOKEN)
   ROUND_ARGS+=("${run_args[${#run_args[@]} - 1]}")
   return 0
+}
+
+# Starts the round's egress network and proxy, when its plan has one (Apple's
+# runtime): the worker's helper, as the root run.sh runs it, owned by this
+# round's job ($1), so it removes both once the job is gone. Rebuilds
+# ROUND_ARGS from the run it hands back, and sets EGRESS_PID. Returns
+# non-zero, with LAST_ERROR set, when the helper gives no run.
+round_egress() {
+  local owner=$1 dir=$2 ready="$2/plan.apple-ready" token args=() _
+  EGRESS_PID=""
+  [[ $ROUND_EGRESS == apple ]] || return 0
+  (cd "$CHECKOUT" && exec deno run --frozen --lock=worker/deno/deno.lock \
+    --allow-env --allow-read --allow-write --allow-run --allow-net --allow-sys \
+    worker/deno/apple_egress_launch_main.ts \
+    "$dir/plan" "$ready" "$dir" "$owner") </dev/null >>"$dir/egress.log" 2>&1 &
+  EGRESS_PID=$!
+  for _ in $(seq 1500); do
+    [[ -f $ready ]] && break
+    kill -0 "$EGRESS_PID" 2>/dev/null || break
+    sleep 0.2
+  done
+  if [[ ! -f $ready ]]; then
+    LAST_ERROR="egress setup failed: $(last_error_line "$dir/egress.log")"
+    stop_egress
+    return 1
+  fi
+  while IFS= read -r -d '' token; do args+=("$token"); done <"$ready"
+  round_args "${args[@]}"
+}
+
+# Stops the round's egress helper, which removes its proxy and network.
+stop_egress() {
+  [[ -n ${EGRESS_PID:-} ]] || return 0
+  kill -TERM "$EGRESS_PID" 2>/dev/null
+  wait "$EGRESS_PID" 2>/dev/null
+  EGRESS_PID=""
 }
 
 # One headless Claude round in the worker container, logged to $1.
@@ -315,9 +374,18 @@ in_flight() {
 # One round in the background (a subshell): run it, price it, and leave its
 # outcome in its directory for reap. $3 is "review" or "learn".
 round_job() {
-  local dir=$1 key=$2 kind=$3 rc err=""
-  run_round "$dir/claude.log" "$key"
-  rc=$?
+  local dir=$1 key=$2 kind=$3 rc err="" job
+  # This job's own PID: macOS's bash 3.2 has no BASHPID.
+  job=$(sh -c 'echo $PPID')
+  if round_egress "$job" "$dir"; then
+    run_round "$dir/claude.log" "$key"
+    rc=$?
+    stop_egress
+  else
+    rc=1
+    log "$key: $LAST_ERROR"
+    echo "$LAST_ERROR" >>"$dir/claude.log"
+  fi
   if [[ $kind == review ]]; then
     price_round "$dir"
     # Whatever the round's outcome, its PR is free for another host (Issue #4398).
@@ -550,7 +618,7 @@ start_review() {
   mkdir -p "$dir"
   jq -c '{ready: [.]}' <<<"$entry" >"$dir/gate.json"
   ROUND_NAME=$(round_name "$dir")
-  if ! round_container "$ROUND_NAME"; then
+  if ! round_container "$ROUND_NAME" "$dir"; then
     ROUND_ERROR="$LAST_ERROR"
     log "$key: round not started: $ROUND_ERROR"
     release_claim "$repo" "$number"
@@ -605,7 +673,7 @@ start_learn() {
   dir=$(round_dir learn)
   mkdir -p "$dir"
   ROUND_NAME=$(round_name "$dir")
-  if ! round_container "$ROUND_NAME"; then
+  if ! round_container "$ROUND_NAME" "$dir"; then
     ROUND_ERROR="learning $LAST_ERROR"
     log "learn: round not started: $LAST_ERROR"
     return 1

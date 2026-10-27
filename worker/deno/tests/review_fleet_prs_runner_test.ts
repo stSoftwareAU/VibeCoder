@@ -79,7 +79,24 @@ async function fixture(
       run=--volume "run=$HOME/logs:/home/vibe/logs" \
       run=--volume "run=$HOME/repo:/workspace:ro" \
       run=--workdir run=/workspace run=--env run=VIBE_BASE_DIR=/workspace \
-      run=vibe-coder:test > "$out"; exit 0 ;;
+      run=vibe-coder:test > "$out"
+    [ -f "$HOME/plan-egress" ] && tr '\\n' '\\000' < "$HOME/plan-egress" >> "$out"
+    exit 0 ;;
+  *apple_egress_launch_main*) echo "$*" > "$HOME/egress-args"
+    [ -f "$HOME/egress-fail" ] && { echo "[egress] apple boom" >&2; exit 1; }
+    trap 'echo stopped >> "$HOME/egress-events"; exit 0' TERM
+    ready=""; n=0
+    for a in "$@"; do
+      case "$a" in *apple_egress_launch_main.ts) n=1; continue ;; esac
+      [ $n -gt 0 ] && n=$((n + 1)); [ $n = 3 ] && ready="$a"
+    done
+    printf '%s\\000' run --env HTTPS_PROXY=http://10.0.0.2:3128 --rm \
+      --name vibe-coder-plan --network vibe-egress-owned-1-abc \
+      --volume vibe-work:/home/vibe/auto-issue-work \
+      --volume "$HOME/logs:/home/vibe/logs" \
+      --volume "$HOME/repo:/workspace:ro" \
+      --workdir /workspace vibe-coder:test > "$ready"
+    while :; do sleep 0.1; done ;;
   *claim.ts*) echo "$*" >> "$HOME/claim-args"
     case "$*" in
     *"claim.ts release"*) echo "$*" >> "$HOME/release-args"
@@ -614,6 +631,62 @@ Deno.test("run.sh gives a long repository's round a container name the runtime a
   }
   // Two PRs of one repository still get two names.
   assert(names[0] !== names[1], names.join(" "));
+});
+
+// On Apple's runtime the plan's run joins an internal network that only its
+// egress proxy reaches; the worker's helper builds both for the round and
+// hands back the run to start (Issue #4409).
+const APPLE_EGRESS = "egress-enforced=false\nproxy-name=vibe-coder-plan-proxy\n";
+
+Deno.test("run.sh starts an Apple round on the network its egress helper built, then stops the helper (Issue #4409)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/plan-egress`, APPLE_EGRESS);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = (await claudeArgs(home))!;
+  assert(args, "the round was not started");
+  assertStringIncludes(args, "--network\nvibe-egress-owned-1-abc\n");
+  assertStringIncludes(args, "HTTPS_PROXY=http://10.0.0.2:3128");
+  // The helper's run is the round's: its named volumes are still left out.
+  assert(!args.includes("vibe-work:"), args);
+  assertStringIncludes(args, "vibe-coder:test\nreview-round\n");
+  // The helper read the round's own plan and is owned by a live PID.
+  const egressArgs = (await recorded(home, "egress-args"))!;
+  assert(
+    /logs\/review-fleet-prs\/rounds\/[^ ]+\/plan [^ ]+\/plan\.apple-ready [^ ]+ [1-9]\d*$/
+      .test(egressArgs.trim()),
+    egressArgs,
+  );
+  assertEquals(await recorded(home, "egress-events"), "stopped\n");
+});
+
+Deno.test("run.sh fails, without starting it, a round whose egress helper gives no run (Issue #4409)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/plan-egress`, APPLE_EGRESS);
+  await Deno.writeTextFile(`${home}/egress-fail`, "");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(
+    await runnerLog(home),
+    "egress setup failed: [egress] apple boom",
+  );
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "egress setup failed",
+  );
+});
+
+Deno.test("run.sh refuses a round whose plan needs the docker egress sidecar, rather than start it on an open network (Issue #4409)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(
+    `${home}/plan-egress`,
+    "egress-enforced=true\nproxy-name=vibe-coder-plan-proxy\n",
+  );
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(await runnerLog(home), "egress sidecar");
 });
 
 Deno.test("run.sh kills a timed-out round's container by name (Issue #3293)", async () => {
