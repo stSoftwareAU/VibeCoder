@@ -1,0 +1,17 @@
+{
+  "issue": 4424,
+  "chunk": "top-up-4424",
+  "title": "top-up: merge queue availability, opt-out, merge_group coverage, queued-base lookup, removal reader and check id",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4424",
+  "definition": "Reviewed the six merge queue modules (Issue #4424). Availability is read from repository and organisation metadata; where that is inconclusive, a disabled probe ruleset carrying a merge_queue rule is created and deleted, straight after creation, and a failed delete is reported with the leftover named. A read-only run never probes and reports unknown. The opt-out topic is read, and an unreadable topic list is an error rather than not opted out. The merge_group coverage check reads the workflows that report required checks and fails closed: anything it cannot establish is unknown, never ok. The queued-base lookup is memoised for ten minutes, never memoises a failed read, and treats null as not queued. The queue-removal reader binds a removal to the current head and collapses its reason to one line capped at 200 characters. The synthetic check id is a fixed prefix plus the leading characters of the head sha. Inputs from GitHub are validated before use, and repository text is parsed as data and never executed.",
+  "status": "claimed",
+  "sweptAt": "a86aed0fc03bc2a213873973b6c231a7699d2a9d",
+  "paths": [
+    "worker/deno/lib/merge_queue.ts",
+    "worker/deno/lib/merge_queue_check_id.ts",
+    "worker/deno/lib/merge_queue_decision.ts",
+    "worker/deno/lib/merge_queue_removal.ts",
+    "worker/deno/lib/merge_queue_runtime.ts",
+    "worker/deno/lib/merge_queue_workflows.ts"
+  ]
+}
