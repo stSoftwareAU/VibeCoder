@@ -120,7 +120,6 @@ interface PolicyDoc {
 
 interface RoleIr {
   id: string; // logical id or TF address
-  kind: "cfn" | "tf";
   file: string;
   line: number;
   /** Literal role name when statically known. */
@@ -225,12 +224,6 @@ function resourceLine(text: string, id: string): number {
   });
 }
 
-/** 1-based line containing a quoted or bare token, or the fallback. */
-function tokenLine(text: string, token: string, fallback: number): number {
-  const line = findLine(text, (l) => l.includes(token));
-  return line > 0 ? line : fallback;
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -271,7 +264,10 @@ function cfnRef(value: unknown, ctx: CfnCtx): Ref {
 
 function cfnNameRef(name: string, ctx: CfnCtx): Ref {
   if (ctx.resourceIds.has(name)) return { kind: "ref", target: name };
-  return { kind: "unknown", text: clean(`${name} (parameter or pseudo value)`) };
+  return {
+    kind: "unknown",
+    text: clean(`${name} (parameter or pseudo value)`),
+  };
 }
 
 function cfnStringRef(value: string, ctx: CfnCtx): Ref {
@@ -285,7 +281,10 @@ function cfnStringRef(value: string, ctx: CfnCtx): Ref {
     return { kind: "ref", target: value.slice(0, dot) };
   }
   if (ctx.paramIds.has(value) || value.startsWith("AWS::")) {
-    return { kind: "unknown", text: clean(`${value} (parameter or pseudo value)`) };
+    return {
+      kind: "unknown",
+      text: clean(`${value} (parameter or pseudo value)`),
+    };
   }
   return { kind: "literal", value };
 }
@@ -298,8 +297,9 @@ function cfnStringRef(value: string, ctx: CfnCtx): Ref {
  */
 function cfnSubRef(text: string, ctx: CfnCtx): Ref {
   const lone = /^\$\{([A-Za-z0-9]+)(\.Arn)?\}$/.exec(text);
-  if (lone && ctx.resourceIds.has(lone[1])) {
-    return { kind: "ref", target: lone[1] };
+  const lid = lone?.[1];
+  if (lid !== undefined && ctx.resourceIds.has(lid)) {
+    return { kind: "ref", target: lid };
   }
   const substituted = text
     .replaceAll("${AWS::AccountId}", "*")
@@ -353,12 +353,24 @@ function passedToServiceOf(condition: unknown): string[] | undefined {
   return found;
 }
 
-/** Earliest line at or after `fromLine` containing `token`, else `fromLine`. */
-function lineAfter(text: string, token: string | undefined, fromLine: number): number {
+/**
+ * Line of the first occurrence of `token` at or after `fromLine`, else the
+ * first occurrence anywhere in the file, else `fromLine`. A statement's
+ * cited line therefore contains its token whenever the token appears at all.
+ */
+function lineAfter(
+  text: string,
+  token: string | undefined,
+  fromLine: number,
+): number {
   if (!token) return fromLine;
   const lines = text.split("\n");
-  for (let i = Math.max(0, fromLine - 1); i < lines.length; i++) {
-    if (lines[i].includes(token)) return i + 1;
+  const from = Math.max(0, fromLine - 1);
+  for (let i = from; i < lines.length; i++) {
+    if ((lines[i] ?? "").includes(token)) return i + 1;
+  }
+  for (let i = 0; i < from; i++) {
+    if ((lines[i] ?? "").includes(token)) return i + 1;
   }
   return fromLine;
 }
@@ -408,14 +420,16 @@ function cfnOneStatement(
     principals.push({ type: "*", values: [{ kind: "literal", value: "*" }] });
   } else if (isObject(st.Principal)) {
     for (const [type, vals] of Object.entries(st.Principal)) {
-      principals.push({ type, values: listOf(vals).map((v) => cfnRef(v, ctx)) });
+      principals.push({
+        type,
+        values: listOf(vals).map((v) => cfnRef(v, ctx)),
+      });
     }
   }
   const condition = st.Condition;
   const acts = actions ?? [];
-  const token = acts[0] ?? (resources[0]?.kind === "literal"
-    ? resources[0].value
-    : undefined);
+  const token = acts[0] ??
+    (resources[0]?.kind === "literal" ? resources[0].value : undefined);
   return {
     effect,
     actions: acts,
@@ -445,6 +459,7 @@ function administratorPolicy(loc: Loc, name: string): PolicyDoc {
       principals: [],
       conditions: [],
       conditioned: false,
+      resourceTags: [],
       loc,
       text: "AdministratorAccess",
       unsupported: false,
@@ -487,7 +502,9 @@ function addPolicyOrUnknown(
 /* CloudFormation model builder                                              */
 /* ------------------------------------------------------------------------ */
 
-function cfnTags(value: unknown): { tags: Record<string, string>; visible: boolean } {
+function cfnTags(
+  value: unknown,
+): { tags: Record<string, string>; visible: boolean } {
   const tags: Record<string, string> = {};
   let visible = true;
   for (const t of listOf(value)) {
@@ -543,7 +560,9 @@ function addIamResources(
       ]),
     ),
   };
-  const entries = Object.entries(resources).filter(([, r]) => isObject(r));
+  const entries = Object.entries(resources).filter(
+    (e): e is [string, Record<string, unknown>] => isObject(e[1]),
+  ).map((e): [string, Record<string, unknown>] => [e[0], e[1]]);
   const managed = new Map<string, PolicyDoc | undefined>();
   const managedUnknown = new Map<string, { text: string; loc: Loc }>();
 
@@ -559,16 +578,21 @@ function addIamResources(
           loc: { file, line },
         });
       } else {
-        managed.set(id, { name: id, loc: { file, line }, statements: parsed.statements });
+        managed.set(id, {
+          name: id,
+          loc: { file, line },
+          statements: parsed.statements,
+        });
       }
     } else if (r.Type === "AWS::IAM::Role") {
       const tags = cfnTags(props.Tags);
       model.roles.push({
         id,
-        kind: "cfn",
         file,
         line,
-        roleName: typeof props.RoleName === "string" ? props.RoleName : undefined,
+        roleName: typeof props.RoleName === "string"
+          ? props.RoleName
+          : undefined,
         description: typeof props.Description === "string"
           ? clean(props.Description)
           : undefined,
@@ -608,7 +632,10 @@ function addIamResources(
     const props = isObject(r.Properties) ? r.Properties : {};
     const trust = cfnStatements(props.AssumeRolePolicyDocument, ctx, role.line);
     if (trust.unknown !== undefined) {
-      role.trustUnknown.push({ text: clean(trust.unknown), loc: { file, line: role.line } });
+      role.trustUnknown.push({
+        text: clean(trust.unknown),
+        loc: { file, line: role.line },
+      });
     } else {
       role.trust = trust.statements;
     }
@@ -623,16 +650,23 @@ function addIamResources(
       );
     }
     for (const arn of listOf(props.ManagedPolicyArns)) {
-      resolveCfnManaged(model, role, arn, ctx, managed, managedUnknown);
+      resolveCfnManaged(role, arn, ctx, managed, managedUnknown);
     }
     if (props.PermissionsBoundary !== undefined) {
-      role.boundary = resolveCfnBoundary(props.PermissionsBoundary, ctx, managed, role.line);
+      role.boundary = resolveCfnBoundary(
+        props.PermissionsBoundary,
+        ctx,
+        managed,
+        role.line,
+      );
     }
   }
 
   // Pass 3: AWS::IAM::Policy and AWS::IAM::ManagedPolicy attached via Roles.
   for (const [id, r] of entries) {
-    if (r.Type !== "AWS::IAM::Policy" && r.Type !== "AWS::IAM::ManagedPolicy") continue;
+    if (r.Type !== "AWS::IAM::Policy" && r.Type !== "AWS::IAM::ManagedPolicy") {
+      continue;
+    }
     const props = isObject(r.Properties) ? r.Properties : {};
     const line = ctx.lineOf(id);
     const loc = { file, line };
@@ -640,7 +674,9 @@ function addIamResources(
     for (const roleRef of listOf(props.Roles)) {
       const ref = cfnRef(roleRef, ctx);
       if (ref.kind === "ref") {
-        const role = model.roles.find((x) => x.id === ref.target && x.file === file);
+        const role = model.roles.find((x) =>
+          x.id === ref.target && x.file === file
+        );
         if (!role) continue;
         addPolicyOrUnknown(role, id, parsed, loc);
       } else {
@@ -657,7 +693,6 @@ function addIamResources(
 
 /** Resolve one ManagedPolicyArns entry onto a role. */
 function resolveCfnManaged(
-  model: Model,
   role: RoleIr,
   arn: unknown,
   ctx: CfnCtx,
@@ -675,7 +710,9 @@ function resolveCfnManaged(
       return;
     }
     role.unresolvedPolicies.push({
-      text: clean(`ManagedPolicyArns ${ref.target} is not an in-repo managed policy`),
+      text: clean(
+        `ManagedPolicyArns ${ref.target} is not an in-repo managed policy`,
+      ),
       loc,
     });
     return;
@@ -691,7 +728,10 @@ function resolveCfnManaged(
     });
     return;
   }
-  role.unresolvedPolicies.push({ text: clean(`managed policy ${ref.text} is unknown`), loc });
+  role.unresolvedPolicies.push({
+    text: clean(`managed policy ${ref.text} is unknown`),
+    loc,
+  });
 }
 
 /** Resolve a PermissionsBoundary value. */
@@ -707,10 +747,18 @@ function resolveCfnBoundary(
     const doc = managed.get(ref.target);
     if (doc) return { kind: "resolved", policy: doc };
   }
-  if (ref.kind === "literal" && ref.value === "arn:aws:iam::aws:policy/AdministratorAccess") {
-    return { kind: "resolved", policy: administratorPolicy(loc, "AdministratorAccess") };
+  if (
+    ref.kind === "literal" &&
+    ref.value === "arn:aws:iam::aws:policy/AdministratorAccess"
+  ) {
+    return {
+      kind: "resolved",
+      policy: administratorPolicy(loc, "AdministratorAccess"),
+    };
   }
-  const text = ref.kind === "literal" ? ref.value : ref.kind === "ref"
+  const text = ref.kind === "literal"
+    ? ref.value
+    : ref.kind === "ref"
     ? ref.target
     : ref.text;
   return { kind: "unresolved", text: clean(text), loc };
@@ -749,7 +797,7 @@ function tfToJs(v: HclValue | undefined): unknown {
   if (Array.isArray(v)) return v.map((x) => tfToJs(x));
   if (isHclRef(v)) {
     const parts = v.ref.split(".");
-    if (parts.length >= 2 && Object.hasOwn(TF_TYPES, parts[0])) {
+    if (parts.length >= 2 && Object.hasOwn(TF_TYPES, parts[0] ?? "")) {
       return {
         "Fn::GetAtt": [
           `${parts[0]}.${parts[1]}`,
@@ -801,12 +849,16 @@ function dataDocToJs(block: HclBlock): unknown {
     const condition: Record<string, Record<string, unknown>> = {};
     for (const p of child.blocks) {
       if (p.type === "principals") {
-        const type = typeof p.attrs.type === "string" ? p.attrs.type : "unknown";
+        const type = typeof p.attrs.type === "string"
+          ? p.attrs.type
+          : "unknown";
         principal[type] = tfToJs(p.attrs.identifiers);
       } else if (p.type === "not_principals") {
         st.NotPrincipal = true;
       } else if (p.type === "condition") {
-        const test = typeof p.attrs.test === "string" ? p.attrs.test : "unknown";
+        const test = typeof p.attrs.test === "string"
+          ? p.attrs.test
+          : "unknown";
         const variable = typeof p.attrs.variable === "string"
           ? p.attrs.variable
           : "unknown";
@@ -840,14 +892,20 @@ function addTfFile(model: Model, file: string, text: string): void {
   const parsed = parseHcl(text);
   if (parsed.errors.length > 0) {
     model.notChecked.push(
-      `${file}: HCL not parseable (${clean(parsed.errors[0])})`,
+      `${file}: HCL not parseable (${clean(parsed.errors[0] ?? "")})`,
     );
     return;
   }
   const dataDocs = new Map<string, unknown>();
   for (const b of parsed.blocks) {
-    if (b.type === "data" && b.labels[0] === "aws_iam_policy_document" && b.labels[1]) {
-      dataDocs.set(`data.aws_iam_policy_document.${b.labels[1]}`, dataDocToJs(b));
+    if (
+      b.type === "data" && b.labels[0] === "aws_iam_policy_document" &&
+      b.labels[1]
+    ) {
+      dataDocs.set(
+        `data.aws_iam_policy_document.${b.labels[1]}`,
+        dataDocToJs(b),
+      );
     }
   }
   const resources: Record<string, unknown> = {};
@@ -861,7 +919,7 @@ function addTfFile(model: Model, file: string, text: string): void {
       attachments.push(b);
       continue;
     }
-    const type = TF_TYPES[b.labels[0]];
+    const type = TF_TYPES[b.labels[0] ?? ""];
     if (type === undefined) continue;
     lines.set(address, b.line);
     const props: Record<string, unknown> = {};
@@ -869,7 +927,10 @@ function addTfFile(model: Model, file: string, text: string): void {
       if (typeof a.name === "string") props.RoleName = a.name;
       if (typeof a.description === "string") props.Description = a.description;
       props.Tags = tfTagList(a.tags);
-      props.AssumeRolePolicyDocument = tfPolicyJs(a.assume_role_policy, dataDocs);
+      props.AssumeRolePolicyDocument = tfPolicyJs(
+        a.assume_role_policy,
+        dataDocs,
+      );
       if (a.permissions_boundary !== undefined) {
         props.PermissionsBoundary = tfToJs(a.permissions_boundary);
       }
@@ -902,14 +963,18 @@ function addTfFile(model: Model, file: string, text: string): void {
     if (isObject(synthetic) && synthetic.Type === "AWS::IAM::Role") {
       const props = synthetic.Properties as Record<string, unknown>;
       props.ManagedPolicyArns = [
-        ...(Array.isArray(props.ManagedPolicyArns) ? props.ManagedPolicyArns : []),
+        ...(Array.isArray(props.ManagedPolicyArns)
+          ? props.ManagedPolicyArns
+          : []),
         arn,
       ];
     } else {
       for (const r of roleResources) {
         const props = (r as { Properties: Record<string, unknown> }).Properties;
         props.ManagedPolicyArns = [
-          ...(Array.isArray(props.ManagedPolicyArns) ? props.ManagedPolicyArns : []),
+          ...(Array.isArray(props.ManagedPolicyArns)
+            ? props.ManagedPolicyArns
+            : []),
           { Ref: "unknown:attachment to an unresolved role" },
         ];
       }
@@ -936,7 +1001,7 @@ function resourceTagsOf(
     for (const [key, vals] of Object.entries(keys)) {
       const m = /^(?:ssm|aws):resourcetag\/(.+)$/i.exec(key);
       if (!m) continue;
-      out.push({ key: m[1], values: stringList(vals) });
+      out.push({ key: m[1] ?? "", values: stringList(vals) });
     }
   }
   return out;
@@ -950,13 +1015,12 @@ type Match = "match" | "possible" | "no";
 
 /** A role or an instance a grant's resource may name. */
 interface TargetRef {
-  kind: "role" | "instance";
+  kind?: "role" | "instance";
   id: string;
   file: string;
   roleName?: string;
   tags?: Record<string, string>;
   tagsVisible?: boolean;
-  line: number;
 }
 
 /** One action on one resource, from one Allow or Deny statement. */
@@ -1197,7 +1261,7 @@ function trustEval(
     blocked: false,
   };
   if (t.trustUnknown.length > 0) {
-    out.unknownPrincipal = t.trustUnknown[0].text;
+    out.unknownPrincipal = t.trustUnknown[0]?.text;
   }
   for (const st of t.trust) {
     if (st.unsupported) {
@@ -1218,9 +1282,12 @@ function trustEval(
       continue;
     }
     if (service !== undefined) {
-      if (anyValues.length > 0 || svcValues.some((v) =>
-        v.kind === "literal" && v.value.toLowerCase() === service.toLowerCase()
-      )) {
+      if (
+        anyValues.length > 0 || svcValues.some((v) =>
+          v.kind === "literal" &&
+          v.value.toLowerCase() === service.toLowerCase()
+        )
+      ) {
         out.admitted = true;
         out.loc ??= st.loc;
         out.text = `${t.id} trusts ${service}`;
@@ -1235,7 +1302,16 @@ function trustEval(
     if (callerHit) {
       out.admitted = true;
       out.loc ??= st.loc;
-      out.text = `${t.id} trusts ${caller?.id ?? "the caller"}`;
+      const viaRoot = awsValues.some((v) =>
+        v.kind === "literal" && /^arn:aws:iam::[^:]*:root$/.test(v.value)
+      ) && !awsValues.some((v) =>
+        caller !== undefined && roleValueIs(v, caller, t.file)
+      );
+      out.text = viaRoot
+        ? `${t.id} trusts the account root, which delegates to ${
+          caller?.id ?? "the caller"
+        }`
+        : `${t.id} trusts ${caller?.id ?? "the caller"}`;
       out.conditions.push(...st.conditions);
       continue;
     }
@@ -1264,11 +1340,759 @@ function valueText(v: Ref): string {
 
 /** Whether a principal value names `caller` (by reference, role name, or account root). */
 function roleValueIs(v: Ref, caller: RoleIr, fromFile: string): boolean {
-  if (v.kind === "ref") return v.target === caller.id && caller.file === fromFile;
+  if (v.kind === "ref") {
+    return v.target === caller.id && caller.file === fromFile;
+  }
   if (v.kind !== "literal") return false;
   if (v.value === "*") return true;
   if (/^arn:aws:iam::[^:]*:root$/.test(v.value)) return true;
   const tail = arnTail(v.value);
   if (!tail.startsWith("role/") || caller.roleName === undefined) return false;
   return globMatch(tail.slice(tail.lastIndexOf("/") + 1), caller.roleName);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Chain builders                                                            */
+/* ------------------------------------------------------------------------ */
+
+/** Declared intent on the roles, quoted, or the fixed phrase. */
+function intentOf(...roles: RoleIr[]): string {
+  for (const r of roles) {
+    if (r.description) return `"${r.description}"`;
+    for (const k of ["Purpose", "Description", "Name"]) {
+      const v = r.tags[k];
+      if (v) return `"${clean(v)}"`;
+    }
+  }
+  return "none stated in the repository";
+}
+
+/** Distinct action names of a grant list, for citing what a target holds. */
+function summaryOf(grants: Grant[]): string {
+  return [...new Set(grants.map((g) => g.action))].join(", ");
+}
+
+/** Citations `file:line` for a grant list. */
+function citeOf(grants: Grant[]): string {
+  return grants.map((g) => `${g.stmt.loc.file}:${g.stmt.loc.line}`).join(", ");
+}
+
+/** The grant's statement location, or the fallback when there is no grant. */
+function locOf(g: Grant | undefined, fallback: Loc): Loc {
+  return g?.stmt.loc ?? fallback;
+}
+
+function callerLoc(c: RoleIr): Loc {
+  return { file: c.file, line: c.line };
+}
+
+function locHop(text: string, loc: Loc): ChainHop {
+  return { text: clean(text), file: loc.file, line: loc.line };
+}
+
+function unresolvedOf(role: RoleIr): string[] {
+  const out: string[] = [];
+  if (role.boundary?.kind === "unresolved") {
+    out.push(
+      clean(`caller ${role.id} boundary ${role.boundary.text} is unresolved`),
+    );
+  }
+  return out;
+}
+
+interface Draft {
+  kind: ChainKind;
+  status: "chain" | "incomplete";
+  caller: RoleIr;
+  target: string;
+  hops: ChainHop[];
+  boundary: string;
+  intent: string;
+  conditions: string[];
+  unresolved: string[];
+  fix: string;
+}
+
+function finish(d: Draft): ChainAssessment {
+  const conditions = [...new Set(d.conditions)].filter((c) => c.length > 0);
+  return {
+    kind: d.kind,
+    status: d.status,
+    caller: d.caller.id,
+    target: d.target,
+    entryFile: d.caller.file,
+    entryLine: d.caller.line,
+    hops: d.hops,
+    boundary: clean(d.boundary, 500),
+    intent: d.intent,
+    conditions,
+    unresolved: [...new Set(d.unresolved)],
+    fix: clean(d.fix, 500),
+    signature: `${d.kind}|${d.caller.id}|${d.target}`,
+  };
+}
+
+/** The unknown grant text a caller holds that may name a target. */
+function possibleText(g: Grant | undefined): string {
+  if (g === undefined) return "an unknown resource";
+  return clean(`${g.action} on ${valueText(g.res)}`);
+}
+
+/** Caller policy unknowns that may already hold the extra grants. */
+function callerUnknowns(c: RoleIr, extras: Grant[]): string[] {
+  if (c.unresolvedPolicies.length === 0) return [];
+  const names = c.unresolvedPolicies.map((u) => u.text).join("; ");
+  return [
+    clean(
+      `caller ${c.id} has unresolved policy/boundary ${names}: it may already hold ${
+        summaryOf(extras)
+      }`,
+    ),
+  ];
+}
+
+/** Informational unknowns on the target: they can only add grants. */
+function targetInfo(t: RoleIr): string[] {
+  return t.unresolvedPolicies.map((u) =>
+    clean(`${t.id} has unresolved policy ${u.text} (may add grants)`)
+  );
+}
+
+function assumeFix(c: RoleIr, t: RoleIr, extras: Grant[]): string {
+  return `Scope the sts:AssumeRole Resource of ${c.id} to a role that does not hold ${
+    summaryOf(extras)
+  }, or constrain the trust policy of ${t.id} to a named principal with an sts:ExternalId/aws:PrincipalOrgID condition, or remove the unneeded grant from ${t.id}`;
+}
+
+/** Chain 1: caller C may sts:AssumeRole target T, which trusts C and holds extra grants. */
+function assumeChains(
+  model: Model,
+  eff: Map<RoleIr, Grant[]>,
+): ChainAssessment[] {
+  const out: ChainAssessment[] = [];
+  const action = "sts:AssumeRole";
+  for (const c of model.roles) {
+    const cg = eff.get(c) ?? [];
+    const assumeGrants = cg.filter((g) => actionCovers(g.action, action));
+    if (assumeGrants.length === 0) continue;
+    for (const t of model.roles) {
+      if (t === c) continue;
+      const matched = assumeGrants.filter((g) =>
+        classify(g.res, t, c.file) === "match" &&
+        !deniedOn(c, action, t, c.file).denied
+      );
+      const possible = assumeGrants.filter((g) =>
+        classify(g.res, t, c.file) === "possible"
+      );
+      if (matched.length === 0 && possible.length === 0) continue;
+      if (!boundaryAllows(c, action, t, c.file)) continue;
+      const trust = trustEval(t, c, undefined);
+      if (trust.blocked) continue;
+      if (!trust.admitted && trust.unknownPrincipal === undefined) continue;
+      const extras = extraGrants(eff.get(t) ?? [], cg);
+      if (extras.length === 0) continue;
+      const unresolved: string[] = [];
+      if (matched.length === 0) {
+        unresolved.push(
+          clean(
+            `sts:AssumeRole of ${c.id} may name ${t.id} via ${
+              possibleText(possible[0])
+            }`,
+          ),
+        );
+      }
+      if (!trust.admitted && trust.unknownPrincipal) {
+        unresolved.push(clean(trust.unknownPrincipal));
+      }
+      if (t.boundary?.kind === "unresolved") {
+        unresolved.push(
+          clean(`boundary of ${t.id} is unresolved: ${t.boundary.text}`),
+        );
+      }
+      unresolved.push(...unresolvedOf(c), ...callerUnknowns(c, extras));
+      const hops: ChainHop[] = [];
+      if (matched.length > 0) {
+        hops.push(
+          locHop(
+            `${c.id} may sts:AssumeRole ${t.id}`,
+            locOf(matched[0], callerLoc(c)),
+          ),
+        );
+      }
+      if (trust.admitted && trust.loc) {
+        hops.push(locHop(trust.text, trust.loc));
+      }
+      for (const g of extras) {
+        hops.push(locHop(`${t.id} holds ${g.action} on *`, g.stmt.loc));
+      }
+      const required = matched.length > 0 && trust.admitted &&
+        c.unresolvedPolicies.length === 0 &&
+        c.boundary?.kind !== "unresolved" &&
+        t.boundary?.kind !== "unresolved";
+      unresolved.push(...targetInfo(t));
+      out.push(finish({
+        kind: "assume-role-escalation",
+        status: required ? "chain" : "incomplete",
+        caller: c,
+        target: t.id,
+        hops,
+        boundary: `${t.id} holds ${summaryOf(extras)} on * (${
+          citeOf(extras)
+        }) that ${c.id} does not hold`,
+        intent: intentOf(t, c),
+        conditions: [
+          ...matched.flatMap((g) => g.stmt.conditions),
+          ...trust.conditions,
+        ],
+        unresolved: unresolved.filter((u) => u.length > 0),
+        fix: assumeFix(c, t, extras),
+      }));
+    }
+  }
+  return out;
+}
+
+/** Chain 2: caller C may iam:PassRole target T and start a compute resource that runs as T. */
+const COMPUTE: {
+  svc: string;
+  actions: string[];
+  link: "profile" | "direct";
+}[] = [
+  {
+    svc: "lambda.amazonaws.com",
+    actions: ["lambda:CreateFunction", "lambda:UpdateFunctionConfiguration"],
+    link: "direct",
+  },
+  {
+    svc: "ec2.amazonaws.com",
+    actions: ["ec2:RunInstances", "ec2:AssociateIamInstanceProfile"],
+    link: "profile",
+  },
+  {
+    svc: "ecs-tasks.amazonaws.com",
+    actions: ["ecs:RunTask", "ecs:RegisterTaskDefinition"],
+    link: "direct",
+  },
+];
+
+/** iam:PassedToService conditions that exclude the service remove the hop. */
+function passedTo(st: Statement, svc: string): boolean {
+  return st.passedToService === undefined ||
+    st.passedToService.some((v) => v === "?" || globMatch(v, svc));
+}
+
+/** An in-repo instance profile carries role `t`. */
+function profileLinks(model: Model, t: RoleIr): boolean {
+  return model.profiles.some((p) =>
+    p.role.kind === "ref" && p.role.target === t.id && p.loc.file === t.file
+  );
+}
+
+function passFix(c: RoleIr, t: RoleIr, extras: Grant[]): string {
+  return `Scope iam:PassRole on ${c.id} to the specific lower-privilege role and add an iam:PassedToService condition, or reduce ${t.id}'s grants (${
+    summaryOf(extras)
+  })`;
+}
+
+function passroleChains(
+  model: Model,
+  eff: Map<RoleIr, Grant[]>,
+): ChainAssessment[] {
+  const out: ChainAssessment[] = [];
+  const action = "iam:PassRole";
+  for (const c of model.roles) {
+    const cg = eff.get(c) ?? [];
+    const passGrants = cg.filter((g) => actionCovers(g.action, action));
+    if (passGrants.length === 0) continue;
+    let emitted = false;
+    for (const t of model.roles) {
+      if (t === c) continue;
+      const pMatch = passGrants.filter((g) =>
+        classify(g.res, t, c.file) === "match" &&
+        !deniedOn(c, action, t, c.file).denied
+      );
+      const pPossible = passGrants.filter((g) =>
+        classify(g.res, t, c.file) === "possible"
+      );
+      if (pMatch.length === 0 && pPossible.length === 0) continue;
+      if (!boundaryAllows(c, action, t, c.file)) continue;
+      const extras = extraGrants(eff.get(t) ?? [], cg);
+      if (extras.length === 0) continue;
+      const cands: {
+        svc: (typeof COMPUTE)[number];
+        compute: Grant;
+        pass: Grant;
+        trust: TrustEval;
+      }[] = [];
+      for (const svc of COMPUTE) {
+        const compute = cg.find((g) =>
+          svc.actions.some((a) => actionCovers(g.action, a))
+        );
+        if (!compute) continue;
+        if (svc.link === "profile" && !profileLinks(model, t)) continue;
+        const pass = pMatch.find((g) => passedTo(g.stmt, svc.svc));
+        if (!pass) continue;
+        const trust = trustEval(t, undefined, svc.svc);
+        if (trust.blocked) continue;
+        if (!trust.admitted && trust.unknownPrincipal === undefined) continue;
+        cands.push({ svc, compute, pass, trust });
+      }
+      if (cands.length === 0) continue;
+      emitted = true;
+      const hops: ChainHop[] = [];
+      const unresolved: string[] = [];
+      for (const x of cands) {
+        hops.push(
+          locHop(
+            `${c.id} may iam:PassRole ${t.id} for ${x.svc.svc}`,
+            x.pass.stmt.loc,
+          ),
+        );
+        hops.push(locHop(
+          `${c.id} may ${x.compute.action} so that ${x.svc.svc} runs ${t.id}`,
+          x.compute.stmt.loc,
+        ));
+        if (x.trust.admitted && x.trust.loc) {
+          hops.push(locHop(`${t.id} trusts ${x.svc.svc}`, x.trust.loc));
+        } else if (x.trust.unknownPrincipal) {
+          unresolved.push(clean(x.trust.unknownPrincipal));
+        }
+      }
+      for (const g of extras) {
+        hops.push(locHop(`${t.id} holds ${g.action} on *`, g.stmt.loc));
+      }
+      if (pMatch.length === 0) {
+        unresolved.push(
+          clean(
+            `iam:PassRole of ${c.id} may name ${t.id} via ${
+              possibleText(pPossible[0])
+            }`,
+          ),
+        );
+      }
+      if (t.boundary?.kind === "unresolved") {
+        unresolved.push(
+          clean(`boundary of ${t.id} is unresolved: ${t.boundary.text}`),
+        );
+      }
+      unresolved.push(
+        ...unresolvedOf(c),
+        ...callerUnknowns(c, extras),
+        ...targetInfo(t),
+      );
+      const proven = cands.some((x) => x.trust.admitted);
+      const required = proven && pMatch.length > 0 &&
+        c.unresolvedPolicies.length === 0 &&
+        c.boundary?.kind !== "unresolved" &&
+        t.boundary?.kind !== "unresolved";
+      out.push(finish({
+        kind: "passrole-compute",
+        status: required ? "chain" : "incomplete",
+        caller: c,
+        target: t.id,
+        hops,
+        boundary: `${t.id} holds ${summaryOf(extras)} on * (${
+          citeOf(extras)
+        }) that ${c.id} does not hold`,
+        intent: intentOf(t, c),
+        conditions: [
+          ...cands.flatMap((x) => x.pass.stmt.conditions),
+          ...cands.flatMap((x) => x.trust.conditions),
+        ],
+        unresolved: unresolved.filter((u) => u.length > 0),
+        fix: passFix(c, t, extras),
+      }));
+    }
+    if (emitted) continue;
+    // PassRole on * with a compute API, and no in-repo target qualifies:
+    // roles outside the repository cannot be checked.
+    const star = passGrants.filter((g) => isWildcardRes(g.res));
+    const compute = cg.find((g) =>
+      COMPUTE.some((svc) => svc.actions.some((a) => actionCovers(g.action, a)))
+    );
+    if (star.length > 0 && compute !== undefined) {
+      out.push(finish({
+        kind: "passrole-compute",
+        status: "incomplete",
+        caller: c,
+        target: "*",
+        hops: [
+          locHop(`${c.id} may iam:PassRole on *`, locOf(star[0], callerLoc(c))),
+        ],
+        boundary:
+          `no in-repo role qualifies as the PassRole target for ${c.id}`,
+        intent: intentOf(c),
+        conditions: star.flatMap((g) => g.stmt.conditions),
+        unresolved: [
+          "PassRole on * may reach roles defined outside this repository (not checked)",
+        ],
+        fix:
+          `Scope iam:PassRole on ${c.id} to the specific lower-privilege role and add an iam:PassedToService condition`,
+      }));
+    }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Chain 3: ssm:SendCommand to an instance whose profile role is more privileged */
+/* ------------------------------------------------------------------------ */
+
+/** The run-command document is covered by the statement's resources. */
+function docOk(st: Statement): boolean {
+  return st.resources.some((r) =>
+    r.kind === "literal" && (isWildcardRes(r) ||
+      globMatch(arnTail(r.value), "document/AWS-RunShellScript") ||
+      globMatch(arnTail(r.value), "document/AWS-RunPowerShellScript"))
+  );
+}
+
+/** The role an in-repo instance runs as, or why it cannot be resolved. */
+function profileRoleOf(
+  model: Model,
+  inst: InstanceIr,
+): { role?: RoleIr; unresolved?: string } {
+  const pref = inst.profile;
+  if (pref.kind !== "ref") return { unresolved: valueText(pref) };
+  const profile = model.profiles.find((p) =>
+    p.id === pref.target && p.loc.file === inst.file
+  );
+  if (!profile) {
+    return { unresolved: clean(`profile ${pref.target} not in repo`) };
+  }
+  const rref = profile.role;
+  if (rref.kind !== "ref") return { unresolved: valueText(rref) };
+  const role = model.roles.find((r) =>
+    r.id === rref.target && r.file === inst.file
+  );
+  return role
+    ? { role }
+    : { unresolved: clean(`role ${rref.target} not in repo`) };
+}
+
+function ssmFix(caller: string, target: string, extras: Grant[]): string {
+  return `Scope ssm:SendCommand on ${caller} to the instances it must manage (resource ARNs or an ssm:resourceTag condition) or reduce the instance role ${target}'s grants (${
+    summaryOf(extras)
+  })`;
+}
+
+function ssmChains(model: Model, eff: Map<RoleIr, Grant[]>): ChainAssessment[] {
+  const out: ChainAssessment[] = [];
+  const action = "ssm:SendCommand";
+  for (const c of model.roles) {
+    const cg = eff.get(c) ?? [];
+    const sendGrants = cg.filter((g) => actionCovers(g.action, action));
+    if (sendGrants.length === 0) continue;
+    for (const inst of model.instances) {
+      const target: TargetRef = {
+        kind: "instance",
+        id: inst.id,
+        file: inst.file,
+        tags: inst.tags,
+        tagsVisible: inst.tagsVisible,
+      };
+      const m = sendGrants.filter((g) =>
+        docOk(g.stmt) &&
+        classify(g.res, target, c.file, g.stmt.resourceTags) === "match" &&
+        !deniedOn(c, action, target, c.file, g.stmt.resourceTags).denied
+      );
+      const p = sendGrants.filter((g) =>
+        classify(g.res, target, c.file, g.stmt.resourceTags) === "possible"
+      );
+      if (m.length === 0 && p.length === 0) continue;
+      if (!boundaryAllows(c, action, target, c.file)) continue;
+      const prof = profileRoleOf(model, inst);
+      if (prof.role === undefined) {
+        if (m.length === 0) continue;
+        out.push(finish({
+          kind: "ssm-send-command",
+          status: "incomplete",
+          caller: c,
+          target: inst.id,
+          hops: [
+            locHop(
+              `${c.id} may ssm:SendCommand ${inst.id}`,
+              locOf(m[0], callerLoc(c)),
+            ),
+          ],
+          boundary:
+            `commands on ${inst.id} execute with the credentials of its instance profile role, which is not resolved`,
+          intent: intentOf(c),
+          conditions: m[0]?.stmt.conditions ?? [],
+          unresolved: [
+            clean(
+              `instance profile of ${inst.id} is unresolved: ${
+                prof.unresolved ?? "unknown"
+              }`,
+            ),
+          ],
+          fix: ssmFix(c.id, "the instance role", []),
+        }));
+        continue;
+      }
+      const t = prof.role;
+      const extras = extraGrants(eff.get(t) ?? [], cg);
+      if (extras.length === 0) continue;
+      const unresolved: string[] = [];
+      if (m.length === 0) {
+        unresolved.push(
+          clean(
+            `ssm:SendCommand of ${c.id} may reach ${inst.id} via ${
+              possibleText(p[0])
+            }`,
+          ),
+        );
+      }
+      if (t.boundary?.kind === "unresolved") {
+        unresolved.push(
+          clean(`boundary of ${t.id} is unresolved: ${t.boundary.text}`),
+        );
+      }
+      unresolved.push(
+        ...unresolvedOf(c),
+        ...callerUnknowns(c, extras),
+        ...targetInfo(t),
+      );
+      const hops: ChainHop[] = [];
+      if (m.length > 0) {
+        hops.push(
+          locHop(
+            `${c.id} may ssm:SendCommand ${inst.id}`,
+            locOf(m[0], callerLoc(c)),
+          ),
+        );
+      }
+      hops.push(locHop(
+        `${inst.id} runs with the instance profile role ${t.id}`,
+        { file: inst.file, line: inst.line },
+      ));
+      for (const g of extras) {
+        hops.push(locHop(`${t.id} holds ${g.action} on *`, g.stmt.loc));
+      }
+      const required = m.length > 0 && c.unresolvedPolicies.length === 0 &&
+        c.boundary?.kind !== "unresolved" && t.boundary?.kind !== "unresolved";
+      out.push(finish({
+        kind: "ssm-send-command",
+        status: required ? "chain" : "incomplete",
+        caller: c,
+        target: inst.id,
+        hops,
+        boundary:
+          `commands run on ${inst.id} execute with ${t.id}'s credentials: ${t.id} holds ${
+            summaryOf(extras)
+          } on * (${citeOf(extras)}) that ${c.id} does not hold`,
+        intent: intentOf(t, c),
+        conditions: m.flatMap((g) => g.stmt.conditions),
+        unresolved: unresolved.filter((u) => u.length > 0),
+        fix: ssmFix(c.id, t.id, extras),
+      }));
+    }
+  }
+  return out;
+}
+
+/** All three chain kinds over one model. */
+function evaluateModel(model: Model): ChainAssessment[] {
+  const eff = new Map<RoleIr, Grant[]>();
+  for (const r of model.roles) eff.set(r, effectiveGrants(r));
+  return [
+    ...assumeChains(model, eff),
+    ...passroleChains(model, eff),
+    ...ssmChains(model, eff),
+  ];
+}
+
+/* ------------------------------------------------------------------------ */
+/* Public API                                                                */
+/* ------------------------------------------------------------------------ */
+
+const CFN_MARKER = /AWSTemplateFormatVersion|AWS::IAM::/;
+const TF_MARKER = /aws_iam_|aws_instance|aws_lambda_function/;
+/** Directories never scanned: dependencies, VCS and generated output. */
+const SKIP_DIRS = new Set(["node_modules", "cdk.out", "target", "vendor"]);
+const IAC_FILE = /\.(ya?ml|json|template|tf)$/;
+/** Bounds so a huge checkout cannot stall the run. */
+const MAX_FILES = 500;
+const MAX_BYTES = 1_000_000;
+
+/**
+ * Pure evaluation over in-memory files (`path` is the repo-relative path used
+ * in citations). A `.tf` file is read as Terraform when it carries a Terraform
+ * marker; any other file as CloudFormation when it carries a CloudFormation
+ * marker. Everything else is ignored. `filesRead` counts the files passed in.
+ */
+export function evaluateCloudPermissionChains(
+  files: ReadonlyArray<{ path: string; text: string }>,
+): ChainScanResult {
+  const model: Model = {
+    roles: [],
+    instances: [],
+    profiles: [],
+    notChecked: [],
+    filesRead: 0,
+  };
+  for (const f of files) {
+    model.filesRead++;
+    if (f.path.endsWith(".tf")) {
+      if (TF_MARKER.test(f.text)) addTfFile(model, f.path, f.text);
+    } else if (CFN_MARKER.test(f.text)) {
+      addCfnTemplate(model, f.path, f.text);
+    }
+  }
+  return {
+    assessments: evaluateModel(model),
+    filesRead: model.filesRead,
+    notChecked: model.notChecked,
+  };
+}
+
+/**
+ * Walk a checkout (sorted, skipping dot-directories and generated output) and
+ * evaluate every CloudFormation or Terraform file. Unreadable, oversized or
+ * unparseable files are listed in `notChecked`, never treated as clean.
+ */
+export async function scanCloudPermissionChains(
+  root: string,
+): Promise<ChainScanResult> {
+  const files: { path: string; text: string }[] = [];
+  const notChecked: string[] = [];
+  let candidates = 0;
+  let limitHit = false;
+  async function walk(dir: string, rel: string): Promise<void> {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await Array.fromAsync(Deno.readDir(dir));
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const path = `${dir}/${entry.name}`;
+      const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory) {
+        if (!entry.name.startsWith(".") && !SKIP_DIRS.has(entry.name)) {
+          await walk(path, relPath);
+        }
+        continue;
+      }
+      if (!entry.isFile || !IAC_FILE.test(entry.name)) continue;
+      if (candidates >= MAX_FILES) {
+        limitHit = true;
+        return;
+      }
+      candidates++;
+      try {
+        if ((await Deno.stat(path)).size > MAX_BYTES) {
+          notChecked.push(`${relPath}: over the ${MAX_BYTES}-byte bound`);
+          continue;
+        }
+        files.push({ path: relPath, text: await Deno.readTextFile(path) });
+      } catch {
+        notChecked.push(`${relPath}: unreadable`);
+      }
+    }
+  }
+  await walk(root, "");
+  if (limitHit) {
+    notChecked.push(
+      `${root}: more than ${MAX_FILES} candidate files, the rest not checked`,
+    );
+  }
+  const result = evaluateCloudPermissionChains(files);
+  return {
+    assessments: result.assessments,
+    filesRead: result.filesRead,
+    notChecked: [...notChecked, ...result.notChecked],
+  };
+}
+
+export interface RenderedChains {
+  lines: string[];
+  incompleteLines: string[];
+  ids: string[];
+  omitted: number;
+  notChecked: string[];
+}
+
+/** Repo-derived text for a prompt line: no newlines or backticks, at most 200 characters. */
+function safe(text: string): string {
+  return clean(text, 200);
+}
+
+function hopList(hops: ChainHop[]): string {
+  return hops.map((h, i) =>
+    `hop ${i + 1}: ${safe(h.text)} (\`${safe(h.file)}:${h.line}\`)`
+  ).join(" → ");
+}
+
+function chainLine(id: string, a: ChainAssessment): string {
+  const conditions = a.conditions.length > 0
+    ? a.conditions.map(safe).join("; ")
+    : "none visible";
+  return `\`${id}\` cloud-permission-chain ${a.kind} — ${
+    hopList(a.hops)
+  } — boundary: ${
+    safe(a.boundary)
+  } — conditions: ${conditions} — declared intent: ${
+    safe(a.intent)
+  } — smallest fix: ${safe(a.fix)}`;
+}
+
+function incompleteLine(a: ChainAssessment): string {
+  const proven = a.hops.length > 0 ? hopList(a.hops) : "none";
+  const unresolved = a.unresolved.map(safe).join("; ");
+  return `\`${
+    safe(a.entryFile)
+  }:${a.entryLine}\` cloud-permission-chain ${a.kind} INCOMPLETE EVIDENCE (not a proven exploit, not a clean result) — hops proven: ${proven} — not resolved: ${unresolved}`;
+}
+
+/**
+ * Render chains for the scan prompt. Chains already suppressed or known open
+ * are dropped; at most `max` chain lines are kept, unconditioned chains first,
+ * then by id. Incomplete evidence is always listed (at most `max`). Anything
+ * beyond those limits is counted in `omitted`.
+ */
+export async function renderChainCandidates(
+  result: ChainScanResult,
+  opts: {
+    repo: string;
+    suppressedIds: readonly string[];
+    knownOpenFindingIds: readonly string[];
+    max?: number;
+  },
+): Promise<RenderedChains> {
+  const max = opts.max ?? 5;
+  const suppressed = new Set(opts.suppressedIds);
+  const known = new Set(opts.knownOpenFindingIds);
+  const chains: { id: string; a: ChainAssessment }[] = [];
+  const incompletes: { id: string; a: ChainAssessment }[] = [];
+  for (const a of result.assessments) {
+    const id = await computeFindingId({
+      repo: opts.repo,
+      class: "exploit-chain",
+      file: a.entryFile,
+      snippet: a.signature,
+    });
+    if (a.status === "chain") {
+      if (suppressed.has(id) || known.has(id)) continue;
+      chains.push({ id, a });
+    } else {
+      incompletes.push({ id, a });
+    }
+  }
+  chains.sort((x, y) =>
+    Number(x.a.conditions.length > 0) - Number(y.a.conditions.length > 0) ||
+    x.id.localeCompare(y.id)
+  );
+  incompletes.sort((x, y) => x.id.localeCompare(y.id));
+  const keptChains = chains.slice(0, max);
+  const keptIncompletes = incompletes.slice(0, max);
+  return {
+    lines: keptChains.map((r) => chainLine(r.id, r.a)),
+    incompleteLines: keptIncompletes.map((r) => incompleteLine(r.a)),
+    ids: [...keptChains, ...keptIncompletes].map((r) => r.id),
+    omitted: (chains.length - keptChains.length) +
+      (incompletes.length - keptIncompletes.length),
+    notChecked: [...result.notChecked],
+  };
 }
