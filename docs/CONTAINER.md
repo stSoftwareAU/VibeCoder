@@ -1569,14 +1569,15 @@ build artefacts.
   the build stays on the volume.
 - **The root has a budget (Issues #3178, #4326, #4360).** The layer is
   released at every relaunch, but **within** a launch every byte written there
-  is real host disk. Before a maintenance build, and before each new
-  agent, quality, mutation or discrimination step, the host must have its
-  floor **plus 25 GB of headroom** free where the trim is refused. Short of
-  that, other checkouts' target directories are pruned, largest first,
-  skipping any written to in the last 20 minutes and the building checkout's
-  own incremental cache. If the build is still not covered, the new step
-  is parked when its checkout holds a cargo project; a Deno-only checkout is
-  parked only below the floor (Issue #4413). Once started, active-process
+  is real host disk. Before a maintenance build, the host must have its floor
+  **plus 25 GB of headroom** free where the trim is refused. Before each new
+  agent, quality, mutation or discrimination step, the same holds in a
+  checkout that holds a cargo project; a checkout with no cargo project is
+  held to the floor only, and nothing is pruned for its step (Issue #4413).
+  Short of the headroom, other checkouts' target directories are pruned,
+  largest first, skipping any written to in the last 20 minutes and the
+  building checkout's own incremental cache. If the build is still not covered,
+  the new step is parked. Once started, active-process
   polling enforces the host floor;
   it does not demand another 25 GB while the admitted work consumes its
   headroom (Issue #4390). A cargo-only milestone tree can still land that cycle
