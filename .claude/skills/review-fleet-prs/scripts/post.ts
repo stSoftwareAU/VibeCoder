@@ -69,6 +69,7 @@ import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
 import { type BranchUpdateResult, updateBranchOnce } from "./branch_update.ts";
 import { postRunInfo, recordPosted } from "./review_cost.ts";
 import { releaseClaims } from "./claim.ts";
+import { retryWithBackoff } from "../../../../worker/deno/lib/retry.ts";
 
 interface Input {
   pr: {
@@ -184,48 +185,60 @@ export async function fileUnrelatedIssues(
       }
     }
     try {
-      const open: FiledIssue[] = JSON.parse(
-        await gh([
-          "issue",
-          "list",
-          "-R",
-          pr.repo,
-          "--state",
-          "open",
-          "--search",
-          `${issue.title} in:title`,
-          "--json",
-          "number,url,title",
-        ]),
-      );
-      const existing = open.find((o) => sameIssueTitle(o.title, issue.title));
-      if (existing) {
-        filed.push(existing);
-        continue;
-      }
-      const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
-      await Deno.writeTextFile(bodyFile, unrelatedIssueBody(issue, pr));
-      const url = await gh([
-        "issue",
-        "create",
-        "-R",
-        pr.repo,
-        "--title",
-        issue.title,
-        "--body-file",
-        bodyFile,
-      ]);
-      await Deno.remove(bodyFile).catch(() => {});
-      filed.push({
-        number: Number(url.split("/").pop()),
-        url,
-        title: issue.title,
-      });
+      // A transient GitHub failure is retried from the search, so a create
+      // that landed despite its error is linked rather than filed twice.
+      filed.push(await retryWithBackoff(() => findOrFileIssue(pr, issue, gh)));
     } catch (e) {
       console.error(`could not file "${issue.title}": ${(e as Error).message}`);
     }
   }
   return filed;
+}
+
+/** The open issue with the finding's title, else a new one filed for it. */
+async function findOrFileIssue(
+  pr: Pick<Input["pr"], "repo" | "number" | "url">,
+  issue: UnrelatedIssue,
+  gh: (args: string[]) => Promise<string>,
+): Promise<FiledIssue> {
+  const open: FiledIssue[] = JSON.parse(
+    await gh([
+      "issue",
+      "list",
+      "-R",
+      pr.repo,
+      "--state",
+      "open",
+      "--search",
+      `${issue.title} in:title`,
+      "--json",
+      "number,url,title",
+    ]),
+  );
+  const existing = open.find((o) => sameIssueTitle(o.title, issue.title));
+  if (existing) return existing;
+  const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
+  await Deno.writeTextFile(bodyFile, unrelatedIssueBody(issue, pr));
+  let url: string;
+  try {
+    url = await gh([
+      "issue",
+      "create",
+      "-R",
+      pr.repo,
+      "--title",
+      issue.title,
+      "--body-file",
+      bodyFile,
+    ]);
+  } finally {
+    await Deno.remove(bodyFile).catch(() => {});
+  }
+  return {
+    number: Number(url.split("/").pop()),
+    url,
+    title: issue.title,
+  };
 }
 
 /**
