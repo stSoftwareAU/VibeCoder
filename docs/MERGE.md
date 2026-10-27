@@ -250,7 +250,8 @@ non-fatal warning.
 Setup respects a setup-time-only rate-limit budget — the metadata reads, a small
 number of ruleset/check-name reads, the direct-push detection reads (three, plus
 one per sampled commit lacking a PR marker;), and at most **one** ruleset write
-or delete per repo — and never runs in the per-tick main loop. A repo already
+or delete per repo, plus the merge-queue probe's create and delete where repository
+metadata cannot settle availability — and never runs in the per-tick main loop. A repo already
 covered by someone else's ruleset short-circuits before the direct-push
 detection and the check-name discovery.
 
@@ -277,7 +278,11 @@ is conclusive, and by a probe where it is not
 | Repository metadata unreadable                          | probe decides | probe      |
 
 The probe creates a **disabled** ruleset named `Vibe Coder merge queue probe`
-carrying a `merge_queue` rule, then deletes it straight away. GitHub's
+carrying a `merge_queue` rule, then deletes it straight away. Only a setup run
+creates it. The read-only `audit-default-branch-rulesets` sweep never does: it
+plans with `readOnly` set (`branch_protection_sync.ts`, `planBranchProtectionForRepo`),
+so an inconclusive answer is reported as `unverified`. A setup run always
+attempts the delete straight after a successful create. GitHub's
 `422 Invalid rule 'merge_queue'` means unavailable. Any other create failure, or
 a probe that cannot be deleted, is `unknown`; a leftover probe is named in the
 output for deletion by hand. `unknown` is never treated as available.
@@ -295,14 +300,14 @@ The decision is shown below.
 
 ```mermaid
 flowchart TD
-    A[Setup run: default-branch ruleset] --> B{Queue availability}
-    B -- unavailable --> X["unavailable<br/>falls back: strict kept, no queue"]
-    B -- unknown --> U["unverified<br/>nothing changed"]
-    B -- available --> C{Topic no-merge-queue?}
-    C -- yes --> O["opted-out<br/>falls back: strict kept, no queue"]
-    C -- unreadable --> U
-    C -- no --> D{Every required check's<br/>workflow has merge_group?}
-    D -- missing --> M["missing-merge-group<br/>falls back: strict kept, no queue"]
+    A[Setup run: default-branch ruleset] --> B{Topic no-merge-queue?}
+    B -- yes --> O["opted-out<br/>falls back: strict on, no queue"]
+    B -- unreadable --> U["unverified<br/>a live queue is kept, none added"]
+    B -- no --> C{Queue availability}
+    C -- unavailable --> X["unavailable<br/>falls back: strict on, no queue"]
+    C -- unknown --> U
+    C -- available --> D{Every required check's<br/>workflow has merge_group?}
+    D -- missing --> M["missing-merge-group<br/>falls back: strict on, no queue"]
     D -- unknown --> U
     D -- ok --> E["enabled<br/>merge_queue rule added;<br/>strict set to false"]
 ```
@@ -317,8 +322,12 @@ The verdicts are:
 | `missing-merge-group` | Falls back: no queue, strict up-to-date kept                                         |
 | `unverified`         | Nothing changes: an existing queue is never removed on an unverified read            |
 
-A definitive refusal removes a queue the worker wrote and restores
-`strict_required_status_checks_policy: true`. A queue rule a human tuned is kept.
+A definitive refusal writes no queue, so it removes a live queue from the
+worker's ruleset, including one a human tuned there, and strict goes back to
+`true`. An unverified read keeps a live queue and adds none. Only an `enabled`
+decision keeps a human-tuned queue, and then only its parameters are kept
+(`effectiveMergeQueue` and `repo_rulesets.ts`, where
+`strict_required_status_checks_policy` is `mergeQueue === undefined`).
 
 **Falling back** leaves the worker on the behaviour it has without a queue: a
 behind PR is updated, and the direct-merge gate refuses while it is behind. The
@@ -342,6 +351,15 @@ the auto-merge sweep; a conflicting PR still is
 ([`pr_branch_update.ts`](../worker/deno/lib/pr_branch_update.ts),
 [`auto_merge_sweep.ts`](../worker/deno/lib/auto_merge_sweep.ts)). The queue tests
 the PR against its future head, and lands it once the checks pass there.
+
+**A queue removal is a red check, not a re-run.** When the queue removes a PR
+at its current head, the CI-fix lane is handed that removal as a failed check
+named `merge queue`, with the synthetic id `merge-queue-<first 12 characters of
+the head sha>` ([`merge_queue_check_id.ts`](../worker/deno/lib/merge_queue_check_id.ts)).
+Nothing is looked up or re-run under that id, and a spent retry budget is not
+re-run. The PR is not re-armed (`merge-queue-removed`) until a new head arrives,
+and the direct-merge fallback never lands it on a queued base. See
+[ci-fix.md](workflows/ci-fix.md) and [pr-feedback.md](workflows/pr-feedback.md).
 
 **Non-default branches are unchanged.** The direct-merge queue check runs only
 for a default-branch target

@@ -825,6 +825,12 @@ intervene.
   conflicting PR on such a base still gets the update. Not when a reviewer has
   requested changes (Issue #2702): that PR cannot merge anyway, so it gets
   neither the update nor a merge attempt, and the sweep logs why at info.
+- **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
+  current head is not armed until a new head arrives, and a queued base is
+  never merged directly (`merge-queue-removed`,
+  [`pr_auto_merge.ts`](../../worker/deno/lib/pr_auto_merge.ts)). The CI-fix lane
+  is handed the removal as a failed `merge queue` check instead
+  ([ci-fix.md](ci-fix.md#merge-queue-removals-issue-4424)).
 
 ## 🛡️ The dual-layer pre-merge gate
 

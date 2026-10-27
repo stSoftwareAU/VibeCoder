@@ -149,7 +149,7 @@ The worker tracks retries per check run ID using state files in the CI check sta
 - **State files:** `${CI_CHECK_STATE_DIR}/${safe_repo}_${check_id}.retries`
 - **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan and the fix** (Issue #552). The old relative default resolved against the worker's working directory — the read-only checkout in container mode — so the scan read retry counters from a store nothing wrote to and the cap was never enforced. That is why semgrep failures waited for somebody to ask for a fix by hand.
 - **Maximum retries:** 3 (configurable via `CI_CHECK_MAX_RETRIES`)
-- **On max retries exceeded:** The worker re-runs the failed jobs of that check run (`gh run rerun <run-id> --failed`) and posts nothing (Issue #4304). The fresh run has a fresh retry budget and comes back to the lane on the next scan; the fleet-wide attempt cap below, which closes the PR and redoes its issue, bounds the whole loop.
+- **On max retries exceeded:** For a merge-queue removal nothing is re-run, because no Actions run stands behind it ([Merge-queue removals](#merge-queue-removals-issue-4424)). Otherwise the worker re-runs the failed jobs of that check run (`gh run rerun <run-id> --failed`) and posts nothing (Issue #4304). The fresh run has a fresh retry budget and comes back to the lane on the next scan; the fleet-wide attempt cap below, which closes the PR and redoes its issue, bounds the whole loop.
 
 ### Fleet-wide attempt cap and comment dedup (Issue #1879)
 
@@ -177,6 +177,17 @@ flowchart LR
     M -->|"else"| R["run agent → reply<br/>+ attempt marker<br/>(edit in place on repeat)"]
     R -->|"no change pushed"| X["re-run the<br/>failed jobs"]
 ```
+
+### Merge-queue removals (Issue #4424)
+
+A PR that a GitHub merge queue removes at its current head (a failed group check, or a conflict) reaches this lane as a failed check named `merge queue`. The removal reason is its annotation, so the fix agent sees why the queue refused the PR.
+
+- **Read in the scan, once per PR.** `findFailedCiChecks` reads the PR's most recent `RemovedFromMergeQueueEvent` with one GraphQL query for each open PR whose base is behind a merge queue, on every scan (`readQueueRemoval` in [`merge_queue_removal.ts`](../../worker/deno/lib/merge_queue_removal.ts), called from `readScanQueueRemoval` in [`pr_maintenance.ts`](../../worker/deno/lib/pr_maintenance.ts)). Whether a base is queued is asked once per scan and memoised for ten minutes ([`merge_queue_runtime.ts`](../../worker/deno/lib/merge_queue_runtime.ts)). A PR on an unqueued base gets no removal query; the base's queue state is one rules read per base per scan.
+- **Only the current head counts.** A removal that names the commit the queue built applies only to that commit. Without one, it applies only when it was recorded at or after the head's committed date, so a later push ends it (`queueRemovalAppliesToHead` in [`merge_queue_removal.ts`](../../worker/deno/lib/merge_queue_removal.ts)).
+- **Its own check id.** The id is `merge-queue-<first 12 characters of the head sha>` ([`merge_queue_check_id.ts`](../../worker/deno/lib/merge_queue_check_id.ts)), so a fresh head gets a fresh id and its own retry budget.
+- **No GitHub job is asked about it.** No code path asks the Actions job, log, check-run annotation or rerun endpoints about a merge-queue id. The rerun and log-excerpt paths in [`pr_ci_processor.ts`](../../worker/deno/lib/pr_ci_processor.ts) check `isMergeQueueCheckId` first. The annotation is the removal reason, carried on the check itself.
+- **A spent budget is not re-run.** Once the check's retries reach `maxRetries`, the scan logs that it is not re-running it and hands the lane no failed check for it (`pr_maintenance.ts`, the merge-queue branch of `findFailedCiChecks`). The fleet-wide attempt cap above bounds the loop when the head keeps changing.
+- **Not re-armed until a new head.** While the removal applies to the current head, auto-merge arming returns `Deferred` with `merge-queue-removed` ([`pr_auto_merge.ts`](../../worker/deno/lib/pr_auto_merge.ts)). A new head ends the removal's application, and arming resumes. On a queued base the direct-merge fallback never lands the PR anyway (`blocked: merge_queue`).
 
 ## ⏱️ Timeout handling
 

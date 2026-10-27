@@ -134,7 +134,10 @@ The command then runs seven steps:
    idempotent `syncBranchProtectionForRepo` helper (reads + at most one ruleset
    write; classic branch protection is never written —). The same step also
    decides the merge queue, where GitHub allows one
-   ([MERGE.md → Merge queue](MERGE.md#merge-queue)). Enabling it needs each
+   ([MERGE.md → Merge queue](MERGE.md#merge-queue)). Settling availability may
+   create and then delete a disabled probe ruleset (`Vibe Coder merge queue
+   probe`); the read-only `audit-default-branch-rulesets` sweep never creates
+   one. Enabling it needs each
    required check's workflow to run on `merge_group` as well as `pull_request`:
 
    ```yaml

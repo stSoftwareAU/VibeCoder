@@ -1493,6 +1493,15 @@ export async function enableAutoMerge(
           message:
             `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
         };
+      } else if (merge.value.blocked === "merge_queue") {
+        // Issue #4424: the base is behind a merge queue, which lands its PRs.
+        // The direct merge refuses to bypass it, so the PR is left for it.
+        return {
+          result: AutoMergeResult.Deferred,
+          directMergeDeferred: true,
+          message:
+            `PR #${prNumber} left for the merge queue on '${baseRefName}': the base's merge queue lands its PRs, and the worker's direct merge never bypasses it (Issue #4424)`,
+        };
       } else {
         return {
           result: AutoMergeResult.Deferred,
@@ -1676,6 +1685,15 @@ export async function enableAutoMerge(
             result: AutoMergeResult.MergedDirectly,
             message:
               `PR #${prNumber} merged directly: auto-merge is not enabled on ${repo}, so the gated direct merge landed it (Issue #4304)`,
+          };
+        }
+        // Issue #4424: a queued base is landed by its merge queue, which the
+        // direct merge never bypasses, so the PR is left for the queue.
+        if (merge.ok && merge.value.blocked === "merge_queue") {
+          return {
+            result: AutoMergeResult.NotEnabledOnRepo,
+            message:
+              `Auto-merge is not enabled on ${repo} — PR #${prNumber} is on a base whose merge queue lands its PRs, and the worker's direct merge never bypasses it, so it is left for the merge queue (Issue #4424)`,
           };
         }
         return {

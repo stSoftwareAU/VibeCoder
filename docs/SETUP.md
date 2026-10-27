@@ -165,7 +165,10 @@ background service is offered, where files land — is covered in
      prints one line per repository: the queue is enabled, or the reason it
      fell back (opted out with the `no-merge-queue` topic, unavailable, a
      required check that cannot report on `merge_group`, or unverified). See
-     [MERGE.md → Merge queue](MERGE.md#merge-queue). Enabling it needs each
+     [MERGE.md → Merge queue](MERGE.md#merge-queue). Settling availability may
+     create and then delete a disabled probe ruleset (`Vibe Coder merge queue
+     probe`); the read-only `audit-default-branch-rulesets` sweep never creates
+     one. Enabling it needs each
      required check's workflow to run on `merge_group` as well as on
      `pull_request`:
 

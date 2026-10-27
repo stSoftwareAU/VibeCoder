@@ -16,6 +16,7 @@ import {
   enableAutoMerge,
   type EnableAutoMergeResult,
 } from "../lib/pr_auto_merge.ts";
+import type { MergeBlockedReason } from "../lib/direct_merge.ts";
 import { _resetMergeQueueMemo } from "../lib/merge_queue_runtime.ts";
 
 const REPO = "org/repo";
@@ -57,6 +58,10 @@ interface ArmOptions {
   readError?: boolean;
   /** The base enforces required checks (GitHub's `--auto` path). */
   protectedBase?: boolean;
+  /** The `gh pr merge --auto` call is refused with this message. */
+  autoMergeError?: string;
+  /** What the gated direct merge returns (default: merged). */
+  directMerge?: { merged: boolean; blocked?: MergeBlockedReason };
 }
 
 interface ArmRun {
@@ -92,6 +97,9 @@ async function arm(options: ArmOptions): Promise<ArmRun> {
       ));
     }
     if (key.includes("/comments")) return Promise.resolve("[]");
+    if (key.includes("pr merge") && options.autoMergeError !== undefined) {
+      return Promise.reject(new Error(options.autoMergeError));
+    }
     if (key.includes("pr view")) return Promise.resolve("{}");
     return Promise.resolve("");
   };
@@ -107,7 +115,10 @@ async function arm(options: ArmOptions): Promise<ArmRun> {
     isBaseProtectedFn: () => Promise.resolve(options.protectedBase ?? true),
     directMergeFn: () => {
       directMergeCalls++;
-      return Promise.resolve({ ok: true, value: { merged: true } });
+      return Promise.resolve({
+        ok: true,
+        value: options.directMerge ?? { merged: true },
+      });
     },
     log: (message: string) => void logs.push(message),
   });
@@ -187,4 +198,36 @@ Deno.test("enableAutoMerge - a failed removal read is logged and arming proceeds
   assert(logged !== undefined, "the read error must be logged");
   assertStringIncludes(logged, "org/repo#42");
   assertStringIncludes(logged, "HTTP 502 Bad Gateway");
+});
+
+Deno.test("enableAutoMerge - a gated direct merge the merge queue holds is left for the queue, never called unprotected (Issue #4424)", async () => {
+  const run = await arm({
+    queued: true,
+    protectedBase: false,
+    directMerge: { merged: false, blocked: "merge_queue" },
+  });
+
+  assertEquals(run.result.result, AutoMergeResult.Deferred);
+  assertEquals(run.result.directMergeDeferred, true);
+  assertEquals(run.directMergeCalls, 1);
+  assertEquals(mergeCalls(run.calls), []);
+  assertEquals(run.result.message.includes("unprotected"), false);
+  assertStringIncludes(run.result.message, "merge queue");
+  assertStringIncludes(run.result.message, "never bypasses it");
+  assertStringIncludes(run.result.message, "left for the merge queue");
+});
+
+Deno.test("enableAutoMerge - auto-merge off on the repo, direct merge held by the merge queue: left for the queue, not 'did not merge it yet' (Issue #4424)", async () => {
+  const run = await arm({
+    queued: true,
+    protectedBase: true,
+    autoMergeError: "auto-merge is not enabled on this repository",
+    directMerge: { merged: false, blocked: "merge_queue" },
+  });
+
+  assertEquals(run.result.result, AutoMergeResult.NotEnabledOnRepo);
+  assertEquals(run.directMergeCalls, 1);
+  assertEquals(run.result.message.includes("(merge_queue)"), false);
+  assertEquals(run.result.message.includes("did not merge it yet"), false);
+  assertStringIncludes(run.result.message, "left for the merge queue");
 });
