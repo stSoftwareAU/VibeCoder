@@ -38,8 +38,8 @@ reported. The entry adds no scheduler, blanket quota or approval step.
   [Review checklists](review-checklists.md).
 - The best-practices scan uses the same guidance for a narrow
   behavioural-coverage check. From Issue #4417 that check also recognises
-  retry and restart paths that alter credentials, mounts or execution
-  identity. See [Best-practices scan](BEST-PRACTICES-SCAN.md).
+  a retry, restart or fallback line near a credential, mount or identity
+  alteration. See [Best-practices scan](BEST-PRACTICES-SCAN.md).
 
 The worker's own copy is the trusted revision. A repository that does not
 already carry the bundle is reviewed against that copy. A pull request that

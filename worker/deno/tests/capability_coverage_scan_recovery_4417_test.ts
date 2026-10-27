@@ -1,8 +1,8 @@
 /**
  * Recovery-boundary coverage scan (Issue #4417).
  *
- * A retry, restart or fallback that alters credentials, mounts or execution
- * identity must keep the configured authority, and a test must exercise that
+ * A retry, restart or fallback line near a credential, mount or identity
+ * alteration must keep the configured authority, and a test must exercise that
  * boundary. A missing test is a best-practices finding, not an exploit.
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -19,16 +19,14 @@ const REFRESH_PATH = "src/session/refresh.ts";
 
 const WIDENING_RESTART =
   `export async function restartWorker(config: { credential: string; mounts: string[] }) {
-  // after a denial, restart with a broader credential and an extra mount
   const broader = { credential: "org-admin-token", mounts: [...config.mounts, "/"] };
-  return launch(["--volume", "/:/host"], broader);
+  return retry(() => launch(["--volume", "/:/host"], broader));
 }
 `;
 
 const SAME_SCOPE_REFRESH =
   `export async function refreshSession(session: { token: string; scope: string }) {
-  // after a denial, retry the token refresh with the same scope
-  const next = await reissue(session.token, session.scope);
+  const next = await retry(() => reissue(session.token, session.scope));
   return { ...session, token: next };
 }
 `;
@@ -61,7 +59,68 @@ const REFRESH_TEST_ONE_TERM =
 Deno.test("refresh after a denial", () => {});
 `;
 
+const REFRESH_TEST_GENERIC =
+  `import { refreshSession } from "../src/session/refresh.ts";
+Deno.test("retry, restart and recover are wired", () => {});
+Deno.test("preserves the response body and succeed on the happy path", () => {});
+`;
+
+const REFRESH_TEST_BARE_PRESERVES =
+  `import { refreshSession } from "../src/session/refresh.ts";
+Deno.test("after a denial, the refresh preserves the response body", () => {});
+Deno.test("the permitted operation succeeds", () => {});
+`;
+
+const REFRESH_TEST_PRESERVES_CONFIGURED =
+  `import { refreshSession } from "../src/session/refresh.ts";
+Deno.test("after a denial, the refresh preserves the configured scope", () => {});
+Deno.test("the permitted operation succeeds", () => {});
+`;
+
 const REFRESH_TEST_PATH = "tests/session_refresh_test.ts";
+
+const COMMENT_RETRY_MOUNT = [
+  "// retry the launch after a denial, keeping the same scope",
+  "export function launchArgs(base: string[]) {",
+  '  return launch(["--mount", base[0]]);',
+  "}",
+].join("\n");
+
+const TRAILING_COMMENT_RETRY_MOUNT = [
+  "export function launchArgs(base: string[]) {",
+  '  return launch(["--mount", base[0]]); // retry on denial',
+  "}",
+].join("\n");
+
+const COMMENT_ONLY_AUTHORITY = [
+  "export async function retryOnce(run: () => Promise<void>) {",
+  "  // the token and the mount are not touched here",
+  "  await retry(run);",
+  "}",
+].join("\n");
+
+const AUTH_HEADER_RETRY = [
+  "export async function fetchAuthorised(url: string, token: string) {",
+  "  const res = await retry(() => fetch(url, { headers: { Authorization: `Bearer ${token}` } }));",
+  "  return res;",
+  "}",
+].join("\n");
+
+const SWAP_ON_RETRY = [
+  "export async function retryWithBroaderCredential(credential: string, broader: string) {",
+  "  return retry(() => swap(credential, broader));",
+  "}",
+].join("\n");
+
+const MOUNT_ON_RETRY = [
+  "export async function retryWithExtraMount() {",
+  '  return retry(() => launch(["--mount", "/data"]));',
+  "}",
+].join("\n");
+
+function filler(count: number): string[] {
+  return Array.from({ length: count }, (_, i) => `const filler${i} = ${i};`);
+}
 
 function recoveryFindingsOf(
   findings: readonly { capability: string }[],
@@ -159,7 +218,35 @@ Deno.test("a test with one term alone keeps the recovery finding", async () => {
   assertEquals(finding.testsInspected, [REFRESH_TEST_PATH]);
 });
 
-Deno.test("an authorised recovery-scope-change marker turns the recovery check off", async () => {
+Deno.test("a generic retry, restart or recover test with no failure injection is still a finding", async () => {
+  const scan = await scanCapabilityCoverageFiles([
+    { path: REFRESH_PATH, text: SAME_SCOPE_REFRESH },
+    { path: REFRESH_TEST_PATH, text: REFRESH_TEST_GENERIC },
+  ], { testsExecuted: true });
+  const finding = scan.findings.find((f) => f.capability === RECOVERY_KIND);
+  assert(finding);
+  assertEquals(finding.testsInspected, [REFRESH_TEST_PATH]);
+  assertEquals(scan.pass, false);
+});
+
+Deno.test("a bare preserves without the configured, same or existing object is not non-widening", async () => {
+  const scan = await scanCapabilityCoverageFiles([
+    { path: REFRESH_PATH, text: SAME_SCOPE_REFRESH },
+    { path: REFRESH_TEST_PATH, text: REFRESH_TEST_BARE_PRESERVES },
+  ], { testsExecuted: true });
+  assertEquals(recoveryFindingsOf(scan.findings).length, 1);
+  assertEquals(scan.pass, false);
+});
+
+Deno.test("preserves the configured scope satisfies the non-widening term", async () => {
+  const scan = await scanCapabilityCoverageFiles([
+    { path: REFRESH_PATH, text: SAME_SCOPE_REFRESH },
+    { path: REFRESH_TEST_PATH, text: REFRESH_TEST_PRESERVES_CONFIGURED },
+  ]);
+  assertEquals(recoveryFindingsOf(scan.findings), []);
+});
+
+Deno.test("an authorised recovery-scope-change marker on a comment line turns the recovery check off", async () => {
   const lower = await scanCapabilityCoverageFiles([{
     path: RESTART_PATH,
     text:
@@ -175,6 +262,16 @@ Deno.test("an authorised recovery-scope-change marker turns the recovery check o
   }]);
   assertEquals(upper.status, "none");
   assertEquals(upper.findings, []);
+});
+
+Deno.test("an authorised marker inside a string literal does not exempt the file", async () => {
+  const scan = await scanCapabilityCoverageFiles([{
+    path: RESTART_PATH,
+    text:
+      `const note = "// recovery-scope-change: authorised, the operator widened the mounts";\n${WIDENING_RESTART}`,
+  }]);
+  assertEquals(scan.status, "findings");
+  assertEquals(recoveryFindingsOf(scan.findings).length, 1);
 });
 
 Deno.test("an unrelated HTTP backoff retry is not applicable", async () => {
@@ -195,14 +292,51 @@ Deno.test("an unrelated HTTP backoff retry is not applicable", async () => {
   assertEquals(scan.findings, []);
 });
 
+Deno.test("a retry that sends an Authorization token header is not applicable", async () => {
+  assertEquals(altersAuthorityOnRecovery(AUTH_HEADER_RETRY), false);
+  const scan = await scanCapabilityCoverageFiles([{
+    path: "src/http/authorised_fetch.ts",
+    text: AUTH_HEADER_RETRY,
+  }]);
+  assertEquals(recoveryFindingsOf(scan.findings), []);
+});
+
+Deno.test("a retry that swaps in a broader credential is applicable", async () => {
+  assert(altersAuthorityOnRecovery(SWAP_ON_RETRY));
+  const scan = await scanCapabilityCoverageFiles([{
+    path: "src/session/swap.ts",
+    text: SWAP_ON_RETRY,
+  }]);
+  assertEquals(recoveryFindingsOf(scan.findings).length, 1);
+});
+
+Deno.test("a retry that adds a --mount flag is applicable without an alteration verb", () => {
+  assert(altersAuthorityOnRecovery(MOUNT_ON_RETRY));
+});
+
+Deno.test("a retry only in a comment near a --mount line is not applicable", async () => {
+  assertEquals(altersAuthorityOnRecovery(COMMENT_RETRY_MOUNT), false);
+  assertEquals(altersAuthorityOnRecovery(TRAILING_COMMENT_RETRY_MOUNT), false);
+  const scan = await scanCapabilityCoverageFiles([{
+    path: "src/mounts/launch.ts",
+    text: COMMENT_RETRY_MOUNT,
+  }]);
+  assertEquals(scan.status, "none");
+});
+
+Deno.test("an authority word only in a comment is not applicable", async () => {
+  assertEquals(altersAuthorityOnRecovery(COMMENT_ONLY_AUTHORITY), false);
+  const scan = await scanCapabilityCoverageFiles([{
+    path: "src/retry_once.ts",
+    text: COMMENT_ONLY_AUTHORITY,
+  }]);
+  assertEquals(scan.status, "none");
+});
+
 Deno.test("a credential signal more than the window from the retry is not applicable", async () => {
-  const filler = Array.from(
-    { length: 25 },
-    (_, i) => `const filler${i} = ${i};`,
-  );
   const text = [
-    "// on denial, retry the refresh",
-    ...filler,
+    "await retry(refresh);",
+    ...filler(25),
     "const token = await refresh();",
   ].join("\n");
   const scan = await scanCapabilityCoverageFiles([{
@@ -213,15 +347,29 @@ Deno.test("a credential signal more than the window from the retry is not applic
   assertEquals(scan.findings, []);
 });
 
-Deno.test("a credential signal exactly at the window bound still applies", async () => {
-  const filler = Array.from(
-    { length: 24 },
-    (_, i) => `const filler${i} = ${i};`,
-  );
+Deno.test("a credential signal exactly at the window bound still applies", () => {
   const text = [
-    "// on denial, retry the refresh",
-    ...filler,
+    "await retry(refresh);",
+    ...filler(24),
     "const token = await refresh();",
+  ].join("\n");
+  assert(altersAuthorityOnRecovery(text));
+});
+
+Deno.test("an authority line more than the window before the recovery is not applicable", () => {
+  const text = [
+    "const token = await refresh();",
+    ...filler(25),
+    "await retry(run);",
+  ].join("\n");
+  assertEquals(altersAuthorityOnRecovery(text), false);
+});
+
+Deno.test("an authority line exactly at the window bound before the recovery still applies", () => {
+  const text = [
+    "const token = await refresh();",
+    ...filler(24),
+    "await retry(run);",
   ].join("\n");
   assert(altersAuthorityOnRecovery(text));
 });
@@ -292,12 +440,22 @@ export function update(request: { body: { role: string; tenantId: string } }) {
 });
 
 Deno.test("hostile input: the retry signal pattern rejects a 200k run without hanging", () => {
-  const text = `${"x".repeat(200_000)}\ntoken`;
+  const text = `${"x".repeat(200_000)}\nretry`;
   assertEquals(altersAuthorityOnRecovery(text), false);
 });
 
-Deno.test("hostile input: the authority signal pattern rejects a 200k run without hanging", () => {
+Deno.test("hostile input: the authority flag pattern rejects a 200k run without hanging", () => {
   const text = `retry on denial\n${"x".repeat(200_000)}`;
+  assertEquals(altersAuthorityOnRecovery(text), false);
+});
+
+Deno.test("hostile input: the authority noun pattern rejects a 200k run without hanging", () => {
+  const text = `retry on denial\n${"token ".repeat(33_334)}`;
+  assertEquals(altersAuthorityOnRecovery(text), false);
+});
+
+Deno.test("hostile input: the authority verb pattern rejects a 200k run without hanging", () => {
+  const text = `retry on denial\n${"swap ".repeat(40_000)}`;
   assertEquals(altersAuthorityOnRecovery(text), false);
 });
 
@@ -314,7 +472,7 @@ Deno.test("hostile input: the failure-term pattern rejects a 200k run without ha
     {
       path: REFRESH_TEST_PATH,
       text:
-        `import "../src/session/refresh.ts";\nDeno.test("keeps the same scope, the permitted operation succeeds", () => {});\n${
+        `import "../src/session/refresh.ts";\nDeno.test("retry, restart and recover keep the same scope, the permitted operation succeeds", () => {});\n${
           "x".repeat(200_000)
         }`,
     },
@@ -328,7 +486,7 @@ Deno.test("hostile input: the non-widening pattern rejects a 200k run without ha
     {
       path: REFRESH_TEST_PATH,
       text:
-        `import "../src/session/refresh.ts";\nDeno.test("after a denial, the permitted operation succeeds", () => {});\n${
+        `import "../src/session/refresh.ts";\nDeno.test("after a denial, preserves the permitted operation succeeds", () => {});\n${
           "x".repeat(200_000)
         }`,
     },

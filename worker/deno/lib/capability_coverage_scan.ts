@@ -4,8 +4,8 @@
  * A narrow, static check on top of the best-practices scan. It looks for
  * four contracts from the capability guidance: resource or tenant
  * authorisation, sensitive-field updates, redaction at a log or outbound
- * sink, and the recovery boundary (a retry, restart or fallback that alters
- * credentials, mounts or execution identity keeps the configured authority).
+ * sink, and the recovery boundary (a retry, restart or fallback line near a
+ * credential, mount or identity alteration keeps the configured authority).
  * A missing test of that contract is a best-practices finding. It is not
  * proof of an exploit — the security scan owns those.
  *
@@ -122,17 +122,22 @@ function leaksToSink(text: string): boolean {
   ) && /(?:secret|password|apiKey|api_key|token)/.test(text);
 }
 
-/** A line-local window: a recovery signal and an authority signal this many lines apart still count. */
+/** A line-local window: a recovery signal and an authority signal this many lines apart still count, in either order. */
 const RECOVERY_WINDOW_LINES = 25;
 const RECOVERY_SIGNAL =
   /\b(?:retr(?:y|ies|ying)|restart(?:s|ed|ing)?|recover(?:y|ies|ed|ing|s)?|fall[- ]?back|relaunch(?:es|ed|ing)?|reconnect(?:s|ed|ing)?)\b/i;
-const AUTHORITY_SIGNAL =
-  /credential|token|secret[ _-]?refresh|--volume|--mount|\bmounts?\b|--user\b|\buid\b|\bgid\b|--network|runArgs|privileged|\bsudo\b|setuid|allowed[ _-]?(?:repositories|repos|scope)/i;
+/** Launch or identity flags that alter the authority by themselves. */
+const AUTHORITY_FLAG_SIGNAL =
+  /--volume|--mount|--user\b|--network|--privileged|runArgs|setuid|\bsudo\b|\buid\b|\bgid\b/i;
+/** Nouns naming authority. They count only with an alteration verb on the same line. */
+const AUTHORITY_NOUN_SIGNAL =
+  /\bcredentials?\b|\btokens?\b|\bmounts?\b|allowed[ _-]?(?:repositories|repos|scope)/i;
+const AUTHORITY_ALTER_VERB =
+  /swap|rotat|replac|switch|refresh|reload|re-?read|re-?mount|append|push|override|escalat|elevat|widen|broaden|fall(?:s)? ?back to|use(?:s)? (?:a|the) (?:different|other|broader)/i;
 const AUTHORISED_SCOPE_CHANGE = /recovery-scope-change:\s*authorised/i;
-const RECOVERY_FAILURE_TERM =
-  /denied|denial|fail(?:s|ure)?|restart|retry|recover/i;
+const RECOVERY_FAILURE_TERM = /denied|denial|fail(?:s|ure)?|injected/i;
 const RECOVERY_NON_WIDENING_TERM =
-  /no broader|not broaden|not widen|never widen|within the configured|same scope|scope unchanged|does not widen|preserves?/i;
+  /no broader|not broaden|not widen|never widen|within the configured|same scope|scope unchanged|does not widen|preserves? the (?:configured|same|existing)/i;
 const RECOVERY_RESUMPTION_TERM =
   /succeed|resum|completes|permitted operation|runs the worker/i;
 
@@ -141,20 +146,48 @@ function anyLineMatches(text: string, pattern: RegExp): boolean {
   return text.split("\n").some((line) => pattern.test(line));
 }
 
+/** True when a line is a comment: it starts, once indented, with `//`, `/*`, `*` or `#`. */
+function isCommentLine(line: string): boolean {
+  const trimmed = line.trimStart();
+  return trimmed.startsWith("//") || trimmed.startsWith("/*") ||
+    trimmed.startsWith("*") || trimmed.startsWith("#");
+}
+
+/** The code part of a line: a comment line is empty and a trailing ` // ...` is cut. */
+function stripLineComment(line: string): string {
+  if (isCommentLine(line)) return "";
+  const cut = line.indexOf(" // ");
+  return cut === -1 ? line : line.slice(0, cut);
+}
+
+/** An authority line is a launch or identity flag, or a noun with an alteration verb on the same line. */
+function isAuthorityLine(code: string): boolean {
+  if (AUTHORITY_FLAG_SIGNAL.test(code)) return true;
+  return AUTHORITY_NOUN_SIGNAL.test(code) && AUTHORITY_ALTER_VERB.test(code);
+}
+
 /**
- * True when a retry, restart, recovery, fallback or relaunch line sits within
- * {@link RECOVERY_WINDOW_LINES} of a credential, mount or execution-identity
- * alteration. An authorised scope change marker turns the check off. Each
- * line is tested once, so the scan is linear in the text length.
+ * True when a retry, restart, recovery, fallback, relaunch or reconnect line
+ * sits within {@link RECOVERY_WINDOW_LINES} of an authority line, in either
+ * order. An authorised scope change marker on a comment line turns the check
+ * off. Comment lines are not matched. Each line is tested once, so the scan is
+ * linear in the text length.
  */
 export function altersAuthorityOnRecovery(text: string): boolean {
   const lines = text.split("\n");
-  if (lines.some((line) => AUTHORISED_SCOPE_CHANGE.test(line))) return false;
+  if (
+    lines.some((line) =>
+      isCommentLine(line) && AUTHORISED_SCOPE_CHANGE.test(line)
+    )
+  ) {
+    return false;
+  }
   let lastRecovery = -Infinity;
   let lastAuthority = -Infinity;
-  for (const [index, line] of lines.entries()) {
-    const isRecovery = RECOVERY_SIGNAL.test(line);
-    const isAuthority = AUTHORITY_SIGNAL.test(line);
+  for (const [index, raw] of lines.entries()) {
+    const code = stripLineComment(raw);
+    const isRecovery = RECOVERY_SIGNAL.test(code);
+    const isAuthority = isAuthorityLine(code);
     if (isRecovery) {
       if (index - lastAuthority <= RECOVERY_WINDOW_LINES) return true;
       lastRecovery = index;

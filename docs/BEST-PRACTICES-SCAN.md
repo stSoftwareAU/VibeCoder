@@ -160,18 +160,31 @@ matching bucket guide under
 A narrow static check, using the capability guidance, looks at four
 contracts only: resource or tenant authorisation, a sensitive-field
 update, redaction at a log or outbound sink, and the recovery boundary.
-The recovery boundary applies when a retry, restart, recovery,
-fallback or relaunch line sits within 25 lines of a credential, token,
-mount, `--volume` or `--mount`, `--user`, uid or gid, `--network`,
-`runArgs`, privileged or sudo setting, or allowed-repositories scope.
-Its contract is that after a denial, authentication refresh or
+The recovery boundary applies when a retry, restart, recovery, fallback,
+relaunch or reconnect line sits within 25 lines of an authority line, in
+either order. Trigger lines are read as code: a line whose trimmed start is
+`//`, `/*`, `*` or `#` is skipped, and a trailing ` // ...` comment is cut.
+An authority line is either a launch or identity flag on its own, for
+example `--volume`, `--mount`, `--user`, `--network`, `--privileged`,
+`runArgs`, `setuid`, `sudo`, `uid` or `gid`; or a credential, token, mount
+or allowed-repositories (repos or scope) noun with an alteration verb on
+the same line, for example swap, rotate, replace, switch, refresh, reload,
+re-read, re-mount, append, push, override, escalate, elevate, widen,
+broaden, fall back to, or use a different, other or broader one. An
+ordinary authenticated HTTP retry that only sends a token in a header does
+not apply. Its contract is that after a denial, authentication refresh or
 proxy/startup failure, the retry or restart keeps the configured
 repositories, credential scope, mounts and network guarantee (no
 broader), and a permitted operation still succeeds on the recovered
 run. A test counts as covering it only when the related tests together
-name a failure, assert non-widening and show resumption. A file that
-carries the marker `recovery-scope-change: authorised` is exempt. An
-ordinary HTTP retry that touches none of those is not applicable. A
+name a failure (for example denied, denial, fail, failure or injected),
+assert non-widening (for example no broader, not widen, same scope, scope
+unchanged, within the configured set, or preserves the configured, same or
+existing) and show resumption (for example succeed, resume, completes,
+permitted operation or runs the worker). Generic words such as retry,
+restart, recover or succeed do not count as a failure. A file that carries
+the marker `recovery-scope-change: authorised` on a comment line is exempt;
+the same text inside a string literal does not exempt it. A
 gap is a best-practices finding. It cites the production path, the tests
 inspected, and the uncovered contract. It is not proof of an exploit;
 the security scan keeps those. A missing file named security is not

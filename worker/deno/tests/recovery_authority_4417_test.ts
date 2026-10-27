@@ -1,35 +1,51 @@
 /**
  * Recovery never broadens a worker container's authority (Issue #4417).
  *
- * A worker container is launched with a configured authority: the mount set,
- * the credential sub-directories, the environment names, the network, the
- * egress enforcement, the allow-listed hosts and the privilege flags the launch
- * plan carries. A failure, a restart or a successful resumption must never
- * widen that authority. These tests drive the real restart classifier
- * (`nextContainerRestartDecision`) and the real plan builder
- * (`buildContainerLaunchPlan`) through each failure class, then check every
- * retried plan against the ceiling computed from the configured inputs before
- * any failure happened.
+ * A worker launch carries a configured authority: the mounts, the credential
+ * sub-directories, the environment names, the network, the egress enforcement,
+ * the allowed egress hosts and the privilege flags. A failure, a restart or a
+ * successful resumption must not widen it. The tests cover three things, and
+ * say which is which:
  *
- * They also fault-inject widened plans by mutation and assert that the named
- * rule refuses each one, and they exercise the production guards the builder
- * runs on its own argument lists by feeding it inputs that would produce a
- * widened list.
+ * - The real recovery path is the `buildLaunchPlanForCommand` group. That is
+ *   the function the container-launch-plan command runs on every launch,
+ *   including each restart `run.sh` makes. Each failure class injects its real
+ *   side effects into the state the launcher leaves behind (the persisted
+ *   restart state, a launch log, rewritten credential bytes, a removed
+ *   credential directory, an edited configuration file), relaunches, and checks
+ *   the new plan against the plan from before the failure. The launcher's shell
+ *   side is covered by the run.sh tests in `run_sh_launcher_test.ts`, not here.
+ * - The pure plan builder (`buildContainerLaunchPlan`) takes no failure input.
+ *   That is a structural guarantee of its signature: a failure cannot reach it.
+ *   The pure tests here check its output for given configured inputs only.
+ * - The authority check (`withinAuthority`) is test-local. Its violation names
+ *   are this file's own vocabulary, not production refusals. The production
+ *   boundary guards inside `buildContainerLaunchPlan` are exercised only by the
+ *   'production guards' test.
+ *
+ * Repository and operation scope: the plan has no separate repository or
+ * operation field. The checkout mount and the egress allow-hosts are the scope
+ * the check reads, and the configuration file's bytes are hashed across each
+ * failure to show the operator's configured scope did not change.
  *
  * Australian English spelling throughout (behaviour, authorised, etc.).
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
-  AGENT_STATE_VOLUME_NAME,
-  APPROVAL_STATE_VOLUME_NAME,
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
+import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
+import {
   buildContainerLaunchPlan,
   type ContainerLaunchInputs,
   type ContainerLaunchPlan,
   containerTargetPaths,
   parseContainerLaunchPlanText,
   renderContainerLaunchPlan,
-  WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
 import {
   buildMountArguments,
@@ -46,6 +62,8 @@ import {
   type AgentProviderDescriptor,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
+  ENABLED_AGENT_PROVIDERS_ENV,
+  IMAGE_AGENT_PROVIDERS_ENV,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { GH_CREDENTIAL_SUBDIR } from "../lib/credential_preflight.ts";
@@ -62,7 +80,6 @@ import {
   nextContainerRestartDecision,
   persistContainerRestartState,
   resolveContainerRestartConfig,
-  STATE_FILENAME,
 } from "../lib/container_restart_backoff.ts";
 import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
 import {
@@ -72,9 +89,7 @@ import {
   retryAppleEgress,
 } from "../lib/apple_egress_launch.ts";
 import { appleControlFailures } from "../lib/apple_egress_controls.ts";
-
-const TEST_FILE_PATH = new URL(import.meta.url).pathname;
-const REPO_ROOT = TEST_FILE_PATH.replace(/\/worker\/deno\/tests\/[^/]+$/, "");
+import { REPO_ROOT } from "./fixtures/launcher_harness.ts";
 
 /** The repository's real manifest — the source of the in-container layout. */
 const MANIFEST: ContainerManifest = parseContainerManifest(
@@ -88,6 +103,7 @@ const NETWORK = `${CONTAINER}-net`;
 const BUILD_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const NONCE = "0123456789abcdef0123456789abcdef";
 const CLOCK = () => 1_000;
+const CLOCK_MS = 1_700_000_000_000;
 const CONFIG = resolveContainerRestartConfig(CONTAINER_RESTART_DEFAULTS);
 const CREDENTIALS_ROOT = containerTargetPaths(MANIFEST).credentials;
 
@@ -319,9 +335,9 @@ function authorityOf(plan: ContainerLaunchPlan): Authority {
 }
 
 /**
- * Violations of the configured authority. An empty list means `effective`
- * grants nothing the `ceiling` did not. Each violation names the rule that
- * refused it, so a test can assert the specific rule rather than "something".
+ * Violations of the configured authority, by this file's own rule names. An
+ * empty list means `effective` grants nothing the `ceiling` did not. This is
+ * test-local: it is not the production refusal logic.
  *
  * A credential mount is judged by the credential rule and a host mount by the
  * mount rule, so one fault yields one named violation.
@@ -426,8 +442,8 @@ function hostPathsFor(root: string) {
 }
 
 /**
- * The configured inputs for one deployment. Every test builds from this, so
- * the ceiling and the retries are the same configuration by construction.
+ * The configured inputs for one deployment. The pure tests build from this, so
+ * the ceiling and the rebuilt plan are the same configuration by construction.
  */
 function configured(
   root: string,
@@ -448,28 +464,27 @@ function configured(
   };
 }
 
+/**
+ * A throwaway deployment root, run as the host launcher runs: outside a
+ * container image. Provider selection checks the process environment's
+ * installed-provider stamp, and a worker container carries one (this one
+ * installs only claude), so the stamp is cleared for the run and restored after.
+ */
 async function withRoot(
   run: (root: string) => void | Promise<void>,
 ): Promise<void> {
   const root = await Deno.makeTempDir({ prefix: "vibe_recovery_authority_" });
+  const stamp = Deno.env.get(IMAGE_AGENT_PROVIDERS_ENV);
+  Deno.env.delete(IMAGE_AGENT_PROVIDERS_ENV);
   try {
     await run(root);
   } finally {
+    if (stamp !== undefined) Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, stamp);
     await Deno.remove(root, { recursive: true });
   }
 }
 
-/** Writes a provider's credential file. The bytes are a token, which refreshes. */
-async function writeProviderCredential(
-  root: string,
-  subdir: string,
-  bytes: string,
-): Promise<void> {
-  await Deno.mkdir(`${root}/credentials/${subdir}`, { recursive: true });
-  await Deno.writeTextFile(`${root}/credentials/${subdir}/provider.env`, bytes);
-}
-
-/** One launcher outcome through the real classifier. */
+/** One restart-classifier outcome, with the configured restart policy. */
 function step(
   state: ContainerRestartState,
   exitStatus: number,
@@ -510,53 +525,176 @@ function insertBeforeImage(
   return { ...plan, runArgs: [...plan.runArgs.slice(0, -1), ...args, image] };
 }
 
-Deno.test("recovery authority - a denied operation retries within the configured authority (Issue #4417)", async () => {
-  await withRoot(async (root) => {
-    const config = configured(root);
-    const ceiling = authorityOf(buildContainerLaunchPlan(config));
-    const networkUnavailable = isNetworkUnavailableLaunch(DENIAL_LOG);
-    assertEquals(networkUnavailable, false);
+// ---------------------------------------------------------------------------
+// Real recovery path: `buildLaunchPlanForCommand`, run on every launch.
+// ---------------------------------------------------------------------------
 
-    // Failure class (a): exit 1 from the worker run, a denial in the log.
+/** The host state one deployment's launches read and write, rooted in `root`. */
+interface Deployment {
+  /** Environment reader the launch is given. */
+  env: (name: string) => string | undefined;
+  configFile: string;
+  credentialDir: string;
+  workDir: string;
+  logDir: string;
+}
+
+function deploymentAt(root: string): Deployment {
+  const environment: Record<string, string> = {
+    HOME: `${root}/home`,
+    VIBE_CREDENTIAL_DIR: `${root}/credentials`,
+    CONFIG_PATH: `${root}/config.json`,
+    WORK_DIR: `${root}/work`,
+  };
+  return {
+    env: (name) => environment[name],
+    configFile: `${root}/config.json`,
+    credentialDir: `${root}/credentials`,
+    workDir: `${root}/work`,
+    logDir: `${root}/logs`,
+  };
+}
+
+/** The configuration an operator has: both providers enabled, no extra hosts. */
+function deploymentConfig(
+  root: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    agent_provider: CLAUDE_PROVIDER_ID,
+    agent_providers: [CLAUDE_PROVIDER_ID, CODEX_PROVIDER_ID],
+    log_dir: `${root}/logs`,
+    egress_allow_hosts: [],
+    ...extra,
+  };
+}
+
+async function writeConfig(
+  d: Deployment,
+  config: Record<string, unknown>,
+): Promise<void> {
+  await Deno.writeTextFile(d.configFile, JSON.stringify(config, null, 2));
+}
+
+/** Creates the credential directories, work and log directories, and configuration. */
+async function provision(
+  d: Deployment,
+  config: Record<string, unknown>,
+): Promise<void> {
+  for (
+    const sub of [GH_CREDENTIAL_SUBDIR, CLAUDE_PROVIDER_ID, CODEX_PROVIDER_ID]
+  ) {
+    await Deno.mkdir(`${d.credentialDir}/${sub}`, { recursive: true });
+  }
+  await Deno.mkdir(d.workDir, { recursive: true });
+  await Deno.mkdir(d.logDir, { recursive: true });
+  await writeConfig(d, config);
+}
+
+/** A provider's credential file. The bytes are a token, which refreshes. */
+async function writeProviderCredential(
+  d: Deployment,
+  subdir: string,
+  bytes: string,
+): Promise<void> {
+  await Deno.writeTextFile(`${d.credentialDir}/${subdir}/provider.env`, bytes);
+}
+
+/** The launch log the launcher leaves in the configured log directory. */
+async function writeLaunchLog(d: Deployment, text: string): Promise<void> {
+  await Deno.writeTextFile(`${d.logDir}/launch-${CONTAINER}.log`, text);
+}
+
+async function readLaunchLog(d: Deployment): Promise<string> {
+  return await Deno.readTextFile(`${d.logDir}/launch-${CONTAINER}.log`);
+}
+
+/** The restart state the launcher persists into the work directory. */
+async function persistRestartState(
+  d: Deployment,
+  state: ContainerRestartState,
+): Promise<void> {
+  const saved = await persistContainerRestartState(d.workDir, state);
+  assertEquals(saved.ok, true);
+}
+
+/** SHA-256 of a file's bytes, so a test can show a file was or was not changed. */
+async function digestOf(path: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    await Deno.readFile(path),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * One launch, as `run.sh` invokes the command for each attempt. The plan clock
+ * is fixed; the provider selection is read from the process environment, and
+ * the rest from the injected one.
+ */
+function launch(d: Deployment): Promise<ContainerLaunchPlan> {
+  return buildLaunchPlanForCommand(REPO_ROOT, CONTAINER, {
+    env: d.env,
+    now: () => CLOCK_MS,
+    probe: (candidate) =>
+      Promise.resolve({
+        available: true,
+        path: `/usr/bin/${candidate.executable}`,
+      }),
+  });
+}
+
+Deno.test("recovery authority - a denied operation relaunches within the configured authority (Issue #4417)", async () => {
+  await withRoot(async (root) => {
+    const d = deploymentAt(root);
+    await provision(d, deploymentConfig(root));
+    const configBytes = await digestOf(d.configFile);
+    const ceiling = authorityOf(await launch(d));
+
+    // The denial: three exit-1 worker runs, each leaving the policy refusal.
     let state = emptyContainerRestartState(CLOCK);
     for (let i = 0; i < 3; i++) {
-      const decision = step(state, 1, "container_run", networkUnavailable);
+      const decision = step(state, 1, "container_run");
       assertEquals(decision.kind, "failure");
-      assertEquals(decision.phase, "worker_run");
       state = decision.state;
     }
-    assertEquals(state.consecutiveFailures, 3);
+    await persistRestartState(d, state);
+    await writeLaunchLog(d, DENIAL_LOG);
+    assertEquals(
+      (await loadContainerRestartState(d.workDir)).consecutiveFailures,
+      3,
+    );
+    assertEquals(isNetworkUnavailableLaunch(await readLaunchLog(d)), false);
 
-    // The retry is rebuilt from the same configured inputs, and must not widen.
-    const retry = buildContainerLaunchPlan(config);
-    assertLauncherView(retry);
-    assertEquals(withinAuthority(ceiling, authorityOf(retry)), []);
-    assertEquals(authorityOf(retry), ceiling);
-
-    // Ordinary recovery is not denial-only: the run succeeds and the streak clears.
-    const recovered = step(state, 0, null);
-    assertEquals(recovered.kind, "success");
-    assertEquals(recovered.recovered, true);
-    assertEquals(recovered.state.consecutiveFailures, 0);
-    assertEquals(retry.runArgs.at(-1), IMAGE);
+    const relaunched = await launch(d);
+    assertEquals(withinAuthority(ceiling, authorityOf(relaunched)), []);
+    assertEquals(authorityOf(relaunched), ceiling);
+    assertEquals(await digestOf(d.configFile), configBytes);
   });
 });
 
-Deno.test("recovery authority - a transient authentication failure and credential refresh stay within the pool (Issue #4417)", async () => {
+Deno.test("recovery authority - an authentication failure and a credential refresh keep the configured authority (Issue #4417)", async () => {
   await withRoot(async (root) => {
-    const config = configured(root);
-    const ceiling = authorityOf(buildContainerLaunchPlan(config));
+    const d = deploymentAt(root);
+    await provision(d, deploymentConfig(root));
+    const configBytes = await digestOf(d.configFile);
+    const ceiling = authorityOf(await launch(d));
     assertEquals(ceiling.credentialDirs, [
-      "claude",
-      "codex",
+      CLAUDE_PROVIDER_ID,
+      CODEX_PROVIDER_ID,
       GH_CREDENTIAL_SUBDIR,
     ]);
 
-    // Failure class (b): two HTTP 401 failures on the stale claude token.
+    // Two HTTP 401 failures on the stale claude token.
     await writeProviderCredential(
-      root,
-      "claude",
+      d,
+      CLAUDE_PROVIDER_ID,
       "ANTHROPIC_API_KEY=stale-token\n",
+    );
+    const staleDigest = await digestOf(
+      `${d.credentialDir}/${CLAUDE_PROVIDER_ID}/provider.env`,
     );
     let state = emptyContainerRestartState(CLOCK);
     for (let i = 0; i < 2; i++) {
@@ -567,26 +705,201 @@ Deno.test("recovery authority - a transient authentication failure and credentia
         isNetworkUnavailableLaunch(AUTH_LOG),
       );
       assertEquals(decision.kind, "failure");
-      assertEquals(decision.phase, "worker_run");
       state = decision.state;
     }
+    await persistRestartState(d, state);
+    await writeLaunchLog(d, AUTH_LOG);
 
-    // Refresh: the same directory, different bytes.
+    // The refresh: the same credential file, rewritten with fresh bytes.
     await writeProviderCredential(
-      root,
-      "claude",
+      d,
+      CLAUDE_PROVIDER_ID,
       "ANTHROPIC_API_KEY=fresh-token\n",
     );
-    assertEquals(
-      await Deno.readTextFile(`${root}/credentials/claude/provider.env`),
-      "ANTHROPIC_API_KEY=fresh-token\n",
+    assertNotEquals(
+      await digestOf(`${d.credentialDir}/${CLAUDE_PROVIDER_ID}/provider.env`),
+      staleDigest,
     );
-    const refreshed = buildContainerLaunchPlan(config);
-    assertEquals(withinAuthority(ceiling, authorityOf(refreshed)), []);
-    assertEquals(authorityOf(refreshed), ceiling);
-    assertEquals(step(state, 0, null).kind, "success");
 
-    // Rotation: the next launch runs the codex provider from the configured pool.
+    const relaunched = await launch(d);
+    assertEquals(withinAuthority(ceiling, authorityOf(relaunched)), []);
+    assertEquals(authorityOf(relaunched), ceiling);
+    assertEquals(await digestOf(d.configFile), configBytes);
+    assertEquals(step(state, 0, null).kind, "success");
+  });
+});
+
+Deno.test("recovery authority - an egress refusal and a network-unavailable restart keep enforcement and the internal network (Issue #4417)", async () => {
+  await withRoot(async (root) => {
+    const d = deploymentAt(root);
+    await provision(d, deploymentConfig(root));
+    const configBytes = await digestOf(d.configFile);
+    const ceiling = authorityOf(await launch(d));
+    assertEquals(ceiling.egressEnforced, true);
+    assertEquals(ceiling.network, NETWORK);
+
+    // The host egress probe refused the launch.
+    const egress = step(
+      emptyContainerRestartState(CLOCK),
+      HOST_EGRESS_BLOCKED_EXIT_STATUS,
+      "container_egress",
+    );
+    assertEquals(egress.phase, "container_egress");
+    await persistRestartState(d, egress.state);
+
+    // Then GitHub was unreachable for every attempt.
+    await writeLaunchLog(d, NETWORK_LOG);
+    assertEquals(isNetworkUnavailableLaunch(await readLaunchLog(d)), true);
+    const unavailable = step(egress.state, 1, "container_run", true);
+    assertEquals(unavailable.kind, "network_unavailable");
+    assertEquals(unavailable.state.consecutiveFailures, 0);
+    await persistRestartState(d, unavailable.state);
+
+    const relaunched = await launch(d);
+    assertEquals(withinAuthority(ceiling, authorityOf(relaunched)), []);
+    assertEquals(authorityOf(relaunched), ceiling);
+    assertEquals(relaunched.egressEnforced, true);
+    assert(relaunched.networkCreateArgs.includes("--internal"));
+    assert(relaunched.proxyRunArgs.length > 0);
+    assertEquals(await digestOf(d.configFile), configBytes);
+  });
+});
+
+Deno.test("recovery authority - a permitted operation still succeeds after a failure streak (Issue #4417)", async () => {
+  await withRoot(async (root) => {
+    const d = deploymentAt(root);
+    await provision(d, deploymentConfig(root));
+    const ceiling = authorityOf(await launch(d));
+
+    let state = emptyContainerRestartState(CLOCK);
+    for (let i = 0; i < 2; i++) {
+      state = step(state, 1, "container_run").state;
+    }
+    await persistRestartState(d, state);
+
+    // The relaunch is returned, not thrown, and ends with its image.
+    const plan = await launch(d);
+    assertEquals(plan.runArgs.at(-1), plan.image);
+    assertEquals(withinAuthority(ceiling, authorityOf(plan)), []);
+
+    const recovered = step(state, 0, null);
+    assertEquals(recovered.kind, "success");
+    assertEquals(recovered.recovered, true);
+    assertEquals(recovered.state.consecutiveFailures, 0);
+  });
+});
+
+Deno.test("recovery authority - an operator's allow-host edit is flagged against the old ceiling and accepted against the recomputed one (Issue #4417)", async () => {
+  await withRoot(async (root) => {
+    const d = deploymentAt(root);
+    await provision(d, deploymentConfig(root));
+    const oldCeiling = authorityOf(await launch(d));
+
+    // The operator adds a host to the configuration, deliberately.
+    await writeConfig(
+      d,
+      deploymentConfig(root, { egress_allow_hosts: ["logs.example.test"] }),
+    );
+    const edited = await launch(d);
+    assert(authorityOf(edited).allowHosts.includes("logs.example.test"));
+    assertEquals(withinAuthority(oldCeiling, authorityOf(edited)), [
+      "allow-host:added logs.example.test",
+    ]);
+
+    const recomputed = authorityOf(await launch(d));
+    assertEquals(withinAuthority(recomputed, authorityOf(edited)), []);
+  });
+});
+
+Deno.test("recovery authority - a legitimate provider rotation keeps the mounts within the configured pool (Issue #4417)", async () => {
+  await withRoot(async (root) => {
+    const d = deploymentAt(root);
+    // No `agent_providers` key: the environment selects the enabled set, and
+    // the command reads that from the process environment.
+    await provision(d, {
+      agent_provider: CLAUDE_PROVIDER_ID,
+      log_dir: `${root}/logs`,
+      egress_allow_hosts: [],
+    });
+    const configBytes = await digestOf(d.configFile);
+    const saved = Deno.env.get(ENABLED_AGENT_PROVIDERS_ENV);
+    const both = `${CLAUDE_PROVIDER_ID},${CODEX_PROVIDER_ID}`;
+    try {
+      Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, both);
+      const pool = authorityOf(await launch(d));
+      assertEquals(pool.credentialDirs, [
+        CLAUDE_PROVIDER_ID,
+        CODEX_PROVIDER_ID,
+        GH_CREDENTIAL_SUBDIR,
+      ]);
+
+      // Rotation: codex is disabled for the next launch.
+      Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, CLAUDE_PROVIDER_ID);
+      const rotated = authorityOf(await launch(d));
+      assertEquals(rotated.credentialDirs, [
+        CLAUDE_PROVIDER_ID,
+        GH_CREDENTIAL_SUBDIR,
+      ]);
+      assertEquals(
+        rotated.credentialDirs.filter((sub) =>
+          !pool.credentialDirs.includes(sub)
+        ),
+        [],
+      );
+      assertEquals(withinAuthority(pool, rotated), []);
+
+      // Enabled again: the authority is the pool's again, unchanged.
+      Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, both);
+      assertEquals(authorityOf(await launch(d)), pool);
+      assertEquals(await digestOf(d.configFile), configBytes);
+    } finally {
+      if (saved === undefined) {
+        Deno.env.delete(ENABLED_AGENT_PROVIDERS_ENV);
+      } else {
+        Deno.env.set(ENABLED_AGENT_PROVIDERS_ENV, saved);
+      }
+    }
+  });
+});
+
+Deno.test("recovery authority - a credential directory missing after a failure fails the launch closed (Issue #4417)", async () => {
+  await withRoot(async (root) => {
+    const d = deploymentAt(root);
+    await provision(d, deploymentConfig(root));
+    await launch(d);
+
+    let state = emptyContainerRestartState(CLOCK);
+    for (let i = 0; i < 2; i++) {
+      state = step(state, 1, "container_run").state;
+    }
+    await persistRestartState(d, state);
+
+    // The codex credential directory disappears between attempts. The launch
+    // refuses, naming the path. It does not fall back to a different mount set.
+    await Deno.remove(`${d.credentialDir}/${CODEX_PROVIDER_ID}`, {
+      recursive: true,
+    });
+    await assertRejects(
+      () => launch(d),
+      Error,
+      `Cannot launch: ${d.credentialDir}/${CODEX_PROVIDER_ID} does not exist`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure plan builder: no failure input. These check its output for given inputs.
+// ---------------------------------------------------------------------------
+
+Deno.test("recovery authority - a provider rotation to a subset of the configured pool stays within the ceiling (Issue #4417)", async () => {
+  await withRoot((root) => {
+    const ceiling = authorityOf(buildContainerLaunchPlan(configured(root)));
+    assertEquals(ceiling.credentialDirs, [
+      CLAUDE_PROVIDER_ID,
+      CODEX_PROVIDER_ID,
+      GH_CREDENTIAL_SUBDIR,
+    ]);
+
     const rotated = buildContainerLaunchPlan(
       configured(root, {
         agentProviders: [resolveAgentProvider(CODEX_PROVIDER_ID)],
@@ -602,152 +915,53 @@ Deno.test("recovery authority - a transient authentication failure and credentia
   });
 });
 
-Deno.test("recovery authority - an egress failure or network-unavailable restart keeps enforcement and the internal network (Issue #4417)", async () => {
-  await withRoot(async (root) => {
-    const config = configured(root);
-    const ceiling = authorityOf(buildContainerLaunchPlan(config));
-    assertEquals(ceiling.egressEnforced, true);
-    assertEquals(ceiling.network, NETWORK);
+Deno.test("recovery authority - the configured plan keeps egress enforcement, the internal network and the proxy (Issue #4417)", async () => {
+  await withRoot((root) => {
+    const plan = buildContainerLaunchPlan(configured(root));
+    assertEquals(plan.egressEnforced, true);
+    assertEquals(authorityOf(plan).network, NETWORK);
+    assert(plan.networkCreateArgs.includes("--internal"));
+    assert(plan.proxyRunArgs.length > 0);
+    assertEquals(plan.runArgs.at(-1), IMAGE);
+  });
+});
 
-    // Failure class (c), first signal: the host egress probe refused the launch.
-    const egress = step(
-      emptyContainerRestartState(CLOCK),
-      HOST_EGRESS_BLOCKED_EXIT_STATUS,
-      "container_egress",
+Deno.test("recovery authority - an Apple plan claims no egress enforcement and says so (Issue #4417)", async () => {
+  await withRoot((root) => {
+    const plan = buildContainerLaunchPlan(
+      configured(root, { descriptor: descriptorFor("apple-container") }),
     );
-    assertEquals(egress.kind, "failure");
-    assertEquals(egress.phase, "container_egress");
-    assertEquals(egress.escalate, true);
-
-    // Failure class (c), second signal: GitHub unreachable for every attempt.
-    assertEquals(isNetworkUnavailableLaunch(NETWORK_LOG), true);
-    const unavailable = step(egress.state, 1, "container_run", true);
-    assertEquals(unavailable.kind, "network_unavailable");
-    assertEquals(unavailable.state.consecutiveFailures, 0);
-
-    // The retry keeps enforcement, the internal network and the proxy.
-    const retry = buildContainerLaunchPlan(config);
-    assertLauncherView(retry);
-    assertEquals(retry.egressEnforced, true);
-    assertEquals(retry.networkCreateArgs.includes("--internal"), true);
-    assert(retry.proxyRunArgs.length > 0);
-    assertEquals(withinAuthority(ceiling, authorityOf(retry)), []);
-    assertEquals(authorityOf(retry), ceiling);
-    assertEquals(step(unavailable.state, 0, null).kind, "success");
-    assertEquals(retry.runArgs.at(-1), IMAGE);
+    assertEquals(plan.egressEnforced, false);
+    assert(plan.runArgs.includes(`${EGRESS_ENFORCED_ENV}=false`));
+    assert(!plan.runArgs.includes(`${EGRESS_ENFORCED_ENV}=true`));
   });
 });
 
-Deno.test("recovery authority - an Apple egress failure keeps the explicit choice and claims no enforcement (Issue #4417)", async () => {
-  await withRoot(async (root) => {
-    const config = configured(root, {
-      descriptor: descriptorFor("apple-container"),
-    });
-    const ceiling = authorityOf(buildContainerLaunchPlan(config));
-    assertEquals(ceiling.egressEnforced, false);
-
-    const egress = step(
-      emptyContainerRestartState(CLOCK),
-      HOST_EGRESS_BLOCKED_EXIT_STATUS,
-      "container_egress",
-    );
-    assertEquals(egress.phase, "container_egress");
-
-    // The retry keeps the Apple choice (#4051): not enforced, and says so.
-    const retry = buildContainerLaunchPlan(config);
-    assertLauncherView(retry);
-    assertEquals(retry.egressEnforced, false);
-    assert(retry.runArgs.includes(`${EGRESS_ENFORCED_ENV}=false`));
-    assert(!retry.runArgs.includes(`${EGRESS_ENFORCED_ENV}=true`));
-    assertEquals(withinAuthority(ceiling, authorityOf(retry)), []);
-    assertEquals(authorityOf(retry), ceiling);
-    assertEquals(step(egress.state, 0, null).kind, "success");
-  });
-});
-
-Deno.test("recovery authority - the restart streak and the work volumes survive the failure streak (Issue #4417)", async () => {
-  await withRoot(async (root) => {
-    const config = configured(root);
-    const before = buildContainerLaunchPlan(config);
-    const beforeAuthority = authorityOf(before);
-
-    let state = emptyContainerRestartState(CLOCK);
-    for (let i = 0; i < 3; i++) {
-      state = step(state, 1, "container_run").state;
-    }
-    const saved = await persistContainerRestartState(root, state);
-    assertEquals(saved.ok, true);
-    assert((await Deno.stat(`${root}/${STATE_FILENAME}`)).isFile);
-
-    const loaded = await loadContainerRestartState(root);
-    assertEquals(loaded.consecutiveFailures, 3);
-    assertEquals(loaded.lastPhase, "worker_run");
-    assertEquals(loaded.streakStartedAt, state.streakStartedAt);
-
-    const after = buildContainerLaunchPlan(config);
-    const durable = [
-      WORK_VOLUME_NAME,
-      APPROVAL_STATE_VOLUME_NAME,
-      AGENT_STATE_VOLUME_NAME,
-    ];
-    assertEquals(before.volumes, durable);
-    assertEquals(after.volumes, durable);
-    assertEquals(after.resettableVolumes, [
-      WORK_VOLUME_NAME,
-      AGENT_STATE_VOLUME_NAME,
-    ]);
-    assertEquals(withinAuthority(beforeAuthority, authorityOf(after)), []);
-  });
-});
-
-Deno.test("recovery authority - an explicit authorised change is accepted only against the recomputed ceiling (Issue #4417)", async () => {
-  await withRoot(async (root) => {
+Deno.test("recovery authority - an explicit authorised change is flagged against the old ceiling and accepted against the recomputed one (Issue #4417)", async () => {
+  await withRoot((root) => {
     // A new allow-listed host, configured deliberately.
-    const oldConfig = configured(root);
-    const oldCeiling = authorityOf(buildContainerLaunchPlan(oldConfig));
+    const oldCeiling = authorityOf(buildContainerLaunchPlan(configured(root)));
     const newHosts = [...HOSTS, "logs.example.test"];
-    const newConfig = configured(root, { egressAllowHosts: newHosts });
-    const newPlan = buildContainerLaunchPlan(newConfig);
+    const newPlan = buildContainerLaunchPlan(
+      configured(root, { egressAllowHosts: newHosts }),
+    );
     assertEquals(withinAuthority(oldCeiling, authorityOf(newPlan)), [
       "allow-host:added logs.example.test",
     ]);
-    const newCeiling = authorityOf(buildContainerLaunchPlan(newConfig));
-    assertEquals(withinAuthority(newCeiling, authorityOf(newPlan)), []);
-
-    // A second configured provider, with the allow-list held fixed.
-    const soloConfig = configured(root, {
-      agentProviders: [resolveAgentProvider(CLAUDE_PROVIDER_ID)],
-    });
-    const soloCeiling = authorityOf(buildContainerLaunchPlan(soloConfig));
-    const poolPlan = buildContainerLaunchPlan(configured(root));
-    assertEquals(withinAuthority(soloCeiling, authorityOf(poolPlan)), [
-      "credential:added codex",
-    ]);
-    const poolCeiling = authorityOf(buildContainerLaunchPlan(configured(root)));
-    assertEquals(withinAuthority(poolCeiling, authorityOf(poolPlan)), []);
+    const recomputed = authorityOf(
+      buildContainerLaunchPlan(
+        configured(root, { egressAllowHosts: newHosts }),
+      ),
+    );
+    assertEquals(withinAuthority(recomputed, authorityOf(newPlan)), []);
   });
 });
 
-Deno.test("recovery authority - a same-scope credential refresh yields no violations (Issue #4417)", async () => {
-  await withRoot(async (root) => {
-    const config = configured(root);
-    const ceiling = authorityOf(buildContainerLaunchPlan(config));
-    for (
-      const bytes of [
-        "ANTHROPIC_API_KEY=token-one\n",
-        "ANTHROPIC_API_KEY=token-two\n",
-      ]
-    ) {
-      await writeProviderCredential(root, "claude", bytes);
-      const plan = buildContainerLaunchPlan(config);
-      assertEquals(withinAuthority(ceiling, authorityOf(plan)), []);
-      assertEquals(authorityOf(plan), ceiling);
-    }
-  });
-});
+// Fault-injected plans: each is a widened copy of a configured plan, run
+// through the test-local authority check. The unmodified plan is a control.
 
-Deno.test("recovery authority - an extra writable host mount is refused by the mount rule (Issue #4417)", async () => {
-  await withRoot(async (root) => {
+Deno.test("recovery authority - the authority check flags an extra writable host mount (Issue #4417)", async () => {
+  await withRoot((root) => {
     const plan = buildContainerLaunchPlan(configured(root));
     const ceiling = authorityOf(plan);
     assertEquals(withinAuthority(ceiling, authorityOf(plan)), []);
@@ -782,8 +996,8 @@ Deno.test("recovery authority - an extra writable host mount is refused by the m
   });
 });
 
-Deno.test("recovery authority - an extra credential sub-directory is refused by the credential rule (Issue #4417)", async () => {
-  await withRoot(async (root) => {
+Deno.test("recovery authority - the authority check flags an extra credential sub-directory (Issue #4417)", async () => {
+  await withRoot((root) => {
     const plan = buildContainerLaunchPlan(configured(root));
     const ceiling = authorityOf(plan);
     assertEquals(withinAuthority(ceiling, authorityOf(plan)), []);
@@ -803,8 +1017,8 @@ Deno.test("recovery authority - an extra credential sub-directory is refused by 
   });
 });
 
-Deno.test("recovery authority - host networking and dropped egress enforcement are refused (Issue #4417)", async () => {
-  await withRoot(async (root) => {
+Deno.test("recovery authority - the authority check flags host networking and dropped egress enforcement (Issue #4417)", async () => {
+  await withRoot((root) => {
     const plan = buildContainerLaunchPlan(configured(root));
     const ceiling = authorityOf(plan);
     assertEquals(withinAuthority(ceiling, authorityOf(plan)), []);
@@ -835,8 +1049,8 @@ Deno.test("recovery authority - host networking and dropped egress enforcement a
   });
 });
 
-Deno.test("recovery authority - an added privilege flag is refused by the privilege rule (Issue #4417)", async () => {
-  await withRoot(async (root) => {
+Deno.test("recovery authority - the authority check flags an added privilege flag (Issue #4417)", async () => {
+  await withRoot((root) => {
     const plan = buildContainerLaunchPlan(configured(root));
     const ceiling = authorityOf(plan);
     assertEquals(withinAuthority(ceiling, authorityOf(plan)), []);
@@ -858,8 +1072,8 @@ Deno.test("recovery authority - an added privilege flag is refused by the privil
   });
 });
 
-Deno.test("recovery authority - a widened allow-host or environment name is refused (Issue #4417)", async () => {
-  await withRoot(async (root) => {
+Deno.test("recovery authority - the authority check flags a widened allow-host or environment name (Issue #4417)", async () => {
+  await withRoot((root) => {
     const plan = buildContainerLaunchPlan(configured(root));
     const ceiling = authorityOf(plan);
     assertEquals(withinAuthority(ceiling, authorityOf(plan)), []);
@@ -889,10 +1103,10 @@ Deno.test("recovery authority - a widened allow-host or environment name is refu
 });
 
 Deno.test("recovery authority - the production guards refuse widened launch arguments (Issue #4417)", async () => {
-  await withRoot(async (root) => {
+  await withRoot((root) => {
     // The guards are private to the builder, so the builder is driven with
     // inputs that would produce each widened list. The unwidened inputs pass.
-    buildContainerLaunchPlan(configured(root));
+    assert(buildContainerLaunchPlan(configured(root)).runArgs.length > 0);
 
     // A host-networked dialect: `--network host` reaches runArgs.
     const hostNetworked: ContainerRuntimeDescriptor = {
