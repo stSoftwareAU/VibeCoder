@@ -605,9 +605,10 @@ jobs:
   run-mode:
     name: validate (${{ matrix.mode }})
     runs-on: ubuntu-latest
-    # Well inside the `validate` budget above: the targeted task takes seconds,
-    # and the smoke step is one Deno start-up.
-    timeout-minutes: 10
+    # `test:run-mode` spawns the launcher scripts hundreds of times: about five
+    # minutes locally and 8-10 on a runner, so the old 10-minute cap cancelled
+    # the no-runtime leg (PR #4425). Same 20-minute budget as `validate`.
+    timeout-minutes: 20
     strategy:
       # Both legs always report — a broken container leg must not hide the
       # no-runtime result, or the other way round.
