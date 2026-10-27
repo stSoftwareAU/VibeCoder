@@ -797,7 +797,9 @@ Deno.test(
     const leftToCi: MergeGateFn = () =>
       Promise.resolve({
         status: "passed" as const,
-        detail: "checked",
+        // The detail shape verifyResolvedTree gives a left-to-CI pass.
+        detail:
+          `deno task check passed; ${left} — left to the milestone PR's CI (Issue #4422)`,
         output: "",
         suiteLeftToCi: left,
       });
@@ -819,6 +821,9 @@ Deno.test(
       assertEquals(result.value.conflict?.resolution, "auto");
       assertEquals(result.value.conflict?.suiteLeftToCi, left);
       assertEquals(result.value.conflict?.unverified, undefined);
+      // The push note names the task that did not run (Issue #4422).
+      assertStringIncludes(result.value.message, "TESTS LEFT TO CI:");
+      assertStringIncludes(result.value.message, left);
     } finally {
       await fx.cleanup();
     }
