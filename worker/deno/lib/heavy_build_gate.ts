@@ -205,7 +205,9 @@ export function deferralSkipsCargoForMerge(
  * still short, `proceed` is false and {@link heavyBuildAdmission} turns the
  * sync into a merge-only one (Issue #4326). The checkout's own directories
  * (its incremental cache) and any written to recently (another slot's build
- * in progress) are never pruned.
+ * in progress) are never pruned. With `creditOwnCache`, the bytes already in
+ * the checkout's own directories count towards the headroom, capped at it, so
+ * the floor itself is never relaxed (Issue #4423).
  */
 export async function enforceEphemeralCargoBudget(
   input: {
@@ -214,13 +216,14 @@ export async function enforceEphemeralCargoBudget(
     floorBytes: number;
     headroomBytes?: number;
     root?: string;
+    creditOwnCache?: boolean;
   },
   deps: EphemeralRootDeps,
 ): Promise<CargoBudgetVerdict> {
   const root = input.root ?? EPHEMERAL_CARGO_TARGET_ROOT;
   const headroom = input.headroomBytes ?? EPHEMERAL_CARGO_HEADROOM_BYTES;
   const needed = input.floorBytes + headroom;
-  const terms = `${formatGb(input.hostFreeBytes)} free, floor ` +
+  let terms = `${formatGb(input.hostFreeBytes)} free, floor ` +
     `${formatGb(input.floorBytes)} + headroom ${formatGb(headroom)}`;
   let shortfall = needed - input.hostFreeBytes;
   if (shortfall <= 0) {
@@ -248,6 +251,25 @@ export async function enforceEphemeralCargoBudget(
   }
 
   const key = checkoutKey(input.checkoutPath, root);
+  if (input.creditOwnCache) {
+    // A build into an existing cache is incremental: what is already there was
+    // part of the from-scratch build the headroom reserves (Issue #4423).
+    const own = dirs.filter((d) => belongsTo(d.path, key))
+      .reduce((sum, d) => sum + d.bytes, 0);
+    const credit = Math.min(own, headroom);
+    if (credit > 0) {
+      shortfall -= credit;
+      terms += `; ${formatGb(credit)} already in this checkout's cache`;
+      if (shortfall <= 0) {
+        return {
+          proceed: true,
+          prunedBytes: 0,
+          skipCargoBuild: false,
+          detail: `within budget (${terms}) (Issue #4423)`,
+        };
+      }
+    }
+  }
   const now = deps.nowMs();
   const candidates = dirs
     .filter((d) => !belongsTo(d.path, key))
@@ -340,6 +362,7 @@ export type HeavyBuildAdmission =
 export async function heavyBuildAdmission(
   checkoutPath: string,
   deps: EphemeralRootDeps = productionEphemeralRootDeps,
+  options: { creditOwnCache?: boolean } = {},
 ): Promise<HeavyBuildAdmission> {
   if (probe === undefined) return { mode: "build" };
   const reading = await probe();
@@ -357,6 +380,7 @@ export async function heavyBuildAdmission(
     checkoutPath,
     hostFreeBytes: free,
     floorBytes: reading.floorBytes,
+    creditOwnCache: options.creditOwnCache,
   }, deps);
   if (verdict.proceed) return { mode: "build" };
   return {
@@ -431,7 +455,10 @@ export function inFlightHostDiskGateEnabled(): boolean {
  * may prune idle sibling target directories for it. A checkout with no cargo
  * project is held to the host floor only (Issue #4413): only cargo writes to
  * the ephemeral cargo root, so the budget is not consulted, nothing is pruned,
- * and its idle sibling target directories are left alone. Null when the gate
+ * and its idle sibling target directories are left alone. A cargo checkout's
+ * own cache counts towards the headroom (Issue #4423): a run that was admitted
+ * and built is not refused a later step for the space its own build used.
+ * Null when the gate
  * is not armed, no probe is registered, or the host has room.
  * Active-process watchers use {@link parkRunningBuild} instead.
  */
@@ -442,7 +469,9 @@ export async function parkInFlightBuild(
   if (!inFlightGateEnabled) return null;
   // No cargo project: only the host floor applies, and nothing is pruned (Issue #4413).
   if (!(await holdsCargoProject(checkoutPath))) return await parkRunningBuild();
-  const admission = await heavyBuildAdmission(checkoutPath, deps);
+  const admission = await heavyBuildAdmission(checkoutPath, deps, {
+    creditOwnCache: true,
+  });
   return inFlightParkReason(
     admission.mode === "build" ? null : admission.reason,
   );
