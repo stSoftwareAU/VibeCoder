@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4415",
   "definition": "Reviewed the static-scan command guard and its hook entry point. The guard classifies a Bash command's literal command words (wrappers, separators, shell -c and env -S payloads, path prefixes) and denies Rust build tools, which run build scripts and proc macros and write build artefacts. A payload it cannot read, or a command it cannot classify, is denied rather than allowed. It is command-text classification, not an OS sandbox; words built at run time are not resolved. Only the best-practices scan installs it, so implementation and CI cargo use is untouched.",
   "status": "claimed",
-  "sweptAt": "739d8d11f257064f12a96880d8467f01aa25cfd5",
+  "sweptAt": "6c3202f8d3e08397d3a8f4136e43b2d377eb4a5d",
   "paths": [
     "worker/deno/lib/static_scan_guard.ts",
     "worker/deno/lib/static_scan_guard_cli.ts"

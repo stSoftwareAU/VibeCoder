@@ -53,6 +53,14 @@ records the final version.
 
 ## Evidence
 
+CI repair: the top-up audit record now uses the verified merge-base with
+`origin/main` (`6c3202f8d3e08397d3a8f4136e43b2d377eb4a5d`), rather than a
+feature-branch commit. The old reference fails `git merge-base --is-ancestor`;
+the replacement passes. No production code or tests changed in this repair.
+The preceding GitHub Actions run passed all four unit-test shards, integration
+tests and container checks. Local Deno checks could not run in the repair
+environment because Deno is unavailable; the pushed commit is checked by CI.
+
 Backend-only change; no UI files. Command run on the head:
 `deno task test tests/static_scan_guard_test.ts tests/static_scan_cargo_build_script_test.ts tests/best_practices_template_test.ts tests/issue_executor_enforcement_test.ts tests/console_redaction_entrypoint_check_test.ts tests/lib_sweep_coverage_test.ts tests/references_doc_test.ts`
 from `worker/deno`.
