@@ -23,7 +23,8 @@ for the same contract. Closes #4417.
 - `worker/deno/lib/capability_coverage_scan.ts` gains a fourth coverage
   contract, `capsec-recovery-boundary`: a retry, restart or fallback line near a
   credential, mount or identity alteration with no boundary test is a
-  best-practices finding (not an exploit claim).
+  best-practices finding (not an exploit claim). The `security.ts` filename
+  exemption no longer skips a file that alters authority on recovery.
 - `worker/deno/commands/container_launch_plan.ts` passes its injected `env` to
   `readConfiguredAgentProviderSet` (default is still the process environment),
   so the recovery tests need no process-environment mutation.
@@ -155,6 +156,12 @@ fix (existing Wiz row).
 - **violation** — prose trigger lists shorter than the code — evidence:
   `docs/CAPABILITY-SECURITY-GUIDANCE.md:40` — reason: fixed in this diff (lists
   reworded as examples pointing to `docs/BEST-PRACTICES-SCAN.md`)
+- **violation** — a file named `security.ts` skipped the recovery check —
+  evidence: `worker/deno/lib/capability_coverage_scan.ts:313` — reason: fixed in
+  this diff (`!altersAuthorityOnRecovery(file.text)` added to the exemption;
+  test
+  `a file named security.ts that alters authority on recovery is still
+  reported`)
 - **clean** — Australian English, regex safety (no overlapping quantifiers, one
   hostile case per pattern), named tests exist, no stubs of other repositories'
   binaries, no persisted-shape change, temp directories from `Deno.makeTempDir`

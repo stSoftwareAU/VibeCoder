@@ -647,3 +647,15 @@ Deno.test("hostile input: the resumption pattern rejects a 200k run without hang
   );
   assertEquals(recoveryFindingsOf(reached.findings).length, 0);
 });
+
+Deno.test("a file named security.ts that alters authority on recovery is still reported", async () => {
+  const named = await scanCapabilityCoverageFiles([
+    { path: "src/security.ts", text: SWAP_ON_RETRY },
+  ]);
+  assertEquals(named.status, "findings");
+  assertEquals(recoveryFindingsOf(named.findings).length, 1);
+  const renamed = await scanCapabilityCoverageFiles([
+    { path: "src/launch.ts", text: SWAP_ON_RETRY },
+  ]);
+  assertEquals(renamed.status, "findings");
+});

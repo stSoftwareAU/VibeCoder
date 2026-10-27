@@ -312,7 +312,8 @@ export async function scanCapabilityCoverageFiles(
     if (
       file.path.split("/").pop() === "security.ts" &&
       !usesResourceAuth(file.text) &&
-      !updatesSensitiveField(file.text) && !leaksToSink(file.text)
+      !updatesSensitiveField(file.text) && !leaksToSink(file.text) &&
+      !altersAuthorityOnRecovery(file.text)
     ) {
       continue;
     }
