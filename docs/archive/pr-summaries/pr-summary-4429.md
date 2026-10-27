@@ -58,7 +58,9 @@ flowchart LR
 - `worker/deno/tests/host_disk_live_reading_test.ts`, `worker/deno/tests/host_disk_test.ts` and `worker/deno/tests/heavy_build_gate_in_flight_4423_test.ts` — passed; existing host measurement and build-admission behaviour remains covered.
 - Targeted command `deno task test:unit tests/run_outcome_classifier_test.ts tests/run_failure_issue_test.ts tests/host_disk_inflight_4360_test.ts tests/issue_worker_infra_retry_test.ts tests/host_disk_live_reading_test.ts tests/host_disk_test.ts tests/heavy_build_gate_in_flight_4423_test.ts` — 126 passed, 0 failed.
 - `deno fmt --check`, `deno lint` and `deno check` on the changed classifier and test files — passed.
-- The full `./quality.sh` gate and `deno task pr-summary-check` are recorded after execution below.
+- Full `./quality.sh`: every static stage passed (lint, type check, fmt, mermaid, markdownlint, semgrep). The parallel Deno pass had 30811 passed and 3 failed, none in files this change touches: two in `worker/deno/tests/completion_phase_repo_formatters_test.ts` (also failing on the unchanged base before this issue) and `worker/deno/tests/pr_maintenance_command_test.ts` (Issue #4424), which passes when run alone (`--filter "merge queue"`, 1 passed) and so is load-sensitive. The serial pass did not run because the parallel pass failed.
+
+<!-- vibe-quality-gate-skipped reason="full gate ran and failed only on tests unrelated to this change; the serial Deno pass did not run" -->
 
 ## Deno regression avoided
 
