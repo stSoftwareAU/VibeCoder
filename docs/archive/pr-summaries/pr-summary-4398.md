@@ -150,6 +150,10 @@ Backend/CLI change; no UI file is touched. Tests:
   for those stages. `tests/completion_phase_repo_formatters_test.ts` (two
   failures seen in an earlier gate run, a Rust formatter assertion this diff
   does not touch) was not re-run or checked on the base branch.
+- Push 4c8de04 (MD018 fix): `references/running-unattended.md` rewrapped so
+  `#4395)` no longer starts a line that markdownlint read as a heading. Prose
+  only, no code changed; the summary gate and markdownlint were re-run on the
+  head after this entry.
 
 Coverage carry-over: the check could not run (`deno coverage` reported "No
 covered files included in the report"), because the changed code is a bash
