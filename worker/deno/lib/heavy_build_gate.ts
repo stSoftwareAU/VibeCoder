@@ -31,7 +31,8 @@
  *   ({@link heavyBuildAdmission}, Issue #4326) applies to a tree that holds a
  *   cargo project, because only a cargo build writes to the ephemeral cargo
  *   root; a repository with no cargo project keeps its own type check and the
- *   normal agent. In a cargo-only tree a conflict-free merge is pushed
+ *   normal agent. {@link parkInFlightBuild} holds such a checkout to the host
+ *   floor only, and prunes nothing for it (Issue #4413). In a cargo-only tree a conflict-free merge is pushed
  *   unverified with the `UNGATED:` note, and the milestone PR's own CI builds
  *   it. So is a merge whose conflicts the deterministic rules settle: its
  *   resolution gate reports a `skipped` verdict marked `landUnverified`, which
@@ -66,7 +67,10 @@
  *
  * Issue #4360: a build already running is held to the same floor. The claim
  * gate only stops new claims, so {@link parkInFlightBuild} checks admission
- * before an agent, mutation or discrimination build. {@link parkRunningBuild}
+ * before an agent, mutation or discrimination build. A checkout with no cargo
+ * project is held to the floor only, and its idle sibling target directories
+ * are not pruned for it, because only cargo writes to the ephemeral cargo root
+ * (Issue #4413). {@link parkRunningBuild}
  * stops an active process at the host floor, letting it consume the headroom
  * admission required (Issue #4390). {@link hostDiskLaunchStopReason} ends the
  * launch when the trim was refused and the host is below the floor — exiting the container
@@ -86,6 +90,7 @@ import {
   cargoTargetDirForCheckout,
   EPHEMERAL_CARGO_TARGET_ROOT,
 } from "./ephemeral_build_cache.ts";
+import { findProjectManifests } from "./project_manifests.ts";
 
 const GIB = 1_073_741_824;
 
@@ -420,8 +425,14 @@ export function inFlightHostDiskGateEnabled(): boolean {
 /**
  * Why a new build step must not start in `checkoutPath` (Issue #4360).
  *
- * Same floor and ephemeral headroom as {@link heavyBuildAdmission}. Null when
- * the gate is not armed, no probe is registered, or the host has room.
+ * A checkout with a cargo project gets the same floor and ephemeral headroom
+ * as {@link heavyBuildAdmission}: a `defer` admission (host below its floor)
+ * or a `merge-only` admission (short of the headroom) parks it, and the budget
+ * may prune idle sibling target directories for it. A checkout with no cargo
+ * project is held to the host floor only (Issue #4413): only cargo writes to
+ * the ephemeral cargo root, so the budget is not consulted, nothing is pruned,
+ * and its idle sibling target directories are left alone. Null when the gate
+ * is not armed, no probe is registered, or the host has room.
  * Active-process watchers use {@link parkRunningBuild} instead.
  */
 export async function parkInFlightBuild(
@@ -429,10 +440,19 @@ export async function parkInFlightBuild(
   deps: EphemeralRootDeps = productionEphemeralRootDeps,
 ): Promise<string | null> {
   if (!inFlightGateEnabled) return null;
+  // No cargo project: only the host floor applies, and nothing is pruned (Issue #4413).
+  if (!(await holdsCargoProject(checkoutPath))) return await parkRunningBuild();
   const admission = await heavyBuildAdmission(checkoutPath, deps);
-  // A merge-only admission permits a milestone merge, never its build.
   return inFlightParkReason(
     admission.mode === "build" ? null : admission.reason,
+  );
+}
+
+/** Whether a cargo project sits within the searched depth of `checkoutPath` (Issue #4413). */
+async function holdsCargoProject(checkoutPath: string): Promise<boolean> {
+  // Unreadable checkout: no manifest, and the agent could not run there either.
+  return (await findProjectManifests(checkoutPath)).some((project) =>
+    project.kind === "cargo"
   );
 }
 

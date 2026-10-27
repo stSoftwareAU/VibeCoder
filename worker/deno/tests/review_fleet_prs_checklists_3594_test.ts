@@ -99,6 +99,8 @@ async function runGate(
         return Promise.reject(e);
       }
     }
+    // No PR comments: gh prints an empty JSON list (Issue #4398).
+    if (args[1]?.endsWith("/comments")) return Promise.resolve("[]");
     return Promise.resolve("");
   };
   const dir = await Deno.makeTempDir();

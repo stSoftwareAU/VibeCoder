@@ -201,6 +201,10 @@ function makeGh(prs: SearchPr[]) {
     if (args[0] === "api" && args[1]?.endsWith("/update-branch")) {
       return Promise.resolve("{}");
     }
+    // No PR comments: gh prints an empty JSON list (Issue #4398).
+    if (args[0] === "api" && args[1]?.endsWith("/comments")) {
+      return Promise.resolve("[]");
+    }
     return Promise.resolve("");
   };
   return { gh, calls };

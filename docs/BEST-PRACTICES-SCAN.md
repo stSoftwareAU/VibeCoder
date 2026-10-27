@@ -558,6 +558,13 @@ to that bucket's own run.
 | `general` | Repo-level hygiene (no language-specific code) | [Open Source Guides](https://opensource.guide/), [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver.org/), [SPDX](https://spdx.org/licenses/), [SLSA](https://slsa.dev/) | [buckets/general.md](../prompts/best_practices/buckets/general.md) |
 | `design` | Design smells in any language (no language idioms, no repo hygiene) | [Refactoring, ch. 3](https://martinfowler.com/books/refactoring.html), [Refactoring catalogue](https://refactoring.guru/refactoring/smells) | [buckets/design.md](../prompts/best_practices/buckets/design.md) |
 
+The `aws-cloudformation` and `terraform` buckets keep IaC hygiene only.
+Cross-policy permission chains — an AssumeRole escalation, a PassRole
+launch through compute, or an SSM SendCommand into a more privileged
+instance role — are owned by the
+[security scan](SECURITY-SCAN.md#cloud-permission-chains-aws-iac).
+Best-practices files nothing for a chain the security scan covers.
+
 The `general` bucket is repo-level hygiene only — README, licence,
 CI/CD presence, dependency tooling, SBOM/lockfile pinning, repo
 structure, **runtime unambiguity** (a mixed Deno+Node

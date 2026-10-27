@@ -17,6 +17,11 @@ containing `AWSTemplateFormatVersion`, plus CDK-emitted templates.
    scope `Action` and `Resource` to the narrowest set required.
    Flag wildcard `Action: "*"`, `Resource: "*"`, and policies that
    grant `iam:PassRole` on `*`. Reference the AWS Security pillar.
+   A concrete cross-policy exploit chain (AssumeRole, PassRole with
+   compute, SendCommand) is filed by the security scan, not here. When
+   an open security issue or the security-scan pre-scan already covers
+   the same role or resource, file nothing; do not file a second
+   proposal for the same fix.
 2. **Encryption at rest defaults on.** `AWS::S3::Bucket`,
    `AWS::RDS::DBInstance`, `AWS::DynamoDB::Table`,
    `AWS::EBS::Volume`, and EFS/SNS/SQS resources declare

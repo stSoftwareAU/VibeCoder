@@ -23,8 +23,9 @@ Optional argument: `owner/name` to review one repo only.
 Read [references/running-unattended.md](references/running-unattended.md)
 before running the loop without an open session through `scripts/run.sh`:
 installing it, where a round runs and on which Claude subscription,
-reviewing as a GitHub App, parallel rounds (one PR per round), the separate
-learning round, and persistent failure escalation.
+reviewing as a GitHub App, parallel rounds (one PR per round), several hosts
+(the per-PR claim), the separate learning round, and persistent failure
+escalation.
 
 ## Rules
 
@@ -103,7 +104,9 @@ learning round, and persistent failure escalation.
    review carrying the skill's marker counts as this skill's review whichever login
    posted it, and a PR anyone has approved at its head commit is skipped as
    `approved`: there is nothing left to review, and it merges once it is up
-   to date.
+   to date. While a round reviews a PR, its claim comment at that head (see
+   [Several hosts](references/running-unattended.md#several-hosts)) keeps the
+   other hosts from starting a second round on it.
 9. **Approve first, then bring the branch up to date.** Every fleet PR is
    armed with auto-merge on three conditions: CI green, approved, and branch
    up to date. The review is of the diff as it stands; when the outcome is an
@@ -178,7 +181,8 @@ The gate script does the polling, not the model. With `--watch=300` it checks
 every 5 minutes and **exits only when a PR is ready for review**, so an idle
 night costs no tokens. It reports at most **5** ready PRs per pass
 (`--limit=<n>` changes that), counted after every other skip, so a PR that is
-red, approved, already reviewed or awaiting a fix never takes one of the slots;
+red, approved, already reviewed, awaiting a fix or `claimed-elsewhere` never
+takes one of the slots;
 the rest are counted as `over-limit` and come back next pass. The search is
 oldest-updated first, so a PR whose head keeps moving cannot starve the quiet
 ones behind it.
@@ -348,6 +352,8 @@ The script does the rest, so do not post anything yourself:
   the result to `<logs>/review-fleet-prs/log.jsonl`, refreshes
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
+- After posting, it deletes the claim comments at the head it reviewed (see
+  [Several hosts](references/running-unattended.md#several-hosts)).
 
 It prints `{ posted, outcome?, autoReleased?, autoReleaseHeld?,
 filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
