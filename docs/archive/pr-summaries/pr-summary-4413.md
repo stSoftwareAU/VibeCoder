@@ -132,11 +132,11 @@ Callers of `findProjectManifests` (moved verbatim, behaviour unchanged):
 `heavy_build_gate.ts` (new, tested by the 4413 suite), `milestone_merge_gate.ts`
 (`checkMergedTree`, re-exports the name) and `milestone_resolution_gate.ts:274`
 (`verifyResolvedTree`) — all unchanged, as the function body is identical to the
-base and the new direct test pins it; `milestone_resolution_gate_test.ts` passes.
-Twinned rules: `docs/CONTAINER.md` (section "In-flight builds stop at the same
-floor", bullet "The root has a budget") and `docs/INTERNALS.md` (~3080) updated;
-`docs/INTERNALS.md` ~4478 and the HOST_DISK_BUDGET section already stated the
-rule.
+base and the new direct test pins it; `milestone_resolution_gate_test.ts`
+passes. Twinned rules: `docs/CONTAINER.md` (section "In-flight builds stop at
+the same floor", bullet "The root has a budget") and `docs/INTERNALS.md` (~3080)
+updated; `docs/INTERNALS.md` ~4478 and the HOST_DISK_BUDGET section already
+stated the rule.
 
 ## Not done
 
