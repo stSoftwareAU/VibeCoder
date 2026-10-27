@@ -1330,7 +1330,10 @@ Before an agent invocation in a checkout, a quality-gate run, a mutation
 check or a discrimination `cargo`/`deno`, the worker reads the same monitor
 with the cache skipped (`check({ force: true })`) and parks the step when the
 host is below the floor or, where the trim is refused, short of the floor
-plus the 25 GB headroom. The park is infrastructure: the reason carries
+plus the 25 GB headroom. The headroom park applies only to a checkout that
+holds a cargo project, because only cargo writes to the ephemeral cargo root;
+a Deno-only checkout is parked only below the floor (Issue #4413). The park is
+infrastructure: the reason carries
 `Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
 gate verdict, and it does not earn `failed-once`. The same stop is not a
 repository fast failure: a host below its floor would otherwise back the
@@ -1353,8 +1356,8 @@ Where the runtime refuses the trim **and** the host is below the floor, the
 launch ends with status 74. Deleting files in that volume does not return
 host blocks; leaving the container discards the ephemeral layer, and the next
 launch's heal recreates the volume if the host is still short. Above the
-floor, or where the trim is honoured, the build is parked and the launch
-continues.
+floor, or where the trim is honoured, the build is parked where the park
+applies (Issue #4413), and the launch continues.
 
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 
@@ -1572,7 +1575,9 @@ build artefacts.
   that, other checkouts' target directories are pruned, largest first,
   skipping any written to in the last 20 minutes and the building checkout's
   own incremental cache. If the build is still not covered, the new step
-  is parked. Once started, active-process polling enforces the host floor;
+  is parked when its checkout holds a cargo project; a Deno-only checkout is
+  parked only below the floor (Issue #4413). Once started, active-process
+  polling enforces the host floor;
   it does not demand another 25 GB while the admitted work consumes its
   headroom (Issue #4390). A cargo-only milestone tree can still land that cycle
   without its cargo build: a conflict-free or deterministically resolved merge
