@@ -28,11 +28,12 @@ sequenceDiagram
   `over-limit` cap, so a claimed PR never takes a slot.
 - `post.ts`: after posting, deletes the claims at the reviewed head
   (`releaseClaimAtHead`).
-- `run.sh`: claims each ready PR before its round (`--ttl` = round timeout); a
-  lost claim starts no round and is not an error; a failed or malformed claim is
-  an error; the claim is released when the round finishes, fails or times out,
-  when its container cannot start, and when the runner stops. `runner.lock` is
-  unchanged.
+- `run.sh`: claims each ready PR before its round (`--ttl` = the round timeout,
+  capped at 7200 s, `claim.ts`'s `MAX_CLAIM_SECONDS`, so a longer
+  `REVIEW_FLEET_PRS_ROUND_TIMEOUT` still claims); a lost claim starts no round
+  and is not an error; a failed or malformed claim is an error; the claim is
+  released when the round finishes, fails or times out, when its container
+  cannot start, and when the runner stops. `runner.lock` is unchanged.
 - Docs: `SKILL.md`, `references/running-unattended.md` (new "Several hosts"
   section), `references/notes.md`.
 
@@ -95,10 +96,11 @@ Backend/CLI change; no UI file is touched. Tests:
 - `worker/deno/tests/review_fleet_prs_post_claim_4398_test.ts` (5 tests): helper
   tests and a `post.ts` subprocess that asserts the claim comment at the head is
   deleted after the review is posted.
-- `worker/deno/tests/review_fleet_prs_runner_test.ts` (12 new tests): claim
-  before the round and before the gate-listed container, lost / failed /
-  malformed claim, release after a finished, failed and timed-out round, on a
-  container failure and on the EXIT trap.
+- `worker/deno/tests/review_fleet_prs_runner_test.ts` (13 new tests): claim
+  before the round, the lease capped at 7200 s for a 9000 s round timeout and
+  before the gate-listed container, lost / failed / malformed claim, release
+  after a finished, failed and timed-out round, on a container failure and on
+  the EXIT trap.
 - Fakes mirror real `gh`: `gh api --paginate` prints a JSON array (`[]` for no
   comments), a created comment returns `id`, `body`, `created_at`, `user.login`,
   and a missing comment on DELETE is `Not Found (HTTP 404)`. `claim.ts` reads
@@ -126,8 +128,9 @@ Backend/CLI change; no UI file is touched. Tests:
   - `run.sh` `false` treated as a win: lost-claim test red; claim moved after
     `launch`: ordering, lost, error and garbage tests red; no release in
     `round_job`: 4 red; no release on container failure: 1 red; `--host` dropped
-    from the gate call: 1 red; EXIT-trap release no-op: 1 red. (Moving the claim
-    after `round_container` stays green by design: the container only starts in
+    from the gate call: 1 red; EXIT-trap release no-op: 1 red; ttl cap removed
+    (`--ttl=$ROUND_TIMEOUT`): the 9000 s cap test red. (Moving the claim after
+    `round_container` stays green by design: the container only starts in
     `launch`.)
 - Callers checked for the new `host` parameter: `gate.ts` `main` passes
   `arg("host")` (covered by the `gate.ts --host` subprocess test) and `run.sh`
@@ -147,3 +150,9 @@ Backend/CLI change; no UI file is touched. Tests:
   for those stages. `tests/completion_phase_repo_formatters_test.ts` (two
   failures seen in an earlier gate run, a Rust formatter assertion this diff
   does not touch) was not re-run or checked on the base branch.
+
+Coverage carry-over: the check could not run (`deno coverage` reported "No
+covered files included in the report"), because the changed code is a bash
+runner and skill scripts under `.claude/` that the worker's coverage report does
+not include. This is a tooling limitation, not an untested line; the new and
+edited tests above exercise the changed paths.

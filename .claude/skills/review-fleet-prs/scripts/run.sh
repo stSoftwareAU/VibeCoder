@@ -44,6 +44,9 @@ DEFAULT_PARALLEL=3
 # A hung round must not wedge the loop, nor outlive its token. Overridable
 # only so the tests can time a round out without waiting 50 minutes.
 ROUND_TIMEOUT=${REVIEW_FLEET_PRS_ROUND_TIMEOUT:-3000}
+# The longest lease claim.ts accepts (its MAX_CLAIM_SECONDS), so a longer round
+# timeout still claims: the lease is the smaller of the two (Issue #4398).
+MAX_CLAIM_TTL=7200
 LABEL="au.com.stsoftware.review-fleet-prs"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
@@ -504,9 +507,10 @@ start_review() {
   sha=$(jq -r .headSha <<<"$entry")
   # Claimed before any round work, so only one host reviews this PR (Issue
   # #4398). A failed claim is an error: the round is not started.
+  claim_ttl=$((ROUND_TIMEOUT < MAX_CLAIM_TTL ? ROUND_TIMEOUT : MAX_CLAIM_TTL))
   claim_json=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh claim.ts claim \
     --repo="$repo" --number="$number" --sha="$sha" --host="$HOST_NAME" \
-    --ttl="$ROUND_TIMEOUT" 2>"$errfile")
+    --ttl="$claim_ttl" 2>"$errfile")
   claim_rc=$?
   [[ -s "$errfile" ]] && errors <"$errfile"
   if [[ $claim_rc -ne 0 ]]; then

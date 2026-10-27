@@ -990,6 +990,18 @@ Deno.test("run.sh claims a ready PR for this host, with the round timeout as its
   assert(await claudeArgs(home), "the round was not started");
 });
 
+Deno.test("run.sh caps the claim lease at 7200 seconds when the round timeout is longer (Issue #4398)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await runBash(home, [RUNNER, "--once"], {
+    REVIEW_FLEET_PRS_ROUND_TIMEOUT: "9000",
+  });
+  assertEquals(code, 0, output);
+  const args = (await recorded(home, "claim-args"))!;
+  assertStringIncludes(args, "--ttl=7200");
+  assert(!args.includes("--ttl=9000"), args);
+  assert(await claudeArgs(home), "the round was not started");
+});
+
 Deno.test("run.sh tells the gate this host, so the gate can skip a PR claimed elsewhere (Issue #4398)", async () => {
   const home = await fixture(READY);
   const { code, output } = await run(home, "--once");
