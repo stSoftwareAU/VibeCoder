@@ -56,6 +56,4 @@ for `detectRemoteModuleGap`; the first cause line after the import line is
 - Red checks (each break applied, test red, restored): detector call disabled, `continue` removed, unit-suite flag removed, quality.sh skip removed, skipped-guard removed, comment case removed, `git_pull` spread removed, `gateNote` branch removed, cause-before-import accepted. 404, certificate and cargo tests pin unchanged behaviour (green on base).
 - Callers checked: `verifyResolvedTree` is called by the milestone sync resolution path only; `gateThenPushMilestoneBranch` and the conflict builder gained the new field through the single conflict object.
 - Docs: `docs/INTERNALS.md` and `docs/workflows/milestones.md` updated (markdownlint 0 issues, mermaid check passed).
-- Full `./quality.sh` was not run in this run; CI runs it.
-
-<!-- vibe-quality-gate-skipped: full ./quality.sh not run; targeted tests listed above passed; CI runs the same checks -->
+- Full `./quality.sh` run on the head: every static stage passed (lint, type check, fmt, mermaid, markdownlint, semgrep). The parallel Deno test pass ran 30563 passed, 2 failed; the 2 failures are `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("an unformatted Rust change is formatted and committed" and "cargo fmt stages only the branch's .rs files"), which fail identically on the unchanged base `6423e467` (checked in a detached worktree) and touch no file in this diff. The serial pass did not run because the parallel pass failed; CI runs it.
