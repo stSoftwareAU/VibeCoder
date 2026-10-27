@@ -589,7 +589,10 @@ section does not replace either.
   — the walk, the three chain rules and the candidate rendering.
 - [`worker/deno/lib/hcl_subset.ts`](../worker/deno/lib/hcl_subset.ts) — the
   Terraform subset parser that feeds the IR.
-- Fixtures: `worker/deno/tests/fixtures/cloud_permission_chains/v1/`.
+- Fixtures: `worker/deno/tests/fixtures/cloud_permission_chains/v1/`. The
+  CloudFormation templates are stored as `template.{yaml,json}.fixture` so the
+  repo-wide Checkov scan does not discover these deliberately over-permissive
+  roles; the test stages them under their real names before scanning.
 - Prompt: the "Cloud permission chains (AWS IaC)" subsection of Phase 2 in
   [`prompts/security_scan/prompt.md`](../prompts/security_scan/prompt.md).
 

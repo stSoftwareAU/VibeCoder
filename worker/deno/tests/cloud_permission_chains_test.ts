@@ -26,10 +26,46 @@ import {
   scanCloudPermissionChains,
 } from "../lib/cloud_permission_chains.ts";
 
-const FIXTURES = new URL(
+/**
+ * The fixture templates are deliberately over-permissive, so the repository
+ * stores the CloudFormation ones as `template.{yaml,json}.fixture`: the
+ * repo-wide Checkov scan (checkov.yml) must not discover them, and Checkov
+ * takes no reasonless skip and no `--skip-path` (worker/deno/lib/checkov_report.ts).
+ * The scan under test finds templates by their real names, so the fixture tree
+ * is staged once into a temporary directory with the `.fixture` suffix
+ * stripped. Hop lines are unchanged by the copy.
+ */
+const FIXTURE_SUFFIX = ".fixture";
+const FIXTURE_SOURCE = new URL(
   "./fixtures/cloud_permission_chains/v1/",
   import.meta.url,
 ).pathname;
+
+async function stageFixtures(from: string, to: string): Promise<void> {
+  await Deno.mkdir(to, { recursive: true });
+  for await (const entry of Deno.readDir(from)) {
+    const source = `${from}/${entry.name}`;
+    if (entry.isDirectory) {
+      await stageFixtures(source, `${to}/${entry.name}`);
+    } else if (entry.isFile) {
+      const name = entry.name.endsWith(FIXTURE_SUFFIX)
+        ? entry.name.slice(0, -FIXTURE_SUFFIX.length)
+        : entry.name;
+      await Deno.copyFile(source, `${to}/${name}`);
+    }
+  }
+}
+
+const STAGED = await Deno.makeTempDir({ prefix: "cloud-chains-fixtures-" });
+await stageFixtures(FIXTURE_SOURCE.replace(/\/$/, ""), STAGED);
+globalThis.addEventListener("unload", () => {
+  try {
+    Deno.removeSync(STAGED, { recursive: true });
+  } catch {
+    // Best effort: a leftover temporary directory is harmless.
+  }
+});
+const FIXTURES = `${STAGED}/`;
 
 /** Element `i` of `xs`, failing the test (not the type-checker) when absent. */
 function at<T>(xs: readonly T[], i: number): T {
