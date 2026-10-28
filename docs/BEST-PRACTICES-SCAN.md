@@ -287,6 +287,10 @@ joins `*.rs` and `Cargo.toml` in the bucket's file scope for this check;
 per repo isolation the manifest edits themselves ride each
 repo's own PR.
 
+### Rust style-guide checks
+
+[`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) also carries a `## Google Rust Style Guide learnings` section (checks 43-51), mined from the Google Rust Style Guide and written in our own words. The checks are static-evidence only and every finding is `severity:low`. They cover glob imports, missing `#[must_use]`, public enums without `#[non_exhaustive]`, many `bool` parameters, check-then-unwrap, assertions with no message, the `Mutex` poisoning policy, `catch_unwind` outside FFI, and another crate's `#[doc(hidden)]` items.
+
 ### Cost, speed and reliability
 
 The owner's goal for every repo is cheaper, faster and more reliable, so
@@ -548,7 +552,7 @@ to that bucket's own run.
 
 | Bucket | Targets | Canonical guides | Inline checklist |
 | ------ | ------- | ---------------- | ---------------- |
-| `rust` | `*.rs`, `Cargo.toml`, `.cargo/config.toml` | [The Rust Book](https://doc.rust-lang.org/book/), [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/), [Rustonomicon](https://doc.rust-lang.org/nomicon/) | [buckets/rust.md](../prompts/best_practices/buckets/rust.md) |
+| `rust` | `*.rs`, `Cargo.toml`, `.cargo/config.toml` | [The Rust Book](https://doc.rust-lang.org/book/), [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/), [Rustonomicon](https://doc.rust-lang.org/nomicon/), [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html) | [buckets/rust.md](../prompts/best_practices/buckets/rust.md) |
 | `typescript` | `*.ts`, `tsconfig*.json` (excludes `.tsx`) | [TypeScript Handbook](https://www.typescriptlang.org/docs/handbook/intro.html), [`tsconfig` reference](https://www.typescriptlang.org/tsconfig), [`typescript-eslint` rules](https://typescript-eslint.io/rules/) | [buckets/typescript.md](../prompts/best_practices/buckets/typescript.md) |
 | `react` | `*.tsx`/`*.jsx` importing `react` | [React docs](https://react.dev/), [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks) | [buckets/react.md](../prompts/best_practices/buckets/react.md) |
 | `java` | `*.java`, `pom.xml`, `build.gradle` | Effective Java, Google Java Style | [buckets/java.md](../prompts/best_practices/buckets/java.md) |
