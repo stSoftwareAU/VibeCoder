@@ -11,6 +11,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { closureGapFindings } from "../lib/closure_met_check.ts";
+import { loadTrustedCapabilityBundle } from "../lib/capability_security_guidance.ts";
 import type { ClaudeRunResult } from "../lib/claude_runner.ts";
 import {
   buildPrePrVerifierGateComment,
@@ -167,6 +168,13 @@ function makeDeps(
 ): PrePrVerifierDeps {
   return {
     ...defaultPrePrVerifierDeps,
+    // This checkout's trusted bundle, never the host's PROMPTS_DIR or
+    // VIBE_BASE_DIR (PR #4463 review).
+    loadTrustedCapabilityBundle: () =>
+      loadTrustedCapabilityBundle(
+        () => undefined,
+        new URL("../../../prompts", import.meta.url).pathname,
+      ),
     ask,
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
     makeTempDir: async () => {

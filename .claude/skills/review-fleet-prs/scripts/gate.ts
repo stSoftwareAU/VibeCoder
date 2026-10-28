@@ -43,6 +43,14 @@
 // The helpers live at <checkout>/.claude/skills/review-fleet-prs/scripts/,
 // and the checkout's own .config.json is four levels up from there.
 const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
+/**
+ * The prompts directory of the checkout this skill runs from. The gate runs
+ * from a VibeCoder checkout, never the container's staged worker copy, so the
+ * trusted bundle beside it is the one it reviews with. It is named here so the
+ * host's PROMPTS_DIR or VIBE_BASE_DIR never redirects it (PR #4463 review).
+ */
+const CHECKOUT_PROMPTS_DIR =
+  new URL("../../../../prompts", import.meta.url).pathname;
 
 import {
   BRANCH_UPDATE_FILE,
@@ -870,13 +878,16 @@ export async function pass(
     host?: string;
     /** Clock for claim expiry (Issue #4398). Defaults to Date.now. */
     now?: () => number;
-    /** Trusted capability bundle. Defaults to the copy shipped with the worker. */
+    /**
+     * Trusted capability bundle. Defaults to the copy in this checkout's
+     * prompts directory, whatever the host's environment says.
+     */
     loadCapabilityBundle?: () => Promise<CapabilityLoad>;
   } = {},
 ) {
   const callGh = deps.gh ?? gh;
   const loadCapabilityBundle = deps.loadCapabilityBundle ??
-    loadTrustedCapabilityBundle;
+    (() => loadTrustedCapabilityBundle(undefined, CHECKOUT_PROMPTS_DIR));
   const dir = deps.dir ?? stateDir();
   const limit = deps.limit ?? DEFAULT_LIMIT;
   const host = deps.host ?? "";

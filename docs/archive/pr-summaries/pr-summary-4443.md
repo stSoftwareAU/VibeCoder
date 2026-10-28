@@ -65,10 +65,30 @@ Backend-only change; no UI files touched.
   `promptsDir` whose bundle carries its own revision records that revision.
   Red check: with `prompt_builder.ts` calling `loadTrustedCapabilityBundle()`
   with no directory again, the `buildIssuePrompt` test fails.
-- Callers of `loadTrustedCapabilityBundle` (`pre_pr_verifier.ts`,
-  `capability_security_comparison.ts`, `capability_security_eval.ts`) call it
-  with no arguments and get the default environment lookup; `prompt_builder.ts`
-  passes its `promptsDir`.
+- Callers of `loadTrustedCapabilityBundle`: `pre_pr_verifier.ts` calls it with
+  no arguments and gets the default environment lookup, because it runs in the
+  container's staged copy (the #4443 case). `prompt_builder.ts` passes its
+  `promptsDir`. `capability_security_comparison.ts` and
+  `capability_security_eval.ts` pass `<root>/prompts`, the tree they already
+  read their guidelines and fixtures from.
+  `.claude/skills/review-fleet-prs/scripts/gate.ts` defaults to the prompts
+  directory of the checkout it runs from (its base behaviour), since the gate
+  never runs from the staged copy (PR #4463 second review).
+- Suites bound to this checkout's bundle (PR #4463 second review):
+  `capability_security_review_4366_test.ts` (the gate's `loadCapabilityBundle`
+  when no `bundle` is given, and `loadTrustedCapabilityBundle` in every verifier
+  deps object spreading `defaultPrePrVerifierDeps`) and
+  `pre_pr_verifier_3395_test.ts` (its deps builder). Red checks with
+  `PROMPTS_DIR=/nonexistent` in the shell: without the 4366 and 3395 bindings
+  and the gate default, 41 of 81 tests in those two files fail; with them, all
+  pass. Without the comparison change and the gate default,
+  `capability_security_comparison_4368_test.ts` and
+  `review_fleet_prs_checklists_3594_test.ts` fail 18 of 36; with them, all pass.
+- Every test file that uses the gate, the verifier deps, `buildIssuePrompt` or
+  the capability modules (63 files): 836 passed, 0 failed. With
+  `PROMPTS_DIR=/nonexistent`, the 11 failures left are template-loader tests in
+  `prompt_override_resolver_test.ts` that fail identically on `main`; they read
+  the prompt templates, not the bundle, and are outside this change.
 - `./quality.sh`: every stage passed except `deno tests`, which failed on two
   tests in `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("an
   unformatted Rust change is formatted and committed…", "cargo fmt stages only
