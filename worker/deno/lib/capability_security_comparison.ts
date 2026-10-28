@@ -297,7 +297,12 @@ export async function compareCapabilityGuidance(options: {
     { provider: "claude", model: options.model },
   );
   if (!baseline.ok) throw baseline.error;
-  const bundle = await loadTrustedCapabilityBundle();
+  // The same prompts directory as the baseline guidelines above, never the
+  // host's PROMPTS_DIR (PR #4463 review).
+  const bundle = await loadTrustedCapabilityBundle(
+    undefined,
+    `${options.root}/prompts`,
+  );
   if (bundle.kind !== "loaded") {
     throw new Error("trusted capability bundle unavailable");
   }

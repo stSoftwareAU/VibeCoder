@@ -4,8 +4,9 @@
  * A small, version-controlled bundle shared by issue implementation and
  * review. Selection uses the task, entry points, imports, callers and sinks.
  * A file extension never selects a capability on its own. The bundle is read
- * from the trusted VibeCoder tree; a pull request that edits it is reviewed
- * against the base copy, so it cannot weaken the checks used to review it.
+ * from the trusted VibeCoder prompts tree, resolved as prompt templates are;
+ * a pull request that edits it is reviewed against the base copy, so it
+ * cannot weaken the checks used to review it.
  *
  * Attribution lives in `docs/REFERENCES.md` and `docs/CAPABILITY-SECURITY-GUIDANCE.md`.
  * The rendered prompt does not carry the bibliography.
@@ -16,17 +17,30 @@
  */
 
 import type { ChecklistState } from "./review_checklists.ts";
+import { getPromptsDir } from "./prompt_manager.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** Repo-relative path of the guidance bundle. */
 export const CAPABILITY_BUNDLE_PATH =
   "prompts/coding_guidelines/capability-security.json";
 
-/** URL of the bundle next to this module's repository tree. */
-export function capabilityBundleUrl(): URL {
-  return new URL(
-    "../../../prompts/coding_guidelines/capability-security.json",
-    import.meta.url,
-  );
+/**
+ * Path of the trusted bundle. A caller that names its prompts directory (the
+ * prompt builder's `promptsDir`) gets the bundle from that directory, the same
+ * one its templates come from, and nothing from the environment. Otherwise it
+ * follows the prompt-template resolution in `getPromptsDir`: PROMPTS_DIR, then
+ * VIBE_BASE_DIR, then module-relative (Issues #4302 and #4443). In container
+ * mode the worker runs from a staged copy of worker/deno with no prompts/
+ * directory, so a module-relative path would not exist there. PROMPTS_DIR
+ * points at the read-only checkout.
+ */
+export function capabilityBundlePath(
+  env: EnvLookup = processEnvLookup,
+  promptsDir?: string,
+): string {
+  return `${
+    promptsDir ?? getPromptsDir(undefined, env)
+  }/coding_guidelines/capability-security.json`;
 }
 
 export interface CapabilitySignals {
@@ -256,10 +270,16 @@ export function capabilityLoadFromGitShow(
   return { kind: "fetch_failed", reason: `git show failed: ${cause}` };
 }
 
-/** Read the trusted bundle that ships with this worker. */
-export async function loadTrustedCapabilityBundle(): Promise<CapabilityLoad> {
+/**
+ * Read the trusted bundle that ships with this worker, from `promptsDir` when
+ * the caller names one (see `capabilityBundlePath`).
+ */
+export async function loadTrustedCapabilityBundle(
+  env: EnvLookup = processEnvLookup,
+  promptsDir?: string,
+): Promise<CapabilityLoad> {
   try {
-    const text = await Deno.readTextFile(capabilityBundleUrl());
+    const text = await Deno.readTextFile(capabilityBundlePath(env, promptsDir));
     return loadCapabilityBundleFromText(text);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
