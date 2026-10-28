@@ -79,6 +79,11 @@ flowchart LR
     the 57 newest depend on an open issue, the 3 oldest are plain; asserts the
     result is one of the 3 oldest.
   - `findOldestIssue - 60 plain work-on issues: the oldest eligible one is selected (Issue #4464)`.
+  - One test per remaining collector, each with 60 plain issues carrying only
+    that collector's label and asserting the oldest (#1) is returned:
+    `findOldestIssue - 60 help-wanted issues: the oldest is selected via collectLabelCandidates (Issue #4464)`,
+    `... 60 low-priority issues ... via collectLowPriorityCandidates ...` and
+    `... 60 idle-task issues ... via collectIdleTaskCandidates ...`.
 - `worker/deno/tests/issue_query_test.ts`:
   `fetchIssuesByLabel at SCAN_LABELLED_ISSUE_LIMIT returns all 120 labelled issues from a cold cache (Issue #4464)`
   (also asserts the `--limit` passed is `200`) and a test that the default limit
@@ -89,6 +94,10 @@ flowchart LR
     new `findOldestIssue` tests red (first one: `found` false, expected true).
   - only `collect_work_on_candidates.ts` set back to `50`: both new
     `findOldestIssue` tests red.
+  - only `collect_label_candidates.ts`, only
+    `collect_low_priority_candidates.ts` or only
+    `collect_idle_task_candidates.ts` set back to `50` (call site, one at a
+    time): exactly that collector's own test red, the other four green.
   - only `Math.max(100, limit)` set back to `100`: the 120-issue
     `fetchIssuesByLabel` test red (`100` against `120`); the default-limit test
     stays green, as it should.

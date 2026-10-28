@@ -89,9 +89,10 @@ function issue(
  */
 function createMockGh(
   issues: FixtureIssue[],
+  labelName = "work-on",
 ): (args: string[]) => Promise<string> {
   const timeline = [
-    { event: "labeled", label: { name: "work-on" }, actor: ALICE },
+    { event: "labeled", label: { name: labelName }, actor: ALICE },
   ];
   return (args: string[]): Promise<string> => {
     const command = args.join(" ");
@@ -198,3 +199,46 @@ Deno.test(
     assertEquals(result.output.startsWith("owner/repo-a|1|"), true);
   },
 );
+
+// One test per collector: each puts more than 50 issues carrying only that
+// collector's label in the listing, with the oldest (#1) claimable, so
+// reverting that collector alone to a 50 cap turns its own test red.
+for (
+  const { collector, label } of [
+    {
+      collector: "collectLabelCandidates",
+      label: "help-wanted",
+    },
+    {
+      collector: "collectLowPriorityCandidates",
+      label: "low-priority",
+    },
+    {
+      collector: "collectIdleTaskCandidates",
+      label: "idle-task",
+    },
+  ] as { collector: string; label: string }[]
+) {
+  Deno.test(
+    `findOldestIssue - 60 ${label} issues: the oldest is selected via ${collector} (Issue #4464)`,
+    async () => {
+      const plain = Array.from({ length: 60 }, (_, i) =>
+        issue({
+          number: i + 1,
+          title: `Plain ${i + 1}`,
+          labels: [{ name: label }],
+        }));
+      const mockGh = createMockGh(plain, label);
+
+      const result = await findOldestIssue(makeConfig(), {
+        githubUser: "bot",
+        ghCommandFn: mockGh,
+        cache: createTestCache(),
+        selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+      });
+
+      assertEquals(result.found, true, result.output);
+      assertEquals(result.output.startsWith("owner/repo-a|1|"), true);
+    },
+  );
+}
