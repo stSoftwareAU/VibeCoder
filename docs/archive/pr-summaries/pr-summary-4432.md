@@ -94,8 +94,8 @@ the markdown linter.
   `tests/references_doc_test.ts`, `tests/markdown_anchors_test.ts`,
   `tests/best_practices_cost_speed_reliability_test.ts` and
   `tests/best_practices_verbose_gate_test.ts`. The last two read
-  `docs/BEST-PRACTICES-SCAN.md`; none of the five is edited by this PR, so
-  their counts are not restated here.
+  `docs/BEST-PRACTICES-SCAN.md`; none of the five is edited by this PR, so their
+  counts are not restated here.
 - `markdownlint-cli2` over the three edited files: 0 issues.
 - `tests/rust_glob_import_prelude_4432_docs_test.ts` (added for the PR #4457
   reviews): five tests in the `Google Rust Style Guide learnings` section pin
@@ -107,9 +107,10 @@ the markdown linter.
   restored to the head before the first two review fixes, every test then in the
   file failed; with `rust.md` reverted before the third fix, only the new test
   failed (`section is missing pin "the crate has a library target …"`); with
-  `rust.md` reverted before the fourth fix, only the new test failed (`section
-  is missing pin "a glob of an enum's own variants …"`). Each new pin is absent
-  from `main`, where checks 43–51 do not exist.
+  `rust.md` reverted before the fourth fix, only the new test failed
+  (`section
+  is missing pin "a glob of an enum's own variants …"`). Each new
+  pin is absent from `main`, where checks 43–51 do not exist.
   `deno task drift-pins-on-base` reports every pin absent on `main` and on the
   pre-fix head. Otherwise the change is prompt and doc prose; existing tests
   guard that credited paths exist, bucket files are documented, and anchors
