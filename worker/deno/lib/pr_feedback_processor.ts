@@ -1891,7 +1891,15 @@ async function _processFeedbackWithHeartbeat(
   // the fix branch itself while the local change/push view still reads
   // "nothing pushed" (HEAD off the branch, unpushed count not measured as 0).
   // Commits on origin/<fixBranch> that the PR head lacks are a fix to deliver.
-  if (fixBranch !== undefined && !(hasChanges && pushSucceeded)) {
+  // A MEASURED positive unpushed count is excluded: the worker holds commits
+  // it could not push, so a partly pushed fix branch must not be read as
+  // delivered (the push-failed path owns that case).
+  const unpushedMeasuredPositive = finalUnpushedCount !== undefined &&
+    finalUnpushedCount > 0;
+  if (
+    fixBranch !== undefined && !(hasChanges && pushSucceeded) &&
+    !unpushedMeasuredPositive
+  ) {
     const stranded = await findCommitsAheadOnRemote(
       deps.git.runGitCommand,
       fixBranch,

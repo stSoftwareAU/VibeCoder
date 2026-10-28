@@ -719,6 +719,8 @@ interface StrandedFixScenario {
   aheadCount: string;
   /** When set, the fix branch's fetch from origin fails with this result. */
   fixFetchFailure?: { code: number; stderr: string };
+  /** Unpushed commits the final-mile push helper still measures (default 0). */
+  finalUnpushedCount?: number;
 }
 
 /**
@@ -758,9 +760,14 @@ function makeSelfPushedFixGit(
         value: {
           committedNewChanges: false,
           commitsPushed: 0,
-          finalUnpushedCount: 0,
+          finalUnpushedCount: scenario.finalUnpushedCount ?? 0,
         },
       })) as unknown as GitDeps["commitAndPushPending"],
+    recoverFromPushRejection: (() =>
+      Promise.resolve({
+        ok: false,
+        error: new Error("recovery failed"),
+      })) as unknown as GitDeps["recoverFromPushRejection"],
     captureBranchHead: (() =>
       Promise.resolve({
         ok: true,
@@ -923,4 +930,107 @@ Deno.test("processPrFeedback - gated head: origin unreachable while reading the 
   );
   assertEquals(created, undefined);
   assertEquals(result.value.changesPushed, false);
+});
+
+Deno.test("processPrFeedback - gated head: a measured unpushed count blocks the remote override even when origin's fix branch is ahead (Issue #4466)", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: makeSelfPushedFixGit(gitCalls, {
+      aheadCount: "2",
+      finalUnpushedCount: 2,
+    }),
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-partly-pushed",
+    workRoot: "/tmp/test-milestone-fix-partly-pushed",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  // The worker measured commits it could not push: a partly pushed fix
+  // branch must not be reported as delivered through a fix PR.
+  const created = captured.calls.find((c) =>
+    c[0] === "pr" && c[1] === "create"
+  );
+  assertEquals(created, undefined);
+  assertEquals(result.value.changesPushed, false);
+  assertEquals(
+    gitCalls.some((c) => c[0] === "rev-list" && c[1] === "--count"),
+    false,
+  );
+});
+
+Deno.test("processPrFeedback - non-gated head: the remote fix-branch check never runs (Issue #4466)", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: false }),
+    git: makeSelfPushedFixGit(gitCalls, { aheadCount: "2" }),
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-not-gated",
+    workRoot: "/tmp/test-milestone-fix-not-gated",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const created = captured.calls.find((c) =>
+    c[0] === "pr" && c[1] === "create"
+  );
+  assertEquals(created, undefined);
+  assertEquals(result.value.changesPushed, false);
+  assertEquals(
+    gitCalls.some((c) => c[0] === "rev-list" && c[1] === "--count"),
+    false,
+  );
+});
+
+Deno.test("processPrFeedback - gated head: a locally confirmed push skips the remote fix-branch check (Issue #4466)", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: makeSuccessfulPushGit(gitCalls),
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-local-confirmed",
+    workRoot: "/tmp/test-milestone-fix-local-confirmed",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(result.value.changesPushed, true);
+  assertEquals(
+    gitCalls.some((c) => c[0] === "rev-list" && c[1] === "--count"),
+    false,
+  );
 });
