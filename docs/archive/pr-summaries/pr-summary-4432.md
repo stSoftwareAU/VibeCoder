@@ -100,8 +100,10 @@ the markdown linter.
   exported-enum scope. Red-checked: with the section restored to the head before
   the first two review fixes, every test then in the file failed (first fix: 0
   of 1 passed; second fix: 0 of 3 passed); with `rust.md` reverted before the
-  third fix, only the new test failed (`section is missing pin "the crate has a
-  library target …"`, 3 passed, 1 failed). Each new pin is absent from `main`, where checks 43–51 do not exist.
+  third fix, only the new test failed
+  (`section is missing pin "the crate has a
+  library target …"`, 3 passed, 1
+  failed). Each new pin is absent from `main`, where checks 43–51 do not exist.
   `deno task drift-pins-on-base` reports every pin absent on `main` and on the
   pre-fix head. Otherwise the change is prompt and doc prose; existing tests
   guard that credited paths exist, bucket files are documented, and anchors
