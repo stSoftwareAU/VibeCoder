@@ -708,3 +708,219 @@ Deno.test("processPrFeedback - gated head: branch_held with a failed reaction DE
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// Issue #4466: the remote decides whether a gated-head fix was pushed
+// ---------------------------------------------------------------------------
+
+/** Remote state the git mock reports for the feedback fix branch. */
+interface StrandedFixScenario {
+  /** stdout of `rev-list --count <fix> --not <head>` on origin. */
+  aheadCount: string;
+  /** When set, the fix branch's fetch from origin fails with this result. */
+  fixFetchFailure?: { code: number; stderr: string };
+}
+
+/**
+ * A run where the agent pushed the fix branch itself while the local view
+ * reads "nothing pushed": no local commit, no unpushed commits, HEAD not moved.
+ */
+function makeSelfPushedFixGit(
+  gitCalls: string[][],
+  scenario: StrandedFixScenario,
+): Partial<GitDeps> {
+  const runGitCommand = (args: string[], _opts?: unknown) => {
+    gitCalls.push(args);
+    const reply = (stdout: string, code = 0, stderr = "") =>
+      Promise.resolve({ ok: true, value: { code, stdout, stderr } });
+    const isFixFetch = args[0] === "fetch" &&
+      (args.at(-1) ?? "").includes("milestone-fix/");
+    if (isFixFetch && scenario.fixFetchFailure !== undefined) {
+      return reply(
+        "",
+        scenario.fixFetchFailure.code,
+        scenario.fixFetchFailure.stderr,
+      );
+    }
+    if (args[0] === "rev-list" && args[1] === "--count") {
+      return reply(`${scenario.aheadCount}\n`);
+    }
+    if (args[0] === "rev-parse" && args[1] === "--verify") {
+      return reply(`${"b".repeat(40)}\n`);
+    }
+    return reply("");
+  };
+  return {
+    runGitCommand: runGitCommand as unknown as GitDeps["runGitCommand"],
+    commitAndPushPending: (() =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          committedNewChanges: false,
+          commitsPushed: 0,
+          finalUnpushedCount: 0,
+        },
+      })) as unknown as GitDeps["commitAndPushPending"],
+    captureBranchHead: (() =>
+      Promise.resolve({
+        ok: true,
+        value: "a".repeat(40),
+      })) as unknown as GitDeps["captureBranchHead"],
+    branchHeadChanged:
+      (() => Promise.resolve({ ok: true, value: false })) as unknown as GitDeps[
+        "branchHeadChanged"
+      ],
+  };
+}
+
+Deno.test("processPrFeedback - gated head: agent pushed the fix branch itself, local view reads nothing pushed => fix PR still raised from the remote view (Issue #4466)", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: makeSelfPushedFixGit(gitCalls, { aheadCount: "2" }),
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-self-pushed",
+    workRoot: "/tmp/test-milestone-fix-self-pushed",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const checkout = gitCalls.find((c) => c[0] === "checkout" && c[1] === "-B");
+  if (!checkout) throw new Error("expected a checkout -B call");
+  const fixBranch = checkout[2] as string;
+
+  // The stranded fix is delivered: a fix PR from the fix branch into the
+  // gated head, not a no-change reply.
+  const created = captured.calls.find((c) =>
+    c[0] === "pr" && c[1] === "create"
+  );
+  if (!created) throw new Error("expected a pr create call");
+  assertEquals(created[created.indexOf("--base") + 1], MILESTONE_HEAD);
+  assertEquals(created[created.indexOf("--head") + 1], fixBranch);
+
+  assertEquals(result.value.changesPushed, true);
+  assertStringIncludes(result.value.summary, "fix PR #9001");
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "PR #9001");
+  assertStringIncludes(body, "Verified on the remote");
+  for (const comment of captured.comments) {
+    assertEquals(
+      comment.includes("could not identify a code change"),
+      false,
+    );
+  }
+});
+
+Deno.test("processPrFeedback - gated head: fix branch on origin holds no commits the PR head lacks => no fix PR, ordinary no-change path (Issue #4466)", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: makeSelfPushedFixGit(gitCalls, { aheadCount: "0" }),
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-nothing-ahead",
+    workRoot: "/tmp/test-milestone-fix-nothing-ahead",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const created = captured.calls.find((c) =>
+    c[0] === "pr" && c[1] === "create"
+  );
+  assertEquals(created, undefined);
+  assertEquals(result.value.changesPushed, false);
+});
+
+Deno.test("processPrFeedback - gated head: fix branch absent from origin => no fix PR and no throw (Issue #4466)", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: makeSelfPushedFixGit(gitCalls, {
+      aheadCount: "0",
+      fixFetchFailure: {
+        code: 128,
+        stderr: "fatal: couldn't find remote ref refs/heads/milestone-fix",
+      },
+    }),
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-absent-on-origin",
+    workRoot: "/tmp/test-milestone-fix-absent-on-origin",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const created = captured.calls.find((c) =>
+    c[0] === "pr" && c[1] === "create"
+  );
+  assertEquals(created, undefined);
+  assertEquals(result.value.changesPushed, false);
+});
+
+Deno.test("processPrFeedback - gated head: origin unreachable while reading the fix branch => no fabricated fix PR, still ok (Issue #4466)", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: makeSelfPushedFixGit(gitCalls, {
+      aheadCount: "2",
+      fixFetchFailure: {
+        code: 128,
+        stderr: "fatal: unable to access remote",
+      },
+    }),
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-remote-unreachable",
+    workRoot: "/tmp/test-milestone-fix-remote-unreachable",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const created = captured.calls.find((c) =>
+    c[0] === "pr" && c[1] === "create"
+  );
+  assertEquals(created, undefined);
+  assertEquals(result.value.changesPushed, false);
+});
