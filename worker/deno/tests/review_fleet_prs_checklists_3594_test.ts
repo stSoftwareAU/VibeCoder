@@ -733,6 +733,56 @@ Deno.test("fleet post - earlier findings cannot disappear from a clean reply", (
   );
 });
 
+// PR #4467 review: the fleet path passes the logged findings as objects, so a
+// gap quotes the original as text and carries it as `earlier`. Sending them
+// through JSON.stringify again would quote escaped JSON and nest a layer.
+Deno.test("fleet post - an earlier finding comes back as a readable gap that stays one level deep", () => {
+  const original = {
+    file: "a.ts",
+    line: 2,
+    problem: "two paths broken",
+    fix: "fix both",
+  };
+  const reply = {
+    summary: "still one path",
+    findings: [],
+    testChanges: "none",
+    earlierFindings: [{
+      index: 1,
+      verdict: "partly",
+      note: "only one path fixed",
+    }],
+  };
+  const first = reviewForPost(reply, {
+    checklistState: { expected: [], problem: null },
+    previousFindings: [original],
+  }).findings;
+  assertEquals(first.length, 1);
+  const gap = first[0]!;
+  assertStringIncludes(gap.problem, "a.ts:2 — two paths broken");
+  assertStringIncludes(gap.problem, "only one path fixed");
+  assert(!gap.problem.includes("{"), gap.problem);
+  assert(!gap.problem.includes("\\"), gap.problem);
+  assertEquals(gap.fix, original.fix);
+  assertEquals(gap.earlier, original);
+
+  // The review log stores the posted findings as JSON; the next round's gate
+  // hands them back as previousFindings.
+  const logged = JSON.parse(JSON.stringify(first));
+  const second = reviewForPost({
+    ...reply,
+    earlierFindings: [{ index: 1, verdict: "not fixed", note: "unchanged" }],
+  }, {
+    checklistState: { expected: [], problem: null },
+    previousFindings: logged,
+  }).findings;
+  assertEquals(second.length, 1);
+  const again = second[0]!;
+  assertEquals(again.earlier, original);
+  assertEquals(again.problem.split("Earlier finding").length - 1, 1);
+  assertStringIncludes(again.problem, "a.ts:2 — two paths broken");
+});
+
 Deno.test("fleet post - a missing earlier-findings inventory cannot approve", () => {
   let message = "";
   try {
