@@ -28,7 +28,12 @@ Wording changes only, in three prompts and one standards line:
   `missing`".
 - `prompts/pr_feedback/prompt.md`, "Stopping the PR from closing its issue": the
   agent writes `Part of #N` in the summary itself; the body's
-  `## Not closing #N` section is unchanged.
+  `## Not closing #N` section is unchanged. The paragraph also gives the
+  reverse step: when a fix finishes every `missing` criterion, the agent marks
+  each one `met` and replaces `Part of #N` with `Closes #N`, because the
+  rebuilt body then appends `Closes #N` (`ensurePrReferencesIssue`, called from
+  `assemblePrBody` once `findMissingCriteria` is empty) and the committed
+  summary must say the same (PR #4468 review).
 
 Version bump: not applicable; no `VERSION` change is part of this wording
 change.
@@ -52,7 +57,9 @@ change.
   `withholdIssueClose` and the `pr_summary_check.ts` "Part of still closes"
   gate, which passes `Part of #N` only when a `missing` entry parses. The prompt
   says so.
-- No new gate or drift test, as the issue asks for "no new rule, gate or check".
+- No new gate or check, as the issue asks for "no new rule, gate or check".
+  The one test added pins the reverse `Part of` → `Closes` step the review
+  asked for, so the pr_feedback paragraph cannot lose it silently.
 
 ### Undiscoverable Facts
 
@@ -80,7 +87,19 @@ summary: it has no `missing` criterion, so it carries `Closes #4445`.
 
 ## Test Plan
 
-- No test added: the issue asks for a rewording with no new check.
+- Added to `worker/deno/tests/pr_claims_verified_3058_test.ts`: "Issue #4445 -
+  pr_feedback prompt restores Closes #N once no criterion is missing" (PR #4468
+  review). It reads the "Making Changes" section of
+  `prompts/pr_feedback/prompt.md` and pins four phrases: ``write `Part of #N`
+  in the summary yourself``, ``When your fix finishes every criterion marked
+  `missing` (none is left `missing`)``, ``replace `Part of #N` in the summary
+  with `Closes #N` `` and `the committed summary must say the same`.
+  - Red check: with `prompts/pr_feedback/prompt.md` restored to the previous
+    head's text, the test fails on ``When your fix finishes every criterion
+    marked `missing` (none is left `missing`)`` (5 passed, 1 failed); with the
+    change it passes (6 passed, 0 failed).
+  - `deno task drift-pins-on-base origin/main prompts/pr_feedback/prompt.md
+    "Making Changes"` with the four phrases reports each one `absent on base`.
 - Edited `worker/deno/tests/pr_claims_verified_3058_test.ts` ("issue prompt
   demands demonstrated criteria and finished deliverables"), which pinned the
   sentence this change had to reword.
@@ -96,25 +115,20 @@ summary: it has no `missing` criterion, so it carries `Closes #4445`.
       ``"a `partial` one does not hold the issue open"`` (PR #4468 review)
     - Required by: "change \"The worker raises no PR until every criterion is
       met (Issue #4146)\" to match"
-  - Red check: with `prompts/issue/prompt.md` restored to the previous head's
-    text, the test fails on
-    `is named on the PR, which the worker raises
-    anyway`; with the change it
-    passes (5 passed, 0 failed). `deno task
-    drift-pins-on-base origin/main`
-    reports all three new pins absent from the base "Acceptance-Criteria
-    Closure" section.
+  - Red check: with `prompts/issue/prompt.md` restored to `origin/main`'s
+    text, "issue prompt demands demonstrated criteria and finished
+    deliverables" fails on its first new pin, `Finish every unmet criterion`
+    (5 passed, 1 failed); with the change it passes. `deno task drift-pins-on-base origin/main prompts/issue/prompt.md
+    "Acceptance-Criteria Closure"` with all four new pins reports each one
+    `absent on base`: `Finish every unmet criterion`, `is named on the PR,
+    which the worker raises anyway`, ``a `missing` one makes it `Part of
+    #{{ISSUE_NUMBER}}` `` and ``a `partial` one does not hold the issue open``.
 - Ran `deno task test:unit tests/pr_claims_verified_3058_test.ts`
-  (`worker/deno/tests/pr_claims_verified_3058_test.ts`, 5 tests at head).
-- `./quality.sh` ran on the head: every stage passed (markdownlint, mermaid,
-  semgrep, lint, type check, fmt) except the parallel deno-test pass, which
-  reported 30822 passed and 2 failed. Both failures are in
-  `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("an unformatted
-  Rust change is formatted and committed, then passes the gate" and "cargo fmt
-  stages only the branch's .rs files, not an unrelated uncommitted edit", both
-  "formatter should commit the Rust fix"). They fail the same way when that file
-  runs alone, and they exercise the Rust formatter, which this wording-only diff
-  does not touch. I did not check them against the base branch, so the serial
-  test pass did not run. Likely worker-environment fault; unverified.
+  (`worker/deno/tests/pr_claims_verified_3058_test.ts`, 6 tests at head):
+  6 passed, 0 failed.
+- On the final head, `deno fmt --check`, `deno lint` and `deno task
+  check:manifests` passed from `worker/deno`, and markdownlint passed on the
+  changed Markdown. The full `./quality.sh` suite was not run for this push
+  (the review-fix host cannot reach jsr.io); CI's `validate` job runs it.
 - `deno task pr-summary-check` against this summary: 0 gates blocked, 0 not
   checked.

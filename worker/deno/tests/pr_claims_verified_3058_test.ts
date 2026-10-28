@@ -80,6 +80,29 @@ Deno.test("Issue #3058 - issue prompt holds docs the diff touches to the same ru
   }
 });
 
+// Issue #4445 (PR #4468 review): a fix run that finishes every `missing`
+// criterion must switch the summary back to `Closes #N`, or the rebuilt body
+// (which appends `Closes #N` once nothing is `missing`) and the committed
+// summary disagree again.
+Deno.test("Issue #4445 - pr_feedback prompt restores Closes #N once no criterion is missing", async () => {
+  const makingChanges = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Making Changes",
+    ),
+  );
+  for (
+    const required of [
+      "write `Part of #N` in the summary yourself",
+      "When your fix finishes every criterion marked `missing` (none is left `missing`)",
+      "replace `Part of #N` in the summary with `Closes #N`",
+      "the committed summary must say the same",
+    ]
+  ) {
+    assertStringIncludes(makingChanges, required);
+  }
+});
+
 Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading", async () => {
   const guidelinesPrompt = await readRepoDoc(
     "prompts/coding_guidelines/prompt.md",
