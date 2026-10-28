@@ -121,3 +121,56 @@ Deno.test("buildConflictEscalationComment - a Deno task left to CI says it did n
   assertStringIncludes(withCargo, "Cargo was not run either (Issue #4326).");
   assertEquals(withCargo.includes("passed the repository's own check"), false);
 });
+
+Deno.test("buildConflictEscalationComment - a type check left to CI says it did not run and does not claim it passed (Issue #4441)", () => {
+  const base = {
+    repo: "org/repo",
+    milestoneBranch: "milestone/4441",
+    defaultBranch: "main",
+    tips: [],
+    landing: { kind: "tip" as const, branch: "milestone/4441", sha: "bbb" },
+  };
+  const conflict = {
+    files: ["web/main_test.ts"],
+    milestoneSha: "aaa",
+    defaultSha: "bbb",
+    resolution: "auto" as const,
+    decisions: [],
+  };
+  const left =
+    "deno task check in /w/web could not fetch its remote modules (0: error sending request for url (https://esm.sh/x))";
+  const suite =
+    "deno task test in /w/web could not fetch its remote modules (0: error sending request for url (https://esm.sh/y))";
+
+  const checkLeft = buildConflictEscalationComment({
+    ...base,
+    conflict: { ...conflict, checkLeftToCi: left },
+  });
+  assertStringIncludes(checkLeft, "did NOT run");
+  assertStringIncludes(checkLeft, "does not claim it passed (Issue #4441)");
+  assertStringIncludes(checkLeft, left);
+  assertStringIncludes(checkLeft, "milestone PR's CI runs it");
+  assertEquals(
+    checkLeft.includes("The merged tree passed the repository's own check"),
+    false,
+  );
+  assertEquals(checkLeft.includes("The same applies to"), false);
+
+  const both = buildConflictEscalationComment({
+    ...base,
+    conflict: { ...conflict, checkLeftToCi: left, suiteLeftToCi: suite },
+  });
+  assertStringIncludes(both, "does not claim it passed (Issue #4441)");
+  assertStringIncludes(both, "The same applies to");
+  assertStringIncludes(both, suite);
+  assertEquals(
+    both.includes("The merged tree passed the repository's own check"),
+    false,
+  );
+
+  const withCargo = buildConflictEscalationComment({
+    ...base,
+    conflict: { ...conflict, checkLeftToCi: left, cargoSkipped: true },
+  });
+  assertStringIncludes(withCargo, "Cargo was not run either (Issue #4326).");
+});

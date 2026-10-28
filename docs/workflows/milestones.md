@@ -490,7 +490,9 @@ task still runs, so a real failure elsewhere still refuses the resolution. A
 refused. `quality.sh` is never substituted for an unreachable unit suite. The
 resolution lands with the outcome `suiteLeftToCi`, naming the task and the
 cause, and the report says that task did not run and that the milestone PR's
-CI runs it. A Deno-only tree and a mixed tree keep their Deno checks and suites
+CI runs it. A Deno type check that cannot fetch its remote modules is treated the
+same way (Issue #4444): the outcome is `checkLeftToCi`, the push note starts
+`CHECK LEFT TO CI:`, and the report says the type check did not fully run. A Deno-only tree and a mixed tree keep their Deno checks and suites
 and are rolled back when red, except for that unreachable-module case. A mixed
 tree whose Deno half passed notes that cargo was left to CI; the report does not
 claim the cargo half passed.

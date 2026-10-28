@@ -829,3 +829,60 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a gate whose type check left a Deno check to CI reaches the conflict report as checkLeftToCi (Issue #4441)",
+  async () => {
+    const fx = await setup(
+      { "CHANGELOG.md": "# Changelog\n\n## Unreleased\n" },
+      {
+        files: {
+          "CHANGELOG.md":
+            "# Changelog\n\n## Unreleased\n\n- the branch's entry\n",
+        },
+        subject: "Issue #4441: the branch's entry",
+      },
+      {
+        files: {
+          "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n- main's entry\n",
+        },
+        subject: "Issue #4441: main's entry",
+      },
+    );
+    const left =
+      "deno task check in /w/web could not fetch its remote modules (0: error sending request for url (https://esm.sh/x))";
+    const leftToCi: MergeGateFn = () =>
+      Promise.resolve({
+        status: "passed" as const,
+        // The detail shape checkMergedTree gives a left-to-CI type check.
+        detail: `cargo check in /w passed; ${left} — left to CI (Issue #4422)`,
+        output: "",
+        checkLeftToCi: left,
+      });
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        leftToCi,
+      );
+
+      assert(
+        result.ok,
+        `expected the resolution to land: ${
+          !result.ok && result.error.message
+        }`,
+      );
+      assertEquals(result.value.conflict?.resolution, "auto");
+      assertEquals(result.value.conflict?.checkLeftToCi, left);
+      assertEquals(result.value.conflict?.suiteLeftToCi, undefined);
+      assertEquals(result.value.conflict?.unverified, undefined);
+      // The push note names the type check that did not run (Issue #4441).
+      assertStringIncludes(result.value.message, "CHECK LEFT TO CI:");
+      assertStringIncludes(result.value.message, left);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);

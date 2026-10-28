@@ -4319,7 +4319,10 @@ and is not repaired. Every other task still runs, so a real failure elsewhere
 still refuses the resolution, and `quality.sh` is never substituted for an
 unreachable unit suite. The resolution then lands with the outcome field
 `suiteLeftToCi`, naming the task and the cause, and the escalation comment says
-that task did not run and that the milestone PR's CI runs it. The exception
+that task did not run and that the milestone PR's CI runs it. A Deno type check
+(`deno task check`) that cannot fetch its modules is treated the same way and
+recorded as `checkLeftToCi` (Issue #4444); the report states that the type check
+did not fully run rather than claiming it passed. The exception
 does not relax the rule for the tree: the report names the task as not run, so
 nothing reads as verified.
 What the triage
@@ -4481,7 +4484,10 @@ Three properties matter:
   above: a Deno task whose remote module host this host cannot reach is reported
   as not run, and the resolution lands with `suiteLeftToCi` naming it, rather
   than being counted as passed or refused. The Issue #974 type check in
-  `checkMergedTree` is outside that exception and is unchanged.
+  `checkMergedTree` now takes the same exception for an unreachable module host
+  (Issue #4444): the project's type check is reported as not run through
+  `checkLeftToCi`, never as passed, and the resolution lands with a
+  `CHECK LEFT TO CI:` note.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
