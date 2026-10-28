@@ -96,9 +96,9 @@ Backend-only change; no UI files touched.
   `pre_pr_verifier_3395_test.ts` (74 tests),
   `capability_security_comparison_4368_test.ts` (9 tests),
   `review_fleet_prs_checklists_3594_test.ts` (27 tests) and
-  `review_fleet_prs_checkout_prompts_dir_4463_test.ts` (1 test); 130 passed,
-  0 failed in total. The earlier broader sweep over every file that uses the
-  gate, the verifier deps, `buildIssuePrompt` or the capability modules is not
+  `review_fleet_prs_checkout_prompts_dir_4463_test.ts` (1 test); 130 passed, 0
+  failed in total. The earlier broader sweep over every file that uses the gate,
+  the verifier deps, `buildIssuePrompt` or the capability modules is not
   restated: it predates the third-review test file, and was not re-run at head.
 - `./quality.sh`: every stage passed except `deno tests`, which failed on two
   tests in `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("an
