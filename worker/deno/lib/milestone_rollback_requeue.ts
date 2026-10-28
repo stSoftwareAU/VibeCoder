@@ -18,6 +18,7 @@
  */
 
 import type { RevertedChild } from "./milestone_rollback.ts";
+import { MERGE_FALLBACK_TARGET_REPO } from "./merge_fallback_issue.ts";
 import { extractIssueFromBranch } from "./pr_maintenance.ts";
 import { extractClosingIssueNumbers } from "./pr_body.ts";
 import {
@@ -179,9 +180,9 @@ export function buildRollbackNotice(input: RollbackNoticeInput): string {
  */
 function describeFlagIssue(flagIssue: number | undefined): string {
   return flagIssue !== undefined && flagIssue > 0
-    ? `The conflict is recorded on the \`merge-fallback\` flag #` +
-      `${flagIssue} — both runs, what they tripped on and what was ` +
-      `reverted.\n\n`
+    ? `The conflict is recorded as a worker failure in ` +
+      `${MERGE_FALLBACK_TARGET_REPO}#${flagIssue} — the runs, what they ` +
+      `tripped on and what was reverted (Issue #4456).\n\n`
     : `The \`merge-fallback\` flag could not be filed for this fallback, so ` +
       `the run log is the only record of it (Issue #2311).\n\n`;
 }
@@ -430,7 +431,7 @@ export async function escalateRollbackFailure(
       `Reported a failed milestone roll-back for '${milestoneBranch}' ` +
         `in ${repo} on issue #${target.issue}, flagged as ${
           options.flagIssue !== undefined && options.flagIssue > 0
-            ? `#${options.flagIssue}`
+            ? `${MERGE_FALLBACK_TARGET_REPO}#${options.flagIssue}`
             : "no merge-fallback issue"
         } (Issues #1781, #2311).`,
     );

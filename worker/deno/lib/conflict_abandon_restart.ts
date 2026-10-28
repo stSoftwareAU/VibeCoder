@@ -109,6 +109,7 @@ import {
 } from "./conflict_fallback_context.ts";
 import {
   createFallbackFlagFiler,
+  MERGE_FALLBACK_TARGET_REPO,
   type MergeFallbackFiling,
   type MergeFallbackOutcome,
   type MergeFallbackRun,
@@ -1271,45 +1272,51 @@ export function buildRestartIssueComment(args: {
 }
 
 /**
- * The comment posted on a PR closed with no originating issue (Issue #2310).
- *
- * Until now that PR was left open and handed to a human. Nobody came: it sat
- * conflicting, out of budget and unowned. So it is closed too — and because
- * there is no issue to re-queue, the `merge-fallback` flag issue is the re-do
- * item, which is what this comment has to make findable.
+ * Marker on the one comment recording that a no-issue PR's fallback was filed
+ * in VibeCoder (Issue #4456), so a later cycle does not file it again.
  */
-export function buildNoIssueAbandonPrComment(args: {
+export const NO_ISSUE_FALLBACK_RECORDED_MARKER =
+  "<!-- vibe-merge-fallback-recorded -->";
+
+/** Cause recorded for a PR whose conflict ladder ran out (Issue #4456). */
+export const PR_LADDER_EXHAUSTED_CAUSE = "the PR conflict ladder was exhausted";
+
+/**
+ * The comment on a conflicting PR with no originating issue (Issues #2310,
+ * #4456): it stays open, and its fallback is a VibeCoder failure.
+ *
+ * Closing it and filing a re-do issue in its place created new work instead
+ * of finishing this work, so the PR is left open for the ladder to keep
+ * working, and the fallback is filed in VibeCoder for the worker to be fixed.
+ */
+export function buildNoIssueKeptOpenPrComment(args: {
   request: AbandonRestartRequest;
   history: FailedAttemptHistory;
-  /** Why no originating issue could be resolved. */
   reason: PrUnresolvedReason;
-  /** The flag issue that now carries the work. */
-  flagIssueNumber: number;
+  /** The VibeCoder record, or 0 when its number could not be read. */
+  recordIssueNumber: number;
 }): string {
-  const { request, history, flagIssueNumber } = args;
+  const { request, history, recordIssueNumber } = args;
   const branch = sanitiseIssueText(request.branchName);
   const base = sanitiseIssueText(request.baseBranch);
+  const record = recordIssueNumber > 0
+    ? `${MERGE_FALLBACK_TARGET_REPO}#${recordIssueNumber}`
+    : `a \`merge-fallback\` issue in ${MERGE_FALLBACK_TARGET_REPO} whose ` +
+      "number could not be read";
   return [
-    `♻️ **Abandoning this PR — the work comes back as #${flagIssueNumber}**`,
+    NO_ISSUE_FALLBACK_RECORDED_MARKER,
+    "🚩 **This PR stays open — the fallback is recorded as a worker failure**",
     "",
     `${describeConcludedAttempts(history)}, and GitHub still will not merge ` +
     `\`${branch}\` into \`${base}\`.`,
     "",
-    `This PR names **no originating issue** (${args.reason}): neither its ` +
-    "branch name, nor a closing keyword in its body, nor GitHub's own linkage " +
-    "points at one. Leaving it open used to be the safe answer, but nobody " +
-    "came — it stayed conflicting, out of budget and unowned. So the fallback " +
-    `records the work as issue #${flagIssueNumber} instead: a ` +
-    "`merge-fallback` flag carrying `idle-task` and this PR's diff summary, " +
-    "which makes it the re-do item the fleet picks up.",
+    `This PR names **no originating issue** (${args.reason}). It is not ` +
+    "closed and no new issue is filed to redo it: the conflict ladder keeps " +
+    `working this PR. The worker's failure to settle it is recorded in ${record}.`,
     "",
     "**Conflicted paths**",
     "",
     ...conflictedPathLines(history),
-    "",
-    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
-    "force-pushed: every commit on it stays exactly as its author pushed it, " +
-    "so the abandoned work remains readable and linked from here.",
   ].join("\n");
 }
 
@@ -1387,36 +1394,6 @@ export function buildStalledRestartIssueComment(args: {
   ].join("\n");
 }
 
-/**
- * The PR comment for a stalled PR naming no originating issue (Issue #2802):
- * closed, and no issue filed — the branch is the record.
- */
-export function buildStalledNoIssueClosePrComment(args: {
-  request: AbandonRestartRequest;
-  detail: string;
-  tried: StallRepairTried;
-  reason: PrUnresolvedReason;
-}): string {
-  const branch = sanitiseIssueText(args.request.branchName);
-  return [
-    "♻️ **Closing this stalled PR**",
-    "",
-    `This PR ${sanitiseIssueText(args.detail)}. ${
-      describeStallRepair(
-        args.tried,
-        sanitiseIssueText(args.request.baseBranch),
-      )
-    }, and it is still stalled.`,
-    "",
-    `It names **no originating issue** (${args.reason}), so there is nothing ` +
-    "to re-queue, and the stall watchdog files no issue of its own. It is " +
-    "closed so it stops blocking the queue.",
-    "",
-    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
-    "force-pushed, so the work remains readable and linked from here.",
-  ].join("\n");
-}
-
 // ---------------------------------------------------------------------------
 // The rung
 // ---------------------------------------------------------------------------
@@ -1470,19 +1447,16 @@ type FailedReporter = (
 ) => AbandonRestartOutcome;
 
 /**
- * Close a conflicting PR that names no originating issue, filing the
- * `merge-fallback` flag as the re-do item (Issue #2310).
+ * Leave a conflicting PR that names no originating issue open, and record its
+ * fallback in VibeCoder (Issues #2310, #4456).
  *
- * The old answer was to decline: closing a PR the fleet cannot re-raise loses
- * the work outright. That reasoning still holds — what changed is that the flag
- * issue *is* something the fleet can re-raise from. It carries `idle-task` and
- * the PR's diff summary, so the work is queued rather than parked on a human
- * who never came.
- *
- * **The flag is filed before anything is closed.** A close with no findable
- * record is the loss the decline existed to prevent, so a filing failure —
- * including one that files an issue whose number cannot be read — leaves the PR
- * open and names the `fallback-flag` step.
+ * Closing it and filing a re-do issue in the source repository made new work
+ * instead of finishing this work, so neither happens: the PR stays open for
+ * the ladder to keep working, and the result is the `no-originating-issue`
+ * decline. A stalled PR (Issue #2802) stays open the same way. The record is
+ * filed once per PR — the marker comment says it was — and a record that
+ * cannot be filed never changes the decline: it is logged, and the next cycle
+ * tries again.
  */
 async function abandonWithoutOriginatingIssue(
   request: AbandonRestartRequest,
@@ -1493,46 +1467,26 @@ async function abandonWithoutOriginatingIssue(
   const { repo, prNumber } = request;
   const gh = deps.gh;
   const logger = deps.logger;
+  const declined: AbandonRestartOutcome = {
+    outcome: "declined",
+    reason: { kind: "no-originating-issue", detail: reason },
+  };
 
-  // Issue #2802: a stalled PR files no issue — comment, close, done.
   if (request.reason?.kind === "stalled") {
-    try {
-      await gh([
-        "pr",
-        "comment",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--body",
-        buildStalledNoIssueClosePrComment({
-          request,
-          detail: request.reason.detail,
-          tried: request.reason.tried,
-          reason,
-        }),
-      ]);
-    } catch (error) {
-      return failed("pr-comment", error);
-    }
-    try {
-      // No `--delete-branch`: the abandoned commits must stay readable.
-      await gh(["pr", "close", String(prNumber), "--repo", repo]);
-    } catch (error) {
-      return failed("pr-close", error);
-    }
     logger?.warn?.(
-      `Stalled PR #${prNumber} named no originating issue (${reason}) — ` +
-        "closed it; no issue filed",
+      `Stalled PR #${prNumber} names no originating issue (${reason}) — left ` +
+        "open; a PR is never closed and redone through a new issue " +
+        "(Issue #4456)",
       { repo, prNumber },
     );
-    return { outcome: "closed-without-issue", reason };
+    return declined;
   }
 
   let comments: readonly unknown[];
   try {
-    // Attributed like every other read of this thread (Issue #1247): the flag
-    // issue quotes it, so an outsider's text must never be filed as the
-    // fleet's own record of what the runs found.
+    // Attributed like every other read of this thread (Issue #1247): the
+    // record quotes it, so an outsider's text must never be filed as the
+    // fleet's own account of what the runs found.
     comments = partitionConflictComments(
       request.prComments ?? await fetchIssueCommentPages(repo, prNumber, gh),
       deps.trustedAuthors,
@@ -1540,10 +1494,17 @@ async function abandonWithoutOriginatingIssue(
   } catch (error) {
     return failed("pr-thread", error);
   }
+  const alreadyRecorded = comments.some((comment) =>
+    typeof (comment as { body?: unknown }).body === "string" &&
+    (comment as { body: string }).body.includes(
+      NO_ISSUE_FALLBACK_RECORDED_MARKER,
+    )
+  );
+  if (alreadyRecorded) return declined;
   const history = summariseFailedAttempts(comments, deps.trustedAuthors);
 
   // Best-effort context: a read that failed renders as `not recorded` in the
-  // flag body rather than as a guess, and never stops the fallback.
+  // record rather than as a guess, and never stops the fallback.
   const divergence = await readPrDivergence({
     repo,
     prNumber,
@@ -1560,7 +1521,12 @@ async function abandonWithoutOriginatingIssue(
     ...(logger !== undefined ? { logger } : {}),
   });
 
-  const filing: MergeFallbackFiling = {
+  const filer = deps.fileFallbackFlag ?? createFallbackFlagFiler({
+    gh,
+    ...(logger !== undefined ? { logger } : {}),
+    fleetAuthors: deps.trustedAuthors,
+  });
+  const filed = await filer({
     target: {
       kind: "pr",
       repo,
@@ -1568,54 +1534,23 @@ async function abandonWithoutOriginatingIssue(
       headBranch: request.branchName,
       baseBranch: request.baseBranch,
     },
+    cause: PR_LADDER_EXHAUSTED_CAUSE,
     conflictedFiles: history.conflictedPaths,
     runs: mergeFallbackRunsFromHistory(history),
     ...divergence,
     ...(diff !== undefined
       ? { diffSummary: diff.files, diffSummaryOmitted: diff.omitted }
       : {}),
-    fallbackAction: `Closed ${repo}#${prNumber} (\`${request.branchName}\`). ` +
-      `No originating issue could be found (${reason}), so this issue carries ` +
-      "`idle-task` and is the re-do item for that work.",
-    requestIdleTask: true,
-  };
-
-  const filer = deps.fileFallbackFlag ?? createFallbackFlagFiler({
-    gh,
-    ...(logger !== undefined ? { logger } : {}),
-    fleetAuthors: deps.trustedAuthors,
+    fallbackAction: `Left ${repo}#${prNumber} open: it names no originating ` +
+      `issue (${reason}), so the ladder keeps working the same PR.`,
   });
-
-  const filed = await filer(filing);
-  if (!filed.ok) return failed("fallback-flag", filed.error);
-  const flagIssueNumber = filed.value.issueNumber;
-  if (!Number.isSafeInteger(flagIssueNumber) || flagIssueNumber <= 0) {
-    return failed(
-      "fallback-flag",
-      new Error(
-        "the merge-fallback flag was filed but its number could not be read, " +
-          "so nothing can link to the re-do item — this PR is left open " +
-          "rather than closed against a record nobody can find",
-      ),
+  if (!filed.ok) {
+    logger?.warn?.(
+      `PR #${prNumber} names no originating issue (${reason}) — left open; ` +
+        "its fallback could not be recorded in VibeCoder this cycle",
+      { repo, prNumber, error: filed.error.message },
     );
-  }
-
-  // An appended event lands as a comment on an existing flag, and the filer
-  // labels only the issues it creates — so the pickup label has to be applied
-  // here or a second fallback on the same PR would close it against a flag
-  // nobody picks up. Failing to apply it leaves the PR open: an unqueued re-do
-  // item is the work lost, which is the whole point of filing first.
-  if (filed.value.appended) {
-    try {
-      const labelled = deps.addLabel
-        ? await deps.addLabel(repo, flagIssueNumber, IDLE_TASK_LABEL)
-        : await addLabelToIssue(repo, flagIssueNumber, IDLE_TASK_LABEL, {
-          ghCommandFn: gh,
-        });
-      if (!labelled.ok) return failed("fallback-flag", labelled.error);
-    } catch (error) {
-      return failed("fallback-flag", error, flagIssueNumber);
-    }
+    return declined;
   }
 
   try {
@@ -1626,43 +1561,31 @@ async function abandonWithoutOriginatingIssue(
       "--repo",
       repo,
       "--body",
-      buildNoIssueAbandonPrComment({
+      buildNoIssueKeptOpenPrComment({
         request,
         history,
         reason,
-        flagIssueNumber,
+        recordIssueNumber: filed.value.issueNumber,
       }),
     ]);
   } catch (error) {
-    return failed("pr-comment", error, flagIssueNumber);
+    logger?.warn?.(
+      `PR #${prNumber}: its fallback is recorded in VibeCoder but the PR ` +
+        "comment saying so could not be posted",
+      {
+        repo,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
   }
-
-  try {
-    // No `--delete-branch`: the abandoned commits must stay readable (#1076).
-    await gh(["pr", "close", String(prNumber), "--repo", repo]);
-  } catch (error) {
-    return failed("pr-close", error, flagIssueNumber);
-  }
-
   logger?.warn?.(
-    `PR #${prNumber} named no originating issue (${reason}) — closed it and ` +
-      `filed merge-fallback issue #${flagIssueNumber} (\`${IDLE_TASK_LABEL}\`) ` +
-      `as the re-do item — ${describeConcludedAttempts(history)}`,
-    {
-      repo,
-      prNumber,
-      issueNumber: flagIssueNumber,
-      flagIssueNumber,
-      label: IDLE_TASK_LABEL,
-      appended: filed.value.appended,
-    },
+    `PR #${prNumber} names no originating issue (${reason}) — left open and ` +
+      `recorded as ${MERGE_FALLBACK_TARGET_REPO}#${filed.value.issueNumber} — ` +
+      describeConcludedAttempts(history),
+    { repo, prNumber, recordIssueNumber: filed.value.issueNumber },
   );
-  return {
-    outcome: "abandoned",
-    issueNumber: flagIssueNumber,
-    label: { applied: IDLE_TASK_LABEL },
-    flagIssueNumber,
-  };
+  return declined;
 }
 
 /**

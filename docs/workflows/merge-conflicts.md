@@ -789,16 +789,15 @@ there is no such budget to use up.
   worker may not apply `work-on`, but `idle-task` re-queues it with nobody
   waiting — an issue parked at `needs-human` is blocked from discovery, which is
   the opposite of restarted.
-- **No originating issue: the flag issue becomes the re-do item** (Issue #2310).
-  The old rule was "no issue, no abandon" — closing a PR the fleet cannot
-  re-raise loses the work outright — and it left the PR open for a human who
-  never came, so it sat conflicting, out of budget and unowned. The reasoning
-  holds; what changed is *what the fleet re-raises from*. The
-  `merge-fallback` flag is filed first, carrying `idle-task` and the PR's diff
-  summary (`gh pr view --json files`: path, additions and deletions, capped at
-  200 paths), and only then is the PR closed. A flag that could **not** be filed
-  leaves the PR open naming the `fallback-flag` step: closing against a record
-  nobody can find is the loss the old rule was protecting against.
+- **No originating issue: the PR stays open** (Issues #2310, #4456). Closing
+  it and filing a re-do issue in its place made new work instead of finishing
+  this work, so neither happens: the abandon declines (`no-originating-issue`)
+  and the ladder keeps working the same PR. The fallback is recorded once in
+  VibeCoder as a worker failure, and one marked comment on the PR names that
+  record as `stSoftwareAU/VibeCoder#N`; a later cycle sees the marker and does
+  not record it again. A record that cannot be filed changes nothing — it is
+  logged and tried again next cycle. A stalled PR with no originating issue
+  (Issue #2802) stays open the same way.
 - **No cap on restarts per originating issue** (Issue #3033, replacing the old
   two-restarts-then-`needs-human` bound from Issue #2804 and #2312). The
   marker still lives on the *issue*, not the PR — the PR being counted is
@@ -893,21 +892,29 @@ merged children — and until Issue #2304 it undid that work **silently**. The
 conflict that caused it was in a run log nobody reads, so the next attempt
 started from the same blank page and could walk into the same conflict again.
 Every fallback leaves one issue behind, carrying the `merge-fallback` content
-label. `worker/deno/lib/merge_fallback_issue.ts` is the shared builder and
+label and `bug`. **It is filed in VibeCoder** (`MERGE_FALLBACK_TARGET_REPO`),
+because a fallback is the worker failing to finish the work, never a new work
+item for the repository the conflict was in (Issue #4456). VibeCoder is public,
+so a private source is never named there: its repository, branches, PR, paths
+and the agents' full replies are left out, and only the hosts, timings, each
+run's conclusion line and how far behind the branch was are recorded. A source
+whose visibility cannot be read is treated as private. `worker/deno/lib/merge_fallback_issue.ts` is the shared builder and
 filer both paths use, so neither invents its own format; it knows nothing
 about either caller, and each fallback path passes it what that path observed.
 
-- **Nothing is omitted.** The flag names the target (the PR with its head and
+- **Nothing is omitted for a public source.** The flag names the target (the PR with its head and
   base branch, or the milestone branch with the default branch), the conflicted
   files, both runs' analyses in the agent's own words, each run's per-stage
   timings and host, how far behind the base the branch was and since when, and
   what was closed or reverted. A field the fallback could not record renders as
   `not recorded` — never dropped, because a missing section and an unmeasured
   one read identically once the body is written.
-- **One issue per PR or branch, not one per event.** The title
-  (`Merge fallback: <owner/repo> PR #N`, or the milestone branch in place of
-  the PR) is the dedup key, so a second fallback on the same target is appended
-  as a comment on the open flag rather than filed again.
+- **One issue per cause, not one per event.** The title
+  (`Merge fallback: <cause>`) is the dedup key. The cause is the caller's own,
+  or the last run's conclusion with a refusal climb unwrapped to the reason it
+  was refused and anything after the first colon dropped, so a second fallback
+  for the same cause — on any branch of any repository — is appended as a
+  comment on the open record rather than filed again.
 - **The match must be open and fleet-authored.** A title is chosen by whoever
   opens an issue, so an unverified match would both suppress the flag and post
   the fallback's contents onto somebody else's issue; the author is checked
@@ -921,10 +928,9 @@ about either caller, and each fallback path passes it what that path observed.
   logged and the filing goes ahead anyway — the label usually exists already —
   but a label that genuinely is not there fails `gh issue create`, and that
   failure is returned rather than reported as a filed flag.
-- **`idle-task` only when the caller asks.** A conflicting PR whose originating
-  issue cannot be found cannot be re-queued, so its flag becomes the re-do work
-  item and gains `idle-task` — the one pickup label `worker_label_guard.ts`
-  lets the worker apply. Every other fallback files the flag unqueued.
+- **Never a work item.** The record carries `bug`, never `idle-task`: the work
+  it records is finished by the ladder on the same PR or by the re-queued
+  originating issue, not redone from the record.
 - **The PR path fills it from the thread it already has** (Issue #2310). The
   conflicted files and both runs' analyses come from the failure conclusions on
   the PR (`summariseFailedAttempts`), each run's stage timings and host from the
@@ -932,7 +938,8 @@ about either caller, and each fallback path passes it what that path observed.
   `conflict_fallback_context.ts`), `behind_by` from the compare API, and
   "since when" from the `merge-conflict` label's own `labeled` timeline event —
   the read the stall watchdog already makes. The flag's number is then posted
-  back on the closed PR, so a closed thread still points at its record.
+  back on the closed PR as `stSoftwareAU/VibeCoder#N`, so a closed thread still
+  points at its record.
 - **A flag the pass could not file never undoes the fallback.** On the re-queue
   route the PR is already closed and the issue already re-queued by the time the
   flag is filed, so a failure there is logged at WARN and both stand. (The
@@ -1283,7 +1290,7 @@ each carries the operands that make the decision checkable afterwards:
 | `needs-human` | `label` | A human already owns the conflict. Not emitted for a `needs-human` that came only from a CI-fix escalation — that PR is resolved (Issue #2728). |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
 | `owner-check-pending` | `dueAt`, `attemptsSpent` | A failed attempt is spent but the next one is not due yet — the PR's head SHA has not moved since that failure and `CONFLICT_OWNER_CHECK_HOURS` (2 hours) have not yet passed, giving the owner a window to look first (Issue #2996). The PR stays labelled and queued; `dueAt` is when it next becomes due. |
-| `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
+| `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` record the fallback filed in VibeCoder, absent only when the filing failed (Issue #4456). |
 | `parked` | `base` | A **legacy** park marker (Issue #2312) on a PR whose base tip has not moved since. **No pass writes a park marker any more** (Issue #3166): a park was the answer to an issue that had spent its restarts, and with no restart cap (Issue #3033) a spent budget always goes to abandon-and-redo — a declined abandon is recorded as `budget-spent`, never parked. The scan still honours markers posted before that change: `base` is the sha the marker records, the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the marker — the first pass it differs, after which it follows the uncapped abandon path like any other PR. No `needs-human` reaches the PR or its originating issue on this route. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |

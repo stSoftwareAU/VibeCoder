@@ -397,9 +397,12 @@ automatic ladder is the whole answer:
    issue a conflict ever files, so the conflict that undid the work is written
    down where the next attempt can read it: both runs' analyses, their stage
    timings and hosts, the conflicted files, how far behind the base the branch
-   was and since when, and what was closed. A conflicting PR whose originating
-   issue cannot be found is closed too, and its flag carries `idle-task` and
-   the PR's diff summary so it *is* the re-do item. A milestone roll-back that
+   was and since when, and what was closed. The flag is filed in VibeCoder as
+   a worker failure, one issue per cause, never as a new issue in the
+   repository the conflict was in, and a private source is never named there
+   (Issue #4456). A conflicting PR whose originating issue cannot be found is
+   never closed and redone through a new issue: it stays open and the ladder
+   keeps working it. A milestone roll-back that
    could not merge records the default-branch tip it answered for and is
    offered its two runs again once that tip moves, so no conflict outcome
    needs a person to release it. **There is no exception**: abandon-and-redo
