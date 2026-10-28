@@ -2784,13 +2784,19 @@ Deno.test("syncMilestoneBranches - a successful roll-back resets the ledger and 
     );
     assertEquals(flags.length, 1, "exactly one merge-fallback issue is filed");
     const flagBody = flags[0]![flags[0]!.indexOf("--body") + 1] ?? "";
-    assertStringIncludes(flagBody, LEDGER_BRANCH);
+    // Filed in VibeCoder, and a source not known to be public is never named
+    // there (Issue #4456).
+    assertEquals(
+      flags[0]![flags[0]!.indexOf("--repo") + 1],
+      "stSoftwareAU/VibeCoder",
+    );
+    assert(!flagBody.includes(LEDGER_BRANCH), "a private branch is named");
     assertStringIncludes(flagBody, "### Agent runs");
     assertStringIncludes(flagBody, "conflict unresolved at rung agent");
     assert(
       calls.some((c) =>
         c[0] === "issue" && c[1] === "comment" &&
-        (c[c.length - 1] ?? "").includes(`merge-fallback\` flag #${FLAG_ISSUE}`)
+        (c[c.length - 1] ?? "").includes(`stSoftwareAU/VibeCoder#${FLAG_ISSUE}`)
       ),
       "the roll-back notice links the flag",
     );
@@ -2837,7 +2843,7 @@ Deno.test("syncMilestoneBranches - a roll-back that could not merge files the fl
     );
     assertEquals(comments.length, 1, "exactly one comment");
     const notice = comments[0]![comments[0]!.length - 1] ?? "";
-    assertStringIncludes(notice, `merge-fallback\` flag #${FLAG_ISSUE}`);
+    assertStringIncludes(notice, `stSoftwareAU/VibeCoder#${FLAG_ISSUE}`);
     assert(
       !calls.some((c) => c.includes("needs-human")),
       `a roll-back that could not merge reached a human: ${
