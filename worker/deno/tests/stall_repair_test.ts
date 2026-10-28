@@ -433,18 +433,18 @@ Deno.test("the credential-rotation marker prefix matches the escalation's own de
   );
 });
 
-Deno.test("a stalled PR with no originating issue is closed and no issue is filed", async () => {
+Deno.test("a stalled PR with no originating issue stays open and no issue is filed (Issue #4456)", async () => {
+  // A PR is never closed and redone through a new issue: it stays open.
   const { state, deps } = harness({ originatingIssue: false });
   const stall = stallFor("red-ci");
 
   await repairStalledPr(stall, deps);
   state.now += THRESHOLD;
-  assertEquals(await repairStalledPr(stall, deps), "abandoned");
+  assertEquals(await repairStalledPr(stall, deps), "abandon-declined");
 
-  assertEquals(state.prClosed, true);
+  assertEquals(state.prClosed, false);
   assertEquals(state.issueComments, []);
   assertEquals(state.issueLabels, []);
-  assertStringIncludes(state.prComments.at(-1)!.body, "no originating issue");
   assertEquals(forbiddenCalls(state.calls), []);
 });
 
