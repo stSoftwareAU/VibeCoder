@@ -3,8 +3,8 @@
 The closing-keyword guidance now agrees with the #3177 guard. A summary whose
 `## Acceptance Criteria` block marks a criterion `missing` carries `Part of #N`,
 so the committed archive and the worker-assembled PR body say the same thing.
-Otherwise (no `missing` entry, including a `partial` one) it carries `Closes #N`,
-as the worker's body does. Closes #4445.
+Otherwise (no `missing` entry, including a `partial` one) it carries
+`Closes #N`, as the worker's body does. Closes #4445.
 
 Wording changes only, in three prompts and one standards line:
 
@@ -18,8 +18,8 @@ Wording changes only, in three prompts and one standards line:
   PR until every criterion is met" is replaced with what `completion_phase.ts`
   does since #4234 (an unmet criterion is named on the PR, which is raised
   anyway; only a `missing` one makes it `Part of #N`, a `partial` one still
-  closes). The "appended automatically" sentence now reads "when no criterion
-  is `missing`".
+  closes). The "appended automatically" sentence now reads "when no criterion is
+  `missing`".
 - `prompts/pr_feedback/prompt.md`, "Stopping the PR from closing its issue": the
   agent writes `Part of #N` in the summary itself; the body's
   `## Not closing #N` section is unchanged.
@@ -67,11 +67,10 @@ relies on was read at:
 Related existing rules checked: `CODING-STANDARDS.md` "not raised over a
 `Closes #<n>`" and the #3177/#4304 paragraph below it (both already say
 `Part of #<n>`), `docs/workflows/issue-processing.md` (describes the body
-rewrite; still true), `prompts/issue/prompt.md` "When no criterion
-is `missing`, the PR body gets `Closes #N` appended automatically" (consistent;
-a `partial` criterion also still gets `Closes #N`). The rule was applied to
-this PR's own summary: it has no `missing` criterion, so it carries
-`Closes #4445`.
+rewrite; still true), `prompts/issue/prompt.md` "When no criterion is `missing`,
+the PR body gets `Closes #N` appended automatically" (consistent; a `partial`
+criterion also still gets `Closes #N`). The rule was applied to this PR's own
+summary: it has no `missing` criterion, so it carries `Closes #4445`.
 
 ## Test Plan
 
@@ -87,15 +86,18 @@ this PR's own summary: it has no `missing` criterion, so it carries
   - Removed from `worker/deno/tests/pr_claims_verified_3058_test.ts`:
     `"The worker raises no PR until every criterion is met"`
     - Replaced by: `"is named on the PR, which the worker raises anyway"`,
-      `` "a `missing` one makes it `Part of #{{ISSUE_NUMBER}}`" `` and
-      `` "a `partial` one does not hold the issue open" `` (PR #4468 review)
+      ``"a `missing` one makes it `Part of #{{ISSUE_NUMBER}}`"`` and
+      ``"a `partial` one does not hold the issue open"`` (PR #4468 review)
     - Required by: "change \"The worker raises no PR until every criterion is
       met (Issue #4146)\" to match"
   - Red check: with `prompts/issue/prompt.md` restored to the previous head's
-    text, the test fails on `is named on the PR, which the worker raises
-    anyway`; with the change it passes (5 passed, 0 failed). `deno task
-    drift-pins-on-base origin/main` reports all three new pins absent from the
-    base "Acceptance-Criteria Closure" section.
+    text, the test fails on
+    `is named on the PR, which the worker raises
+    anyway`; with the change it
+    passes (5 passed, 0 failed). `deno task
+    drift-pins-on-base origin/main`
+    reports all three new pins absent from the base "Acceptance-Criteria
+    Closure" section.
 - Ran `deno task test:unit tests/pr_claims_verified_3058_test.ts`
   (`worker/deno/tests/pr_claims_verified_3058_test.ts`, 5 tests at head).
 - `./quality.sh` ran on the head: every stage passed (markdownlint, mermaid,
