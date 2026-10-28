@@ -1002,19 +1002,20 @@ merges on green CI with no reviewer:
 
 - **Finish every unmet criterion.** When any criterion is `partial` or
   `missing`, finish it. A criterion still unmet when the run ends is named on
-  the PR, which the worker raises as `Part of #{{ISSUE_NUMBER}}`, never
-  `Closes #{{ISSUE_NUMBER}}` (Issues #4146, #4234), and an approved issue is
-  never handed back (Issue #4227). Never relabel a `missing` criterion
-  `partial` or `met` to get past this; the Spec reviewer's verdict records the
-  departure. Once a file has changed, the
+  the PR, which the worker raises anyway (Issues #4146, #4234): a `missing` one
+  makes it `Part of #{{ISSUE_NUMBER}}`, never `Closes #{{ISSUE_NUMBER}}`, while
+  a `partial` one does not hold the issue open. An approved issue is never
+  handed back (Issue #4227). Never relabel a `missing` criterion `partial` or
+  `met` to get past this; the Spec reviewer's verdict records the departure.
+  Once a file has changed, the
   markers in **No hand-back, no follow-up** are still read: a `## Blocked:`
   heading with a `Depends on` / `Blocked by` line naming an issue that is still
   open, a time deferral, or a planning marker defers or plans and raises no PR
   (the suspicious-image flag is the exception: it always stops the run). A
   closed, unreadable or self-filed dependency does not defer, and the issue is
-  retried. A bare `## Blocked:` heading does not defer. When every criterion
-  is met, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended automatically if
-  your summary omits it.
+  retried. A bare `## Blocked:` heading does not defer. When no criterion
+  is `missing`, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended
+  automatically if your summary omits it.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -1199,16 +1200,17 @@ however small or non-visual the edit seems.
 ## Issue Closure in PR Summary
 
 Every PR must say whether it closes its issue; without a closing keyword where
-every criterion is met, the issue stays open after merge and a human has to
+no criterion is `missing`, the issue stays open after merge and a human has to
 close it by hand.
 
 In your `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` file, write
 one of:
 
+- `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
+  criterion `missing`;
 - `Closes #{{ISSUE_NUMBER}}` (or `Fixes #{{ISSUE_NUMBER}}` / `Resolves
-  #{{ISSUE_NUMBER}}`) when every criterion in the `## Acceptance Criteria` block
-  is met, or the issue states no criteria;
-- `Part of #{{ISSUE_NUMBER}}` when that block marks any criterion `missing`.
+  #{{ISSUE_NUMBER}}`) otherwise: no criterion is `missing`, including when one
+  is `partial`, or the issue states no criteria.
 
 In the `Part of` case, write no closing keyword for the issue anywhere in the
 summary. The worker raises the PR body the same way (`Part of #{{ISSUE_NUMBER}}`
@@ -1317,9 +1319,8 @@ the rules in this section as written; they also say why each check exists.
 The file MUST contain:
 
 1. **Summary**: A brief description of what was changed and why, **including
-   `Closes #{{ISSUE_NUMBER}}` when every criterion is met, or
    `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
-   criterion `missing`**
+   criterion `missing`, otherwise `Closes #{{ISSUE_NUMBER}}`**
 2. **Spec**: the after-run record of what the diff alone cannot tell a
    reviewer, placed directly after Summary under three sub-headings — at most
    four bullets each, and `None.` when a sub-heading has nothing to say:
