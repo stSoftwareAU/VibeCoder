@@ -8,7 +8,7 @@
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  capabilityBundleUrl,
+  capabilityBundlePath,
   type CapabilityEntry,
   parseCapabilityBundle,
   selectCapabilityGuidance,
@@ -20,7 +20,7 @@ const RECOVERY_ID = "capsec-recovery-boundary";
 
 async function shippedBundle() {
   return parseCapabilityBundle(
-    await Deno.readTextFile(capabilityBundleUrl()),
+    await Deno.readTextFile(capabilityBundlePath()),
   );
 }
 
