@@ -645,8 +645,14 @@ the toolchain section above).
     module, nor a public glob re-export (`pub use …::*;`,
     `pub(crate) use …::*;`), such as a facade in `lib.rs`. Clippy allows
     all three, and the guide permits `pub use submodule::*` for non-leaf
-    modules. Flag only the remaining private `use …::*;` imports.
-    Clippy `wildcard_imports` (pedantic) can confirm. Why:
+    modules. Also do not flag a glob of an enum's own variants
+    (`use Color::*;` or `use self::Color::*;`) that sits inside that
+    enum's `impl` block or inside a function that mainly matches on that
+    enum: the guide permits `use enum::*` in method bodies of enums and in
+    functions primarily dealing with that enum. Clippy reports enum-variant
+    globs under `enum_glob_use`, not `wildcard_imports`. Flag only the
+    remaining private `use …::*;` imports. Clippy `wildcard_imports`
+    (pedantic) can confirm those. Why:
     a glob hides where a name comes from, and an upstream addition can
     silently shadow or collide with a local name. Fix: import the names
     explicitly. Severity: `severity:low`. Finding title:

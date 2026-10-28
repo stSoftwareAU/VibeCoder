@@ -7,6 +7,9 @@
  *   prelude, so `use rayon::prelude::*;` would have been flagged, and it
  *   flagged public glob re-exports (`pub use submodule::*;`) too. Clippy's
  *   `wildcard_imports` allows both, and the guide permits the second.
+ *   It also flagged `use Color::*;` inside `impl Color`, which the guide
+ *   permits and which clippy reports under `enum_glob_use`, not
+ *   `wildcard_imports`.
  * - Check 48 (assertions with no message) flagged doctest examples, which are
  *   test code, outside the issue's "non-test code" scope.
  * - Check 49 (lock poisoning) accepted `PoisonError::into_inner` recovery,
@@ -40,6 +43,18 @@ Deno.test(
       "nor a public glob re-export (`pub use …::*;`, `pub(crate) use …::*;`)",
       "the guide permits `pub use submodule::*` for non-leaf modules",
       "Flag only the remaining private `use …::*;` imports",
+    ]);
+  },
+);
+
+Deno.test(
+  "prompts/best_practices/buckets/rust.md Google Rust Style Guide learnings exempts enum-variant globs in the enum's own methods (Issue #4432)",
+  async () => {
+    assertPins(await googleGuideSection(), [
+      "a glob of an enum's own variants (`use Color::*;` or `use self::Color::*;`)",
+      "inside that enum's `impl` block or inside a function that mainly matches on that enum",
+      "the guide permits `use enum::*` in method bodies of enums",
+      "Clippy reports enum-variant globs under `enum_glob_use`, not `wildcard_imports`",
     ]);
   },
 );
