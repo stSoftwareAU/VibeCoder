@@ -66,7 +66,8 @@ comment above the `admin_only_repair` block in `lib/issue_worker.ts`.
     stays `transient`), `planCodingFailure #4461` (phase `admin_only_repair`)
     and `applyCodingFailureLadder #4461` (handler called once, category
     `unknown`).
-  - Added `classifyCodingFailure #4461 - a repo_config category without the repo-config class is not record-only`
+  - Added
+    `classifyCodingFailure #4461 - a repo_config category without the repo-config class is not record-only`
     (category `repo_config` with a non-`repo-config` class takes the ladder). It
     pins the `RECORD_ONLY_FAILURE_CLASSES.has(failureClass)` operand at
     `lib/coding_failure_ladder.ts:243`; replacing that operand with `true` turns
