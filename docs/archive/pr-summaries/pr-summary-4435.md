@@ -27,3 +27,9 @@ Doc-only prompt change plus a doc-drift test. Existing rules checked for overlap
 - Red check: with step 2 reverted to the old line, the first test fails (`to contain: "A change that clears a dependency audit that is red on this PR is not unrelated"`); restored, it passes. The pinned phrases are absent from the base brief.
 - `deno task test:unit` on the new test, `pr_review_brief_shared_3395_test.ts` and `pre_pr_verifier_3395_test.ts`: 83 passed, 0 failed. `deno fmt --check` and `deno lint` on the new file: clean.
 - No existing test was edited.
+
+## Quality gate
+
+`./quality.sh` ran twice; every stage up to and including release-tag ruleset passed (markdownlint, semgrep, mermaid, chokepoints), then the full `deno tests` stage exceeded the 500s and 590s foreground caps both times and was killed (exit 124), so it did not finish.
+
+<!-- vibe-quality-gate-skipped reason="the full deno tests stage exceeds the 10-minute foreground cap; the touched tests and the shared-brief tests were run directly and pass, CI runs the full suite" -->
