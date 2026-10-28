@@ -25,6 +25,12 @@ const MARKER = "CAPSEC_ISOLATION_OK\n";
 const PARENT_MARKER = "CAPSEC_PARENT_PROTECTED\n";
 const PATH = "/usr/local/bin:/usr/bin:/bin";
 
+/** Deno's kill-after-exit TypeError; the message gains a full stop on newer runtimes. */
+export function isAlreadyTerminatedError(error: unknown): boolean {
+  return error instanceof TypeError &&
+    /^Child process has already terminated\.?$/.test(error.message);
+}
+
 export interface EvalContainerResult {
   code: number | null;
   stdout: string;
@@ -156,8 +162,7 @@ async function runBounded(
     } catch (error) {
       if (
         !(error instanceof Deno.errors.NotFound) &&
-        !(error instanceof TypeError &&
-          error.message === "Child process has already terminated")
+        !isAlreadyTerminatedError(error)
       ) throw error;
     }
   };
