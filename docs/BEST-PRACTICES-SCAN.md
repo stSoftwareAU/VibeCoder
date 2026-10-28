@@ -289,13 +289,20 @@ repo's own PR.
 
 ### Rust style-guide checks
 
-[`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) also carries a `## Google Rust Style Guide learnings` section (checks 43-51), mined from the Google Rust Style Guide and written in our own words. The checks are static-evidence only and every finding is `severity:low`. They cover glob imports, missing `#[must_use]`, public enums without `#[non_exhaustive]`, many `bool` parameters, check-then-unwrap, assertions with no message, the `Mutex` poisoning policy, `catch_unwind` outside FFI, and another crate's `#[doc(hidden)]` items.
+[`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) also
+carries a `## Google Rust Style Guide learnings` section (checks 43-51),
+mined from the Google Rust Style Guide and written in our own words. The
+checks are static-evidence only and every finding is `severity:low`.
+They cover glob imports, missing `#[must_use]`, public enums without
+`#[non_exhaustive]`, many `bool` parameters, check-then-unwrap,
+assertions with no message, the `Mutex` poisoning policy, `catch_unwind`
+outside FFI, and another crate's `#[doc(hidden)]` items.
 
 ### Cost, speed and reliability
 
 The owner's goal for every repo is cheaper, faster and more reliable, so
 seven guides (`aws-cloudformation`, `terraform`, `rust`, `typescript`,
-`react`, `java`, `general`) end with a `## Cost, speed and reliability`
+`react`, `java`, `general`) carry a `## Cost, speed and reliability`
 section ([#2579](https://github.com/stSoftwareAU/VibeCoder/issues/2579)).
 The checks are concrete and cite a file and line: Lambda architecture,
 memory and timeout sizing, log retention, provisioned capacity,
