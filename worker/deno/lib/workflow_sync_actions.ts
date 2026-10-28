@@ -38,7 +38,9 @@ export interface WorkflowSyncActionReferences {
  * Adapt `gh` to the command runner the detector and auditor take. Only `gh`
  * is run; a thrown error becomes a failed command carrying its message.
  */
-function ghRunner(gh: GhCommandFn): (cmd: string[]) => Promise<CommandOutput> {
+export function ghRunner(
+  gh: GhCommandFn,
+): (cmd: string[]) => Promise<CommandOutput> {
   return async (cmd: string[]): Promise<CommandOutput> => {
     if (cmd[0] !== "gh") {
       return {
@@ -59,8 +61,13 @@ function ghRunner(gh: GhCommandFn): (cmd: string[]) => Promise<CommandOutput> {
   };
 }
 
-/** Every `uses:` value in the templates of `specs`, sorted and unique. */
-function templateActionReferences(specs: readonly WorkflowSpec[]): string[] {
+/**
+ * Every `uses:` value in the templates of `specs`, sorted and unique. Local
+ * (`./…`) and `docker://` references are not allow-listable and are skipped.
+ */
+export function templateActionReferences(
+  specs: readonly WorkflowSpec[],
+): string[] {
   const out = new Set<string>();
   for (const spec of specs) {
     for (const line of spec.template.split("\n")) {

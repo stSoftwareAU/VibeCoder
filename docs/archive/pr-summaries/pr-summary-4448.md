@@ -54,6 +54,13 @@ Backend-only change; no UI files. Verification is by tests (below).
 - Added `worker/deno/tests/workflow_sync_actions_test.ts` (references
   sorted/unique/SHA-pinned; detection fault and audit fault each assert the
   cause text).
+- Mutation-check follow-up: `ghRunner` and `templateActionReferences` are now
+  exported and tested directly in `workflow_sync_actions_test.ts` (non-gh
+  command refused with exact result; success and thrown Error / non-Error
+  results asserted whole; local `./` and `docker://` references skipped, rest
+  sorted and unique), plus two `workflowSyncActionReferences` tests asserting
+  the exact fault text and the `could not read the templates:` catch path
+  (response `null` from the contents endpoint).
 - Added three `hardenRepo` tests in
   `worker/deno/tests/repo_settings_harden_test.ts`: a repository with no
   workflows gets `gitleaks/gitleaks-action@*` in `patterns_allowed`; a present
