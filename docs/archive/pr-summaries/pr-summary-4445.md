@@ -108,7 +108,8 @@ summary: it has no `missing` criterion, so it carries `Closes #4445`.
   with `Closes #N` `` and
   `the committed summary must say the same`.
   - Red check: with `prompts/pr_feedback/prompt.md` restored to the previous
-    head's text, the test fails on
+    head's text, the test in `worker/deno/tests/pr_claims_verified_3058_test.ts`
+    fails on
     ``When your fix finishes every criterion
     marked `missing` (none is left `missing`)``
     (5 passed, 1 failed); with the change it passes (6 passed, 0 failed).
@@ -122,8 +123,9 @@ summary: it has no `missing` criterion, so it carries `Closes #4445`.
   summary's `## Acceptance Criteria` block marks any criterion `missing` ``.
   - Red check: with `buildMilestoneBranchSection` restored to the previous
     unconditional line, `deno task test:unit tests/prompt_builder_test.ts` fails
-    on that assertion; with the change, `tests/prompt_builder_test.ts` and
-    `tests/builder_prompt_deshout_2576_test.ts` pass (76 passed, 0 failed).
+    on that assertion; with the change,
+    `worker/deno/tests/prompt_builder_test.ts` passes (69 tests at head, 0
+    failed).
 - Edited `worker/deno/tests/pr_claims_verified_3058_test.ts` ("issue prompt
   demands demonstrated criteria and finished deliverables"), which pinned the
   sentence this change had to reword.
@@ -140,9 +142,10 @@ summary: it has no `missing` criterion, so it carries `Closes #4445`.
     - Required by: "change \"The worker raises no PR until every criterion is
       met (Issue #4146)\" to match"
   - Red check: with `prompts/issue/prompt.md` restored to `origin/main`'s text,
-    "issue prompt demands demonstrated criteria and finished deliverables" fails
-    on its first new pin, `Finish every unmet criterion` (5 passed, 1 failed);
-    with the change it passes.
+    "issue prompt demands demonstrated criteria and finished deliverables" in
+    `worker/deno/tests/pr_claims_verified_3058_test.ts` fails on its first new
+    pin, `Finish every unmet criterion` (5 passed, 1 failed); with the change it
+    passes (6 passed, 0 failed).
     `deno task drift-pins-on-base origin/main prompts/issue/prompt.md
     "Acceptance-Criteria Closure"`
     with all four new pins reports each one `absent on base`:
