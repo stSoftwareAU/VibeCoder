@@ -69,6 +69,12 @@ export const RUN_FAILURE_MIN_WRITE_INTERVAL_SECONDS = 60 * 60;
 export const RUN_FAILURE_FOLLOWUP_WINDOW_SECONDS = 24 * 60 * 60;
 /** State file beside the other worker state files. */
 export const RUN_FAILURE_STATE_FILE = ".run_failure_filing_state.json";
+/**
+ * The body line that names the phase a run died in. Present in every
+ * run-failure body, whether or not its source was disclosed; the hard-kill
+ * body (`hard_kill_report.ts`) uses `**Phase:**` instead.
+ */
+export const RUN_FAILURE_PHASE_LABEL = "**Phase that died:**";
 /** Classes filed as `bug`; the rest as `enhancement`. */
 const CRASH_CLASSES: ReadonlySet<string> = new Set([
   "worker-crash",
@@ -244,6 +250,11 @@ export function formatRunFailureTitle(failureClass: string): string {
  * `repo_visibility` maps anything other than `"public"` to private. A failed
  * lookup is unknown, and unknown is private: the Source line, the release
  * comment and the agent excerpt stay off the public issue.
+ *
+ * Consequence (Issue #4462): a withheld source leaves the issue without a
+ * readable source, so the self-scheduler does not schedule it on its own; it
+ * waits for a human `work-on` unless a follow-up occurrence names a public
+ * source ({@link runFailureNamesReadableSource}).
  */
 async function sourceIsPublic(
   repo: string,
@@ -267,7 +278,40 @@ async function sourceIsPublic(
   return result.value === "public";
 }
 
-/** Issue body: marker first, then the diagnosis a human needs. */
+/**
+ * The `**Source:**` line of a disclosed body. Linear: each part is a
+ * character class ended by a fixed delimiter, so a hostile body cannot force
+ * backtracking beyond one pass per line.
+ */
+const SOURCE_LINE_PATTERN = /^\*\*Source:\*\* [\w.-]+\/[\w.-]+#\d+[ \t]*$/m;
+/** A follow-up occurrence line that names its source (Issue #4462). */
+const OCCURRENCE_SOURCE_PATTERN =
+  /^- \S+ `[^`\n]+` — [\w.-]+\/[\w.-]+#\d+, phase `/m;
+
+/**
+ * Whether a run-failure issue names at least one readable source, so the
+ * self-scheduler may act on it (Issue #4462).
+ *
+ * True when the body is not the withheld run-failure shape (hard-kill bodies
+ * carry their facts publicly), when the body's Source line names a repo, or
+ * when a verified follow-up occurrence line names one. Otherwise the run is
+ * left to a human: the cause would have to be guessed.
+ */
+export function runFailureNamesReadableSource(
+  body: string,
+  followUpBodies: readonly string[],
+): boolean {
+  if (!body.includes(RUN_FAILURE_PHASE_LABEL)) return true;
+  if (SOURCE_LINE_PATTERN.test(body)) return true;
+  return followUpBodies.some((text) => OCCURRENCE_SOURCE_PATTERN.test(text));
+}
+
+/**
+ * Issue body: marker first, then the diagnosis a human needs. A private source
+ * withholds the Source line, the release comment and the excerpt (Issue #4318),
+ * so the body then names no readable source and the self-scheduler waits for a
+ * human unless a follow-up names one (Issue #4462, see `sourceIsPublic`).
+ */
 export async function formatRunFailureBody(
   report: RunFailureReport,
   classification: RunFailureClassification,
@@ -283,7 +327,7 @@ export async function formatRunFailureBody(
     `**Failure class:** \`${classification.failureClass}\` (${classification.fixability})`,
     ...(disclose ? [`**Rationale:** ${classification.rationale}`] : []),
     `**Category:** \`${getFailureCategoryDisplay(o.category)}\``,
-    `**Phase that died:** \`${o.phase}\` after ${o.elapsedSeconds}s`,
+    `${RUN_FAILURE_PHASE_LABEL} \`${o.phase}\` after ${o.elapsedSeconds}s`,
     `**Host:** \`${report.machineId}\``,
     ...(disclose
       ? [`**Source:** ${report.sourceRepo}#${report.sourceIssueNumber}`]
@@ -307,7 +351,11 @@ export async function formatRunFailureBody(
   return lines.join("\n");
 }
 
-async function formatOccurrenceLine(
+/**
+ * One follow-up occurrence line. The source is named only when public
+ * (Issue #4318), so a private-repo occurrence names no source (Issue #4462).
+ */
+export async function formatOccurrenceLine(
   report: RunFailureReport,
   epoch: number,
   ghFn: (args: string[]) => Promise<string>,

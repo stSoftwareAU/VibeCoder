@@ -9,20 +9,30 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   fileRunFailureIssue,
+  formatOccurrenceLine,
+  formatRunFailureBody,
   formatRunFailureFollowUpMarker,
   formatRunFailureMarker,
   isRunFailureIssue,
   parseRunFailureFollowUpMarker,
   parseRunFailureMarker,
   RUN_FAILURE_FAMILY_ID,
+  RUN_FAILURE_PHASE_LABEL,
   RUN_FAILURE_TARGET_REPO,
+  runFailureNamesReadableSource,
   type RunFailureReport,
 } from "../lib/run_failure_issue.ts";
 import { CI_FAILURE_EXCERPT_BYTES } from "../lib/ci_failure_issue.ts";
 import type { SelfDiagnosticFiling } from "../lib/self_diagnostic_attestation.ts";
 import { formatRunFailureExcerpt } from "../lib/run_failure_issue.ts";
 import { deriveRunOutcome } from "../lib/run_outcome.ts";
-import { REPO_ADMIN_REFUSED } from "../lib/run_outcome_classifier.ts";
+import {
+  REPO_ADMIN_REFUSED,
+  type RunFailureClassification,
+} from "../lib/run_outcome_classifier.ts";
+import { formatHardKillBody } from "../lib/hard_kill_report.ts";
+import type { HardKillSignature } from "../lib/hard_kill_report.ts";
+import type { HardKillEvidence } from "../lib/hard_kill_evidence.ts";
 
 /**
  * The fleet account these fixtures file as. A dedup match is only evidence
@@ -959,4 +969,131 @@ Deno.test("run failure issue - a public source still names the repo, the release
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// Issue #4462: a run-failure issue names a readable source only when its body
+// shows one, or a verified follow-up occurrence line does.
+
+const SOURCE_CLASSIFICATION: RunFailureClassification = {
+  fixability: "code_fixable",
+  failureClass: "oom",
+  rationale: "the run was killed by SIGKILL, the signature of an OOM kill",
+};
+const OCCURRENCE_EPOCH = 1_800_000_000;
+
+/** A gh stub answering only the visibility lookup, as `visibility`. */
+function visibilityGh(visibility: string): (args: string[]) => Promise<string> {
+  return fakeGh({}, { visibility }).ghFn;
+}
+
+Deno.test("runFailureNamesReadableSource - a public run-failure body names its source (Issue #4462)", async () => {
+  const body = await formatRunFailureBody(
+    OOM_REPORT,
+    SOURCE_CLASSIFICATION,
+    visibilityGh("public"),
+  );
+  assert(body.includes("**Source:** stSoftwareAU/private-repo-6#147"), body);
+  assertEquals(runFailureNamesReadableSource(body, []), true);
+});
+
+Deno.test("runFailureNamesReadableSource - a private run-failure body names no source (Issue #4462)", async () => {
+  const body = await formatRunFailureBody(
+    OOM_REPORT,
+    SOURCE_CLASSIFICATION,
+    visibilityGh("private"),
+  );
+  assert(body.includes(RUN_FAILURE_PHASE_LABEL), body);
+  assert(!body.includes("**Source:**"), body);
+  assertEquals(runFailureNamesReadableSource(body, []), false);
+});
+
+Deno.test("runFailureNamesReadableSource - a hard-kill body stays schedulable (Issue #4462)", () => {
+  const evidence = {
+    host: "s1",
+    container: "vibe-coder-s1-4254",
+    runId: "vibe-mh5abc-abcdef",
+    trigger: "watchdog",
+    capturedAt: "2026-10-25T01:30:00.000Z",
+    lastLogTimestamp: "2026-10-25 01:27:18Z",
+  } as HardKillEvidence;
+  const sig: HardKillSignature = {
+    handler: "watchdog",
+    phase: "execute",
+    failureClass: "hard-kill-watchdog-execute",
+  };
+  const body = formatHardKillBody(evidence, sig);
+  assert(!body.includes(RUN_FAILURE_PHASE_LABEL), body);
+  assertEquals(runFailureNamesReadableSource(body, []), true);
+});
+
+Deno.test("runFailureNamesReadableSource - a follow-up occurrence naming a public source is readable (Issue #4462)", async () => {
+  const body = await formatRunFailureBody(
+    OOM_REPORT,
+    SOURCE_CLASSIFICATION,
+    visibilityGh("private"),
+  );
+  const line = await formatOccurrenceLine(
+    OOM_REPORT,
+    OCCURRENCE_EPOCH,
+    visibilityGh("public"),
+  );
+  assert(
+    line.includes("stSoftwareAU/private-repo-6#147, phase `execute`"),
+    line,
+  );
+  const followUp = [
+    formatRunFailureFollowUpMarker("oom", OCCURRENCE_EPOCH),
+    "",
+    "Recurred (class `oom`, the run was killed)",
+    "",
+    line,
+  ].join("\n");
+  assertEquals(runFailureNamesReadableSource(body, [followUp]), true);
+});
+
+Deno.test("runFailureNamesReadableSource - a follow-up occurrence withholding its source is not readable (Issue #4462)", async () => {
+  const body = await formatRunFailureBody(
+    OOM_REPORT,
+    SOURCE_CLASSIFICATION,
+    visibilityGh("private"),
+  );
+  const line = await formatOccurrenceLine(
+    OOM_REPORT,
+    OCCURRENCE_EPOCH,
+    visibilityGh("private"),
+  );
+  assert(!line.includes("#147"), line);
+  const followUp = [
+    formatRunFailureFollowUpMarker("oom", OCCURRENCE_EPOCH),
+    "",
+    line,
+  ].join("\n");
+  assertEquals(runFailureNamesReadableSource(body, [followUp]), false);
+  assertEquals(runFailureNamesReadableSource(body, []), false);
+});
+
+Deno.test("runFailureNamesReadableSource - a hostile body returns false without super-linear work (Issue #4462)", () => {
+  const run = 100_000;
+  // A long run of one character, then a character that breaks the shape.
+  const sourceLine = `${RUN_FAILURE_PHASE_LABEL}\n**Source:** ${
+    "a".repeat(run)
+  }!`;
+  assertEquals(runFailureNamesReadableSource(sourceLine, []), false);
+
+  const sourceNoHash = `${RUN_FAILURE_PHASE_LABEL}\n**Source:** ${
+    "a".repeat(run)
+  }/${"b".repeat(run)}!`;
+  assertEquals(runFailureNamesReadableSource(sourceNoHash, []), false);
+
+  const occurrenceNoClose = `- ${"a".repeat(run)} \`${"b".repeat(run)}!`;
+  assertEquals(
+    runFailureNamesReadableSource(RUN_FAILURE_PHASE_LABEL, [occurrenceNoClose]),
+    false,
+  );
+
+  const occurrenceLong = `- ${"a".repeat(run)}!`;
+  assertEquals(
+    runFailureNamesReadableSource(RUN_FAILURE_PHASE_LABEL, [occurrenceLong]),
+    false,
+  );
 });

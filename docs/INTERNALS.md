@@ -1767,6 +1767,9 @@ find_oldest_issue(github_user)
    audit chain under the `self-schedule-diagnostic` verb and announced on the
    issue, a permanently-blocked diagnostic is escalated with `needs-human`, and
    `self_schedule_diagnostics_enabled: false` restores the previous behaviour.
+   A run-failure issue is self-scheduled only once its body's Source line or a
+   fleet follow-up occurrence line names a (public) source; an issue whose every
+   occurrence was withheld (private source repo) waits for `work-on` (Issue #4462).
    See
    [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b).
 3. **Low-priority label** — idle-time tier. Selected only when **no** eligible
