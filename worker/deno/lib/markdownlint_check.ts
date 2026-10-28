@@ -12,8 +12,11 @@
  *
  * The linter is invoked out-of-process; when no `markdownlint-cli2`
  * binary is available locally the check returns SKIPPED so contributors
- * without a Node toolchain are not blocked. `./quality.sh --strict`
- * promotes SKIPPED to FAILED, matching the `mermaid` pattern.
+ * without a Node toolchain are not blocked. The same holds when the repo
+ * configures no `globs` (Issue #4438): markdownlint-cli2 then prints its help
+ * screen and lints nothing, which is reported as SKIPPED with a reason rather
+ * than FAILED. `./quality.sh --strict` promotes SKIPPED to FAILED, matching
+ * the `mermaid` pattern.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -146,13 +149,45 @@ function extractFilesChecked(output: string): number {
 }
 
 /**
+ * Pattern matching the `Syntax:` line of the help screen markdownlint-cli2
+ * prints when run with no globs (Issue #4438). Anchored to the line start so
+ * text that merely quotes the phrase does not match.
+ */
+const HELP_SCREEN_PATTERN = /^Syntax:[ \t]+markdownlint-cli2[ \t]+glob0\b/m;
+
+/**
+ * Whether a run was markdownlint-cli2 printing its help screen because the
+ * repo configures no `globs` (Issue #4438).
+ *
+ * With no positional arguments and no `globs` in the config, markdownlint-cli2
+ * prints help to STDOUT, exits 2 and lints nothing. That is not a lint
+ * failure. All of these must hold: exit 2, the help `Syntax:` line on stdout
+ * or stderr, no `Linting:` header on stdout, and no violation lines on stdout.
+ * A config error also exits 2, but it prints an `Error:` line rather than the
+ * help screen, so it is not matched and stays FAILED.
+ */
+function isNoGlobsHelpRun(run: MarkdownlintRunResult): boolean {
+  if (run.exitCode !== 2) return false;
+  if (
+    !HELP_SCREEN_PATTERN.test(run.stdout) &&
+    !HELP_SCREEN_PATTERN.test(run.stderr)
+  ) {
+    return false;
+  }
+  if (LINTING_COUNT_PATTERN.test(run.stdout)) return false;
+  return parseMarkdownlintOutput(run.stdout).length === 0;
+}
+
+/**
  * Build a runner that invokes the given `markdownlint-cli2` binary path
  * with `cwd: scriptDir` and no explicit globs (the config's `globs`
  * field drives file selection).
  *
  * `--no-globs` is intentionally NOT passed — markdownlint-cli2 picks up
  * the `globs` array from `.markdownlint-cli2.jsonc` automatically when
- * no positional arguments are supplied.
+ * no positional arguments are supplied. When the config has no `globs`,
+ * the binary prints its help screen and exits 2; runMarkdownlintCheck
+ * reports that run as SKIPPED (Issue #4438).
  */
 export async function runMarkdownlintBinary(
   binaryPath: string,
@@ -275,6 +310,9 @@ export interface MarkdownlintCheckOptions {
  *   4. Report PASSED, FAILED (with per-violation lines), or FAILED with
  *      a synthesised error if the runner exited non-zero but emitted no
  *      parseable violations.
+ *   5. Report SKIPPED when the repo configures no `globs`: the run printed
+ *      markdownlint-cli2's help screen, exited 2 and linted nothing
+ *      (Issue #4438). A config error exits 2 too but stays FAILED.
  */
 export async function runMarkdownlintCheck(
   scriptDir: string,
@@ -297,7 +335,10 @@ export async function runMarkdownlintCheck(
 
   const run = await runner(scriptDir);
   const combined = run.stderr ? `${run.stdout}\n${run.stderr}` : run.stdout;
-  const violations = parseMarkdownlintOutput(run.stdout);
+  // markdownlint-cli2 v0.24.0 writes violation lines to STDERR and the
+  // `Linting:` / `Summary:` header to STDOUT, so violations are parsed from
+  // both streams. The file count stays on stdout.
+  const violations = parseMarkdownlintOutput(combined);
   const filesChecked = extractFilesChecked(run.stdout);
 
   if (run.exitCode === 0 && violations.length === 0) {
@@ -309,11 +350,28 @@ export async function runMarkdownlintCheck(
     };
   }
 
+  if (isNoGlobsHelpRun(run)) {
+    const reason =
+      "no markdown globs configured: markdownlint-cli2 printed its help and " +
+      "linted nothing — add a `globs` array to .markdownlint-cli2.jsonc to " +
+      "enable this check";
+    return {
+      status: "SKIPPED",
+      output: `markdownlint: SKIPPED (${reason})`,
+      violations: [],
+      filesChecked: 0,
+      skipReason: reason,
+    };
+  }
+
   if (violations.length === 0) {
     // Runner died (e.g. config error) without emitting any parseable
     // violation lines — surface the raw stderr so the failure does not
-    // disappear silently.
+    // disappear silently. A config error prints its `Error:` line to STDOUT,
+    // so with empty stderr fall back to that line before the generic exit code.
+    const stdoutError = /^Error:[^\n]*/m.exec(run.stdout)?.[0].trim();
     const detail = run.stderr.trim() ||
+      stdoutError ||
       `markdownlint-cli2 exited with code ${run.exitCode}`;
     return {
       status: "FAILED",

@@ -12,6 +12,10 @@
  *   - SKIPPED state is promoted to FAILED via the shared formatSummary
  *     helper when strict mode is requested (mirrors the mermaid
  *     pattern).
+ *   - Issue #4438: markdownlint-cli2 run with no `globs` prints its help
+ *     screen and exits 2 — SKIPPED. A config error (also exit 2) and a
+ *     Linting run with violations stay FAILED. Real-binary cases run only
+ *     when `markdownlint-cli2` is on PATH.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -19,6 +23,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type DetectMarkdownlintRunner,
+  detectMarkdownlintRunner,
   type MarkdownlintRunner,
   parseMarkdownlintOutput,
   runMarkdownlintCheck,
@@ -200,4 +205,205 @@ Deno.test("runMarkdownlintCheck - SKIPPED is promoted to FAILED in strict mode (
   const strict = formatSummary(checks, true);
   assertEquals(strict.passed, false);
   assertStringIncludes(strict.text, "FAILED");
+});
+
+// =============================================================================
+// Issue #4438: no `globs` configured. markdownlint-cli2 then prints its help
+// screen to STDOUT and exits 2 without linting anything. That is SKIPPED, not
+// FAILED. A config error also exits 2 but stays FAILED.
+// =============================================================================
+
+const MARKDOWNLINT_HELP_STDOUT = [
+  "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)",
+  "https://github.com/DavidAnson/markdownlint-cli2",
+  "",
+  "Syntax: markdownlint-cli2 glob0 [glob1] [...] [globN] [--config file] [--fix] [--help] [--no-globs] [--out file] [--stdin]",
+  "",
+].join("\n");
+
+const MARKDOWNLINT_CONFIG_ERROR_STDOUT = [
+  "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)",
+  "Error: Unable to use configuration file .markdownlint-cli2.jsonc (malformed JSON)",
+  "",
+].join("\n");
+
+Deno.test("runMarkdownlintCheck - SKIPPED with a globs reason when markdownlint-cli2 prints its help (Issue #4438)", async () => {
+  const capture: FakeRunnerCapture = { invocations: [] };
+  const runner = makeFakeRunner(2, MARKDOWNLINT_HELP_STDOUT, capture);
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "SKIPPED");
+  assertEquals(result.violations.length, 0);
+  assertEquals(result.filesChecked, 0);
+  assertStringIncludes(result.output, "markdownlint: SKIPPED");
+  assert(result.skipReason);
+  assertStringIncludes(result.skipReason!, "globs");
+});
+
+Deno.test("runMarkdownlintCheck - FAILED when exit 2 is a config error, not the help screen (Issue #4438)", async () => {
+  const capture: FakeRunnerCapture = { invocations: [] };
+  const runner = makeFakeRunner(2, MARKDOWNLINT_CONFIG_ERROR_STDOUT, capture);
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertStringIncludes(result.output, "markdownlint: FAILED");
+  assertStringIncludes(result.output, "Unable to use configuration file");
+});
+
+Deno.test("runMarkdownlintCheck - FAILED when exit 2 follows a Linting run with a violation (Issue #4438)", async () => {
+  const capture: FakeRunnerCapture = { invocations: [] };
+  const stdout = [
+    "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)",
+    "Linting: 1 file(s)",
+    "Summary: 1 error(s)",
+    "fixture.md:5:1 error MD056/table-column-count Table column count [Expected: 3; Actual: 4]",
+  ].join("\n");
+  const runner = makeFakeRunner(2, stdout, capture);
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertEquals(result.violations.length, 1);
+  assertEquals(result.violations[0]!.file, "fixture.md");
+  assertEquals(result.filesChecked, 1);
+});
+
+Deno.test("runMarkdownlintCheck - FAILED with parsed violations when they arrive only on stderr (Issue #4438)", async () => {
+  // markdownlint-cli2 v0.24.0 writes violation lines to STDERR; the header
+  // and summary go to STDOUT.
+  const stdout = [
+    "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)",
+    "Finding: **/*.md",
+    "Linting: 1 file(s)",
+    "Summary: 1 error(s) in 1 file",
+  ].join("\n");
+  const stderr =
+    "fixture.md:5:1 error MD056/table-column-count Table column count [Expected: 3; Actual: 4]";
+  const runner: MarkdownlintRunner = () =>
+    Promise.resolve({ exitCode: 1, stdout, stderr });
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertEquals(result.violations.length, 1);
+  assertEquals(result.violations[0]!.file, "fixture.md");
+  assertEquals(result.violations[0]!.line, 5);
+  assertEquals(result.violations[0]!.rule, "MD056/table-column-count");
+  assertEquals(result.filesChecked, 1);
+  assertStringIncludes(result.output, "fixture.md:5");
+});
+
+// -----------------------------------------------------------------------------
+// Real markdownlint-cli2 binary (Issue #4438). Skipped when the binary is not
+// on PATH. The runner builds a cleared environment, so PATH must still resolve
+// it for these cases to run.
+// -----------------------------------------------------------------------------
+
+const HAS_MARKDOWNLINT_CLI2 = (() => {
+  try {
+    new Deno.Command("markdownlint-cli2", {
+      args: ["--help"],
+      stdout: "null",
+      stderr: "null",
+    }).outputSync();
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** Creates a temp repo with the given files, runs `body`, then removes it. */
+async function withTempRepo(
+  files: Record<string, string>,
+  body: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "markdownlint-check-test-" });
+  try {
+    for (const [name, content] of Object.entries(files)) {
+      await Deno.writeTextFile(`${dir}/${name}`, content);
+    }
+    await body(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const BAD_README = "#bad\n";
+
+function runRealCheck(dir: string) {
+  return runMarkdownlintCheck(dir, { detectRunner: detectMarkdownlintRunner });
+}
+
+Deno.test({
+  name:
+    "runMarkdownlintCheck (real binary) - SKIPPED when the repo has no config (Issue #4438)",
+  ignore: !HAS_MARKDOWNLINT_CLI2,
+  fn: () =>
+    withTempRepo({ "README.md": BAD_README }, async (dir) => {
+      const result = await runRealCheck(dir);
+      assertEquals(result.status, "SKIPPED");
+      assertStringIncludes(result.skipReason ?? "", "globs");
+    }),
+});
+
+Deno.test({
+  name:
+    "runMarkdownlintCheck (real binary) - SKIPPED when the config has no globs (Issue #4438)",
+  ignore: !HAS_MARKDOWNLINT_CLI2,
+  fn: () =>
+    withTempRepo(
+      {
+        "README.md": BAD_README,
+        ".markdownlint-cli2.jsonc": '{"config":{"MD013":false}}',
+      },
+      async (dir) => {
+        const result = await runRealCheck(dir);
+        assertEquals(result.status, "SKIPPED");
+        assertStringIncludes(result.skipReason ?? "", "globs");
+      },
+    ),
+});
+
+Deno.test({
+  name:
+    "runMarkdownlintCheck (real binary) - FAILED with violations when the config sets globs (Issue #4438)",
+  ignore: !HAS_MARKDOWNLINT_CLI2,
+  fn: () =>
+    withTempRepo(
+      {
+        "README.md": BAD_README,
+        ".markdownlint-cli2.jsonc":
+          '{"config":{"MD013":false},"globs":["**/*.md"]}',
+      },
+      async (dir) => {
+        const result = await runRealCheck(dir);
+        assertEquals(result.status, "FAILED");
+        assert(result.violations.length > 0);
+        assert(result.violations.some((v) => v.file === "README.md"));
+      },
+    ),
+});
+
+Deno.test({
+  name:
+    "runMarkdownlintCheck (real binary) - FAILED on a malformed config (Issue #4438)",
+  ignore: !HAS_MARKDOWNLINT_CLI2,
+  fn: () =>
+    withTempRepo(
+      {
+        "README.md": BAD_README,
+        ".markdownlint-cli2.jsonc": "{bad",
+      },
+      async (dir) => {
+        const result = await runRealCheck(dir);
+        assertEquals(result.status, "FAILED");
+        assertStringIncludes(result.output, "markdownlint: FAILED");
+      },
+    ),
 });
