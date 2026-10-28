@@ -48,8 +48,12 @@ carries it too plus the docs update. Version bump: not applicable. Closes #4444.
 
 Backend only. Changes: `worker/deno/lib/milestone_merge_gate.ts`,
 `milestone_resolution_gate.ts`, `milestone_sync_conflict.ts`, `git_pull.ts`;
-docs `docs/INTERNALS.md` and `docs/workflows/milestones.md` (the sentence saying
-the #974 type check is outside the exception is corrected).
+docs `docs/INTERNALS.md` and `docs/workflows/milestones.md` (the stale sentences
+saying the #974 type check is outside the exception are rewritten, in both files
+and in the INTERNALS "Nothing unverified is published" bullet and the merge-only
+paragraph, to state the condition: a type check left to CI lands as
+`checkLeftToCi` only when another project's check passed, and a tree where
+nothing else ran is still `skipped` and refused).
 
 ## Test Plan
 

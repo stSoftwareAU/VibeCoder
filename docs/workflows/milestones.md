@@ -1,22 +1,62 @@
 # 🎯 Workflow: Milestones
 
-This page is part of the **user manual** for the Vibe Coder. It describes how milestones work: grouping issues into a shared branch, **one PR per target branch**, and the final PR from the milestone branch to default when all milestone issues are done. For internal details, see **Further reading** at the end.
+This page is part of the **user manual** for the Vibe Coder. It describes how
+milestones work: grouping issues into a shared branch, **one PR per target
+branch**, and the final PR from the milestone branch to default when all
+milestone issues are done. For internal details, see **Further reading** at the
+end.
 
 ---
 
 ## Why milestones? (Productivity + safety)
 
-**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. Each milestone-issue PR targets the **milestone branch**, and the worker **enables auto-merge at PR creation** for those PRs like any other (Issue #1136). The Priority 1.65 catch-up scan — and the post-scan sweep that repeats it once the issue slots drain — are the backstop when arming is refused or fails. You still get **one final PR** to default with many issues completed and quality checks already exercised on the milestone line.
+**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on
+many issues in the background overnight or over the weekend. Each
+milestone-issue PR targets the **milestone branch**, and the worker **enables
+auto-merge at PR creation** for those PRs like any other (Issue #1136). The
+Priority 1.65 catch-up scan — and the post-scan sweep that repeats it once the
+issue slots drain — are the backstop when arming is refused or fails. You still
+get **one final PR** to default with many issues completed and quality checks
+already exercised on the milestone line.
 
-**Safety is unchanged.** Every PR (including every milestone-issue PR) runs the full quality gate (e.g. `./quality.sh`). Milestone work reaches the default branch through the **final PR**, subject to the required CI and code-review gates. The operating intent is automated review, repair and recovery without a person supervising or signing off each run; see [unattended self-healing](../../DESIGN-PRINCIPLES.md#fully-unattended-operation-and-self-healing). This does not authorise bypassing a required check or a repository's access controls.
+**Safety is unchanged.** Every PR (including every milestone-issue PR) runs the
+full quality gate (e.g. `./quality.sh`). Milestone work reaches the default
+branch through the **final PR**, subject to the required CI and code-review
+gates. The operating intent is automated review, repair and recovery without a
+person supervising or signing off each run; see
+[unattended self-healing](../../DESIGN-PRINCIPLES.md#fully-unattended-operation-and-self-healing).
+This does not authorise bypassing a required check or a repository's access
+controls.
 
-**Without a milestone:** Each PR targets the default branch. Work is bounded by the configured fleet PR slots, not by waiting for a person to review or merge. While one PR's checks and automated review are pending, independent eligible work continues within those slots. A routine failure needs an automated recovery path rather than a permanent human hand-off.
+**Without a milestone:** Each PR targets the default branch. Work is bounded by
+the configured fleet PR slots, not by waiting for a person to review or merge.
+While one PR's checks and automated review are pending, independent eligible
+work continues within those slots. A routine failure needs an automated recovery
+path rather than a permanent human hand-off.
 
 ---
 
 ## ⚡ TL;DR
 
-**One branch per milestone; one PR (Pull Request) at a time per branch.** Put issues in a GitHub milestone → the worker creates a `milestone/<name>` branch and implements issues one by one, each with a PR **to the milestone branch** (not default). Those PRs enable auto-merge at create, exactly as non-milestone PRs do (Issue #1136). If the milestone branch fell behind the default branch during the run, the worker syncs it inline and arms in the same cycle when the merge is clean (Issue #2005); a conflicting sync posts its reason and arms the child anyway — the milestone ruleset holds the merge until its required checks pass (Issue #2460; the ruleset does not require an up-to-date branch, Issue #2623) — with the Priority 1.65 / post-scan sweeps plus the 1.72 milestone sync as the backstop — see [Label Flows](label-flows.md) and [PR feedback](pr-feedback.md). When **all** milestone issues are done, the worker creates a **tracking issue**, then opens **one final PR** from the milestone branch to default — the automated review and CI gate for the whole stream. The worker **monitors the final PR for CI failures** (including integration tests that may only run against the default branch) and automatically fixes them. Milestone issues **branch off the milestone branch** so the integration line stays clean. Spelling/quality/merge fixes run automatically on worker-authored PRs.
+**One branch per milestone; one PR (Pull Request) at a time per branch.** Put
+issues in a GitHub milestone → the worker creates a `milestone/<name>` branch
+and implements issues one by one, each with a PR **to the milestone branch**
+(not default). Those PRs enable auto-merge at create, exactly as non-milestone
+PRs do (Issue #1136). If the milestone branch fell behind the default branch
+during the run, the worker syncs it inline and arms in the same cycle when the
+merge is clean (Issue #2005); a conflicting sync posts its reason and arms the
+child anyway — the milestone ruleset holds the merge until its required checks
+pass (Issue #2460; the ruleset does not require an up-to-date branch, Issue
+#2623) — with the Priority 1.65 / post-scan sweeps plus the 1.72 milestone sync
+as the backstop — see [Label Flows](label-flows.md) and
+[PR feedback](pr-feedback.md). When **all** milestone issues are done, the
+worker creates a **tracking issue**, then opens **one final PR** from the
+milestone branch to default — the automated review and CI gate for the whole
+stream. The worker **monitors the final PR for CI failures** (including
+integration tests that may only run against the default branch) and
+automatically fixes them. Milestone issues **branch off the milestone branch**
+so the integration line stays clean. Spelling/quality/merge fixes run
+automatically on worker-authored PRs.
 
 ```mermaid
 flowchart TD
@@ -45,8 +85,16 @@ flowchart TD
 
 ## 🎯 Purpose and scope
 
-- **Purpose:** Define how the worker handles issues that belong to a GitHub milestone: create/sync `milestone/<name>` branch, implement issues one at a time with PRs targeting that branch, and create a final PR from the milestone branch to the default branch when all milestone issues are closed.
-- **Scope:** Milestone branch creation and sync; issue selection with milestone-aware open-PR blocking; PR targeting milestone branch (uses "Closes #N" — see [Issue closure for milestone issues](#-issue-closure-for-milestone-issues)); milestone completion detection; final consolidation PR; closing the GitHub milestone after merge.
+- **Purpose:** Define how the worker handles issues that belong to a GitHub
+  milestone: create/sync `milestone/<name>` branch, implement issues one at a
+  time with PRs targeting that branch, and create a final PR from the milestone
+  branch to the default branch when all milestone issues are closed.
+- **Scope:** Milestone branch creation and sync; issue selection with
+  milestone-aware open-PR blocking; PR targeting milestone branch (uses "Closes
+  #N" — see
+  [Issue closure for milestone issues](#-issue-closure-for-milestone-issues));
+  milestone completion detection; final consolidation PR; closing the GitHub
+  milestone after merge.
 
 ### Several milestones from one plan
 
@@ -55,10 +103,10 @@ A planning run no longer produces at most one milestone. When the plan's
 structural gate, the worker creates **one milestone per group of two or more
 sub-issues**, titled `#<N> <area>: <short description>` (for example
 `#2163 infra: options trading`), and assigns each sub-issue to its own group's
-milestone only. A group of a single sub-issue — or one whose `Milestone` cell
-is `—` — gets **no** milestone and merges straight to the default branch. A
-plan may create at most **four** milestones. Two rows naming the same file area
-share one milestone, and the worker warns when that happens.
+milestone only. A group of a single sub-issue — or one whose `Milestone` cell is
+`—` — gets **no** milestone and merges straight to the default branch. A plan
+may create at most **four** milestones. Two rows naming the same file area share
+one milestone, and the worker warns when that happens.
 
 Each is an ordinary milestone from this document's point of view: its own
 `milestone/<slug>` branch, its own one-PR-per-target-branch budget, its own
@@ -70,53 +118,128 @@ planning parent. See
 
 ## 🔀 One PR per target branch
 
-In a single repo, issues either target the **default branch** (no milestone) or a **milestone branch**. The owner's rule is **one fleet PR per slot; multiple milestones mean multiple PRs** (Issue #2663):
+In a single repo, issues either target the **default branch** (no milestone) or
+a **milestone branch**. The owner's rule is **one fleet PR per slot; multiple
+milestones mean multiple PRs** (Issue #2663):
 
-- **No milestone** — Up to `fleet_pr_slots` fleet PRs (default `8`) targeting the default branch at once, one per slot. A non-milestone issue waits only once that cap is reached.
-- **Per milestone** — At most one PR targeting that milestone’s branch (for issues in that milestone).
+- **No milestone** — Up to `fleet_pr_slots` fleet PRs (default `8`) targeting
+  the default branch at once, one per slot. A non-milestone issue waits only
+  once that cap is reached.
+- **Per milestone** — At most one PR targeting that milestone’s branch (for
+  issues in that milestone).
 
-So with several milestones there are several milestone PRs at once, beside the default-branch PRs. Human-authored PRs never count. See [projects-and-dependencies.md](projects-and-dependencies.md) for the full model.
+So with several milestones there are several milestone PRs at once, beside the
+default-branch PRs. Human-authored PRs never count. See
+[projects-and-dependencies.md](projects-and-dependencies.md) for the full model.
 
-**Enforced at issue selection:** When selecting an issue for implementation, the worker skips a milestone issue whose milestone branch already has an open fleet PR, and a non-milestone issue once the fleet's open PRs on the default branch reach the cap. This is enforced at **issue selection** time — the issue finder filters out blocked issues before one is chosen. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#-one-pr-per-target-branch-open-pr-blocking).
+**Enforced at issue selection:** When selecting an issue for implementation, the
+worker skips a milestone issue whose milestone branch already has an open fleet
+PR, and a non-milestone issue once the fleet's open PRs on the default branch
+reach the cap. This is enforced at **issue selection** time — the issue finder
+filters out blocked issues before one is chosen. Issues with `ignore-open-prs`
+(added by an allowed author) bypass this check. See
+[resilience-and-concurrency.md](resilience-and-concurrency.md#-one-pr-per-target-branch-open-pr-blocking).
 
-**Implementation only:** This constraint applies only to **implementation** workflows (issues selected via `find_oldest_issue`). Planning, question, and refinement workflows are **exempt** — they never create branches or PRs, so open-PR blocking is irrelevant. See [planning-and-questions.md](planning-and-questions.md#-open-pr-blocking-does-not-apply).
+**Implementation only:** This constraint applies only to **implementation**
+workflows (issues selected via `find_oldest_issue`). Planning, question, and
+refinement workflows are **exempt** — they never create branches or PRs, so
+open-PR blocking is irrelevant. See
+[planning-and-questions.md](planning-and-questions.md#-open-pr-blocking-does-not-apply).
 
 ## 🔍 Milestone-aware repo availability
 
-When scanning for work, the worker checks each repo for **available work streams** rather than simply checking whether any issue is assigned. A work stream is either a specific milestone or the non-milestone (default branch) stream.
+When scanning for work, the worker checks each repo for **available work
+streams** rather than simply checking whether any issue is assigned. A work
+stream is either a specific milestone or the non-milestone (default branch)
+stream.
 
-**Design principle:** A PR targeting the default branch must not block issues in milestones. Milestones are independent work streams. A repo is only fully "busy" when **every** work stream has assigned work.
+**Design principle:** A PR targeting the default branch must not block issues in
+milestones. Milestones are independent work streams. A repo is only fully "busy"
+when **every** work stream has assigned work.
 
-This means: if a non-milestone issue has a stuck PR targeting the default branch, milestone issues in the same repo **remain eligible**. The worker will scan the repo and find the milestone work.
+This means: if a non-milestone issue has a stuck PR targeting the default
+branch, milestone issues in the same repo **remain eligible**. The worker will
+scan the repo and find the milestone work.
 
-**Implementation:** The `check-repo-availability` Deno command (`worker/deno/lib/repo_availability.ts`) groups open issues by work stream (milestone title) and checks assignment status per stream. It replaces the previous coarse `is_repo_busy()` shell function which treated any assigned issue as blocking the entire repo.
+**Implementation:** The `check-repo-availability` Deno command
+(`worker/deno/lib/repo_availability.ts`) groups open issues by work stream
+(milestone title) and checks assignment status per stream. It replaces the
+previous coarse `is_repo_busy()` shell function which treated any assigned issue
+as blocking the entire repo.
 
 ## 🎭 Actors and triggers
 
-- **Trigger (per issue):** Issue has a milestone set and is selected for implementation (same eligibility as non-milestone issues, plus milestone-aware blocking: do not start another issue for the same milestone while this worker already has an open PR targeting that milestone branch).
-- **Trigger (completion):** **All** issues in the milestone are completed (closed); worker creates the **final PR** from `milestone/<name>` to the default branch.
+- **Trigger (per issue):** Issue has a milestone set and is selected for
+  implementation (same eligibility as non-milestone issues, plus milestone-aware
+  blocking: do not start another issue for the same milestone while this worker
+  already has an open PR targeting that milestone branch).
+- **Trigger (completion):** **All** issues in the milestone are completed
+  (closed); worker creates the **final PR** from `milestone/<name>` to the
+  default branch.
 
 ## 📏 Preconditions / invariants
 
-- **One issue per milestone at a time:** The worker enforces that **only one issue per repo/milestone combination** can be in progress simultaneously. The `is_milestone_occupied` check in the issue finder ensures that if any issue in the same repo and milestone is already assigned, no additional issues from that milestone are eligible. This prevents concurrent work on different milestone issues — ensuring each issue builds on the completed work from the previous one. This applies to both milestone and non-milestone issues (one non-milestone issue per repo at a time).
-- **One PR (Pull Request) per target branch:** The worker does not start a second implementation issue for the same target branch (default or a given milestone) while there is already an open PR by the configured GitHub user targeting that branch. Enforced by **issue selection**: the issue finder does not return an issue whose target branch already has an open PR by that user.
-- **Milestone issues branch off the milestone branch:** When implementing an issue that has a milestone, the feature branch is created from the **milestone branch** (created/synced if needed), not from the default branch. PR targets the milestone branch.
-- **Parallel target branches:** Different target branches (default vs milestone A vs milestone B) can each have one PR in progress. No separate lock object — implemented via selection filtering.
+- **One issue per milestone at a time:** The worker enforces that **only one
+  issue per repo/milestone combination** can be in progress simultaneously. The
+  `is_milestone_occupied` check in the issue finder ensures that if any issue in
+  the same repo and milestone is already assigned, no additional issues from
+  that milestone are eligible. This prevents concurrent work on different
+  milestone issues — ensuring each issue builds on the completed work from the
+  previous one. This applies to both milestone and non-milestone issues (one
+  non-milestone issue per repo at a time).
+- **One PR (Pull Request) per target branch:** The worker does not start a
+  second implementation issue for the same target branch (default or a given
+  milestone) while there is already an open PR by the configured GitHub user
+  targeting that branch. Enforced by **issue selection**: the issue finder does
+  not return an issue whose target branch already has an open PR by that user.
+- **Milestone issues branch off the milestone branch:** When implementing an
+  issue that has a milestone, the feature branch is created from the **milestone
+  branch** (created/synced if needed), not from the default branch. PR targets
+  the milestone branch.
+- **Parallel target branches:** Different target branches (default vs milestone
+  A vs milestone B) can each have one PR in progress. No separate lock object —
+  implemented via selection filtering.
 
 ## ✅ Happy path
 
 ### 📌 Per-issue (milestone issue)
 
-1. **Select** — Issue is in a milestone; no other open PR by the configured GitHub user for **this milestone branch**; issue is otherwise eligible (labels, author, not blocked by dependencies or open children).
-2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with default (merge); **create feature branch from the milestone branch** (not from default).
-3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push. One deliberate difference: the **dependency-bump phase is skipped** (Issue #1775). The default branch's own PRs bump dependencies and the [periodic sync](#-periodic-milestone-branch-sync) carries those bumps down into the milestone branch, so a child PR that bumped as well would rewrite the same lockfile lines and conflict with the sync for no new versions. The child PR body carries `Dependency bump: skipped — milestone child; the default branch's own PRs bump and the sync carries them down`, and the milestone summary PR therefore inherits the current versions rather than bumping separately.
-4. **PR** — Sync the milestone branch with default, then merge it into the feature branch (see [the three branch sync points](#-the-three-branch-sync-points)). Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#-issue-closure-for-milestone-issues)). Enable auto-merge at create, like any other PR (Issue #1136). If the milestone is cleanly behind the default branch, sync it inline and arm in the same cycle (Issue #2005); when that sync conflicts the reason is posted and the child is armed anyway, because the milestone ruleset holds the merge until its required checks pass (Issue #2460). The catch-up scan, post-scan sweep and 1.72 sync are the backstop — and the one base with no such ruleset to hold it is held instead of armed, see [MERGE.md](../MERGE.md).
+1. **Select** — Issue is in a milestone; no other open PR by the configured
+   GitHub user for **this milestone branch**; issue is otherwise eligible
+   (labels, author, not blocked by dependencies or open children).
+2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with
+   default (merge); **create feature branch from the milestone branch** (not
+   from default).
+3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality,
+   commit, push. One deliberate difference: the **dependency-bump phase is
+   skipped** (Issue #1775). The default branch's own PRs bump dependencies and
+   the [periodic sync](#-periodic-milestone-branch-sync) carries those bumps
+   down into the milestone branch, so a child PR that bumped as well would
+   rewrite the same lockfile lines and conflict with the sync for no new
+   versions. The child PR body carries
+   `Dependency bump: skipped — milestone child; the default branch's own PRs bump and the sync carries them down`,
+   and the milestone summary PR therefore inherits the current versions rather
+   than bumping separately.
+4. **PR** — Sync the milestone branch with default, then merge it into the
+   feature branch (see
+   [the three branch sync points](#-the-three-branch-sync-points)). Create PR
+   targeting **milestone branch** (not default). Use "Closes #N" in the PR body
+   (not "Addresses #N" — see
+   [Issue closure for milestone issues](#-issue-closure-for-milestone-issues)).
+   Enable auto-merge at create, like any other PR (Issue #1136). If the
+   milestone is cleanly behind the default branch, sync it inline and arm in the
+   same cycle (Issue #2005); when that sync conflicts the reason is posted and
+   the child is armed anyway, because the milestone ruleset holds the merge
+   until its required checks pass (Issue #2460). The catch-up scan, post-scan
+   sweep and 1.72 sync are the backstop — and the one base with no such ruleset
+   to hold it is held instead of armed, see [MERGE.md](../MERGE.md).
 
 ### 🔁 The three branch sync points
 
 A feature branch is brought up to its target at three points, each by **merge
 and a plain push — never a rebase, never a force-push** (Issues #2807, #2809).
-`worker/deno/tests/sync_points_test.ts` covers each point, over real repositories.
+`worker/deno/tests/sync_points_test.ts` covers each point, over real
+repositories.
 
 1. **Work start** — the issue-run presync merges the milestone branch up to the
    default branch, then `createFeatureBranchFromBase` fetches the target and
@@ -152,40 +275,88 @@ sequenceDiagram
 
 ### ✅ Milestone completion
 
-Once **all** issues for a milestone are completed (merged to the milestone branch or closed), the worker creates a tracking issue and raises a PR targeting the default branch:
+Once **all** issues for a milestone are completed (merged to the milestone
+branch or closed), the worker creates a tracking issue and raises a PR targeting
+the default branch:
 
 1. **Detect** — All issues in the milestone are closed.
-2. **Tracking issue** — A GitHub issue titled "Merge milestone '&lt;name&gt;' to &lt;default&gt;" is created. This provides a visible record of the milestone completion and is automatically closed when the final PR merges. The tracking issue lists all closed milestone issues and is labelled with the first configured issue label for automatic discovery.
-3. **Final PR** — Create a single pull request from `milestone/<name>` to the **default** branch; body lists addressed issues and includes a `Closes #N` reference to the tracking issue. Resolve any merge issues, then enable auto-merge (see [pr-feedback.md](pr-feedback.md): auto-merge only when the PR is mergeable).
-4. **CI (Continuous Integration) monitoring** — The final PR is monitored for CI/integration test failures. This is particularly important because **repositories that only run integration tests on the default branch** will have those tests exercised for the first time against the milestone's combined changes. The worker automatically detects and fixes CI failures at priority 1.55 in the main loop — see [CI/integration test failure detection](#-ciintegration-test-failure-monitoring).
+2. **Tracking issue** — A GitHub issue titled "Merge milestone '&lt;name&gt;' to
+   &lt;default&gt;" is created. This provides a visible record of the milestone
+   completion and is automatically closed when the final PR merges. The tracking
+   issue lists all closed milestone issues and is labelled with the first
+   configured issue label for automatic discovery.
+3. **Final PR** — Create a single pull request from `milestone/<name>` to the
+   **default** branch; body lists addressed issues and includes a `Closes #N`
+   reference to the tracking issue. Resolve any merge issues, then enable
+   auto-merge (see [pr-feedback.md](pr-feedback.md): auto-merge only when the PR
+   is mergeable).
+4. **CI (Continuous Integration) monitoring** — The final PR is monitored for
+   CI/integration test failures. This is particularly important because
+   **repositories that only run integration tests on the default branch** will
+   have those tests exercised for the first time against the milestone's
+   combined changes. The worker automatically detects and fixes CI failures at
+   priority 1.55 in the main loop — see
+   [CI/integration test failure detection](#-ciintegration-test-failure-monitoring).
 5. **After merge** — Close the GitHub milestone (when the final PR is merged).
 
-The completion scan lists every open milestone in pages of 100, up to 10 pages (1,000 open milestones); a repository past that bound gets a `WARNING` in the worker log naming it, and milestones beyond the bound wait (Issue #3609). Each milestone's closed issues — the list the tracking issue and final PR body are built from — are then read by milestone number with a paginated `gh api repos/<repo>/issues?milestone=<n>&state=closed`, so an older milestone's issues are not lost to the repo-wide newest-500 closed batch; a failed read logs a `WARNING` and skips that milestone for the scan (Issue #3662, see *Nothing to merge* under [Decision points and exceptions](#-decision-points-and-exceptions)).
+The completion scan lists every open milestone in pages of 100, up to 10 pages
+(1,000 open milestones); a repository past that bound gets a `WARNING` in the
+worker log naming it, and milestones beyond the bound wait (Issue #3609). Each
+milestone's closed issues — the list the tracking issue and final PR body are
+built from — are then read by milestone number with a paginated
+`gh api repos/<repo>/issues?milestone=<n>&state=closed`, so an older milestone's
+issues are not lost to the repo-wide newest-500 closed batch; a failed read logs
+a `WARNING` and skips that milestone for the scan (Issue #3662, see _Nothing to
+merge_ under
+[Decision points and exceptions](#-decision-points-and-exceptions)).
 
-This final PR is monitored like all other PRs **authored by the configured GitHub user** (see [pr-feedback.md](pr-feedback.md)): spelling, quality (shellcheck, Deno quality checks), CI/integration test failures, and merge issues are fixed automatically; auto-merge is enabled once the PR is mergeable.
+This final PR is monitored like all other PRs **authored by the configured
+GitHub user** (see [pr-feedback.md](pr-feedback.md)): spelling, quality
+(shellcheck, Deno quality checks), CI/integration test failures, and merge
+issues are fixed automatically; auto-merge is enabled once the PR is mergeable.
 
 ## 🔒 Issue closure for milestone issues
 
-GitHub auto-closes issues only when a PR containing a closing keyword ("Closes #N", "Fixes #N", "Resolves #N") is merged into the **default branch**. Merging into any other branch — including a milestone branch — does **not** auto-close the referenced issue, regardless of keywords used.
+GitHub auto-closes issues only when a PR containing a closing keyword ("Closes
+#N", "Fixes #N", "Resolves #N") is merged into the **default branch**. Merging
+into any other branch — including a milestone branch — does **not** auto-close
+the referenced issue, regardless of keywords used.
 
 ### 💡 Why "Closes" and not "Addresses"
 
-Milestone PRs use **"Closes #N"** (not "Addresses #N") even though GitHub will not auto-close the issue when the PR merges into the milestone branch. This is intentional:
+Milestone PRs use **"Closes #N"** (not "Addresses #N") even though GitHub will
+not auto-close the issue when the PR merges into the milestone branch. This is
+intentional:
 
-- **"Addresses"** is not a GitHub closing keyword. When milestone PRs used "Addresses", the `ensure_pr_references_issue` safety net would not detect a valid closing reference, causing the worker to repeatedly pick up the same issue in an infinite loop.
-- **"Closes"** satisfies the closing-keyword validation and links the PR to the issue on GitHub, but does **not** trigger auto-close because the target branch is not the default branch.
+- **"Addresses"** is not a GitHub closing keyword. When milestone PRs used
+  "Addresses", the `ensure_pr_references_issue` safety net would not detect a
+  valid closing reference, causing the worker to repeatedly pick up the same
+  issue in an infinite loop.
+- **"Closes"** satisfies the closing-keyword validation and links the PR to the
+  issue on GitHub, but does **not** trigger auto-close because the target branch
+  is not the default branch.
 
 ### 🕐 When milestone issues actually close
 
-Milestone issues are closed **manually** — either by the user or by the worker via `close_milestone_issue_after_merge()` — after their individual PR is merged into the milestone branch. They are **not** auto-closed by GitHub because the PR targets a non-default branch.
+Milestone issues are closed **manually** — either by the user or by the worker
+via `close_milestone_issue_after_merge()` — after their individual PR is merged
+into the milestone branch. They are **not** auto-closed by GitHub because the PR
+targets a non-default branch.
 
-The milestone completion check (`check_and_handle_milestone_completions()`) only creates the final consolidation PR once **all** milestone issues are closed. This means:
+The milestone completion check (`check_and_handle_milestone_completions()`) only
+creates the final consolidation PR once **all** milestone issues are closed.
+This means:
 
-1. Each individual milestone PR merges into the milestone branch → the issue stays open (GitHub does not auto-close).
+1. Each individual milestone PR merges into the milestone branch → the issue
+   stays open (GitHub does not auto-close).
 2. The issue is closed manually or by the worker after the merge.
-3. Once all issues are closed, the worker detects completion and creates the final PR from `milestone/<name>` to the default branch.
+3. Once all issues are closed, the worker detects completion and creates the
+   final PR from `milestone/<name>` to the default branch.
 4. After the final PR is merged, the GitHub milestone itself is closed.
-5. Only then is a **cross-milestone** `Depends on #N` satisfied — an issue in another milestone that names a closed sub-issue of this one stays held until this milestone closes (see [Projects and dependencies](projects-and-dependencies.md#-mixed-dependencies-and-milestones)).
+5. Only then is a **cross-milestone** `Depends on #N` satisfied — an issue in
+   another milestone that names a closed sub-issue of this one stays held until
+   this milestone closes (see
+   [Projects and dependencies](projects-and-dependencies.md#-mixed-dependencies-and-milestones)).
 
 ## 📊 Diagram: milestone branch flow
 
@@ -217,7 +388,10 @@ flowchart TD
 
 ## 📊 Diagram: milestone branch flow (gitGraph)
 
-The following `gitGraph` diagram shows how milestone issues branch off a shared milestone branch, merge back one at a time, and then — after a tracking issue is created and CI is monitored — a final consolidation PR merges the milestone branch into `Develop`:
+The following `gitGraph` diagram shows how milestone issues branch off a shared
+milestone branch, merge back one at a time, and then — after a tracking issue is
+created and CI is monitored — a final consolidation PR merges the milestone
+branch into `Develop`:
 
 ```mermaid
 gitGraph
@@ -246,18 +420,36 @@ gitGraph
     commit id: "CI monitored & fixed"
 ```
 
-*The `main` line represents `Develop`. Each milestone issue branches from `milestone/<name>`, merges back via PR (one at a time). When all issues are done, a tracking issue is created, the milestone branch merges into `Develop` with a consolidation PR, and the worker monitors CI — automatically fixing any failures (including integration tests that may run for the first time against the default branch).*
+_The `main` line represents `Develop`. Each milestone issue branches from
+`milestone/<name>`, merges back via PR (one at a time). When all issues are
+done, a tracking issue is created, the milestone branch merges into `Develop`
+with a consolidation PR, and the worker monitors CI — automatically fixing any
+failures (including integration tests that may run for the first time against
+the default branch)._
 
 ## 🔧 CI/integration test failure monitoring
 
-The milestone summary PR (final PR from `milestone/<name>` to default) is monitored for CI and integration test failures, just like any other PR authored by the worker. This is particularly important for milestones because:
+The milestone summary PR (final PR from `milestone/<name>` to default) is
+monitored for CI and integration test failures, just like any other PR authored
+by the worker. This is particularly important for milestones because:
 
-- **Integration tests on the default branch:** Some repositories only run integration tests when targeting the default branch. The milestone summary PR is the first time the combined milestone changes are tested against the default branch's CI pipeline.
-- **Automatic detection:** `find_failed_ci_checks` scans all open PRs for failed check runs (excluding checks whose failing step is a spelling tool, which are handled separately at priority 1.5). PRs targeting the default branch are prioritised.
-- **Automatic remediation:** `work_on_ci_failure` diagnoses and fixes CI failures using Claude, then commits and pushes the fix to the PR branch. Retries are capped at `CI_CHECK_MAX_RETRIES` (default 3) per check run.
-- **Priority 1.55:** CI failure remediation runs after spelling fixes (1.5) but before branch updates (1.6), ensuring CI issues on the milestone summary PR are addressed promptly.
+- **Integration tests on the default branch:** Some repositories only run
+  integration tests when targeting the default branch. The milestone summary PR
+  is the first time the combined milestone changes are tested against the
+  default branch's CI pipeline.
+- **Automatic detection:** `find_failed_ci_checks` scans all open PRs for failed
+  check runs (excluding checks whose failing step is a spelling tool, which are
+  handled separately at priority 1.5). PRs targeting the default branch are
+  prioritised.
+- **Automatic remediation:** `work_on_ci_failure` diagnoses and fixes CI
+  failures using Claude, then commits and pushes the fix to the PR branch.
+  Retries are capped at `CI_CHECK_MAX_RETRIES` (default 3) per check run.
+- **Priority 1.55:** CI failure remediation runs after spelling fixes (1.5) but
+  before branch updates (1.6), ensuring CI issues on the milestone summary PR
+  are addressed promptly.
 
-If a CI failure cannot be fixed after the maximum number of retries, a comment is posted on the PR and the failure is left for manual investigation.
+If a CI failure cannot be fixed after the maximum number of retries, a comment
+is posted on the PR and the failure is left for manual investigation.
 
 ### ⏸️ Pending dependencies hold the summary PR (Issue #3014)
 
@@ -267,31 +459,31 @@ default branch yet. `findPendingMilestoneDependencies()`
 ([milestone_dependency_hold.ts](../../worker/deno/lib/milestone_dependency_hold.ts))
 reads every issue in the milestone (open and closed) and flags a dependency as
 **pending** when it is still open, or when it is closed but assigned to a
-different milestone that is still open — that work sits on an unmerged
-milestone branch, not on the target branch. A dependency inside the same
-milestone is ignored, since it assembles in the same PR and an open one is
-already caught by the open-children gate above.
+different milestone that is still open — that work sits on an unmerged milestone
+branch, not on the target branch. A dependency inside the same milestone is
+ignored, since it assembles in the same PR and an open one is already caught by
+the open-children gate above.
 
-`createMilestoneSummaryPr()` runs this check when the summary PR is created,
-so the PR body gains a `### ⏸️ Held: pending dependencies` section listing
-each pending dependency (or a `### ⏸️ Declared dependencies not verified` note
-if the check could not be read), without ever blocking creation. `decideSummaryPrMerge()`
-re-checks declared dependencies independently on every merge attempt and scan,
-after finding no open children: a pending dependency blocks the merge with
-`reason: "pending-dependencies"`, logs a warning listing each "#A depends
-on #B" description, and posts one idempotent comment carrying marker
-`<!-- milestone-pending-dependencies-merge-block -->`. The PR merges, with no
-human action needed, once every pending dependency lands. A cross-milestone
-dependency cycle (milestone A's sub-issue depends on B's and vice versa) holds
-both summary PRs; a human can still merge one by hand.
+`createMilestoneSummaryPr()` runs this check when the summary PR is created, so
+the PR body gains a `### ⏸️ Held: pending dependencies` section listing each
+pending dependency (or a `### ⏸️ Declared dependencies not verified` note if the
+check could not be read), without ever blocking creation.
+`decideSummaryPrMerge()` re-checks declared dependencies independently on every
+merge attempt and scan, after finding no open children: a pending dependency
+blocks the merge with `reason: "pending-dependencies"`, logs a warning listing
+each "#A depends on #B" description, and posts one idempotent comment carrying
+marker `<!-- milestone-pending-dependencies-merge-block -->`. The PR merges,
+with no human action needed, once every pending dependency lands. A
+cross-milestone dependency cycle (milestone A's sub-issue depends on B's and
+vice versa) holds both summary PRs; a human can still merge one by hand.
 
 ### ⚠️ Docs citing issues closed as not planned (Issue #3223)
 
-Milestone sub-PRs merge into the milestone branch on green CI with no
-review — review happens once, on the summary PR into the default branch. A
-sibling sub-issue can be closed as **not planned** after other sub-issues
-already documented its intended work, leaving a doc on the milestone branch
-that still describes the dropped work as present.
+Milestone sub-PRs merge into the milestone branch on green CI with no review —
+review happens once, on the summary PR into the default branch. A sibling
+sub-issue can be closed as **not planned** after other sub-issues already
+documented its intended work, leaving a doc on the milestone branch that still
+describes the dropped work as present.
 
 When `createMilestoneSummaryPr()` raises the summary PR,
 `findNotPlannedDocReferences()`
@@ -299,24 +491,37 @@ When `createMilestoneSummaryPr()` raises the summary PR,
 collects the milestone's issues and their declared `Depends on`/`Blocked by`
 issues closed as not planned. A dependency counts when written `#N` or as
 `owner/repo#N` naming this repo (matched case-insensitively, Issue #3245); a
-dependency in another repo is skipped, not looked up. The
-compare diff is read only when at least
-one such not-planned issue exists; it then lists each added Markdown line
-naming such an issue (`#N` or `owner/repo#N` for this repo) in the PR body.
-Markdown files the compare API returns without diff text are listed as not
-checked, and a note says so when the response reaches the API's 300-file
-cap. A lookup failure swaps in a "not checked" note instead. It never blocks
-PR creation and is not re-checked at merge time — rewording each hit is left
-to the reviewer of the default-branch PR.
+dependency in another repo is skipped, not looked up. The compare diff is read
+only when at least one such not-planned issue exists; it then lists each added
+Markdown line naming such an issue (`#N` or `owner/repo#N` for this repo) in the
+PR body. Markdown files the compare API returns without diff text are listed as
+not checked, and a note says so when the response reaches the API's 300-file
+cap. A lookup failure swaps in a "not checked" note instead. It never blocks PR
+creation and is not re-checked at merge time — rewording each hit is left to the
+reviewer of the default-branch PR.
 
 ## 🔄 Periodic milestone branch sync
 
-Long-running milestones can drift significantly from the default branch, causing merge conflicts when the final summary PR is created. To prevent this, the worker periodically merges the default branch into active milestone branches at **priority 1.72** in the main event loop — after milestone completion checks (1.7) but before issue refinement (1.75).
+Long-running milestones can drift significantly from the default branch, causing
+merge conflicts when the final summary PR is created. To prevent this, the
+worker periodically merges the default branch into active milestone branches at
+**priority 1.72** in the main event loop — after milestone completion checks
+(1.7) but before issue refinement (1.75).
 
 ### How it works
 
-1. **Milestone detection:** For each configured repo, the worker takes **every open milestone** — except an `idle-task:` one, which never carries a branch (Issue #2125). The closed-issue query that once decided whether work had "started" is gone (Issue #1776): a milestone that has completed nothing still drifts, and it was exactly the branch nobody was watching.
-2. **Cadence guard:** One `git rev-parse origin/<default>` per repo, compared against the tip each branch was last **successfully** synced against (`lastSyncedDefaultSha` in `milestone_sync_failures.json`). A branch already carrying that tip is skipped with `default tip unchanged`; anything else syncs on that cycle, which on the default 120-second loop means within two minutes of a push to the default branch. A tip git cannot report is logged and synced — never read as "unchanged".
+1. **Milestone detection:** For each configured repo, the worker takes **every
+   open milestone** — except an `idle-task:` one, which never carries a branch
+   (Issue #2125). The closed-issue query that once decided whether work had
+   "started" is gone (Issue #1776): a milestone that has completed nothing still
+   drifts, and it was exactly the branch nobody was watching.
+2. **Cadence guard:** One `git rev-parse origin/<default>` per repo, compared
+   against the tip each branch was last **successfully** synced against
+   (`lastSyncedDefaultSha` in `milestone_sync_failures.json`). A branch already
+   carrying that tip is skipped with `default tip unchanged`; anything else
+   syncs on that cycle, which on the default 120-second loop means within two
+   minutes of a push to the default branch. A tip git cannot report is logged
+   and synced — never read as "unchanged".
 
    ```mermaid
    flowchart TD
@@ -328,29 +533,91 @@ Long-running milestones can drift significantly from the default branch, causing
        M -- failure --> W["WARNING, record nothing<br/>→ retried next cycle"]
    ```
 
-3. **Pass order — longest behind first (Issue #2309):** Before a repository's branches are synced, each one's behind count is measured against the default tip just fetched (one `git rev-list --count origin/<milestone>..origin/<default>`) and they are synced behind-count descending, because the branch carrying the most drift is the one most likely to conflict and the one whose conflict is cheapest to settle today. A branch the ledger already records against this tip is level by construction and is not measured at all, so an idle cycle pays nothing for an order it will not use; a branch whose count cannot be read sorts as level and is still synced, only later in the pass. A level branch still takes the cheap cadence path above. The order is decided within each repository's pass, so the cross-repo cursor (Issue #2215) and the per-repo lease (Issue #2030) are untouched.
-4. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
-5. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-6. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). What the triage cannot decide climbs the rest of the ladder (Issue #1777): the deterministic dependency rules, then the resolution agent. Only a file **every** rung leaves undecided aborts the merge and escalates with both sides prepared, without blocking other work.
-7. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below. Before it force-pushes that branch, the sync reads the remote `sync/milestone-<name>` head: when it already holds the same merge (same tree, same tips) nothing is pushed, so an open sync PR's checks are not restarted for no change; a comparison git cannot answer pushes as before (Issue #3690, see `docs/milestone-sync-overhead.md`).
+3. **Pass order — longest behind first (Issue #2309):** Before a repository's
+   branches are synced, each one's behind count is measured against the default
+   tip just fetched (one
+   `git rev-list --count origin/<milestone>..origin/<default>`) and they are
+   synced behind-count descending, because the branch carrying the most drift is
+   the one most likely to conflict and the one whose conflict is cheapest to
+   settle today. A branch the ledger already records against this tip is level
+   by construction and is not measured at all, so an idle cycle pays nothing for
+   an order it will not use; a branch whose count cannot be read sorts as level
+   and is still synced, only later in the pass. A level branch still takes the
+   cheap cadence path above. The order is decided within each repository's pass,
+   so the cross-repo cursor (Issue #2215) and the per-repo lease (Issue #2030)
+   are untouched.
+4. **Branch existence check:** Verifies the milestone branch exists on the
+   remote before attempting sync.
+5. **Merge:** Merges the default branch into the milestone branch using
+   `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
+6. **Conflict handling:** If a merge conflict occurs, the worker **triages** it
+   file by file rather than taking one side wholesale (Issue #1559) — see
+   [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the
+   milestone branch edited a file the default branch deleted — resolves as a
+   **delete**, never by keeping the file (Issue #1048). What the triage cannot
+   decide climbs the rest of the ladder (Issue #1777): the deterministic
+   dependency rules, then the resolution agent. Only a file **every** rung
+   leaves undecided aborts the merge and escalates with both sides prepared,
+   without blocking other work.
+7. **Gated branches:** Where a ruleset refuses the direct push, the same merge
+   lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a
+   **merge commit, never a squash** (Issue #1048) — see below. Before it
+   force-pushes that branch, the sync reads the remote `sync/milestone-<name>`
+   head: when it already holds the same merge (same tree, same tips) nothing is
+   pushed, so an open sync PR's checks are not restarted for no change; a
+   comparison git cannot answer pushes as before (Issue #3690, see
+   `docs/milestone-sync-overhead.md`).
 
 ### Running beside issue work, one host per branch (Issue #2030)
 
-The sync's agent rung takes minutes to an hour. Until Issue #2030 it ran in the sequential pass list, so every issue slot on the host waited for it. It now runs in the **maintenance lane** (Issue #213) beside the issue pool, leasing each repository's shared clone for the duration of that repository's pass so an issue slot never resets the clone mid-merge; a repository a slot already holds is deferred to the next cycle with a log line. The self-heal that runs before the sync leases the same way.
+The sync's agent rung takes minutes to an hour. Until Issue #2030 it ran in the
+sequential pass list, so every issue slot on the host waited for it. It now runs
+in the **maintenance lane** (Issue #213) beside the issue pool, leasing each
+repository's shared clone for the duration of that repository's pass so an issue
+slot never resets the clone mid-merge; a repository a slot already holds is
+deferred to the next cycle with a log line. The self-heal that runs before the
+sync leases the same way.
 
-Two hosts used to spend the same rung on the same branch — the sync's attempt ledger is host-local. Before a branch is synced the host now takes a **claim**: a hidden ref `refs/vibe/sync-claims/<milestone-branch>` on the remote (no branch, no PR, no ruleset), pushed with `--force-with-lease` expecting the ref to be absent. A sibling's claim younger than two hours skips the branch this cycle without opening an attempt; an older one belongs to a host that died mid-sync and is taken over, still atomically. The claim is released when the sync concludes. A claim that cannot be read or written is logged and ignored: duplicate work is the cost of a claim outage, a stalled sync is not.
+Two hosts used to spend the same rung on the same branch — the sync's attempt
+ledger is host-local. Before a branch is synced the host now takes a **claim**:
+a hidden ref `refs/vibe/sync-claims/<milestone-branch>` on the remote (no
+branch, no PR, no ruleset), pushed with `--force-with-lease` expecting the ref
+to be absent. A sibling's claim younger than two hours skips the branch this
+cycle without opening an attempt; an older one belongs to a host that died
+mid-sync and is taken over, still atomically. The claim is released when the
+sync concludes. A claim that cannot be read or written is logged and ignored:
+duplicate work is the cost of a claim outage, a stalled sync is not.
 
-**Every behind branch is offered the agent rung, and a running attempt says so (Issue #2309).** The rung used to be latched to one branch a cycle: whichever branch conflicted first spent it, and every other behind branch was refused a rung the cycle could still have covered. The latch is gone — `grantAgentRun` is asked per branch against the deadline that is actually left, so a second branch is refused only by the 24-minute floor (`DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT` plus `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS`), and a refused branch concludes `agent deferred: cycle budget` rather than a charged failure. The refusal is counted, though: a branch refused `MILESTONE_REFUSAL_CEILING` (3) cycles in a row is charged on the next refusal, as a failure that spends the whole budget and climbs to the hand-off (Issue #4328). When a branch genuinely **enters** the rung, the worker logs one line and posts one comment on the milestone's escalation target naming the host and the ISO start time, keyed on the ledger's `attemptOpenedAt` so one opened attempt is announced once; a merge the deterministic rules settle announces nothing. The lock and the claim ref below are still the duplicate-work guard — the announcement is a record, not a claim.
+**Every behind branch is offered the agent rung, and a running attempt says so
+(Issue #2309).** The rung used to be latched to one branch a cycle: whichever
+branch conflicted first spent it, and every other behind branch was refused a
+rung the cycle could still have covered. The latch is gone — `grantAgentRun` is
+asked per branch against the deadline that is actually left, so a second branch
+is refused only by the 24-minute floor (`DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT`
+plus `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS`), and a refused branch concludes
+`agent deferred: cycle budget` rather than a charged failure. The refusal is
+counted, though: a branch refused `MILESTONE_REFUSAL_CEILING` (3) cycles in a
+row is charged on the next refusal, as a failure that spends the whole budget
+and climbs to the hand-off (Issue #4328). When a branch genuinely **enters** the
+rung, the worker logs one line and posts one comment on the milestone's
+escalation target naming the host and the ISO start time, keyed on the ledger's
+`attemptOpenedAt` so one opened attempt is announced once; a merge the
+deterministic rules settle announces nothing. The lock and the claim ref below
+are still the duplicate-work guard — the announcement is a record, not a claim.
 
-And because a sibling may still land the same sync while this host is resolving it, the sync re-fetches the milestone branch **right before** the gate and push: if the default tip is already an ancestor of the remote branch, the local merge is discarded, the remote branch adopted, and the outcome is a success with nothing pushed.
+And because a sibling may still land the same sync while this host is resolving
+it, the sync re-fetches the milestone branch **right before** the gate and push:
+if the default tip is already an ancestor of the remote branch, the local merge
+is discarded, the remote branch adopted, and the outcome is a success with
+nothing pushed.
 
 ### Conflict triage
 
 A conflicted sync used to have two moves, and both were wrong: taking the
-default branch's side wholesale is a decision nobody made, and handing the
-whole merge to a human asks a person to choose between two changes they did not
-write. Since Issue #1559 the worker decides what is mechanical and escalates
-only what is not.
+default branch's side wholesale is a decision nobody made, and handing the whole
+merge to a human asks a person to choose between two changes they did not write.
+Since Issue #1559 the worker decides what is mechanical and escalates only what
+is not.
 
 ```mermaid
 flowchart TD
@@ -391,8 +658,8 @@ Three rules decide a file, and one rule outranks all of them:
    because it needs no evidence about either side's tests.
 2. **The same fix landed twice** — both sides' commits touching the file cite
    the same `Fixes #NNNN`, or carry this fleet's own `(Issue #N)` **subject**
-   stamp. The side whose test cases *for that issue* are a superset is kept,
-   and the reason names what was dropped. Cases written for other issues do not
+   stamp. The side whose test cases _for that issue_ are a superset is kept, and
+   the reason names what was dropped. Cases written for other issues do not
    count: pooling them compares two populations dominated by unrelated churn.
    Where neither side wrote a case for the fix, or the evidence could not be
    read, nothing is decided — the file escalates rather than being resolved on
@@ -400,48 +667,68 @@ Three rules decide a file, and one rule outranks all of them:
 3. **Two designs for the same problem** — neither side contains the other, so
    the triage decides nothing and the file climbs to the next rung.
 
-**The ported rung (Issue #2023).** Between the dependency rules and the agent sits a rung that asks history instead of reading hunks. On 2026-09-12 the agent rung spent 44 minutes and 800 tool calls on a ninety-file conflict — twenty-five add/add pairs across whole directories — merging the default branch into a milestone whose content had already reached that default branch through another milestone's squash. The three-way merge saw two branches editing every file from an ancient base; the hunks had no answer, but history did. For each conflicted path the rung checks whether the **default branch's history ever carried the milestone's exact current version** of that file (`git log --find-object=<blob>`, byte for byte). If it did, the default branch absorbed the milestone's version and has since moved on, so its version contains the milestone's and is taken. Symmetrically, if the milestone's history carried the default branch's exact version, the milestone moved on and its version is taken. Neither is a side-pick: the side kept provably contains the other, and the merge commit records `ported: '<default>' already carried this exact version at <sha> and moved on` per file. A path neither history explains is left for the agent, narrowed to exactly those paths, so the rung can never make an outcome worse than today's. The conflict's shape (files, add/add pairs, directories) is logged once as `wrong-base shape` when it exceeds twenty files or add/add pairs in more than one directory, so the sync's report can say what it was looking at.
+**The ported rung (Issue #2023).** Between the dependency rules and the agent
+sits a rung that asks history instead of reading hunks. On 2026-09-12 the agent
+rung spent 44 minutes and 800 tool calls on a ninety-file conflict — twenty-five
+add/add pairs across whole directories — merging the default branch into a
+milestone whose content had already reached that default branch through another
+milestone's squash. The three-way merge saw two branches editing every file from
+an ancient base; the hunks had no answer, but history did. For each conflicted
+path the rung checks whether the **default branch's history ever carried the
+milestone's exact current version** of that file
+(`git log --find-object=<blob>`, byte for byte). If it did, the default branch
+absorbed the milestone's version and has since moved on, so its version contains
+the milestone's and is taken. Symmetrically, if the milestone's history carried
+the default branch's exact version, the milestone moved on and its version is
+taken. Neither is a side-pick: the side kept provably contains the other, and
+the merge commit records
+`ported: '<default>' already carried this exact version at <sha> and moved on`
+per file. A path neither history explains is left for the agent, narrowed to
+exactly those paths, so the rung can never make an outcome worse than today's.
+The conflict's shape (files, add/add pairs, directories) is logged once as
+`wrong-base shape` when it exceeds twenty files or add/add pairs in more than
+one directory, so the sync's report can say what it was looking at.
 
-**The rest of the ladder (Issue #1777).** What the triage cannot decide is not
-a human's problem yet. The sync climbs the same two rungs the PR merge-conflict
+**The rest of the ladder (Issue #1777).** What the triage cannot decide is not a
+human's problem yet. The sync climbs the same two rungs the PR merge-conflict
 pass climbs, in the very clone the merge conflicted in:
 
 1. **The dependency rules** — a lock file or a manifest bumped on both sides
    needs no judgement, so it never costs a model run.
-2. **The resolution agent** — asked only about the paths the rules deferred,
-   and required to resolve *and stage* them, exactly as the PR pass requires.
+2. **The resolution agent** — asked only about the paths the rules deferred, and
+   required to resolve _and stage_ them, exactly as the PR pass requires.
 
-**One writer of the merge commit (Issue #1964).** The agent stages; the
-worker's final-mile commit writes the merge, so the commit message always
-carries the rung that settled each file. An agent that commits the merge
-anyway is **tolerated, not punished**: before the plan is applied, the sync
-reads the merge state, and a HEAD that is already the merge of the branch's
-pre-merge commit and the default branch's tip keeps its commit and has its
-message rewritten. Three guards bound that tolerance, and each resets the
-branch to its pre-merge commit rather than pushing:
+**One writer of the merge commit (Issue #1964).** The agent stages; the worker's
+final-mile commit writes the merge, so the commit message always carries the
+rung that settled each file. An agent that commits the merge anyway is
+**tolerated, not punished**: before the plan is applied, the sync reads the
+merge state, and a HEAD that is already the merge of the branch's pre-merge
+commit and the default branch's tip keeps its commit and has its message
+rewritten. Three guards bound that tolerance, and each resets the branch to its
+pre-merge commit rather than pushing:
 
-- **The safety gate still runs.** The index gate saw nothing to inspect, so
-  the adopted commit's own changed paths are classified instead — a `.env`, a
+- **The safety gate still runs.** The index gate saw nothing to inspect, so the
+  adopted commit's own changed paths are classified instead — a `.env`, a
   credential file or a stray `.heartbeat_*` refuses the adoption.
-- **The triage's sides are taken before any rung runs (Issue #2006).** The
-  agent rung stages the whole working tree when the agent is done, and that
-  `git add -A` used to stage the triage's still-unmerged paths too — markers
-  and all — so their side could no longer be taken and the whole resolution,
-  agent work included, was refused. Staging the sides first means a rung that
-  commits the merge commits them too, and the adopted commit is judged on its
-  safety alone.
+- **The triage's sides are taken before any rung runs (Issue #2006).** The agent
+  rung stages the whole working tree when the agent is done, and that
+  `git add -A` used to stage the triage's still-unmerged paths too — markers and
+  all — so their side could no longer be taken and the whole resolution, agent
+  work included, was refused. Staging the sides first means a rung that commits
+  the merge commits them too, and the adopted commit is judged on its safety
+  alone.
 - **A state that could not be read resets nothing.** "No merge in progress" is
-  only believed when git says so determinately; a timeout or a broken
-  repository fails loudly with the branch untouched.
+  only believed when git says so determinately; a timeout or a broken repository
+  fails loudly with the branch untouched.
 
-A merge that is determinately neither in progress nor committed — an agent
-that aborted it, or committed something else — fails **by name**, rather than
-as an unexplained `git commit` exit 1.
+A merge that is determinately neither in progress nor committed — an agent that
+aborted it, or committed something else — fails **by name**, rather than as an
+unexplained `git commit` exit 1.
 
 Every git failure on the sync path quotes git's **stdout as well as its
-stderr**, because `git commit` explains "nothing to commit, working tree
-clean" on stdout, and a push that fails for anything but a repository rule is
-now a **failed sync** rather than a note on a success. The second-occurrence
+stderr**, because `git commit` explains "nothing to commit, working tree clean"
+on stdout, and a push that fails for anything but a repository rule is now a
+**failed sync** rather than a note on a success. The second-occurrence
 escalation Issue #1964 added for an identical repeated reason was removed by
 Issue #2311: a conflict is answered by the three-run budget, the roll-back and
 the `merge-fallback` flag, and a **non-conflict** failure escalates on the
@@ -451,17 +738,16 @@ Only a file every rung leaves undecided aborts the merge, and the refusal then
 names the rung that failed (`agent: …`). It charges one of the branch's three
 runs and reaches no human (Issue #2311) — the third spent run hands the branch
 on: a rebuild when a roll-back was already spent on it, otherwise the roll-back
-and its `merge-fallback` flag (Issue #4328). An agent that
-fails, is ended by the worker, leaves a path unmerged or leaves a conflict
-marker behind is a failed rung: nothing is pushed and the branch stands exactly
-at its pre-merge commit. The escalation carries the preparation: what each side
-exports, what each side tests, and which cases exist on one side only. Each
-file that *was* settled carries the rung that settled it — `triage: <case>`,
-`rule: <reason>` or `agent` — on the merge commit, in the sync's log line and
-in the report comment.
+and its `merge-fallback` flag (Issue #4328). An agent that fails, is ended by
+the worker, leaves a path unmerged or leaves a conflict marker behind is a
+failed rung: nothing is pushed and the branch stands exactly at its pre-merge
+commit. The escalation carries the preparation: what each side exports, what
+each side tests, and which cases exist on one side only. Each file that _was_
+settled carries the rung that settled it — `triage: <case>`, `rule: <reason>` or
+`agent` — on the merge commit, in the sync's log line and in the report comment.
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
-by taking a side only when that side already keeps every case *and* every line
+by taking a side only when that side already keeps every case _and_ every line
 of the other. Otherwise the file is merged as a **union** — both sides' hunks
 kept — and the result is checked case by case before it is staged: a union that
 would lose a case escalates instead. Equal case names are not enough to take a
@@ -469,56 +755,58 @@ side, because an assertion changed inside a case with the same name is a silent
 loss.
 
 **Every automatic resolution is verified before it is pushed.** The merged tree
-must pass the repository's own Issue #974 type check, its `check:manifests`
-task and its unit suite (`test:unit`, else `test`, else `cargo test`, else the
-repository's own `./quality.sh` — Issue #2388), inside a single 15-minute
-budget so the sync cannot block the event loop. A red tree is reset to the
-pre-merge commit and escalated — with both halves: what the verification said
-*and* both sides prepared. A tree with no type check or no unit suite is
-*unverifiable*, and a resolution that cannot be verified is not a resolution —
-it is refused the same way. There are two exceptions, and each names what went
-unchecked. The first is a merge-only cycle (Issue #4326) on a cargo-only tree:
-when the host cannot afford the cargo build, a resolution is pushed with the
-`UNGATED` note and the milestone PR's CI builds it. The second (Issue #4422)
-applies only to the resolution gate's Deno tasks, not to the Issue #974 type
-check. When a Deno task fails because this host cannot reach a remote module
-host, deno prints `error: Import '<url>' failed.` followed by a connection-class
-cause such as `error sending request for url`, `unsuccessful tunnel` or
-`dns error`. The task is neither counted as passed nor repaired. Every other
-task still runs, so a real failure elsewhere still refuses the resolution. A
-404, a certificate, a checksum or a type error is an ordinary failure and is
-refused. `quality.sh` is never substituted for an unreachable unit suite. The
-resolution lands with the outcome `suiteLeftToCi`, naming the task and the
-cause, and the report says that task did not run and that the milestone PR's
-CI runs it. A Deno type check that cannot fetch its remote modules is treated the
-same way (Issue #4444): the outcome is `checkLeftToCi`, the push note starts
-`CHECK LEFT TO CI:`, and the report says the type check did not fully run. A Deno-only tree and a mixed tree keep their Deno checks and suites
-and are rolled back when red, except for that unreachable-module case. A mixed
-tree whose Deno half passed notes that cargo was left to CI; the report does not
+must pass the repository's own Issue #974 type check, its `check:manifests` task
+and its unit suite (`test:unit`, else `test`, else `cargo test`, else the
+repository's own `./quality.sh` — Issue #2388), inside a single 15-minute budget
+so the sync cannot block the event loop. A red tree is reset to the pre-merge
+commit and escalated — with both halves: what the verification said _and_ both
+sides prepared. A tree with no type check or no unit suite is _unverifiable_,
+and a resolution that cannot be verified is not a resolution — it is refused the
+same way. There are two exceptions, and each names what went unchecked. The
+first is a merge-only cycle (Issue #4326) on a cargo-only tree: when the host
+cannot afford the cargo build, a resolution is pushed with the `UNGATED` note
+and the milestone PR's CI builds it. The second (Issue #4422) covers a Deno task
+that cannot reach its module host, in the resolution gate's tasks and, with the
+condition below (Issue #4444), in the Issue #974 type check. When a Deno task
+fails because this host cannot reach a remote module host, deno prints
+`error: Import '<url>' failed.` followed by a connection-class cause such as
+`error sending request for url`, `unsuccessful tunnel` or `dns error`. The task
+is neither counted as passed nor repaired. Every other task still runs, so a
+real failure elsewhere still refuses the resolution. A 404, a certificate, a
+checksum or a type error is an ordinary failure and is refused. `quality.sh` is
+never substituted for an unreachable unit suite. The resolution lands with the
+outcome `suiteLeftToCi`, naming the task and the cause, and the report says that
+task did not run and that the milestone PR's CI runs it. A Deno type check that
+cannot fetch its remote modules is treated the same way (Issue #4444): the
+outcome is `checkLeftToCi`, the push note starts `CHECK LEFT TO CI:`, and the
+report says the type check did not fully run. That only applies when another
+project's check passed: a tree where nothing else ran is still `skipped` and
+refused. A Deno-only tree and a mixed tree keep their Deno checks and suites and
+are rolled back when red, except for that unreachable-module case. A mixed tree
+whose Deno half passed notes that cargo was left to CI; the report does not
 claim the cargo half passed.
 
 ### A conflict is reported only once the landing is confirmed
 
-A push this host believes succeeded can still lose the race — a sibling
-host's own sync, or a ruleset routing the same merge through a
-`sync/milestone-*` PR — so the sync re-reads the milestone branch's tip
-(`resolveBranchTips`) before it posts anything (Issue #2998). `confirmSyncLanding`
-in [milestone_sync_landing.ts](../../worker/deno/lib/milestone_sync_landing.ts)
-accepts the landing when the current tip **equals or contains** the merge
-commit (via a GitHub compare), or when an open sync PR's head already holds
-it, and only then does
-`escalateSyncConflict` post the report — saying the merge **landed on
-`<branch>` at `<sha>`**, or **is in sync PR #N**, never that it "was pushed".
-Anything else — a tip that still sits before the merge, a sync that recorded
-no merge SHA at all, or a tip that could not be read — is not confirmed: no
-report is posted, a `WARNING` names both the expected merge SHA and the
-observed tip SHA, and `recordSyncFailure` records the attempt against the
-failure streak in `milestone_sync_failures.json` while the open
-conflict-attempt ledger entry itself concludes `not-charged` — an unreadable
-tip is never read as a success. The cycle counts the branch as **failed**,
-not synced. With an open PR on the milestone branch, the attempt is still
-charged to that PR as a failed `pass="sync"` marker (Issue #2998); with no
-open PR it concludes the local ledger attempt `not-charged` as above.
+A push this host believes succeeded can still lose the race — a sibling host's
+own sync, or a ruleset routing the same merge through a `sync/milestone-*` PR —
+so the sync re-reads the milestone branch's tip (`resolveBranchTips`) before it
+posts anything (Issue #2998). `confirmSyncLanding` in
+[milestone_sync_landing.ts](../../worker/deno/lib/milestone_sync_landing.ts)
+accepts the landing when the current tip **equals or contains** the merge commit
+(via a GitHub compare), or when an open sync PR's head already holds it, and
+only then does `escalateSyncConflict` post the report — saying the merge
+**landed on `<branch>` at `<sha>`**, or **is in sync PR #N**, never that it "was
+pushed". Anything else — a tip that still sits before the merge, a sync that
+recorded no merge SHA at all, or a tip that could not be read — is not
+confirmed: no report is posted, a `WARNING` names both the expected merge SHA
+and the observed tip SHA, and `recordSyncFailure` records the attempt against
+the failure streak in `milestone_sync_failures.json` while the open
+conflict-attempt ledger entry itself concludes `not-charged` — an unreadable tip
+is never read as a success. The cycle counts the branch as **failed**, not
+synced. With an open PR on the milestone branch, the attempt is still charged to
+that PR as a failed `pass="sync"` marker (Issue #2998); with no open PR it
+concludes the local ledger attempt `not-charged` as above.
 
 ```mermaid
 flowchart TD
@@ -533,21 +821,21 @@ flowchart TD
 ### Every sync says where its minutes went
 
 The sync merge runs the same ladder the PR path does, and it can take just as
-long. Issue #2308 gives each conflicting sync that lands the wall-clock
-seconds of its stages — `deepen`, `rules`, `agent`, `gate`, `push` — and the
-host it ran on, rendered as one line at the bottom of the sync report comment
-(both the "resolved a conflict automatically" notice and the older
-check-what-was-overwritten report) and emitted as one structured log record
-with the same fields:
+long. Issue #2308 gives each conflicting sync that lands the wall-clock seconds
+of its stages — `deepen`, `rules`, `agent`, `gate`, `push` — and the host it ran
+on, rendered as one line at the bottom of the sync report comment (both the
+"resolved a conflict automatically" notice and the older
+check-what-was-overwritten report) and emitted as one structured log record with
+the same fields:
 
 ```text
 Timings (host `mel-01`): deepen 2s · rules 1s · agent 212s · gate 94s · push 5s
 ```
 
-A repair round runs the resolution agent from inside the verification, and
-those minutes are counted as `agent`, not as `gate` — the gate's own slices
-either side of the repair accumulate into one `gate` entry. A stage started
-and never stopped renders as `unfinished` rather than vanishing from the line.
+A repair round runs the resolution agent from inside the verification, and those
+minutes are counted as `agent`, not as `gate` — the gate's own slices either
+side of the repair accumulate into one `gate` entry. A stage started and never
+stopped renders as `unfinished` rather than vanishing from the line.
 
 A sync that refuses or escalates emits the same log record. It posts no
 "resolved a conflict automatically" notice to carry the line, but it spent the
@@ -556,7 +844,7 @@ the attempt the breakdown was built to explain.
 
 ### The sync must record the default branch as an ancestor
 
-A squashed sync applies the default branch's *content* under a single-parent
+A squashed sync applies the default branch's _content_ under a single-parent
 commit, so the default branch is **not an ancestor** of the milestone branch.
 Every later merge then computes its merge base from before the sync, and a
 deletion the default branch made in the meantime returns as a modify/delete
@@ -584,37 +872,36 @@ Two things hold this in place:
 - **The sync PR merges as a merge commit.** `mergeMethodFlagForHead` in
   `worker/deno/lib/milestone_sync_pr.ts` returns `--merge` for a
   `sync/milestone-*` head that lives in this repository, and `--squash` for
-  everything else, and every auto-merge and direct-merge path routes through
-  it. A milestone-fix head is the exception to that default: its callers pick
-  the method with `milestoneFixMergeMethod` instead (next bullet). A fork names
-  its own branches, so a cross-repository head cannot claim the merge-commit
+  everything else, and every auto-merge and direct-merge path routes through it.
+  A milestone-fix head is the exception to that default: its callers pick the
+  method with `milestoneFixMergeMethod` instead (next bullet). A fork names its
+  own branches, so a cross-repository head cannot claim the merge-commit
   deviation by its name (Issue #1249); when one tries, the squash is announced
-  rather than silent. This needs **merge
-  commits to be permitted on the repository** (Settings → Pull Requests →
-  Allow merge commits). Where they are not, the sync is armed as a squash with
-  a warning naming the setting, and the check below is what catches the
-  consequence.
-- **A milestone-fix PR merges as a merge commit when its head merges the
-  default branch** (Issue #3596). `milestoneFixMergeMethod` in
-  `worker/deno/lib/milestone_fix_pr.ts` reads the default branch, the fix
-  head's merge base with it, and whether that merge base is already in the
-  milestone branch. When `compare` reports `ahead` or `diverged` (the merge
-  base is not in the milestone branch yet), the PR merges with `--merge`; when
-  it reports `identical` or `behind`, the PR squashes; any other status is an
-  unreadable method (below), never a squash. Creation arming has no
-  same-repository check, because the worker pushed the branch itself. The
-  Auto-Merge sweep and the direct merge apply the rule only to same-repository
-  heads, so a fork's fix-shaped head still squashes as before. Where merge
-  commits are forbidden the fix PR is refused, never downgraded: at creation
-  with a warning and a PR comment; on the sweep with a logged warning and a
-  failed result; in the direct merge with an error. Each names the setting
-  (Settings → Pull Requests → Allow merge commits). An unreadable method fails
-  closed: at creation the PR is not armed, with a warning and a PR comment; the
-  sweep returns a failed result and re-reads next scan; the direct merge is
-  refused with an error and retried on the next maintenance scan.
-- **A resurrection is detected directly.** The `check-resurrected-files`
-  command fails when a branch carries a file the default branch deleted and
-  whose deleting commit is already in the branch's ancestry:
+  rather than silent. This needs **merge commits to be permitted on the
+  repository** (Settings → Pull Requests → Allow merge commits). Where they are
+  not, the sync is armed as a squash with a warning naming the setting, and the
+  check below is what catches the consequence.
+- **A milestone-fix PR merges as a merge commit when its head merges the default
+  branch** (Issue #3596). `milestoneFixMergeMethod` in
+  `worker/deno/lib/milestone_fix_pr.ts` reads the default branch, the fix head's
+  merge base with it, and whether that merge base is already in the milestone
+  branch. When `compare` reports `ahead` or `diverged` (the merge base is not in
+  the milestone branch yet), the PR merges with `--merge`; when it reports
+  `identical` or `behind`, the PR squashes; any other status is an unreadable
+  method (below), never a squash. Creation arming has no same-repository check,
+  because the worker pushed the branch itself. The Auto-Merge sweep and the
+  direct merge apply the rule only to same-repository heads, so a fork's
+  fix-shaped head still squashes as before. Where merge commits are forbidden
+  the fix PR is refused, never downgraded: at creation with a warning and a PR
+  comment; on the sweep with a logged warning and a failed result; in the direct
+  merge with an error. Each names the setting (Settings → Pull Requests → Allow
+  merge commits). An unreadable method fails closed: at creation the PR is not
+  armed, with a warning and a PR comment; the sweep returns a failed result and
+  re-reads next scan; the direct merge is refused with an error and retried on
+  the next maintenance scan.
+- **A resurrection is detected directly.** The `check-resurrected-files` command
+  fails when a branch carries a file the default branch deleted and whose
+  deleting commit is already in the branch's ancestry:
 
   ```bash
   deno run --allow-read --allow-env --allow-run worker/deno/mod.ts \
@@ -623,36 +910,117 @@ Two things hold this in place:
 
   The `milestone-resurrection` job in `.github/workflows/validate-scripts.yml`
   runs it on every PR into a `milestone/*` branch and on the milestone →
-  default-branch rollup PR, naming each file and the commit that deleted it.
-  A file that is new on the milestone branch and was never on the default
-  branch is not reported, and neither is a branch that is merely behind the
-  deletion — only a branch that has the deleting commit in its ancestry and
-  the file still in its tree.
+  default-branch rollup PR, naming each file and the commit that deleted it. A
+  file that is new on the milestone branch and was never on the default branch
+  is not reported, and neither is a branch that is merely behind the deletion —
+  only a branch that has the deleting commit in its ancestry and the file still
+  in its tree.
 
 ### Configuration
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `sync_milestone_branches` | `true` | Enable or disable periodic milestone branch sync |
+| Option                    | Default | Description                                      |
+| ------------------------- | ------- | ------------------------------------------------ |
+| `sync_milestone_branches` | `true`  | Enable or disable periodic milestone branch sync |
 
-To disable milestone branch sync entirely, set `sync_milestone_branches: false` in `.config.json`.
+To disable milestone branch sync entirely, set `sync_milestone_branches: false`
+in `.config.json`.
 
-`milestone_sync_cooldown_seconds` was retired by Issue #1776 — the cadence is the default-branch tip, not a clock. A `.config.json` still carrying the key loads normally and reports it once as an unknown key.
+`milestone_sync_cooldown_seconds` was retired by Issue #1776 — the cadence is
+the default-branch tip, not a clock. A `.config.json` still carrying the key
+loads normally and reports it once as an unknown key.
 
 ### Design notes
 
-- The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
-- The cadence state is the `lastSyncedDefaultSha` in `milestone_sync_failures.json`, so it survives a worker restart — there is no in-memory cooldown to lose (Issue #1776).
-- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out — there is no wait between a branch's three conflict attempts (Issue #2305), and the budget itself is what bounds the retrying.
-- A branch's conflict budget is **three concluded failures** (`CONFLICT_RESOLUTION_BUDGET`, raised from two under Issue #2996), the same constant a conflicting PR spends, and the third spent failure hands the branch on rather than to a fourth merge — to a rebuild first when a roll-back was already spent on it, otherwise to the roll-back (Issue #4328). A refused cycle (not charged) is counted in `refusedCycles` and spends nothing; the fourth consecutive refusal is charged, so a branch refused every cycle cannot be retried for ever (Issue #4328). An attempt this host opened and never concluded reads as `disrupted` on the next cycle and is charged nothing; while it is open, and while the budget is spent, the claim scan skips that milestone's issues rather than claiming a child that could only defer. This ledger stays host-local and paces itself with no wait between attempts, as it always has; the 2-hour owner-check spacing Issue #2996 adds applies only to the PR scan's own shared tally (see [the merge-conflict workflow](merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)).
-- **A branch that heads an open PR spends that PR's budget instead** (Issue #2998). When the milestone branch is the head of an open milestone → default-branch PR, `readMilestoneHeadPr` in [milestone_sync_pr_budget.ts](../../worker/deno/lib/milestone_sync_pr_budget.ts) reads the shared `CONFLICT_RESOLUTION_BUDGET` from that PR's own trusted marker comments, and each conflict attempt posts one `pass="sync"` attempt marker plus its conclusion on the PR — `resolved` (tagged with the landed merge SHA) on a confirmed landing, `failed` on a charged failure, and `failed` again on an unconfirmed landing (the merge's landing on the milestone tip could not be confirmed); a not-charged or disrupted outcome posts nothing. Two prior failed markers on the PR leave exactly one attempt; a spent PR budget skips the sync (logged `WARNING`). There is **no** #2311-style re-arm for the PR budget — only a `resolved` marker resets the PR's tally — and, with a head PR, the roll-back on a spent budget is decided by the PR tally rather than the local ledger (the rebuild-first choice reads this ledger's roll-back counts, Issue #4328). A milestone branch with **no** open PR — or one whose PR or comments could not be read, logged as a warning — falls back to the host-local ledger above (Issue #2919).
-- A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
-- **A spent budget is handed off, and a roll-back files one `merge-fallback` flag** (Issues #2311, #4328). The hand-off is one place, reached from the same-cycle failure and from the skip site of a branch with no open PR, so a budget the child run's pre-cut sync spent is handed off too rather than skipped for ever. Once a roll-back has been spent on a branch (`rollbacks` or `rollbackFailures` above zero, both lifetime counts), every later spent budget on it is offered a **rebuild** first: the branch is rebuilt from its base tip, its merged sub-PRs are replayed in merge order (less the ones the earlier roll-back reverted, below), the rebuilt tree is recorded as a `merge -s ours` descendant of the milestone tip, so it reaches the branch as a fast-forward: a plain push, or a sync PR armed as a merge commit when a ruleset refuses that push. Never forced. A sub-PR that does not replay is skipped and its issue re-queued. The sub-PRs the earlier roll-back reverted (`revertedPrs`) are not replayed at all, since their issues are already re-queued for a redo. The rebuilt tree is run through the sync's own merge gate before it is delivered; a tree the gate refuses is a failed rebuild (step `milestone-gate`) that pushes and re-queues nothing, and a sweep with no gate wired does not rebuild. A rebuild that succeeds resets the ledger and counts `rebuilds`; one that fails falls through to the roll-back, and a rebuild with no escalation target to post to logs its notice instead. Both roll-back outcomes file or append the flag — the roll-back that merged cleanly and the one that could not — and the roll-back notice on the escalation target links it by number. The flag names both spent runs (host, stage timings and what each made of the conflict), the conflicted files, how far behind the branch had fallen and what was reverted; a field nothing recorded renders as `not recorded`.
-- **No conflict outcome applies `needs-human` or asks anyone anything.** A roll-back that could not merge posts the notice and stops; it records the default tip it answered for, and when the default branch moves past that tip the branch is offered its three runs again. The repeated-identical-failure escalation of Issue #1964 went with it; the streak escalation (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives only for a **non-conflict** failure — a fetch, a push or an ordinary git error.
-- The filing emits a `fallback_flagged` self-heal event carrying the flag's issue number. A `sync_failed` event with a roll-back and no `fallback_flagged` beside it means the record was not written. A rebuild emits `rebuilt` on success (with its replayed and skipped counts) and, when it fails and the roll-back follows, `rebuild_failed`; neither files the flag.
-- This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
+- The sync is **best-effort** — failures are logged but do not block the main
+  event loop or prevent other work.
+- The cadence state is the `lastSyncedDefaultSha` in
+  `milestone_sync_failures.json`, so it survives a worker restart — there is no
+  in-memory cooldown to lose (Issue #1776).
+- Only a **successful** sync records the tip, so a failed sync is retried on the
+  next cycle rather than waited out — there is no wait between a branch's three
+  conflict attempts (Issue #2305), and the budget itself is what bounds the
+  retrying.
+- A branch's conflict budget is **three concluded failures**
+  (`CONFLICT_RESOLUTION_BUDGET`, raised from two under Issue #2996), the same
+  constant a conflicting PR spends, and the third spent failure hands the branch
+  on rather than to a fourth merge — to a rebuild first when a roll-back was
+  already spent on it, otherwise to the roll-back (Issue #4328). A refused cycle
+  (not charged) is counted in `refusedCycles` and spends nothing; the fourth
+  consecutive refusal is charged, so a branch refused every cycle cannot be
+  retried for ever (Issue #4328). An attempt this host opened and never
+  concluded reads as `disrupted` on the next cycle and is charged nothing; while
+  it is open, and while the budget is spent, the claim scan skips that
+  milestone's issues rather than claiming a child that could only defer. This
+  ledger stays host-local and paces itself with no wait between attempts, as it
+  always has; the 2-hour owner-check spacing Issue #2996 adds applies only to
+  the PR scan's own shared tally (see
+  [the merge-conflict workflow](merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)).
+- **A branch that heads an open PR spends that PR's budget instead** (Issue
+  #2998). When the milestone branch is the head of an open milestone →
+  default-branch PR, `readMilestoneHeadPr` in
+  [milestone_sync_pr_budget.ts](../../worker/deno/lib/milestone_sync_pr_budget.ts)
+  reads the shared `CONFLICT_RESOLUTION_BUDGET` from that PR's own trusted
+  marker comments, and each conflict attempt posts one `pass="sync"` attempt
+  marker plus its conclusion on the PR — `resolved` (tagged with the landed
+  merge SHA) on a confirmed landing, `failed` on a charged failure, and `failed`
+  again on an unconfirmed landing (the merge's landing on the milestone tip
+  could not be confirmed); a not-charged or disrupted outcome posts nothing. Two
+  prior failed markers on the PR leave exactly one attempt; a spent PR budget
+  skips the sync (logged `WARNING`). There is **no** #2311-style re-arm for the
+  PR budget — only a `resolved` marker resets the PR's tally — and, with a head
+  PR, the roll-back on a spent budget is decided by the PR tally rather than the
+  local ledger (the rebuild-first choice reads this ledger's roll-back counts,
+  Issue #4328). A milestone branch with **no** open PR — or one whose PR or
+  comments could not be read, logged as a warning — falls back to the host-local
+  ledger above (Issue #2919).
+- A merge that conflicts is triaged on that cycle and reported — naming the
+  conflicting files, what was decided about each and both sides' commits —
+  rather than surfacing at rollup time. A clean merge raises nothing.
+- **A spent budget is handed off, and a roll-back files one `merge-fallback`
+  flag** (Issues #2311, #4328). The hand-off is one place, reached from the
+  same-cycle failure and from the skip site of a branch with no open PR, so a
+  budget the child run's pre-cut sync spent is handed off too rather than
+  skipped for ever. Once a roll-back has been spent on a branch (`rollbacks` or
+  `rollbackFailures` above zero, both lifetime counts), every later spent budget
+  on it is offered a **rebuild** first: the branch is rebuilt from its base tip,
+  its merged sub-PRs are replayed in merge order (less the ones the earlier
+  roll-back reverted, below), the rebuilt tree is recorded as a `merge -s ours`
+  descendant of the milestone tip, so it reaches the branch as a fast-forward: a
+  plain push, or a sync PR armed as a merge commit when a ruleset refuses that
+  push. Never forced. A sub-PR that does not replay is skipped and its issue
+  re-queued. The sub-PRs the earlier roll-back reverted (`revertedPrs`) are not
+  replayed at all, since their issues are already re-queued for a redo. The
+  rebuilt tree is run through the sync's own merge gate before it is delivered;
+  a tree the gate refuses is a failed rebuild (step `milestone-gate`) that
+  pushes and re-queues nothing, and a sweep with no gate wired does not rebuild.
+  A rebuild that succeeds resets the ledger and counts `rebuilds`; one that
+  fails falls through to the roll-back, and a rebuild with no escalation target
+  to post to logs its notice instead. Both roll-back outcomes file or append the
+  flag — the roll-back that merged cleanly and the one that could not — and the
+  roll-back notice on the escalation target links it by number. The flag names
+  both spent runs (host, stage timings and what each made of the conflict), the
+  conflicted files, how far behind the branch had fallen and what was reverted;
+  a field nothing recorded renders as `not recorded`.
+- **No conflict outcome applies `needs-human` or asks anyone anything.** A
+  roll-back that could not merge posts the notice and stops; it records the
+  default tip it answered for, and when the default branch moves past that tip
+  the branch is offered its three runs again. The repeated-identical-failure
+  escalation of Issue #1964 went with it; the streak escalation
+  (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives only for a **non-conflict**
+  failure — a fetch, a push or an ordinary git error.
+- The filing emits a `fallback_flagged` self-heal event carrying the flag's
+  issue number. A `sync_failed` event with a roll-back and no `fallback_flagged`
+  beside it means the record was not written. A rebuild emits `rebuilt` on
+  success (with its replayed and skipped counts) and, when it fails and the
+  roll-back follows, `rebuild_failed`; neither files the flag.
+- This complements (syncing before each feature branch creation) by proactively
+  keeping milestone branches current between issues.
 
-The ladder after the agent rung is bounded, so a refused or failing branch is not retried for ever (Issue #4328). A refusal that repeats reaches the same hand-off as a charged failure once it hits the ceiling, a spent budget is rebuilt first when a roll-back was already spent on the branch, and a roll-back that could not merge is re-armed when the default tip moves:
+The ladder after the agent rung is bounded, so a refused or failing branch is
+not retried for ever (Issue #4328). A refusal that repeats reaches the same
+hand-off as a charged failure once it hits the ceiling, a spent budget is
+rebuilt first when a roll-back was already spent on the branch, and a roll-back
+that could not merge is re-armed when the default tip moves:
 
 ```mermaid
 flowchart TD
@@ -674,97 +1042,277 @@ flowchart TD
 
 ### Which PRs the self-heal may retarget (Issue #2022)
 
-The milestone **self-heal** (Issue #3912) runs just before the sync. It recreates a milestone branch that was deleted while the milestone still had open children, and it retargets an open child PR that is still based on the default branch at the milestone branch, with one explanatory comment.
+The milestone **self-heal** (Issue #3912) runs just before the sync. It
+recreates a milestone branch that was deleted while the milestone still had open
+children, and it retargets an open child PR that is still based on the default
+branch at the milestone branch, with one explanatory comment.
 
-The retarget is allowed only for a PR the fleet itself raised. Admission requires **both** signals, checked in [`milestone_branch_self_heal.ts`](../../worker/deno/lib/milestone_branch_self_heal.ts) `isFleetRaisedPr`:
+The retarget is allowed only for a PR the fleet itself raised. Admission
+requires **both** signals, checked in
+[`milestone_branch_self_heal.ts`](../../worker/deno/lib/milestone_branch_self_heal.ts)
+`isFleetRaisedPr`:
 
-- the PR's author is one of the fleet's logins (`service_accounts` / `fleet_pr_authors`, the same maintenance set every PR scan uses); and
-- the PR body carries the worker's own marker (`<!-- vibe-worker-issue-N -->`), which every PR the worker raises has.
+- the PR's author is one of the fleet's logins (`service_accounts` /
+  `fleet_pr_authors`, the same maintenance set every PR scan uses); and
+- the PR body carries the worker's own marker (`<!-- vibe-worker-issue-N -->`),
+  which every PR the worker raises has.
 
-A branch named `issue-<n>-…` is not evidence — people use that shape too — and neither is the author on its own. A PR that fails the test is left exactly as its author raised it: no base change, no comment, no label, one log line saying why. If the fleet identity cannot be resolved, nothing is retargeted that cycle.
+A branch named `issue-<n>-…` is not evidence — people use that shape too — and
+neither is the author on its own. A PR that fails the test is left exactly as
+its author raised it: no base change, no comment, no label, one log line saying
+why. If the fleet identity cannot be resolved, nothing is retargeted that cycle.
 
-A fleet PR is also **not** retargeted when merging its head onto the milestone branch would conflict. The worker dry-runs the merge in its clone (`git merge-tree --write-tree`) first; a conflicting result leaves the PR where it is, and a dry run that cannot answer allows the retarget as before and says so. The pass exists to stop work landing outside the milestone, not to manufacture conflicts for the merge-conflict lane to spend an hour on.
+A fleet PR is also **not** retargeted when merging its head onto the milestone
+branch would conflict. The worker dry-runs the merge in its clone
+(`git merge-tree --write-tree`) first; a conflicting result leaves the PR where
+it is, and a dry run that cannot answer allows the retarget as before and says
+so. The pass exists to stop work landing outside the milestone, not to
+manufacture conflicts for the merge-conflict lane to spend an hour on.
 
 ### Milestone-fix PRs only target their milestone branch (Issue #3433)
 
-A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its milestone branch to deliver a fix to the milestone's final PR #N. Its diff against the default branch is the whole milestone, so it must only ever target that milestone branch. Its merge method follows its head: a merge commit when the head merges the default branch, so the default branch stays an ancestor (see [the sync rule](#the-sync-must-record-the-default-branch-as-an-ancestor)).
+A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its
+milestone branch to deliver a fix to the milestone's final PR #N. Its diff
+against the default branch is the whole milestone, so it must only ever target
+that milestone branch. Its merge method follows its head: a merge commit when
+the head merges the default branch, so the default branch stays an ancestor (see
+[the sync rule](#the-sync-must-record-the-default-branch-as-an-ancestor)).
 
-- **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts)) reads the PR's head and base before any base change and refuses, with `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head to anything but its own milestone branch, or any other PR off a `milestone/**` base onto a non-milestone branch. An unreadable PR fails closed. The coding agent's `gh` guard refuses every base change outright (`gh pr edit --base`, `-B`, REST `PATCH` or `POST …/pulls/N` (or `repositories/<id>/pulls/N`) with `base`, including `gh api`'s default POST when a field is given without `-X`, and any GraphQL request (`graphql`, `/graphql` or the absolute `api.github.com/graphql` URL) that may carry an `updatePullRequest` mutation, including a document read from a file or stdin that cannot be read, and an `--input` JSON body that spells the name with `\uXXXX` escapes), whether or not the write-repo allowlist is active.
+- **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's
+  single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts))
+  reads the PR's head and base before any base change and refuses, with
+  `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head to
+  anything but its own milestone branch, or any other PR off a `milestone/**`
+  base onto a non-milestone branch. An unreadable PR fails closed. The coding
+  agent's `gh` guard refuses every base change outright (`gh pr edit --base`,
+  `-B`, REST `PATCH` or `POST …/pulls/N` (or `repositories/<id>/pulls/N`) with
+  `base`, including `gh api`'s default POST when a field is given without `-X`,
+  and any GraphQL request (`graphql`, `/graphql` or the absolute
+  `api.github.com/graphql` URL) that may carry an `updatePullRequest` mutation,
+  including a document read from a file or stdin that cannot be read, and an
+  `--input` JSON body that spells the name with `\uXXXX` escapes), whether or
+  not the write-repo allowlist is active.
 
   The REST base-change guard splits the endpoint path on literal `/` before
   decoding each segment on its own, because GitHub's router treats an encoded
-  slash (`%2F`) as part of the PR-number segment. It reads the PR number as
-  the decoded segment's leading digits after any whitespace, so `%2012`,
-  `12%2F`, `12%2Fcomments`, `12.json` and `12;x` all name PR 12, on both
-  repository routes. Malformed percent-encoding, and a base change whose
-  number segment has no readable number, fail closed. Literal child routes
-  such as `pulls/N/comments` are not PR base-change requests.
+  slash (`%2F`) as part of the PR-number segment. It reads the PR number as the
+  decoded segment's leading digits after any whitespace, so `%2012`, `12%2F`,
+  `12%2Fcomments`, `12.json` and `12;x` all name PR 12, on both repository
+  routes. Malformed percent-encoding, and a base change whose number segment has
+  no readable number, fail closed. Literal child routes such as
+  `pulls/N/comments` are not PR base-change requests.
 
-- **A closed route closes the PR and redoes its issue** when the milestone is closed, or a rollup has merged and there is nothing left to carry (no open work, and the branch has no file diff against the default branch). The PR is never merged into that branch and never retargeted; auto-merge is disarmed (best effort), then `abandonAndRestart` closes it and re-queues its originating issue, so the work comes back against the base its milestone now routes to — it is never left on hold for a human (Issue #4304). An abandon that does not happen is logged and tried again next scan (result `held_route_closed`, returned by the arming path in `pr_auto_merge.ts`).
-- **An open milestone whose rollup has merged gets a fresh rollup** from the milestone branch (Issue #4175). When the branch is already ahead of the default branch, the worker opens that rollup first and then arms the child onto the milestone branch. The fresh rollup is the milestone's review. A milestone-fix pull request is not moved onto the default branch.
-- **When the branch is not ahead, the child is landed by the ordinary merge path.** A base with no required checks uses the gated direct merge (green, current, and a settled head). A protected base is armed with auto-merge. The merge method is the one that path already chooses, so a repository that refuses merge commits takes a squash instead of being refused on every scan. The child merges into the milestone branch. The rollup from that branch to the default branch is opened only after the merge has landed. On a protected base the arming pass returns while GitHub still holds the merge; the next scan that sees the merged pull request opens the rollup when the milestone branch is ahead and no rollup is open, even when that pull request is no longer open and even when it was the last child pull request. A gate that defers leaves the child unmerged and its issue untouched. If the merge has landed and the rollup cannot be opened, the child's milestone issue is reopened and the failure is reported.
-- **A merged rollup with nothing new to carry stays closed.** When the branch has no file diff against the default branch, milestone completion does not raise another summary. A file diff still does not count the merged rollup as the existing summary.
-- **The milestone sync does not open a sync pull request** into a branch with no open rollup. That covers a closed milestone, a merged rollup with nothing left to carry, and a branch that is not yet ahead. Catching the branch up is not how a not-ahead child reaches a rollup.
-- **Auto-merge follows the base.** On every Auto-Merge sweep pass, before any arming or branch update, the worker re-reads each listed fleet PR's base (one GraphQL read: default branch, head, base, `autoMergeRequest`, latest base-change event; [`pr_base_integrity.ts`](../../worker/deno/lib/pr_base_integrity.ts)). An unarmed, non-fix PR on a milestone base skips the read, as there is nothing to disarm. The read then decides, in order:
-  - a PR whose head is `milestone-fix/**` and whose base is not a `milestone/**` branch is disarmed and never armed there; a `[MILESTONE_FIX_RETARGETED]` warning is logged;
-  - a PR moved onto the default branch after it was opened is disarmed. A milestone sync PR is excluded: the Issue #1967 close path handles it;
-  - an armed PR whose base changed after it was armed is disarmed and re-evaluated on the same pass, so the normal arming path decides afresh for its current base. If the disarm fails, the PR is held with `deferred` instead and is re-checked next pass.
+- **A closed route closes the PR and redoes its issue** when the milestone is
+  closed, or a rollup has merged and there is nothing left to carry (no open
+  work, and the branch has no file diff against the default branch). The PR is
+  never merged into that branch and never retargeted; auto-merge is disarmed
+  (best effort), then `abandonAndRestart` closes it and re-queues its
+  originating issue, so the work comes back against the base its milestone now
+  routes to — it is never left on hold for a human (Issue #4304). An abandon
+  that does not happen is logged and tried again next scan (result
+  `held_route_closed`, returned by the arming path in `pr_auto_merge.ts`).
+- **An open milestone whose rollup has merged gets a fresh rollup** from the
+  milestone branch (Issue #4175). When the branch is already ahead of the
+  default branch, the worker opens that rollup first and then arms the child
+  onto the milestone branch. The fresh rollup is the milestone's review. A
+  milestone-fix pull request is not moved onto the default branch.
+- **When the branch is not ahead, the child is landed by the ordinary merge
+  path.** A base with no required checks uses the gated direct merge (green,
+  current, and a settled head). A protected base is armed with auto-merge. The
+  merge method is the one that path already chooses, so a repository that
+  refuses merge commits takes a squash instead of being refused on every scan.
+  The child merges into the milestone branch. The rollup from that branch to the
+  default branch is opened only after the merge has landed. On a protected base
+  the arming pass returns while GitHub still holds the merge; the next scan that
+  sees the merged pull request opens the rollup when the milestone branch is
+  ahead and no rollup is open, even when that pull request is no longer open and
+  even when it was the last child pull request. A gate that defers leaves the
+  child unmerged and its issue untouched. If the merge has landed and the rollup
+  cannot be opened, the child's milestone issue is reopened and the failure is
+  reported.
+- **A merged rollup with nothing new to carry stays closed.** When the branch
+  has no file diff against the default branch, milestone completion does not
+  raise another summary. A file diff still does not count the merged rollup as
+  the existing summary.
+- **The milestone sync does not open a sync pull request** into a branch with no
+  open rollup. That covers a closed milestone, a merged rollup with nothing left
+  to carry, and a branch that is not yet ahead. Catching the branch up is not
+  how a not-ahead child reaches a rollup.
+- **Auto-merge follows the base.** On every Auto-Merge sweep pass, before any
+  arming or branch update, the worker re-reads each listed fleet PR's base (one
+  GraphQL read: default branch, head, base, `autoMergeRequest`, latest
+  base-change event;
+  [`pr_base_integrity.ts`](../../worker/deno/lib/pr_base_integrity.ts)). An
+  unarmed, non-fix PR on a milestone base skips the read, as there is nothing to
+  disarm. The read then decides, in order:
+  - a PR whose head is `milestone-fix/**` and whose base is not a `milestone/**`
+    branch is disarmed and never armed there; a `[MILESTONE_FIX_RETARGETED]`
+    warning is logged;
+  - a PR moved onto the default branch after it was opened is disarmed. A
+    milestone sync PR is excluded: the Issue #1967 close path handles it;
+  - an armed PR whose base changed after it was armed is disarmed and
+    re-evaluated on the same pass, so the normal arming path decides afresh for
+    its current base. If the disarm fails, the PR is held with `deferred`
+    instead and is re-checked next pass.
 
-  Neither of the first two is held for a human (Issue #4304). The PR is moved back onto the base it was opened against — the milestone branch named by its latest base-change event, which the base-change guard allows — with one comment (marker-deduplicated; a failed comment is logged), and returns `deferred` so the next pass arms it there. When there is no such base to return to (the PR was opened off a milestone branch, the old base has been deleted, or the move back is refused), `abandonAndRestart` closes it and re-queues its originating issue.
+  Neither of the first two is held for a human (Issue #4304). The PR is moved
+  back onto the base it was opened against — the milestone branch named by its
+  latest base-change event, which the base-change guard allows — with one
+  comment (marker-deduplicated; a failed comment is logged), and returns
+  `deferred` so the next pass arms it there. When there is no such base to
+  return to (the PR was opened off a milestone branch, the old base has been
+  deleted, or the move back is refused), `abandonAndRestart` closes it and
+  re-queues its originating issue.
 
-  A closed-and-redone PR returns `held_base_retargeted`. An unreadable PR (or a failed disarm in the third case) returns `deferred` and is not armed that pass (it fails closed and is re-read next pass). The arming path in `pr_auto_merge.ts` also returns `held_base_retargeted` for a `milestone-fix/**` PR on a non-milestone base. The sweep lists fleet-authored PRs only, so a human's PR is never checked. Comments are de-duplicated by marker among fleet-authored comments.
-- **Human retargets are untouched.** A human's retarget of a PR the fleet did not raise is left alone; the Issue #2022 rule above still applies to the self-heal.
+  A closed-and-redone PR returns `held_base_retargeted`. An unreadable PR (or a
+  failed disarm in the third case) returns `deferred` and is not armed that pass
+  (it fails closed and is re-read next pass). The arming path in
+  `pr_auto_merge.ts` also returns `held_base_retargeted` for a
+  `milestone-fix/**` PR on a non-milestone base. The sweep lists fleet-authored
+  PRs only, so a human's PR is never checked. Comments are de-duplicated by
+  marker among fleet-authored comments.
+- **Human retargets are untouched.** A human's retarget of a PR the fleet did
+  not raise is left alone; the Issue #2022 rule above still applies to the
+  self-heal.
 
 ## 🏷️ Issue ordering within milestones
 
-By default, issues within a milestone are processed oldest-first (by creation date). You can override this order using **priority labels** to control which milestone issue the worker picks next.
+By default, issues within a milestone are processed oldest-first (by creation
+date). You can override this order using **priority labels** to control which
+milestone issue the worker picks next.
 
-These `priority-high`/`priority-low` labels order issues **within a single milestone only**; they are independent of the cross-repo discovery tiers (`top-priority` > `work-on` > `low-priority` > `idle-task`) that decide which issue is picked across the whole queue. The discovery tiers are the canonical reference — see [Issue selection priority](issue-processing.md#-issue-selection-priority).
+These `priority-high`/`priority-low` labels order issues **within a single
+milestone only**; they are independent of the cross-repo discovery tiers
+(`top-priority` > `work-on` > `low-priority` > `idle-task`) that decide which
+issue is picked across the whole queue. The discovery tiers are the canonical
+reference — see
+[Issue selection priority](issue-processing.md#-issue-selection-priority).
 
-**Finish a started milestone before starting another** (Issue #2009): when an open milestone already has closed children and every leftover is fleet-viable, that leftover is selected after `top-priority` and **before** any `work-on` that would open a new milestone branch — even if the leftover is `low-priority` and the new work is older. A leftover that needs a human (`needs-human`, blocked, unlabelled) does not apply the rule. Among started milestones, the one with the fewest remaining viable issues is closed out first. See [Finish a started milestone](issue-processing.md#-finish-a-started-milestone-before-starting-another).
+**Finish a started milestone before starting another** (Issue #2009): when an
+open milestone already has closed children and every leftover is fleet-viable,
+that leftover is selected after `top-priority` and **before** any `work-on` that
+would open a new milestone branch — even if the leftover is `low-priority` and
+the new work is older. A leftover that needs a human (`needs-human`, blocked,
+unlabelled) does not apply the rule. Among started milestones, the one with the
+fewest remaining viable issues is closed out first. See
+[Finish a started milestone](issue-processing.md#-finish-a-started-milestone-before-starting-another).
 
 ### Priority labels
 
-| Label | Effect |
-|-------|--------|
+| Label           | Effect                                                                        |
+| --------------- | ----------------------------------------------------------------------------- |
 | `priority-high` | Issue is selected before normal and low-priority issues in the same milestone |
-| *(no label)* | Default — normal priority; selected by creation date |
-| `priority-low` | Issue is selected after normal and high-priority issues in the same milestone |
+| _(no label)_    | Default — normal priority; selected by creation date                          |
+| `priority-low`  | Issue is selected after normal and high-priority issues in the same milestone |
 
 ### How it works
 
-1. **Within the same milestone:** Issues with `priority-high` are picked first, then normal (no label), then `priority-low`. Within the same priority level, oldest-first applies.
-2. **Across milestones:** Priority labels have no effect on which *milestone* is worked. Close-out (Issue #2009) prefers the started, fleet-viable milestone with the fewest leftovers; only then does oldest-first apply. `priority-high` / `priority-low` still order issues *inside* one milestone.
-3. **Non-milestone issues:** Priority labels have no effect on issues without a milestone.
-4. **Fallback:** When no priority labels are present, the existing oldest-first behaviour is preserved.
+1. **Within the same milestone:** Issues with `priority-high` are picked first,
+   then normal (no label), then `priority-low`. Within the same priority level,
+   oldest-first applies.
+2. **Across milestones:** Priority labels have no effect on which _milestone_ is
+   worked. Close-out (Issue #2009) prefers the started, fleet-viable milestone
+   with the fewest leftovers; only then does oldest-first apply. `priority-high`
+   / `priority-low` still order issues _inside_ one milestone.
+3. **Non-milestone issues:** Priority labels have no effect on issues without a
+   milestone.
+4. **Fallback:** When no priority labels are present, the existing oldest-first
+   behaviour is preserved.
 
 ### Example
 
 A milestone "v2.0" has three issues:
 
-| Issue | Created | Label | Selected |
-|-------|---------|-------|----------|
-| #10 — Add feature X | Jan 1 | — | 2nd |
-| #11 — Database schema migration | Feb 1 | `priority-high` | **1st** |
-| #12 — Nice-to-have cleanup | Mar 1 | `priority-low` | 3rd |
+| Issue                           | Created | Label           | Selected |
+| ------------------------------- | ------- | --------------- | -------- |
+| #10 — Add feature X             | Jan 1   | —               | 2nd      |
+| #11 — Database schema migration | Feb 1   | `priority-high` | **1st**  |
+| #12 — Nice-to-have cleanup      | Mar 1   | `priority-low`  | 3rd      |
 
-Without priority labels, #10 would be picked first (oldest). With the `priority-high` label on #11, the worker picks the database migration first — ensuring the schema is in place before dependent features.
+Without priority labels, #10 would be picked first (oldest). With the
+`priority-high` label on #11, the worker picks the database migration first —
+ensuring the schema is in place before dependent features.
 
 ### Implementation
 
-Priority extraction is implemented in `worker/deno/lib/milestone_priority.ts`. The `extractMilestonePriority()` function reads priority labels from each issue and assigns a numeric value used during candidate sorting in `worker/deno/lib/issue_priority.ts`.
+Priority extraction is implemented in `worker/deno/lib/milestone_priority.ts`.
+The `extractMilestonePriority()` function reads priority labels from each issue
+and assigns a numeric value used during candidate sorting in
+`worker/deno/lib/issue_priority.ts`.
 
 ## 🔀 Decision points and exceptions
 
-- **Milestone branch sync conflict:** Merge from default into milestone fails; worker logs and aborts; user may need to resolve on milestone branch manually.
-- **Final PR already exists:** Worker should not create a duplicate; ensure idempotent behaviour (create or update/find existing). Only a same-repository PR headed by the milestone branch counts as the existing final PR; a fork-headed PR reusing the branch name is ignored, so it cannot stop the final PR from being raised (Issue #3595).
-  - An existing final PR's body is rewritten only while the PR is `OPEN` (read live with `gh pr view`), is headed by the milestone branch in the same repository, and no longer matches the closed-issue classification (Issue #3476, PR #3640 review). The body ends with a `<!-- vibe-rollup-fingerprint value="…" -->` marker over the milestone title, default branch, tracker and classified issues; a scan that finds the current marker in the body costs that one read and makes no edit. The edit is skipped only while the marker is present and current, so a hand edit that keeps the marker survives, while one that removes or rewrites it is overwritten on the next scan, and a changed milestone title, default branch, tracker or classified issue changes the fingerprint and triggers a rewrite. A closed issue's claim verdict is cached by its number and `updatedAt` (and the cache TTL), so an unchanged issue's timeline is not re-paged each scan. While the milestone still has an open child, the same refresh runs only for final PRs that the cached all-state branch list shows `OPEN` (or shows no state for, when the read gave none): a milestone whose only final PR is merged or closed, as after an automated roll-back, costs no closed-issue classification and no `gh pr view` per scan.
-- **Final PR closed without merging (Issue #3474):** Once no milestone issue is open, the worker reads the same-repository PRs from the milestone branch (up to 100; a fork-headed PR reusing the branch name is ignored). If one has merged, the milestone is closed as merged. If one is open, the milestone stays open. If every one was closed unmerged, the worker comments on the tracking issue (or on the closed PR when there is no tracker) naming the closed PR, closes the tracker and the milestone, and raises no new final PR. A final PR closed by the fleet's own milestone roll-back is not abandoned: it is ignored, any open sync PR is retired first, and a fresh final PR is raised. The roll-back is recognised by its close comment (`<!-- vibe-final-pr-rollback-close -->`, or the earlier "Closed by a milestone roll-back of" prose) **only when a fleet login authored that comment** — a comment from any other account is ignored and the PR stays abandoned. When the fleet logins cannot be resolved, the PR is classed neither abandoned nor superseded: the worker logs a warning and the milestone is left as it was.
-- **Nothing to merge (Issues #3214, #3474):** When the milestone branch is missing, 0 commits ahead of the default branch, or its comparison reports an empty changed-file list, the milestone is closed directly with no tracker or final PR — even when it has no closed issues. A comparison with an invalid commit count, or with commits ahead and no usable file list, cannot establish that there is nothing to merge. An empty milestone whose branch has file changes is still skipped, as is an empty milestone created in the last 15 minutes (or with no usable `created_at`), which planning may still be assigning issues to; a later scan closes it once it is older. The closed items are read per milestone by its number, through a paginated `gh api` read of `repos/<repo>/issues?milestone=<n>&state=closed` (Issue #3662), not filtered from the repo-wide newest-500 `gh issue list` batch, so an older milestone's closed issues are no longer dropped. A failed read is logged as a `WARNING` and that milestone is skipped for the scan: it is neither closed as "nothing to merge" nor treated as empty.
-- **Milestone closed on GitHub:** Worker should not pick new issues from closed milestones; in-progress work on already-claimed issues may complete.
+- **Milestone branch sync conflict:** Merge from default into milestone fails;
+  worker logs and aborts; user may need to resolve on milestone branch manually.
+- **Final PR already exists:** Worker should not create a duplicate; ensure
+  idempotent behaviour (create or update/find existing). Only a same-repository
+  PR headed by the milestone branch counts as the existing final PR; a
+  fork-headed PR reusing the branch name is ignored, so it cannot stop the final
+  PR from being raised (Issue #3595).
+  - An existing final PR's body is rewritten only while the PR is `OPEN` (read
+    live with `gh pr view`), is headed by the milestone branch in the same
+    repository, and no longer matches the closed-issue classification (Issue
+    #3476, PR #3640 review). The body ends with a
+    `<!-- vibe-rollup-fingerprint value="…" -->` marker over the milestone
+    title, default branch, tracker and classified issues; a scan that finds the
+    current marker in the body costs that one read and makes no edit. The edit
+    is skipped only while the marker is present and current, so a hand edit that
+    keeps the marker survives, while one that removes or rewrites it is
+    overwritten on the next scan, and a changed milestone title, default branch,
+    tracker or classified issue changes the fingerprint and triggers a rewrite.
+    A closed issue's claim verdict is cached by its number and `updatedAt` (and
+    the cache TTL), so an unchanged issue's timeline is not re-paged each scan.
+    While the milestone still has an open child, the same refresh runs only for
+    final PRs that the cached all-state branch list shows `OPEN` (or shows no
+    state for, when the read gave none): a milestone whose only final PR is
+    merged or closed, as after an automated roll-back, costs no closed-issue
+    classification and no `gh pr view` per scan.
+- **Final PR closed without merging (Issue #3474):** Once no milestone issue is
+  open, the worker reads the same-repository PRs from the milestone branch (up
+  to 100; a fork-headed PR reusing the branch name is ignored). If one has
+  merged, the milestone is closed as merged. If one is open, the milestone stays
+  open. If every one was closed unmerged, the worker comments on the tracking
+  issue (or on the closed PR when there is no tracker) naming the closed PR,
+  closes the tracker and the milestone, and raises no new final PR. A final PR
+  closed by the fleet's own milestone roll-back is not abandoned: it is ignored,
+  any open sync PR is retired first, and a fresh final PR is raised. The
+  roll-back is recognised by its close comment
+  (`<!-- vibe-final-pr-rollback-close -->`, or the earlier "Closed by a
+  milestone roll-back of" prose) **only when a fleet login authored that
+  comment** — a comment from any other account is ignored and the PR stays
+  abandoned. When the fleet logins cannot be resolved, the PR is classed neither
+  abandoned nor superseded: the worker logs a warning and the milestone is left
+  as it was.
+- **Nothing to merge (Issues #3214, #3474):** When the milestone branch is
+  missing, 0 commits ahead of the default branch, or its comparison reports an
+  empty changed-file list, the milestone is closed directly with no tracker or
+  final PR — even when it has no closed issues. A comparison with an invalid
+  commit count, or with commits ahead and no usable file list, cannot establish
+  that there is nothing to merge. An empty milestone whose branch has file
+  changes is still skipped, as is an empty milestone created in the last 15
+  minutes (or with no usable `created_at`), which planning may still be
+  assigning issues to; a later scan closes it once it is older. The closed items
+  are read per milestone by its number, through a paginated `gh api` read of
+  `repos/<repo>/issues?milestone=<n>&state=closed` (Issue #3662), not filtered
+  from the repo-wide newest-500 `gh issue list` batch, so an older milestone's
+  closed issues are no longer dropped. A failed read is logged as a `WARNING`
+  and that milestone is skipped for the scan: it is neither closed as "nothing
+  to merge" nor treated as empty.
+- **Milestone closed on GitHub:** Worker should not pick new issues from closed
+  milestones; in-progress work on already-claimed issues may complete.
 
 ## 📚 Further reading
 
-- **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue selection, PR monitoring, milestone/dependency handling.
-- **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts), [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts), [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts), [worker/deno/lib/issue_filter.ts](../../worker/deno/lib/issue_filter.ts) (milestone occupation check —), [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts).
-- **User docs:** [README.md](../../README.md), [USAGE.md](../USAGE.md), [projects-and-dependencies.md](projects-and-dependencies.md), [resilience-and-concurrency.md](resilience-and-concurrency.md), [issue-processing.md](issue-processing.md).
+- **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue
+  selection, PR monitoring, milestone/dependency handling.
+- **Implementation details:**
+  [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),
+  [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts),
+  [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts),
+  [worker/deno/lib/issue_filter.ts](../../worker/deno/lib/issue_filter.ts)
+  (milestone occupation check —),
+  [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts).
+- **User docs:** [README.md](../../README.md), [USAGE.md](../USAGE.md),
+  [projects-and-dependencies.md](projects-and-dependencies.md),
+  [resilience-and-concurrency.md](resilience-and-concurrency.md),
+  [issue-processing.md](issue-processing.md).
