@@ -224,6 +224,19 @@ const TOOL_RUNTIME: RunFailureClassification = {
     "The agent's tool runtime failed (tools or the code-mode host were unavailable, or every tool call failed to spawn) — infrastructure, not an agent outcome.",
 };
 
+/**
+ * A refused repository-admin setting (Issue #4442).
+ *
+ * The category stays `internal_error`, but the refusal is a repository or
+ * credential condition, so it is never auto-filed as a `worker-crash`.
+ */
+export const REPO_ADMIN_REFUSED: RunFailureClassification = {
+  fixability: "not_code_fixable",
+  failureClass: "repo-config",
+  rationale:
+    "The repository or the worker's token refused the repository-admin setting the finding asks for (permission, plan or protection) — a configuration fault, not a worker defect.",
+};
+
 /** Codex item types that are tool calls (the same set the progress tracker counts). */
 const TOOL_ITEM_TYPES: ReadonlySet<string> = new Set([
   "command_execution",
