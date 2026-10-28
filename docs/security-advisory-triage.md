@@ -168,11 +168,16 @@ and no maintainer approval is sought — a red audit naming an advisory against
 the version currently in the lockfile is the whole condition.
 
 The limit is the same as a maintainer's. The agent passes an explicit zero age
-for **that package only** (`deno outdated --update --minimum-dependency-age=0
-<pkg>`) or edits the manifest directly — it does **not** touch the repository's
-`minimumDependencyAge` config or its `exclude` globs, so there is no temporary
-rule to revert afterwards. Every other bump in the same run keeps the full 24h
-floor.
+for the advisory-clearing version only — the fixed package, or the parent
+crate's version that carries the fix (`deno outdated --update
+--minimum-dependency-age=0 <pkg>`; on Cargo, `cargo update -p <parent>
+--precise <version>` after raising its requirement) — and does **not** touch
+the repository's `minimumDependencyAge` config or its `exclude` globs, so there
+is no temporary rule to revert afterwards. Every other version the change moves
+in the lockfile, including the crates a parent bump pulls in, keeps the full
+24h floor: the agent reads the lockfile diff and holds each one at its newest
+release outside the window (`cargo update -p <crate> --precise <version>`)
+(stSoftwareAU/VibeCoder#4437).
 
 The CI-fix prompt tells the agent that a red audit is fixed in the PR even
 when the base is red — the same advisory red on the base branch is never

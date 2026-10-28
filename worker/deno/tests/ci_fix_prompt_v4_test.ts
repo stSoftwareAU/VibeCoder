@@ -224,3 +224,24 @@ Deno.test("ci_fix - every other bump in the run keeps the 24h floor (Issue #1847
     "an unsubstituted {{PLACEHOLDER}} remains in the rendered prompt",
   );
 });
+
+Deno.test("ci_fix - the zero age covers the advisory-clearing version only, not the crates a parent bump pulls in (Issue #4437)", async () => {
+  const prompt = await renderAuditFailure();
+
+  assertStringIncludes(
+    prompt,
+    "Apply the zero age to the advisory-clearing version only",
+  );
+  assertStringIncludes(prompt, "cargo update -p <parent> --precise <version>");
+  assertStringIncludes(
+    prompt,
+    "including the crates a parent bump pulls in, keeps the 24h floor",
+  );
+  assertStringIncludes(prompt, "cargo update -p <crate> --precise <version>");
+  // The old sentence let "edit the manifest and lockfile directly" stand as
+  // the whole mechanism for the exemption.
+  assertEquals(
+    prompt.includes("or by editing the manifest and lockfile directly"),
+    false,
+  );
+});
