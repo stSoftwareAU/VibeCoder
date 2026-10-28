@@ -2635,3 +2635,74 @@ Deno.test("issue_query - wasLabelAddedByAllowedAuthor never trusts a worker-appl
   );
   assertEquals(result, false);
 });
+
+// =============================================================================
+// The claim scan's labelled-issue window (Issue #4464)
+// =============================================================================
+
+Deno.test("issue_query - fetchIssuesByLabel at SCAN_LABELLED_ISSUE_LIMIT returns all 120 labelled issues from a cold cache (Issue #4464)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    // 120 labelled issues, newest-first as `gh issue list` returns them.
+    const listing = Array.from({ length: 120 }, (_, i) => ({
+      number: 120 - i,
+      title: `Issue ${120 - i}`,
+      labels: [{ name: "work-on" }],
+    }));
+    const limits: string[] = [];
+    const gh = (args: string[]) => {
+      const limit = args[args.indexOf("--limit") + 1] ?? "";
+      limits.push(limit);
+      return Promise.resolve(
+        JSON.stringify(listing.slice(0, Number(limit))),
+      );
+    };
+
+    const issues = await fetchIssuesByLabel(
+      "org/repo",
+      "work-on",
+      cache,
+      SCAN_LABELLED_ISSUE_LIMIT,
+      gh,
+    );
+
+    assertEquals(issues.length, 120);
+    // The scan's window is the listing's width, so the call asks for 200.
+    assertEquals(limits, ["200"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchIssuesByLabel with the default limit still returns 50 and requests --limit 100 (Issue #4464)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const listing = Array.from({ length: 120 }, (_, i) => ({
+      number: 120 - i,
+      title: `Issue ${120 - i}`,
+      labels: [{ name: "work-on" }],
+    }));
+    const limits: string[] = [];
+    const gh = (args: string[]) => {
+      const limit = args[args.indexOf("--limit") + 1] ?? "";
+      limits.push(limit);
+      return Promise.resolve(
+        JSON.stringify(listing.slice(0, Number(limit))),
+      );
+    };
+
+    // `undefined` takes the default limit of 50, as the other callers do.
+    const issues = await fetchIssuesByLabel(
+      "org/repo",
+      "work-on",
+      cache,
+      undefined,
+      gh,
+    );
+
+    assertEquals(issues.length, 50);
+    assertEquals(limits, ["100"]);
+  } finally {
+    await cleanup();
+  }
+});
