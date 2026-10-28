@@ -84,13 +84,14 @@ Backend-only change; no UI files. Verification is by tests (below).
   unreadable-workflow-directory test in `repo_settings_harden_test.ts` (red with
   the `templateReferenceCount: 0` initialiser deleted).
 - `deno task test:unit`, one file at a time on the head:
-  `setup_repo_settings_harden_test.ts` (40 tests at head),
-  `repo_settings_harden_test.ts` (116 tests at head),
-  `workflow_sync_actions_test.ts` (10 tests at head),
-  `workflow_definitions_test.ts` (70 tests at head),
-  `admin_only_finding_test.ts` (30 tests at head),
-  `setup_repo_settings_audit_close_test.ts` (27 tests at head) and
-  `issue_worker_test.ts` (128 tests at head): all passed, 0 failed.
+  `worker/deno/tests/setup_repo_settings_harden_test.ts` (40 tests at head),
+  `worker/deno/tests/repo_settings_harden_test.ts` (116 tests at head),
+  `worker/deno/tests/workflow_sync_actions_test.ts` (10 tests at head),
+  `worker/deno/tests/workflow_definitions_test.ts` (70 tests at head),
+  `worker/deno/tests/admin_only_finding_test.ts` (30 tests at head),
+  `worker/deno/tests/setup_repo_settings_audit_close_test.ts` (27 tests at head)
+  and `worker/deno/tests/issue_worker_test.ts` (128 tests at head): all passed,
+  0 failed.
 - PR #4473 review round tests: `workflow_sync_actions_test.ts` partial-spec test
   (Deno repo, only `deno lint`, asserts the codecov reference; red with the
   `audit.value.partial` spread deleted); `setup_repo_settings_harden_test.ts`
@@ -98,17 +99,19 @@ Backend-only change; no UI files. Verification is by tests (below).
   setup warning disabled). The setup fake GitHub now answers the detection and
   workflow-audit reads, so the drifted-repo test expects
   `gitleaks/gitleaks-action@*` in the written list.
-- PR #4473 review round 2: the CLI now appends the `Could not read the
-  workflow-sync templates` line and the unreadable-manifest line after the
-  plan/no-plan branch (like the skip notes), so they print when nothing is
-  planned. Tested through `repoSettingsHardenCommand.execute` with
-  `_setGhSpawnRunner` over the stateful fake, on a converged repository: a
-  positive control (no fault, `nothing to harden`, no warning), a failing
-  `languages` read (template line and cause), and a failing `action.yml` read
-  (manifest line and cause). Red check: with `commands/repo_settings_harden.ts`
-  at its previous version the test fails (`nothing to harden …` does not
-  contain `Could not read the workflow-sync templates`). The manifest phase's
-  own red run was not separately isolated (the template assertion fails first).
+- PR #4473 review round 2: the CLI now appends the
+  `Could not read the
+  workflow-sync templates` line and the
+  unreadable-manifest line after the plan/no-plan branch (like the skip notes),
+  so they print when nothing is planned. Tested through
+  `repoSettingsHardenCommand.execute` with `_setGhSpawnRunner` over the stateful
+  fake, on a converged repository: a positive control (no fault,
+  `nothing to harden`, no warning), a failing `languages` read (template line
+  and cause), and a failing `action.yml` read (manifest line and cause). Red
+  check: with `commands/repo_settings_harden.ts` at its previous version the
+  test fails (`nothing to harden …` does not contain
+  `Could not read the workflow-sync templates`). The manifest phase's own red
+  run was not separately isolated (the template assertion fails first).
 - Docs: `docs/SETUP.md` (Settings bullet, `repo-settings-harden` row) and
   `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` (allow-list paragraph) updated; doc
   comments in `lib/repo_settings_harden.ts` and
