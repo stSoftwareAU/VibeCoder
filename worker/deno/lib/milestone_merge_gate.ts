@@ -119,6 +119,13 @@ export interface MergeGateOutcome {
    * passed; the milestone PR's CI runs it.
    */
   suiteLeftToCi?: string;
+  /**
+   * Set when the repository's own type check for a Deno project could not
+   * fetch its remote modules (Issue #4422). It names the task and the cause.
+   * That check did not run, so the report must not claim it passed; the
+   * milestone PR's CI runs it (Issue #4441).
+   */
+  checkLeftToCi?: string;
 }
 
 /**
@@ -568,12 +575,14 @@ export async function checkMergedTree(
     ...(skippedCargo ? [`${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`] : []),
     ...leftToCi.map((note) => `${note} — left to CI (Issue #4422)`),
   ];
+  const checkLeftToCi = leftToCi.length > 0 ? leftToCi.join("; ") : undefined;
   if (checked.length === 0 && notes.length > 0) {
     return {
       status: "skipped",
       detail: notes.join("; "),
       output: "",
       ...(skippedCargo ? { cargoSkipped: true } : {}),
+      ...(checkLeftToCi ? { checkLeftToCi } : {}),
     };
   }
 
@@ -582,6 +591,7 @@ export async function checkMergedTree(
     detail: [`${checked.join("; ")} passed`, ...notes].join("; "),
     output: "",
     ...(skippedCargo ? { cargoSkipped: true } : {}),
+    ...(checkLeftToCi ? { checkLeftToCi } : {}),
   };
 }
 
