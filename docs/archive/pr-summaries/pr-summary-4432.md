@@ -23,9 +23,19 @@ Version bump: none; prose-only change to a prompt bucket and two docs.
 ### Essential Design Decisions
 
 - Check 43 does not flag any glob import from a module named `prelude` (a
-  consumer import such as `use rayon::prelude::*;` or a `pub use` re-export),
-  nor `use super::*;` in a `#[cfg(test)]` module, matching the issue's agreed
-  scope and clippy `wildcard_imports` (PR #4457 review).
+  consumer import such as `use rayon::prelude::*;` or a re-export of one),
+  `use super::*;` in a `#[cfg(test)]` module, or a public glob re-export
+  (`pub use …::*;`, `pub(crate) use …::*;`). That matches the issue's agreed
+  scope, clippy `wildcard_imports` (which checks private imports only) and the
+  guide, which permits `pub use submodule::*` for non-leaf modules (PR #4457
+  reviews).
+- Check 48 leaves doctest assertions (inside `///` or `//!` code blocks) and
+  `#[test]` functions alone: they are test code, outside the issue's
+  "non-test code" scope, and clippy `missing_assert_message` skips them.
+- Check 49 no longer accepts `PoisonError::into_inner` recovery as a policy.
+  The guide says never to reach inside a poisoned mutex, so the check flags
+  such recovery (`Poisoned lock recovered in <file>`) and the fix is
+  propagation or a fatal exit.
 - Every new finding is `severity:low`, because none fails a build on its own.
   The toolchain section differs (deny-by-default lints), so it escalates; this
   one does not.
@@ -78,14 +88,17 @@ the markdown linter.
   `docs/BEST-PRACTICES-SCAN.md`): 19 and 30 passed, 0 failed.
 - `markdownlint-cli2` over the three edited files: 0 issues.
 - `tests/rust_glob_import_prelude_4432_docs_test.ts` (added for the PR #4457
-  review): pins check 43's prelude exemption in the
-  `Google Rust Style Guide learnings` section. Red-checked: with check 43's
-  first wording (re-exports only) restored it fails on the first pin;
-  `deno task drift-pins-on-base` reports all three pins absent on `main` and on
-  the pre-fix head. Otherwise the change is prompt and doc prose; existing tests
+  reviews): three tests in the `Google Rust Style Guide learnings` section pin
+  check 43's prelude and public re-export exemptions, check 48's doctest
+  exclusion and check 49's refusal of `into_inner` recovery. Red-checked: with
+  the section restored to the head before each review fix, every test fails
+  (first fix: 0 of 1 passed; second fix: 0 of 3 passed).
+  `deno task drift-pins-on-base` reports every pin absent on `main` and on the
+  pre-fix head. Otherwise the change is prompt and doc prose; existing tests
   guard that credited paths exist, bucket files are documented, and anchors
   resolve. No existing test was edited.
-- `deno task check:manifests` set (55 files): 846 passed, 0 failed.
+- `deno task check:manifests` set (55 files) plus the drift test: 849 passed, 0
+  failed.
 - `deno fmt --check` on `rust.md` fails identically on the unmodified HEAD copy
   (existing prose width); not touched.
 - Rule applied to this PR's own diff: the only claims about other components are

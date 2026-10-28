@@ -641,9 +641,12 @@ the toolchain section above).
 43. **Glob imports.** Always applies. Grep `use .*::\*;`. Do not flag a
     glob import from a module named `prelude`, whether a consumer import
     (`use rayon::prelude::*;`, `use std::io::prelude::*;`) or a
-    `pub use` re-export of one, nor `use super::*;` inside a
-    `#[cfg(test)]` module; clippy allows both. Flag every other
-    `use …::*;`. Clippy `wildcard_imports` (pedantic) can confirm. Why:
+    re-export of one, nor `use super::*;` inside a `#[cfg(test)]`
+    module, nor a public glob re-export (`pub use …::*;`,
+    `pub(crate) use …::*;`), such as a facade in `lib.rs`. Clippy allows
+    all three, and the guide permits `pub use submodule::*` for non-leaf
+    modules. Flag only the remaining private `use …::*;` imports.
+    Clippy `wildcard_imports` (pedantic) can confirm. Why:
     a glob hides where a name comes from, and an upstream addition can
     silently shadow or collide with a local name. Fix: import the names
     explicitly. Severity: `severity:low`. Finding title:
@@ -688,8 +691,10 @@ the toolchain section above).
 48. **Assertions with no context message in non-test code.** Always
     applies. Grep `assert!(`, `assert_eq!(`, `assert_ne!(` and their
     `debug_` forms, and flag each call with no message argument outside
-    `#[cfg(test)]` and `tests/`. Read the whole call, since it may span
-    lines. Clippy `missing_assert_message` (restriction) can confirm.
+    `#[cfg(test)]` modules, `#[test]` functions, `tests/`, and
+    doc-comment examples (an assertion inside a `///` or `//!` code block
+    is a doctest, which is test code). Read the whole call, since it may
+    span lines. Clippy `missing_assert_message` (restriction) can confirm.
     Why: a production panic that says only `assertion failed: x > 0`
     costs a log dive. Whether the assertion is reachable belongs to
     check 12 (panic DoS), and whether a safety invariant rests only on a
@@ -701,15 +706,23 @@ the toolchain section above).
 49. **`Mutex::lock().unwrap()` with no poisoning policy.** Gate:
     `has_concurrency`. Grep `.lock().unwrap()`, `.read().unwrap()` and
     `.write().unwrap()`. Flag the crate when nothing states what happens
-    to a poisoned lock: propagate the panic, recover with
-    `unwrap_or_else(PoisonError::into_inner)`, or treat it as fatal. No
-    clippy lint covers this. Why: `unwrap()` turns a poisoned lock into
-    a panic on every later lock, and nothing in the code says that was
-    the intent. Fix: choose one policy and comment it once at the lock
-    type or in a small helper. A bare `unwrap()` elsewhere stays under
-    check 1. Locking order and ABBA stay under check 16. Severity:
+    to a poisoned lock: propagate the panic (a commented
+    `lock().unwrap()` or `.expect(…)`, or a small helper) or treat it as
+    fatal. Recovering through `PoisonError::into_inner` is not a policy
+    this check accepts: the guide says never to reach inside a poisoned
+    mutex, because later lockers would read state that a panicking
+    thread left half-updated. Also grep `into_inner` and flag each call
+    on a lock's `PoisonError` (for example
+    `unwrap_or_else(PoisonError::into_inner)`), even when a comment
+    states it. No clippy lint covers this. Why: `unwrap()` turns a
+    poisoned lock into a panic on every later lock, and nothing in the
+    code says that was the intent. Fix: choose propagation or a fatal
+    exit, comment it once at the lock type or in a small helper, and
+    remove any `into_inner` recovery. A bare `unwrap()` elsewhere stays
+    under check 1. Locking order and ABBA stay under check 16. Severity:
     `severity:low`. Finding title: `Lock poisoning policy unstated in
-    <crate>`.
+    <crate>`, or `Poisoned lock recovered in <file>` for an
+    `into_inner` recovery.
 50. **`catch_unwind` outside an FFI boundary.** Always applies. Grep
     `catch_unwind`. Flag use as general error handling, meaning a panic
     turned into a `Result` inside ordinary application code. Acceptable
