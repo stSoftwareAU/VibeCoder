@@ -1305,6 +1305,13 @@ export interface HardenResult {
   /** `skipped`: deliberately not attempted; `detail` says why (Issue #2626). */
   status: "planned" | "applied" | "failed" | "skipped";
   detail?: string;
+  /**
+   * Set on a `failed` result that is a refusal from outside this repository's
+   * own settings (Issue #4442): an organisation ruleset the repository cannot
+   * edit, or a role a team or the organisation grants. Absent on every other
+   * failure, including the worker's own faults.
+   */
+  refusal?: "organisation-ruleset" | "inherited-role";
 }
 
 /** Options for {@link applyRepoSettingsPlan}. */
@@ -1439,6 +1446,7 @@ async function applyFleetAccountWrite(
       return {
         step,
         status: "failed",
+        refusal: "inherited-role",
         detail: `${login} is still ${role} after the write: the role comes ` +
           `from a team or the organisation (Settings → Collaborators and ` +
           `teams on ${repo}, or the organisation's People page), so change ` +
@@ -1523,6 +1531,7 @@ async function applyRulesetReviews(
       return {
         step,
         status: "failed",
+        refusal: "organisation-ruleset",
         detail: `ruleset ${blocked.join(", ")} on ${branch} is not this ` +
           "repository's to edit (an organisation ruleset); an owner must " +
           "change it there",

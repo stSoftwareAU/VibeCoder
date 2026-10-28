@@ -24,7 +24,12 @@
 import type { Result } from "../types.ts";
 import { escapeRegExp } from "./regexp_escape.ts";
 import { REPO_ADMIN_ACTION } from "./repo_settings_scanner.ts";
-import type { HardenRepoOutcome, HardenStep } from "./repo_settings_harden.ts";
+import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
+import type {
+  HardenRepoOutcome,
+  HardenResult,
+  HardenStep,
+} from "./repo_settings_harden.ts";
 
 /**
  * The `BP-REPO-*` finding-id marker every repo-settings finding body carries.
@@ -165,6 +170,52 @@ export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
 };
 
 /**
+ * A repository-admin finding with no automatic fix mapped (Issue #4442).
+ *
+ * A worker defect: the finding is missing from `FINDING_STEP_KIND`, so the run
+ * stays a `worker-crash`.
+ */
+export class NoAutomaticFixError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoAutomaticFixError";
+  }
+}
+
+/**
+ * A repository-admin setting the repository or the worker's token refused
+ * (Issue #4442): every result that kept the setting from applying is a
+ * {@link isRepoRefusal} refusal. Only this error is classed `repo-config`;
+ * any other failure stays a `worker-crash`.
+ */
+export class RepoAdminRefusalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RepoAdminRefusalError";
+  }
+}
+
+/**
+ * Whether one result that kept the setting from applying is a repository or
+ * token refusal rather than a worker fault (Issue #4442).
+ *
+ * A refusal is a deliberate skip (the plan held the step, a dependency did not
+ * apply, or the owner's own setup), a 403 or 404 from GitHub, an organisation
+ * ruleset or a role the repository cannot lower. Everything else is the
+ * worker's to fix and stays a `worker-crash`: `hardenRepo`'s catch-all for an
+ * exception in its own planning code, a 422 for a body the worker built, a 5xx,
+ * a rate limit or a local fault such as a temp-file write.
+ */
+export function isRepoRefusal(result: HardenResult): boolean {
+  if (result.status === "skipped") return true;
+  if (result.status !== "failed") return false;
+  if (result.refusal !== undefined) return true;
+  const category = classifyGitHubError(result.detail ?? "").category;
+  return category === GitHubErrorCategory.Permission ||
+    category === GitHubErrorCategory.NotFound;
+}
+
+/**
  * Apply the setting a repository-admin finding asks for (Issue #4298).
  *
  * Only the finding's own steps are run, so fixing one finding never rewrites
@@ -172,7 +223,11 @@ export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
  * the setting already holds — returns the applied steps for the closing
  * comment. Anything else is an error naming what was refused, for the caller
  * to record on the normal `failed-once` ladder: a token without admin rights,
- * an unreadable surface, or a finding with no automatic fix.
+ * an unreadable surface, or a finding with no automatic fix. The no-fix error
+ * is a {@link NoAutomaticFixError} (a worker defect, Issue #4442). A failure
+ * whose every refused result is a {@link isRepoRefusal} refusal is a
+ * {@link RepoAdminRefusalError}; any other failure, such as a fault in the
+ * hardener itself, is a plain `Error` and stays a worker defect (Issue #4442).
  *
  * @param harden - Runs `hardenRepo` with `apply` for the given step kinds.
  */
@@ -189,7 +244,7 @@ export async function repairAdminOnlyFinding(
   if (!kind) {
     return {
       ok: false,
-      error: new Error(
+      error: new NoAutomaticFixError(
         `no automatic fix is mapped for ${
           findingId ?? "this repository-admin finding"
         } — add it to FINDING_STEP_KIND in admin_only_finding.ts`,
@@ -206,14 +261,15 @@ export async function repairAdminOnlyFinding(
     (r.status === "skipped" && kinds.includes(r.step.kind))
   );
   if (refused.length > 0) {
+    const message = `could not apply ${findingId}: ` +
+      refused.map((r) =>
+        `${r.step.kind}: ${r.step.title}${r.detail ? ` — ${r.detail}` : ""}`
+      ).join("; ");
     return {
       ok: false,
-      error: new Error(
-        `could not apply ${findingId}: ` +
-          refused.map((r) =>
-            `${r.step.kind}: ${r.step.title}${r.detail ? ` — ${r.detail}` : ""}`
-          ).join("; "),
-      ),
+      error: refused.every(isRepoRefusal)
+        ? new RepoAdminRefusalError(message)
+        : new Error(message),
     };
   }
   const applied = outcome.results.filter((r) => kinds.includes(r.step.kind));
