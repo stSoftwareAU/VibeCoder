@@ -25,6 +25,11 @@ Version bump: `VERSION` is not touched by this change.
 - Violations are now parsed from stdout and stderr: v0.24.0 (observed) writes
   violation lines to stderr, so the previous stdout-only parse reported FAILED
   with an empty violation list.
+- Warning-severity lines are dropped before deciding and counting (PR #4453
+  review). markdownlint-cli2 writes them to stderr too, but exits 0 when every
+  result is a warning, so a repo whose config sets `"default": "warning"` (or
+  any rule to `"warning"`) stays PASSED, as its own CI does, and a warning
+  never becomes a baseline finding.
 - The FAILED detail for a violation-free failure falls back to the stdout
   `Error:` line (v0.24.0 prints config errors on stdout) before the generic
   exit-code message.
@@ -44,13 +49,12 @@ Backend-only change; no UI files touched. Tests in
 `worker/deno/tests/markdownlint_check_test.ts` (fake-runner and real
 `markdownlint-cli2` temp-repo cases: no config → SKIPPED, rules-only config →
 SKIPPED, `globs` → FAILED with parsed README.md violations, malformed config →
-FAILED).
+FAILED, every rule a warning → PASSED).
 
 ## Test Plan
 
 - `deno task test:unit tests/markdownlint_check_test.ts tests/markdownlint_probe_test.ts`
-  (from `worker/deno`): the two files pass (markdownlint_check_test.ts: 19
-  passed, 0 failed).
+  (from `worker/deno`): the two files pass.
 - Red check: with `worker/deno/lib/markdownlint_check.ts` restored to base, 6 of
   the new tests fail (help-screen SKIPPED, config-error cause text, stderr-only
   violations, both real-binary SKIPPED cases, real-binary globs FAILED).
@@ -63,8 +67,20 @@ FAILED).
   fails if the `stderr` operand of the help-line test is dropped (`:173`);
   "FAILED when exit 2 shows the help line and a Linting header but no parsed
   violation" fails if the `Linting:` guard returns true (`:177`). Both mutants
-  applied by hand each turn one test red; `markdownlint_check_test.ts` is 19
-  passed, 0 failed with the real code.
+  applied by hand each turn one test red.
+- PR #4453 review fixes, each red-checked by hand:
+  - "FAILED when exit 2 shows the help line and a violation but no Linting
+    header" reaches the last `isNoGlobsHelpRun` guard; with that guard changed
+    to `return true` it fails (1 failed).
+  - "PASSED when the binary exits 0 with only warning lines on stderr", "FAILED
+    lists only error lines when warnings arrive beside them" and the real-binary
+    "PASSED when the config makes every rule a warning" fail with the warning
+    filter removed (3 failed).
+  - `markdownlint_check_test.ts`: 23 passed, 0 failed with the real code. The
+    45 test files that mention markdownlint: 1032 passed, 2 failed, both
+    environmental here and unrelated (a child `deno` that cannot reach jsr.io,
+    and a read-only-directory test that fails identically without this
+    change).
 - Callers of `runMarkdownlintCheck` (three, all in `worker/deno`):
   - `runMarkdownlintQualityCheck` in `lib/quality_gate.ts` passes
     `result.status` through unchanged, so a help-screen run is SKIPPED in the
@@ -74,8 +90,8 @@ FAILED).
     stderr appear in its `data`.
   - `collectDiffableGateFindings` in `lib/baseline_gate.ts` only reads
     `violations`: a SKIPPED run has none (no findings, as before for a skip),
-    and stderr-only violations now become baseline findings where the
-    stdout-only parse produced none.
+    and stderr-only error violations now become baseline findings where the
+    stdout-only parse produced none; warning lines never do.
 - Docs: grepped `docs/` and README for markdownlint; none describes the
   FAILED-on-no-globs behaviour. Doc comments in `markdownlint_check.ts` and
   `quality_gate.ts` updated.

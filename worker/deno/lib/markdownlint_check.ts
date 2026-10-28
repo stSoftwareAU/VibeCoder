@@ -137,6 +137,25 @@ export function parseMarkdownlintOutput(
 }
 
 /**
+ * Pattern matching a warning-severity violation line. markdownlint-cli2 exits
+ * 0 when every result is a warning (only results whose severity is not
+ * `warning` set the failing exit code), so a warning line never fails the gate
+ * on its own (PR #4453 review).
+ */
+const WARNING_LINE_PATTERN = /^\S+?:\d+(?::\d+)?\s+warning\s/;
+
+/**
+ * Parse only the error-severity violations from markdownlint-cli2 output,
+ * dropping warning lines so the check follows the binary's own verdict.
+ */
+function parseMarkdownlintErrors(output: string): MarkdownlintViolation[] {
+  const errorLines = output
+    .split("\n")
+    .filter((line) => !WARNING_LINE_PATTERN.test(line.trimEnd()));
+  return parseMarkdownlintOutput(errorLines.join("\n"));
+}
+
+/**
  * Pattern that extracts the `Linting: N file(s)` header markdownlint-cli2
  * emits before listing violations. Used purely for the summary count.
  */
@@ -337,8 +356,10 @@ export async function runMarkdownlintCheck(
   const combined = run.stderr ? `${run.stdout}\n${run.stderr}` : run.stdout;
   // markdownlint-cli2 v0.24.0 writes violation lines to STDERR and the
   // `Linting:` / `Summary:` header to STDOUT, so violations are parsed from
-  // both streams. The file count stays on stdout.
-  const violations = parseMarkdownlintOutput(combined);
+  // both streams. The file count stays on stdout. Warning-severity lines are
+  // dropped: the binary exits 0 on warnings alone, and the gate follows that
+  // verdict (PR #4453 review).
+  const violations = parseMarkdownlintErrors(combined);
   const filesChecked = extractFilesChecked(run.stdout);
 
   if (run.exitCode === 0 && violations.length === 0) {

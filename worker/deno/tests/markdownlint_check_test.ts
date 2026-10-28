@@ -16,6 +16,8 @@
  *     screen and exits 2 — SKIPPED. A config error (also exit 2) and a
  *     Linting run with violations stay FAILED. Real-binary cases run only
  *     when `markdownlint-cli2` is on PATH.
+ *   - PR #4453 review: warning-severity lines (stderr, exit 0) never fail
+ *     the check, and an exit-2 help run with a parsed violation is FAILED.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -301,6 +303,72 @@ Deno.test("runMarkdownlintCheck - FAILED when exit 2 follows a Linting run with 
   assertEquals(result.filesChecked, 1);
 });
 
+Deno.test("runMarkdownlintCheck - FAILED when exit 2 shows the help line and a violation but no Linting header (PR #4453 review)", async () => {
+  // Reaches the last guard of the help-screen detection: exit 2, the help
+  // `Syntax:` line, no `Linting:` header, and a violation on stdout. A parsed
+  // violation means the binary linted something, so this is not SKIPPED.
+  const capture: FakeRunnerCapture = { invocations: [] };
+  const stdout = [
+    MARKDOWNLINT_HELP_STDOUT,
+    "fixture.md:5:1 error MD056/table-column-count Table column count [Expected: 3; Actual: 4]",
+  ].join("\n");
+  const runner = makeFakeRunner(2, stdout, capture);
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertEquals(result.violations.length, 1);
+  assertEquals(result.violations[0]!.file, "fixture.md");
+  assertEquals(result.violations[0]!.rule, "MD056/table-column-count");
+});
+
+Deno.test("runMarkdownlintCheck - PASSED when the binary exits 0 with only warning lines on stderr (PR #4453 review)", async () => {
+  // markdownlint-cli2 v0.24.0 writes warning-severity results to STDERR and
+  // exits 0 when there are no errors; the gate follows that verdict.
+  const stdout = [
+    "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)",
+    "Finding: **/*.md",
+    "Linting: 1 file(s)",
+    "Summary: 1 issue in 1 file",
+  ].join("\n");
+  const stderr =
+    'README.md:1:1 warning MD018/no-missing-space-atx No space after hash on atx style heading [Context: "#bad heading"]';
+  const runner: MarkdownlintRunner = () =>
+    Promise.resolve({ exitCode: 0, stdout, stderr });
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "PASSED");
+  assertEquals(result.violations.length, 0);
+  assertEquals(result.filesChecked, 1);
+});
+
+Deno.test("runMarkdownlintCheck - FAILED lists only error lines when warnings arrive beside them (PR #4453 review)", async () => {
+  // A warning never fails the binary, so it is not a gate violation either —
+  // the baseline-aware bypass compares these, and a new warning beside an old
+  // error must not read as a new finding.
+  const stdout = [
+    "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)",
+    "Linting: 2 file(s)",
+    "Summary: 2 error(s) in 2 files",
+  ].join("\n");
+  const stderr = [
+    "fixture.md:5:1 error MD056/table-column-count Table column count [Expected: 3; Actual: 4]",
+    "README.md:1 warning MD041/first-line-heading/first-line-h1 First line in a file should be a top-level heading",
+  ].join("\n");
+  const runner: MarkdownlintRunner = () =>
+    Promise.resolve({ exitCode: 1, stdout, stderr });
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertEquals(result.violations.length, 1);
+  assertEquals(result.violations[0]!.file, "fixture.md");
+});
+
 Deno.test("runMarkdownlintCheck - FAILED with parsed violations when they arrive only on stderr (Issue #4438)", async () => {
   // markdownlint-cli2 v0.24.0 writes violation lines to STDERR; the header
   // and summary go to STDOUT.
@@ -432,6 +500,25 @@ Deno.test({
         const result = await runRealCheck(dir);
         assertEquals(result.status, "FAILED");
         assertStringIncludes(result.output, "markdownlint: FAILED");
+      },
+    ),
+});
+
+Deno.test({
+  name:
+    "runMarkdownlintCheck (real binary) - PASSED when the config makes every rule a warning (PR #4453 review)",
+  ignore: !HAS_MARKDOWNLINT_CLI2,
+  fn: () =>
+    withTempRepo(
+      {
+        "README.md": BAD_README,
+        ".markdownlint-cli2.jsonc":
+          '{"config":{"default":"warning","MD013":false},"globs":["**/*.md"]}',
+      },
+      async (dir) => {
+        const result = await runRealCheck(dir);
+        assertEquals(result.status, "PASSED");
+        assertEquals(result.violations.length, 0);
       },
     ),
 });
