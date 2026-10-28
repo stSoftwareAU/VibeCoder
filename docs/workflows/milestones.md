@@ -46,9 +46,9 @@ PRs do (Issue #1136). If the milestone branch fell behind the default branch
 during the run, the worker syncs it inline and arms in the same cycle when the
 merge is clean (Issue #2005); a conflicting sync posts its reason and arms the
 child anyway — the milestone ruleset holds the merge until its required checks
-pass (Issue #2460; the ruleset does not require an up-to-date branch, Issue
-#2623) — with the Priority 1.65 / post-scan sweeps plus the 1.72 milestone sync
-as the backstop — see [Label Flows](label-flows.md) and
+pass (Issue #2460; the ruleset does not require an up-to-date branch, as settled
+in Issue #2623) — with the Priority 1.65 / post-scan sweeps plus the 1.72
+milestone sync as the backstop — see [Label Flows](label-flows.md) and
 [PR feedback](pr-feedback.md). When **all** milestone issues are done, the
 worker creates a **tracking issue**, then opens **one final PR** from the
 milestone branch to default — the automated review and CI gate for the whole
@@ -317,10 +317,10 @@ issues are fixed automatically; auto-merge is enabled once the PR is mergeable.
 
 ## 🔒 Issue closure for milestone issues
 
-GitHub auto-closes issues only when a PR containing a closing keyword ("Closes
-#N", "Fixes #N", "Resolves #N") is merged into the **default branch**. Merging
-into any other branch — including a milestone branch — does **not** auto-close
-the referenced issue, regardless of keywords used.
+GitHub auto-closes issues only when a PR containing a closing keyword
+("Closes #N", "Fixes #N", "Resolves #N") is merged into the **default branch**.
+Merging into any other branch — including a milestone branch — does **not**
+auto-close the referenced issue, regardless of keywords used.
 
 ### 💡 Why "Closes" and not "Addresses"
 
