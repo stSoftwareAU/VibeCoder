@@ -54,22 +54,22 @@ commit message names all four notes).
 
 Manuals read and updated (PR #4459 review): `docs/workflows/milestones.md`
 ("Every automatic resolution is verified before it is pushed" and the merge-down
-mermaid edge) and `docs/INTERNALS.md` (the merge-down section's two
-exceptions, its mermaid edge, the "Nothing unverified is published" bullet and
-the conflict-triage mermaid edge). They now say a Deno type check whose module
-host is unreachable is left to CI by `checkMergedTree`, lands with
-`checkLeftToCi` and gets the `CHECK LEFT TO CI:` note; the "type check is
-unchanged" sentences are gone. Siblings grepped: `suiteLeftToCi`,
-`TESTS LEFT TO CI`, `CARGO SKIPPED` and `UNGATED` across `docs/`, `README.md`,
-`DESIGN-PRINCIPLES.md`, `prompts/` and `worker/deno/lib`. `docs/CONTAINER.md`'s merge-only
-paragraph said mixed trees must pass every Deno check; it now names the
-left-to-CI exception and both notes, and says the note applies only when some
-other check ran: with cargo skipped and a mixed tree's only Deno type check
-unreachable, nothing ran, so a conflict-free merge is pushed `UNGATED:` and a
-resolved conflict is refused (`milestone_merge_only.ts` `resolutionGate` sets
-`landUnverified` for cargo-only trees only). The remaining hits
-(`docs/CONTAINER.md:1389`, `:1393`, `docs/INTERNALS.md:4471`, `:4506`, `:4515`) describe
-`UNGATED` alone and stay true.
+mermaid edge) and `docs/INTERNALS.md` (the merge-down section's two exceptions,
+its mermaid edge, the "Nothing unverified is published" bullet and the
+conflict-triage mermaid edge). They now say a Deno type check whose module host
+is unreachable is left to CI by `checkMergedTree`, lands with `checkLeftToCi`
+and gets the `CHECK LEFT TO CI:` note; the "type check is unchanged" sentences
+are gone. Siblings grepped: `suiteLeftToCi`, `TESTS LEFT TO CI`, `CARGO SKIPPED`
+and `UNGATED` across `docs/`, `README.md`, `DESIGN-PRINCIPLES.md`, `prompts/`
+and `worker/deno/lib`. `docs/CONTAINER.md`'s merge-only paragraph said mixed
+trees must pass every Deno check; it now names the left-to-CI exception and both
+notes, and says the note applies only when some other check ran: with cargo
+skipped and a mixed tree's only Deno type check unreachable, nothing ran, so a
+conflict-free merge is pushed `UNGATED:` and a resolved conflict is refused
+(`milestone_merge_only.ts` `resolutionGate` sets `landUnverified` for cargo-only
+trees only). The remaining hits (`docs/CONTAINER.md:1389`, `:1393`,
+`docs/INTERNALS.md:4471`, `:4506`, `:4515`) describe `UNGATED` alone and stay
+true.
 
 Review-fix tests: `milestone_conflict_triage_test.ts` 31 passed;
 `check:manifests` files 846 passed.
