@@ -26,7 +26,11 @@ import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { NoAutomaticFixError } from "../lib/admin_only_finding.ts";
+import {
+  NoAutomaticFixError,
+  repairAdminOnlyFinding,
+} from "../lib/admin_only_finding.ts";
+import type { HardenResult } from "../lib/repo_settings_harden.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
 import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 
@@ -3329,17 +3333,37 @@ Deno.test("workOnIssue #4298 - a repository-admin finding is applied by the work
   );
 });
 
+/**
+ * The production repair (`repairAdminOnlyFinding`) over a hardener that
+ * reports `results`, as `hardenRepo` does: it never throws (Issue #4442).
+ */
+function repairReporting(results: HardenResult[]) {
+  return (repo: string, body: string) =>
+    repairAdminOnlyFinding(repo, body, () =>
+      Promise.resolve({
+        results,
+        coordinates: [],
+        referenceCount: 0,
+        unreadable: [],
+      }));
+}
+
 Deno.test("workOnIssue #4298 - a refused repository-admin fix is a failure to retry, not a hand-off", async () => {
   const ctx = makeContext({ issueBody: ADMIN_FINDING_BODY });
   const calls = makeStubGhCalls();
   const deps = createMockDeps({
     github: {
       createClient: () => makeStubGhClient(calls),
-      repairRepoSettingsFinding: () =>
-        Promise.resolve({
-          ok: false,
-          error: new Error("HTTP 403: Must have admin rights"),
-        }),
+      repairRepoSettingsFinding: repairReporting([{
+        step: {
+          kind: "default-branch-approval",
+          title: "Require an approving review",
+          method: "PUT",
+          endpoint: "x",
+        },
+        status: "failed",
+        detail: "HTTP 403: Must have admin rights",
+      }]),
     },
   });
 
@@ -3384,6 +3408,42 @@ Deno.test("workOnIssue #4442 - an unmapped repository-admin finding stays a work
     result.classification,
     undefined,
     "a worker defect keeps the classifier's own class",
+  );
+  assertEquals(
+    classifyRunFailure("internal_error", result.reason, false).failureClass,
+    "worker-crash",
+  );
+});
+
+Deno.test("workOnIssue #4442 - a hardener exception reported as a failed result stays a worker-crash, not a repo-config refusal", async () => {
+  const ctx = makeContext({ issueBody: ADMIN_FINDING_BODY });
+  const calls = makeStubGhCalls();
+  const deps = createMockDeps({
+    github: {
+      createClient: () => makeStubGhClient(calls),
+      // hardenRepo's catch-all for an exception in its own planning code.
+      repairRepoSettingsFinding: repairReporting([{
+        step: {
+          kind: "ruleset-reviews",
+          title: "Read repos/o/r",
+          method: "PUT",
+          endpoint: "repos/o/r",
+        },
+        status: "failed",
+        detail: "TypeError: Cannot read properties of undefined",
+      }]),
+    },
+  });
+
+  const result = await workOnIssue(ctx, deps);
+
+  assertEquals(result.success, false);
+  assertEquals(result.phase, "admin_only_repair");
+  assertStringIncludes(result.reason, "TypeError");
+  assertEquals(
+    result.classification,
+    undefined,
+    "a hardener fault keeps the classifier's own class",
   );
   assertEquals(
     classifyRunFailure("internal_error", result.reason, false).failureClass,

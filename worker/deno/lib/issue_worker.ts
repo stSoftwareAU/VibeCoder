@@ -47,7 +47,7 @@ import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { deleteResumeState } from "./resume_state_store.ts";
 import {
   isAdminOnlyRepoSettingsIssue,
-  NoAutomaticFixError,
+  RepoAdminRefusalError,
 } from "./admin_only_finding.ts";
 import { REPO_ADMIN_REFUSED } from "./run_outcome_classifier.ts";
 import { closeReapprovalSuperseded } from "./reapproval_superseded_close.ts";
@@ -518,7 +518,8 @@ async function workOnIssueCore(
     // before cloning the repo or running Claude, and closes the finding
     // (Issue #4298). A token that cannot apply it is recorded as a failure on
     // the normal `failed-once` ladder and retried — never handed to a human.
-    // A refused setting is classed `repo-config`, not a `worker-crash` (Issue #4442).
+    // A setting the repository or its token refused is classed `repo-config`,
+    // not a `worker-crash`; any other failure stays a worker-crash (Issue #4442).
     if (isAdminOnlyRepoSettingsIssue(ctx.issueBody)) {
       logger.info(
         "Repository-admin finding — applying the setting before running Claude (Issue #4298)",
@@ -533,8 +534,10 @@ async function workOnIssueCore(
             ctx.issueBody,
           );
           if (!applied.ok) {
-            // An unmapped finding is a worker defect; a refused write is not (Issue #4442).
-            refusedByRepo = !(applied.error instanceof NoAutomaticFixError);
+            // Only a declared repository or token refusal is `repo-config`;
+            // an unmapped finding, a hardener fault or a 422/5xx write stays
+            // a worker-crash (Issue #4442).
+            refusedByRepo = applied.error instanceof RepoAdminRefusalError;
             return {
               category: "internal_error",
               status: "failure",
