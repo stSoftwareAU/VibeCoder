@@ -254,6 +254,34 @@ Deno.test("runMarkdownlintCheck - FAILED when exit 2 is a config error, not the 
   assertStringIncludes(result.output, "Unable to use configuration file");
 });
 
+Deno.test("runMarkdownlintCheck - SKIPPED when the help screen arrives only on stderr (Issue #4438)", async () => {
+  const runner: MarkdownlintRunner = () =>
+    Promise.resolve({
+      exitCode: 2,
+      stdout: "",
+      stderr: MARKDOWNLINT_HELP_STDOUT,
+    });
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "SKIPPED");
+  assertEquals(result.violations.length, 0);
+});
+
+Deno.test("runMarkdownlintCheck - FAILED when exit 2 shows the help line and a Linting header but no parsed violation (Issue #4438)", async () => {
+  const capture: FakeRunnerCapture = { invocations: [] };
+  const stdout = `${MARKDOWNLINT_HELP_STDOUT}\nLinting: 3 file(s)\n`;
+  const runner = makeFakeRunner(2, stdout, capture);
+  const result = await runMarkdownlintCheck("/some/repo", {
+    detectRunner: fakeDetect(runner),
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertEquals(result.violations.length, 0);
+  assertEquals(result.filesChecked, 3);
+});
+
 Deno.test("runMarkdownlintCheck - FAILED when exit 2 follows a Linting run with a violation (Issue #4438)", async () => {
   const capture: FakeRunnerCapture = { invocations: [] };
   const stdout = [

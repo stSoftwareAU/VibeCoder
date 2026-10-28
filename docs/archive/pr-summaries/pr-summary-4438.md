@@ -49,17 +49,32 @@ FAILED).
 ## Test Plan
 
 - `deno task test:unit tests/markdownlint_check_test.ts tests/markdownlint_probe_test.ts`
-  (from `worker/deno`): 21 passed, 0 failed.
+  (from `worker/deno`): the two files pass (markdownlint_check_test.ts: 19 passed, 0 failed).
 - Red check: with `worker/deno/lib/markdownlint_check.ts` restored to base, 6 of
   the new tests fail (help-screen SKIPPED, config-error cause text, stderr-only
   violations, both real-binary SKIPPED cases, real-binary globs FAILED).
-- Existing tests edited: the config-error fake test now asserts the cause text
-  `Unable to use configuration file` instead of only the exit-code message
-  (required by the issue's "a config parse error … must still fail"); it still
-  asserts FAILED and goes red on base.
-- Callers of `runMarkdownlintCheck`: only `runMarkdownlintQualityCheck` in
-  `worker/deno/lib/quality_gate.ts`, which passes `result.status` through
-  unchanged.
+- Existing tests: none modified. The config-error case (asserts the cause text
+  `Unable to use configuration file`, required by the issue's "a config parse
+  error … must still fail") is a new test; the base test "FAILED when runner
+  exits non-zero even without parsed violations" is unchanged and still passes.
+- Mutation check: two further new tests pin the `isNoGlobsHelpRun` lines the
+  mutation check flagged. "SKIPPED when the help screen arrives only on stderr"
+  fails if the `stderr` operand of the help-line test is dropped (`:173`);
+  "FAILED when exit 2 shows the help line and a Linting header but no parsed
+  violation" fails if the `Linting:` guard returns true (`:177`). Both mutants
+  applied by hand each turn one test red; `markdownlint_check_test.ts` is
+  19 passed, 0 failed with the real code.
+- Callers of `runMarkdownlintCheck` (three, all in `worker/deno`):
+  - `runMarkdownlintQualityCheck` in `lib/quality_gate.ts` passes
+    `result.status` through unchanged, so a help-screen run is SKIPPED in the
+    gate (still promoted to FAILED by `--strict`).
+  - `commands/check_markdownlint.ts` returns `success: status !== "FAILED"`, so
+    the new SKIPPED counts as success there and violations now parsed from
+    stderr appear in its `data`.
+  - `collectDiffableGateFindings` in `lib/baseline_gate.ts` only reads
+    `violations`: a SKIPPED run has none (no findings, as before for a skip),
+    and stderr-only violations now become baseline findings where the
+    stdout-only parse produced none.
 - Docs: grepped `docs/` and README for markdownlint; none describes the
   FAILED-on-no-globs behaviour. Doc comments in `markdownlint_check.ts` and
   `quality_gate.ts` updated.
