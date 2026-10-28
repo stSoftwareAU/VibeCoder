@@ -67,8 +67,9 @@ relies on was read at:
 Related existing rules checked: `CODING-STANDARDS.md` "not raised over a
 `Closes #<n>`" and the #3177/#4304 paragraph below it (both already say
 `Part of #<n>`), `docs/workflows/issue-processing.md` (describes the body
-rewrite; still true), `prompts/issue/prompt.md` "`Closes #N` appended
-automatically when every criterion is met" (consistent). The rule was applied to
+rewrite; still true), `prompts/issue/prompt.md` "When no criterion
+is `missing`, the PR body gets `Closes #N` appended automatically" (consistent;
+a `partial` criterion also still gets `Closes #N`). The rule was applied to
 this PR's own summary: it has no `missing` criterion, so it carries
 `Closes #4445`.
 
@@ -95,8 +96,8 @@ this PR's own summary: it has no `missing` criterion, so it carries
     anyway`; with the change it passes (5 passed, 0 failed). `deno task
     drift-pins-on-base origin/main` reports all three new pins absent from the
     base "Acceptance-Criteria Closure" section.
-- Ran `deno task test:unit tests/coding_guidelines_layers_2574_test.ts` (12
-  passed) and `tests/pr_claims_verified_3058_test.ts` (5 passed).
+- Ran `deno task test:unit tests/pr_claims_verified_3058_test.ts`
+  (`worker/deno/tests/pr_claims_verified_3058_test.ts`, 5 tests at head).
 - `./quality.sh` ran on the head: every stage passed (markdownlint, mermaid,
   semgrep, lint, type check, fmt) except the parallel deno-test pass, which
   reported 30822 passed and 2 failed. Both failures are in
