@@ -135,7 +135,7 @@ export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
     ],
     [
       "worker/deno/lib/merge_fallback_issue.ts",
-      "#2304 merge-fallback flag issue, filed in the repo whose conflict fallback left it behind; not yet routed",
+      "#2304/#4456 merge-fallback record, filed in VibeCoder as a worker failure (MERGE_FALLBACK_TARGET_REPO), one issue per cause; not yet routed",
     ],
     [
       "worker/deno/lib/milestone_branch_self_heal.ts",

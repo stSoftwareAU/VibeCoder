@@ -1000,19 +1000,22 @@ One more rule no gate parses — a reviewer sends the PR back for it:
 The worker enforces the next rule itself, because a PR into a milestone branch
 merges on green CI with no reviewer:
 
-- **An unmet criterion is not a PR.** When any criterion is `partial` or
-  `missing`, finish it. The worker raises no PR until every criterion is met
-  (Issue #4146), and an approved issue is never handed back (Issue #4227). Never
-  relabel a `missing` criterion `partial` or `met` to get past this; the Spec
-  reviewer's verdict records the departure. Once a file has changed, the
+- **Finish every unmet criterion.** When any criterion is `partial` or
+  `missing`, finish it. A criterion still unmet when the run ends is named on
+  the PR, which the worker raises anyway (Issues #4146, #4234): a `missing` one
+  makes it `Part of #{{ISSUE_NUMBER}}`, never `Closes #{{ISSUE_NUMBER}}`, while
+  a `partial` one does not hold the issue open. An approved issue is never
+  handed back (Issue #4227). Never relabel a `missing` criterion `partial` or
+  `met` to get past this; the Spec reviewer's verdict records the departure.
+  Once a file has changed, the
   markers in **No hand-back, no follow-up** are still read: a `## Blocked:`
   heading with a `Depends on` / `Blocked by` line naming an issue that is still
   open, a time deferral, or a planning marker defers or plans and raises no PR
   (the suspicious-image flag is the exception: it always stops the run). A
   closed, unreadable or self-filed dependency does not defer, and the issue is
-  retried. A bare `## Blocked:` heading does not defer. When every criterion
-  is met, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended automatically if
-  your summary omits it.
+  retried. A bare `## Blocked:` heading does not defer. When no criterion
+  is `missing`, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended
+  automatically if your summary omits it.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -1196,21 +1199,31 @@ however small or non-visual the edit seems.
 
 ## Issue Closure in PR Summary
 
-Every PR MUST explicitly reference the issue it closes. Without the keyword the
-issue stays open after the PR merges, and a human has to close it by hand.
+Every PR must say whether it closes its issue. When no criterion is `missing`,
+the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body if your summary
+leaves it out, so write it in the summary yourself and the committed summary and
+the PR body agree.
 
-**In your `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` file**, you
-MUST include one of these GitHub closing keywords followed by the issue number:
+In your `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` file, write
+one of:
 
-- `Closes #{{ISSUE_NUMBER}}`
-- `Fixes #{{ISSUE_NUMBER}}`
-- `Resolves #{{ISSUE_NUMBER}}`
+- `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
+  criterion `missing`;
+- `Closes #{{ISSUE_NUMBER}}` (or `Fixes #{{ISSUE_NUMBER}}` / `Resolves
+  #{{ISSUE_NUMBER}}`) otherwise: no criterion is `missing`, including when one
+  is `partial`, or the issue states no criteria.
 
-Place the closing keyword in the **Summary** section of your PR summary. For
-example: "Fixed the bug by updating the parser. Closes #{{ISSUE_NUMBER}}."
+In the `Part of` case, write no closing keyword for the issue anywhere in the
+summary. The worker raises the PR body the same way (`Part of #{{ISSUE_NUMBER}}`
+plus a `## Not closing #{{ISSUE_NUMBER}}` section), so the committed summary and
+the PR body agree. The `missing` entry must really be in the block, since
+without one the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body and the
+issue closes on merge (in the Vibe Coder repository, `deno task
+pr-summary-check` also blocks it).
 
-**Do NOT omit the issue closure reference.** Without it, the GitHub issue will
-remain open even after the PR is merged.
+Place it in the **Summary** section of your PR summary. For example: "Fixed the
+bug by updating the parser. Closes #{{ISSUE_NUMBER}}." and "Added the parser;
+the tablet breakpoint is still outstanding. Part of #{{ISSUE_NUMBER}}."
 
 ## PR Summary File — docs/archive/pr-summaries/pr-summary-ISSUE.md
 
@@ -1309,7 +1322,8 @@ the rules in this section as written; they also say why each check exists.
 The file MUST contain:
 
 1. **Summary**: A brief description of what was changed and why, **including
-   `Closes #{{ISSUE_NUMBER}}`**
+   `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
+   criterion `missing`, otherwise `Closes #{{ISSUE_NUMBER}}`**
 2. **Spec**: the after-run record of what the diff alone cannot tell a
    reviewer, placed directly after Summary under three sub-headings — at most
    four bullets each, and `None.` when a sub-heading has nothing to say:
