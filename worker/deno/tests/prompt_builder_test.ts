@@ -344,6 +344,12 @@ Deno.test("prompt builder - issue prompt includes milestone targeting", async ()
     // instructions carry the `<branch>` placeholder instead (Issue #16).
     assertStringIncludes(result.value.prompt, '--base "<milestone-branch>"');
     assertStringIncludes(result.value.prompt, "Closes #10");
+    // The milestone line agrees with the Issue Closure rule: `Part of` when a
+    // criterion is `missing`, never an unconditional Closes (PR #4468 review).
+    assertStringIncludes(
+      result.value.prompt,
+      "use **Closes #10**, or `Part of #10` when the summary's `## Acceptance Criteria` block marks any criterion `missing`",
+    );
   }
 });
 
