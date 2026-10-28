@@ -6,7 +6,8 @@
  *   mod.ts repo-settings-harden --repo owner/name --apply    # write the safe subset
  *
  * The default plan: read-only default token, no approve-PRs, SHA-pin
- * enforcement, an allow-list of the actions the workflows use, one approving
+ * enforcement, an allow-list of the actions the workflows use (and the
+ * workflow-sync templates would bring, Issue #4448), one approving
  * review on the default branch (Issue #2680 — skipped and reported on a
  * branch that takes direct pushes), and — on a public repository only —
  * secret scanning + push protection; a private or internal repository needs

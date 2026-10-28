@@ -1238,7 +1238,13 @@ like a workflow's, so `aquasecurity/trivy-action` needs
 third-party action's `action.yml` at its pinned ref via `gh api` and follows
 the chain; a manifest it cannot read is reported as a warning, and
 `--allow-action owner/repo[,owner/repo]` adds anything the operator vouches
-for). An already-"selected" list that misses a pattern is extended, keeping
+for). The workflow-sync templates contribute too (Issue #4448): every
+third-party action in the templates workflow sync would file for the
+repository (its missing and partial workflows for the detected languages) is
+added, and followed through its composite steps, so a verbatim template runs
+under the list. A template set that cannot be read is reported as a warning,
+like an unreadable manifest, and the rest of the list is still written. An
+already-"selected" list that misses a pattern is extended, keeping
 what it has; secret scanning and push protection
 on a **public** repository only — on a private or internal one the step is
 not planned at all and the plan carries one line, `secret scanning / push
