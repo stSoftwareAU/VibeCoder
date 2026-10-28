@@ -48,8 +48,10 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "Demonstrate a criterion; do not assert it",
       "must have been run on the final head",
       "one untested branch makes it `partial`",
-      "An unmet criterion is not a PR",
-      "The worker raises no PR until every criterion is met",
+      "Finish every unmet criterion",
+      "is named on the PR, which the worker raises anyway",
+      "a `missing` one makes it `Part of #{{ISSUE_NUMBER}}`",
+      "a `partial` one does not hold the issue open",
       "a planning marker defers or plans and raises no PR",
       "suspicious-image flag is the exception",
       "A closed, unreadable or self-filed dependency does not defer",
@@ -75,6 +77,29 @@ Deno.test("Issue #3058 - issue prompt holds docs the diff touches to the same ru
     ]
   ) {
     assertStringIncludes(body, required);
+  }
+});
+
+// Issue #4445 (PR #4468 review): a fix run that finishes every `missing`
+// criterion must switch the summary back to `Closes #N`, or the rebuilt body
+// (which appends `Closes #N` once nothing is `missing`) and the committed
+// summary disagree again.
+Deno.test("Issue #4445 - pr_feedback prompt restores Closes #N once no criterion is missing", async () => {
+  const makingChanges = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Making Changes",
+    ),
+  );
+  for (
+    const required of [
+      "write `Part of #N` in the summary yourself",
+      "When your fix finishes every criterion marked `missing` (none is left `missing`)",
+      "replace `Part of #N` in the summary with `Closes #N`",
+      "the committed summary must say the same",
+    ]
+  ) {
+    assertStringIncludes(makingChanges, required);
   }
 });
 
