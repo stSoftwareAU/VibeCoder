@@ -688,3 +688,33 @@ Deno.test("verifyResolvedTree - a Cargo task with the same fetch text is a failu
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("verifyResolvedTree - a type check that left a Deno check to CI carries checkLeftToCi onto the passed verdict (Issue #4441)", async () => {
+  const left =
+    "deno task check in /x could not fetch its remote modules (0: error sending request for url)";
+  const leftTypeCheck: MergeGateFn = () =>
+    Promise.resolve({
+      status: "passed" as const,
+      detail: "cargo check in /x passed",
+      output: "",
+      checkLeftToCi: left,
+    });
+  const { outcome } = await gate(
+    { "test:unit": "deno test" },
+    () => Promise.resolve({ code: 0, output: "" }),
+    { typeCheck: leftTypeCheck },
+  );
+
+  assertEquals(outcome.status, "passed", outcome.detail);
+  assertEquals(outcome.checkLeftToCi, left);
+});
+
+Deno.test("verifyResolvedTree - a type check with nothing left to CI carries no checkLeftToCi (Issue #4441)", async () => {
+  const { outcome } = await gate(
+    { "test:unit": "deno test" },
+    () => Promise.resolve({ code: 0, output: "" }),
+  );
+
+  assertEquals(outcome.status, "passed", outcome.detail);
+  assertEquals(outcome.checkLeftToCi, undefined);
+});

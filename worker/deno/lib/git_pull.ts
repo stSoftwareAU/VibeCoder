@@ -471,6 +471,8 @@ async function gateThenPushMilestoneBranch(
   // detail already carries any cargo note.
   const gateNote = outcome.status === "skipped"
     ? `UNGATED: ${outcome.detail} (Issue #974) — `
+    : outcome.checkLeftToCi
+    ? `CHECK LEFT TO CI: ${outcome.detail} (Issue #4441) — `
     : outcome.suiteLeftToCi
     ? `TESTS LEFT TO CI: ${outcome.detail} (Issue #4422) — `
     : outcome.cargoSkipped
@@ -507,7 +509,9 @@ async function readRef(
  * passed carries a `CARGO SKIPPED:` note, so the report does not claim the
  * cargo half passed. A resolved tree whose Deno task could not fetch its
  * remote modules (Issue #4422) carries a `TESTS LEFT TO CI:` note naming that
- * task, so the report does not claim it passed.
+ * task, so the report does not claim it passed. A resolved tree whose Issue
+ * #974 type check could not fetch its remote modules carries a
+ * `CHECK LEFT TO CI:` note (Issue #4441) for the same reason.
  *
  * What the triage cannot decide climbs the rest of the ladder the PR pass
  * climbs (Issue #1777): the deterministic dependency rules, then the
@@ -1374,6 +1378,9 @@ async function syncMilestoneBranchWithDefaultBody(
           : {}),
         ...(finalGate.suiteLeftToCi
           ? { suiteLeftToCi: finalGate.suiteLeftToCi }
+          : {}),
+        ...(finalGate.checkLeftToCi
+          ? { checkLeftToCi: finalGate.checkLeftToCi }
           : {}),
         decisions: resolved,
         ...(repaired ? { repair: repaired } : {}),

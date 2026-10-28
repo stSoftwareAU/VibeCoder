@@ -60,6 +60,49 @@ Deno.test("the merge gate leaves a Deno check that cannot reach its module host 
   }
 });
 
+Deno.test("the merge gate names a Deno check left to CI as checkLeftToCi, so the report cannot claim it passed (Issue #4441)", async () => {
+  const dir = await denoTree();
+  try {
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 1, output: ESM_SH_REFUSED }),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "skipped", outcome.detail);
+    assertStringIncludes(
+      outcome.checkLeftToCi ?? "",
+      "could not fetch its remote modules",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a cargo project that passes does not hide a Deno check left to CI from checkLeftToCi (Issue #4441)", async () => {
+  const dir = await denoTree();
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const outcome = await checkMergedTree(
+      dir,
+      (project) =>
+        Promise.resolve(
+          project.kind === "cargo"
+            ? { code: 0, output: "" }
+            : { code: 1, output: ESM_SH_REFUSED },
+        ),
+      () => Promise.resolve(false),
+    );
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertStringIncludes(
+      outcome.checkLeftToCi ?? "",
+      "could not fetch its remote modules",
+    );
+    assertStringIncludes(outcome.detail, "left to CI");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("the merge gate still refuses a Deno check that fails for a real reason", async () => {
   const dir = await denoTree();
   try {
