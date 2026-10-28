@@ -71,6 +71,7 @@ import {
   type AbandonRestartRequest,
   exhaustedEscalationRoute,
   mergeFallbackRunsFromHistory,
+  PR_LADDER_EXHAUSTED_CAUSE,
   requeueLabelName,
   summariseFailedAttempts,
 } from "./conflict_abandon_restart.ts";
@@ -78,6 +79,7 @@ import { readPrDivergence } from "./conflict_fallback_context.ts";
 import {
   createFallbackFlagFiler,
   MERGE_FALLBACK_LABEL,
+  MERGE_FALLBACK_TARGET_REPO,
   type MergeFallbackFiling,
   type MergeFallbackOutcome,
 } from "./merge_fallback_issue.ts";
@@ -1152,6 +1154,7 @@ async function fileConflictFallbackFlag(
       headBranch: args.branchName,
       baseBranch: args.baseBranch,
     },
+    cause: PR_LADDER_EXHAUSTED_CAUSE,
     conflictedFiles: history.conflictedPaths,
     runs: mergeFallbackRunsFromHistory(history),
     ...divergence,
@@ -1187,15 +1190,17 @@ export function buildFallbackFlagLinkComment(
   flagIssueNumber: number,
   appended: boolean,
 ): string {
+  // Qualified: the record is in VibeCoder, and a bare number here would link
+  // to an issue in this repository (Issue #4456).
   const reference = flagIssueNumber > 0
-    ? `#${flagIssueNumber}`
+    ? `${MERGE_FALLBACK_TARGET_REPO}#${flagIssueNumber}`
     : "a `merge-fallback` issue whose number could not be read";
   return [
     `🚩 **This fallback is recorded in ${reference}**`,
     "",
     appended
-      ? "The flag issue for this PR was already open, so this fallback was " +
-        "appended to it — one issue per PR, not one per event."
+      ? "The record for this cause was already open, so this fallback was " +
+        "appended to it — one issue per cause, not one per event."
       : "It carries what both runs found in their own words, their stage " +
         "timings and hosts, the files still conflicted, how far behind the " +
         "base this branch was and since when, and what the fallback closed.",
