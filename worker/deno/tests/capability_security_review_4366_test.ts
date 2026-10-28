@@ -35,6 +35,15 @@ const BUNDLE_TEXT = await Deno.readTextFile(
     import.meta.url,
   ),
 );
+/**
+ * This checkout's trusted bundle, never the host's: the environment lookup
+ * answers nothing, so PROMPTS_DIR and VIBE_BASE_DIR cannot redirect the gate
+ * or the verifier (PR #4463 review).
+ */
+const CHECKOUT_PROMPTS = new URL("../../../prompts", import.meta.url).pathname;
+const checkoutBundle = () =>
+  loadTrustedCapabilityBundle(() => undefined, CHECKOUT_PROMPTS);
+
 const RESOURCE_CHECK =
   parseCapabilityBundle(BUNDLE_TEXT).entries.find((e) =>
     e.id === "capsec-resource-auth"
@@ -130,9 +139,9 @@ async function runGate(options: {
       {
         gh,
         dir,
-        ...(options.bundle
-          ? { loadCapabilityBundle: () => Promise.resolve(options.bundle!) }
-          : {}),
+        loadCapabilityBundle: options.bundle
+          ? () => Promise.resolve(options.bundle!)
+          : checkoutBundle,
       },
     );
   } finally {
@@ -177,6 +186,7 @@ Deno.test("gate and verifier render the same resource-auth check", async () => {
   let prompt = "";
   const deps: PrePrVerifierDeps = {
     ...defaultPrePrVerifierDeps,
+    loadTrustedCapabilityBundle: checkoutBundle,
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
     makeTempDir: async () => {
       const d = await defaultPrePrVerifierDeps.makeTempDir();
@@ -371,6 +381,7 @@ Deno.test("a weaker head bundle does not replace the base checks", async () => {
   let prompt = "";
   const deps: PrePrVerifierDeps = {
     ...defaultPrePrVerifierDeps,
+    loadTrustedCapabilityBundle: checkoutBundle,
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
     makeTempDir: async () => {
       const d = await defaultPrePrVerifierDeps.makeTempDir();
@@ -533,6 +544,7 @@ async function verifyChange(input: {
   let prompt = "";
   const deps: PrePrVerifierDeps = {
     ...defaultPrePrVerifierDeps,
+    loadTrustedCapabilityBundle: checkoutBundle,
     loadBrief: () => Promise.resolve({ ok: true, value: TEMPLATE }),
     makeTempDir: async () => {
       const d = await defaultPrePrVerifierDeps.makeTempDir();
