@@ -25,17 +25,21 @@ export const CAPABILITY_BUNDLE_PATH =
   "prompts/coding_guidelines/capability-security.json";
 
 /**
- * Path of the trusted bundle. It follows the prompt-template resolution in
- * `getPromptsDir`: PROMPTS_DIR, then VIBE_BASE_DIR, then module-relative
- * (Issues #4302 and #4443). In container mode the worker runs from a staged
- * copy of worker/deno with no prompts/ directory, so a module-relative path
- * would not exist there. PROMPTS_DIR points at the read-only checkout.
+ * Path of the trusted bundle. A caller that names its prompts directory (the
+ * prompt builder's `promptsDir`) gets the bundle from that directory, the same
+ * one its templates come from, and nothing from the environment. Otherwise it
+ * follows the prompt-template resolution in `getPromptsDir`: PROMPTS_DIR, then
+ * VIBE_BASE_DIR, then module-relative (Issues #4302 and #4443). In container
+ * mode the worker runs from a staged copy of worker/deno with no prompts/
+ * directory, so a module-relative path would not exist there. PROMPTS_DIR
+ * points at the read-only checkout.
  */
 export function capabilityBundlePath(
   env: EnvLookup = processEnvLookup,
+  promptsDir?: string,
 ): string {
   return `${
-    getPromptsDir(undefined, env)
+    promptsDir ?? getPromptsDir(undefined, env)
   }/coding_guidelines/capability-security.json`;
 }
 
@@ -266,12 +270,16 @@ export function capabilityLoadFromGitShow(
   return { kind: "fetch_failed", reason: `git show failed: ${cause}` };
 }
 
-/** Read the trusted bundle that ships with this worker. */
+/**
+ * Read the trusted bundle that ships with this worker, from `promptsDir` when
+ * the caller names one (see `capabilityBundlePath`).
+ */
 export async function loadTrustedCapabilityBundle(
   env: EnvLookup = processEnvLookup,
+  promptsDir?: string,
 ): Promise<CapabilityLoad> {
   try {
-    const text = await Deno.readTextFile(capabilityBundlePath(env));
+    const text = await Deno.readTextFile(capabilityBundlePath(env, promptsDir));
     return loadCapabilityBundleFromText(text);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {

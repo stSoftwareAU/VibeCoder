@@ -18,9 +18,16 @@ import { buildIssuePrompt } from "../lib/prompt_builder.ts";
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const RECOVERY_ID = "capsec-recovery-boundary";
 
+/**
+ * This checkout's bundle, never the host's: the environment lookup answers
+ * nothing, so PROMPTS_DIR and VIBE_BASE_DIR cannot redirect it (PR #4463
+ * review).
+ */
 async function shippedBundle() {
   return parseCapabilityBundle(
-    await Deno.readTextFile(capabilityBundlePath()),
+    await Deno.readTextFile(
+      capabilityBundlePath(() => undefined, PROMPTS_DIR),
+    ),
   );
 }
 

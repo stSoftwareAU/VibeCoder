@@ -11,6 +11,7 @@ import {
   capabilityBundlePath,
   loadTrustedCapabilityBundle,
 } from "../lib/capability_security_guidance.ts";
+import { buildIssuePrompt } from "../lib/prompt_builder.ts";
 
 const SHIPPED_BUNDLE = new URL(
   "../../../prompts/coding_guidelines/capability-security.json",
@@ -68,5 +69,54 @@ Deno.test("an empty PROMPTS_DIR reports the bundle as missing (Issue #4443)", as
     const load = await loadTrustedCapabilityBundle(env);
     assert(load.kind === "unreadable", `expected unreadable, got ${load.kind}`);
     assertStringIncludes(load.reason, "is missing");
+  });
+});
+
+Deno.test("a named prompts directory supplies the bundle, never the environment (PR #4463 review)", () => {
+  const env = (name: string) =>
+    name === "PROMPTS_DIR" || name === "VIBE_BASE_DIR" ? "/host" : undefined;
+  assertEquals(
+    capabilityBundlePath(env, "/checkout/prompts"),
+    "/checkout/prompts/coding_guidelines/capability-security.json",
+  );
+});
+
+/** Copy one prompts/ subdirectory of this checkout into `promptsRoot`. */
+async function copyPromptDir(promptsRoot: string, name: string) {
+  const from = new URL(`../../../prompts/${name}/`, import.meta.url);
+  await Deno.mkdir(`${promptsRoot}/${name}`, { recursive: true });
+  for await (const entry of Deno.readDir(from)) {
+    if (!entry.isFile) continue;
+    await Deno.copyFile(
+      new URL(entry.name, from),
+      `${promptsRoot}/${name}/${entry.name}`,
+    );
+  }
+}
+
+Deno.test("buildIssuePrompt reads the bundle from its promptsDir, not the host's (PR #4463 review)", async () => {
+  await withTempDir(async (tmp) => {
+    for (const name of ["issue", "coding_guidelines"]) {
+      await copyPromptDir(tmp, name);
+    }
+    const shipped = JSON.parse(await Deno.readTextFile(SHIPPED_BUNDLE));
+    await Deno.writeTextFile(
+      `${tmp}/coding_guidelines/capability-security.json`,
+      JSON.stringify({ ...shipped, revision: "pr-4463-own-copy" }),
+    );
+    const result = await buildIssuePrompt({
+      repo: "owner/repo",
+      issueNumber: "4463",
+      issueTitle: "Rename a helper",
+      issueBody: "No capability here.",
+      issueLabels: "",
+      qualityInstructions: "Run ./quality.sh",
+      promptsDir: tmp,
+    });
+    if (!result.ok) throw result.error;
+    assertStringIncludes(
+      result.value.capabilitySecurityRecord ?? "",
+      "revision=pr-4463-own-copy",
+    );
   });
 });
