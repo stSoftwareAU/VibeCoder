@@ -13,7 +13,13 @@ Wording changes only, in three prompts and one standards line:
   conditional rule (`Part of #N` when any criterion is `missing`, otherwise
   `Closes #N`, including when one is `partial` or none are stated).
 - `prompts/issue/prompt.md`, summary-file item 1 and `CODING-STANDARDS.md` item
-  1: same conditional.
+  1: same conditional. The section's opening and its `Part of` paragraph give
+  the reasons that hold in every repo: when no criterion is `missing` the worker
+  appends `Closes #N` to the PR body (`ensurePrReferencesIssue`,
+  `worker/deno/lib/pr_body.ts`, called from `assemblePrBody`,
+  `worker/deno/lib/pr_body_sync.ts`), so the summary writes it too; a `Part of`
+  summary with no parsed `missing` entry would be closed on merge, and
+  `deno task pr-summary-check` blocking it is Vibe Coder-only (PR #4468 review).
 - `prompts/issue/prompt.md`, the "unmet criterion" bullet: the false "raises no
   PR until every criterion is met" is replaced with what `completion_phase.ts`
   does since #4234 (an unmet criterion is named on the PR, which is raised

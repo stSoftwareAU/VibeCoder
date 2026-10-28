@@ -1199,9 +1199,10 @@ however small or non-visual the edit seems.
 
 ## Issue Closure in PR Summary
 
-Every PR must say whether it closes its issue; without a closing keyword where
-no criterion is `missing`, the issue stays open after merge and a human has to
-close it by hand.
+Every PR must say whether it closes its issue. When no criterion is `missing`,
+the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body if your summary
+leaves it out, so write it in the summary yourself and the committed summary and
+the PR body agree.
 
 In your `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` file, write
 one of:
@@ -1216,7 +1217,9 @@ In the `Part of` case, write no closing keyword for the issue anywhere in the
 summary. The worker raises the PR body the same way (`Part of #{{ISSUE_NUMBER}}`
 plus a `## Not closing #{{ISSUE_NUMBER}}` section), so the committed summary and
 the PR body agree. The `missing` entry must really be in the block, since
-`Part of` without one is blocked by `deno task pr-summary-check`.
+without one the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body and the
+issue closes on merge (in the Vibe Coder repository, `deno task
+pr-summary-check` also blocks it).
 
 Place it in the **Summary** section of your PR summary. For example: "Fixed the
 bug by updating the parser. Closes #{{ISSUE_NUMBER}}." and "Added the parser;
