@@ -30,12 +30,18 @@ Version bump: none; prose-only change to a prompt bucket and two docs.
   guide, which permits `pub use submodule::*` for non-leaf modules (PR #4457
   reviews).
 - Check 48 leaves doctest assertions (inside `///` or `//!` code blocks) and
-  `#[test]` functions alone: they are test code, outside the issue's
-  "non-test code" scope, and clippy `missing_assert_message` skips them.
-- Check 49 no longer accepts `PoisonError::into_inner` recovery as a policy.
-  The guide says never to reach inside a poisoned mutex, so the check flags
-  such recovery (`Poisoned lock recovered in <file>`) and the fix is
-  propagation or a fatal exit.
+  `#[test]` functions alone: they are test code, outside the issue's "non-test
+  code" scope, and clippy `missing_assert_message` skips them.
+- Check 49 no longer accepts `PoisonError::into_inner` recovery as a policy. The
+  guide says never to reach inside a poisoned mutex, so the check flags such
+  recovery (`Poisoned lock recovered in <file>`) and the fix is propagation or a
+  fatal exit.
+- Check 45 is scoped to enums exported from a library target: declared `pub`
+  along a `pub mod` chain from `src/lib.rs`, or re-exported with `pub use`. A
+  binary-only crate (no `src/lib.rs`, no `[lib]`) and a `pub enum` in a private,
+  never re-exported `mod` are skipped, because no downstream `match` can name
+  them. That matches clippy `exhaustive_enums`, which lints exported enums only
+  (PR #4457 review).
 - Every new finding is `severity:low`, because none fails a build on its own.
   The toolchain section differs (deny-by-default lints), so it escalates; this
   one does not.
@@ -88,11 +94,14 @@ the markdown linter.
   `docs/BEST-PRACTICES-SCAN.md`): 19 and 30 passed, 0 failed.
 - `markdownlint-cli2` over the three edited files: 0 issues.
 - `tests/rust_glob_import_prelude_4432_docs_test.ts` (added for the PR #4457
-  reviews): three tests in the `Google Rust Style Guide learnings` section pin
+  reviews): four tests in the `Google Rust Style Guide learnings` section pin
   check 43's prelude and public re-export exemptions, check 48's doctest
-  exclusion and check 49's refusal of `into_inner` recovery. Red-checked: with
-  the section restored to the head before each review fix, every test fails
-  (first fix: 0 of 1 passed; second fix: 0 of 3 passed).
+  exclusion, check 49's refusal of `into_inner` recovery and check 45's
+  exported-enum scope. Red-checked: with the section restored to the head before
+  each review fix, every test fails (first fix: 0 of 1 passed; second fix: 0 of
+  3 passed); with `rust.md` reverted before the third fix, the new test fails
+  (`section is missing pin "the crate has a library target …"`, 3 passed, 1
+  failed). Each new pin is absent from `main`, where checks 43–51 do not exist.
   `deno task drift-pins-on-base` reports every pin absent on `main` and on the
   pre-fix head. Otherwise the change is prompt and doc prose; existing tests
   guard that credited paths exist, bucket files are documented, and anchors

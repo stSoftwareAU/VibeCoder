@@ -660,13 +660,20 @@ the toolchain section above).
     is silently a no-op. Fix: add `#[must_use]`. Severity:
     `severity:low`. Finding title: `Missing #[must_use] on <function>`.
 45. **Public enum without `#[non_exhaustive]`.** Gate: the crate's
-    `Cargo.toml` does not set `publish = false`, so it can be depended
-    on from outside the workspace. Grep `pub enum` and flag each one
-    whose attributes lack `#[non_exhaustive]`: adding a variant later
-    breaks every downstream `match`. Clippy `exhaustive_enums`
-    (restriction) can confirm. Not a finding for an enum that is
-    deliberately closed (a two-state `Direction`, say) when its doc
-    comment says so. Fix: add `#[non_exhaustive]`. Severity:
+    `Cargo.toml` does not set `publish = false` and the crate has a
+    library target (a `src/lib.rs` or a `[lib]` section), so it can be
+    depended on from outside the workspace. A binary-only crate has no
+    downstream `match` to break: skip it. Scope: only an enum exported
+    from the library, meaning one declared `pub` along a chain of
+    `pub mod` declarations from `src/lib.rs`, or re-exported with
+    `pub use`. A `pub enum` in a private `mod` that is never re-exported
+    cannot be named outside the crate, so it is not a finding. This
+    matches clippy `exhaustive_enums` (restriction), which lints exported
+    enums only and can confirm. Grep `pub enum`, keep the exported ones,
+    and flag each whose attributes lack `#[non_exhaustive]`: adding a
+    variant later breaks every downstream `match`. Not a finding for an
+    enum that is deliberately closed (a two-state `Direction`, say) when
+    its doc comment says so. Fix: add `#[non_exhaustive]`. Severity:
     `severity:low`. Finding title: `Public enum <name> is not
     #[non_exhaustive]`.
 46. **Too many `bool` parameters.** Always applies. Grep `pub fn` with

@@ -12,6 +12,11 @@
  * - Check 49 (lock poisoning) accepted `PoisonError::into_inner` recovery,
  *   which the guide forbids ("never reach inside a poisoned mutex").
  *
+ * - Check 45 (`#[non_exhaustive]`) flagged every `pub enum` in a publishable
+ *   crate, including enums in a private module and enums in a binary-only
+ *   crate, which no downstream crate can name. Clippy `exhaustive_enums`
+ *   lints exported enums only.
+ *
  * These tests pin each correction so a later edit cannot quietly undo it.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
@@ -57,6 +62,19 @@ Deno.test(
       "the guide says never to reach inside a poisoned mutex",
       "flag each call on a lock's `PoisonError`",
       "`Poisoned lock recovered in <file>`",
+    ]);
+  },
+);
+
+Deno.test(
+  "prompts/best_practices/buckets/rust.md Google Rust Style Guide learnings limits non_exhaustive to exported enums (Issue #4432)",
+  async () => {
+    assertPins(await googleGuideSection(), [
+      "the crate has a library target (a `src/lib.rs` or a `[lib]` section)",
+      "A binary-only crate has no downstream `match` to break: skip it",
+      "declared `pub` along a chain of `pub mod` declarations from `src/lib.rs`, or re-exported with `pub use`",
+      "A `pub enum` in a private `mod` that is never re-exported cannot be named outside the crate",
+      "which lints exported enums only",
     ]);
   },
 );
