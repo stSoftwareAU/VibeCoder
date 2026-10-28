@@ -26,6 +26,8 @@ import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { NoAutomaticFixError } from "../lib/admin_only_finding.ts";
+import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
 import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 
 /**
@@ -3347,10 +3349,45 @@ Deno.test("workOnIssue #4298 - a refused repository-admin fix is a failure to re
   assertEquals(result.phase, "admin_only_repair");
   assertEquals(result.category, "internal_error");
   assertStringIncludes(result.reason, "Must have admin rights");
+  // A refused setting is a repo/credential fault, not a worker crash (Issue #4442).
+  assertEquals(result.classification?.fixability, "not_code_fixable");
+  assertEquals(result.classification?.failureClass, "repo-config");
   assertEquals(calls.closeIssue.length, 0);
   assertEquals(
     calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
     false,
+  );
+});
+
+Deno.test("workOnIssue #4442 - an unmapped repository-admin finding stays a worker-crash, not a repo-config refusal", async () => {
+  const ctx = makeContext({ issueBody: ADMIN_FINDING_BODY });
+  const calls = makeStubGhCalls();
+  const deps = createMockDeps({
+    github: {
+      createClient: () => makeStubGhClient(calls),
+      repairRepoSettingsFinding: () =>
+        Promise.resolve({
+          ok: false,
+          error: new NoAutomaticFixError(
+            "no automatic fix is mapped for BP-REPO-X — add it to FINDING_STEP_KIND",
+          ),
+        }),
+    },
+  });
+
+  const result = await workOnIssue(ctx, deps);
+
+  assertEquals(result.success, false);
+  assertEquals(result.phase, "admin_only_repair");
+  assertEquals(result.category, "internal_error");
+  assertEquals(
+    result.classification,
+    undefined,
+    "a worker defect keeps the classifier's own class",
+  );
+  assertEquals(
+    classifyRunFailure("internal_error", result.reason, false).failureClass,
+    "worker-crash",
   );
 });
 

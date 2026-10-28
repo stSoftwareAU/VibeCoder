@@ -21,6 +21,8 @@ import {
 import { CI_FAILURE_EXCERPT_BYTES } from "../lib/ci_failure_issue.ts";
 import type { SelfDiagnosticFiling } from "../lib/self_diagnostic_attestation.ts";
 import { formatRunFailureExcerpt } from "../lib/run_failure_issue.ts";
+import { deriveRunOutcome } from "../lib/run_outcome.ts";
+import { REPO_ADMIN_REFUSED } from "../lib/run_outcome_classifier.ts";
 
 /**
  * The fleet account these fixtures file as. A dedup match is only evidence
@@ -122,6 +124,17 @@ const OOM_REPORT: RunFailureReport = {
       "Claude was killed (exit 137, SIGKILL — possible out-of-memory in the VM) without creating changes",
   },
 };
+
+/** A failed run's outcome from the production deriver, narrowed to `no_pr` (Issue #4442). */
+function noPrOutcome(
+  source: Parameters<typeof deriveRunOutcome>[0],
+): RunFailureReport["outcome"] {
+  const outcome = deriveRunOutcome(source);
+  if (outcome.kind !== "no_pr") {
+    throw new Error(`expected a no_pr outcome, got ${outcome.kind}`);
+  }
+  return outcome;
+}
 
 async function tmp(): Promise<string> {
   return await Deno.makeTempDir({ prefix: "run-failure-issue-" });
@@ -397,6 +410,61 @@ Deno.test("run failure issue - the same marker issue authored by a fleet login i
     });
     assertEquals(gh.rec.creates.length, 0);
     assertEquals(gh.rec.comments.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("run failure issue #4442 - a refused repository-admin setting is suppressed as repo-config, the same internal_error without the classification files as worker-crash", async () => {
+  const dir = await tmp();
+  try {
+    const { ghFn, rec } = fakeGh();
+    const reason =
+      "Repository-admin finding not applied: could not apply BP-REPO-SECRET-SCANNING-OFF: HTTP 403";
+    const refused = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: {
+        ...OOM_REPORT,
+        outcome: noPrOutcome({
+          category: "internal_error",
+          classification: REPO_ADMIN_REFUSED,
+          success: false,
+          phase: "admin_only_repair",
+          reason,
+        }),
+      },
+      ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1,
+    });
+    assertEquals(refused, {
+      action: "suppressed",
+      reason: "not_code_fixable",
+      failureClass: "repo-config",
+    });
+    assertEquals(rec.calls, [], "no GitHub call of any kind");
+
+    const unclassified = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
+      report: {
+        ...OOM_REPORT,
+        outcome: noPrOutcome({
+          category: "internal_error",
+          success: false,
+          phase: "admin_only_repair",
+          reason,
+        }),
+      },
+      ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1,
+    });
+    assertEquals(unclassified.action, "filed");
+    assertEquals(rec.creates.length, 1);
+    const body = rec.creates[0]![rec.creates[0]!.indexOf("--body") + 1]!;
+    assertEquals(parseRunFailureMarker(body), "worker-crash");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

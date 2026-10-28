@@ -137,7 +137,8 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
  * Failure classes that are the REPOSITORY's state, not the issue's, but
  * that still owe the issue a written record (Issue #2220).
  *
- * `repo-config` is a ruleset or protection the repository carries: it
+ * `repo-config` is a ruleset, protection or refused admin permission the
+ * repository or its token carries (Issue #4442): it
  * refuses every issue in the milestone identically and no attempt of the
  * issue's can clear it, so it must not consume an attempt or earn the
  * escalating 2 h → 6 h → 24 h cooldown.

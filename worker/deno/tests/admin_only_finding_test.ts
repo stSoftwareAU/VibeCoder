@@ -5,9 +5,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   isAdminOnlyRepoSettingsIssue,
+  NoAutomaticFixError,
   parseRepoSettingsFindingId,
   repairAdminOnlyFinding,
 } from "../lib/admin_only_finding.ts";
@@ -373,6 +374,8 @@ Deno.test("repairAdminOnlyFinding - a refused write is a failure to retry, never
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertStringIncludes(result.error.message, "Must have admin rights");
+    // A refused write is a repo/token refusal, not a worker defect (Issue #4442).
+    assertEquals(result.error instanceof NoAutomaticFixError, false);
   }
 });
 
@@ -384,5 +387,9 @@ Deno.test("repairAdminOnlyFinding - a finding with no automatic fix fails rather
     hardenStub([], seen),
   );
   assertEquals(result.ok, false);
+  if (!result.ok) {
+    // An unmapped finding is a worker defect (Issue #4442).
+    assert(result.error instanceof NoAutomaticFixError);
+  }
   assertEquals(seen, [], "nothing is written for an unmapped finding");
 });

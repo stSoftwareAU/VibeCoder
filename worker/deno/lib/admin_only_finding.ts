@@ -165,6 +165,19 @@ export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
 };
 
 /**
+ * A repository-admin finding with no automatic fix mapped (Issue #4442).
+ *
+ * A worker defect: the finding is missing from `FINDING_STEP_KIND`, so the run
+ * stays a `worker-crash`.
+ */
+export class NoAutomaticFixError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoAutomaticFixError";
+  }
+}
+
+/**
  * Apply the setting a repository-admin finding asks for (Issue #4298).
  *
  * Only the finding's own steps are run, so fixing one finding never rewrites
@@ -172,7 +185,9 @@ export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
  * the setting already holds — returns the applied steps for the closing
  * comment. Anything else is an error naming what was refused, for the caller
  * to record on the normal `failed-once` ladder: a token without admin rights,
- * an unreadable surface, or a finding with no automatic fix.
+ * an unreadable surface, or a finding with no automatic fix. The no-fix error
+ * is a {@link NoAutomaticFixError} (a worker defect, Issue #4442); the refused
+ * write is a plain `Error` (a repository or token refusal, Issue #4442).
  *
  * @param harden - Runs `hardenRepo` with `apply` for the given step kinds.
  */
@@ -189,7 +204,7 @@ export async function repairAdminOnlyFinding(
   if (!kind) {
     return {
       ok: false,
-      error: new Error(
+      error: new NoAutomaticFixError(
         `no automatic fix is mapped for ${
           findingId ?? "this repository-admin finding"
         } — add it to FINDING_STEP_KIND in admin_only_finding.ts`,
