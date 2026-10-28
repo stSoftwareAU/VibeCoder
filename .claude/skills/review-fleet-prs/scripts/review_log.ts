@@ -32,6 +32,8 @@ export interface Finding {
   line: number;
   problem: string;
   fix?: string;
+  // A gap for an earlier finding also carries that finding (#4446).
+  earlier?: Finding;
 }
 
 // Lives here (not auto_release.ts) so auto_release.ts can import it without a cycle.
