@@ -37,8 +37,8 @@ export interface MergeOnlyBindings {
   /**
    * The resolution agent. Undefined when the grant withheld the rung, so the
    * sync records `agent deferred: cycle budget` rather than a provider outage.
-   * A tree with a Cargo project refuses the run so the next over-budget cycle
-   * is charged; any other tree runs the real agent.
+   * A tree with a Cargo project refuses the run, an uncharged wait for the
+   * host's disk; any other tree runs the real agent.
    */
   agentFn?: MilestoneConflictAgentFn;
 }
