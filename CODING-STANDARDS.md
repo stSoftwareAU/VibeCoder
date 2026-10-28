@@ -2056,8 +2056,8 @@ historical reproduction versions, migration examples and changelog entries.
 
 The first-run claim check that used to ask this before the pull request was
 raised was removed (Issue #4234). A review-fix push still asks the shared
-doc-prose question through the drift check's model pass (Issues #3347, #3715,
-#3731), over changed comments, unchanged attached headers and heading-bounded
+doc-prose question through the drift check's model pass (Issues #3347, #3715
+and #3731), over changed comments, unchanged attached headers and heading-bounded
 manual sections the summary names or that mention a changed source path. That
 scope excludes `docs/archive/` and is capped at 20 files and 40 manual
 sections; anything past a cap is logged as not checked, never passed. A
