@@ -1250,8 +1250,9 @@ async function runMermaidQualityCheck(
  * (AGENTS.md, README.md, SECURITY.md, docs/**\/*.md) using the rule
  * selection in `.markdownlint-cli2.jsonc`. Catches structural defects
  * the mermaid (#1683) check misses. Returns
- * SKIPPED when no markdownlint-cli2 binary is available; strict mode
- * promotes that to FAILED.
+ * SKIPPED when no markdownlint-cli2 binary is available, and also when the
+ * repo configures no `globs` (Issue #4438); strict mode promotes SKIPPED to
+ * FAILED.
  */
 async function runMarkdownlintQualityCheck(
   config: QualityGateConfig,
