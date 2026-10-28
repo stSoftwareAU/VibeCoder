@@ -5,16 +5,20 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   isAdminOnlyRepoSettingsIssue,
+  isRepoRefusal,
+  NoAutomaticFixError,
   parseRepoSettingsFindingId,
   repairAdminOnlyFinding,
+  RepoAdminRefusalError,
 } from "../lib/admin_only_finding.ts";
-import type {
-  HardenRepoOutcome,
-  HardenResult,
-  HardenStep,
+import {
+  hardenRepo,
+  type HardenRepoOutcome,
+  type HardenResult,
+  type HardenStep,
 } from "../lib/repo_settings_harden.ts";
 import { REPO_ADMIN_ACTION } from "../lib/repo_settings_scanner.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
@@ -373,6 +377,9 @@ Deno.test("repairAdminOnlyFinding - a refused write is a failure to retry, never
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertStringIncludes(result.error.message, "Must have admin rights");
+    // A refused write is a repo/token refusal, not a worker defect (Issue #4442).
+    assertEquals(result.error instanceof NoAutomaticFixError, false);
+    assert(result.error instanceof RepoAdminRefusalError);
   }
 });
 
@@ -384,5 +391,139 @@ Deno.test("repairAdminOnlyFinding - a finding with no automatic fix fails rather
     hardenStub([], seen),
   );
   assertEquals(result.ok, false);
+  if (!result.ok) {
+    // An unmapped finding is a worker defect (Issue #4442).
+    assert(result.error instanceof NoAutomaticFixError);
+  }
   assertEquals(seen, [], "nothing is written for an unmapped finding");
+});
+
+/** Fail the finding's repair with `results`; return the error it produced. */
+async function repairError(results: HardenResult[]): Promise<Error> {
+  const result = await repairAdminOnlyFinding(
+    "org/repo",
+    "<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->",
+    hardenStub(results, []),
+  );
+  if (result.ok) throw new Error("expected the repair to fail");
+  return result.error;
+}
+
+Deno.test("repairAdminOnlyFinding #4442 - a hardener exception reported as a failed result is not a repository refusal", async () => {
+  // The exact shape hardenRepo's catch-all records for an exception thrown
+  // in its own planning code: it never throws, so this is the crash path.
+  const error = await repairError([{
+    step: {
+      kind: "ruleset-reviews",
+      title: "Read repos/org/repo",
+      method: "PUT",
+      endpoint: "repos/org/repo",
+    },
+    status: "failed",
+    detail: "TypeError: Cannot read properties of undefined (reading 'map')",
+  }]);
+  assertEquals(error instanceof RepoAdminRefusalError, false);
+  assertStringIncludes(error.message, "TypeError");
+});
+
+Deno.test("repairAdminOnlyFinding #4442 - a 422, a 5xx or a local write fault is not a repository refusal", async () => {
+  for (
+    const detail of [
+      "gh: Invalid request. (HTTP 422)",
+      "gh: Server Error (HTTP 502)",
+      "Permission denied (os error 13): writing the request body temp file",
+    ]
+  ) {
+    const error = await repairError([{
+      step: step("ruleset-reviews"),
+      status: "failed",
+      detail,
+    }]);
+    assertEquals(error instanceof RepoAdminRefusalError, false, detail);
+  }
+});
+
+Deno.test("repairAdminOnlyFinding #4442 - a 403, a 404, an organisation ruleset, an inherited role and a held skip are refusals", async () => {
+  const cases: HardenResult[] = [
+    {
+      step: step("ruleset-reviews"),
+      status: "failed",
+      detail: "gh: Must have admin rights to Repository. (HTTP 403)",
+    },
+    { step: step("ruleset-reviews"), status: "failed", detail: "HTTP 404" },
+    {
+      step: step("ruleset-reviews"),
+      status: "failed",
+      refusal: "organisation-ruleset",
+      detail: "ruleset 7 on main is not this repository's to edit",
+    },
+    {
+      step: step("ruleset-reviews"),
+      status: "failed",
+      refusal: "inherited-role",
+      detail: "bot is still admin after the write",
+    },
+    {
+      // A skip counts only for the finding's own step (default-branch-approval).
+      step: step("default-branch-approval"),
+      status: "skipped",
+      detail: "held by the plan",
+    },
+  ];
+  for (const result of cases) {
+    assert(isRepoRefusal(result), result.detail);
+    assert(
+      (await repairError([result])) instanceof RepoAdminRefusalError,
+      result.detail,
+    );
+  }
+});
+
+Deno.test("repairAdminOnlyFinding #4442 - one worker fault among refusals keeps the whole failure a worker defect", async () => {
+  const error = await repairError([
+    {
+      step: step("ruleset-reviews"),
+      status: "failed",
+      detail: "gh: Must have admin rights to Repository. (HTTP 403)",
+    },
+    {
+      step: step("secret-scanning"),
+      status: "failed",
+      detail: "gh: Invalid request. (HTTP 422)",
+    },
+  ]);
+  assertEquals(error instanceof RepoAdminRefusalError, false);
+});
+
+Deno.test("repairAdminOnlyFinding #4442 - through the real hardenRepo, a 403 is a refusal and a local exception is not", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "admin-only-4442-" });
+  try {
+    const repair = (repo: string, fault: Error) =>
+      repairAdminOnlyFinding(
+        repo,
+        "<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->",
+        (target, kinds) =>
+          hardenRepo(target, {
+            apply: true,
+            ghCommandFn: () => Promise.reject(fault),
+            onlyKinds: kinds,
+            defaultBranchCachePath: `${dir}/default-branch.json`,
+          }),
+      );
+    const refused = await repair(
+      "org/refused-4442",
+      new Error("gh: Must have admin rights to Repository. (HTTP 403)"),
+    );
+    assert(!refused.ok && refused.error instanceof RepoAdminRefusalError);
+    const crashed = await repair(
+      "org/crashed-4442",
+      new TypeError("Cannot read properties of undefined (reading 'trim')"),
+    );
+    assert(!crashed.ok);
+    if (!crashed.ok) {
+      assertEquals(crashed.error instanceof RepoAdminRefusalError, false);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
