@@ -4512,10 +4512,11 @@ So is a conflict the deterministic rules settle: the resolution gate reports a
 `skipped` verdict marked `landUnverified`, which `judgeResolutionVerdict` lets
 through where it would otherwise refuse an unverified resolution. A conflict
 that needs the agent is not landed in that cycle: the agent is free to run the
-very cargo build the host cannot afford, so it is not offered. The first such
-cycle is a refusal and is not charged. The next over-budget cycle charges the
-attempt, so the recovery ladder applies and the branch does not stay behind on
-disk budget alone. See
+very cargo build the host cannot afford, so it is not offered. Every such cycle
+is a refusal that is never charged and never climbs the recovery ladder: the
+branch waits for the host's disk, as every other disk stop does. A Deno check
+that cannot reach its module host is left to CI by both the merge gate and the
+resolution gate (Issue #4422), never charged as a refused tree. See
 [HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
 
 #### 🪦 The sync never resurrects a deleted file

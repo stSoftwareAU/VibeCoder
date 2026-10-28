@@ -505,6 +505,7 @@ export async function checkMergedTree(
   }
 
   const checked: string[] = [];
+  const leftToCi: string[] = [];
   const skipCargo = await skipCargoBuild();
   let skippedCargo = false;
   for (const project of projects) {
@@ -530,6 +531,19 @@ export async function checkMergedTree(
       };
     }
     if (result.code !== 0) {
+      // A Deno check that could not reach its module host says nothing about
+      // the merged tree: it is left to CI, as the resolution gate leaves it
+      // (Issue #4422). Refusing here charged a conflict attempt for a network
+      // fault and walked every milestone to the merge-fallback rung.
+      const remote = project.kind === "cargo"
+        ? undefined
+        : detectRemoteModuleGap(result.output);
+      if (remote) {
+        leftToCi.push(
+          `${where} could not fetch its remote modules (${remote.cause})`,
+        );
+        continue;
+      }
       const gap = project.kind === "cargo"
         ? detectRustToolchainGap(result.output)
         : undefined;
@@ -550,21 +564,22 @@ export async function checkMergedTree(
     checked.push(where);
   }
 
-  if (checked.length === 0 && skippedCargo) {
+  const notes = [
+    ...(skippedCargo ? [`${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`] : []),
+    ...leftToCi.map((note) => `${note} — left to CI (Issue #4422)`),
+  ];
+  if (checked.length === 0 && notes.length > 0) {
     return {
       status: "skipped",
-      detail: `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`,
+      detail: notes.join("; "),
       output: "",
-      cargoSkipped: true,
+      ...(skippedCargo ? { cargoSkipped: true } : {}),
     };
   }
 
-  const cargoNote = skippedCargo
-    ? `; ${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`
-    : "";
   return {
     status: "passed",
-    detail: `${checked.join("; ")} passed${cargoNote}`,
+    detail: [`${checked.join("; ")} passed`, ...notes].join("; "),
     output: "",
     ...(skippedCargo ? { cargoSkipped: true } : {}),
   };
