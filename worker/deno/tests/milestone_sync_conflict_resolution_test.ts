@@ -855,8 +855,7 @@ Deno.test(
       Promise.resolve({
         status: "passed" as const,
         // The detail shape checkMergedTree gives a left-to-CI type check.
-        detail:
-          `cargo check in /w passed; ${left} — left to CI (Issue #4422)`,
+        detail: `cargo check in /w passed; ${left} — left to CI (Issue #4422)`,
         output: "",
         checkLeftToCi: left,
       });
