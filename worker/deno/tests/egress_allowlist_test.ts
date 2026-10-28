@@ -30,6 +30,7 @@ const REGISTRY_HOSTS = [
   "registry.npmjs.org",
   "jsr.io",
   "deno.land",
+  "esm.sh",
   "crates.io",
   "index.crates.io",
   "static.crates.io",

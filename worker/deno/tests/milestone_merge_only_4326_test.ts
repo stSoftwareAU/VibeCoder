@@ -246,7 +246,7 @@ Deno.test("mergeOnlyBindings - a cargo-only tree delegates with cargo disabled (
   });
 });
 
-Deno.test("mergeOnlyBindings - a cargo tree withholds the agent, and the next over-budget cycle is charged (Issue #4326)", async () => {
+Deno.test("mergeOnlyBindings - a cargo tree withholds the agent, and no over-budget cycle is ever charged (Issue #4326)", async () => {
   await withTree({ "Cargo.toml": CARGO_TOML }, async (dir) => {
     const real = recordingAgent();
     const agentFn = bindingsFor(REASON, real.agent).agentFn;
@@ -276,9 +276,10 @@ Deno.test("mergeOnlyBindings - a cargo tree withholds the agent, and the next ov
     );
     assertEquals(first.outcome, "not-charged");
     assertEquals(first.refusal, true);
+    // The branch waits for the host's disk; it never climbs to the roll-back.
     const second = escalateRepeatedRefusal(first, 1);
-    assertEquals(second.outcome, "failed");
-    assertEquals(second.exhaust, true);
+    assertEquals(second.outcome, "not-charged");
+    assertEquals(second.exhaust, undefined);
   });
 });
 
@@ -572,10 +573,10 @@ Deno.test("merge-only e2e - control: the same clean merge is refused by a failin
   }
 });
 
-Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pushed, and the next cycle is charged (Issue #4326)", async () => {
+Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pushed, and the withhold is never charged (Issue #4326)", async () => {
   // Both sides change the same line, so no rule decides it: the ladder reaches
   // the agent rung, which a cargo tree withholds. The first cycle is a
-  // refusal; the next over-budget cycle is charged.
+  // refusal that waits, uncharged, for the host.
   const f = await fixture({
     milestone: ["shared.txt", "a\nMILESTONE\nc\n"],
     main: ["shared.txt", "a\nMAIN\nc\n"],
@@ -599,7 +600,11 @@ Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pu
     const conclusion = judgeSyncFailure(result.error, true);
     assertEquals(conclusion.outcome, "not-charged");
     assertEquals(conclusion.reason, CARGO_BUDGET_AGENT_WITHHELD);
-    assertEquals(escalateRepeatedRefusal(conclusion, 1).outcome, "failed");
+    // Never climbs: the branch waits for the host's disk.
+    assertEquals(
+      escalateRepeatedRefusal(conclusion, 1).outcome,
+      "not-charged",
+    );
     assertEquals(real.calls, []);
     assertEquals(await remoteSha(f.remote, MILESTONE), before);
     assertEquals(await mergeInProgress(f.clone), false);

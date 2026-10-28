@@ -571,6 +571,7 @@ other Azure accounts remain outside the built-in allowlist.
 | `registry.npmjs.org` | Registry | always | npm packages |
 | `jsr.io` | Registry | always | JSR packages |
 | `deno.land` | Registry | always | Deno standard modules and binaries |
+| `esm.sh` | Registry | always | npm packages as ES modules for Deno projects |
 | `crates.io` | Registry | always | Cargo registry API |
 | `index.crates.io` | Registry | always | Cargo sparse index |
 | `static.crates.io` | Registry | always | Cargo crate downloads |
