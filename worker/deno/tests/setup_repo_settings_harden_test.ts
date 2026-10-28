@@ -18,6 +18,13 @@ import {
   assertMatch,
   assertStringIncludes,
 } from "@std/assert";
+import { repoSettingsHardenCommand } from "../commands/repo_settings_harden.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  _resetGhSpawnRunner,
+  _setGhSpawnRunner,
+  type GhSpawnRunner,
+} from "../lib/gh_spawn.ts";
 import {
   type CloseFixedFindingsFn,
   type CodeownersSyncResult,
@@ -1498,4 +1505,76 @@ Deno.test("runRepoSettingsHarden - a workflow-sync template fault is warned on t
   assertEquals(faults.length, 1, h.warnings.join("\n"));
   assertStringIncludes(faults[0]!, `${faulty}:`);
   assertStringIncludes(faults[0]!, cause);
+});
+
+Deno.test("repo-settings-harden command - a template read fault is printed even when nothing is planned (PR #4473 review)", async () => {
+  const repo = uniqueRepo();
+  const { gh } = makeFakeGitHub({ [repo]: driftedRepo() });
+  // Converge the repository first, so the command plans nothing.
+  await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, await makeWorkDir([repo])).deps,
+  );
+
+  const cause = "Resource not accessible by integration (HTTP 403)";
+  const runnerFor = (
+    languagesFail: boolean,
+    manifestFail = false,
+  ): GhSpawnRunner =>
+  async (args) => {
+    if (manifestFail && /\/contents\/action\.ya?ml/.test(args[1] ?? "")) {
+      return { code: 1, success: false, stdout: "", stderr: `gh: ${cause}` };
+    }
+    if (languagesFail && args[1] === `repos/${repo}/languages`) {
+      return { code: 1, success: false, stdout: "", stderr: `gh: ${cause}` };
+    }
+    try {
+      return {
+        code: 0,
+        success: true,
+        stdout: await gh([...args]),
+        stderr: "",
+      };
+    } catch (err) {
+      const stderr = err instanceof Error ? err.message : String(err);
+      return { code: 1, success: false, stdout: "", stderr };
+    }
+  };
+  const run = () =>
+    repoSettingsHardenCommand.execute({ repo }, buildDefaultWorkerConfig());
+
+  const priorCache = Deno.env.get("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH");
+  Deno.env.set("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH", BRANCH_CACHE);
+  try {
+    // Positive control: with every read answering, nothing is planned and
+    // no read-fault line appears.
+    _setGhSpawnRunner(runnerFor(false));
+    const clean = await run();
+    assertStringIncludes(clean.message ?? "", "nothing to harden");
+    assertEquals(
+      (clean.message ?? "").includes("Could not read the workflow-sync"),
+      false,
+      clean.message,
+    );
+
+    _setGhSpawnRunner(runnerFor(true));
+    const faulty = await run();
+    const message = faulty.message ?? "";
+    assertStringIncludes(message, "nothing to harden");
+    assertStringIncludes(message, "Could not read the workflow-sync templates");
+    assertStringIncludes(message, "language detection failed");
+    assertStringIncludes(message, cause);
+
+    // An unreadable action manifest is likewise reported with nothing planned.
+    _setGhSpawnRunner(runnerFor(false, true));
+    const unreadable = (await run()).message ?? "";
+    assertStringIncludes(unreadable, "nothing to harden");
+    assertStringIncludes(unreadable, "Could not read the manifest of");
+    assertStringIncludes(unreadable, cause);
+  } finally {
+    _resetGhSpawnRunner();
+    if (priorCache === undefined) {
+      Deno.env.delete("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH");
+    } else Deno.env.set("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH", priorCache);
+  }
 });

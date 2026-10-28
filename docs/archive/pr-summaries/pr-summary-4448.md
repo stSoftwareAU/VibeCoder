@@ -38,7 +38,8 @@ flowchart LR
 - A failure reading the templates never aborts hardening and is never silent: it
   is reported as `outcome.templateFault` (apart from `outcome.unreadable`, which
   stays action manifests): setup warns on the repository's line and the CLI
-  prints its own `Could not read the workflow-sync templates` line.
+  prints its own `Could not read the workflow-sync templates` line, also when
+  nothing is planned.
 - Template references are SHA-pinned, so they go through
   `resolveTransitiveActionCoordinates` exactly like default-branch references.
 
@@ -83,7 +84,7 @@ Backend-only change; no UI files. Verification is by tests (below).
   unreadable-workflow-directory test in `repo_settings_harden_test.ts` (red with
   the `templateReferenceCount: 0` initialiser deleted).
 - `deno task test:unit`, one file at a time on the head:
-  `setup_repo_settings_harden_test.ts` (39 tests at head),
+  `setup_repo_settings_harden_test.ts` (40 tests at head),
   `repo_settings_harden_test.ts` (116 tests at head),
   `workflow_sync_actions_test.ts` (10 tests at head),
   `workflow_definitions_test.ts` (70 tests at head),
@@ -96,8 +97,18 @@ Backend-only change; no UI files. Verification is by tests (below).
   template-fault test (warning on the faulty repo's line only; red with the
   setup warning disabled). The setup fake GitHub now answers the detection and
   workflow-audit reads, so the drifted-repo test expects
-  `gitleaks/gitleaks-action@*` in the written list. The CLI line has no seam (it
-  calls `runGhCommand`), so it is not unit-tested.
+  `gitleaks/gitleaks-action@*` in the written list.
+- PR #4473 review round 2: the CLI now appends the `Could not read the
+  workflow-sync templates` line and the unreadable-manifest line after the
+  plan/no-plan branch (like the skip notes), so they print when nothing is
+  planned. Tested through `repoSettingsHardenCommand.execute` with
+  `_setGhSpawnRunner` over the stateful fake, on a converged repository: a
+  positive control (no fault, `nothing to harden`, no warning), a failing
+  `languages` read (template line and cause), and a failing `action.yml` read
+  (manifest line and cause). Red check: with `commands/repo_settings_harden.ts`
+  at its previous version the test fails (`nothing to harden …` does not
+  contain `Could not read the workflow-sync templates`). The manifest phase's
+  own red run was not separately isolated (the template assertion fails first).
 - Docs: `docs/SETUP.md` (Settings bullet, `repo-settings-harden` row) and
   `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` (allow-list paragraph) updated; doc
   comments in `lib/repo_settings_harden.ts` and

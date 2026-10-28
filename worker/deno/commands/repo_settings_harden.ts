@@ -130,6 +130,18 @@ export const repoSettingsHardenCommand: Command = {
     const skipNote = outcomeSkipNotes(outcome)
       .map((note) => `\n${note}`)
       .join("");
+    // Appended after the plan/no-plan branch, like the skip notes: a fault
+    // reading the allow-list's sources matters most when nothing was planned,
+    // because that is when a short list would otherwise read as "all holds".
+    const readFaultNotes =
+      (unreadable.length > 0
+        ? `\n⚠ Could not read the manifest of ${unreadable.length} action(s) — the allow-list may be incomplete: ${
+          unreadable.join("; ")
+        }`
+        : "") +
+      (templateFault
+        ? `\n⚠ Could not read the workflow-sync templates — the allow-list may be incomplete: ${templateFault}`
+        : "");
     const message =
       (results.length === 0
         ? `${repo}: nothing to harden — every checked setting already holds.`
@@ -141,15 +153,7 @@ export const repoSettingsHardenCommand: Command = {
               (extraCoordinates.length > 0
                 ? ` plus --allow-action ${extraCoordinates.join(", ")}`
                 : "")
-            : "") +
-          (unreadable.length > 0
-            ? `\n⚠ Could not read the manifest of ${unreadable.length} action(s) — the allow-list may be incomplete: ${
-              unreadable.join("; ")
-            }`
-            : "") +
-          (templateFault
-            ? `\n⚠ Could not read the workflow-sync templates — the allow-list may be incomplete: ${templateFault}`
-            : "")) + skipNote;
+            : "")) + readFaultNotes + skipNote;
     const failed = results.some((r) => r.status === "failed");
     return {
       success: !failed,
