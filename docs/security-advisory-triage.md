@@ -175,8 +175,11 @@ crate's version that carries the fix (`deno outdated --update
 the repository's `minimumDependencyAge` config or its `exclude` globs, so there
 is no temporary rule to revert afterwards. Every other version the change moves
 in the lockfile, including the crates a parent bump pulls in, keeps the full
-24h floor: the agent reads the lockfile diff and holds each one at its newest
-release outside the window (`cargo update -p <crate> --precise <version>`)
+24h floor: the agent reads the diff of every lockfile at any depth
+(`git diff -- '*Cargo.lock' '*deno.lock'` from the repository root, since a
+bare `Cargo.lock deno.lock` pathspec misses a nested lockfile such as
+`worker/deno/deno.lock`) and holds each one at its newest release outside the
+window (`cargo update -p <crate> --precise <version>`)
 (stSoftwareAU/VibeCoder#4437). Only a version with an older release that
 satisfies the advisory-clearing version's requirement is held back. A moved
 version that the advisory-clearing version requires, and that has no release

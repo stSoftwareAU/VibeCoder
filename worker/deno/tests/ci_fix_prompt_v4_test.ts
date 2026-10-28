@@ -238,6 +238,22 @@ Deno.test("ci_fix - the zero age covers the advisory-clearing version only, not 
     "including the crates a parent bump pulls in, keeps the 24h floor",
   );
   assertStringIncludes(prompt, "cargo update -p <crate> --precise <version>");
+  // PR #4450 review: a bare `Cargo.lock deno.lock` pathspec matches only the
+  // root lockfiles, so a nested one (worker/deno/deno.lock, fuzz/Cargo.lock)
+  // showed no moved version to hold. The wildcard pathspec reads every depth.
+  assertStringIncludes(
+    prompt,
+    "run `git diff -- '*Cargo.lock' '*deno.lock'` from the repository root after the update",
+  );
+  assertStringIncludes(
+    prompt,
+    "so this reads every lockfile at any depth",
+  );
+  assertEquals(
+    prompt.includes("read `git diff -- Cargo.lock deno.lock`"),
+    false,
+    "the root-only lockfile diff misses a nested lockfile",
+  );
   // PR #4450 review: a required version with no release outside the window
   // (crates published together) cannot be held back, so it joins the
   // advisory-clearing change at its oldest satisfying release, named in the

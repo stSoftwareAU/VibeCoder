@@ -33,6 +33,12 @@ change is made in `docs/security-advisory-triage.md`. Closes #4437.
   `.pr_response_message` reply, so the advisory is not left red until the
   window passes (PR #4450 review). Only versions with an older satisfying
   release are held at the floor. The prompt and the triage doc both say so.
+- The lockfile diff the prompt gives is `git diff -- '*Cargo.lock' '*deno.lock'`
+  from the repository root. Git's `*` in a pathspec matches across `/`, so it
+  reads nested lockfiles such as `worker/deno/deno.lock` or `fuzz/Cargo.lock`;
+  the earlier bare `Cargo.lock deno.lock` pathspec read only root files and
+  showed nothing to hold for a nested one (PR #4450 second review). The triage
+  doc says the same.
 - The existing pinned phrase "reaches no further than the advisory-clearing
   change" is kept, and the sentence extended: it also asks the agent to name
   other moved versions and its age check in the `.pr_response_message` reply.
@@ -68,6 +74,11 @@ passed, 0 failed. markdownlint-cli2 on the two edited docs: 0 issues.
 - PR #4450 review: the same test pins the no-older-release clause in three
   phrases. Each is absent from the pre-fix prompt, and with the pre-fix prompt
   restored the test fails (9 passed, 1 failed).
+- PR #4450 second review: the same test pins the wildcard lockfile diff in two
+  phrases and asserts the root-only `git diff -- Cargo.lock deno.lock` wording
+  is gone. With the pre-fix prompt restored the test fails (0 of 1 passed
+  under `--filter 4437`). Checked by hand that the wildcard pathspec lists a
+  changed `worker/deno/deno.lock` and the bare one lists nothing.
 - Existing #1847 tests unchanged and still passing. Related rules checked: the
   #1847 tests in the same file; `CODING-STANDARDS.md` lines ~1986-1989 (CI-fix
   audit deferral) are unaffected.
