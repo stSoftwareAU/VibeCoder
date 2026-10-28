@@ -22,6 +22,10 @@ Version bump: none; prose-only change to a prompt bucket and two docs.
 
 ### Essential Design Decisions
 
+- Check 43 does not flag any glob import from a module named `prelude` (a
+  consumer import such as `use rayon::prelude::*;` or a `pub use` re-export),
+  nor `use super::*;` in a `#[cfg(test)]` module, matching the issue's agreed
+  scope and clippy `wildcard_imports` (PR #4457 review).
 - Every new finding is `severity:low`, because none fails a build on its own.
   The toolchain section differs (deny-by-default lints), so it escalates; this
   one does not.
@@ -73,9 +77,15 @@ the markdown linter.
   `tests/best_practices_verbose_gate_test.ts` (both read
   `docs/BEST-PRACTICES-SCAN.md`): 19 and 30 passed, 0 failed.
 - `markdownlint-cli2` over the three edited files: 0 issues.
-- No test added: the change is prompt and doc prose with no new behaviour;
-  existing tests already guard that credited paths exist, bucket files are
-  documented, and anchors resolve. No existing test was edited.
+- `tests/rust_glob_import_prelude_4432_docs_test.ts` (added for the PR #4457
+  review): pins check 43's prelude exemption in the
+  `Google Rust Style Guide learnings` section. Red-checked: with check 43's
+  first wording (re-exports only) restored it fails on the first pin;
+  `deno task drift-pins-on-base` reports all three pins absent on `main` and on
+  the pre-fix head. Otherwise the change is prompt and doc prose; existing tests
+  guard that credited paths exist, bucket files are documented, and anchors
+  resolve. No existing test was edited.
+- `deno task check:manifests` set (55 files): 846 passed, 0 failed.
 - `deno fmt --check` on `rust.md` fails identically on the unmodified HEAD copy
   (existing prose width); not touched.
 - Rule applied to this PR's own diff: the only claims about other components are

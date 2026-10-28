@@ -638,13 +638,16 @@ the toolchain section above).
 
 ### Checks
 
-43. **Glob imports.** Always applies. Grep `use .*::\*;`. Flag a glob
-    import outside a prelude module re-export (`pub use … ::prelude::*`)
-    and outside `use super::*;` in a `#[cfg(test)] mod tests`. Clippy
-    `wildcard_imports` (pedantic) can confirm. Why: a glob hides where a
-    name comes from, and an upstream addition can silently shadow or
-    collide with a local name. Fix: import the names explicitly.
-    Severity: `severity:low`. Finding title: `Glob import in <file>`.
+43. **Glob imports.** Always applies. Grep `use .*::\*;`. Do not flag a
+    glob import from a module named `prelude`, whether a consumer import
+    (`use rayon::prelude::*;`, `use std::io::prelude::*;`) or a
+    `pub use` re-export of one, nor `use super::*;` inside a
+    `#[cfg(test)]` module; clippy allows both. Flag every other
+    `use …::*;`. Clippy `wildcard_imports` (pedantic) can confirm. Why:
+    a glob hides where a name comes from, and an upstream addition can
+    silently shadow or collide with a local name. Fix: import the names
+    explicitly. Severity: `severity:low`. Finding title:
+    `Glob import in <file>`.
 44. **Missing `#[must_use]`.** Always applies. Grep `pub fn .*->` and
     flag a function whose return value a caller would be wrong to ignore
     and that has no `#[must_use]`. That covers a non-`()` return that is
