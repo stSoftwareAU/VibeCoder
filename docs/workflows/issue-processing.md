@@ -317,9 +317,9 @@ never lost — the refusal is logged, the issue stays open, and a human `work-on
 schedules it exactly as before.
 
 A run-failure issue is also self-scheduled only once its body's **Source** line
-or a fleet-authored follow-up occurrence line names a (public) source (Issue
-#4462). A run on a private repository withholds its source (Issue #4318), so an
-issue whose every occurrence was withheld waits for a human `work-on`; the
+or a fleet-authored follow-up occurrence line names a (public) source
+(Issue #4462). A run on a private repository withholds its source (Issue
+#4318), so an issue whose every occurrence was withheld waits for a human `work-on`; the
 refusal is logged, and the worker does not guess the cause.
 
 **Bounded, visible and reversible:**
