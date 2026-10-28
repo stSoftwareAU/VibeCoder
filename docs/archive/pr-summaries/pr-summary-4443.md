@@ -60,11 +60,11 @@ Backend-only change; no UI files touched.
   lookup that answers nothing; no assertion removed. Red check: with the
   `promptsDir` override removed and `PROMPTS_DIR=/nonexistent` in the shell,
   five 4417 tests fail.
-- Added to the 4443 test file: a named prompts directory wins over
-  `PROMPTS_DIR` and `VIBE_BASE_DIR`; `buildIssuePrompt` with a temporary
-  `promptsDir` whose bundle carries its own revision records that revision.
-  Red check: with `prompt_builder.ts` calling `loadTrustedCapabilityBundle()`
-  with no directory again, the `buildIssuePrompt` test fails.
+- Added to the 4443 test file: a named prompts directory wins over `PROMPTS_DIR`
+  and `VIBE_BASE_DIR`; `buildIssuePrompt` with a temporary `promptsDir` whose
+  bundle carries its own revision records that revision. Red check: with
+  `prompt_builder.ts` calling `loadTrustedCapabilityBundle()` with no directory
+  again, the `buildIssuePrompt` test fails.
 - Callers of `loadTrustedCapabilityBundle`: `pre_pr_verifier.ts` calls it with
   no arguments and gets the default environment lookup, because it runs in the
   container's staged copy (the #4443 case). `prompt_builder.ts` passes its
@@ -74,6 +74,11 @@ Backend-only change; no UI files touched.
   `.claude/skills/review-fleet-prs/scripts/gate.ts` defaults to the prompts
   directory of the checkout it runs from (its base behaviour), since the gate
   never runs from the staged copy (PR #4463 second review).
+  `checkoutPromptsDir(moduleUrl)` decodes the percent-encoded URL pathname, so a
+  checkout under `/Users/a b/` still reads the bundle (PR #4463 third review);
+  `worker/deno/tests/review_fleet_prs_checkout_prompts_dir_4463_test.ts` (1 test
+  at head) feeds it `%20` and non-ASCII escapes; red check: with
+  `decodeURIComponent` removed it fails ("Values are not equal").
 - Suites bound to this checkout's bundle (PR #4463 second review):
   `capability_security_review_4366_test.ts` (the gate's `loadCapabilityBundle`
   when no `bundle` is given, and `loadTrustedCapabilityBundle` in every verifier

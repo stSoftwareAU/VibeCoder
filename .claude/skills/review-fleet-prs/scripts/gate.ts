@@ -49,8 +49,11 @@ const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
  * trusted bundle beside it is the one it reviews with. It is named here so the
  * host's PROMPTS_DIR or VIBE_BASE_DIR never redirects it (PR #4463 review).
  */
-const CHECKOUT_PROMPTS_DIR =
-  new URL("../../../../prompts", import.meta.url).pathname;
+export function checkoutPromptsDir(moduleUrl: string | URL): string {
+  // pathname stays percent-encoded; decode it so a space or non-ASCII path reads.
+  return decodeURIComponent(new URL("../../../../prompts", moduleUrl).pathname);
+}
+const CHECKOUT_PROMPTS_DIR = checkoutPromptsDir(import.meta.url);
 
 import {
   BRANCH_UPDATE_FILE,
