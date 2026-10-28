@@ -4307,25 +4307,28 @@ exceptions, and each names what went unchecked. The first is a merge-only
 cycle (Issue #4326): a host that cannot afford the cargo build marks its
 `skipped` verdict `landUnverified`, the resolution is pushed with the `UNGATED`
 note, and the report says the tree was not checked. The second (Issue #4422)
-is narrower: it covers a Deno check this host cannot run because it cannot
-fetch a remote module, whether a resolution gate Deno task or a Deno project's
-type check in `checkMergedTree` (Issue #4441). When such a check fails, deno
-prints `error: Import '<url>' failed.`
+covers a Deno task whose remote module host this host cannot reach, in the
+resolution gate's tasks and, under the condition below, in the type check in
+`checkMergedTree` (Issue #4451). When a Deno task fails because this
+host cannot fetch a remote module, deno prints `error: Import '<url>' failed.`
 followed by a connection-class cause such as `error sending request for url`,
 `unsuccessful tunnel` or `dns error`. `detectRemoteModuleGap` in
 [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) recognises
 only that pair. A 404, a certificate, a checksum or a type error is still an
-ordinary failure and is refused. The unreachable task or type check is not
-counted as passed and is not repaired. Every other project and task still runs,
-so a real failure elsewhere still refuses the resolution, and `quality.sh` is
-never substituted for an unreachable unit suite. A task left to CI lands with
-the outcome field `suiteLeftToCi` and the `TESTS LEFT TO CI:` push note; a type
-check left to CI lands with `checkLeftToCi` and the `CHECK LEFT TO CI:` push
-note (Issue #4441). Each names what did not run and the cause, and the
-escalation comment says it did not run and that the milestone PR's CI runs it.
-The exception does not relax the rule for the tree: a tree where no type check
-ran is still refused, and the report names what did not run, so nothing reads
-as verified.
+ordinary failure and is refused. The unreachable task is not counted as passed
+and is not repaired. Every other task still runs, so a real failure elsewhere
+still refuses the resolution, and `quality.sh` is never substituted for an
+unreachable unit suite. The resolution then lands with the outcome field
+`suiteLeftToCi` and the `TESTS LEFT TO CI:` push note, naming the task and the
+cause, and the escalation comment says that task did not run and that the
+milestone PR's CI runs it. A type check
+that cannot fetch its remote modules is left to CI only when another project's
+check passed: `verifyResolvedTree` then carries it as `checkLeftToCi`, and the
+report says the type check did not fully run rather than claiming it passed
+(Issue #4444). A tree where nothing else was checked is `skipped`, and the
+resolution is refused. The exception
+does not relax the rule for the tree: the report names the task as not run, so
+nothing reads as verified.
 What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
 ([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts));
@@ -4480,13 +4483,17 @@ Three properties matter:
   failure, a timeout past `MERGE_GATE_TIMEOUT_MS`, a working tree that cannot be
   read — counts as a failure, not a pass: absence of a failure is not success.
   The deliberate exceptions are the merge-only cycle of Issue #4326 on a tree
-  that holds a cargo project, described after this list, and one narrower case
-  for Deno checks (Issue #4422), described in the merge-down section above: a
-  Deno task or a Deno project's type check in `checkMergedTree` whose remote
-  module host this host cannot reach is reported as not run, rather than being
-  counted as passed or refused. The resolution lands with `suiteLeftToCi` naming
-  a task left to CI, or `checkLeftToCi` naming a type check left to CI
-  (Issue #4441).
+  that holds a cargo project, described after this list, and a Deno check whose
+  remote module host this host cannot reach, which is reported as not run
+  rather than counted as passed. In the resolution gate (Issue #4422, described
+  in the merge-down section above) the resolution lands with `suiteLeftToCi`
+  and the `TESTS LEFT TO CI:` note, naming such a task. `checkMergedTree` leaves such a type check to CI too
+  (Issue #4451). When another project's check passed, the verdict is `passed`
+  with `checkLeftToCi` set, and the push carries a `CHECK LEFT TO CI:` note
+  (Issue #4444). When nothing else was checked, the verdict is `skipped`: on a
+  clean merge the tree is pushed with the `UNGATED:` note, like the flowchart's
+  no-Deno-project path, and only the resolution path (`verifyResolvedTree`)
+  refuses it.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
@@ -4521,7 +4528,7 @@ very cargo build the host cannot afford, so it is not offered. Every such cycle
 is a refusal that is never charged and never climbs the recovery ladder: the
 branch waits for the host's disk, as every other disk stop does. A Deno check
 that cannot reach its module host is left to CI by both the merge gate and the
-resolution gate (Issue #4422), never charged as a refused tree. See
+resolution gate (Issues #4422 and #4451), never charged as a refused tree. See
 [HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
 
 #### 🪦 The sync never resurrects a deleted file

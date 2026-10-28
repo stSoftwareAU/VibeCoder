@@ -1,23 +1,27 @@
 ## Summary
 
-A milestone sync whose merged tree passed the repository's Issue #974 type check
-only because the host could not fetch a remote Deno module (Issue #4422's
-left-to-CI carve-out) was reported as if that check had passed. The left-to-CI
-note is now carried from the merge gate (`checkMergedTree`) and the resolution
-gate (`verifyResolvedTree`) through the sync result into the conflict report and
-the `CHECK LEFT TO CI:` push note, so the report names the check that did not
-run instead of claiming it passed. Version bump: not applicable. Closes #4441.
+Issue #4441's left-to-CI reporting for a Deno type check (`checkLeftToCi`, the
+`CHECK LEFT TO CI:` push note and the conflict-report wording) has landed on the
+base branch through Issues #4444 and #4451, so this PR no longer carries it.
+What remains is the label set: the push-note labels are one exported
+`SYNC_UNCHECKED_NOTE`, `git_pull.ts` builds its notes from it, and the
+resolution commit message names every note that means a check did not run, so
+the merge commit never says the repository's own check passed when its note says
+`CHECK LEFT TO CI` or `TESTS LEFT TO CI`. The manuals now name the
+`TESTS LEFT TO CI:` note beside `CHECK LEFT TO CI:`, and `docs/CONTAINER.md`
+says what a merge-only mixed tree does when nothing ran. Version bump: not
+applicable. Closes #4441.
 
 ## Reproduction
 
 - **symptom** — the milestone sync gate refused (or reported as passed) a
   resolution whose `deno task check` could not fetch `https://esm.sh/...`
   ("unsuccessful tunnel"); the report never said the type check did not run.
-- **status** — `verified` — the regression tests were observed failing against
-  the unfixed `lib/` (the four changed lib files restored to `244a4d18`: 5
-  failed, 49 passed) and passing after the fix (54 passed, 0 failed).
+- **status** — `verified` on the original branch; the behaviour now lives on the
+  base branch (Issues #4444, #4451), and this PR's remaining change is the
+  commit-message and push-note labels.
 - **regression test** —
-  `worker/deno/tests/milestone_env_fault_not_charged_test.ts::the merge gate names a Deno check left to CI as checkLeftToCi, so the report cannot claim it passed (Issue #4441)`
+  `worker/deno/tests/milestone_conflict_triage_test.ts::buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)`
 
 ## Spec
 
@@ -45,47 +49,21 @@ run instead of claiming it passed. Version bump: not applicable. Closes #4441.
 
 ## Evidence
 
-Changes: `lib/milestone_merge_gate.ts` (new `checkLeftToCi` on
-`MergeGateOutcome`), `lib/milestone_resolution_gate.ts` (carried onto the passed
-verdict), `lib/milestone_sync_conflict.ts` (field and report wording),
-`lib/git_pull.ts` (`CHECK LEFT TO CI:` push note and result field),
-`lib/milestone_conflict_triage.ts` (`SYNC_UNCHECKED_NOTE`, and the resolution
-commit message names all four notes).
-
-Manuals read and updated (PR #4459 review): `docs/workflows/milestones.md`
-("Every automatic resolution is verified before it is pushed" and the merge-down
-mermaid edge) and `docs/INTERNALS.md` (the merge-down section's two exceptions,
-its mermaid edge, the "Nothing unverified is published" bullet and the
-conflict-triage mermaid edge). They now say a Deno type check whose module host
-is unreachable is left to CI by `checkMergedTree`, lands with `checkLeftToCi`
-and gets the `CHECK LEFT TO CI:` note; the "type check is unchanged" sentences
-are gone. Siblings grepped: `suiteLeftToCi`, `TESTS LEFT TO CI`, `CARGO SKIPPED`
-and `UNGATED` across `docs/`, `README.md`, `DESIGN-PRINCIPLES.md`, `prompts/`
-and `worker/deno/lib`. `docs/CONTAINER.md`'s merge-only paragraph said mixed
-trees must pass every Deno check; it now names the left-to-CI exception and both
-notes, and says the note applies only when some other check ran: with cargo
-skipped and a mixed tree's only Deno type check unreachable, nothing ran, so a
-conflict-free merge is pushed `UNGATED:` and a resolved conflict is refused
-(`milestone_merge_only.ts` `resolutionGate` sets `landUnverified` for cargo-only
-trees only). The remaining hits (`docs/CONTAINER.md:1389`, `:1393`,
-`docs/INTERNALS.md:4471`, `:4506`, `:4515`) describe `UNGATED` alone and stay
-true.
-
-Review-fix tests: `milestone_conflict_triage_test.ts` 31 passed;
-`check:manifests` files 846 passed.
+Merged diff against the base: `lib/milestone_conflict_triage.ts` (new
+`SYNC_UNCHECKED_NOTE`; the resolution commit message names all four notes),
+`lib/git_pull.ts` (push notes built from `SYNC_UNCHECKED_NOTE`),
+`tests/milestone_conflict_triage_test.ts`, and the manuals
+`docs/workflows/milestones.md`, `docs/INTERNALS.md` and `docs/CONTAINER.md`.
+The gate and report logic (`milestone_merge_gate.ts`, `milestone_resolution_gate.ts`,
+`milestone_sync_conflict.ts`) is the base branch's own, from Issues #4444 and
+#4451. Merge resolution kept the base's wording on when a type check is left to
+CI (only when another project's check passed) and added the
+`TESTS LEFT TO CI:` note label to it.
 
 ## Test Plan
 
-- New tests: two in `milestone_env_fault_not_charged_test.ts`, one in
-  `milestone_gate_repair_land_unverified_4326_test.ts`, two in
-  `milestone_resolution_gate_test.ts`, one in
-  `milestone_sync_conflict_resolution_test.ts`.
-- Red check: with `git_pull.ts`, `milestone_merge_gate.ts`,
-  `milestone_resolution_gate.ts` and `milestone_sync_conflict.ts` restored to
-  `244a4d18`, 5 of the new tests fail; restored to the branch head, all 54 tests
-  in those four files pass.
-- No existing test was edited.
-- Review fix: new
-  `milestone_conflict_triage_test.ts::buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)`.
+- Remaining test: `worker/deno/tests/milestone_conflict_triage_test.ts::buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)`.
   Red check: with the commit message restored to its "UNGATED or CARGO SKIPPED"
   wording, it fails.
+- The earlier regression tests for `checkLeftToCi` are superseded by the base
+  branch's own tests from Issues #4444 and #4451.
