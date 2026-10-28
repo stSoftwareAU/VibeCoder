@@ -67,7 +67,8 @@ the markdown linter.
 ## Test Plan
 
 - `deno test -A tests/bucket_docs_test.ts tests/references_doc_test.ts tests/markdown_anchors_test.ts`
-  (from `worker/deno`), plus the two best-practices scan tests below: 90 passed, 0 failed across the five files.
+  (from `worker/deno`), plus the two best-practices scan tests below: 90 passed,
+  0 failed across the five files.
 - `tests/best_practices_cost_speed_reliability_test.ts` and
   `tests/best_practices_verbose_gate_test.ts` (both read
   `docs/BEST-PRACTICES-SCAN.md`): 19 and 30 passed, 0 failed.
@@ -87,21 +88,51 @@ the markdown linter.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — New `## Google Rust Style Guide learnings` section with a preamble and `### Checks` numbered 43–51, one per rule (glob imports, `must_use`, `non_exhaustive`, `bool` parameters, check-then-unwrap, assertion messages, `Mutex` poisoning, `catch_unwind`, `#[doc(hidden)]`/`__` internals) — evidence: `prompts/best_practices/buckets/rust.md` checks 43–51 — reviewer: met
-- **met** — Every new check names a grep-able pattern and files at `severity:low` — evidence: `prompts/best_practices/buckets/rust.md` (each check carries `Severity: \`severity:low\``; the preamble states it for the whole section) — reviewer: met
-- **met** — The guide's URL is a fourth "Canonical guides" entry and is in the `rust` row of the bucket table — evidence: `prompts/best_practices/buckets/rust.md`, `docs/BEST-PRACTICES-SCAN.md` — reviewer: met
-- **met** — A Google Rust Style Guide row in `docs/REFERENCES.md`, "Where it shows up" = `prompts/best_practices/buckets/rust.md` — evidence: `docs/REFERENCES.md`, `tests/references_doc_test.ts` — reviewer: met
-- **met** — No other prompt changes; `prompts/coding_guidelines/prompt.md` untouched — evidence: `git diff main --stat` lists no other file under `prompts/` — reviewer: met
-- **unrequested** — A short `### Rust style-guide checks` subsection in `docs/BEST-PRACTICES-SCAN.md` — reviewer: unrequested — reason: keeps the operator manual in step with the new bucket section
+- **met** — New `## Google Rust Style Guide learnings` section with a preamble
+  and `### Checks` numbered 43–51, one per rule (glob imports, `must_use`,
+  `non_exhaustive`, `bool` parameters, check-then-unwrap, assertion messages,
+  `Mutex` poisoning, `catch_unwind`, `#[doc(hidden)]`/`__` internals) —
+  evidence: `prompts/best_practices/buckets/rust.md` checks 43–51 — reviewer:
+  met
+- **met** — Every new check names a grep-able pattern and files at
+  `severity:low` — evidence: `prompts/best_practices/buckets/rust.md` (each
+  check carries `Severity: \`severity:low\``; the preamble states it for the
+  whole section) — reviewer: met
+- **met** — The guide's URL is a fourth "Canonical guides" entry and is in the
+  `rust` row of the bucket table — evidence:
+  `prompts/best_practices/buckets/rust.md`, `docs/BEST-PRACTICES-SCAN.md` —
+  reviewer: met
+- **met** — A Google Rust Style Guide row in `docs/REFERENCES.md`, "Where it
+  shows up" = `prompts/best_practices/buckets/rust.md` — evidence:
+  `docs/REFERENCES.md`, `tests/references_doc_test.ts` — reviewer: met
+- **met** — No other prompt changes; `prompts/coding_guidelines/prompt.md`
+  untouched — evidence: `git diff main --stat` lists no other file under
+  `prompts/` — reviewer: met
+- **unrequested** — A short `### Rust style-guide checks` subsection in
+  `docs/BEST-PRACTICES-SCAN.md` — reviewer: unrequested — reason: keeps the
+  operator manual in step with the new bucket section
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — New checks used the `Stable id:` wording, which `tests/best_practices_cost_speed_reliability_test.ts` reserves for the cost section — evidence: `prompts/best_practices/buckets/rust.md` checks 43–51 — reason: fixed in this diff (now `Finding title:`)
-- **violation** — Check 44 excluded `Option` as if it were `#[must_use]`; check 51's example path did not match its own grep; check 48 left `debug_assert!` scope open — evidence: `prompts/best_practices/buckets/rust.md` checks 44, 48, 51 — reason: fixed in this diff
-- **violation** — `docs/BEST-PRACTICES-SCAN.md` said the guides "end with" the cost section, false for `rust` once a later section exists; new paragraph was one long line — evidence: `docs/BEST-PRACTICES-SCAN.md` — reason: fixed in this diff
-- **violation** — Checks 47 and 49 did not cross-reference check 1 (bare `unwrap()`) — evidence: `prompts/best_practices/buckets/rust.md` — reason: fixed in this diff
-- **clean** — Australian spelling, check counts across the three files, cross-references to checks 1, 10, 12, 16, 20 and 30, clippy lint names and groups, `docs/REFERENCES.md` row format, prompt-engineering guidance
+- **violation** — New checks used the `Stable id:` wording, which
+  `tests/best_practices_cost_speed_reliability_test.ts` reserves for the cost
+  section — evidence: `prompts/best_practices/buckets/rust.md` checks 43–51 —
+  reason: fixed in this diff (now `Finding title:`)
+- **violation** — Check 44 excluded `Option` as if it were `#[must_use]`; check
+  51's example path did not match its own grep; check 48 left `debug_assert!`
+  scope open — evidence: `prompts/best_practices/buckets/rust.md` checks 44, 48,
+  51 — reason: fixed in this diff
+- **violation** — `docs/BEST-PRACTICES-SCAN.md` said the guides "end with" the
+  cost section, false for `rust` once a later section exists; new paragraph was
+  one long line — evidence: `docs/BEST-PRACTICES-SCAN.md` — reason: fixed in
+  this diff
+- **violation** — Checks 47 and 49 did not cross-reference check 1 (bare
+  `unwrap()`) — evidence: `prompts/best_practices/buckets/rust.md` — reason:
+  fixed in this diff
+- **clean** — Australian spelling, check counts across the three files,
+  cross-references to checks 1, 10, 12, 16, 20 and 30, clippy lint names and
+  groups, `docs/REFERENCES.md` row format, prompt-engineering guidance
 
 <!-- vibe-quality-gate-skipped reason="prose-only change; targeted tests and markdownlint run instead, full ./quality.sh left to CI and the worker's pre-PR gate" -->
