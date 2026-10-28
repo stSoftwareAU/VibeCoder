@@ -48,6 +48,9 @@ export interface EarlierFinding {
 /** Opens the original finding inside a gap's text, so a gap quoted as text can be unwrapped. */
 const ORIGINAL_MARKER = "Original finding: ";
 const GAP_FILE = "(earlier review)";
+const TEXT_GAP_FIX =
+  "Resolve every ask in the original finding, including its Fix, in this change.";
+const TEXT_GAP_FIX_TAIL = `\n\n**Fix:** ${TEXT_GAP_FIX}`;
 
 /** The reviewer's verdict for this index, in words; no verdict and a duplicate are named too. */
 function verdictText(matches: readonly EarlierVerdict[]): string {
@@ -63,7 +66,12 @@ function verdictText(matches: readonly EarlierVerdict[]): string {
 function originalOf(finding: string | EarlierFinding): string | EarlierFinding {
   if (typeof finding === "string") {
     const at = finding.lastIndexOf(ORIGINAL_MARKER);
-    return at < 0 ? finding : finding.slice(at + ORIGINAL_MARKER.length);
+    if (at < 0) return finding;
+    // A posted gap ends with its own generic Fix; reusing it would grow one per round.
+    const quoted = finding.slice(at + ORIGINAL_MARKER.length);
+    return quoted.endsWith(TEXT_GAP_FIX_TAIL)
+      ? quoted.slice(0, -TEXT_GAP_FIX_TAIL.length)
+      : quoted;
   }
   return finding.file === GAP_FILE && finding.earlier
     ? originalOf(finding.earlier)
@@ -103,8 +111,7 @@ export function earlierFindingGaps(
         file: GAP_FILE,
         line: 0,
         problem: `${head}${original}`,
-        fix:
-          "Resolve every ask in the original finding, including its Fix, in this change.",
+        fix: TEXT_GAP_FIX,
       }];
     }
     const at = original.line > 0

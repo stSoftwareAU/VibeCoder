@@ -133,3 +133,45 @@ Deno.test("earlier findings - a posted gap quoted as text unwraps to the origina
   assertStringIncludes(second.problem, "**`a.ts:2`**: broken");
   assertStringIncludes(second.problem, "**Fix:** both");
 });
+
+Deno.test("earlier findings - a posted text gap does not grow over several rounds", () => {
+  const verdicts = [{ index: 1, verdict: "not fixed" as const, note: "no" }];
+  const originalText = "**`a.ts:2`**: broken\n\n**Fix:** both";
+  let text = originalText;
+  const quoted: string[] = [];
+  for (let round = 0; round < 4; round++) {
+    const gap = earlierFindingGaps([text], verdicts)[0]!;
+    quoted.push(gap.problem.slice(gap.problem.indexOf("Original finding: ")));
+    text = `**\`(earlier review)\`**: ${gap.problem}\n\n**Fix:** ${gap.fix}`;
+    text = extractEarlierFindings(text).join("\n");
+  }
+  assertEquals(quoted[3], quoted[1]);
+  assertEquals(quoted[1], `Original finding: ${originalText}`);
+  assertEquals(text.split("Resolve every ask").length - 1, 1);
+  assertEquals(text.split("**Fix:** both").length - 1, 1);
+});
+
+Deno.test("earlier findings - a gap pins its file and line, and only a real gap is unwrapped", () => {
+  const [textGap] = earlierFindingGaps(["plain finding"], []);
+  assertEquals(textGap!.file, "(earlier review)");
+  assertEquals(textGap!.line, 0);
+  const [structured] = earlierFindingGaps([original], []);
+  assertEquals(structured!.file, "(earlier review)");
+  assertEquals(structured!.line, 0);
+  // A non-gap finding that carries `earlier` data is itself the original.
+  const other = { file: "b.ts", line: 3, problem: "other", fix: "do b" };
+  const carrying = { ...original, earlier: other };
+  const [gap] = earlierFindingGaps([carrying], []);
+  assertEquals(gap!.earlier, carrying);
+  assertStringIncludes(gap!.problem, "a.ts:2 — two paths broken");
+  // A legacy gap without `earlier` is quoted as it is.
+  const legacy = {
+    file: "(earlier review)",
+    line: 0,
+    problem: "legacy problem",
+    fix: "legacy fix",
+  };
+  const [legacyGap] = earlierFindingGaps([legacy], []);
+  assertEquals(legacyGap!.earlier, legacy);
+  assertStringIncludes(legacyGap!.problem, "(earlier review) — legacy problem");
+});
