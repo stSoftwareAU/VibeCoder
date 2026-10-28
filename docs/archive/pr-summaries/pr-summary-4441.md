@@ -63,7 +63,11 @@ unchanged" sentences are gone. Siblings grepped: `suiteLeftToCi`,
 `TESTS LEFT TO CI`, `CARGO SKIPPED` and `UNGATED` across `docs/`, `README.md`,
 `DESIGN-PRINCIPLES.md`, `prompts/` and `worker/deno/lib`. `docs/CONTAINER.md`'s merge-only
 paragraph said mixed trees must pass every Deno check; it now names the
-left-to-CI exception and both notes. The remaining hits
+left-to-CI exception and both notes, and says the note applies only when some
+other check ran: with cargo skipped and a mixed tree's only Deno type check
+unreachable, nothing ran, so a conflict-free merge is pushed `UNGATED:` and a
+resolved conflict is refused (`milestone_merge_only.ts` `resolutionGate` sets
+`landUnverified` for cargo-only trees only). The remaining hits
 (`docs/CONTAINER.md:1386`, `docs/INTERNALS.md:4471`, `:4506`, `:4515`) describe
 `UNGATED` alone and stay true.
 
