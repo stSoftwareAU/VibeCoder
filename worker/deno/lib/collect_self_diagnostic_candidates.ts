@@ -650,9 +650,11 @@ async function unreadableRunFailureSource(
     const comments = await fetchIssueCommentPages(repo, issue.number, ghFn);
     rows = [];
     for (const raw of comments) {
-      if (typeof raw !== "object" || raw === null) continue;
-      const comment = raw as { body?: unknown; user?: { login?: unknown } };
-      if (typeof comment.body !== "string") continue;
+      // A primitive has no `body`; `?.` covers a null entry.
+      const comment = raw as
+        | { body?: unknown; user?: { login?: unknown } }
+        | null;
+      if (typeof comment?.body !== "string") continue;
       if (parseRunFailureFollowUpMarker(comment.body) === null) continue;
       const login = comment.user?.login;
       rows.push({

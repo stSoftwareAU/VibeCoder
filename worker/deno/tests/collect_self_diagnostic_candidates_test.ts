@@ -560,6 +560,7 @@ Deno.test("self-schedule - a run-failure issue whose every occurrence withheld i
 
   assertEquals(result.candidates, []);
   assertEquals(result.refusals.map((r) => r.cause), ["no-readable-source"]);
+  assertEquals(result.refusals.map((r) => r.issueNumber), [39]);
   assert(
     logs.some((l) => l.includes("refused") && l.includes("#39")),
     `expected a refusal log line, got ${JSON.stringify(logs)}`,
@@ -642,4 +643,60 @@ Deno.test("self-schedule - a run-failure issue whose follow-ups cannot be read i
   assertEquals(result.refusals.map((r) => r.cause), ["no-readable-source"]);
   assertStringIncludes(result.refusals[0]!.detail, "could not read");
   assert(logs.some((l) => l.includes("refused")));
+});
+
+Deno.test("self-schedule - a follow-up thread with non-object entries still schedules on a public follow-up (Issue #4462)", async () => {
+  const { result } = await collect({
+    issues: [makeIssue({ body: await runFailureBody("private") })],
+    gh: makeGh([], {
+      comments: JSON.stringify([
+        null,
+        "a string",
+        7,
+        followUpComment(await occurrenceLine("public")),
+      ]),
+    }),
+    deps: captureDeps([], []),
+  });
+
+  assertEquals(result.candidates.map((c) => c.number), [39]);
+  assertEquals(result.refusals, []);
+});
+
+Deno.test("self-schedule - a diagnostic whose filing attestation failed is refused with the reason and detail", async () => {
+  const logs: string[] = [];
+  const deps: SelfDiagnosticDeps = {
+    ...captureDeps([], logs),
+    verifyFilings: (_repo, issues) =>
+      Promise.resolve(
+        new Map(issues.map((issue) => [issue.number, {
+          attested: false,
+          reason: "content-mismatch",
+          detail: "the body changed after filing",
+        } as AttestationVerdict])),
+      ),
+  };
+  const { result } = await collect({ issues: [makeIssue()], deps });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals, [{
+    issueNumber: 39,
+    cause: "unattested",
+    detail: "content-mismatch: the body changed after filing",
+  }]);
+});
+
+Deno.test("self-schedule - a diagnostic with no attestation verdict is refused", async () => {
+  const deps: SelfDiagnosticDeps = {
+    ...captureDeps([], []),
+    verifyFilings: () => Promise.resolve(new Map()),
+  };
+  const { result } = await collect({ issues: [makeIssue()], deps });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals, [{
+    issueNumber: 39,
+    cause: "unattested",
+    detail: "no filing attestation was returned for this issue",
+  }]);
 });

@@ -51,6 +51,14 @@ round trip).
   `self-schedule` tests: all-withheld refused with cause `no-readable-source`;
   public-source follow-up scheduled; Source-line body needs no follow-up read;
   non-fleet follow-up refused; unreadable comments refused.
+- Mutation follow-up: three more `self-schedule` tests pin the `unattested`
+  refusal (reason, detail and issue number, with and without a verdict), the
+  `no-readable-source` refusal's issue number, and a comments thread holding
+  null and primitive entries. The comment-entry guard in
+  `unreadableRunFailureSource` is now `typeof comment?.body !== "string"`: the
+  separate `typeof raw !== "object"` / `raw === null` operands were redundant
+  (a primitive has no `body`, and `?.` covers null), so no equivalent mutant
+  remains.
 - Red check: with the readable-source check disabled, the all-withheld,
   outside-login and unreadable-comments tests fail; the two scheduling tests
   stay green.
