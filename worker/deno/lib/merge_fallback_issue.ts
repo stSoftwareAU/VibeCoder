@@ -1,6 +1,16 @@
 /**
- * The `merge-fallback` flag issue every conflict fallback leaves behind
- * (Issue #2304, part of #2298).
+ * The `merge-fallback` record every conflict fallback leaves behind
+ * (Issue #2304, part of #2298), filed in VibeCoder as a worker failure
+ * (Issue #4456).
+ *
+ * A fallback means the worker failed to finish the work, so it is never filed
+ * as a new issue in the repository the conflict was in: that read as a fresh
+ * work item instead of the worker completing the one it had. It is filed in
+ * {@link MERGE_FALLBACK_TARGET_REPO}, labelled `bug`, with one open issue per
+ * cause; a repeat appends a comment. VibeCoder is public, so a private source
+ * repository is never named there: its repository, branches, PR, paths and
+ * the agents' full replies are left out, and only the host, the timings, each
+ * run's conclusion and how far behind the branch was are recorded.
  *
  * The conflict ladder ends in a fallback: on the PR path the PR is closed and
  * its originating issue re-queued; on the milestone path the merged children
@@ -53,8 +63,23 @@ import { ensureLabelExists as defaultEnsureLabelExists } from "./label_operation
 /** Content label marking an issue filed by a conflict fallback. */
 export const MERGE_FALLBACK_LABEL = "merge-fallback";
 
-/** Label applied only when the caller asks for the flag to be re-done work. */
-const IDLE_TASK_LABEL = "idle-task";
+/**
+ * Where every fallback is filed (Issue #4456): a fallback is the worker's
+ * failure, whichever monitored repository the conflict was in.
+ */
+export const MERGE_FALLBACK_TARGET_REPO = "stSoftwareAU/VibeCoder";
+
+/** Worker-fault label every fallback record carries. */
+const BUG_LABEL = "bug";
+
+/** Title and cause when no conclusion names one. */
+const UNCLASSIFIED_CAUSE = "unclassified";
+
+/** Longest cause kept in a title. */
+const MAX_CAUSE_CHARS = 100;
+
+/** Whether the source repository may be named in VibeCoder. */
+export type SourceVisibility = "public" | "private";
 
 /** Callsite recorded in the label guard's audit line. */
 const CALLER = "worker/deno/lib/merge_fallback_issue.ts";
@@ -136,10 +161,8 @@ export interface MergeFallbackEvent {
   /** What the fallback closed or reverted. */
   fallbackAction?: string;
   /**
-   * What the abandoned PR changed (Issue #2310). This is what makes the flag a
-   * re-do item for a conflicting PR whose originating issue cannot be found:
-   * the PR is closed, so the summary is the only statement of what the work
-   * touched. Absent means the fallback did not read one — a milestone branch has
+   * What a conflicting PR with no originating issue changed (Issue #2310),
+   * rendered only for a public source. Absent means the fallback did not read one — a milestone branch has
    * no PR diff, and the route that re-queues an originating issue does not need
    * one — and the section is then not rendered at all, rather than claiming a
    * read that was never attempted.
@@ -147,17 +170,15 @@ export interface MergeFallbackEvent {
   diffSummary?: readonly MergeFallbackDiffFile[];
   /** Paths beyond the caller's cap, counted rather than dropped in silence. */
   diffSummaryOmitted?: number;
+  /**
+   * Why the fallback was reached, when the caller knows it. Absent, it is read
+   * from the last run's conclusion line ({@link mergeFallbackCause}).
+   */
+  cause?: string;
 }
 
-/** A fallback event, plus the one filing choice the caller owns. */
-export interface MergeFallbackFiling extends MergeFallbackEvent {
-  /**
-   * Ask for `idle-task` as well, making the flag the re-do work item — the
-   * conflicting PR whose originating issue could not be found (Issue #2298).
-   * Applied only through the worker label guard, like every other label.
-   */
-  requestIdleTask?: boolean;
-}
+/** What a caller hands {@link fileMergeFallbackIssue}. */
+export type MergeFallbackFiling = MergeFallbackEvent;
 
 /** What {@link fileMergeFallbackIssue} did. */
 export interface MergeFallbackOutcome {
@@ -194,31 +215,128 @@ async function defaultGh(args: string[]): Promise<string> {
   return result.stdout;
 }
 
-/**
- * Title of the flag issue — also its deduplication key.
- *
- * Deterministic and derived only from the target, so two fallbacks on the
- * same PR or branch land on the same issue however differently they failed.
- */
-export function mergeFallbackTitle(target: MergeFallbackTarget): string {
-  return target.kind === "pr"
-    ? `Merge fallback: ${target.repo} PR #${target.prNumber}`
-    : `Merge fallback: ${target.repo} ${target.milestoneBranch}`;
+/** The names a private source would be recognised by, longest first. */
+function sourceNames(target: MergeFallbackTarget): string[] {
+  const names = [
+    target.repo,
+    target.repo.split("/").pop() ?? "",
+    ...(target.kind === "pr"
+      ? [target.headBranch ?? "", target.baseBranch ?? ""]
+      : [target.milestoneBranch, target.defaultBranch ?? ""]),
+  ];
+  return [...new Set(names.filter((name) => name.length > 0))]
+    .sort((a, b) => b.length - a.length);
 }
 
 /**
- * Marker tying a flag issue to the PR or branch it was raised for.
+ * Text with nothing that names a private source: its repository and branch
+ * names, any path or slash-joined name, and any `#N` — a bare number in
+ * VibeCoder links to an unrelated VibeCoder issue.
+ */
+function scrubPrivate(text: string, target: MergeFallbackTarget): string {
+  let scrubbed = text;
+  for (const name of sourceNames(target)) {
+    scrubbed = replaceWord(scrubbed, name, "<source>");
+  }
+  return scrubbed
+    .replace(/[^\s`'"(),]*\/[^\s`'"(),]*/g, "<path>")
+    .replace(/#(\d+)/g, "number $1");
+}
+
+/** A character that continues a name, so a match inside a longer one is left. */
+function isNameChar(char: string | undefined): boolean {
+  return char !== undefined && /[\w/-]/.test(char);
+}
+
+/**
+ * Every whole-word, case-insensitive occurrence of `word` replaced. A plain
+ * scan rather than a regular expression built from the name, so no name can
+ * change the pattern.
+ */
+function replaceWord(text: string, word: string, replacement: string): string {
+  const haystack = text.toLowerCase();
+  const needle = word.toLowerCase();
+  let out = "";
+  let from = 0;
+  for (
+    let at = haystack.indexOf(needle);
+    at !== -1;
+    at = haystack.indexOf(needle, at + 1)
+  ) {
+    if (at < from) continue;
+    const end = at + needle.length;
+    if (isNameChar(text[at - 1]) || isNameChar(text[end])) continue;
+    out += text.slice(from, at) + replacement;
+    from = end;
+  }
+  return out + text.slice(from);
+}
+
+/** `#N` qualified as `owner/repo#N`, so it never links to a VibeCoder issue. */
+function qualifyReferences(text: string, repo: string): string {
+  return text.replace(/(^|[^\w/.-])#(\d+)\b/g, `$1${repo}#$2`);
+}
+
+/** One conclusion line, as the milestone ledger writes it. */
+const CONCLUSION_RE = /^Concluded `[^`]+` at \S+: (.+)$/m;
+
+/** A refusal that climbed, wrapping the reason it was refused for. */
+const REFUSAL_CLIMB_RE = /^refused \d+ cycles? in a row \((.+)\) — climbing/;
+
+/** The conclusion line of one run, when it wrote one. */
+function conclusionLine(run: MergeFallbackRun): string | undefined {
+  const match = CONCLUSION_RE.exec(run.analysis ?? "");
+  return match ? match[0] : undefined;
+}
+
+/**
+ * Why the fallback was reached — the deduplication key (Issue #4456).
+ *
+ * The caller's explicit cause, else the last run's conclusion with a refusal
+ * climb unwrapped to the reason that was refused and anything after the first
+ * colon dropped, so measurements that vary per event cannot split one cause
+ * into many issues. Names of the source are scrubbed whatever its
+ * visibility, so one cause has one title across every repository.
+ *
+ * @param event - The fallback event
+ * @returns A short, repository-agnostic cause
+ */
+export function mergeFallbackCause(event: MergeFallbackEvent): string {
+  let cause = event.cause?.trim() ?? "";
+  if (cause === "") {
+    const last = event.runs?.at(-1);
+    const match = CONCLUSION_RE.exec(last?.analysis ?? "");
+    if (match) {
+      const reason = match[1]!.trim();
+      const climbed = REFUSAL_CLIMB_RE.exec(reason);
+      cause = (climbed ? climbed[1]! : reason).split(":")[0]!.trim();
+    }
+  }
+  cause = scrubPrivate(sanitiseIssueText(cause), event.target)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_CAUSE_CHARS);
+  return cause === "" ? UNCLASSIFIED_CAUSE : cause;
+}
+
+/**
+ * Title of the fallback record — also its deduplication key: one open issue
+ * per cause, whichever repository or branch it happened on (Issue #4456).
+ */
+export function mergeFallbackTitle(event: MergeFallbackEvent): string {
+  return `Merge fallback: ${mergeFallbackCause(event)}`;
+}
+
+/**
+ * Marker tying a record to its cause.
  *
  * Canonical `vibe-*` grammar — a bare prefix and `key="value"` attributes
- * (Issue #842). Quotes are stripped from the values so a branch name can
- * never close an attribute early.
+ * (Issue #842). Quotes are stripped so a cause can never close the attribute
+ * early, and no source repository is named.
  */
-export function mergeFallbackMarker(target: MergeFallbackTarget): string {
-  const attr = (value: string) => sanitiseIssueText(value).replaceAll('"', "");
-  const subject = target.kind === "pr"
-    ? `pr="${target.prNumber}"`
-    : `branch="${attr(target.milestoneBranch)}"`;
-  return `<!-- vibe-merge-fallback repo="${attr(target.repo)}" ${subject} -->`;
+export function mergeFallbackMarker(event: MergeFallbackEvent): string {
+  const cause = mergeFallbackCause(event).replaceAll('"', "");
+  return `<!-- vibe-merge-fallback cause="${cause}" -->`;
 }
 
 /** One `- **Label**: value` line, saying so when there is no value. */
@@ -245,9 +363,11 @@ function fenceAnalysis(text: string): string[] {
   return [fence, text, fence];
 }
 
-/** The analysis, sanitised and capped, or `not recorded`. */
-function renderAnalysis(analysis: string | undefined): string[] {
-  const text = analysis === undefined ? "" : sanitiseIssueText(analysis).trim();
+/** The analysis, sanitised, qualified by repo and capped, or `not recorded`. */
+function renderAnalysis(analysis: string | undefined, repo: string): string[] {
+  const text = analysis === undefined
+    ? ""
+    : qualifyReferences(sanitiseIssueText(analysis), repo).trim();
   if (text.length === 0) return [`- **Analysis**: ${NOT_RECORDED}`];
 
   let capped = text.length > MAX_ANALYSIS_CHARS
@@ -271,25 +391,50 @@ function renderAnalysis(analysis: string | undefined): string[] {
   ];
 }
 
-/** One run's host, timings and analysis. */
-function renderRun(run: MergeFallbackRun): string[] {
+/** One run's stage timings line. */
+function renderTimings(run: MergeFallbackRun): string {
   const timings = run.timings ?? [];
+  return timings.length === 0
+    ? `- **Stage timings**: ${NOT_RECORDED}`
+    : `- **Stage timings**: ${
+      timings
+        .map((t) =>
+          `${sanitiseIssueText(t.stage)} ${
+            t.seconds === null ? "unfinished" : `${t.seconds}s`
+          }`
+        )
+        .join(", ")
+    }`;
+}
+
+/** One run's host, timings and analysis. */
+function renderRun(run: MergeFallbackRun, repo: string): string[] {
   return [
     `#### Run ${run.run}`,
     "",
     field("Host", run.host),
-    timings.length === 0
-      ? `- **Stage timings**: ${NOT_RECORDED}`
-      : `- **Stage timings**: ${
-        timings
-          .map((t) =>
-            `${sanitiseIssueText(t.stage)} ${
-              t.seconds === null ? "unfinished" : `${t.seconds}s`
-            }`
-          )
-          .join(", ")
+    renderTimings(run),
+    ...renderAnalysis(run.analysis, repo),
+    "",
+  ];
+}
+
+/** One run of a private source: host, timings and its conclusion only. */
+function renderPrivateRun(
+  run: MergeFallbackRun,
+  target: MergeFallbackTarget,
+): string[] {
+  const conclusion = conclusionLine(run);
+  return [
+    `#### Run ${run.run}`,
+    "",
+    field("Host", run.host),
+    renderTimings(run),
+    conclusion === undefined
+      ? `- **Conclusion**: ${NOT_RECORDED}`
+      : `- **Conclusion**: ${
+        scrubPrivate(sanitiseIssueText(conclusion), target)
       }`,
-    ...renderAnalysis(run.analysis),
     "",
   ];
 }
@@ -299,7 +444,7 @@ function renderTarget(target: MergeFallbackTarget): string[] {
   if (target.kind === "pr") {
     return [
       field("Repository", target.repo),
-      field("Pull request", `#${target.prNumber}`),
+      field("Pull request", `${target.repo}#${target.prNumber}`),
       field("Head branch", target.headBranch),
       field("Base branch", target.baseBranch),
     ];
@@ -316,8 +461,8 @@ function renderTarget(target: MergeFallbackTarget): string[] {
  *
  * The section renders only when {@link MergeFallbackEvent.diffSummary} is
  * present, because absent means nobody asked: a milestone branch has no PR diff
- * at all, and the PR route that re-queues an originating issue needs none — the
- * issue is the re-do item there. Printing `not recorded` for a read nobody
+ * at all, and the PR route that re-queues an originating issue needs none.
+ * Printing `not recorded` for a read nobody
  * attempted would claim a measurement failure that never happened.
  *
  * A summary that **was** read and came back empty says so in words, so "GitHub
@@ -344,26 +489,70 @@ function renderDiffSummary(event: MergeFallbackEvent): string[] {
 }
 
 /**
- * Body of the flag issue — and of the comment appended for a repeat event.
+ * Body of the fallback record — and of the comment appended for a repeat.
  *
- * Pure: the same event always renders the same body. Every field renders,
- * and one the caller could not record renders as `not recorded`.
+ * Pure: the same event and visibility always render the same body. A public
+ * source renders every field, one the caller could not record as
+ * `not recorded`, with each `#N` qualified by its repository. A private
+ * source — the default, so an unknown visibility never leaks — renders only
+ * what names nothing of it (Issue #4456).
  */
-export function buildMergeFallbackBody(event: MergeFallbackEvent): string {
+export function buildMergeFallbackBody(
+  event: MergeFallbackEvent,
+  visibility: SourceVisibility = "private",
+): string {
+  return visibility === "public"
+    ? buildPublicBody(event)
+    : buildPrivateBody(event);
+}
+
+function buildPrivateBody(event: MergeFallbackEvent): string {
+  const { target, runs = [] } = event;
+  const kind = target.kind === "pr" ? "a pull request" : "a milestone branch";
+  return [
+    mergeFallbackMarker(event),
+    "",
+    `The conflict fallback ran on ${kind} of a private monitored ` +
+    "repository: the agent runs could not settle the conflict, so the fleet " +
+    "fell back. A fallback is a worker failure (Issue #4456). The source is " +
+    "private, so its repository, branches, paths and the agents' full " +
+    "replies are left out; the hosts and times below find them in each " +
+    "host's run log.",
+    "",
+    "### Cause",
+    "",
+    mergeFallbackCause(event),
+    "",
+    "### Agent runs",
+    "",
+    ...(runs.length === 0
+      ? [NOT_RECORDED, ""]
+      : runs.flatMap((run) => renderPrivateRun(run, target))),
+    "### How far behind the base",
+    "",
+    field("Commits behind the base", event.behindBy),
+    field("Behind since", event.behindSince),
+  ].join("\n");
+}
+
+function buildPublicBody(event: MergeFallbackEvent): string {
   const { target, conflictedFiles = [], runs = [] } = event;
+  const repo = sanitiseIssueText(target.repo);
   const what = target.kind === "pr"
-    ? `${sanitiseIssueText(target.repo)}#${target.prNumber}`
-    : `${sanitiseIssueText(target.repo)} \`${
-      sanitiseIssueText(target.milestoneBranch)
-    }\``;
+    ? `${repo}#${target.prNumber}`
+    : `${repo} \`${sanitiseIssueText(target.milestoneBranch)}\``;
 
   return [
-    mergeFallbackMarker(target),
+    mergeFallbackMarker(event),
     "",
-    `The conflict fallback ran on ${what}: both agent runs failed to settle ` +
-    "the conflict, so the fleet fell back to the last known good state. " +
-    "This issue is the record of that event, filed so the cause can be seen " +
-    "and avoided rather than walked into again (Issue #2298).",
+    `The conflict fallback ran on ${what}: the agent runs could not settle ` +
+    "the conflict, so the fleet fell back. A fallback is a worker failure, " +
+    "recorded here so the cause can be fixed rather than walked into again " +
+    "(Issues #2298, #4456).",
+    "",
+    "### Cause",
+    "",
+    mergeFallbackCause(event),
     "",
     "### Target",
     "",
@@ -377,7 +566,9 @@ export function buildMergeFallbackBody(event: MergeFallbackEvent): string {
     "",
     "### Agent runs",
     "",
-    ...(runs.length === 0 ? [NOT_RECORDED, ""] : runs.flatMap(renderRun)),
+    ...(runs.length === 0
+      ? [NOT_RECORDED, ""]
+      : runs.flatMap((run) => renderRun(run, repo))),
     ...renderDiffSummary(event),
     "### How far behind the base",
     "",
@@ -388,7 +579,7 @@ export function buildMergeFallbackBody(event: MergeFallbackEvent): string {
     "",
     event.fallbackAction === undefined || event.fallbackAction === ""
       ? NOT_RECORDED
-      : sanitiseIssueText(event.fallbackAction),
+      : qualifyReferences(sanitiseIssueText(event.fallbackAction), repo),
   ].join("\n");
 }
 
@@ -403,10 +594,28 @@ interface FlagIssueRow extends AlertDedupRow {
 }
 
 /**
- * File the `merge-fallback` flag for one fallback event, or append it to the
- * open flag issue already covering this PR or branch.
+ * The source repository's visibility, read through the caller's `gh`.
  *
- * @param filing - The event, and whether the flag is also the re-do task.
+ * Anything but an explicit `public` — an error, an empty answer, `internal` —
+ * is private, so a failed lookup never names a private repository.
+ */
+async function sourceVisibility(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+): Promise<SourceVisibility> {
+  try {
+    const answer = await gh(["api", `repos/${repo}`, "--jq", ".visibility"]);
+    return answer.trim().toLowerCase() === "public" ? "public" : "private";
+  } catch {
+    return "private";
+  }
+}
+
+/**
+ * File one fallback event in VibeCoder as a worker failure, or append it to
+ * the open record for the same cause (Issue #4456).
+ *
+ * @param filing - The event.
  * @param deps - Injected `gh`, label creation, fleet identity and logger.
  * @returns The flag issue, and whether this call appended to an existing one.
  *   A `gh` failure is returned as the error, never swallowed.
@@ -416,9 +625,12 @@ export async function fileMergeFallbackIssue(
   deps: MergeFallbackIssueDeps = {},
 ): Promise<Result<MergeFallbackOutcome>> {
   const gh = deps.gh ?? defaultGh;
-  const { repo } = filing.target;
-  const title = mergeFallbackTitle(filing.target);
-  const body = buildMergeFallbackBody(filing);
+  const repo = MERGE_FALLBACK_TARGET_REPO;
+  const title = mergeFallbackTitle(filing);
+  const body = buildMergeFallbackBody(
+    filing,
+    await sourceVisibility(gh, filing.target.repo),
+  );
   const log = (message: string) => {
     if (deps.logger?.warn) deps.logger.warn(message, { repo });
     else console.warn(message);
@@ -475,12 +687,7 @@ export async function fileMergeFallbackIssue(
       title,
       "--body",
       body,
-      ...guardedLabelArgs(
-        filing.requestIdleTask
-          ? [MERGE_FALLBACK_LABEL, IDLE_TASK_LABEL]
-          : [MERGE_FALLBACK_LABEL],
-        CALLER,
-      ),
+      ...guardedLabelArgs([BUG_LABEL, MERGE_FALLBACK_LABEL], CALLER),
     ]);
     const url = created.trim();
     const parsed = Number(url.split("/").pop());
@@ -494,10 +701,9 @@ export async function fileMergeFallbackIssue(
           "issue exists; the caller has no number to link it by.",
       );
     }
-    deps.logger?.info?.("Filed a conflict fallback as a merge-fallback issue", {
+    deps.logger?.info?.("Filed a conflict fallback as a VibeCoder failure", {
       repo,
       issueNumber,
-      idleTask: filing.requestIdleTask === true,
     });
     return { ok: true, value: { issueNumber, url, appended: false } };
   } catch (error) {

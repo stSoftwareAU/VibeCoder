@@ -98,6 +98,13 @@ export const BUILTIN_EGRESS_RULES: readonly EgressHostRule[] = [
     reason: "Deno standard library and third-party modules",
   },
   {
+    // Deno projects import npm packages as ES modules from here; refused,
+    // their `deno task check` fails on every merge (GRQ-AutoTrader `web/`).
+    host: "esm.sh",
+    purpose: "registry",
+    reason: "npm packages as ES modules for Deno",
+  },
+  {
     host: "crates.io",
     purpose: "registry",
     reason: "Rust crate index API",

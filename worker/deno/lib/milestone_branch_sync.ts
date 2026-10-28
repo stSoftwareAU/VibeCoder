@@ -610,10 +610,12 @@ export function escalateRepeatedRefusal(
   refusedBefore: number,
   ceiling: number = MILESTONE_REFUSAL_CEILING,
 ): ConflictConclusion {
-  // A cargo-budget withhold climbs on the next cycle. The generic ceiling
-  // would leave the branch behind for three more cycles on disk alone.
-  const bound = verdict.reason === CARGO_BUDGET_AGENT_WITHHELD ? 1 : ceiling;
-  if (!verdict.refusal || refusedBefore < bound) return verdict;
+  // A cargo-budget withhold never climbs: a full disk is the host's fault,
+  // not the branch's, and rolling the branch back frees no disk. It waits for
+  // the host like every other disk stop. Climbing here filed a
+  // `merge-fallback` issue on every milestone of a host short of disk.
+  if (verdict.reason === CARGO_BUDGET_AGENT_WITHHELD) return verdict;
+  if (!verdict.refusal || refusedBefore < ceiling) return verdict;
   return {
     outcome: "failed",
     reason:
@@ -906,9 +908,8 @@ export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
 
 /**
  * Ledger reason when a merge-only cycle withholds the agent because a cargo
- * build would not fit the host (Issue #4326). The first cycle is a refusal.
- * The next one is charged, so the branch cannot stay behind on disk budget
- * alone.
+ * build would not fit the host (Issue #4326). Never charged: the branch waits
+ * for the host to recover, and {@link escalateRepeatedRefusal} never climbs it.
  */
 export const CARGO_BUDGET_AGENT_WITHHELD = "cargo budget withheld the agent";
 
