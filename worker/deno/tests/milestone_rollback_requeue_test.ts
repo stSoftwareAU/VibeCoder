@@ -86,7 +86,7 @@ Deno.test("buildRollbackFailedComment - names the reason and the flag, and asks 
     flagIssue: 4242,
   });
   assertStringIncludes(body, "nothing left to revert");
-  assertStringIncludes(body, "merge-fallback` flag #4242");
+  assertStringIncludes(body, "stSoftwareAU/VibeCoder#4242");
   assertStringIncludes(body, BRANCH);
   assert(!body.toLowerCase().includes("needs-human"));
 });
@@ -112,7 +112,7 @@ Deno.test("buildRollbackNotice - links the merge-fallback flag (Issue #2311)", (
     needsTrustedRelabel: [],
     flagIssue: 4242,
   });
-  assertStringIncludes(body, "merge-fallback` flag #4242");
+  assertStringIncludes(body, "stSoftwareAU/VibeCoder#4242");
   assert(!body.toLowerCase().includes("needs-human"));
 });
 
@@ -326,7 +326,7 @@ Deno.test("escalateRollbackFailure - one notice on the parent naming the flag, a
   assertEquals(comments.length, 1, "one notice for one fallback");
   assertStringIncludes(
     comments[0]![comments[0]!.length - 1] ?? "",
-    "merge-fallback` flag #4242",
+    "stSoftwareAU/VibeCoder#4242",
   );
   assert(
     !calls.some((c) => c.includes("needs-human")),

@@ -1142,10 +1142,21 @@ Deno.test("processMergeConflict - the final failed attempt never escalates to a 
   assertEquals(result.value.escalated, false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 
-  // No hand-off comment is posted on the route out of a spent budget that
-  // does not run abandon-and-redo; the FAILED marker is the last word.
-  const lastComment = captured.comments.at(-1) ?? "";
-  assertStringIncludes(lastComment, CONFLICT_FAILED_MARKER);
+  // No hand-off comment is posted. The FAILED marker concludes the attempt;
+  // a PR with no originating issue then stays open, and the only other
+  // comment is the note naming its VibeCoder record (Issue #4456).
+  assert(
+    captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)),
+    "the attempt is concluded",
+  );
+  for (const comment of captured.comments) {
+    assert(
+      comment.includes(CONFLICT_FAILED_MARKER) ||
+        comment.includes("vibe-merge-fallback-recorded") ||
+        !comment.includes("needs-human"),
+      `an unexpected hand-off: ${comment}`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
