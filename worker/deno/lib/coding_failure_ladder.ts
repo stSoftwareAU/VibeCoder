@@ -142,6 +142,12 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
  * issue's can clear it, so it must not consume an attempt or earn the
  * escalating 2 h → 6 h → 24 h cooldown.
  *
+ * A refused repository-admin setting (`REPO_ADMIN_REFUSED`, Issue #4442) also
+ * carries the `repo-config` class, but only for the run-failure filer: its
+ * category stays `internal_error`, which {@link isInfrastructureFailure}
+ * counts as infrastructure, so this ladder returns `transient` for it before
+ * this set is consulted and writes no record.
+ *
  * It is deliberately NOT in {@link TRANSIENT_FAILURE_CLASSES}, because a
  * transient decision returns before `handleIssueFailure` is ever reached
  * and the run would end with no record at all on the issue. The issue asked
