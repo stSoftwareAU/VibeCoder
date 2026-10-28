@@ -177,7 +177,13 @@ is no temporary rule to revert afterwards. Every other version the change moves
 in the lockfile, including the crates a parent bump pulls in, keeps the full
 24h floor: the agent reads the lockfile diff and holds each one at its newest
 release outside the window (`cargo update -p <crate> --precise <version>`)
-(stSoftwareAU/VibeCoder#4437).
+(stSoftwareAU/VibeCoder#4437). Only a version with an older release that
+satisfies the advisory-clearing version's requirement is held back. A moved
+version that the advisory-clearing version requires, and that has no release
+outside the window meeting that requirement (crates or packages published
+together, such as `arrow-*` with `parquet`, or `@aws-sdk/*`), is part of the
+advisory-clearing change: the agent takes the oldest release that satisfies the
+requirement and names it, with its age, in the `.pr_response_message` reply.
 
 The CI-fix prompt tells the agent that a red audit is fixed in the PR even
 when the base is red — the same advisory red on the base branch is never

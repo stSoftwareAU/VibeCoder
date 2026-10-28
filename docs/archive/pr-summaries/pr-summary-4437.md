@@ -25,6 +25,14 @@ change is made in `docs/security-advisory-triage.md`. Closes #4437.
   (deno 2.9.8) shows `--min-dep-age` as a cutoff for the whole command, so the
   prompt says the flag is command-wide, to name only that package, and to read
   the lockfile diff afterwards.
+- A moved version that the advisory-clearing version requires and that has no
+  release outside the window meeting that requirement (crates or packages
+  published together, such as `arrow-*` with `parquet`, or `@aws-sdk/*`)
+  cannot be held back. It is part of the advisory-clearing change: the agent
+  takes the oldest satisfying release and names it with its age in the
+  `.pr_response_message` reply, so the advisory is not left red until the
+  window passes (PR #4450 review). Only versions with an older satisfying
+  release are held at the floor. The prompt and the triage doc both say so.
 - The existing pinned phrase "reaches no further than the advisory-clearing
   change" is kept, and the sentence extended: it also asks the agent to name
   other moved versions and its age check in the `.pr_response_message` reply.
@@ -38,7 +46,8 @@ change is made in `docs/security-advisory-triage.md`. Closes #4437.
 
 Prompt-only change; backed by a rendered-prompt test:
 `worker/deno/tests/ci_fix_prompt_v4_test.ts` (`deno task test:unit`: 10 passed,
-0 failed). markdownlint-cli2 on the two edited docs: 0 issues.
+0 failed). The `ci_fix*` tests with the `deno task check:manifests` set: 914
+passed, 0 failed. markdownlint-cli2 on the two edited docs: 0 issues.
 
 ## Test Plan
 
@@ -48,6 +57,9 @@ Prompt-only change; backed by a rendered-prompt test:
   exemption by passing an explicit zero age for that package"), and the negative
   assertion on the removed "or by editing the manifest and lockfile directly"
   wording is red against the base.
+- PR #4450 review: the same test pins the no-older-release clause in three
+  phrases. Each is absent from the pre-fix prompt, and with the pre-fix prompt
+  restored the test fails (9 passed, 1 failed).
 - Existing #1847 tests unchanged and still passing. Related rules checked: the
   #1847 tests in the same file; `CODING-STANDARDS.md` lines ~1986-1989 (CI-fix
   audit deferral) are unaffected.

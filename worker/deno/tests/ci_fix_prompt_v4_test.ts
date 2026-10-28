@@ -238,6 +238,22 @@ Deno.test("ci_fix - the zero age covers the advisory-clearing version only, not 
     "including the crates a parent bump pulls in, keeps the 24h floor",
   );
   assertStringIncludes(prompt, "cargo update -p <crate> --precise <version>");
+  // PR #4450 review: a required version with no release outside the window
+  // (crates published together) cannot be held back, so it joins the
+  // advisory-clearing change at its oldest satisfying release, named in the
+  // reply, rather than leaving the advisory red until the window passes.
+  assertStringIncludes(
+    prompt,
+    "Hold a version back only when an older release satisfies what the advisory-clearing version requires",
+  );
+  assertStringIncludes(
+    prompt,
+    "and that has no release outside the window meeting that requirement",
+  );
+  assertStringIncludes(
+    prompt,
+    "is part of the advisory-clearing change: take the oldest release that satisfies the requirement, and name it with its age in the `.pr_response_message` reply",
+  );
   // The old sentence let "edit the manifest and lockfile directly" stand as
   // the whole mechanism for the exemption.
   assertEquals(
