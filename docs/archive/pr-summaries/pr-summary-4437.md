@@ -49,6 +49,14 @@ Prompt-only change; backed by a rendered-prompt test:
 0 failed). The `ci_fix*` tests with the `deno task check:manifests` set: 914
 passed, 0 failed. markdownlint-cli2 on the two edited docs: 0 issues.
 
+- CI fix on this PR (commit 8879d45, VibeCoderST): `validate (tests 4/4)` failed
+  because the CI Deno raises "Child process has already terminated." with a
+  full stop, so the kill-after-exit guard in
+  `worker/deno/lib/capability_security_eval_container.ts` (an exact string
+  match) let the `TypeError` escape the timeout handler and fail the run. The
+  guard is now `isAlreadyTerminatedError`, which accepts both forms and nothing
+  else; `capability_security_eval_container_test.ts` pins it.
+
 ## Test Plan
 
 - Added
@@ -63,4 +71,8 @@ passed, 0 failed. markdownlint-cli2 on the two edited docs: 0 issues.
 - Existing #1847 tests unchanged and still passing. Related rules checked: the
   #1847 tests in the same file; `CODING-STANDARDS.md` lines ~1986-1989 (CI-fix
   audit deferral) are unaffected.
+- `tests/capability_security_eval_container_test.ts` with
+  `tests/ci_fix_prompt_v4_test.ts`: 19 passed, 0 failed, 1 ignored (the new
+  `isAlreadyTerminatedError` test covers both message forms and two
+  non-matches).
 - Full `./quality.sh` was not run in this session; CI runs it on the PR.
