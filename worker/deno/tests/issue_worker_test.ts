@@ -3391,6 +3391,27 @@ Deno.test("workOnIssue #4442 - an unmapped repository-admin finding stays a work
   );
 });
 
+Deno.test("workOnIssue #4442 - a repository-admin repair that throws is not classed as a repo-config refusal", async () => {
+  const ctx = makeContext({ issueBody: ADMIN_FINDING_BODY });
+  const calls = makeStubGhCalls();
+  const deps = createMockDeps({
+    github: {
+      createClient: () => makeStubGhClient(calls),
+      repairRepoSettingsFinding: () => Promise.reject(new Error("boom")),
+    },
+  });
+
+  const result = await workOnIssue(ctx, deps);
+
+  assertEquals(result.success, false);
+  assertEquals(result.phase, "admin_only_repair");
+  assertEquals(
+    result.classification,
+    undefined,
+    "a thrown repair is a worker defect, not a refused setting",
+  );
+});
+
 Deno.test("workOnIssue - stops at setup failure", async () => {
   const ctx = makeContext();
   const deps = createMockDeps({

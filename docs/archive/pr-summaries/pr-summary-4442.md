@@ -58,6 +58,10 @@ on the seven changed files exit 0. The full `./quality.sh` was not run.
 - `worker/deno/tests/issue_worker_test.ts`: the #4298 refusal test now also
   asserts `not_code_fixable` / `repo-config`; new
   `workOnIssue #4442 - an unmapped repository-admin finding stays a worker-crash, not a repo-config refusal`.
+- `worker/deno/tests/issue_worker_test.ts`: new
+  `workOnIssue #4442 - a repository-admin repair that throws is not classed as a repo-config refusal`
+  pins the `let refusedByRepo = false` initial value (`issue_worker.ts:527`);
+  with it mutated to `true` this test goes red, restored it passes (127 passed).
 - `worker/deno/tests/admin_only_finding_test.ts`: unmapped error is a
   `NoAutomaticFixError`, refused-write error is not.
 - `worker/deno/tests/run_failure_issue_test.ts`: a refused admin setting is
