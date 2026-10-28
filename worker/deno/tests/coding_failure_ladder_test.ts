@@ -261,6 +261,21 @@ Deno.test("applyCodingFailureLadder #4461 - a refused repository-admin setting c
 // Host faults are the host's, not the issue's (Issue #1949)
 // ---------------------------------------------------------------------------
 
+Deno.test("classifyCodingFailure #4461 - a repo_config category without the repo-config class is not record-only", () => {
+  const decision = classifyCodingFailure(
+    "Repository rule blocked the push",
+    "repo_config",
+    {
+      fixability: "not_code_fixable",
+      failureClass: "agent-outcome",
+      rationale: "Not a repo-config class.",
+    },
+  );
+  assertEquals(decision.category, "repo_config");
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.cooldownKind, "non_transient");
+});
+
 Deno.test("classifyCodingFailure - a full disk is the host's fault, not the issue's", () => {
   const decision = classifyCodingFailure(
     "Claude failed: No space left on device while writing the worktree",
