@@ -471,7 +471,7 @@ async function gateThenPushMilestoneBranch(
   // detail already carries any cargo note.
   const gateNote = outcome.status === "skipped"
     ? `UNGATED: ${outcome.detail} (Issue #974) — `
-    : false
+    : outcome.checkLeftToCi
     ? `CHECK LEFT TO CI: ${outcome.detail} (Issue #4441) — `
     : outcome.suiteLeftToCi
     ? `TESTS LEFT TO CI: ${outcome.detail} (Issue #4422) — `
