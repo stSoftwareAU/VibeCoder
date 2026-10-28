@@ -1890,7 +1890,9 @@ At the end of your work, after all commits are complete, create
 `docs/archive/pr-summaries/pr-summary-{issue_number}.md` — the canonical home
 for every PR summary — containing:
 
-1. **Summary** — What was changed and why, including the `Closes #<n>` keyword.
+1. **Summary** — What was changed and why, including `Closes #<n>` when every
+   criterion is met, or `Part of #<n>` when the `## Acceptance Criteria` block
+   marks any criterion `missing`.
 2. **Spec** — The after-run record of what the diff alone cannot tell a
    reviewer, under `### Intent and Rationale`, `### Essential Design
    Decisions` and `### Undiscoverable Facts` (decisions from issue comments,
