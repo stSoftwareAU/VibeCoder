@@ -49,7 +49,8 @@ FAILED).
 ## Test Plan
 
 - `deno task test:unit tests/markdownlint_check_test.ts tests/markdownlint_probe_test.ts`
-  (from `worker/deno`): the two files pass (markdownlint_check_test.ts: 19 passed, 0 failed).
+  (from `worker/deno`): the two files pass (markdownlint_check_test.ts: 19
+  passed, 0 failed).
 - Red check: with `worker/deno/lib/markdownlint_check.ts` restored to base, 6 of
   the new tests fail (help-screen SKIPPED, config-error cause text, stderr-only
   violations, both real-binary SKIPPED cases, real-binary globs FAILED).
@@ -62,8 +63,8 @@ FAILED).
   fails if the `stderr` operand of the help-line test is dropped (`:173`);
   "FAILED when exit 2 shows the help line and a Linting header but no parsed
   violation" fails if the `Linting:` guard returns true (`:177`). Both mutants
-  applied by hand each turn one test red; `markdownlint_check_test.ts` is
-  19 passed, 0 failed with the real code.
+  applied by hand each turn one test red; `markdownlint_check_test.ts` is 19
+  passed, 0 failed with the real code.
 - Callers of `runMarkdownlintCheck` (three, all in `worker/deno`):
   - `runMarkdownlintQualityCheck` in `lib/quality_gate.ts` passes
     `result.status` through unchanged, so a help-screen run is SKIPPED in the
