@@ -142,11 +142,10 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
  * issue's can clear it, so it must not consume an attempt or earn the
  * escalating 2 h → 6 h → 24 h cooldown.
  *
- * A refused repository-admin setting (`REPO_ADMIN_REFUSED`, Issue #4442) also
- * carries the `repo-config` class, but only for the run-failure filer: its
- * category stays `internal_error`, which {@link isInfrastructureFailure}
- * counts as infrastructure, so this ladder returns `transient` for it before
- * this set is consulted and writes no record.
+ * `REPO_ADMIN_REFUSED` (Issue #4442) also carries the `repo-config` class, but
+ * its category is `unknown`, not `repo_config`, so it takes the normal
+ * failed-once ladder (Issue #4461), not record-only. {@link classifyCodingFailure}
+ * gates this set on the `repo_config` category for that reason.
  *
  * It is deliberately NOT in {@link TRANSIENT_FAILURE_CLASSES}, because a
  * transient decision returns before `handleIssueFailure` is ever reached
@@ -237,7 +236,12 @@ export function classifyCodingFailure(
     return { disposition: "transient", category, failureClass, rationale };
   }
 
-  if (RECORD_ONLY_FAILURE_CLASSES.has(failureClass)) {
+  // Record-only is the milestone-branch refusal (`repo_config`, Issue #2220).
+  // A refused admin setting carries the same class with category `unknown`
+  // (Issue #4461), so it falls through to the ladder below.
+  if (
+    category === "repo_config" && RECORD_ONLY_FAILURE_CLASSES.has(failureClass)
+  ) {
     return { disposition: "record-only", category, failureClass, rationale };
   }
 

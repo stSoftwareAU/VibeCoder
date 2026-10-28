@@ -426,7 +426,7 @@ Deno.test("run failure issue #4442 - a refused repository-admin setting is suppr
       report: {
         ...OOM_REPORT,
         outcome: noPrOutcome({
-          category: "internal_error",
+          category: "unknown",
           classification: REPO_ADMIN_REFUSED,
           success: false,
           phase: "admin_only_repair",
