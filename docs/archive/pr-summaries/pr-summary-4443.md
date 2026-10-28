@@ -59,7 +59,7 @@ Backend-only change; no UI files touched.
   `shippedBundle()` names this checkout's prompts directory and an environment
   lookup that answers nothing; no assertion removed. Red check: with the
   `promptsDir` override removed and `PROMPTS_DIR=/nonexistent` in the shell,
-  five 4417 tests fail.
+  four of the 7 tests at head in that file fail (3 pass).
 - Added to the 4443 test file: a named prompts directory wins over `PROMPTS_DIR`
   and `VIBE_BASE_DIR`; `buildIssuePrompt` with a temporary `promptsDir` whose
   bundle carries its own revision records that revision. Red check: with
@@ -89,11 +89,17 @@ Backend-only change; no UI files touched.
   pass. Without the comparison change and the gate default,
   `capability_security_comparison_4368_test.ts` and
   `review_fleet_prs_checklists_3594_test.ts` fail 18 of 36; with them, all pass.
-- Every test file that uses the gate, the verifier deps, `buildIssuePrompt` or
-  the capability modules (63 files): 836 passed, 0 failed. With
-  `PROMPTS_DIR=/nonexistent`, the 11 failures left are template-loader tests in
-  `prompt_override_resolver_test.ts` that fail identically on `main`; they read
-  the prompt templates, not the bundle, and are outside this change.
+- Passing at head (`deno test -A`, one file at a time, no `PROMPTS_DIR` set):
+  `capability_security_recovery_4417_test.ts` (7 tests),
+  `capability_security_bundle_path_4443_test.ts` (5 tests),
+  `capability_security_review_4366_test.ts` (7 tests),
+  `pre_pr_verifier_3395_test.ts` (74 tests),
+  `capability_security_comparison_4368_test.ts` (9 tests),
+  `review_fleet_prs_checklists_3594_test.ts` (27 tests) and
+  `review_fleet_prs_checkout_prompts_dir_4463_test.ts` (1 test); 130 passed,
+  0 failed in total. The earlier broader sweep over every file that uses the
+  gate, the verifier deps, `buildIssuePrompt` or the capability modules is not
+  restated: it predates the third-review test file, and was not re-run at head.
 - `./quality.sh`: every stage passed except `deno tests`, which failed on two
   tests in `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("an
   unformatted Rust change is formatted and committed…", "cargo fmt stages only
