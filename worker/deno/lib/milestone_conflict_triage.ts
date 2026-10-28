@@ -733,6 +733,18 @@ export function describeDecisionRung(
 }
 
 /**
+ * The labels of the notes a milestone sync's push carries when a check did not
+ * run (`gateThenPushMilestoneBranch` in git_pull.ts). The resolution commit
+ * message names every one, so adding a label here adds it there (Issue #4441).
+ */
+export const SYNC_UNCHECKED_NOTE = {
+  ungated: "UNGATED",
+  checkLeftToCi: "CHECK LEFT TO CI",
+  suiteLeftToCi: "TESTS LEFT TO CI",
+  cargoSkipped: "CARGO SKIPPED",
+} as const;
+
+/**
  * The merge commit's message for a conflict the worker resolved itself.
  *
  * Every decision is named with its reasoning, because the commit is where
@@ -752,14 +764,21 @@ export function buildResolutionCommitMessage(o: {
       })
     }`
   );
+  const n = SYNC_UNCHECKED_NOTE;
   return `Merge '${o.defaultBranch}' into '${o.milestoneBranch}' — ${o.plan.resolved.length} conflict(s) resolved automatically\n\n` +
     `${lines.join("\n")}\n\n` +
     `Each resolution was verified before it was pushed: the merged tree ` +
     `passes the repository's own check, its manifest check and its unit ` +
-    `suite, unless the sync's note says UNGATED or CARGO SKIPPED. UNGATED ` +
-    `means a cargo-only merge-only sync (Issue #4326) left the whole build ` +
-    `to the milestone PR's CI. CARGO SKIPPED means the Deno half passed and ` +
-    `cargo was left to that CI; it does not mean the cargo half passed. No ` +
+    `suite, unless the sync's note says ${n.ungated}, ${n.checkLeftToCi}, ` +
+    `${n.suiteLeftToCi} or ${n.cargoSkipped}. Each of those means a check ` +
+    `did not run. ${n.ungated} means a cargo-only merge-only sync (Issue ` +
+    `#4326) left the whole build to the milestone PR's CI. ` +
+    `${n.checkLeftToCi} means the host could not reach a Deno project's ` +
+    `module host, so that project's type check was left to that CI (Issue ` +
+    `#4441). ${n.suiteLeftToCi} means a Deno task of the resolution gate was ` +
+    `left to that CI for the same reason (Issue #4422). ${n.cargoSkipped} ` +
+    `means the Deno half passed and cargo was left to that CI. None of them ` +
+    `means the check it names passed. No ` +
     `conflicted test file was resolved by taking a side that drops cases ` +
     `(Issue #1559).`;
 }

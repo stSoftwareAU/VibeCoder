@@ -33,6 +33,11 @@ run instead of claiming it passed. Version bump: not applicable. Closes #4441.
   carries `checkLeftToCi`.
 - The conflict-report wording also names `suiteLeftToCi` and `cargoSkipped` when
   they are set, so one report states everything that was left to CI.
+- The push-note labels are one exported set, `SYNC_UNCHECKED_NOTE` in
+  `milestone_conflict_triage.ts`. `git_pull.ts` builds its notes from it and
+  `buildResolutionCommitMessage` names each one, so the merge commit no longer
+  says the repository's own check passed when its note says `CHECK LEFT TO CI`
+  or `TESTS LEFT TO CI` (PR #4459 review).
 
 ### Undiscoverable Facts
 
@@ -43,7 +48,27 @@ run instead of claiming it passed. Version bump: not applicable. Closes #4441.
 Changes: `lib/milestone_merge_gate.ts` (new `checkLeftToCi` on
 `MergeGateOutcome`), `lib/milestone_resolution_gate.ts` (carried onto the passed
 verdict), `lib/milestone_sync_conflict.ts` (field and report wording),
-`lib/git_pull.ts` (`CHECK LEFT TO CI:` push note and result field).
+`lib/git_pull.ts` (`CHECK LEFT TO CI:` push note and result field),
+`lib/milestone_conflict_triage.ts` (`SYNC_UNCHECKED_NOTE`, and the resolution
+commit message names all four notes).
+
+Manuals read and updated (PR #4459 review): `docs/workflows/milestones.md`
+("Every automatic resolution is verified before it is pushed" and the merge-down
+mermaid edge) and `docs/INTERNALS.md` (the merge-down section's two
+exceptions, its mermaid edge, the "Nothing unverified is published" bullet and
+the conflict-triage mermaid edge). They now say a Deno type check whose module
+host is unreachable is left to CI by `checkMergedTree`, lands with
+`checkLeftToCi` and gets the `CHECK LEFT TO CI:` note; the "type check is
+unchanged" sentences are gone. Siblings grepped: `suiteLeftToCi`,
+`TESTS LEFT TO CI`, `CARGO SKIPPED` and `UNGATED` across `docs/`, `README.md`,
+`DESIGN-PRINCIPLES.md`, `prompts/` and `worker/deno/lib`. `docs/CONTAINER.md`'s merge-only
+paragraph said mixed trees must pass every Deno check; it now names the
+left-to-CI exception and both notes. The remaining hits
+(`docs/CONTAINER.md:1386`, `docs/INTERNALS.md:4471`, `:4506`, `:4515`) describe
+`UNGATED` alone and stay true.
+
+Review-fix tests: `milestone_conflict_triage_test.ts` 31 passed;
+`check:manifests` files 846 passed.
 
 ## Test Plan
 
@@ -56,3 +81,7 @@ verdict), `lib/milestone_sync_conflict.ts` (field and report wording),
   `244a4d18`, 5 of the new tests fail; restored to the branch head, all 54 tests
   in those four files pass.
 - No existing test was edited.
+- Review fix: new
+  `milestone_conflict_triage_test.ts::buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)`.
+  Red check: with the commit message restored to its "UNGATED or CARGO SKIPPED"
+  wording, it fails.

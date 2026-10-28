@@ -4307,21 +4307,25 @@ exceptions, and each names what went unchecked. The first is a merge-only
 cycle (Issue #4326): a host that cannot afford the cargo build marks its
 `skipped` verdict `landUnverified`, the resolution is pushed with the `UNGATED`
 note, and the report says the tree was not checked. The second (Issue #4422)
-is narrower: it covers only the resolution gate's Deno tasks, and the type
-check in `checkMergedTree` is unchanged. When a Deno task fails because this
-host cannot fetch a remote module, deno prints `error: Import '<url>' failed.`
+is narrower: it covers a Deno check this host cannot run because it cannot
+fetch a remote module, whether a resolution gate Deno task or a Deno project's
+type check in `checkMergedTree` (Issue #4441). When such a check fails, deno
+prints `error: Import '<url>' failed.`
 followed by a connection-class cause such as `error sending request for url`,
 `unsuccessful tunnel` or `dns error`. `detectRemoteModuleGap` in
 [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) recognises
 only that pair. A 404, a certificate, a checksum or a type error is still an
-ordinary failure and is refused. The unreachable task is not counted as passed
-and is not repaired. Every other task still runs, so a real failure elsewhere
-still refuses the resolution, and `quality.sh` is never substituted for an
-unreachable unit suite. The resolution then lands with the outcome field
-`suiteLeftToCi`, naming the task and the cause, and the escalation comment says
-that task did not run and that the milestone PR's CI runs it. The exception
-does not relax the rule for the tree: the report names the task as not run, so
-nothing reads as verified.
+ordinary failure and is refused. The unreachable task or type check is not
+counted as passed and is not repaired. Every other project and task still runs,
+so a real failure elsewhere still refuses the resolution, and `quality.sh` is
+never substituted for an unreachable unit suite. A task left to CI lands with
+the outcome field `suiteLeftToCi` and the `TESTS LEFT TO CI:` push note; a type
+check left to CI lands with `checkLeftToCi` and the `CHECK LEFT TO CI:` push
+note (Issue #4441). Each names what did not run and the cause, and the
+escalation comment says it did not run and that the milestone PR's CI runs it.
+The exception does not relax the rule for the tree: a tree where no type check
+ran is still refused, and the report names what did not run, so nothing reads
+as verified.
 What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
 ([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts));
@@ -4384,7 +4388,7 @@ flowchart TD
     T -- decided --> V
     RU -- decided --> V
     V -- red or unverifiable --> R[Reset to the pre-merge commit and escalate]
-    V -- "unreachable module host (Issue #4422)" --> PU["Push, suiteLeftToCi names the task"]
+    V -- "unreachable module host (Issues #4422, #4441)" --> PU["Push, suiteLeftToCi or checkLeftToCi<br/>names what did not run"]
     V -- green --> P[Push]
     P --> F["Report the same cycle:<br/>decisions + both sides' commits"]
     PU --> F
@@ -4477,11 +4481,12 @@ Three properties matter:
   read — counts as a failure, not a pass: absence of a failure is not success.
   The deliberate exceptions are the merge-only cycle of Issue #4326 on a tree
   that holds a cargo project, described after this list, and one narrower case
-  in the resolution gate only (Issue #4422), described in the merge-down section
-  above: a Deno task whose remote module host this host cannot reach is reported
-  as not run, and the resolution lands with `suiteLeftToCi` naming it, rather
-  than being counted as passed or refused. The Issue #974 type check in
-  `checkMergedTree` is outside that exception and is unchanged.
+  for Deno checks (Issue #4422), described in the merge-down section above: a
+  Deno task or a Deno project's type check in `checkMergedTree` whose remote
+  module host this host cannot reach is reported as not run, rather than being
+  counted as passed or refused. The resolution lands with `suiteLeftToCi` naming
+  a task left to CI, or `checkLeftToCi` naming a type check left to CI
+  (Issue #4441).
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and

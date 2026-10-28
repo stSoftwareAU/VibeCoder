@@ -1377,7 +1377,10 @@ cycle, in **merge-only** mode, unless its conflict needs the agent. Merge-only a
 to a tree that holds a cargo project, because only a cargo build writes to the
 ephemeral cargo root. A repository with no cargo project keeps its own check
 (the repository's own type check) and the normal agent. Only cargo checks and cargo unit suites are skipped. Mixed trees still run
-and must pass their Deno checks and unit suites. For a cargo-only tree:
+and must pass their Deno checks and unit suites, bar a Deno check whose module
+host this host cannot reach: that is left to CI and named as not run
+(`TESTS LEFT TO CI:` or `CHECK LEFT TO CI:`, Issues #4422 and #4441). For a
+cargo-only tree:
 
 - **A conflict-free merge is pushed unverified.** The sync outcome carries the
   existing `UNGATED:` note (Issue #974), and the milestone PR's own CI builds
