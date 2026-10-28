@@ -60,6 +60,7 @@ import {
   fetchOpenPRsForFleet,
   getBlockingPRForIssue,
   resolveFleetPrSlots,
+  SCAN_LABELLED_ISSUE_LIMIT,
 } from "./issue_query.ts";
 import { buildDedupMarker } from "./needs_human_escalation.ts";
 import { MERGE_CONFLICT_LABEL } from "./pr_merge_conflict_scan.ts";
@@ -754,7 +755,7 @@ async function mapBlockedWorkOnIssues(
     repo,
     workOnLabel,
     cache,
-    50,
+    SCAN_LABELLED_ISSUE_LIMIT,
     ghCommandFn,
   );
   if (issues.length === 0) return blockedByPr;

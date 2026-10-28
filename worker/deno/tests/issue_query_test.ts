@@ -27,6 +27,7 @@ import {
   isBlockedByRecentlyClosedPR,
   parseIssueListJson,
   parsePRListJson,
+  SCAN_LABELLED_ISSUE_LIMIT,
   wasLabelAddedByAllowedAuthor,
 } from "../lib/issue_query.ts";
 import { IssueCache } from "../lib/issue_cache.ts";

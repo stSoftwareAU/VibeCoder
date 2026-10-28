@@ -991,6 +991,18 @@ export async function fetchOpenIssuesByMilestone(
 }
 
 /**
+ * The width of the open-issue listing the claim scan reads, and the most
+ * labelled issues one scan collector considers per label per repo (Issue
+ * #4464).
+ *
+ * The idle-decision census counts claimable work from the same listing, so a
+ * per-label cap narrower than this width makes the census count work the scan
+ * never looks at. The listing is newest-first, so a narrower cap drops the
+ * OLDEST labelled issues: the ones the scan is most likely to have missed.
+ */
+export const SCAN_LABELLED_ISSUE_LIMIT = 200;
+
+/**
  * Fetch issues with a specific label from the shared `issues_all` batch.
  *
  * Filters the cached `fetchAllIssues` payload locally — one gh call per
@@ -1002,18 +1014,20 @@ export async function fetchOpenIssuesByMilestone(
  * of returning a match — the batch is the source of truth, and an empty
  * batch means there are no labelled issues to find.
  *
- * Known limitation: `fetchAllIssues` defaults to a 100-issue limit. A
- * repo with more than 100 open issues whose labelled subset falls
- * outside the first 100 will under-report here. This limitation exists
- * pre-#1909 too — the old fallback only fired on `allIssues.length ===
- * 0`, so it never rescued the >100 case either. If that case becomes
- * load-bearing, raise the `fetchAllIssues` limit (a single larger batch
- * is still one call).
+ * Known limitation: the listing is requested at a width of
+ * `Math.max(100, limit)` (Issue #4464), so a caller asking for more than
+ * 100 labelled issues is not silently cut to the 100-issue default on a cold
+ * cache. A repo with more open issues than that width whose labelled subset
+ * falls outside the newest ones will under-report here. The scan collectors
+ * pass {@link SCAN_LABELLED_ISSUE_LIMIT}, the same width as the scan's own
+ * listing, so they do not inherit that limit. The census reads that same
+ * listing, so a narrower request here would let the scan miss work it counts.
  *
  * @param repo - Repository in "owner/repo" format
  * @param label - Label to filter by
  * @param cache - Optional cache instance
- * @param limit - Maximum issues to return (default: 50)
+ * @param limit - Maximum issues to return (default: 50). The listing filtered
+ *   is requested at `Math.max(100, limit)`, so a limit above 100 is honoured.
  * @param ghCommandFn - Optional gh command function for testing
  * @returns Issues with the specified label
  */
@@ -1024,7 +1038,12 @@ export async function fetchIssuesByLabel(
   limit = 50,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
 ): Promise<FilterableIssue[]> {
-  const allIssues = await fetchAllIssues(repo, cache, 100, ghCommandFn);
+  const allIssues = await fetchAllIssues(
+    repo,
+    cache,
+    Math.max(100, limit),
+    ghCommandFn,
+  );
   return allIssues
     .filter((issue) => issue.labels.includes(label))
     .slice(0, limit);

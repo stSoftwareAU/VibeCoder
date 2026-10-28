@@ -24,6 +24,7 @@ import {
   fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
+  SCAN_LABELLED_ISSUE_LIMIT,
 } from "./issue_query.ts";
 import {
   buildCloseOutMilestones,
@@ -164,7 +165,7 @@ export async function findOldestIssue(
       // `isMilestoneOccupied` — asks its question of the same truth.
       const allIssuesForCheck = applyInFlightClaims(
         repo,
-        await fetchAllIssues(repo, cache, 200, ghFn),
+        await fetchAllIssues(repo, cache, SCAN_LABELLED_ISSUE_LIMIT, ghFn),
         inFlightClaims,
         options.githubUser,
       );
@@ -383,7 +384,7 @@ export async function findOldestIssue(
     const repoAllIssues = issuesByRepo.get(repo) ??
       applyInFlightClaims(
         repo,
-        await fetchAllIssues(repo, cache, 200, ghFn),
+        await fetchAllIssues(repo, cache, SCAN_LABELLED_ISSUE_LIMIT, ghFn),
         inFlightClaims,
         options.githubUser,
       );
