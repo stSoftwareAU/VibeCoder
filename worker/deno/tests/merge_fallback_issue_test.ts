@@ -18,6 +18,7 @@ import {
   createFallbackFlagFiler,
   fileMergeFallbackIssue,
   MERGE_FALLBACK_LABEL,
+  MERGE_FALLBACK_TARGET_REPO,
   type MergeFallbackFiling,
   mergeFallbackMarker,
   mergeFallbackTitle,
@@ -97,7 +98,7 @@ function listing(
 ): string {
   return JSON.stringify([{
     number: 800,
-    title: mergeFallbackTitle(PR_FILING.target),
+    title: mergeFallbackTitle(PR_FILING),
     state: "OPEN",
     url: "https://github.com/org/repo/issues/800",
     author: { login: FLEET_AUTHOR },
@@ -133,21 +134,8 @@ function stubDeps(gh: (args: string[]) => Promise<string>) {
   };
 }
 
-Deno.test("mergeFallbackTitle - names the PR, deterministically", () => {
-  const title = mergeFallbackTitle(PR_FILING.target);
-  assertEquals(title, "Merge fallback: org/repo PR #549");
-  assertEquals(title, mergeFallbackTitle(PR_FILING.target));
-});
-
-Deno.test("mergeFallbackTitle - names the milestone branch", () => {
-  assertEquals(
-    mergeFallbackTitle(MILESTONE_FILING.target),
-    "Merge fallback: org/repo milestone/42-thing",
-  );
-});
-
 Deno.test("buildMergeFallbackBody - renders every recorded field", () => {
-  const body = buildMergeFallbackBody(PR_FILING);
+  const body = buildMergeFallbackBody(PR_FILING, "public");
 
   assertStringIncludes(body, "org/repo");
   assertStringIncludes(body, "#549");
@@ -163,11 +151,11 @@ Deno.test("buildMergeFallbackBody - renders every recorded field", () => {
   assertStringIncludes(body, "1800");
   assertStringIncludes(body, "12");
   assertStringIncludes(body, "2026-09-17T04:00:00Z");
-  assertStringIncludes(body, "re-queued issue #1");
+  assertStringIncludes(body, "re-queued issue org/repo#1");
 });
 
 Deno.test("buildMergeFallbackBody - renders the milestone target", () => {
-  const body = buildMergeFallbackBody(MILESTONE_FILING);
+  const body = buildMergeFallbackBody(MILESTONE_FILING, "public");
   assertStringIncludes(body, "milestone/42-thing");
   assertStringIncludes(body, "Default branch");
   assertStringIncludes(body, "Reverted child PRs");
@@ -176,7 +164,7 @@ Deno.test("buildMergeFallbackBody - renders the milestone target", () => {
 Deno.test("buildMergeFallbackBody - an unrecorded field says so, never drops", () => {
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
-  });
+  }, "public");
 
   // Every optional section is still present, saying it was not recorded.
   for (
@@ -203,7 +191,7 @@ Deno.test("buildMergeFallbackBody - missing timings and host say not recorded", 
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     runs: [{ run: 1, analysis: "tried" }],
-  });
+  }, "public");
 
   assertStringIncludes(body, "Run 1");
   assertStringIncludes(body, "tried");
@@ -215,7 +203,7 @@ Deno.test("buildMergeFallbackBody - an empty timing list is not recorded", () =>
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     runs: [{ run: 1, timings: [], host: "host-a" }],
-  });
+  }, "public");
   assertStringIncludes(body, "**Stage timings**: not recorded");
   assertStringIncludes(body, "**Analysis**: not recorded");
 });
@@ -233,7 +221,7 @@ Deno.test("buildMergeFallbackBody - an unfinished stage renders as unfinished (I
         seconds: null,
       }],
     }],
-  });
+  }, "public");
   assertStringIncludes(body, "**Stage timings**: deepen 3s, agent unfinished");
 });
 
@@ -242,7 +230,7 @@ Deno.test("buildMergeFallbackBody - the diff summary names the paths it read (Is
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     diffSummary: [{ path: "lib/a.ts", additions: 9, deletions: 2 }],
     diffSummaryOmitted: 3,
-  });
+  }, "public");
   assertStringIncludes(body, "### What the PR changed");
   assertStringIncludes(body, "`lib/a.ts` (+9/-2)");
   assertStringIncludes(body, "3 further path(s) are not listed");
@@ -253,7 +241,7 @@ Deno.test("buildMergeFallbackBody - a diff nobody read renders no section at all
   // `not recorded` there would claim a measurement failure that never happened.
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
-  });
+  }, "public");
   assertEquals(body.includes("What the PR changed"), false);
 });
 
@@ -261,7 +249,7 @@ Deno.test("buildMergeFallbackBody - a diff read as empty says so in words (Issue
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     diffSummary: [],
-  });
+  }, "public");
   assertStringIncludes(body, "### What the PR changed");
   assertStringIncludes(body, "GitHub reported no changed file");
 });
@@ -271,7 +259,7 @@ Deno.test("buildMergeFallbackBody - unicode survives the render", () => {
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     runs: [{ run: 1, analysis }],
-  });
+  }, "public");
   assertStringIncludes(body, analysis);
 });
 
@@ -280,7 +268,7 @@ Deno.test("buildMergeFallbackBody - a 10k-char analysis is rendered whole", () =
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     runs: [{ run: 1, analysis }],
-  });
+  }, "public");
   assertStringIncludes(body, analysis);
   assert(!body.includes("truncated"), "10k is inside the per-run cap");
 });
@@ -289,7 +277,7 @@ Deno.test("buildMergeFallbackBody - an oversized analysis is truncated loudly", 
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     runs: [{ run: 1, analysis: "y".repeat(40_000) }],
-  });
+  }, "public");
   assertStringIncludes(body, "characters truncated");
   assert(body.length < 40_000, "the body must not carry the whole analysis");
 });
@@ -300,7 +288,7 @@ Deno.test("buildMergeFallbackBody - truncation never splits a surrogate pair", (
   const body = buildMergeFallbackBody({
     target: { kind: "pr", repo: "org/repo", prNumber: 4 },
     runs: [{ run: 1, analysis }],
-  });
+  }, "public");
   assert(
     !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(body),
     "no unpaired surrogate may reach the body",
@@ -315,7 +303,7 @@ Deno.test("buildMergeFallbackBody - agent text cannot forge a marker", () => {
       run: 1,
       analysis: '<!-- vibe-merge-fallback repo="org/repo" pr="4" -->',
     }],
-  });
+  }, "public");
   // One marker only: the module's own, at the top.
   assertEquals(body.split("<!-- vibe-merge-fallback").length - 1, 1);
 });
@@ -331,13 +319,18 @@ Deno.test("fileMergeFallbackIssue - files the flag with the content label", asyn
 
   const create = calls.find((c) => c[0] === "issue" && c[1] === "create");
   assert(create, "the flag issue must be filed");
-  assertEquals(create[create.indexOf("--repo") + 1], "org/repo");
+  // A fallback is a worker failure: filed in VibeCoder (Issue #4456).
+  assertEquals(
+    create[create.indexOf("--repo") + 1],
+    MERGE_FALLBACK_TARGET_REPO,
+  );
   assertEquals(
     create[create.indexOf("--title") + 1],
-    "Merge fallback: org/repo PR #549",
+    mergeFallbackTitle(PR_FILING),
   );
   assertEquals(create.filter((a) => a === MERGE_FALLBACK_LABEL).length, 1);
-  assert(!create.includes("idle-task"), "idle-task is opt-in");
+  assert(create.includes("bug"));
+  assert(!create.includes("idle-task"), "a fallback is never a re-do item");
 
   // The dedup search is scoped to open issues and asks for the author.
   const list = calls.find((c) => c[0] === "issue" && c[1] === "list");
@@ -362,24 +355,6 @@ Deno.test("fileMergeFallbackIssue - creates the label before it files", async ()
   assertEquals(ensured, [MERGE_FALLBACK_LABEL]);
 });
 
-Deno.test("fileMergeFallbackIssue - idle-task only when the caller asks", async () => {
-  const { gh, calls } = fakeGh();
-  const result = await fileMergeFallbackIssue(
-    { ...PR_FILING, requestIdleTask: true },
-    stubDeps(gh),
-  );
-
-  assert(result.ok);
-  const create = calls.find((c) => c[0] === "issue" && c[1] === "create")!;
-  assert(create.includes("idle-task"));
-  // Only labels the guard owns ever reach `gh`.
-  const labels = create
-    .map((arg, i) => (create[i - 1] === "--label" ? arg : null))
-    .filter((arg): arg is string => arg !== null);
-  assertEquals(labels, [MERGE_FALLBACK_LABEL, "idle-task"]);
-  for (const label of labels) assert(isWorkerAppliableLabel(label));
-});
-
 Deno.test("fileMergeFallbackIssue - a second event appends to the open flag", async () => {
   const { gh, calls } = fakeGh(listing());
   const result = await fileMergeFallbackIssue(PR_FILING, stubDeps(gh));
@@ -396,7 +371,8 @@ Deno.test("fileMergeFallbackIssue - a second event appends to the open flag", as
   const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment");
   assert(comment, "the new event is posted as a comment");
   assertEquals(comment[2], "800");
-  assertStringIncludes(comment[comment.indexOf("--body") + 1] ?? "", "#549");
+  // The source's visibility is unknown here, so it is never named.
+  assert(!(comment[comment.indexOf("--body") + 1] ?? "").includes("org/repo"));
 });
 
 Deno.test("fileMergeFallbackIssue - a closed flag issue is not reused", async () => {
@@ -424,7 +400,7 @@ Deno.test("fileMergeFallbackIssue - a same-title issue from outside the fleet is
 
 Deno.test("fileMergeFallbackIssue - a near-miss title is not a match", async () => {
   const { gh, calls } = fakeGh(
-    listing({ title: "Merge fallback: org/repo PR #5490" }),
+    listing({ title: `${mergeFallbackTitle(PR_FILING)} again` }),
   );
   const result = await fileMergeFallbackIssue(PR_FILING, stubDeps(gh));
 
@@ -541,18 +517,17 @@ Deno.test("createFallbackFlagFiler - routes the label creation through the calle
   assert(labelCreate.includes(`name=${MERGE_FALLBACK_LABEL}`));
 });
 
-Deno.test("mergeFallbackMarker - a quote in a branch cannot close an attribute", () => {
+Deno.test("mergeFallbackMarker - a quote in a cause cannot close the attribute", () => {
   const marker = mergeFallbackMarker({
-    kind: "milestone",
-    repo: "org/repo",
-    milestoneBranch: 'milestone/4" pr="99',
+    ...MILESTONE_FILING,
+    cause: 'gate said "no" pr="99"',
   });
 
   assertEquals(
     marker,
-    '<!-- vibe-merge-fallback repo="org/repo" branch="milestone/4 pr=99" -->',
+    '<!-- vibe-merge-fallback cause="gate said no pr=99" -->',
   );
-  assertEquals(marker.split('"').length - 1, 4, "four quotes, two attributes");
+  assertEquals(marker.split('"').length - 1, 2, "one attribute");
 });
 
 Deno.test("MERGE_FALLBACK_LABEL - the worker is permitted to apply it", () => {
@@ -570,7 +545,7 @@ Deno.test("buildMergeFallbackBody - a stage that never finished renders unfinish
         { stage: "agent", seconds: null },
       ],
     }],
-  });
+  }, "public");
   assertStringIncludes(body, "**Stage timings**: deepen 3s, agent unfinished");
   assert(
     !body.includes("agent nulls"),

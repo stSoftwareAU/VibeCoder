@@ -26,10 +26,11 @@ import type {
   FileAnalysis,
   FileDecision,
 } from "./milestone_conflict_triage.ts";
-import type {
-  MergeFallbackFiling,
-  MergeFallbackOutcome,
-  MergeFallbackRun,
+import {
+  MERGE_FALLBACK_TARGET_REPO,
+  type MergeFallbackFiling,
+  type MergeFallbackOutcome,
+  type MergeFallbackRun,
 } from "./merge_fallback_issue.ts";
 import type { RollbackOutcome } from "./milestone_rollback.ts";
 import type { ConflictAttemptRecord } from "./milestone_sync_streak.ts";
@@ -255,14 +256,14 @@ export async function fileFallbackFlag(
 
   log(
     `${filed.value.appended ? "Appended to" : "Filed"} the merge-fallback ` +
-      `flag #${filed.value.issueNumber} for '${branch.milestoneBranch}' ` +
-      `in ${repo} (Issue #2311)`,
+      `record ${MERGE_FALLBACK_TARGET_REPO}#${filed.value.issueNumber} for ` +
+      `'${branch.milestoneBranch}' in ${repo} (Issues #2311, #4456)`,
   );
   await opts.emitSelfHealEvent?.({
     module: "milestone_branch_sync",
     action: "fallback_flagged",
     reason: `${repo} branch ${branch.milestoneBranch}: merge-fallback ` +
-      `flag #${filed.value.issueNumber}${
+      `record ${MERGE_FALLBACK_TARGET_REPO}#${filed.value.issueNumber}${
         filed.value.appended ? " (appended)" : ""
       }`,
     result: "ok",
