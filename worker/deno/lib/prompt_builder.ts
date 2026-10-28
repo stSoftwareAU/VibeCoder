@@ -841,8 +841,11 @@ export async function buildIssuePrompt(
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
+  // The bundle comes from the same prompts directory as the templates, so a
+  // caller naming `promptsDir` never reads PROMPTS_DIR or VIBE_BASE_DIR from
+  // the host instead (PR #4463 review).
   const guidanceLoad = await (loadCapabilityGuidance ??
-    loadTrustedCapabilityBundle)();
+    (() => loadTrustedCapabilityBundle(undefined, promptsDir)))();
   const guidance = renderCapabilityGuidanceForIssue(
     guidanceLoad,
     capabilityContextFromChange({
