@@ -36,3 +36,6 @@ Backend-only change; no UI files touched. Tests in `worker/deno/tests/markdownli
 - Existing tests edited: the config-error fake test now asserts the cause text `Unable to use configuration file` instead of only the exit-code message (required by the issue's "a config parse error … must still fail"); it still asserts FAILED and goes red on base.
 - Callers of `runMarkdownlintCheck`: only `runMarkdownlintQualityCheck` in `worker/deno/lib/quality_gate.ts`, which passes `result.status` through unchanged.
 - Docs: grepped `docs/` and README for markdownlint; none describes the FAILED-on-no-globs behaviour. Doc comments in `markdownlint_check.ts` and `quality_gate.ts` updated.
+- `./quality.sh`: ran to the 590s foreground cap (the tool maximum) before the unit-test stage finished. Every stage that completed passed, including `markdownlint` (the repository's own config has `globs`, so it still lints) and `semgrep`; the full gate was not completed locally.
+
+<!-- vibe-quality-gate-skipped reason="full gate takes about 15m, longer than the 600s foreground tool cap; stages before the unit-test stage passed; CI and the worker re-run it" -->
