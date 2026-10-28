@@ -1388,10 +1388,10 @@ and must pass their Deno checks and unit suites. For a cargo-only tree:
   a resolution nothing verified (Issue #1559). The merge commit still records
   which rung settled each file, and the milestone PR's CI builds it.
 - **A conflict that needs the agent is not landed in that cycle.** The agent can
-  run the very cargo build the host cannot afford, so it is not offered. The
-  first such cycle is a refusal and is not charged. The next over-budget cycle
-  charges the attempt and the recovery ladder (roll-back, then rebuild, then
-  close) applies, so the branch does not stay behind on disk budget alone.
+  run the very cargo build the host cannot afford, so it is not offered. Every
+  such cycle is a refusal that is never charged and never climbs the recovery
+  ladder: a full disk is the host's fault, rolling the branch back frees no
+  disk, and the branch waits for the host like every other disk stop.
 
 The log names the reason:
 
@@ -1594,8 +1594,8 @@ build artefacts.
   without its cargo build: a conflict-free or deterministically resolved merge
   is pushed unverified. A Deno-only tree and a mixed tree keep their Deno
   checks and suites and are rolled back when those are red. A conflict that
-  needs the agent on a cargo tree is charged on the next over-budget cycle,
-  so the recovery ladder applies (see
+  needs the agent on a cargo tree waits, uncharged, until the host has room
+  (see
   [HOST_DISK_BUDGET](#host_disk_budget-merges-without-the-build-issue-4326)).
   Pruning counts as room even where the trim is refused: the guest reuses
   the freed blocks, so a build writing into them does not grow the host image
