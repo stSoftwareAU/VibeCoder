@@ -18,8 +18,7 @@ import {
   assertMatch,
   assertStringIncludes,
 } from "@std/assert";
-import { repoSettingsHardenCommand } from "../commands/repo_settings_harden.ts";
-import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { runHardenCommand } from "../commands/repo_settings_harden.ts";
 import {
   _resetGhSpawnRunner,
   _setGhSpawnRunner,
@@ -1540,11 +1539,8 @@ Deno.test("repo-settings-harden command - a template read fault is printed even 
       return { code: 1, success: false, stdout: "", stderr };
     }
   };
-  const run = () =>
-    repoSettingsHardenCommand.execute({ repo }, buildDefaultWorkerConfig());
+  const run = () => runHardenCommand({ repo }, BRANCH_CACHE);
 
-  const priorCache = Deno.env.get("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH");
-  Deno.env.set("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH", BRANCH_CACHE);
   try {
     // Positive control: with every read answering, nothing is planned and
     // no read-fault line appears.
@@ -1573,8 +1569,5 @@ Deno.test("repo-settings-harden command - a template read fault is printed even 
     assertStringIncludes(unreadable, cause);
   } finally {
     _resetGhSpawnRunner();
-    if (priorCache === undefined) {
-      Deno.env.delete("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH");
-    } else Deno.env.set("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH", priorCache);
   }
 });

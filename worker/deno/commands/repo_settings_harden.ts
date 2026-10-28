@@ -75,90 +75,104 @@ export const repoSettingsHardenCommand: Command = {
   name: "repo-settings-harden",
   description:
     "Plan (default) or apply (--apply) the repository-settings hardening the Actions audit reports: read-only token, no approve-PRs, SHA-pin enforcement, action allow-list, secret scanning, one approving review on the default branch (never on a direct-push branch), and code-owner review turned off (the fleet reviewer App cannot be a code owner); the allow-list follows composite actions' own uses: and --allow-action adds more (Issues #4397 #4398 #4401 #4424 #2680)",
-  async execute(
+  execute(
     args: Record<string, unknown>,
     _config: WorkerConfig,
   ): Promise<CommandResult<RepoSettingsHardenReport>> {
-    const repo = typeof args["repo"] === "string" ? args["repo"] : "";
-    if (!isValidRepoSlug(repo)) {
-      return {
-        success: false,
-        message: "repo-settings-harden requires --repo owner/name",
-      };
-    }
-    const apply = args["apply"] === true;
-    if (
-      args["require-code-owner-review"] !== undefined ||
-      args["require-reviews"] !== undefined
-    ) {
-      return {
-        success: false,
-        message: "--require-code-owner-review / --require-reviews are " +
-          "retired: code-owner review is now turned off, never on, because " +
-          "the fleet reviewer App cannot be a code owner and its approval " +
-          "is the gate",
-      };
-    }
-    let extraCoordinates: string[];
-    try {
-      extraCoordinates = parseAllowActionArg(args["allow-action"]);
-    } catch (err) {
-      return {
-        success: false,
-        message: err instanceof Error ? err.message : String(err),
-      };
-    }
-    const outcome = await hardenRepo(repo, {
-      apply,
-      ghCommandFn: runGhCommand,
-      extraCoordinates,
-    });
-    const {
-      results,
-      coordinates,
-      referenceCount,
-      templateReferenceCount,
-      templateFault,
-      unreadable,
-    } = outcome;
-    const lines = results.map((r) =>
-      `- [${r.status}] ${r.step.kind}: ${r.step.title}` +
-      (r.step.warning ? ` — ⚠ ${r.step.warning}` : "") +
-      (r.detail ? ` — ${r.detail}` : "")
-    );
-    // The exempted step is stated in the output, never silently absent.
-    const skipNote = outcomeSkipNotes(outcome)
-      .map((note) => `\n${note}`)
-      .join("");
-    // Appended after the plan/no-plan branch, like the skip notes: a fault
-    // reading the allow-list's sources matters most when nothing was planned,
-    // because that is when a short list would otherwise read as "all holds".
-    const readFaultNotes =
-      (unreadable.length > 0
-        ? `\n⚠ Could not read the manifest of ${unreadable.length} action(s) — the allow-list may be incomplete: ${
-          unreadable.join("; ")
-        }`
-        : "") +
-      (templateFault
-        ? `\n⚠ Could not read the workflow-sync templates — the allow-list may be incomplete: ${templateFault}`
-        : "");
-    const message =
-      (results.length === 0
-        ? `${repo}: nothing to harden — every checked setting already holds.`
-        : `${repo}: ${
-          apply ? "applied" : "planned (dry run; add --apply)"
-        } ${results.length} step(s):\n${lines.join("\n")}` +
-          (coordinates.length > 0
-            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${referenceCount} workflow reference(s) on the default branch plus ${templateReferenceCount} workflow-sync template reference(s)` +
-              (extraCoordinates.length > 0
-                ? ` plus --allow-action ${extraCoordinates.join(", ")}`
-                : "")
-            : "")) + readFaultNotes + skipNote;
-    const failed = results.some((r) => r.status === "failed");
-    return {
-      success: !failed,
-      message,
-      data: { repo, applied: apply, results },
-    };
+    return runHardenCommand(args);
   },
 };
+
+/**
+ * Run the command with an injected default-branch cache file, so a test never
+ * sets `VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH` in the shared process
+ * environment (Issue #880). Production goes through
+ * {@link repoSettingsHardenCommand}, which passes no override.
+ */
+export async function runHardenCommand(
+  args: Record<string, unknown>,
+  defaultBranchCachePath?: string,
+): Promise<CommandResult<RepoSettingsHardenReport>> {
+  const repo = typeof args["repo"] === "string" ? args["repo"] : "";
+  if (!isValidRepoSlug(repo)) {
+    return {
+      success: false,
+      message: "repo-settings-harden requires --repo owner/name",
+    };
+  }
+  const apply = args["apply"] === true;
+  if (
+    args["require-code-owner-review"] !== undefined ||
+    args["require-reviews"] !== undefined
+  ) {
+    return {
+      success: false,
+      message: "--require-code-owner-review / --require-reviews are " +
+        "retired: code-owner review is now turned off, never on, because " +
+        "the fleet reviewer App cannot be a code owner and its approval " +
+        "is the gate",
+    };
+  }
+  let extraCoordinates: string[];
+  try {
+    extraCoordinates = parseAllowActionArg(args["allow-action"]);
+  } catch (err) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const outcome = await hardenRepo(repo, {
+    apply,
+    ghCommandFn: runGhCommand,
+    extraCoordinates,
+    defaultBranchCachePath,
+  });
+  const {
+    results,
+    coordinates,
+    referenceCount,
+    templateReferenceCount,
+    templateFault,
+    unreadable,
+  } = outcome;
+  const lines = results.map((r) =>
+    `- [${r.status}] ${r.step.kind}: ${r.step.title}` +
+    (r.step.warning ? ` — ⚠ ${r.step.warning}` : "") +
+    (r.detail ? ` — ${r.detail}` : "")
+  );
+  // The exempted step is stated in the output, never silently absent.
+  const skipNote = outcomeSkipNotes(outcome)
+    .map((note) => `\n${note}`)
+    .join("");
+  // Appended after the plan/no-plan branch, like the skip notes: a fault
+  // reading the allow-list's sources matters most when nothing was planned,
+  // because that is when a short list would otherwise read as "all holds".
+  const readFaultNotes =
+    (unreadable.length > 0
+      ? `\n⚠ Could not read the manifest of ${unreadable.length} action(s) — the allow-list may be incomplete: ${
+        unreadable.join("; ")
+      }`
+      : "") +
+    (templateFault
+      ? `\n⚠ Could not read the workflow-sync templates — the allow-list may be incomplete: ${templateFault}`
+      : "");
+  const message =
+    (results.length === 0
+      ? `${repo}: nothing to harden — every checked setting already holds.`
+      : `${repo}: ${
+        apply ? "applied" : "planned (dry run; add --apply)"
+      } ${results.length} step(s):\n${lines.join("\n")}` +
+        (coordinates.length > 0
+          ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${referenceCount} workflow reference(s) on the default branch plus ${templateReferenceCount} workflow-sync template reference(s)` +
+            (extraCoordinates.length > 0
+              ? ` plus --allow-action ${extraCoordinates.join(", ")}`
+              : "")
+          : "")) + readFaultNotes + skipNote;
+  const failed = results.some((r) => r.status === "failed");
+  return {
+    success: !failed,
+    message,
+    data: { repo, applied: apply, results },
+  };
+}
