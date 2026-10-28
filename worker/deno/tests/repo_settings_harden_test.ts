@@ -1074,6 +1074,8 @@ Deno.test("hardenRepo - an unreadable workflow directory fails the allow-list al
   );
   assertEquals(allowList.map((r) => r.status), ["failed"]);
   assert(allowList[0]?.detail?.includes("HTTP 500"), allowList[0]?.detail);
+  // No template read happens once the workflow tree is unreadable.
+  assertEquals(report.templateReferenceCount, 0);
 });
 
 /** A repository with no root files, no languages and no workflows. */

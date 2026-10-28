@@ -76,12 +76,20 @@ Backend-only change; no UI files. Verification is by tests (below).
 - Red check: with the new call in `hardenRepoInto` skipped, the regression test
   and the fault test fail (`allow-list written: undefined`); restored
   afterwards.
-- No existing assertion was removed or edited.
-- `deno task test:unit` over `setup_repo_settings_harden_test.ts`,
-  `repo_settings_harden_test.ts`, `workflow_sync_actions_test.ts`,
-  `workflow_definitions_test.ts`, `admin_only_finding_test.ts`,
-  `setup_repo_settings_audit_close_test.ts` and `issue_worker_test.ts`: 390
-  passed, 0 failed (run on the final head).
+- No existing assertion was removed. One was edited: the drifted-repo test in
+  `setup_repo_settings_harden_test.ts` now expects `gitleaks/gitleaks-action@*`
+  in the written allow-list (the template reference joins it). The new
+  `templateReferenceCount === 0` assertion sits in the existing
+  unreadable-workflow-directory test in `repo_settings_harden_test.ts` (red with
+  the `templateReferenceCount: 0` initialiser deleted).
+- `deno task test:unit`, one file at a time on the head:
+  `setup_repo_settings_harden_test.ts` (39 tests at head),
+  `repo_settings_harden_test.ts` (116 tests at head),
+  `workflow_sync_actions_test.ts` (10 tests at head),
+  `workflow_definitions_test.ts` (70 tests at head),
+  `admin_only_finding_test.ts` (30 tests at head),
+  `setup_repo_settings_audit_close_test.ts` (27 tests at head) and
+  `issue_worker_test.ts` (128 tests at head): all passed, 0 failed.
 - PR #4473 review round tests: `workflow_sync_actions_test.ts` partial-spec test
   (Deno repo, only `deno lint`, asserts the codecov reference; red with the
   `audit.value.partial` spread deleted); `setup_repo_settings_harden_test.ts`
