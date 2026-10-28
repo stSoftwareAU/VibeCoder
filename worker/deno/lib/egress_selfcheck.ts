@@ -344,6 +344,67 @@ export async function probeProxyConnect(
   }
 }
 
+/** Attempts the allowlisted CONNECT gets before the self-check concludes. */
+export const EGRESS_ALLOWED_PROBE_ATTEMPTS = 3;
+
+/**
+ * Budget for one allowlisted CONNECT. Unlike the denied probe, the proxy has
+ * to resolve and dial the upstream host before it answers, and on the Apple
+ * runtime it does so from a container started seconds earlier.
+ */
+export const EGRESS_ALLOWED_PROBE_TIMEOUT_MS = 5_000;
+
+/** Pause between allowlisted CONNECT attempts. */
+const EGRESS_ALLOWED_PROBE_DELAY_MS = 1_000;
+
+/**
+ * Probe an allowlisted CONNECT, retrying a slow or silent answer.
+ *
+ * One cold upstream dial that missed its budget used to fail the self-check
+ * and cost the whole launch (`proxyAllowlist=failed`, worker claimed
+ * nothing). A refusal is final at once: the proxy said no, and asking again
+ * will not change its allowlist. Every attempt that did not succeed is logged
+ * with what it saw.
+ *
+ * @param proxyUrl - The proxy URL from the environment
+ * @param host - An allowlisted host
+ * @param options - Attempts, per-attempt budget, pause and log sink (tests)
+ * @returns The last attempt's result; `succeeded` as soon as one connects
+ */
+export async function probeProxyAllowed(
+  proxyUrl: string,
+  host: string,
+  options: {
+    attempts?: number;
+    timeoutMs?: number;
+    delayMs?: number;
+    log?: (line: string) => void;
+  } = {},
+): Promise<ConnectRaw> {
+  const attempts = options.attempts ?? EGRESS_ALLOWED_PROBE_ATTEMPTS;
+  const timeoutMs = options.timeoutMs ?? EGRESS_ALLOWED_PROBE_TIMEOUT_MS;
+  const delayMs = options.delayMs ?? EGRESS_ALLOWED_PROBE_DELAY_MS;
+  const log = options.log ?? ((line: string) => console.warn(line));
+  let result: ConnectRaw = "failed";
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    result = await probeProxyConnect(proxyUrl, host, timeoutMs);
+    if (
+      result === "succeeded" || result === "not_checked" || result === "denied"
+    ) {
+      return result;
+    }
+    log(
+      `[egress-selfcheck] allowlisted CONNECT to ${host} ${
+        result === "failed" ? `got no answer within ${timeoutMs}ms` : result
+      } (attempt ${attempt} of ${attempts})`,
+    );
+    if (attempt < attempts && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return result;
+}
+
 function proxyUrlFrom(
   env: (name: string) => string | undefined,
 ): string | undefined {
@@ -356,8 +417,10 @@ function proxyUrlFrom(
 /** Run the four probes. A missing proxy URL makes the CONNECT probes `not_checked` / `failed`. */
 export async function runEgressProbes(
   env: (name: string) => string | undefined,
-  timeoutMs: number = EGRESS_PROBE_TIMEOUT_MS,
+  timeoutMs?: number,
 ): Promise<EgressProbeResults> {
+  const allowedTimeoutMs = timeoutMs ?? EGRESS_ALLOWED_PROBE_TIMEOUT_MS;
+  timeoutMs ??= EGRESS_PROBE_TIMEOUT_MS;
   const [directCloudflare, directGithub] = await Promise.all([
     probeDirectTcp(DIRECT_CLOUDFLARE, PROBE_PORT, timeoutMs),
     probeDirectTcp(DIRECT_GITHUB, PROBE_PORT, timeoutMs),
@@ -372,7 +435,9 @@ export async function runEgressProbes(
     };
   }
   const denied = await probeProxyConnect(proxy, DENIED_HOST, timeoutMs);
-  const allowed = await probeProxyConnect(proxy, ALLOWED_HOST, timeoutMs);
+  const allowed = await probeProxyAllowed(proxy, ALLOWED_HOST, {
+    timeoutMs: allowedTimeoutMs,
+  });
   const proxyDenied: ConnectDenyResult = denied === "denied"
     ? "denied"
     : denied === "succeeded" || denied === "through"
@@ -423,10 +488,11 @@ export async function checkEgressPolicy(
   const apple = dialect === "apple-container" &&
     (appleMode === "internal" || appleMode === "advisory");
   if ((flag === "true" || apple) && probes === undefined) {
-    probes = input.probe ? await input.probe() : await runEgressProbes(
-      input.env,
-      input.timeoutMs ?? EGRESS_PROBE_TIMEOUT_MS,
-    );
+    // Unset unless a test pins it: the allowlisted CONNECT gets its own,
+    // longer budget than the other probes.
+    probes = input.probe
+      ? await input.probe()
+      : await runEgressProbes(input.env, input.timeoutMs);
   }
   if (apple && probes) {
     let control = input.appleControl;
