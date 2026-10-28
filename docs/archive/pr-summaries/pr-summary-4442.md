@@ -71,9 +71,14 @@ sources or `HardenResult`'s fields, so only doc comments changed.
 - **symptom** — a refused repository-admin repair (phase `admin_only_repair`,
   category `internal_error`) was classified code-fixable `worker-crash` and
   auto-filed as a worker-fault issue.
-- **status** — `verified` — with the `classification` spread removed from
-  `issue_worker.ts` (the base behaviour) the new test failed (`undefined` vs
-  `"not_code_fixable"`); it passes with the fix.
+- **status** — `partial` — reason: the issue carries no failure message, so
+  the refusal cause is inferred, and the regression test drives a stubbed
+  hardener reporting a 403 rather than the recorded `admin_only_repair`
+  failure. With the `classification` spread removed from `issue_worker.ts`
+  (the base behaviour) that test failed (`undefined` vs `"not_code_fixable"`);
+  it passes with the fix. #4442's own recurrences (10-second
+  `admin_only_repair` failures every two hours) are still undiagnosed: if they
+  are a hardener fault, a 422 or a 5xx, they keep filing as `worker-crash`.
 - **regression test** —
   `worker/deno/tests/issue_worker_test.ts::workOnIssue #4298 - a refused repository-admin fix is a failure to retry, not a hand-off`
 
