@@ -334,6 +334,7 @@ function hardenStub(
       results,
       coordinates: [],
       referenceCount: 0,
+      templateReferenceCount: 0,
       unreadable: [],
     });
   };

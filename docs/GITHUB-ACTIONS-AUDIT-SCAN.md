@@ -1242,8 +1242,11 @@ for). The workflow-sync templates contribute too (Issue #4448): every
 third-party action in the templates workflow sync would file for the
 repository (its missing and partial workflows for the detected languages) is
 added, and followed through its composite steps, so a verbatim template runs
-under the list. A template set that cannot be read is reported as a warning,
-like an unreadable manifest, and the rest of the list is still written. An
+under the list. A template set that cannot be read is reported as its own
+warning line (`Could not read the workflow-sync templates`, naming the cause;
+setup prints it on the repository's line), apart from unreadable manifests,
+and the rest of the list is still written. The plan's step titles and the
+`Allow-list source:` line name the templates' contribution. An
 already-"selected" list that misses a pattern is extended, keeping
 what it has; secret scanning and push protection
 on a **public** repository only — on a private or internal one the step is

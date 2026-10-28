@@ -55,6 +55,29 @@ Deno.test("workflowSyncActionReferences - an empty repository's templates give S
   }
 });
 
+Deno.test("workflowSyncActionReferences - a partial spec's third-party action is included alongside the missing specs' (Issue #4448)", async () => {
+  // A Deno repository whose only workflow runs `deno lint`: deno-quality is
+  // partial (fmt and check are not covered), so its template, which brings
+  // the codecov action, is the one workflow sync files for it.
+  const lint = "jobs:\n  q:\n    steps:\n      - run: deno lint\n";
+  const gh = routedGh({
+    "repos/acme/denoish/contents/": [
+      { name: "deno.json", path: "deno.json", type: "file" },
+    ],
+    "repos/acme/denoish/languages": {},
+    "repos/acme/denoish/contents/.github/workflows": [
+      { name: "ci.yml", path: ".github/workflows/ci.yml", type: "file" },
+    ],
+    "repos/acme/denoish/contents/.github/workflows/ci.yml": lint,
+  });
+  const result = await workflowSyncActionReferences("acme/denoish", gh);
+  assertEquals(result.fault, undefined);
+  assert(
+    result.references.includes(pinnedReference("codecov/codecov-action")),
+    result.references.join(", "),
+  );
+});
+
 Deno.test("workflowSyncActionReferences - a failed language detection is a fault naming the cause, never a throw (Issue #4448)", async () => {
   const gh = async (): Promise<string> => {
     throw new Error("HTTP 503: unavailable");

@@ -3344,6 +3344,7 @@ function repairReporting(results: HardenResult[]) {
         results,
         coordinates: [],
         referenceCount: 0,
+        templateReferenceCount: 0,
         unreadable: [],
       }));
 }

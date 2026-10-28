@@ -442,6 +442,15 @@ export async function runRepoSettingsHarden(
           : {}),
       });
       tally = tallyOutcome(outcome);
+      // A template fault leaves the allow-list short, so setup says so
+      // rather than letting the next verbatim template fail to start.
+      if (outcome.templateFault) {
+        deps.warn(
+          `${renderInertRepoSlug(repo)}: could not read the workflow-sync ` +
+            `templates, so the action allow-list may omit their actions: ` +
+            outcome.templateFault,
+        );
+      }
 
       // The closer comments on and closes issues: never in a dry run.
       if (!dryRun) await closeFindings(repo, outcome, config, deps);

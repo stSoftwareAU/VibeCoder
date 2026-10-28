@@ -1102,6 +1102,8 @@ Deno.test("hardenRepo - a workflow-sync template's third-party action joins the 
     `allow-list written: ${JSON.stringify(allowList)}`,
   );
   assertEquals(report.unreadable, []);
+  assertEquals(report.templateFault, undefined);
+  assert(report.templateReferenceCount > 0, "templates' references counted");
 });
 
 Deno.test("hardenRepo - a present gitleaks workflow keeps its template's action off the allow-list from the sync side (Issue #4448)", async () => {
@@ -1141,7 +1143,7 @@ Deno.test("hardenRepo - a present gitleaks workflow keeps its template's action 
   );
 });
 
-Deno.test("hardenRepo - a failed workflow-sync audit is named in unreadable and the other steps still apply (Issue #4448)", async () => {
+Deno.test("hardenRepo - a failed workflow-sync audit is a templateFault, apart from the manifests, and the other steps still apply (Issue #4448)", async () => {
   const repo = uniqueRepo();
   const routes = {
     ...emptyRepoRoutes(repo),
@@ -1157,16 +1159,15 @@ Deno.test("hardenRepo - a failed workflow-sync audit is named in unreadable and 
     ghCommandFn: gh,
     defaultBranchCachePath: BRANCH_CACHE,
   });
-  assertEquals(report.unreadable.length, 1);
+  // Not an action manifest: the fault is reported as its own thing.
+  assertEquals(report.unreadable, []);
   assert(
-    report.unreadable[0]?.startsWith(
-      "workflow-sync templates: workflow audit failed",
-    ),
-    report.unreadable[0],
+    report.templateFault?.startsWith("workflow audit failed"),
+    report.templateFault,
   );
   assert(
-    report.unreadable[0]?.includes("HTTP 500: server error"),
-    report.unreadable[0],
+    report.templateFault?.includes("HTTP 500: server error"),
+    report.templateFault,
   );
   assert(
     writes.some((w) =>

@@ -113,7 +113,14 @@ export const repoSettingsHardenCommand: Command = {
       ghCommandFn: runGhCommand,
       extraCoordinates,
     });
-    const { results, coordinates, referenceCount, unreadable } = outcome;
+    const {
+      results,
+      coordinates,
+      referenceCount,
+      templateReferenceCount,
+      templateFault,
+      unreadable,
+    } = outcome;
     const lines = results.map((r) =>
       `- [${r.status}] ${r.step.kind}: ${r.step.title}` +
       (r.step.warning ? ` — ⚠ ${r.step.warning}` : "") +
@@ -130,7 +137,7 @@ export const repoSettingsHardenCommand: Command = {
           apply ? "applied" : "planned (dry run; add --apply)"
         } ${results.length} step(s):\n${lines.join("\n")}` +
           (coordinates.length > 0
-            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${referenceCount} workflow reference(s) on the default branch` +
+            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${referenceCount} workflow reference(s) on the default branch plus ${templateReferenceCount} workflow-sync template reference(s)` +
               (extraCoordinates.length > 0
                 ? ` plus --allow-action ${extraCoordinates.join(", ")}`
                 : "")
@@ -139,6 +146,9 @@ export const repoSettingsHardenCommand: Command = {
             ? `\n⚠ Could not read the manifest of ${unreadable.length} action(s) — the allow-list may be incomplete: ${
               unreadable.join("; ")
             }`
+            : "") +
+          (templateFault
+            ? `\n⚠ Could not read the workflow-sync templates — the allow-list may be incomplete: ${templateFault}`
             : "")) + skipNote;
     const failed = results.some((r) => r.status === "failed");
     return {

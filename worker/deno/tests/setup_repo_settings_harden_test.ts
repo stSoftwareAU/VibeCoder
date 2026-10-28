@@ -243,6 +243,20 @@ function makeFakeGitHub(
         endpoint === `${base}/rulesets/${r["id"]}`
       );
       if (ruleset) return ruleset;
+      // Workflow-sync's language detection and workflow audit (Issue #4448)
+      // read the tree without a ref; a repo with no marker files or
+      // languages reads as empty, so only a real fault is warned about.
+      if (endpoint === `${base}/contents/`) return [];
+      if (endpoint === `${base}/languages`) return {};
+      if (
+        endpoint === `${base}/contents/.github/workflows` ||
+        endpoint.startsWith(`${base}/contents/.github/workflows/`)
+      ) {
+        return contentsAt(
+          state,
+          endpoint.slice(`${base}/contents/`.length),
+        );
+      }
       if (endpoint.startsWith(`${base}/contents/`)) {
         const path = endpoint.slice(`${base}/contents/`.length);
         if (state.codeowners instanceof Error) throw state.codeowners;
@@ -476,9 +490,12 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
       `PUT repos/${repo}/rulesets/7`,
     ],
   );
-  // The allow-list is the existing list unioned with the workflow's action.
+  // The allow-list is the existing list unioned with the workflow's action
+  // and the action of the Gitleaks template workflow sync would file
+  // (Issue #4448).
   assertEquals(state[repo]!.selected["patterns_allowed"], [
     "acme/deploy-action@*",
+    "gitleaks/gitleaks-action@*",
     "other/thing@*",
   ]);
   assertEquals(state[repo]!.workflow, {
@@ -1453,4 +1470,32 @@ Deno.test("runRepoSettingsHarden - a refused PVR write fails the step, named on 
   const line = h.warnings.find((l) => l.startsWith(`${repo}:`)) ?? "";
   assertStringIncludes(line, "failed: ");
   assertStringIncludes(line, "private-vulnerability-reporting");
+});
+
+Deno.test("runRepoSettingsHarden - a workflow-sync template fault is warned on the repo's own line, and a repo without one is not (Issue #4448)", async () => {
+  const faulty = uniqueRepo();
+  const healthy = uniqueRepo();
+  const { gh } = makeFakeGitHub({
+    [faulty]: driftedRepo(),
+    [healthy]: driftedRepo(),
+  });
+  const cause = "workflow audit failed: HTTP 500: server error";
+  const h = harness(gh, await makeWorkDir([faulty, healthy]), {
+    hardenRepo: async (repo, options) => {
+      const outcome = await hardenRepo(repo, options);
+      if (repo === faulty) outcome.templateFault = cause;
+      return outcome;
+    },
+  });
+
+  const ok = await runRepoSettingsHarden({ repos: [faulty, healthy] }, h.deps);
+
+  // The allow-list was still written, so the step is not failed by it.
+  assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
+  const faults = h.warnings.filter((w) =>
+    w.includes("could not read the workflow-sync templates")
+  );
+  assertEquals(faults.length, 1, h.warnings.join("\n"));
+  assertStringIncludes(faults[0]!, `${faulty}:`);
+  assertStringIncludes(faults[0]!, cause);
 });

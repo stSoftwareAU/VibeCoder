@@ -622,7 +622,7 @@ export function planRepoSettingsHardening(
       steps.push({
         kind: "actions-allow-list",
         title:
-          `Extend the action allow-list with the action(s) the workflows or their composite steps use but the list omits: ${
+          `Extend the action allow-list with the action(s) the workflows, their composite steps or the workflow-sync templates use but the list omits: ${
             missing.join(", ")
           }`,
         method: "PUT",
@@ -639,7 +639,7 @@ export function planRepoSettingsHardening(
     steps.push({
       kind: "actions-allow-list",
       title:
-        "Allow GitHub-owned actions plus the third-party actions the workflows use, nothing else",
+        "Allow GitHub-owned actions plus the third-party actions the workflows or the workflow-sync templates use, nothing else",
       method: "PUT",
       endpoint: "actions/permissions/selected-actions",
       body: JSON.stringify({
@@ -1807,13 +1807,20 @@ export interface HardenRepoOutcome {
   coordinates: string[];
   /**
    * How many default-branch workflow `uses:` references fed the allow-list
-   * (the workflow-sync templates' references are not counted).
+   * (the workflow-sync templates' references are counted apart, in
+   * {@link HardenRepoOutcome.templateReferenceCount}).
    */
   referenceCount: number;
+  /** How many workflow-sync template `uses:` references fed the allow-list (Issue #4448). */
+  templateReferenceCount: number;
   /**
-   * Actions whose manifest could not be read, and workflow-sync templates
-   * that could not be read (allow-list may be short).
+   * Why the workflow-sync templates could not be read, naming the cause
+   * (Issue #4448); absent when they were read. The allow-list may be short.
+   * Kept apart from {@link HardenRepoOutcome.unreadable}, which names action
+   * manifests, so each is reported as what it is.
    */
+  templateFault?: string;
+  /** Actions whose manifest could not be read (allow-list may be short). */
   unreadable: string[];
 }
 
@@ -1842,6 +1849,7 @@ export async function hardenRepo(
     results: [],
     coordinates: [],
     referenceCount: 0,
+    templateReferenceCount: 0,
     unreadable: [],
   };
   try {
@@ -2033,10 +2041,9 @@ async function hardenRepoInto(
       gh,
     );
     outcome.referenceCount = references.length;
+    outcome.templateReferenceCount = sync.references.length;
     outcome.unreadable = transitive.unreadable;
-    if (sync.fault) {
-      outcome.unreadable.push(`workflow-sync templates: ${sync.fault}`);
-    }
+    if (sync.fault) outcome.templateFault = sync.fault;
     outcome.coordinates = [
       ...new Set([
         ...transitive.coordinates,

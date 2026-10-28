@@ -376,7 +376,9 @@ For each monitored repository, in order:
      and partial workflows for its detected languages. A verbatim template
      then runs, rather than failing with `startup_failure` against an
      allow-list that never named its action (Issue #4448). GitHub-owned
-     actions stay implicit, as above;
+     actions stay implicit, as above. A template set that cannot be read is
+     warned on the repository's line (the rest of the list is still
+     written), so a short list is never silent;
    - secret scanning and push protection are turned on for **public**
      repositories only. A private repository needs the paid GitHub Secret
      Protection add-on, so the step is skipped there and its line says so;
