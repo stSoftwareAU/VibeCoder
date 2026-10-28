@@ -920,12 +920,14 @@ Deno.test("findConflictingPr - a spent budget falls back rather than stalling (I
   assert(result.ok);
   assertEquals(result.value.selected, null);
   assertNoNeedsHumanWrites(fake);
+  // A PR with no originating issue stays open for the ladder (Issue #4456);
+  // the fallback is still recorded, in VibeCoder.
   assertEquals(
     fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
-    1,
-    "the PR is closed by the fallback",
+    0,
+    "the PR stays open",
   );
-  assertEquals(fake.issuesCreated.length, 1, "and the fallback is flagged");
+  assertEquals(fake.issuesCreated.length, 1, "and the fallback is recorded");
 });
 
 Deno.test("findConflictingPr - a disrupted attempt is re-attempted, not counted as spent", async () => {
@@ -1741,21 +1743,24 @@ Deno.test("findConflictingPr - an abandoned PR leaves one merge-fallback flag be
   assertEquals(reasonFor(log, 48), "abandoned-restarted");
   assertEquals(recordFor(log, 48).context?.flagIssueNumber, 900);
 
-  assertEquals(fake.issuesCreated.length, 1, "one flag per fallback");
+  assertEquals(fake.issuesCreated.length, 1, "one record per fallback");
   const flag = fake.issuesCreated[0];
-  // Not the re-do item here: the originating issue was re-queued, so the flag
-  // is a record and carries no pickup label.
-  assertEquals(flag?.labels, ["merge-fallback"]);
-  assertStringIncludes(flag?.title ?? "", "org/repo PR #48");
-  assertStringIncludes(flag?.body ?? "", "tripped on the same constant");
-  assertStringIncludes(flag?.body ?? "", "worker/deno/lib/limits.ts");
+  // A worker failure filed in VibeCoder, never a work item (Issue #4456).
+  assertEquals(flag?.labels.sort(), ["bug", "merge-fallback"]);
+  assertEquals(
+    flag?.title,
+    "Merge fallback: the PR conflict ladder was exhausted",
+  );
+  // The fake answers no visibility, so the source is private and unnamed.
+  assert(!(flag?.body ?? "").includes("org/repo"));
+  assert(!(flag?.body ?? "").includes("worker/deno/lib/limits.ts"));
   assertStringIncludes(flag?.body ?? "", "41");
   assertStringIncludes(flag?.body ?? "", "2026-08-18T09:30:00.000Z");
-  assertStringIncludes(flag?.body ?? "", "re-queued issue #16");
 
-  // The close comment carries the link, so the closed PR stays traceable.
+  // The close comment carries the full reference, so the closed PR stays
+  // traceable and never links an issue of its own repository.
   const link = fake.commentsPosted.find((c) =>
-    c.prNumber === 48 && c.body.includes("#900")
+    c.prNumber === 48 && c.body.includes("stSoftwareAU/VibeCoder#900")
   );
   assert(link, "the closed PR does not link its flag issue");
   assertNoNeedsHumanWrites(fake);
@@ -1763,7 +1768,7 @@ Deno.test("findConflictingPr - an abandoned PR leaves one merge-fallback flag be
 
 Deno.test("buildFallbackFlagLinkComment - names the flag and asks nobody (Issue #2310)", () => {
   const filed = buildFallbackFlagLinkComment(900, false);
-  assertStringIncludes(filed, "#900");
+  assertStringIncludes(filed, "stSoftwareAU/VibeCoder#900");
   assertStringIncludes(filed, "Nobody is being asked to do anything");
   assertStringIncludes(filed, "timings");
 
@@ -1771,7 +1776,7 @@ Deno.test("buildFallbackFlagLinkComment - names the flag and asks nobody (Issue 
   // comment has to say which happened or the reader cannot tell.
   const appended = buildFallbackFlagLinkComment(900, true);
   assertStringIncludes(appended, "already open");
-  assertStringIncludes(appended, "one issue per PR");
+  assertStringIncludes(appended, "one issue per cause");
 
   // `gh` reported no number: the comment must not claim a link it cannot make.
   const unknown = buildFallbackFlagLinkComment(0, false);
@@ -1850,7 +1855,7 @@ Deno.test("findConflictingPr - the flag filer is handed both runs' analyses, tim
 
   assertEquals(filings.length, 1);
   const filing = filings[0];
-  assertEquals(filing?.requestIdleTask, undefined);
+  assertEquals(filing?.cause, "the PR conflict ladder was exhausted");
   assertEquals(filing?.runs?.length, CONFLICT_RESOLUTION_BUDGET);
   assertEquals(filing?.runs?.[0]?.host, "mel-01");
   assertEquals(filing?.runs?.[0]?.timings, [{ stage: "agent", seconds: 212 }]);
@@ -1861,11 +1866,10 @@ Deno.test("findConflictingPr - the flag filer is handed both runs' analyses, tim
   assertEquals(filing?.diffSummary, undefined);
 });
 
-Deno.test("findConflictingPr - an exhausted PR with no originating issue is closed and flagged (Issue #2310)", async () => {
-  // This used to fall through to a human, and nobody came: the PR sat
-  // conflicting, out of budget and unowned. It is closed now, and the
-  // `merge-fallback` flag — `idle-task`, with the PR's diff summary — is the
-  // re-do item the fleet picks up instead.
+Deno.test("findConflictingPr - an exhausted PR with no originating issue stays open and is recorded in VibeCoder (Issue #4456)", async () => {
+  // Closing it and filing a re-do issue in its place made new work instead of
+  // finishing this work. It stays open for the ladder, and the fallback is a
+  // worker failure filed in VibeCoder — never a new issue in this repository.
   const fake = makeFakeGh(exhaustedState({
     prs: [{ number: 48, headRefName: "hotfix/no-issue", baseRefName: "main" }],
     issues: {},
@@ -1877,29 +1881,35 @@ Deno.test("findConflictingPr - an exhausted PR with no originating issue is clos
   const { result, log } = await scanWith(fake);
 
   assertEquals(result.value.selected, null);
-  assertEquals(reasonFor(log, 48), "abandoned-restarted");
-  assertEquals(recordFor(log, 48).context?.issueNumber, 900);
+  assertEquals(reasonFor(log, 48), "budget-spent");
   assertEquals(escalatedToHuman(fake, 48), false);
   assertEquals(
     fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
-    1,
+    0,
   );
 
-  // Exactly one flag, carrying `idle-task` and the diff summary.
+  // One VibeCoder record — a bug, never an `idle-task` work item.
   assertEquals(fake.issuesCreated.length, 1);
-  const flag = fake.issuesCreated[0];
-  assertEquals(flag?.labels, ["merge-fallback", "idle-task"]);
-  assertStringIncludes(flag?.title ?? "", "PR #48");
-  assertStringIncludes(flag?.body ?? "", "What the PR changed");
-  assertStringIncludes(flag?.body ?? "", "worker/deno/lib/limits.ts");
-  assertStringIncludes(flag?.body ?? "", "(+9/-2)");
-  assertStringIncludes(flag?.body ?? "", "41");
-
-  // The close comment points at it.
-  const closeComment = fake.commentsPosted.find((c) =>
-    c.prNumber === 48 && c.body.includes("#900")
+  const record = fake.issuesCreated[0];
+  assertEquals(record?.labels.sort(), ["bug", "merge-fallback"]);
+  assertEquals(
+    record?.title,
+    "Merge fallback: the PR conflict ladder was exhausted",
   );
-  assert(closeComment, "the close comment does not name the flag issue");
+  const create = fake.calls.find((c) => c[0] === "issue" && c[1] === "create");
+  assertEquals(
+    create?.[create.indexOf("--repo") + 1],
+    "stSoftwareAU/VibeCoder",
+  );
+  // The fake answers no visibility, so the source is treated as private.
+  assert(!(record?.body ?? "").includes("org/repo"));
+  assert(!(record?.body ?? "").includes("worker/deno/lib/limits.ts"));
+
+  // The PR names the record by its full reference.
+  const note = fake.commentsPosted.find((c) =>
+    c.prNumber === 48 && c.body.includes("stSoftwareAU/VibeCoder#900")
+  );
+  assert(note, "the PR comment does not name the VibeCoder record");
   assertNoNeedsHumanWrites(fake);
 });
 
