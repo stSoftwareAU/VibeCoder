@@ -68,7 +68,7 @@ other check ran: with cargo skipped and a mixed tree's only Deno type check
 unreachable, nothing ran, so a conflict-free merge is pushed `UNGATED:` and a
 resolved conflict is refused (`milestone_merge_only.ts` `resolutionGate` sets
 `landUnverified` for cargo-only trees only). The remaining hits
-(`docs/CONTAINER.md:1386`, `docs/INTERNALS.md:4471`, `:4506`, `:4515`) describe
+(`docs/CONTAINER.md:1389`, `:1393`, `docs/INTERNALS.md:4471`, `:4506`, `:4515`) describe
 `UNGATED` alone and stay true.
 
 Review-fix tests: `milestone_conflict_triage_test.ts` 31 passed;
