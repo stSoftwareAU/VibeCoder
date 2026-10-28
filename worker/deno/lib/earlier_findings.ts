@@ -62,16 +62,31 @@ function verdictText(matches: readonly EarlierVerdict[]): string {
   return `the reviewer's verdict is ${v.verdict}: ${v.note.trim()}`;
 }
 
+/**
+ * A gap's own worker-written opening: bare (as this module writes `problem`)
+ * or under the `(earlier review)` header a posted review gives it. Only a text
+ * that starts this way is a gap; any other finding, or a review summary, that
+ * merely quotes the marker is an original and stays whole (PR #4467 review).
+ */
+const GAP_TEXT_HEAD =
+  /^(?:\*\*`\(earlier review\)`\*\*: )?Earlier finding \d+ is not independently verified as fixed \(/;
+/** Closes the verdict in a gap's head and opens the quoted original. */
+const GAP_TEXT_QUOTE = `). ${ORIGINAL_MARKER}`;
+
 /** A gap carries the finding it wraps, never the wrapper, so it stays one level deep. */
 function originalOf(finding: string | EarlierFinding): string | EarlierFinding {
   if (typeof finding === "string") {
-    const at = finding.lastIndexOf(ORIGINAL_MARKER);
+    const head = GAP_TEXT_HEAD.exec(finding);
+    if (!head) return finding;
+    // The first quote opening after the head: an original that itself quotes
+    // the marker is kept whole rather than cut at its own copy.
+    const at = finding.indexOf(GAP_TEXT_QUOTE, head[0].length);
     if (at < 0) return finding;
-    // A posted gap ends with its own generic Fix; reusing it would grow one per round.
-    const quoted = finding.slice(at + ORIGINAL_MARKER.length);
-    return quoted.endsWith(TEXT_GAP_FIX_TAIL)
-      ? quoted.slice(0, -TEXT_GAP_FIX_TAIL.length)
-      : quoted;
+    const quoted = finding.slice(at + GAP_TEXT_QUOTE.length);
+    // A posted gap ends with its own generic Fix, then (as the last finding)
+    // the review summary; reusing either would grow one per round.
+    const tail = quoted.indexOf(TEXT_GAP_FIX_TAIL);
+    return tail < 0 ? quoted : quoted.slice(0, tail);
   }
   return finding.file === GAP_FILE && finding.earlier
     ? originalOf(finding.earlier)

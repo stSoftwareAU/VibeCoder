@@ -1,4 +1,7 @@
-import { earlierFindingGaps } from "../../../../worker/deno/lib/earlier_findings.ts";
+import {
+  type EarlierFinding,
+  earlierFindingGaps,
+} from "../../../../worker/deno/lib/earlier_findings.ts";
 import {
   applyCapabilityJudgement,
   type CapabilityFixtureJudgement,
@@ -83,12 +86,8 @@ interface Input {
     // From the gate entry; required, so a stale entry fails loudly rather
     // than skipping the checklist checks (Issue #3594).
     checklistState: ChecklistState;
-    previousFindings: {
-      file: string;
-      line: number;
-      problem: string;
-      fix?: string;
-    }[];
+    // A logged gap also carries the finding it wraps as `earlier` (#4446).
+    previousFindings: EarlierFinding[];
   };
   review: unknown;
 }
