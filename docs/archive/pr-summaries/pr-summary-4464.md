@@ -96,4 +96,4 @@ flowchart LR
   `Math.max(100, limit)` is 100 for them.
 - Related twinned rule: the census reads the same cached listing as the scan, so
   no census change is needed; found no second copy of the 50 cap.
-- `./quality.sh < /dev/null`: see the result recorded below once run.
+- `./quality.sh < /dev/null` on the final code: Result PASSED (with skipped checks: config integration, checkov).
