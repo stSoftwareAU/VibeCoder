@@ -224,3 +224,56 @@ Deno.test("ci_fix - every other bump in the run keeps the 24h floor (Issue #1847
     "an unsubstituted {{PLACEHOLDER}} remains in the rendered prompt",
   );
 });
+
+Deno.test("ci_fix - the zero age covers the advisory-clearing version only, not the crates a parent bump pulls in (Issue #4437)", async () => {
+  const prompt = await renderAuditFailure();
+
+  assertStringIncludes(
+    prompt,
+    "Apply the zero age to the advisory-clearing version only",
+  );
+  assertStringIncludes(prompt, "cargo update -p <parent> --precise <version>");
+  assertStringIncludes(
+    prompt,
+    "including the crates a parent bump pulls in, keeps the 24h floor",
+  );
+  assertStringIncludes(prompt, "cargo update -p <crate> --precise <version>");
+  // PR #4450 review: a bare `Cargo.lock deno.lock` pathspec matches only the
+  // root lockfiles, so a nested one (worker/deno/deno.lock, fuzz/Cargo.lock)
+  // showed no moved version to hold. The wildcard pathspec reads every depth.
+  assertStringIncludes(
+    prompt,
+    "run `git diff -- '*Cargo.lock' '*deno.lock'` from the repository root after the update",
+  );
+  assertStringIncludes(
+    prompt,
+    "so this reads every lockfile at any depth",
+  );
+  assertEquals(
+    prompt.includes("read `git diff -- Cargo.lock deno.lock`"),
+    false,
+    "the root-only lockfile diff misses a nested lockfile",
+  );
+  // PR #4450 review: a required version with no release outside the window
+  // (crates published together) cannot be held back, so it joins the
+  // advisory-clearing change at its oldest satisfying release, named in the
+  // reply, rather than leaving the advisory red until the window passes.
+  assertStringIncludes(
+    prompt,
+    "Hold a version back only when an older release satisfies what the advisory-clearing version requires",
+  );
+  assertStringIncludes(
+    prompt,
+    "and that has no release outside the window meeting that requirement",
+  );
+  assertStringIncludes(
+    prompt,
+    "is part of the advisory-clearing change: take the oldest release that satisfies the requirement, and name it with its age in the `.pr_response_message` reply",
+  );
+  // The old sentence let "edit the manifest and lockfile directly" stand as
+  // the whole mechanism for the exemption.
+  assertEquals(
+    prompt.includes("or by editing the manifest and lockfile directly"),
+    false,
+  );
+});

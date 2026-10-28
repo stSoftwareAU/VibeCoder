@@ -3,6 +3,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { CONTAINER_RUNTIMES } from "../lib/container_runtime.ts";
 import {
   type EvalContainerDependencies,
+  isAlreadyTerminatedError,
   runIsolatedCapabilitySource,
 } from "../lib/capability_security_eval_container.ts";
 
@@ -366,4 +367,25 @@ Deno.test("evaluation requires an image digest and refuses an Apple tag that cha
     );
     if (missing) assert(!fake.calls.some((a) => a[0] === "run"));
   }
+});
+
+Deno.test("kill-after-exit TypeError is recognised with and without the full stop, and nothing else is", () => {
+  assert(
+    isAlreadyTerminatedError(
+      new TypeError("Child process has already terminated"),
+    ),
+  );
+  assert(
+    isAlreadyTerminatedError(
+      new TypeError("Child process has already terminated."),
+    ),
+  );
+  assert(
+    !isAlreadyTerminatedError(new TypeError("Child process is not a child")),
+  );
+  assert(
+    !isAlreadyTerminatedError(
+      new Error("Child process has already terminated."),
+    ),
+  );
 });
