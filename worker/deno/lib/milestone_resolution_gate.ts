@@ -222,9 +222,13 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
  * @param runner - Override the spawned task (tests)
  * @returns `passed` when every task that ran passed. A task left to CI because
  *   the host could not fetch its remote modules (Issue #4422) is not run, so
- *   the passed outcome names it in `suiteLeftToCi` and in its detail. `skipped`
- *   when the tree defines nothing to run, which the caller must treat as a
- *   refusal
+ *   the passed outcome names it in `suiteLeftToCi` and in its detail. A type
+ *   check left to CI the same way is carried through as `checkLeftToCi`
+ *   (Issue #4441), so the report does not claim it passed. `skipped` when the
+ *   tree defines nothing to run, which the caller must treat as a refusal. That
+ *   refusal is fail closed: an all-left-to-CI tree where no unit suite or
+ *   quality script ran is still `skipped`, and the early `skipped` return (the
+ *   type check did not pass) never carries `checkLeftToCi`
  */
 export async function verifyResolvedTree(
   repoDir: string,
@@ -458,5 +462,6 @@ export async function verifyResolvedTree(
     output: "",
     ...(cargoLeftToCi ? { cargoSkipped: true } : {}),
     ...(leftToCi.length > 0 ? { suiteLeftToCi: leftToCi.join("; ") } : {}),
+    ...(typed.checkLeftToCi ? { checkLeftToCi: typed.checkLeftToCi } : {}),
   };
 }
