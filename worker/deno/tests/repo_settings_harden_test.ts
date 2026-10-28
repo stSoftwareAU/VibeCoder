@@ -958,6 +958,8 @@ Deno.test("hardenRepo - an organisation ruleset requiring code-owner review is r
   const reviews = report.results.find((r) => r.step.kind === "ruleset-reviews");
   assertEquals(reviews?.status, "failed");
   assert(reviews?.detail?.includes("11"), reviews?.detail);
+  // Declared a refusal from outside the repository (Issue #4442).
+  assertEquals(reviews?.refusal, "organisation-ruleset");
 });
 
 Deno.test("hardenRepo - code-owner review already gone at apply time is skipped with no write (Issue #2685)", async () => {
@@ -1904,6 +1906,8 @@ Deno.test("hardenRepo - a fleet account set to write is re-read; admin that surv
   );
   assertEquals(fleet.map((r) => r.status), ["failed"]);
   assert(fleet[0]?.detail?.includes("team"), fleet[0]?.detail);
+  // Declared a refusal from outside the repository (Issue #4442).
+  assertEquals(fleet[0]?.refusal, "inherited-role");
 });
 
 Deno.test("hardenRepo - an invalid fleet login is never put in an API path (Issue #2690)", async () => {
@@ -1919,8 +1923,9 @@ Deno.test("hardenRepo - an invalid fleet login is never put in an API path (Issu
   assert(!reads.some((r) => r.includes("evil")), reads.join("\n"));
   assertEquals(
     report.results.filter((r) => r.step.kind === "fleet-account-write")
-      .map((r) => r.status),
-    ["failed"],
+      .map((r) => [r.status, r.refusal]),
+    [["failed", undefined]],
+    "a worker-side fault is not declared a refusal (Issue #4442)",
   );
 });
 
