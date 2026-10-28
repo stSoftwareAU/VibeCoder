@@ -121,7 +121,7 @@ export function reviewForPost(
     findings: [
       ...review.findings,
       ...earlierFindingGaps(
-        pr.previousFindings.map((f) => JSON.stringify(f)),
+        pr.previousFindings,
         review.earlierFindings ?? [],
       ),
     ],
