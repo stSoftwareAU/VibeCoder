@@ -495,8 +495,9 @@ CI runs it. A Deno type check that cannot fetch its remote modules is left to
 CI only when another project's check passed: the outcome is then
 `checkLeftToCi`, the push note starts `CHECK LEFT TO CI:`, and the report says
 the type check did not fully run (Issue #4444). A tree where nothing else was
-checked is `skipped`, and the resolution is refused. A Deno-only tree and a mixed tree keep their Deno checks and suites
-and are rolled back when red, except for that unreachable-module case. A mixed
+checked is `skipped`, and the resolution is refused. A Deno-only tree and a
+mixed tree keep their Deno checks and suites and are rolled back when red,
+except for that unreachable-module case. A mixed
 tree whose Deno half passed notes that cargo was left to CI; the report does not
 claim the cargo half passed.
 
