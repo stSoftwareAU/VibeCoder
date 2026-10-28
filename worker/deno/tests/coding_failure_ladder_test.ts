@@ -23,6 +23,7 @@ import {
   SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import type { HandleFailureOptions } from "../lib/label_types.ts";
+import { REPO_ADMIN_REFUSED } from "../lib/run_outcome_classifier.ts";
 
 // ---------------------------------------------------------------------------
 // classifyCodingFailure
@@ -527,4 +528,16 @@ Deno.test("declared failure causes outrank quoted deadline and timeout wording (
     "transient",
   );
   assertEquals(classifyCodingFailure(reason).disposition, "transient");
+});
+
+Deno.test("classifyCodingFailure #4442 - a refused repository-admin setting is transient here, never a record-only repo-config", () => {
+  // REPO_ADMIN_REFUSED carries `repo-config` for the run-failure filer only:
+  // its category stays internal_error, so this ladder writes no record.
+  const decision = classifyCodingFailure(
+    "Repository-admin finding not applied: could not apply BP-REPO-RULESET-NO-REVIEW: HTTP 403",
+    "internal_error",
+    REPO_ADMIN_REFUSED,
+  );
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.failureClass, "repo-config");
 });
