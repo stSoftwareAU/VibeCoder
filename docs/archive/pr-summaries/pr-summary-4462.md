@@ -56,8 +56,8 @@ round trip).
   `no-readable-source` refusal's issue number, and a comments thread holding
   null and primitive entries. The comment-entry guard in
   `unreadableRunFailureSource` is now `typeof comment?.body !== "string"`: the
-  separate `typeof raw !== "object"` / `raw === null` operands were redundant
-  (a primitive has no `body`, and `?.` covers null), so no equivalent mutant
+  separate `typeof raw !== "object"` / `raw === null` operands were redundant (a
+  primitive has no `body`, and `?.` covers null), so no equivalent mutant
   remains.
 - Red check: with the readable-source check disabled, the all-withheld,
   outside-login and unreadable-comments tests fail; the two scheduling tests
