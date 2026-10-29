@@ -39,16 +39,18 @@ Version bump: `VERSION` is not touched by this change.
 
 Backend only, no UI. No existing test pinned the old strings. From
 `worker/deno`: `deno task test:unit` over `tests/unmet_criteria_gate_test.ts`
-(new), `degraded_delivery_test.ts`, `completion_phase_unmet_criteria_4146_test.ts`,
+(new), `degraded_delivery_test.ts`,
+`completion_phase_unmet_criteria_4146_test.ts`,
 `completion_phase_advisory_gates_4234_test.ts` and
 `summary_rule_gate_retry_test.ts`: 47 passed, 0 failed. `deno fmt`, `deno lint`
 and `deno check` on the changed `.ts` files exit 0.
 
 Docs sweep: grepped `README.md`, `docs/` (excluding `docs/archive/`),
 `prompts/`, `DESIGN-PRINCIPLES.md` and `CODING-STANDARDS.md` for
-`unmet.criteri`, `criteria_unmet`, `criteria not met` and `until every
-criterion`. `docs/workflows/issue-processing.md:1073` already describes the
-advice flow; `docs/workflows/issue-processing.md:1417` and
+`unmet.criteri`, `criteria_unmet`, `criteria not met` and
+`until every
+criterion`. `docs/workflows/issue-processing.md:1073` already
+describes the advice flow; `docs/workflows/issue-processing.md:1417` and
 `prompts/issue/prompt.md:1003` are already true. Behaviour cited against
 `worker/deno/lib/phases/completion_phase.ts` (the `unmetCriteriaVerdict.blocked`
 branch and `postCompletionAdvisory`) and `assemblePrBody` for the `Part of #N`
