@@ -243,9 +243,8 @@ Universal specs (applied to every repo regardless of language) include:
 - **`semgrep`** — SAST scanning on every PR.
 - **`markdown-lint`** — runs `markdownlint-cli2` (pinned to an exact
   version) against the same `.markdownlint-cli2.jsonc` configuration used
-  locally by `quality.sh`, on every PR. Optionally mirrors the local
-  `check-mermaid` quality gate when the Deno worker module is present in
-  the repo.
+  locally by `quality.sh`, on every PR. Only this repository's own
+  `.github/workflows/markdown-lint.yml` keeps the Mermaid check.
 
 Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
 see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.

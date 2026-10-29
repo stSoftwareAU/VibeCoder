@@ -7,7 +7,8 @@
  *  - a read-only default workflow token, and Actions may not approve PRs;
  *  - SHA pinning required;
  *  - `allowed_actions: selected`, with every transitive `owner/repo@*` the
- *    workflows need unioned onto the existing list;
+ *    workflows and the workflow-sync templates need unioned onto the
+ *    existing list (so it can hold actions no workflow uses yet);
  *  - secret scanning and push protection on public repositories only;
  *  - CodeQL default setup, `default` query suite, on public repositories
  *    only (Issue #2704): written only when `not-configured`, never on a
@@ -442,6 +443,15 @@ export async function runRepoSettingsHarden(
           : {}),
       });
       tally = tallyOutcome(outcome);
+      // A template fault leaves the allow-list short, so setup says so
+      // rather than letting the next verbatim template fail to start.
+      if (outcome.templateFault) {
+        deps.warn(
+          `${renderInertRepoSlug(repo)}: could not read the workflow-sync ` +
+            `templates, so the action allow-list may omit their actions: ` +
+            outcome.templateFault,
+        );
+      }
 
       // The closer comments on and closes issues: never in a dry run.
       if (!dryRun) await closeFindings(repo, outcome, config, deps);

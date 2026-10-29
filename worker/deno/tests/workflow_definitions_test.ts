@@ -189,6 +189,39 @@ Deno.test(
 );
 
 Deno.test(
+  "workflow_definitions - markdown-lint template uses only GitHub-owned actions and no Deno or Mermaid steps",
+  () => {
+    const spec = WORKFLOW_SPECS.find((s) => s.id === "markdown-lint");
+    assertNotEquals(spec, undefined, "markdown-lint spec missing");
+    const usesLines = spec!.template
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("- uses:") || l.startsWith("uses:"));
+    assertNotEquals(usesLines.length, 0, "Expected at least one uses: line");
+    // Every `uses:` owner must be GitHub-owned (`actions/`); a third-party
+    // action in the markdown gate would be an unreviewed supply-chain input.
+    for (const line of usesLines) {
+      const ref = /uses:\s+(\S+)/.exec(line)![1]!;
+      assertEquals(
+        ref.split("/")[0],
+        "actions",
+        `markdown-lint uses: line is not GitHub-owned: "${line}"`,
+      );
+    }
+    assertEquals(
+      spec!.template.includes("setup-deno"),
+      false,
+      "markdown-lint template must not install Deno (setup-deno)",
+    );
+    assertEquals(
+      spec!.template.includes("check-mermaid"),
+      false,
+      "markdown-lint template must not run the check-mermaid gate",
+    );
+  },
+);
+
+Deno.test(
   "workflow_definitions - markdown-lint template parses as YAML",
   () => {
     const spec = WORKFLOW_SPECS.find((s) => s.id === "markdown-lint");

@@ -18,6 +18,12 @@ import {
   assertMatch,
   assertStringIncludes,
 } from "@std/assert";
+import { runHardenCommand } from "../commands/repo_settings_harden.ts";
+import {
+  _resetGhSpawnRunner,
+  _setGhSpawnRunner,
+  type GhSpawnRunner,
+} from "../lib/gh_spawn.ts";
 import {
   type CloseFixedFindingsFn,
   type CodeownersSyncResult,
@@ -243,6 +249,20 @@ function makeFakeGitHub(
         endpoint === `${base}/rulesets/${r["id"]}`
       );
       if (ruleset) return ruleset;
+      // Workflow-sync's language detection and workflow audit (Issue #4448)
+      // read the tree without a ref; a repo with no marker files or
+      // languages reads as empty, so only a real fault is warned about.
+      if (endpoint === `${base}/contents/`) return [];
+      if (endpoint === `${base}/languages`) return {};
+      if (
+        endpoint === `${base}/contents/.github/workflows` ||
+        endpoint.startsWith(`${base}/contents/.github/workflows/`)
+      ) {
+        return contentsAt(
+          state,
+          endpoint.slice(`${base}/contents/`.length),
+        );
+      }
       if (endpoint.startsWith(`${base}/contents/`)) {
         const path = endpoint.slice(`${base}/contents/`.length);
         if (state.codeowners instanceof Error) throw state.codeowners;
@@ -476,9 +496,12 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
       `PUT repos/${repo}/rulesets/7`,
     ],
   );
-  // The allow-list is the existing list unioned with the workflow's action.
+  // The allow-list is the existing list unioned with the workflow's action
+  // and the action of the Gitleaks template workflow sync would file
+  // (Issue #4448).
   assertEquals(state[repo]!.selected["patterns_allowed"], [
     "acme/deploy-action@*",
+    "gitleaks/gitleaks-action@*",
     "other/thing@*",
   ]);
   assertEquals(state[repo]!.workflow, {
@@ -1453,4 +1476,98 @@ Deno.test("runRepoSettingsHarden - a refused PVR write fails the step, named on 
   const line = h.warnings.find((l) => l.startsWith(`${repo}:`)) ?? "";
   assertStringIncludes(line, "failed: ");
   assertStringIncludes(line, "private-vulnerability-reporting");
+});
+
+Deno.test("runRepoSettingsHarden - a workflow-sync template fault is warned on the repo's own line, and a repo without one is not (Issue #4448)", async () => {
+  const faulty = uniqueRepo();
+  const healthy = uniqueRepo();
+  const { gh } = makeFakeGitHub({
+    [faulty]: driftedRepo(),
+    [healthy]: driftedRepo(),
+  });
+  const cause = "workflow audit failed: HTTP 500: server error";
+  const h = harness(gh, await makeWorkDir([faulty, healthy]), {
+    hardenRepo: async (repo, options) => {
+      const outcome = await hardenRepo(repo, options);
+      if (repo === faulty) outcome.templateFault = cause;
+      return outcome;
+    },
+  });
+
+  const ok = await runRepoSettingsHarden({ repos: [faulty, healthy] }, h.deps);
+
+  // The allow-list was still written, so the step is not failed by it.
+  assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
+  const faults = h.warnings.filter((w) =>
+    w.includes("could not read the workflow-sync templates")
+  );
+  assertEquals(faults.length, 1, h.warnings.join("\n"));
+  assertStringIncludes(faults[0]!, `${faulty}:`);
+  assertStringIncludes(faults[0]!, cause);
+});
+
+Deno.test("repo-settings-harden command - a template read fault is printed even when nothing is planned (PR #4473 review)", async () => {
+  const repo = uniqueRepo();
+  const { gh } = makeFakeGitHub({ [repo]: driftedRepo() });
+  // Converge the repository first, so the command plans nothing.
+  await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, await makeWorkDir([repo])).deps,
+  );
+
+  const cause = "Resource not accessible by integration (HTTP 403)";
+  const runnerFor = (
+    languagesFail: boolean,
+    manifestFail = false,
+  ): GhSpawnRunner =>
+  async (args) => {
+    if (manifestFail && /\/contents\/action\.ya?ml/.test(args[1] ?? "")) {
+      return { code: 1, success: false, stdout: "", stderr: `gh: ${cause}` };
+    }
+    if (languagesFail && args[1] === `repos/${repo}/languages`) {
+      return { code: 1, success: false, stdout: "", stderr: `gh: ${cause}` };
+    }
+    try {
+      return {
+        code: 0,
+        success: true,
+        stdout: await gh([...args]),
+        stderr: "",
+      };
+    } catch (err) {
+      const stderr = err instanceof Error ? err.message : String(err);
+      return { code: 1, success: false, stdout: "", stderr };
+    }
+  };
+  const run = () => runHardenCommand({ repo }, BRANCH_CACHE);
+
+  try {
+    // Positive control: with every read answering, nothing is planned and
+    // no read-fault line appears.
+    _setGhSpawnRunner(runnerFor(false));
+    const clean = await run();
+    assertStringIncludes(clean.message ?? "", "nothing to harden");
+    assertEquals(
+      (clean.message ?? "").includes("Could not read the workflow-sync"),
+      false,
+      clean.message,
+    );
+
+    _setGhSpawnRunner(runnerFor(true));
+    const faulty = await run();
+    const message = faulty.message ?? "";
+    assertStringIncludes(message, "nothing to harden");
+    assertStringIncludes(message, "Could not read the workflow-sync templates");
+    assertStringIncludes(message, "language detection failed");
+    assertStringIncludes(message, cause);
+
+    // An unreadable action manifest is likewise reported with nothing planned.
+    _setGhSpawnRunner(runnerFor(false, true));
+    const unreadable = (await run()).message ?? "";
+    assertStringIncludes(unreadable, "nothing to harden");
+    assertStringIncludes(unreadable, "Could not read the manifest of");
+    assertStringIncludes(unreadable, cause);
+  } finally {
+    _resetGhSpawnRunner();
+  }
 });

@@ -146,6 +146,7 @@ function outcome(results: HardenResult[]): HardenRepoOutcome {
     results,
     coordinates: ["denoland/setup-deno"],
     referenceCount: 1,
+    templateReferenceCount: 0,
     unreadable: [],
   };
 }

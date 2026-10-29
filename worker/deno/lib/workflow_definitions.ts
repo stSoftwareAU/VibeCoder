@@ -820,9 +820,7 @@ const markdownLint: WorkflowSpec = {
   // cannot inject code into CI, and `markdownlint-cli2` to an exact version
   // (Issue #1639) so the install sits inside the supply-chain quarantine.
   // Reuses the same `.markdownlint-cli2.jsonc` configuration that local
-  // `quality.sh` consumes — single source of truth, no drift. The optional
-  // Mermaid step mirrors the local `check-mermaid` quality gate (Issue
-  // #1683); it runs only when `worker/deno/mod.ts` is present.
+  // `quality.sh` consumes — single source of truth, no drift.
   template: `name: Markdown Lint
 
 on:
@@ -856,24 +854,6 @@ ${CHECKOUT_NO_CREDENTIALS}
         run: npm install -g --ignore-scripts markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}
       - name: Run markdownlint-cli2
         run: markdownlint-cli2
-      # Optional: mirror the local check-mermaid quality gate when Deno
-      # and the worker module are available in the repo (Issue #1683).
-      - name: Detect Deno worker module
-        id: detect-deno
-        run: |
-          set -euo pipefail
-          if [ -f worker/deno/mod.ts ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.detect-deno.outputs.present == 'true'
-        uses: ${pinnedAction("denoland/setup-deno")}
-        with:
-          deno-version: v2.x
-      - if: steps.detect-deno.outputs.present == 'true'
-        name: Validate Mermaid blocks
-        run: deno run --allow-read --allow-env=DEBUG,LOG_LEVEL,CONFIG_FILE,CONFIG_PATH,OUTPUT_JSON worker/deno/mod.ts check-mermaid
 `,
 };
 

@@ -1074,6 +1074,109 @@ Deno.test("hardenRepo - an unreadable workflow directory fails the allow-list al
   );
   assertEquals(allowList.map((r) => r.status), ["failed"]);
   assert(allowList[0]?.detail?.includes("HTTP 500"), allowList[0]?.detail);
+  // No template read happens once the workflow tree is unreadable.
+  assertEquals(report.templateReferenceCount, 0);
+});
+
+/** A repository with no root files, no languages and no workflows. */
+function emptyRepoRoutes(repo: string): Record<string, unknown> {
+  return {
+    ...hardenedRoutes(repo),
+    [`repos/${repo}/contents/`]: [],
+    [`repos/${repo}/languages`]: {},
+  };
+}
+
+Deno.test("hardenRepo - a workflow-sync template's third-party action joins the allow-list before any workflow uses it (Issue #4448)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(emptyRepoRoutes(repo));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  const allowList = writes.find((w) =>
+    w.endpoint === `repos/${repo}/actions/permissions/selected-actions`
+  );
+  const body = allowList?.body as { patterns_allowed: string[] } | undefined;
+  assert(
+    body?.patterns_allowed.includes("gitleaks/gitleaks-action@*"),
+    `allow-list written: ${JSON.stringify(allowList)}`,
+  );
+  assertEquals(report.unreadable, []);
+  assertEquals(report.templateFault, undefined);
+  assert(report.templateReferenceCount > 0, "templates' references counted");
+});
+
+Deno.test("hardenRepo - a present gitleaks workflow keeps its template's action off the allow-list from the sync side (Issue #4448)", async () => {
+  const repo = uniqueRepo();
+  // The default-branch scan adds acme/deploy-action, so an allow-list is
+  // written and its contents can be checked for the gitleaks pattern.
+  const gitleaksYml =
+    `jobs:\n  scan:\n    steps:\n      - uses: acme/deploy-action@${SHA_A}\n      - run: ./gitleaks git --redact\n`;
+  const routes = {
+    ...emptyRepoRoutes(repo),
+    ...workflowRoutes(repo, { ".github/workflows/gitleaks.yml": gitleaksYml }),
+    // The audit lists and reads the workflows without a ref.
+    [`repos/${repo}/contents/.github/workflows`]: [{
+      name: "gitleaks.yml",
+      path: ".github/workflows/gitleaks.yml",
+      type: "file",
+    }],
+    [`repos/${repo}/contents/.github/workflows/gitleaks.yml`]: gitleaksYml,
+  };
+  const { gh, writes } = makeGh(routes);
+  await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  const allowList = writes.find((w) =>
+    w.endpoint === `repos/${repo}/actions/permissions/selected-actions`
+  );
+  const body = allowList?.body as { patterns_allowed: string[] } | undefined;
+  assert(
+    body?.patterns_allowed.includes("acme/deploy-action@*"),
+    `allow-list written: ${JSON.stringify(allowList)}`,
+  );
+  assert(
+    !body?.patterns_allowed.includes("gitleaks/gitleaks-action@*"),
+    `present gitleaks workflow still added its action: ${JSON.stringify(body)}`,
+  );
+});
+
+Deno.test("hardenRepo - a failed workflow-sync audit is a templateFault, apart from the manifests, and the other steps still apply (Issue #4448)", async () => {
+  const repo = uniqueRepo();
+  const routes = {
+    ...emptyRepoRoutes(repo),
+    [`repos/${repo}/actions/permissions/workflow`]: {
+      default_workflow_permissions: "write",
+      can_approve_pull_request_reviews: true,
+    },
+    [`repos/${repo}/contents/.github/workflows`]: SERVER_ERROR(),
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  // Not an action manifest: the fault is reported as its own thing.
+  assertEquals(report.unreadable, []);
+  assert(
+    report.templateFault?.startsWith("workflow audit failed"),
+    report.templateFault,
+  );
+  assert(
+    report.templateFault?.includes("HTTP 500: server error"),
+    report.templateFault,
+  );
+  assert(
+    writes.some((w) =>
+      w.endpoint === `repos/${repo}/actions/permissions/workflow`
+    ),
+    "the workflow-token write still applies",
+  );
 });
 
 Deno.test("hardenRepo - a failed workflow-permissions read is a failure naming the endpoint, with no write (Issue #2626)", async () => {

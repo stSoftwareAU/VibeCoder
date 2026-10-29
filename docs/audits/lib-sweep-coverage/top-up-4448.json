@@ -1,0 +1,12 @@
+{
+  "issue": 4448,
+  "chunk": "top-up-4448",
+  "title": "top-up: workflow-sync template actions for the Actions allow-list",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4448",
+  "definition": "Reviewed the workflow-sync template action references (Issue #4448). The module adapts gh to the command runner the language detector and workflow auditor take: only gh is run, any other command is refused, and a thrown gh error becomes a failed command carrying its message. It detects the repository's languages, audits its workflows, and collects the uses: references of the missing and partial workflow-sync templates, sorted and unique, skipping local paths and docker:// references and keeping GitHub-owned actions. The function never throws; a failed detection, audit or read is reported as a fault with references left empty, never a partial list. Repository text is parsed as data only, and nothing from it is executed.",
+  "status": "claimed",
+  "sweptAt": "c12f3a6bd34b7c8b1ca364479897886335e1c768",
+  "paths": [
+    "worker/deno/lib/workflow_sync_actions.ts"
+  ]
+}

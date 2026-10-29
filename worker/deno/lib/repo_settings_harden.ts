@@ -11,7 +11,8 @@
  *  - `sha_pinning_required: true` (GHA-PERM-003) — every `uses:` in the
  *    tree is already SHA-pinned (`workflow_definitions_test.ts`)
  *  - `allowed_actions: selected` with GitHub-owned actions implicit and one
- *    `<owner>/<repo>@*` pattern per third-party action the workflows use
+ *    `<owner>/<repo>@*` pattern per third-party action the workflows use or
+ *    the workflow-sync templates would bring (Issue #4448)
  *    (GHA-PERM-003 / GHA-HYGIENE-004)
  *  - secret scanning + push protection (GHA-MONITOR-004) — public
  *    repositories only: a private or internal repo needs the paid GitHub
@@ -88,9 +89,10 @@ import {
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { extractUsesValue } from "./action_pin_scanner.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
+import { workflowSyncActionReferences } from "./workflow_sync_actions.ts";
 import type { CopilotCodeReviewMode } from "../types.ts";
 
-type GhCommandFn = (args: string[]) => Promise<string>;
+export type GhCommandFn = (args: string[]) => Promise<string>;
 
 /** The `selected-actions` surface: what a "selected" allow-list permits. */
 export interface SelectedActionsSnapshot {
@@ -620,7 +622,7 @@ export function planRepoSettingsHardening(
       steps.push({
         kind: "actions-allow-list",
         title:
-          `Extend the action allow-list with the action(s) the workflows or their composite steps use but the list omits: ${
+          `Extend the action allow-list with the action(s) the workflows, their composite steps or the workflow-sync templates use but the list omits: ${
             missing.join(", ")
           }`,
         method: "PUT",
@@ -637,7 +639,7 @@ export function planRepoSettingsHardening(
     steps.push({
       kind: "actions-allow-list",
       title:
-        "Allow GitHub-owned actions plus the third-party actions the workflows use, nothing else",
+        "Allow GitHub-owned actions plus the third-party actions the workflows or the workflow-sync templates use, nothing else",
       method: "PUT",
       endpoint: "actions/permissions/selected-actions",
       body: JSON.stringify({
@@ -1803,8 +1805,21 @@ export interface HardenRepoOutcome {
   pvrSkipNote?: string;
   /** The allow-list's action coordinates (empty when the workflows were unreadable). */
   coordinates: string[];
-  /** How many workflow `uses:` references fed the allow-list. */
+  /**
+   * How many default-branch workflow `uses:` references fed the allow-list
+   * (the workflow-sync templates' references are counted apart, in
+   * {@link HardenRepoOutcome.templateReferenceCount}).
+   */
   referenceCount: number;
+  /** How many workflow-sync template `uses:` references fed the allow-list (Issue #4448). */
+  templateReferenceCount: number;
+  /**
+   * Why the workflow-sync templates could not be read, naming the cause
+   * (Issue #4448); absent when they were read. The allow-list may be short.
+   * Kept apart from {@link HardenRepoOutcome.unreadable}, which names action
+   * manifests, so each is reported as what it is.
+   */
+  templateFault?: string;
   /** Actions whose manifest could not be read (allow-list may be short). */
   unreadable: string[];
 }
@@ -1834,6 +1849,7 @@ export async function hardenRepo(
     results: [],
     coordinates: [],
     referenceCount: 0,
+    templateReferenceCount: 0,
     unreadable: [],
   };
   try {
@@ -2000,7 +2016,9 @@ async function hardenRepoInto(
   }
 
   // The allow-list is built from the default branch's workflows, read
-  // through the API (Issue #2685), so no checkout is needed.
+  // through the API (Issue #2685), so no checkout is needed, and from the
+  // third-party actions of the workflow-sync templates this repository would
+  // be filed with (Issue #4448).
   let allowListFault: string | undefined;
   let references: string[] = [];
   try {
@@ -2015,12 +2033,17 @@ async function hardenRepoInto(
     }`;
   }
   if (!allowListFault) {
+    // A template the fleet files must run under this allow-list too, so its
+    // actions join the references the default branch already contributes.
+    const sync = await workflowSyncActionReferences(repo, gh);
     const transitive = await resolveTransitiveActionCoordinates(
-      references,
+      [...references, ...sync.references],
       gh,
     );
     outcome.referenceCount = references.length;
+    outcome.templateReferenceCount = sync.references.length;
     outcome.unreadable = transitive.unreadable;
+    if (sync.fault) outcome.templateFault = sync.fault;
     outcome.coordinates = [
       ...new Set([
         ...transitive.coordinates,
