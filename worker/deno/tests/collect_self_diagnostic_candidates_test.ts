@@ -29,6 +29,13 @@ import type { FindIssuesOptions } from "../lib/issue_finder_common.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 import type { WorkerConfig } from "../types.ts";
+import {
+  formatOccurrenceLine,
+  formatRunFailureBody,
+  formatRunFailureFollowUpMarker,
+  type RunFailureReport,
+} from "../lib/run_failure_issue.ts";
+import type { RunFailureClassification } from "../lib/run_outcome_classifier.ts";
 
 const WORKER_LOGIN = "vibe-bot";
 const PRODUCT_REPO = "stSoftwareAU/NEAT-AI-Rebase";
@@ -475,4 +482,221 @@ Deno.test("self-schedule - a diagnostic a merged PR names is closed as resolved,
     !joined.some((c) => c.includes("needs-human")),
     "a resolved diagnostic is never handed to a human",
   );
+});
+
+// Issue #4462: a run-failure issue whose body withholds its source (a private
+// source repo) is scheduled only when a fleet-authored follow-up occurrence
+// names a source. Otherwise the worker would guess the cause.
+
+const RUN_FAILURE_REPORT: RunFailureReport = {
+  sourceRepo: "stSoftwareAU/private-repo-6",
+  sourceIssueNumber: 147,
+  machineId: "vibe-coder-50110",
+  outcome: {
+    kind: "no_pr",
+    category: "killed",
+    phase: "execute",
+    elapsedSeconds: 539,
+    message: "Claude was killed (exit 137, SIGKILL) without creating changes",
+  },
+};
+const RUN_FAILURE_CLASSIFICATION: RunFailureClassification = {
+  fixability: "code_fixable",
+  failureClass: "oom",
+  rationale: "the run was killed by SIGKILL, the signature of an OOM kill",
+};
+const OCCURRENCE_EPOCH = 1_800_000_000;
+
+/** A gh stub answering only the source visibility lookup. */
+function visibilityGh(visibility: string): (args: string[]) => Promise<string> {
+  return (args: string[]) =>
+    Promise.resolve(args.includes(".visibility") ? visibility : "");
+}
+
+/** A run-failure body as the filer writes it for a public or private source. */
+function runFailureBody(visibility: string): Promise<string> {
+  return formatRunFailureBody(
+    RUN_FAILURE_REPORT,
+    RUN_FAILURE_CLASSIFICATION,
+    visibilityGh(visibility),
+  );
+}
+
+/** One occurrence line as the filer writes it for a public or private source. */
+function occurrenceLine(visibility: string): Promise<string> {
+  return formatOccurrenceLine(
+    RUN_FAILURE_REPORT,
+    OCCURRENCE_EPOCH,
+    visibilityGh(visibility),
+  );
+}
+
+/** A follow-up comment carrying one occurrence line, by `login`. */
+function followUpComment(line: string, login = FLEET_LOGIN) {
+  return {
+    id: 1,
+    body: [
+      formatRunFailureFollowUpMarker("oom", OCCURRENCE_EPOCH),
+      "",
+      line,
+    ].join("\n"),
+    user: { login },
+  };
+}
+
+Deno.test("self-schedule - a run-failure issue whose every occurrence withheld its source is not scheduled (Issue #4462)", async () => {
+  const calls: GhCall[] = [];
+  const logs: string[] = [];
+  const gh = makeGh(calls, {
+    comments: JSON.stringify([
+      followUpComment(await occurrenceLine("private")),
+    ]),
+  });
+  const { result } = await collect({
+    issues: [makeIssue({ body: await runFailureBody("private") })],
+    gh,
+    deps: captureDeps([], logs),
+  });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals.map((r) => r.cause), ["no-readable-source"]);
+  assertEquals(result.refusals.map((r) => r.issueNumber), [39]);
+  assert(
+    logs.some((l) => l.includes("refused") && l.includes("#39")),
+    `expected a refusal log line, got ${JSON.stringify(logs)}`,
+  );
+  assertEquals(
+    calls.filter((c) => c.args.join(" ").includes("issue comment")).length,
+    0,
+    "nothing is announced for an issue that names no readable source",
+  );
+});
+
+Deno.test("self-schedule - a run-failure issue whose follow-up names a public source is scheduled (Issue #4462)", async () => {
+  const audited: string[] = [];
+  const gh = makeGh([], {
+    comments: JSON.stringify([followUpComment(await occurrenceLine("public"))]),
+  });
+  const { result } = await collect({
+    issues: [makeIssue({ body: await runFailureBody("private") })],
+    gh,
+    deps: captureDeps(audited, []),
+  });
+
+  assertEquals(result.candidates.map((c) => c.number), [39]);
+  assertEquals(result.refusals, []);
+  assertEquals(audited, [
+    `${SELF_SCHEDULE_AUDIT_VERB} ${SELF_DIAGNOSTIC_REPO}#39 run-failure`,
+  ]);
+});
+
+Deno.test("self-schedule - a run-failure issue whose body names a public source reads no follow-up (Issue #4462)", async () => {
+  const calls: GhCall[] = [];
+  const { result } = await collect({
+    issues: [makeIssue({ body: await runFailureBody("public") })],
+    gh: makeGh(calls),
+    deps: captureDeps([], []),
+  });
+
+  assertEquals(result.candidates.map((c) => c.number), [39]);
+  assertEquals(result.refusals, []);
+  // Only the announcement check reads the comments; the source check does not.
+  assertEquals(
+    calls.filter((c) => c.args.join(" ").includes("/comments")).length,
+    1,
+  );
+});
+
+Deno.test("self-schedule - a follow-up naming a public source from an outside login does not count (Issue #4462)", async () => {
+  const { result } = await collect({
+    issues: [makeIssue({ body: await runFailureBody("private") })],
+    gh: makeGh([], {
+      comments: JSON.stringify([
+        followUpComment(await occurrenceLine("public"), "drive-by-attacker"),
+      ]),
+    }),
+    deps: captureDeps([], []),
+  });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals.map((r) => r.cause), ["no-readable-source"]);
+});
+
+Deno.test("self-schedule - a run-failure issue whose follow-ups cannot be read is refused (Issue #4462)", async () => {
+  const calls: GhCall[] = [];
+  const base = makeGh(calls);
+  const gh = (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("comments")) {
+      calls.push({ args });
+      return Promise.reject(new Error("HTTP 500: comments unavailable"));
+    }
+    return base(args);
+  };
+  const logs: string[] = [];
+  const { result } = await collect({
+    issues: [makeIssue({ body: await runFailureBody("private") })],
+    gh,
+    deps: captureDeps([], logs),
+  });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals.map((r) => r.cause), ["no-readable-source"]);
+  assertStringIncludes(result.refusals[0]!.detail, "could not read");
+  assert(logs.some((l) => l.includes("refused")));
+});
+
+Deno.test("self-schedule - a follow-up thread with non-object entries still schedules on a public follow-up (Issue #4462)", async () => {
+  const { result } = await collect({
+    issues: [makeIssue({ body: await runFailureBody("private") })],
+    gh: makeGh([], {
+      comments: JSON.stringify([
+        null,
+        "a string",
+        7,
+        followUpComment(await occurrenceLine("public")),
+      ]),
+    }),
+    deps: captureDeps([], []),
+  });
+
+  assertEquals(result.candidates.map((c) => c.number), [39]);
+  assertEquals(result.refusals, []);
+});
+
+Deno.test("self-schedule - a diagnostic whose filing attestation failed is refused with the reason and detail", async () => {
+  const logs: string[] = [];
+  const deps: SelfDiagnosticDeps = {
+    ...captureDeps([], logs),
+    verifyFilings: (_repo, issues) =>
+      Promise.resolve(
+        new Map(issues.map((issue) => [issue.number, {
+          attested: false,
+          reason: "content-mismatch",
+          detail: "the body changed after filing",
+        } as AttestationVerdict])),
+      ),
+  };
+  const { result } = await collect({ issues: [makeIssue()], deps });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals, [{
+    issueNumber: 39,
+    cause: "unattested",
+    detail: "content-mismatch: the body changed after filing",
+  }]);
+});
+
+Deno.test("self-schedule - a diagnostic with no attestation verdict is refused", async () => {
+  const deps: SelfDiagnosticDeps = {
+    ...captureDeps([], []),
+    verifyFilings: () => Promise.resolve(new Map()),
+  };
+  const { result } = await collect({ issues: [makeIssue()], deps });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals, [{
+    issueNumber: 39,
+    cause: "unattested",
+    detail: "no filing attestation was returned for this issue",
+  }]);
 });

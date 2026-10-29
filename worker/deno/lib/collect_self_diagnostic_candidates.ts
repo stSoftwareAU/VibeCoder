@@ -28,6 +28,11 @@
  *     The body marker alone is written by whoever writes the body, so on
  *     its own it reduced the gate to "filed by the worker account" — the
  *     signal this module's own comments call insufficient.
+ *   - **Readable source** (Issue #4462) — a run-failure issue whose body
+ *     withholds its source (a private repo) is scheduled only once its body
+ *     or a fleet-authored follow-up occurrence names one. Otherwise it is
+ *     refused, logged and left for a human `work-on`; the worker does not
+ *     guess the cause.
  *   - **Cap** — at most `self_schedule_diagnostics_max_in_flight`
  *     diagnostics in flight (assigned = claimed), so a misfiring detector
  *     cannot fill the queue with its own work. The surplus is refused and
@@ -43,9 +48,11 @@
  *     names it) is handed to a human with `needs-human` and one comment,
  *     rather than sitting open as an alarm nobody is obliged to read.
  *
- * No extra `gh` calls are made to find candidates: the issues are read from
- * the per-repo `fetchAllIssues` list the scan already holds, which carries
- * the body and author this module matches on.
+ * Candidates are found without extra `gh` calls: the issues are read from the
+ * per-repo `fetchAllIssues` list the scan already holds, which carries the
+ * body and author this module matches on. The one exception is the readable
+ * source check (Issue #4462): a run-failure issue whose body names no source
+ * costs one bounded comments read to look for a fleet-authored follow-up.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -76,8 +83,19 @@ import {
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
 import { isIssueTimeDeferred } from "./time_deferral.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
-import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
+import {
+  fetchIssueCommentPages,
+  issueCommentsContainMarker,
+} from "./issue_comment_pages.ts";
+import {
+  parseRunFailureFollowUpMarker,
+  RUN_FAILURE_FAMILY_ID,
+  runFailureNamesReadableSource,
+} from "./run_failure_issue.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import {
@@ -108,7 +126,12 @@ const DEFAULT_MAX_IN_FLIGHT = 1;
 export interface SelfScheduleRefusal {
   issueNumber: number;
   /** Short machine-readable cause, e.g. `cap-reached`. */
-  cause: "cap-reached" | "audit-failed" | "announce-failed" | "unattested";
+  cause:
+    | "cap-reached"
+    | "audit-failed"
+    | "announce-failed"
+    | "unattested"
+    | "no-readable-source";
   /** Human-readable detail for the log line. */
   detail: string;
 }
@@ -261,7 +284,7 @@ export async function collectSelfDiagnosticCandidates(
   // the tamper-evident audit chain. Everything else is refused loudly and
   // waits for a human. Run after the label filters above so an issue that was
   // never a tier-2b candidate is not refused on every scan.
-  const attestationRefusals: SelfScheduleRefusal[] = [];
+  const filterRefusals: SelfScheduleRefusal[] = [];
   const verifyFilings = deps.verifyFilings ?? verifySelfDiagnosticFilings;
   const verdicts = await verifyFilings(
     repo,
@@ -272,30 +295,64 @@ export async function collectSelfDiagnosticCandidates(
       familyId: familyByNumber.get(issue.number)!.id,
     })),
   );
-  const filtered = eligible.filter((issue) => {
+  const filtered: FilterableIssue[] = [];
+  for (const issue of eligible) {
     const verdict = verdicts.get(issue.number);
-    if (verdict?.attested) return true;
-    const detail = verdict?.attested === false
-      ? `${verdict.reason}: ${verdict.detail}`
-      : "no filing attestation was returned for this issue";
-    attestationRefusals.push({
-      issueNumber: issue.number,
-      cause: "unattested",
-      detail,
-    });
-    log(
-      `[self-schedule] refused ${repo}#${issue.number}: ${detail} — a body ` +
-        `marker is written by whoever writes the body, so it is not ` +
-        `provenance on its own; the diagnostic waits for a human \`work-on\``,
+    if (!verdict?.attested) {
+      const detail = verdict?.attested === false
+        ? `${verdict.reason}: ${verdict.detail}`
+        : "no filing attestation was returned for this issue";
+      filterRefusals.push({
+        issueNumber: issue.number,
+        cause: "unattested",
+        detail,
+      });
+      log(
+        `[self-schedule] refused ${repo}#${issue.number}: ${detail} — a body ` +
+          `marker is written by whoever writes the body, so it is not ` +
+          `provenance on its own; the diagnostic waits for a human \`work-on\``,
+      );
+      diag?.logIssueSkipped(
+        repo,
+        issue.number,
+        "self-schedule-refused",
+        detail,
+      );
+      continue;
+    }
+    const sourceDetail = await unreadableRunFailureSource(
+      repo,
+      issue,
+      familyByNumber.get(issue.number)!,
+      ghFn,
+      deps.dedupAuthors,
+      log,
     );
-    diag?.logIssueSkipped(repo, issue.number, "self-schedule-refused", detail);
-    return false;
-  });
+    if (sourceDetail !== null) {
+      filterRefusals.push({
+        issueNumber: issue.number,
+        cause: "no-readable-source",
+        detail: sourceDetail,
+      });
+      log(
+        `[self-schedule] refused ${repo}#${issue.number}: ${sourceDetail} — ` +
+          `it waits for a human \`work-on\``,
+      );
+      diag?.logIssueSkipped(
+        repo,
+        issue.number,
+        "self-schedule-refused",
+        sourceDetail,
+      );
+      continue;
+    }
+    filtered.push(issue);
+  }
   if (filtered.length === 0) {
-    return { candidates: [], refusals: attestationRefusals };
+    return { candidates: [], refusals: filterRefusals };
   }
 
-  const refusals: SelfScheduleRefusal[] = [...attestationRefusals];
+  const refusals: SelfScheduleRefusal[] = [...filterRefusals];
   let remaining = maxInFlight - inFlight;
   if (remaining <= 0) {
     // Fail loud: a refused diagnostic is reported, never dropped quietly.
@@ -566,6 +623,62 @@ export async function collectSelfDiagnosticCandidates(
   }
 
   return { candidates, refusals };
+}
+
+/**
+ * Issue #4462: whether a run-failure issue names a readable source. A body
+ * that withholds its source (a private repo) names none unless a fleet-authored
+ * follow-up occurrence does, so the worker would otherwise guess the cause.
+ * Returns the refusal detail, or null when the issue may be scheduled. The
+ * follow-ups are read only for such an issue, and only fleet-authored ones
+ * count.
+ */
+async function unreadableRunFailureSource(
+  repo: string,
+  issue: FilterableIssue,
+  family: SelfDiagnosticFamily,
+  ghFn: (args: string[]) => Promise<string>,
+  dedupAuthors: AlertDedupAuthorOptions | undefined,
+  log: (message: string) => void,
+): Promise<string | null> {
+  if (family.id !== RUN_FAILURE_FAMILY_ID) return null;
+  const body = issue.body ?? "";
+  if (runFailureNamesReadableSource(body, [])) return null;
+
+  let rows: { author: string | null; body: string }[];
+  try {
+    const comments = await fetchIssueCommentPages(repo, issue.number, ghFn);
+    rows = [];
+    for (const raw of comments) {
+      // A primitive has no `body`; `?.` covers a null entry.
+      const comment = raw as
+        | { body?: unknown; user?: { login?: unknown } }
+        | null;
+      if (typeof comment?.body !== "string") continue;
+      if (parseRunFailureFollowUpMarker(comment.body) === null) continue;
+      const login = comment.user?.login;
+      rows.push({
+        author: typeof login === "string" ? login : null,
+        body: comment.body,
+      });
+    }
+  } catch (err) {
+    return `no readable source: could not read the follow-up comments: ` +
+      errorText(err);
+  }
+
+  const verified = await selectFleetAuthoredComments(
+    rows,
+    `run-failure follow-ups on ${repo}#${issue.number}`,
+    dedupAuthors ?? {},
+    log,
+    "the follow-up does not count, so the diagnostic waits for a human `work-on`",
+  );
+  if (runFailureNamesReadableSource(body, verified.map((row) => row.body))) {
+    return null;
+  }
+  return "no readable source: every occurrence withheld its source (a private " +
+    "repo), and no fleet-authored follow-up names one";
 }
 
 /** Message text of an unknown thrown value. */
