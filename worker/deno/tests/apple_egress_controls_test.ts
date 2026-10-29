@@ -13,6 +13,7 @@ import {
   appleProxyAddress,
   appleStateDirectory,
   appleWorkerArgs,
+  appleWorkerEnv,
   retryAppleEgress,
   staleAppleOwnership,
 } from "../lib/apple_egress_launch.ts";
@@ -209,6 +210,59 @@ Deno.test("Apple internal mode gives the worker a resolver that fails at once, s
   assert(at < launch.run.indexOf("vibe:test"), "--dns precedes the image");
   // Advisory mode keeps the default network and its DNS.
   assertEquals(fixture("advisory").run.includes("--dns"), false);
+});
+
+Deno.test("Apple internal worker args name the internal network's gateway as the self-check resolver; advisory args do not", () => {
+  // The default and internal gateways differ, so passing the wrong attachment
+  // field (address, or the default network's gateway) fails here (#4491 review).
+  const inspect = (network: string) =>
+    JSON.stringify([{
+      status: {
+        networks: [{
+          network: "default",
+          ipv4Address: "192.168.64.2/24",
+          ipv4Gateway: "192.168.64.1",
+        }, {
+          network,
+          ipv4Address: "192.168.128.2/24",
+          ipv4Gateway: "192.168.128.1",
+        }],
+      },
+    }]);
+  const runtimeEnv = { VIBE_RUNTIME_VERSION: "0.6.0" };
+  const internal = fixture();
+  const internalArgs = appleWorkerArgs(
+    internal.run,
+    appleWorkerEnv(
+      "internal",
+      appleProxyAddress(inspect(internal.network), internal.network),
+      {},
+      runtimeEnv,
+    ),
+  );
+  const dns = internalArgs.filter((arg) =>
+    arg.startsWith("VIBE_EGRESS_DNS_SERVER=")
+  );
+  assertEquals(dns, ["VIBE_EGRESS_DNS_SERVER=192.168.128.1"]);
+  assert(internalArgs.includes("HTTPS_PROXY=http://192.168.128.2:3128"));
+  assert(internalArgs.includes("VIBE_APPLE_EGRESS_MODE=internal"));
+  assert(internalArgs.includes("VIBE_RUNTIME_VERSION=0.6.0"));
+
+  const advisory = fixture("advisory");
+  const advisoryArgs = appleWorkerArgs(
+    advisory.run,
+    appleWorkerEnv(
+      "advisory",
+      { address: "192.168.64.3", gateway: "192.168.64.1" },
+      {},
+      runtimeEnv,
+    ),
+  );
+  assertEquals(
+    advisoryArgs.some((arg) => arg.startsWith("VIBE_EGRESS_DNS_SERVER=")),
+    false,
+  );
+  assert(advisoryArgs.includes("VIBE_APPLE_EGRESS_MODE=advisory"));
 });
 
 /** Fake the network: record each lookup and dial, answer from `answers`. */

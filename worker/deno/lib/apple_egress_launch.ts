@@ -309,6 +309,37 @@ export function appleWorkerArgs(
   return result;
 }
 
+/**
+ * The worker's startup environment on an Apple launch (Issue #4491 review).
+ *
+ * Internal mode runs the worker with `--dns 127.0.0.1`, so the system resolver
+ * fails at once and a proxied fetch is not held up. That also hides the
+ * internal network's own resolver from the self-check, which therefore asks
+ * it by address: `VIBE_EGRESS_DNS_SERVER` carries the internal network's
+ * gateway. Advisory mode keeps the default network and its DNS, so it gets no
+ * such variable. Keys keep the order `appleWorkerArgs` was always given.
+ */
+export function appleWorkerEnv(
+  mode: AppleEgressMode,
+  attachment: { address: string; gateway: string },
+  hostEnv: Record<string, string>,
+  runtimeEnv: Record<string, string>,
+): Record<string, string> {
+  const proxyUrl = `http://${attachment.address}:3128`;
+  return {
+    ...hostEnv,
+    ...(mode === "internal"
+      ? { VIBE_EGRESS_DNS_SERVER: attachment.gateway }
+      : {}),
+    VIBE_APPLE_EGRESS_MODE: mode,
+    ...runtimeEnv,
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+  };
+}
+
 export interface AppleOwnership {
   owner: number;
   manager: number;

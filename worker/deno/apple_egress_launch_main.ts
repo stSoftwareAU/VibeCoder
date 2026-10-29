@@ -9,6 +9,7 @@ import {
   type AppleOwnership,
   appleStateDirectory,
   appleWorkerArgs,
+  appleWorkerEnv,
   boundedAppleChild,
   retryAppleEgress,
   staleAppleOwnership,
@@ -284,23 +285,16 @@ try {
           console.error(`[egress] negative-control cleanup: ${removed.stderr}`);
         }
       }
-      const proxyUrl = `http://${attachment.address}:3128`;
-      const runArgs = appleWorkerArgs(launch.run, {
-        ...hostEnv,
-        // `--dns 127.0.0.1` hides the internal network's resolver from
-        // ordinary lookups; the self-check probes it here by address.
-        ...(mode === "internal"
-          ? { VIBE_EGRESS_DNS_SERVER: attachment.gateway }
-          : {}),
-        VIBE_APPLE_EGRESS_MODE: mode,
-        VIBE_RUNTIME_VERSION: caps.version,
-        VIBE_EGRESS_MACOS_VERSION: caps.macOS,
-        VIBE_EGRESS_NEGATIVE_CONTROL: JSON.stringify(control),
-        HTTP_PROXY: proxyUrl,
-        HTTPS_PROXY: proxyUrl,
-        http_proxy: proxyUrl,
-        https_proxy: proxyUrl,
-      });
+      // `--dns 127.0.0.1` hides the internal network's resolver from
+      // ordinary lookups; appleWorkerEnv names it for the self-check.
+      const runArgs = appleWorkerArgs(
+        launch.run,
+        appleWorkerEnv(mode, attachment, hostEnv, {
+          VIBE_RUNTIME_VERSION: caps.version,
+          VIBE_EGRESS_MACOS_VERSION: caps.macOS,
+          VIBE_EGRESS_NEGATIVE_CONTROL: JSON.stringify(control),
+        }),
+      );
       await Deno.writeTextFile(`${readyFile}.tmp`, runArgs.join("\0") + "\0", {
         mode: 0o600,
       });
