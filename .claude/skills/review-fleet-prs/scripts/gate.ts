@@ -729,6 +729,13 @@ function arg(name: string): string | undefined {
 // fails like any other gh error and the next pass tries again.
 const GH_TIMEOUT_MS = 120_000;
 
+/** A failed command, with what it printed: gh prints a GraphQL body with errors on stdout. */
+export class GhError extends Error {
+  constructor(message: string, readonly stdout: string) {
+    super(message);
+  }
+}
+
 export async function runWithTimeout(
   cmd: string,
   args: string[],
@@ -749,9 +756,49 @@ export async function runWithTimeout(
   }
   if (!out.success) {
     const err = new TextDecoder().decode(out.stderr).trim();
-    throw new Error(`${cmd} ${args[0] ?? ""} ${args[1] ?? ""}: ${err}`);
+    throw new GhError(
+      `${cmd} ${args[0] ?? ""} ${args[1] ?? ""}: ${err}`,
+      new TextDecoder().decode(out.stdout),
+    );
   }
   return new TextDecoder().decode(out.stdout);
+}
+
+// A FORBIDDEN error on a check suite's `app` (its data comes back null). The
+// Cursor app's owner has an IP allow list, so the reviewer App may not read
+// that app, and every search that met a Cursor suite failed: no fleet PR was
+// reviewed. A suite from an app the gate cannot name is a non-Actions suite,
+// which failedActionsSuiteConclusions already ignores.
+const unreadableSuiteApp = (e: { type?: string; path?: unknown[] }) =>
+  e.type === "FORBIDDEN" && Array.isArray(e.path) &&
+  e.path.at(-1) === "app" && e.path.at(-4) === "checkSuites";
+
+/**
+ * One GraphQL page's data. gh exits non-zero on any GraphQL error; a response
+ * whose only errors are unreadable suite apps is used as it came back, any
+ * other failure is thrown.
+ */
+async function graphqlData(
+  args: string[],
+  gh: (args: string[]) => Promise<string>,
+) {
+  try {
+    return JSON.parse(await gh(args)).data;
+  } catch (e) {
+    if (!(e instanceof GhError)) throw e;
+    let body;
+    try {
+      body = JSON.parse(e.stdout);
+    } catch {
+      throw e;
+    }
+    const errors = body?.errors;
+    if (
+      !body?.data || !Array.isArray(errors) || errors.length === 0 ||
+      !errors.every(unreadableSuiteApp)
+    ) throw e;
+    return body.data;
+  }
 }
 
 const gh = (args: string[]) => runWithTimeout("gh", args, GH_TIMEOUT_MS);
@@ -824,7 +871,7 @@ async function fleetActiveRepos(
       `q=${q}`,
     ];
     if (after) args.push("-F", `after=${after}`);
-    const page = JSON.parse(await gh(args)).data.search;
+    const page = (await graphqlData(args, gh)).search;
     for (const n of page.nodes) {
       if (n.repository) repos.add(n.repository.nameWithOwner);
     }
@@ -857,7 +904,7 @@ async function searchOpenPrs(
       `q=${q}`,
     ];
     if (after) args.push("-F", `after=${after}`);
-    const page = JSON.parse(await gh(args)).data.search;
+    const page = (await graphqlData(args, gh)).search;
     prs.push(...page.nodes.filter((n: SearchPr) => n.number !== undefined));
     after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
   } while (after);
