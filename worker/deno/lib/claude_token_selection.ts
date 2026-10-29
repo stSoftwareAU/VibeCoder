@@ -26,10 +26,17 @@
  *   has used 80% or more cannot spend whatever its week still holds, so every
  *   passing token ranks ahead of every failing one.
  * - **Passing tokens are ordered by remaining share** of the seven-day window
- *   (100% less its utilisation), largest first. A response that reported no
- *   seven-day window is ranked on the remaining share of the window it did
- *   report. A nearly spent week needs no floor of its own: it holds the least
- *   and so ranks last among the passing tokens.
+ *   (100% less its utilisation), largest first. A nearly spent week needs no
+ *   floor of its own: it holds the least and so ranks last among the passing
+ *   tokens.
+ * - **Among passing tokens, one with a seven-day window ranks ahead of one
+ *   without** (Issue #4503, restoring #1731): a share of a five-hour window is
+ *   not comparable with a share of a seven-day one. A response that reported
+ *   no seven-day window is ranked only among the tokens that also lack one, on
+ *   the remaining share of the window it did report. It is never dropped and
+ *   it is not a gate: if every candidate lacks a seven-day window, one is
+ *   still selected. Gate failures are still ordered by soonest five-hour
+ *   reset, whatever their telemetry.
  * - A token whose `resetAt` has already passed is treated as a fresh, FULL
  *   window, in both the gate and the ranking. The probe reports the window
  *   that was current when the figure was produced; once that instant is behind
@@ -170,7 +177,11 @@ export const CLAUDE_WEEK_PACE_GRACE_HOURS = 24;
 export type ClaudeTokenSelectionReason =
   /**
    * Strictly the largest remaining share of the seven-day window (or of the
-   * only window reported) of every candidate that passed the five-hour gate.
+   * only window reported) of every candidate that passed the five-hour gate —
+   * except that a candidate with a seven-day window is preferred to one
+   * without, whatever the shares (Issue #4503). Also given when the winner and
+   * the runner-up hold the same share on different windows, since that is not
+   * a tie.
    */
   | "most-seven-day-remaining"
   /** Level on remaining share; won on the sooner reset. */
@@ -207,8 +218,17 @@ export interface RankedClaudeToken {
   readonly budget: ClaudeTokenBudget;
   /** The five-hour window the gate was applied to, or null when absent. */
   readonly fiveHour: RankedClaudeWindow | null;
-  /** The window the token is ranked on — seven-day when reported. */
+  /**
+   * The window the token is ranked on — seven-day when reported, otherwise the
+   * first window the probe did report (see {@link hasSevenDayTelemetry}).
+   */
   readonly rankWindow: RankedClaudeWindow | null;
+  /**
+   * True when the probe reported a seven-day window. False means the token is
+   * ranked on the window it did report, which is never comparable with a
+   * seven-day share; false for an unknown budget (Issue #4503).
+   */
+  readonly hasSevenDayTelemetry: boolean;
   /** True when the five-hour window still holds the gate's minimum share. */
   readonly passesFiveHourGate: boolean;
   /**
@@ -291,6 +311,7 @@ function rankingView(
       budget,
       fiveHour: null,
       rankWindow: null,
+      hasSevenDayTelemetry: false,
       passesFiveHourGate: false,
       remainingFraction: null,
       resetAt: null,
@@ -302,15 +323,17 @@ function rankingView(
   );
   const fiveHour = windows.find((w) => w.window === "five_hour") ?? null;
   // The ranking is on the seven-day window; a response that did not report
-  // one is ranked on the window it did report rather than dropped.
-  const rankWindow = windows.find((w) => w.window === "seven_day") ??
-    windows[0] ?? null;
+  // one is ranked on the window it did report rather than dropped (Issue
+  // #4503).
+  const sevenDay = windows.find((w) => w.window === "seven_day") ?? null;
+  const rankWindow = sevenDay ?? windows[0] ?? null;
   return {
     label: budget.label,
     index,
     budget,
     fiveHour,
     rankWindow,
+    hasSevenDayTelemetry: sevenDay !== null,
     // A response carrying no five-hour window has no gate to fail.
     passesFiveHourGate: fiveHour === null ||
       1 - fiveHour.remainingFraction < CLAUDE_FIVE_HOUR_GATE_MAX_USED,
@@ -334,9 +357,10 @@ function band(candidate: RankedClaudeToken): 0 | 1 | 2 {
 }
 
 /**
- * Order two candidates: by band, then — inside the passing band — by the most
- * remaining share, soonest reset, and finally discovery order. Gate failures
- * are ordered by which five-hour window refills first.
+ * Order two candidates: by band, then — inside the passing band — by seven-day
+ * telemetry (a token with a seven-day window first, Issue #4503), then by the
+ * most remaining share, soonest reset, and finally discovery order. Gate
+ * failures are ordered by which five-hour window refills first.
  */
 function compareCandidates(
   a: RankedClaudeToken,
@@ -352,6 +376,12 @@ function compareCandidates(
     const rightReset = b.fiveHour?.resetAt ?? Number.MAX_SAFE_INTEGER;
     if (leftReset !== rightReset) return leftReset - rightReset;
     return a.index - b.index;
+  }
+  // A share of a five-hour window is not comparable with a seven-day share,
+  // so a token with seven-day telemetry ranks ahead of one without (Issue
+  // #4503).
+  if (a.hasSevenDayTelemetry !== b.hasSevenDayTelemetry) {
+    return a.hasSevenDayTelemetry ? -1 : 1;
   }
   // The most weekly quota left is spent first.
   const remainingA = a.remainingFraction ?? 0;
@@ -375,6 +405,9 @@ function winningReason(
   const runnerUp = ranked[1];
   if (
     runnerUp === undefined || band(runnerUp) !== 0 ||
+    // Equal shares on different windows are not a tie: the telemetry decided
+    // it (Issue #4503).
+    runnerUp.hasSevenDayTelemetry !== winner.hasSevenDayTelemetry ||
     runnerUp.remainingFraction !== winner.remainingFraction
   ) {
     return "most-seven-day-remaining";

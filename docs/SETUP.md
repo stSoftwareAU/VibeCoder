@@ -1148,13 +1148,19 @@ The candidates are ordered:
    **no** five-hour window has no gate to fail, so it passes.
 3. **The most seven-day quota left wins**: the largest remaining share of
    the seven-day window (100% less its utilisation), whenever that window
-   resets. A response that reported no seven-day window is ranked on the
-   remaining share of the window it did report, rather than dropped. A window
-   whose reset instant has already passed counts as **full** (100% left): the
-   figure describes the window that was current when it was measured, and once
-   that instant is behind us the window has rolled over. A nearly spent week
-   needs no floor of its own — it holds the least, so it ranks last among the
-   passing tokens and still ahead of every gate failure.
+   resets (Issue #4504). Among tokens that passed the five-hour gate, a token
+   with a seven-day window ranks ahead of one without (Issue #4503, restoring
+   #1731), because a share of a five-hour window is not comparable with a
+   share of a seven-day one. A response that reported no seven-day window is
+   never dropped and is not a gate: among gate-passing tokens it is ordered
+   only among the tokens that also lack one, on the remaining share of the
+   window it did report; as a gate failure it is ordered by five-hour reset
+   like any other. A window whose reset instant has already passed counts as
+   **full** (100% left): the figure describes the window that was current
+   when it was measured, and once that instant is behind us the window has
+   rolled over. A nearly spent week needs no floor of its own — it holds the
+   least, so it ranks last among the passing tokens and still ahead of every
+   gate failure.
 4. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
    so when nothing can be spent now the token that refills first is the one
    chosen.
@@ -1233,7 +1239,12 @@ found; `of 3` is how many candidates were ranked. Each candidate line carries
 both windows — a window the response did not report reads `absent` — plus
 `remaining=`, the remaining share the token was ranked on (the seven-day
 window's, or the only window the response reported when it carried no
-seven-day one), and `gate=pass|fail` for the five-hour gate. A `selected` line
+seven-day one), and `gate=pass|fail` for the five-hour gate. A `remaining=` on
+a line whose response reported no seven-day window is the share of that other
+window, so it is **not** comparable with a seven-day share: among tokens that
+passed the five-hour gate, such a token ranks behind every token that reported
+one (Issue #4503), while tokens with `gate=fail` are still ordered by soonest
+five-hour reset, whatever their seven-day telemetry. A `selected` line
 for a token that failed the gate also carries the five-hour reset the choice
 was made on. Above, `provider-2`'s 22% resets in eleven hours, but `provider`
 holds 75% of its week, so `provider` wins. The `[SECURITY]` prefix and the trailing `host=` field
@@ -1262,7 +1273,7 @@ carrying the credential. The last line names why the winner won:
 
 | Reason | What it means |
 |--------|---------------|
-| `most-seven-day-remaining` | Strictly the largest remaining share of the seven-day window (or of the only window reported) of every candidate that passed the five-hour gate. |
+| `most-seven-day-remaining` | Strictly the largest remaining share of the seven-day window (or of the only window reported) of every candidate that passed the five-hour gate, where a token with a seven-day window is preferred to one without, whatever the shares (Issue #4503). Also shown when the runner-up holds an equal share on a different window. |
 | `equal-seven-day-remaining-soonest-reset` | Level on remaining share; won on the sooner reset. |
 | `tied-discovery-order` | Level on both remaining share and reset; won on discovery order. |
 | `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
