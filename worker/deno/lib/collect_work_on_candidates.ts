@@ -37,6 +37,7 @@ import {
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
   resolveFleetPrSlots,
+  SCAN_LABELLED_ISSUE_LIMIT,
   wasLabelAddedByAllowedAuthor,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
@@ -213,7 +214,7 @@ export async function collectWorkOnCandidates(
     repo,
     config.workOnLabel,
     options.cache,
-    50,
+    SCAN_LABELLED_ISSUE_LIMIT,
     ghFn,
   );
 

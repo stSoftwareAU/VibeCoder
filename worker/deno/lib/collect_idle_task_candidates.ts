@@ -51,6 +51,7 @@ import {
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
   resolveFleetPrSlots,
+  SCAN_LABELLED_ISSUE_LIMIT,
   wasLabelAddedByAllowedAuthor,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
@@ -122,7 +123,7 @@ export async function collectIdleTaskCandidates(
     repo,
     IDLE_TASK_LABEL,
     options.cache,
-    50,
+    SCAN_LABELLED_ISSUE_LIMIT,
     ghFn,
   );
 

@@ -89,7 +89,11 @@ client-side. This is implemented in
   this validation and also propagates command failures (Issue #4124).
 - `fetchIssuesByLabel(repo, label, cache, …)` calls `fetchAllIssues`
   and applies the label filter in memory — it never issues a per-label
-  GitHub call.
+  GitHub call. The scan collectors read up to `SCAN_LABELLED_ISSUE_LIMIT`
+  (200) labelled issues per label, the full width of the listing the scan
+  reads and never a narrower window, because the listing is newest-first and
+  a narrower cap would drop the oldest labelled issues while the idle-decision
+  census still counts them (Issue #4464).
 - `fetchClosedIssuesByMilestoneNumber(repo, n, cache, …)` reads/writes the
   `issues_closed_milestone_<n>` cache key, holding one milestone's closed
   issues (PRs filtered out). It is read with `gh api
