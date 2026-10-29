@@ -286,11 +286,21 @@ run_round() {
   # stream-json: the round's own result carries its per-model usage, which
   # price_round turns into each review's cost; the driver keeps the full
   # stream in the round's directory and logs only its readable lines.
+  # Read-only shell tools as well (owner, 2026-10-29): without them about two
+  # commands a round were refused (ls, mkdir, pipes into base64/head, git log),
+  # each costing the reviewer a turn. Only git subcommands that read are
+  # allowed; the checkout is mounted read-only in any case.
   claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" '["--model",
     "claude-opus-5-5", "--effort", "xhigh", "--output-format", "stream-json",
     "--verbose", "--allowedTools", "Agent",
     "Read", "Grep", "Glob", $edit, "Bash(deno run:*)", "Bash(gh:*)",
-    "Bash(jq:*)", "Bash(cat:*)"]')
+    "Bash(jq:*)", "Bash(cat:*)", "Bash(ls:*)", "Bash(mkdir:*)",
+    "Bash(cd:*)", "Bash(base64:*)", "Bash(head:*)", "Bash(tail:*)",
+    "Bash(wc:*)", "Bash(sort:*)", "Bash(uniq:*)", "Bash(cut:*)",
+    "Bash(tr:*)", "Bash(grep:*)", "Bash(diff:*)", "Bash(which:*)",
+    "Bash(git log:*)", "Bash(git show:*)", "Bash(git diff:*)",
+    "Bash(git grep:*)", "Bash(git blame:*)", "Bash(git cat-file:*)",
+    "Bash(git rev-parse:*)", "Bash(git ls-files:*)"]')
   perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
     "$ROUND_TIMEOUT" "$RUNTIME" "${ROUND_ARGS[@]}" review-round \
     --prompt-file "$C_DIR/prompt.md" --claude-args "$claude_args" \
@@ -641,6 +651,13 @@ $C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR,
 and write its input files directly in $C_DIR (not a sub-directory: post.ts
 reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.
+
+Shell commands you may run: gh, jq, cat, deno run, ls, mkdir, cd, base64,
+head, tail, wc, sort, uniq, cut, tr, grep, diff, which, and the read-only git
+subcommands (log, show, diff, grep, blame, cat-file, rev-parse, ls-files),
+run from the working directory without \`git -C\`. Any other command is
+refused, and a pipeline runs only when every command in it is on that list.
+Prefer \`gh api --jq\` and the Read tool.
 PROMPT
   log "$key: round started: $dir"
   launch "$key" "$dir" review
