@@ -321,7 +321,12 @@ export async function runCapabilitySecurityEval(options: {
       ? { available: options.isolationAvailable }
       : {}),
   });
-  const guidance = await loadTrustedCapabilityBundle();
+  // The bundle of the tree under evaluation, never the host's PROMPTS_DIR
+  // (PR #4463 review).
+  const guidance = await loadTrustedCapabilityBundle(
+    undefined,
+    `${root}/prompts`,
+  );
   const guidanceRevision = guidance.kind === "loaded"
     ? guidance.bundle.revision
     : null;

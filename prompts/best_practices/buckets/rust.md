@@ -5,6 +5,7 @@ Canonical guides — link, do not restate:
 - The Rust Book — <https://doc.rust-lang.org/book/>
 - Rust API Guidelines — <https://rust-lang.github.io/api-guidelines/>
 - The Rustonomicon (for `unsafe`) — <https://doc.rust-lang.org/nomicon/>
+- Google Rust Style Guide — <https://google.github.io/styleguide/rustguide.html>
 
 Apply these checks to `*.rs` files, `Cargo.toml`, and `.cargo/config.toml`
 (the build-profile checks below read the last one) only.
@@ -617,3 +618,146 @@ Blocking calls on an async runtime stay under check 19.
     `clone()` stays under check 2. Effect: flat memory under load. Risk:
     eviction changes hit rates. Stable id: title `Unbounded growth in
     <item>`.
+
+## Google Rust Style Guide learnings
+
+This section mines the
+[Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
+for rules the checks above do not already cover. Rules that apply only
+inside Google's own trees are left out: the guide's `[chrome]` and
+`[Fuchsia]`-tagged rules (no `async`, no `std::thread`, flat library
+layout, Fuchsia's own `Mutex`). So are judgement calls such as naming,
+`Rc` versus `Arc`, and iterator chains.
+
+**Static evidence only**, as everywhere in this bucket: each check
+below names a grep-able pattern, and the scan never runs clippy or any
+other tool. Where a clippy lint covers the pattern, the check names it
+as an optional confirmation the human can run. Every finding is
+`severity:low`, because none of these fails a build on its own (unlike
+the toolchain section above).
+
+### Checks
+
+43. **Glob imports.** Always applies. Grep `use .*::\*;`. Do not flag a
+    glob import from a module named `prelude`, whether a consumer import
+    (`use rayon::prelude::*;`, `use std::io::prelude::*;`) or a
+    re-export of one, nor `use super::*;` inside a `#[cfg(test)]`
+    module, nor a public glob re-export (`pub use …::*;`,
+    `pub(crate) use …::*;`), such as a facade in `lib.rs`. Clippy allows
+    all three, and the guide permits `pub use submodule::*` for non-leaf
+    modules. Also do not flag a glob of an enum's own variants
+    (`use Color::*;` or `use self::Color::*;`) that sits inside that
+    enum's `impl` block or inside a function that mainly matches on that
+    enum: the guide permits `use enum::*` in method bodies of enums and in
+    functions primarily dealing with that enum. Clippy reports enum-variant
+    globs under `enum_glob_use`, not `wildcard_imports`. Flag only the
+    remaining private `use …::*;` imports. Clippy `wildcard_imports`
+    (pedantic) can confirm those. Why:
+    a glob hides where a name comes from, and an upstream addition can
+    silently shadow or collide with a local name. Fix: import the names
+    explicitly. Severity: `severity:low`. Finding title:
+    `Glob import in <file>`.
+44. **Missing `#[must_use]`.** Always applies. Grep `pub fn .*->` and
+    flag a function whose return value a caller would be wrong to ignore
+    and that has no `#[must_use]`. That covers a non-`()` return that is
+    not already `Result` or another `#[must_use]` type, such as a
+    builder-style `self` return or a computed flag, id or handle. Clippy
+    `must_use_candidate` (pedantic) can confirm. Why: dropping the value
+    is silently a no-op. Fix: add `#[must_use]`. Severity:
+    `severity:low`. Finding title: `Missing #[must_use] on <function>`.
+45. **Public enum without `#[non_exhaustive]`.** Gate: the crate's
+    `Cargo.toml` does not set `publish = false` and the crate has a
+    library target (a `src/lib.rs` or a `[lib]` section), so it can be
+    depended on from outside the workspace. A binary-only crate has no
+    downstream `match` to break: skip it. Scope: only an enum exported
+    from the library, meaning one declared `pub` along a chain of
+    `pub mod` declarations from `src/lib.rs`, or re-exported with
+    `pub use`. A `pub enum` in a private `mod` that is never re-exported
+    cannot be named outside the crate, so it is not a finding. This
+    matches clippy `exhaustive_enums` (restriction), which lints exported
+    enums only and can confirm. Grep `pub enum`, keep the exported ones,
+    and flag each whose attributes lack `#[non_exhaustive]`: adding a
+    variant later breaks every downstream `match`. Not a finding for an
+    enum that is deliberately closed (a two-state `Direction`, say) when
+    its doc comment says so. Fix: add `#[non_exhaustive]`. Severity:
+    `severity:low`. Finding title: `Public enum <name> is not
+    #[non_exhaustive]`.
+46. **Too many `bool` parameters.** Always applies. Grep `pub fn` with
+    `bool` in its signature and flag one with more than three `bool`
+    parameters (clippy's default `max-fn-params-bools`), where call
+    sites read as `f(true, false, true, true)`. Clippy
+    `fn_params_excessive_bools` (pedantic) can confirm. Why: a bare
+    `bool` at the call site does not say what it switches on, and two
+    swapped flags still compile. Fix: take an options struct or an enum.
+    Severity: `severity:low`. Finding title: `Too many bool parameters
+    in <function>`.
+47. **Check-then-unwrap.** Always applies. Grep `is_some()`, `is_ok()`,
+    `is_none()` and `is_err()` used as an `if` condition, then
+    `.unwrap()`, `.expect(` or `.unwrap_err()` on the same value inside
+    that branch. Clippy `unnecessary_unwrap` (warn by default) can
+    confirm. Why: the compiler cannot see that the check and the unwrap
+    are linked, so a later edit that reorders the code or clones the
+    value makes the unwrap panic. The `unwrap()` itself stays under
+    check 1 when no check precedes it. Fix: use `if let`, `match` or
+    `let … else`. Severity: `severity:low`. Finding title:
+    `Check-then-unwrap in <function>`.
+48. **Assertions with no context message in non-test code.** Always
+    applies. Grep `assert!(`, `assert_eq!(`, `assert_ne!(` and their
+    `debug_` forms, and flag each call with no message argument outside
+    `#[cfg(test)]` modules, `#[test]` functions, `tests/`, and
+    doc-comment examples (an assertion inside a `///` or `//!` code block
+    is a doctest, which is test code). Read the whole call, since it may
+    span lines. Clippy `missing_assert_message` (restriction) can confirm.
+    Why: a production panic that says only `assertion failed: x > 0`
+    costs a log dive. Whether the assertion is reachable belongs to
+    check 12 (panic DoS), and whether a safety invariant rests only on a
+    `debug_assert!` belongs to check 10; this check is only about the
+    message, and a message-less `debug_assert!(` counts here. Fix: add a
+    message that names the invariant and the values involved. Severity:
+    `severity:low`. Finding title: `Assertion without message in
+    <file>`.
+49. **`Mutex::lock().unwrap()` with no poisoning policy.** Gate:
+    `has_concurrency`. Grep `.lock().unwrap()`, `.read().unwrap()` and
+    `.write().unwrap()`. Flag the crate when nothing states what happens
+    to a poisoned lock: propagate the panic (a commented
+    `lock().unwrap()` or `.expect(…)`, or a small helper) or treat it as
+    fatal. Recovering through `PoisonError::into_inner` is not a policy
+    this check accepts: the guide says never to reach inside a poisoned
+    mutex, because later lockers would read state that a panicking
+    thread left half-updated. Also grep `into_inner` and flag each call
+    on a lock's `PoisonError` (for example
+    `unwrap_or_else(PoisonError::into_inner)`), even when a comment
+    states it. No clippy lint covers this. Why: `unwrap()` turns a
+    poisoned lock into a panic on every later lock, and nothing in the
+    code says that was the intent. Fix: choose propagation or a fatal
+    exit, comment it once at the lock type or in a small helper, and
+    remove any `into_inner` recovery. A bare `unwrap()` elsewhere stays
+    under check 1. Locking order and ABBA stay under check 16. Severity:
+    `severity:low`. Finding title: `Lock poisoning policy unstated in
+    <crate>`, or `Poisoned lock recovered in <file>` for an
+    `into_inner` recovery.
+50. **`catch_unwind` outside an FFI boundary.** Always applies. Grep
+    `catch_unwind`. Flag use as general error handling, meaning a panic
+    turned into a `Result` inside ordinary application code. Acceptable
+    at an FFI boundary, which check 20 already requires for Rust
+    closures called from `extern "C"` code; at the top level of a thread
+    or task that logs and restarts; and in a test harness. No clippy
+    lint covers this. Why: it hides a bug behind a recoverable-looking
+    error, and it does nothing under `panic = "abort"`. Fix: return a
+    `Result` from the failing code, or let the panic reach the boundary
+    that handles it. Severity: `severity:low`. Finding title:
+    `catch_unwind used as error handling in <function>`.
+51. **Another crate's `#[doc(hidden)]` items and `__`-prefixed
+    internals.** Always applies. Grep `::__` and `use .*::__` in `*.rs`,
+    and flag a path that reaches, from outside the defining crate, an
+    item that crate marks `#[doc(hidden)]` or whose name starts with
+    `__`. Macro-support exports are the usual case: `serde::__private`.
+    The grep finds only `__`-named paths; a `#[doc(hidden)]` item with
+    an ordinary name needs the dependency's source to spot. Why: these
+    carry no semver promise, so a minor release of the dependency can
+    break the build. Confirming a candidate needs the dependency's
+    source, so say so in the suggested fix and let the human confirm, as
+    check 30 does. A call generated by the dependency's own macro is not
+    a finding. No clippy lint covers this. Fix: use the crate's
+    documented public path. Severity: `severity:low`. Finding title:
+    `Reach into <crate> internals in <file>`.
