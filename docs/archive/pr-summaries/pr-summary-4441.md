@@ -11,9 +11,8 @@ the merge commit never says the repository's own check passed when its note says
 `TESTS LEFT TO CI:` note beside `CHECK LEFT TO CI:` and say that a resolution
 with both left to CI carries only the `CHECK LEFT TO CI:` note, whose detail
 names the suite too (`gateThenPushMilestoneBranch` checks `checkLeftToCi` first,
-PR #4459 review), and `docs/CONTAINER.md`
-says what a merge-only mixed tree does when nothing ran. Version bump: not
-applicable. Closes #4441.
+PR #4459 review), and `docs/CONTAINER.md` says what a merge-only mixed tree does
+when nothing ran. Version bump: not applicable. Closes #4441.
 
 ## Reproduction
 
@@ -56,16 +55,17 @@ Merged diff against the base: `lib/milestone_conflict_triage.ts` (new
 `SYNC_UNCHECKED_NOTE`; the resolution commit message names all four notes),
 `lib/git_pull.ts` (push notes built from `SYNC_UNCHECKED_NOTE`),
 `tests/milestone_conflict_triage_test.ts`, and the manuals
-`docs/workflows/milestones.md`, `docs/INTERNALS.md` and `docs/CONTAINER.md`.
-The gate and report logic (`milestone_merge_gate.ts`, `milestone_resolution_gate.ts`,
-`milestone_sync_conflict.ts`) is the base branch's own, from Issues #4444 and
-#4451. Merge resolution kept the base's wording on when a type check is left to
-CI (only when another project's check passed) and added the
-`TESTS LEFT TO CI:` note label to it.
+`docs/workflows/milestones.md`, `docs/INTERNALS.md` and `docs/CONTAINER.md`. The
+gate and report logic (`milestone_merge_gate.ts`,
+`milestone_resolution_gate.ts`, `milestone_sync_conflict.ts`) is the base
+branch's own, from Issues #4444 and #4451. Merge resolution kept the base's
+wording on when a type check is left to CI (only when another project's check
+passed) and added the `TESTS LEFT TO CI:` note label to it.
 
 ## Test Plan
 
-- Remaining test: `worker/deno/tests/milestone_conflict_triage_test.ts::buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)`.
+- Remaining test:
+  `worker/deno/tests/milestone_conflict_triage_test.ts::buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)`.
   Red check: with the commit message restored to its "UNGATED or CARGO SKIPPED"
   wording, it fails.
 - The earlier regression tests for `checkLeftToCi` are superseded by the base
