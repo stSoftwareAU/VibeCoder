@@ -37,4 +37,4 @@ Callers checked: `rankClaudeTokenBudgets` is called from `lib/claude_credential_
   - Required by: "A token whose probe carried no seven-day header is therefore ranked on its five-hour window against other tokens' weekly windows."
 - Edited in the decision-log test (`the decision log names every candidate then the winner and its reason (Issue #1623)`): the first two candidate lines swap order and the `selected` line now names `provider (#1)`. Text of each line is unchanged. Required by: "The decision-log test in `claude_token_selection_test.ts` pins this: a five-hour-only 75% beats a seven-day 25%." Red check: that test failed with the comparator clause removed.
 - Docs: `docs/SETUP.md` rule 3, the `rate=` field paragraph and the `highest-remaining-per-hour` reason row. Related siblings read: `docs/PROVIDER-PARITY.md` line 39 (still true) and the week-pace paragraph in SETUP.md (about the pace gate, not ranking).
-- The full `./quality.sh` result is recorded below once run.
+- `./quality.sh` on the final head: Result: PASSED (with skipped checks); checkov was skipped by the gate.
