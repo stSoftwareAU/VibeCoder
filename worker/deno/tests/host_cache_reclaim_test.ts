@@ -153,16 +153,18 @@ function removedPaths(result: { removed: { path: string }[] }): string[] {
 
 Deno.test("acceptance: only the stale, tagged, unheld cache is removed", async () => {
   await withRoot(async (root) => {
-    const stale = await makeCache(root, "stale-target", { ageMs: STALE_MS });
-    const fresh = await makeCache(root, "fresh-target");
+    // The untagged directory is the oldest, and the floor needs more than one
+    // removal, so a broken untagged guard would remove it first and be seen.
     const untagged = await makeCache(root, "untagged-stale", {
       signature: null,
-      ageMs: STALE_MS,
+      ageMs: VERY_STALE_MS,
     });
+    const stale = await makeCache(root, "stale-target", { ageMs: STALE_MS });
+    const fresh = await makeCache(root, "fresh-target");
     const held = await makeCache(root, "held-target", { ageMs: STALE_MS });
 
     const result = await reclaimHostCaches(
-      oneGibOptions([root]),
+      oneGibOptions([root], { floorBytes: 2 * GIB }),
       reclaimDeps({
         processSnapshot: async () => [
           "cargo build",
@@ -176,6 +178,7 @@ Deno.test("acceptance: only the stale, tagged, unheld cache is removed", async (
     assertEquals(await exists(untagged), true, "untagged stale dir is kept");
     assertEquals(await exists(held), true, "held-open cache is kept");
     assertEquals(removedPaths(result), [stale]);
+    assertEquals(result.shortBytes, GIB, "the floor is still one GiB short");
     const skipReasons = Object.fromEntries(
       result.skipped.map((s) => [s.path, s.reason]),
     );

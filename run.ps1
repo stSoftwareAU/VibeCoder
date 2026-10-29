@@ -739,8 +739,8 @@ $VolumeRemoveArgs = [System.Collections.Generic.List[string]]::new()
 # that failed its toolchain self-check so the next launch rebuilds.
 $ImageRemoveArgs = [System.Collections.Generic.List[string]]::new()
 # Issue #732: the claiming floor rides the plan so both launchers and the
-# worker agree on it. Windows has no counterpart to the low-disk heal, so
-# these are parsed and carried rather than acted on here.
+# worker agree on it. Windows has no counterpart to the low-disk heal, so the
+# floor is acted on here only by the host build-cache reclaim (Issue #4498).
 $ClaimFloorGb = ""
 $ClaimFloorPercent = ""
 $ClaimFloorOrigin = ""
@@ -1366,7 +1366,60 @@ if ($initialised.ExitCode -ne 0) {
 # volume as a thin-provisioned ext4 image and refuses FITRIM on it. Docker and
 # Podman - the runtimes this launcher drives - bind-mount a host directory, so
 # volume-init's block-device branch never runs and no refusal is ever
-# reported. Should one be, run.sh is the launcher to mirror.
+# reported. Should one be, run.sh is the launcher to mirror. The host build-
+# cache reclaim (Issue #4498) is the counterpart that does exist here, below.
+
+# Host build-cache reclaim (Issue #4498). Mirrors run.sh's reclaim_host_caches:
+# a host below its claiming floor - the larger of ClaimFloorGb and
+# ClaimFloorPercent of the drive - first asks reclaim-host-caches to remove the
+# regenerable build caches that are old, unused and tagged CACHEDIR.TAG. Its
+# lines go to the console and run_core.log; a failed reclaim is said loudly and
+# the launch carries on, because a host that cannot reclaim must still run and
+# report. The hard floor below re-measures the drive, so it judges what the
+# reclaim left behind.
+$cacheFloorGb = 20
+if ($ClaimFloorGb -match '^\d+$') { $cacheFloorGb = [int]$ClaimFloorGb }
+$cacheFloorPercent = 10
+if ($ClaimFloorPercent -match '^\d+$' -and [int]$ClaimFloorPercent -le 100) {
+    $cacheFloorPercent = [int]$ClaimFloorPercent
+}
+try {
+    $cacheDriveRoot = [System.IO.Path]::GetPathRoot((Resolve-Path $HOME).Path)
+    $cacheDrive = [System.IO.DriveInfo]::new($cacheDriveRoot)
+    $cacheFreeBytes = [int64]$cacheDrive.AvailableFreeSpace
+    $cacheTotalBytes = [int64]$cacheDrive.TotalSize
+    $cacheByPercent = [int64][math]::Floor($cacheTotalBytes * $cacheFloorPercent / 100)
+    $cacheFloorBytes = [math]::Max([int64]$cacheFloorGb * 1GB, $cacheByPercent)
+    if ($cacheFreeBytes -lt $cacheFloorBytes) {
+        $cacheFreeKb = [int64][math]::Floor($cacheFreeBytes / 1KB)
+        $cacheFloorKb = [int64][math]::Floor($cacheFloorBytes / 1KB)
+        $reclaim = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+            "run",
+            "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+            "--allow-env", "--allow-read", "--allow-write", "--allow-run",
+            "$BaseDir/worker/deno/mod.ts", "reclaim-host-caches",
+            "--config", "$BaseDir/.config.json",
+            "--free-kb", "$cacheFreeKb",
+            "--floor-kb", "$cacheFloorKb",
+            "--protect", $BaseDir
+        )
+        foreach ($line in ($reclaim.StdOut -split "`r?`n")) {
+            if ($line -eq "") { continue }
+            [Console]::Error.WriteLine($line)
+            Write-RunCoreLog $line
+        }
+        if ($reclaim.StdErr) { [Console]::Error.Write($reclaim.StdErr) }
+        if ($reclaim.ExitCode -ne 0) {
+            $failed = "[HOST_CACHE_RECLAIM] failed - reclaim-host-caches exited $($reclaim.ExitCode); the launch carries on without the host cache reclaim (Issue #4498)"
+            [Console]::Error.WriteLine("[run.ps1] $failed")
+            Write-RunCoreLog $failed
+        }
+    }
+} catch {
+    $failed = "[HOST_CACHE_RECLAIM] failed - reclaim-host-caches could not be run: $_; the launch carries on (Issue #4498)"
+    [Console]::Error.WriteLine("[run.ps1] $failed")
+    Write-RunCoreLog $failed
+}
 
 # Hard free-disk floor (Issue #226). Mirrors run.sh: a host whose drive is
 # below the floor must not start a worker that would fill it. Best-effort

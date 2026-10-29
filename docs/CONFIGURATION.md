@@ -3422,6 +3422,31 @@ The same resolution feeds the launcher's low-disk self-heal and the worker's
 own claim gate — they ride the launch plan together — so the two can never
 heal at one floor and claim at another.
 
+### Host build-cache reclaim (Issue #4498)
+
+A host below its claiming floor first reclaims regenerable build caches (stale
+`target/` directories and their kind), before any work volume is considered for
+recreation. The reclaim is on by default and is configured only in
+`.config.json`; there is no environment variable for it. See
+[Host build caches are reclaimed before a work volume is touched](CONTAINER.md#host-build-caches-are-reclaimed-before-a-work-volume-is-touched-issue-4498)
+for what is removed and where.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `host_cache_reclaim_enabled` | `true` | `false` switches the reclaim off entirely. |
+| `host_cache_reclaim_min_age_hours` | `24` | A candidate cache must be at least this many hours old. |
+| `host_cache_reclaim_headroom_gb` | `10` | Free space, beyond the claiming floor, the reclaim aims for before it stops. |
+| `host_cache_reclaim_roots` | none | Extra absolute directories to search, in addition to the built-in locations. |
+
+```json
+{
+  "host_cache_reclaim_enabled": true,
+  "host_cache_reclaim_min_age_hours": 24,
+  "host_cache_reclaim_headroom_gb": 10,
+  "host_cache_reclaim_roots": ["/Volumes/scratch/builds"]
+}
+```
+
 ### One config file, one name (Issue #750)
 
 Setup read `CONFIG_FILE` while the launcher read `CONFIG_PATH`, so a host that

@@ -1411,6 +1411,76 @@ ephemeral root's idle target directories, already pruned first, are the only
 space the worker can hand back.
 
 
+## Host build caches are reclaimed before a work volume is touched (Issue #4498)
+
+A developer host below its claiming floor is often short for a reason no
+volume can fix: regenerable build caches. A `target/` directory a Rust build
+left behind months ago can hold tens of gigabytes, and recreating the work
+volume returns nothing towards the floor while those caches are still on the
+disk. So before any decision that could destroy a work volume, the launchers
+ask `reclaim-host-caches` to remove the caches that are safe to regenerate,
+oldest first.
+
+```mermaid
+flowchart TD
+    B{"host below its<br/>claiming floor?"} -->|"no"| N["nothing reclaimed"]
+    B -->|"yes, once per launch"| C["reclaim-host-caches<br/>removes stale caches,<br/>oldest first"]
+    C --> F{"floor still<br/>not met?"}
+    F -->|"no"| OK["host recovered —<br/>no work volume touched"]
+    F -->|"yes"| V["work-volume heal<br/>(recreate, or decline and<br/>name the largest directories)"]
+    style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style V fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
+**What is removed.** A directory is a candidate only when all three hold:
+
+- it carries a `CACHEDIR.TAG` whose first line is the standard signature,
+  `Signature: 8a477f597d28d172789f06886806bc55`, which build tools write into
+  their output directories;
+- it is older than `host_cache_reclaim_min_age_hours` (24 by default);
+- no running process is using it, checked with `ps` and `lsof`.
+
+Candidates go oldest first, and the reclaim stops once the host has the
+claiming floor plus `host_cache_reclaim_headroom_gb` (10 by default) free.
+
+**Where it looks.** `~/src`, `/tmp`, `/private/tmp` and `$TMPDIR`, plus any
+absolute directories listed in `host_cache_reclaim_roots`. The launcher's own
+checkout is passed to the command as a protected path.
+
+The four keys live in `.config.json` (see the host-disk keys in
+[CONFIGURATION.md](CONFIGURATION.md)):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `host_cache_reclaim_enabled` | `true` | `false` switches the reclaim off. No environment variable overrides it. |
+| `host_cache_reclaim_min_age_hours` | `24` | A cache must be at least this old to be removed. |
+| `host_cache_reclaim_headroom_gb` | `10` | Free space to reach beyond the claiming floor before the reclaim stops. |
+| `host_cache_reclaim_roots` | none | Extra absolute directories to search, in addition to the locations above. |
+
+**What the log says.** Every line the command prints goes to stderr and to
+`run_core.log`:
+
+- `[HOST_CACHE_RECLAIM] removed <path> (<size>)` — one per directory removed;
+- `[HOST_CACHE_RECLAIM] summary: …` — what was reclaimed, and what the host has
+  free now;
+- `[HOST_CACHE_RECLAIM] largest host directories: <path> (<GB> GB); …` — only
+  when the host is still below its floor, naming where the space went;
+- `[HOST_CACHE_RECLAIM] failed - …` — the reclaim itself failed. The launch
+  carries on without it: a failed reclaim is said loudly and is never fatal.
+
+`run.ps1` runs the same reclaim, before its hard floor gate. Windows has no
+work-volume heal to follow it.
+
+**The unrecovered alert names where the space went.** `[WORK_VOLUME_UNRECOVERED]`
+ends with `- largest host directories: …` when the reclaim reported them. It is
+also deduplicated. When the paths (not the sizes) match the last launch's,
+stderr carries one line, `[run.sh] [WORK_VOLUME_UNRECOVERED] unchanged since
+the last launch (details in the run log)`, and the full message stays in
+`run_core.log`. The digest is kept in `~/.vibe-coder/work-volume-heal-largest`.
+A launch that declines to recreate a work volume records
+`workVolumeRecreateDeclined: true` in `host-disk.json`, with the list in
+`largestHostDirectories`.
+
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
 On the Apple `container` runtime the trim above has **never** worked. As
@@ -1444,9 +1514,10 @@ takes it:
    with less free space than the floor the worker stops claiming at — the
    larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and
    `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), the same floor
-   `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
-   the volume, then runs the init again to re-own it. This happens **before
-   any container starts**, so no work is in flight: the clones re-clone. The
+   `worker/deno/lib/host_disk.ts` applies — and only once the host build-cache
+   reclaim above has had its chance (Issue #4498), the launcher deletes and
+   recreates the volume, then runs the init again to re-own it. This happens
+   **before any container starts**, so no work is in flight: the clones re-clone. The
    approval snapshots are never in that set (point 3). The removal verb comes
    from the launch
    plan, because the runtimes disagree about it — Docker and Podman say
@@ -1479,8 +1550,9 @@ takes it:
    against `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) as well (Issue #2117),
    because resetting a small one gains nothing.
 5. **The reset is never held back by the clock, and never silent.** Where the
-   volumes *can* cover the shortfall, a host below the floor resets them on
-   **every launch it is below it**, however recent the last reset: the volume
+   volumes *can* cover the shortfall, a host still below the floor after the
+   cache reclaim resets them on **every launch it is below it**, however
+   recent the last reset: the volume
    is disposable and the host is not (Issue #2077 — a 24 h interval once left
    GRQ-23, re-ratcheted to 45 GB in eleven hours with 1.2 GB live and at 3%
    free, claiming nothing for thirteen hours). The last reset is recorded in
@@ -1500,7 +1572,8 @@ takes it:
    runs inside the image, so a host whose image build is failing would never
    reach it — GRQ-23 fell from 24 GB free to 11 GB in under an hour while
    `loop.sh` retried a broken builder (#2089). So before any build, a host
-   below its floor makes the same measurements — the shortfall gate of point
+   still below its floor after the cache reclaim (Issue #4498) makes the same
+   measurements — the shortfall gate of point
    4 included — and resets any *resettable* volume holding at least
    `VIBE_WORK_VOLUME_HEAL_MIN_GB`, logged as
    `work-volume: pre-build reset of vibe-work …`; the init after the build
@@ -1518,7 +1591,7 @@ flowchart TD
     U -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]<br/>volumes left intact"]
     U -->|"no"| S{"volumes hold less than<br/>the shortfall (floor − free)?"}
     S -->|"yes"| E
-    S -->|"no"| D["delete + create volume,<br/>re-run the init<br/>(every launch below the floor)"]
+    S -->|"no"| D["delete + create volume,<br/>re-run the init<br/>(every launch still below the floor after the reclaim)"]
     D --> M{"floor cleared?<br/>(re-measured)"}
     M -->|"yes"| H["host recovered<br/>without an operator"]
     M -->|"no"| E

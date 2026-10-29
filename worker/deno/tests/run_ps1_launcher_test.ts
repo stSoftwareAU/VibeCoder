@@ -58,7 +58,7 @@ import {
   REPO_ROOT,
   runCoreLog,
   runLauncher as runHarnessLauncher,
-  setupHarness,
+  setupHarness as setupBaseHarness,
   spawnLauncher as spawnHarnessLauncher,
   tempFileModes,
   waitForRecord,
@@ -82,6 +82,63 @@ function runLauncher(harness: Harness): Promise<LaunchOutcome> {
 /** Start `run.ps1` under the shared launcher harness. */
 function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, POWERSHELL_LAUNCHER!);
+}
+
+/**
+ * A stand-in for `reclaim-host-caches` that answers its contract (Issue #4498).
+ *
+ * The shared Deno stub does not know this sub-command, and run.ps1 would
+ * otherwise run the real command against this runner's own directories. The
+ * stand-in records its arguments, prints `STUB_RECLAIM_STDOUT` and exits 0.
+ * Every other sub-command goes to the shared stub unchanged. This mirrors the
+ * stand-in in run_sh_launcher_test.ts, which this file cannot import.
+ *
+ * @param bin - The harness's stub directory
+ * @returns The stand-in's script source
+ */
+function reclaimDenoStub(bin: string): string {
+  return `#!/bin/bash
+set -u
+for arg in "\$@"; do
+  if [[ "\${arg}" == "reclaim-host-caches" ]]; then
+    record_dir="\${VIBE_STUB_RECORD}"
+    mkdir -p "\${record_dir}"
+    printf '%s\\0' "\$@" > "\${record_dir}/reclaim-host-caches.args"
+    if [[ -n "\${STUB_RECLAIM_STDOUT:-}" ]]; then
+      printf '%s\\n' "\${STUB_RECLAIM_STDOUT}"
+    fi
+    exit 0
+  fi
+done
+exec "${bin}/deno-harness" "\$@"
+`;
+}
+
+/**
+ * The shared launcher harness, with the reclaim stand-in installed (Issue
+ * #4498). Every harness this file builds goes through here, so no test can
+ * reach the real reclaim command.
+ *
+ * @param extraEnv - Stub behaviour overrides, as for the shared harness
+ * @param options - As for the shared harness
+ * @returns The harness the launcher runs under
+ */
+async function setupHarness(
+  extraEnv: Record<string, string> = {},
+  options: Parameters<typeof setupBaseHarness>[1] = {},
+): Promise<Harness> {
+  const harness = await setupBaseHarness(extraEnv, options);
+  const bin = `${harness.tmpDir}/bin`;
+  await Deno.rename(`${bin}/deno`, `${bin}/deno-harness`);
+  await Deno.writeTextFile(`${bin}/deno`, reclaimDenoStub(bin));
+  await Deno.chmod(`${bin}/deno`, 0o755);
+  return harness;
+}
+
+/** The value that follows `flag` in a recorded argument list (Issue #4498). */
+function argAfter(args: string[], flag: string): string | undefined {
+  const at = args.indexOf(flag);
+  return at === -1 ? undefined : args[at + 1];
 }
 
 Deno.test({
@@ -1256,6 +1313,83 @@ Deno.test({
           `writing, long after the 2s deadline - the container's own output ` +
           `postponed it`,
       );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a host below its claiming floor runs the host cache reclaim, logs it and carries on (Issue #4498)",
+  ignore,
+  fn: async () => {
+    // A floor no host can clear: the drive is always below it, so the reclaim
+    // runs. The hard floor (5 GB) is far lower, so the launch still proceeds.
+    const floorGb = 999999;
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      VIBE_HOST_DISK_LOW_FLOOR_GB: String(floorGb),
+      VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+      STUB_RECLAIM_STDOUT: [
+        "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (2.0 GB, CACHEDIR.TAG, 40 days idle)",
+        "[HOST_CACHE_RECLAIM] summary: reclaimed 2.0 GB",
+      ].join("\n"),
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      const args = await recorded(harness, "reclaim-host-caches");
+      assert(args, "a host below its floor must run reclaim-host-caches");
+      assertEquals(argAfter(args, "--floor-kb"), String(floorGb * 1024 * 1024));
+      assert(
+        /^\d+$/.test(argAfter(args, "--free-kb") ?? ""),
+        `--free-kb must be a whole number of kilobytes, got ${args}`,
+      );
+      assert(
+        argAfter(args, "--config")?.endsWith("/.config.json"),
+        `--config must name the checkout's .config.json, got ${args}`,
+      );
+      assert(args.includes("--protect"), `--protect missing from ${args}`);
+
+      // The reclaim's lines reach the console and the run log, and the
+      // worker still starts: a failed or short reclaim never blocks a launch.
+      assertStringIncludes(
+        outcome.stderr,
+        "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target",
+      );
+      assertStringIncludes(
+        await runCoreLog(harness),
+        "[HOST_CACHE_RECLAIM] summary: reclaimed 2.0 GB",
+      );
+      assert(await recorded(harness, "run"), "the worker must still start");
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a host above its claiming floor does not run the host cache reclaim (Issue #4498)",
+  ignore,
+  fn: async () => {
+    // A floor of zero: whatever the drive has free is above it.
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      VIBE_HOST_DISK_LOW_FLOOR_GB: "0",
+      VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+      assertEquals(
+        await recorded(harness, "reclaim-host-caches"),
+        null,
+        "a host above its floor must not reclaim",
+      );
+      assertEquals(outcome.stderr.includes("[HOST_CACHE_RECLAIM]"), false);
     } finally {
       await harness.cleanup();
     }
