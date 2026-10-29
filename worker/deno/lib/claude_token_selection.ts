@@ -26,10 +26,16 @@
  *   passing token ranks ahead of every failing one.
  * - **Passing tokens are ordered by remaining budget per hour** on the
  *   seven-day window: its remaining share divided by the hours until it
- *   resets. A response that reported no seven-day window is ranked on the
- *   rate of the window it did report.
+ *   resets. Inside a band, every token with a seven-day window ranks ahead of
+ *   every token without one (Issue #4503, restoring #1731), because a rate on
+ *   a five-hour window is not comparable with a seven-day rate. A response
+ *   that reported no seven-day window is ranked only among the tokens that
+ *   also lack one, on the window it did report. It is never dropped and it is
+ *   not a gate: if every candidate lacks a seven-day window, one is still
+ *   selected.
  * - **A passing token under {@link CLAUDE_SEVEN_DAY_LOW_REMAINING} of its
- *   seven-day window ranks behind every passing token above that floor**,
+ *   seven-day window (or, without one, of the window it reported) ranks behind
+ *   every passing token above that floor**,
  *   whatever its rate — a near-exhausted week divided by an imminent reset
  *   scores highly and would stall a run almost immediately. Sub-floor tokens
  *   are ordered among themselves by rate, and still beat every gate failure.
@@ -78,8 +84,9 @@
  * ## Logging
  *
  * Every candidate is named with both windows' remaining budget and reset time
- * and its seven-day rate in percent per hour, and the winner with the reason
- * it won, through {@link formatClaudeTokenSelectionLog}.
+ * and its rate in percent per hour (on the window it reported, which is the
+ * seven-day window when it reported one), and the winner with the reason it
+ * won, through {@link formatClaudeTokenSelectionLog}.
  * Tokens are identified by **label** (`provider`, `provider-2`) and discovery
  * position only — no token value, nor any prefix or suffix of one, can reach
  * a log line, a GitHub comment or an error message, because nothing this
@@ -193,11 +200,14 @@ const WINDOW_HOURS: Record<ClaudeBudgetWindowName, number> = {
 /** Why the winning token won — stable, greppable, and safe to log. */
 export type ClaudeTokenSelectionReason =
   /**
-   * Strictly the most remaining budget per hour of every candidate that
-   * passed the five-hour gate **and** holds at least
-   * {@link CLAUDE_SEVEN_DAY_LOW_REMAINING} of its seven-day window. A
-   * near-exhausted token demoted by that floor can still score a higher rate
-   * — the floor is applied before the rate, not after it.
+   * The most remaining budget per hour of every candidate that passed the
+   * five-hour gate **and** holds at least {@link CLAUDE_SEVEN_DAY_LOW_REMAINING}
+   * of its window — except that a candidate with a seven-day window is
+   * preferred to one without, whatever the rates (Issue #4503). A
+   * near-exhausted token demoted by that floor can still score a higher rate —
+   * the floor is applied before the rate, not after it. Also given when the
+   * winner and the runner-up hold the same rate on different windows, since
+   * that is not a tie.
    */
   | "highest-remaining-per-hour"
   /** Level on budget per hour; won on the sooner reset. */
@@ -241,8 +251,17 @@ export interface RankedClaudeToken {
   readonly budget: ClaudeTokenBudget;
   /** The five-hour window the gate was applied to, or null when absent. */
   readonly fiveHour: RankedClaudeWindow | null;
-  /** The window the rate was computed on — seven-day when reported. */
+  /**
+   * The window the rate was computed on — seven-day when reported, otherwise
+   * the first window the probe did report (see {@link hasSevenDayTelemetry}).
+   */
   readonly rateWindow: RankedClaudeWindow | null;
+  /**
+   * True when the probe reported a seven-day window. False means the rate was
+   * computed on the window it did report, which is never comparable with a
+   * seven-day rate; false for an unknown budget (Issue #4503).
+   */
+  readonly hasSevenDayTelemetry: boolean;
   /** Remaining share per hour until {@link rateWindow} resets, or null. */
   readonly ratePerHour: number | null;
   /** True when the five-hour window still holds the gate's minimum share. */
@@ -331,6 +350,7 @@ function rankingView(
       budget,
       fiveHour: null,
       rateWindow: null,
+      hasSevenDayTelemetry: false,
       ratePerHour: null,
       passesFiveHourGate: false,
       remainingFraction: null,
@@ -343,15 +363,16 @@ function rankingView(
   );
   const fiveHour = windows.find((w) => w.window === "five_hour") ?? null;
   // The rate is the seven-day window's; a response that did not report one is
-  // ranked on the window it did report rather than dropped.
-  const rateWindow = windows.find((w) => w.window === "seven_day") ??
-    windows[0] ?? null;
+  // ranked on the window it did report rather than dropped (Issue #4503).
+  const sevenDay = windows.find((w) => w.window === "seven_day") ?? null;
+  const rateWindow = sevenDay ?? windows[0] ?? null;
   return {
     label: budget.label,
     index,
     budget,
     fiveHour,
     rateWindow,
+    hasSevenDayTelemetry: sevenDay !== null,
     ratePerHour: rateWindow === null
       ? null
       : rateWindow.remainingFraction / rateWindow.hoursUntilReset,
@@ -382,9 +403,10 @@ function band(candidate: RankedClaudeToken): 0 | 1 | 2 | 3 {
 }
 
 /**
- * Order two candidates: by band, then — inside a passing band — by remaining
- * budget per hour, soonest reset, and finally discovery order. Gate failures
- * are ordered by which five-hour window refills first.
+ * Order two candidates: by band, then — inside a passing band — by seven-day
+ * telemetry (a token with a seven-day window first, Issue #4503), then by
+ * remaining budget per hour, soonest reset, and finally discovery order. Gate
+ * failures are ordered by which five-hour window refills first.
  */
 function compareCandidates(
   a: RankedClaudeToken,
@@ -400,6 +422,11 @@ function compareCandidates(
     const rightReset = b.fiveHour?.resetAt ?? Number.MAX_SAFE_INTEGER;
     if (leftReset !== rightReset) return leftReset - rightReset;
     return a.index - b.index;
+  }
+  // A rate on a five-hour window is not comparable with a seven-day rate, so
+  // a token with seven-day telemetry ranks ahead of one without (Issue #4503).
+  if (a.hasSevenDayTelemetry !== b.hasSevenDayTelemetry) {
+    return a.hasSevenDayTelemetry ? -1 : 1;
   }
   // Use it or lose it: the budget worth most per hour is spent first.
   const rateA = a.ratePerHour ?? 0;
@@ -423,6 +450,11 @@ function winningReason(
   if (winnerBand === 1) return "low-seven-day-remaining-highest-rate";
   const runnerUp = ranked[1];
   if (runnerUp === undefined || band(runnerUp) !== 0) {
+    return "highest-remaining-per-hour";
+  }
+  // Equal numbers on different windows are not a tie: the telemetry decided it
+  // (Issue #4503).
+  if (runnerUp.hasSevenDayTelemetry !== winner.hasSevenDayTelemetry) {
     return "highest-remaining-per-hour";
   }
   if (runnerUp.ratePerHour !== winner.ratePerHour) {
