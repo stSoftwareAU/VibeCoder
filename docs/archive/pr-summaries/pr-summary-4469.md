@@ -73,11 +73,16 @@ flowchart TD
     (singular and plural counts, "raised anyway", and no withheld-PR phrase).
   - `buildUnmetCriteriaGateComment - names each criterion and does not claim the PR is withheld`
     (each criterion with its status, "raised and armed anyway", `Part of #N`, no
-    withheld-PR phrase, no `⛔`).
+    withheld-PR phrase, no `⛔`). The latest push (e40ac48b) adds an assertion
+    that the note opens with its `### Acceptance criteria not met (Issue #4146)`
+    heading, so deleting the heading fails a test.
 - `worker/deno/tests/degraded_delivery_test.ts`: header comment only; no
   assertion changed or removed.
 - Red check: restoring the base `lib/unmet_criteria_gate.ts` with the new test
   kept turns both new tests red (0 passed, 2 failed); restored afterwards.
+- Heading pin (e40ac48b): dropping the `### ` marker from the heading in
+  `lib/unmet_criteria_gate.ts` turns `buildUnmetCriteriaGateComment` red
+  (1 passed, 1 failed); restored afterwards, 2 passed.
 - Callers of the changed functions: only `phases/completion_phase.ts` (the
   verdict's `reason` and `comment`); both strings flow into the in-session note
   and `postCompletionAdvisory` unchanged in shape.
