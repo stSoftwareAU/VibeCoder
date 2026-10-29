@@ -239,7 +239,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // added `clear-worker-gate-labels` and Issue #4046 added `egress-proxy`;
   // each side reached 157 alone, and together the registry held 158.
   // Issue #4048 added `egress-selfcheck` (count 158 → 159).
-  assertEquals(commands.length, 159);
+  // Issue #4498 added `reclaim-host-caches` (count 159 → 160).
+  assertEquals(commands.length, 160);
+  assertEquals(commands.includes("reclaim-host-caches"), true);
   assertEquals(commands.includes("egress-selfcheck"), true);
   assertEquals(commands.includes("clear-worker-gate-labels"), true);
   assertEquals(commands.includes("route-issue"), true);

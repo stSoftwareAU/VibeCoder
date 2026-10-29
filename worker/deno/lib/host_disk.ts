@@ -354,6 +354,39 @@ export interface HostDiskRefresh {
    * (Issue #2080). Absent from older launchers, which reads as `false`.
    */
   workVolumeTrimRefused?: boolean;
+  /**
+   * Whether the launcher declined to recreate the work volume this launch,
+   * because recreating it would not return the missing space to the host
+   * (`[WORK_VOLUME_UNRECOVERED]`). Absent from older launchers, which reads as
+   * `false`.
+   */
+  workVolumeRecreateDeclined?: boolean;
+  /**
+   * The text of the largest host directories line the launcher logged, for
+   * the stop reason. Control characters are stripped and the length capped
+   * (see {@link MAX_LARGEST_HOST_DIRECTORIES_CHARS}); absent or blank reads as
+   * none.
+   */
+  largestHostDirectories?: string;
+}
+
+/** The longest `largestHostDirectories` text the worker keeps. */
+export const MAX_LARGEST_HOST_DIRECTORIES_CHARS = 2000;
+
+/**
+ * Make the launcher's directory text safe to render on one log line: every
+ * control character (newlines included) becomes a space, the ends are trimmed,
+ * and the result is capped. Blank after that reads as absent.
+ */
+function sanitiseLargestHostDirectories(text: string): string | undefined {
+  const flat = text
+    // Control characters are the point: they must not reach a log line.
+    // deno-lint-ignore no-control-regex
+    .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ")
+    .trim()
+    .slice(0, MAX_LARGEST_HOST_DIRECTORIES_CHARS)
+    .trim();
+  return flat === "" ? undefined : flat;
 }
 
 /** Parse a `host-disk.json` body; anything malformed reads as no reading. */
@@ -379,11 +412,20 @@ export function parseHostDiskRefresh(text: string): HostDiskRefresh | null {
   }
   const refused = o.workVolumeTrimRefused;
   if (refused !== undefined && typeof refused !== "boolean") return null;
+  const declined = o.workVolumeRecreateDeclined;
+  if (declined !== undefined && typeof declined !== "boolean") return null;
+  const dirs = o.largestHostDirectories;
+  if (dirs !== undefined && typeof dirs !== "string") return null;
+  const largest = dirs === undefined
+    ? undefined
+    : sanitiseLargestHostDirectories(dirs);
   return {
     availableBytes: avail,
     totalBytes: total,
     measuredAt: at,
     ...(refused === undefined ? {} : { workVolumeTrimRefused: refused }),
+    ...(declined === undefined ? {} : { workVolumeRecreateDeclined: declined }),
+    ...(largest === undefined ? {} : { largestHostDirectories: largest }),
   };
 }
 
@@ -519,6 +561,10 @@ export class HostDiskMonitor {
   private volumeUsedNow: number | null = null;
   /** The launcher's word that the runtime refused the trim (#2080). */
   private trimRefused = false;
+  /** The launcher's word that it declined to recreate the work volume. */
+  private recreateDeclined = false;
+  /** The launcher's largest-host-directories text, if it wrote one. */
+  private largestDirs: string | undefined = undefined;
   private baselined = false;
   private lastSampleAt: number | undefined;
   private lastStatus: HostDiskStatus = {
@@ -574,6 +620,8 @@ export class HostDiskMonitor {
     // Taken from any reading the launcher wrote, before the recency rules
     // below: the flag is a property of this launch, not of one sample.
     this.trimRefused = refresh.workVolumeTrimRefused === true;
+    this.recreateDeclined = refresh.workVolumeRecreateDeclined === true;
+    this.largestDirs = refresh.largestHostDirectories;
     const measuredMs = refresh.measuredAt * 1000;
     if (measuredMs <= this.adoptedMeasuredAtMs) return;
     if (t - measuredMs > this.refreshMaxAgeMs) return;
@@ -634,6 +682,23 @@ export class HostDiskMonitor {
    */
   get workVolumeTrimRefused(): boolean {
     return this.trimRefused;
+  }
+
+  /**
+   * Did the launcher decline to recreate the work volume this launch, because
+   * recreating it would not return the missing space to the host? Absent
+   * reads as `false` (Issue #4498).
+   */
+  get workVolumeRecreateDeclined(): boolean {
+    return this.recreateDeclined;
+  }
+
+  /**
+   * The largest host directories the launcher reported, for the stop reason
+   * (Issue #4498). Undefined when the launcher wrote none.
+   */
+  get largestHostDirectories(): string | undefined {
+    return this.largestDirs;
   }
 
   /**

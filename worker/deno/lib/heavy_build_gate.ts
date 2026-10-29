@@ -117,6 +117,17 @@ export interface HeavyBuildDiskReading {
   floorBytes: number | undefined;
   /** Did the launcher report the runtime refuses the work-volume trim? */
   trimRefused: boolean;
+  /**
+   * Did the launcher decline to recreate the work volume this launch, because
+   * the work volume does not hold the missing space (Issue #4498)? Absent reads
+   * as false.
+   */
+  recreateDeclined?: boolean;
+  /**
+   * The largest host directories the launcher reported (Issue #4498). Absent
+   * or blank names none.
+   */
+  largestHostDirectories?: string;
 }
 
 /** One directory under the ephemeral cargo root. */
@@ -410,9 +421,11 @@ export function inFlightParkReason(deferral: string | null): string | null {
  *
  * Deleting files inside a volume whose trim was refused does not return host
  * blocks. Ending the launch discards the container's ephemeral layer, and the
- * next launch recreates the volume when the host is still below the floor.
- * Above the floor, or where the trim is honoured, the build is parked and the
- * launch continues: fstrim can return the blocks, and a recreate would not.
+ * launcher then either recreates the volume, if the host is still below the
+ * floor, or, when it declined to recreate (Issue #4498), says the missing space
+ * is elsewhere on the host and that nothing in the worker will free it. Above
+ * the floor, or where the trim is honoured, the build is parked and the launch
+ * continues: fstrim can return the blocks, and a recreate would not.
  *
  * @returns The reason to end the launch, naming the floor, or null to continue.
  */
@@ -422,6 +435,16 @@ export function hostDiskLaunchStopReason(
   if (reading.status.level !== "low" || !reading.trimRefused) return null;
   const deferral = judgeHostDiskForBuild(reading);
   if (deferral === null) return null;
+  if (reading.recreateDeclined === true) {
+    const largest = reading.largestHostDirectories?.trim();
+    const dirs = largest ? ` Largest host directories: ${largest}.` : "";
+    return `${deferral} The launcher declined to recreate the work volume ` +
+      `because the work volume does not hold the missing space; the missing ` +
+      `space is elsewhere on the host (stale build caches or clones outside ` +
+      `the worker volumes).${dirs} Nothing in the worker will free it until ` +
+      `the host has room, so this launch ends and the ephemeral build layer ` +
+      `is discarded (Issue #4498). ${HOST_DISK_PARK_NOTE}`;
+  }
   return `${deferral} The work volume trim was refused, so this launch ends ` +
     `and the ephemeral build layer is discarded; the next launch recreates ` +
     `the volume if the host is still below the floor (Issue #4360). ` +
