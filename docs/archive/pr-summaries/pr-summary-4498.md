@@ -3,9 +3,9 @@
 Closes #4498.
 
 A host sat below its disk floor for about 25 hours while roughly 150 GB of it
-was stale cargo build output the worker could have removed. Recreating the
-work volume cannot return that space, so the launcher now asks the worker to
-remove it.
+was stale cargo build output the worker could have removed. Recreating the work
+volume cannot return that space, so the launcher now asks the worker to remove
+it.
 
 ## What changed
 
@@ -16,8 +16,8 @@ remove it.
 - `run.sh` / `run.ps1`: call the command before deciding to recreate the work
   volume, and report `[WORK_VOLUME_UNRECOVERED]` when a recreate would not help.
 - `host_disk.ts` / `heavy_build_gate.ts`: the launch-end stop reason no longer
-  promises a recreate once the launcher has declined one, and names the
-  largest host directories.
+  promises a recreate once the launcher has declined one, and names the largest
+  host directories.
 - `docs/CONFIGURATION.md`, `docs/CONTAINER.md`: document the new settings.
 
 ## Reproduction
