@@ -297,6 +297,25 @@ Deno.test({
 
 Deno.test({
   name:
+    "agent start - a Cargo checkout starts above the floor without reserving build headroom",
+  ignore: Deno.build.os === "windows",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const run = await withCheckout(
+      { "Cargo.toml": CARGO_TOML },
+      (dir) => runAgentIn(dir, reading(50.7)),
+    );
+    assert(
+      run.ok,
+      "manager startup must not require cargo build headroom at 50.7 GB free",
+    );
+    assertEquals(run.value.exitCode, 0);
+    assertEquals(run.value.timedOut, false);
+  },
+});
+
+Deno.test({
+  name:
     "agent start - a cargo checkout below the floor is parked at the call site (Issue #4360)",
   ignore: Deno.build.os === "windows",
   permissions: { read: true, write: true, run: true, env: true },
