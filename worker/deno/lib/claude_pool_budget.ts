@@ -4,7 +4,7 @@
  *
  * A quota pause belongs to the **token** that ran out, not to the host. Worker
  * start already ranks the pool and takes the token with the most seven-day
- * quota left (owner decision 2026-10-29), so once a
+ * quota left (Issue #4504), so once a
  * second subscription still has quota the only thing keeping the host idle is
  * the supervisor's hour-long re-probe cadence. On 2026-09-06 a host slept 59
  * minutes waiting for the spent token's window while its other subscription

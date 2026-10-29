@@ -49,8 +49,11 @@
  *    window has rolled over, has no trustworthy rate and is left out of it.
  * 2. **Capacity walk** — start from the sum of every credential's remaining
  *    share, and step through the reset times in order. Between resets the
- *    capacity is drawn down at the burn rate, soonest-expiring credential
- *    first; at each reset that credential's week reopens with a full window.
+ *    capacity is drawn down at the burn rate in the order token selection
+ *    spends it: the credential with the largest remaining share first, so the
+ *    shares level down together (Issue #4504); at each reset that
+ *    credential's week reopens with a full window, and whatever it still held
+ *    lapses.
  *    The walk ends at the latest reset in the pool (at most 168 hours out).
  * 3. **Verdict** — engaged if capacity reaches zero before the next
  *    reopening would refill it; off otherwise.
@@ -386,10 +389,13 @@ export function claudePoolWeekPaceVerdict(
 /**
  * Walk the pool's capacity forward through its reopenings.
  *
- * Between two reopenings the capacity is drawn down at the burn rate from the
- * soonest-expiring credential first (share still on a window when it reopens
- * is lost, so it is the share to spend first); at each reopening that
- * credential's window refills to a full one. Capacity reaching zero at or
+ * Between two reopenings the capacity is drawn down at the burn rate in the
+ * order token selection spends it (Issue #4504): each run takes the token
+ * with the largest remaining seven-day share, so the largest share is drawn
+ * until it matches the next, then those draw down together. At each
+ * reopening that credential's window refills to a full one, and any share it
+ * still held lapses — the selection no longer spends the soonest-expiring
+ * share first, so the walk must not assume it does. Capacity reaching zero at or
  * before a reopening is "won't make it" — the single-token threshold, where a
  * projection landing exactly on the reset engages.
  *
@@ -420,12 +426,7 @@ function walkPoolCapacity(
     if (need >= capacity) {
       return { runsOutAt: at + capacity / perMs, nextReopenAt: reopenAt };
     }
-    credentials.sort((a, b) => a.resetAt - b.resetAt);
-    for (const credential of credentials) {
-      const draw = Math.min(credential.remaining, need);
-      credential.remaining -= draw;
-      need -= draw;
-    }
+    drawLargestFirst(credentials, need);
     for (const credential of credentials) {
       if (credential.resetAt === reopenAt) {
         credential.remaining = 1;
@@ -436,6 +437,32 @@ function walkPoolCapacity(
     at = reopenAt;
   }
   return { runsOutAt: null, nextReopenAt: firstReopen };
+}
+
+/**
+ * Draw `need` from the pool the way the selection spends it: always from the
+ * largest remaining share, so the top shares level down together. Mutates the
+ * given credentials; `need` never exceeds their total (the caller checks).
+ */
+function drawLargestFirst(
+  credentials: { remaining: number }[],
+  need: number,
+): void {
+  let left = need;
+  while (left > 0) {
+    const top = Math.max(...credentials.map((c) => c.remaining));
+    if (!(top > 0)) return;
+    const group = credentials.filter((c) => c.remaining === top);
+    const next = Math.max(
+      0,
+      ...credentials.filter((c) => c.remaining < top).map((c) => c.remaining),
+    );
+    const step = Math.min((top - next) * group.length, left);
+    for (const credential of group) {
+      credential.remaining = top - step / group.length;
+    }
+    left -= step;
+  }
 }
 
 /** Render a share as a percentage. */

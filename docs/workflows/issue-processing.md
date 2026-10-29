@@ -179,8 +179,10 @@ credential the pool holds, from the pool's own ten-minute snapshots
    24 h grace, or whose window has rolled over, gives no rate.
 2. **Capacity walk** — start from the sum of every credential's remaining
    share and step through the reset times in order, drawing capacity down at
-   the burn rate (soonest-expiring credential first) and adding a full window
-   as each credential's week reopens. The walk ends at the latest reset in
+   the burn rate in the order token selection spends it (the largest remaining
+   share first, so the shares level down together, Issue #4504) and adding a
+   full window as each credential's week reopens. Whatever a credential still
+   holds when its week reopens lapses. The walk ends at the latest reset in
    the pool, at most 168 h out.
 3. **Verdict** — **engaged** if capacity reaches zero before the next
    reopening would refill it; **off** otherwise. A credential whose reading

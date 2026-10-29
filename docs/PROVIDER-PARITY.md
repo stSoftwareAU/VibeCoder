@@ -38,7 +38,7 @@ fraction, or remaining-fraction / hours-to-reset. Unknown budgets stay
 unknown — they are never treated as zero.
 
 - **Claude** keeps the five-hour soft gate (#1623 / #1685) and ranks on
-  the most seven-day quota left (owner decision 2026-10-29, which replaced
+  the most seven-day quota left (Issue #4504, which replaced
   the per-hour rate and its 10% floor). All-low-but-usable credentials
   still run.
 - **Codex** ranks on remaining-fraction / hours-to-reset of its `primary`

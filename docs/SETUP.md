@@ -1123,8 +1123,8 @@ one-character prompt and generates nothing.
 Anthropic reports two windows, a five-hour and a seven-day one, and names one
 of them representative. The worker uses **both**, and not as one combined
 score: the five-hour window is a *gate*, and the seven-day window sets the
-*order*. The rule is **the most weekly quota left wins** (owner decision
-2026-10-29): a token holding 90% of its week that resets in six days is used
+*order*. The rule is **the most weekly quota left wins**
+(Issue #4504): a token holding 90% of its week that resets in six days is used
 before one holding 20% that resets in six hours. This replaced Issue #1623's
 remaining-budget-per-hour rule, under which the 20% token won.
 
@@ -1422,8 +1422,8 @@ ranked on the share of its own week it still holds, whenever that week resets.
 Expect the worker to favour a freshly rolled-over subscription (100% left)
 and to keep spending whichever holds the most, which tends to even the pool
 out; a subscription close to its reset with little left is used last and may
-let that little lapse. That is the ranking working (owner decision
-2026-10-29), not a fault.
+let that little lapse. That is the ranking working
+(Issue #4504), not a fault.
 
 **Several Vibe Coders on one machine** share `~/.vibe-coder/credentials` unless
 you separate them, so pinning one to its own subscription needs a credential

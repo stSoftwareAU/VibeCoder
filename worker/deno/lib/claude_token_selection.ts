@@ -1,6 +1,6 @@
 /**
  * Pick the Claude token with the most seven-day quota left at worker start
- * (owner decision 2026-10-29, replacing Issue #1623's per-hour rule;
+ * (Issue #4504, replacing Issue #1623's per-hour rule;
  * originally #919, parent #902).
  *
  * An operator with two or more Claude subscriptions wants them consumed
@@ -15,7 +15,7 @@
  * now, the one holding the largest remaining share of its seven-day window is
  * used. Issue #1623 used to divide that share by the hours until the window
  * reset, so 20% resetting in six hours beat 90% resetting in six days; the
- * owner replaced that rule on 2026-10-29, and the 90% token now wins.
+ * owner replaced that rule on 2026-10-29 (Issue #4504), and the 90% token now wins.
  *
  * {@link rankClaudeTokenBudgets} is **pure** — no I/O, and the current time is
  * a parameter rather than a clock of its own — so every rule below is a plain
@@ -419,8 +419,8 @@ function winningReason(
 
 /**
  * Rank probe results by the most seven-day quota left — the pure heart of the
- * selection (Issue #919, reshaped by Issue #1623 and by the owner's
- * 2026-10-29 decision).
+ * selection (Issue #919, reshaped by Issue #1623 and by Issue
+ * #4504).
  *
  * Input order is the discovery order from #917 and is the tie-break of last
  * resort, so with every budget unknown the primary `provider.env` wins.

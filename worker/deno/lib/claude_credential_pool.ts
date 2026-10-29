@@ -2,7 +2,7 @@
  * The process-wide Claude credential pool (Issue #1668, parent #1653).
  *
  * Worker start already ranks the host's Claude subscriptions and exports the
- * winner (#919, reshaped by #1623 and the owner's 2026-10-29 decision), but
+ * winner (#919, reshaped by #1623 and Issue #4504), but
  * that decision was taken once and never
  * revisited: a subscription that ran out part-way through a run took the retry
  * ladder and failed the run while another token in the pool sat untouched, and

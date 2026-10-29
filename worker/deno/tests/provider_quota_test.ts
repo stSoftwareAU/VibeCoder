@@ -69,8 +69,8 @@ function soonSmallAgainstLateLarge(
   ];
 }
 
-Deno.test("rankQuotaCandidates - Claude policy spends the most seven-day quota left (owner decision 2026-10-29)", () => {
-  // Rewritten for the owner's 2026-10-29 decision: under #1623's per-hour
+Deno.test("rankQuotaCandidates - Claude policy spends the most seven-day quota left (Issue #4504)", () => {
+  // Rewritten for Issue #4504: under #1623's per-hour
   // rule 20%/6h (3.33%/h) beat 90%/144h (0.63%/h); now the larger share wins.
   const ranking = rankQuotaCandidates(
     soonSmallAgainstLateLarge("claude", "seven_day"),
@@ -82,7 +82,7 @@ Deno.test("rankQuotaCandidates - Claude policy spends the most seven-day quota l
 });
 
 Deno.test("rankQuotaCandidates - Codex policy still ranks by remaining per hour", () => {
-  // The owner's 2026-10-29 decision is Claude's; Codex keeps the per-hour
+  // Issue #4504 is Claude's; Codex keeps the per-hour
   // rate, so the same figures pick the other credential.
   const ranking = rankQuotaCandidates(
     soonSmallAgainstLateLarge("codex", "primary"),
@@ -140,10 +140,55 @@ Deno.test("rankQuotaCandidates - all-low-but-usable still selects the most left 
     NOW,
     CLAUDE_QUOTA_POLICY,
   );
-  // Rewritten for the owner's 2026-10-29 decision: Claude has no low floor
+  // Rewritten for Issue #4504: Claude has no low floor
   // any more and no rate, so b's 8% beats a's 5% although a resets sooner.
   assertEquals(ranking.winner?.credentialLabel, "b");
   assertEquals(ranking.reason, "most-remaining");
+  assertEquals(ranking.winner?.eligible, true);
+});
+
+Deno.test("rankQuotaCandidates - Codex demotes a sub-10% credential below a healthier one, whatever its rate (#4502 review)", () => {
+  // Claude dropped its 10% low-remaining floor (Issue #4504); Codex keeps it.
+  // 5% resetting in 2 h scores 2.5%/h, far above the healthy 50% over 100 h
+  // (0.5%/h), so only the floor puts the healthy credential first.
+  const ranking = rankQuotaCandidates(
+    [
+      known("nearly-spent", "codex", [
+        { name: "primary", remainingFraction: 0.05, resetAt: NOW + 2 * HOUR },
+      ]),
+      known("healthy", "codex", [
+        { name: "primary", remainingFraction: 0.5, resetAt: NOW + 100 * HOUR },
+      ]),
+    ],
+    NOW,
+    CODEX_QUOTA_POLICY,
+  );
+  assertEquals(ranking.winner?.credentialLabel, "healthy");
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
+  assertEquals(
+    ranking.ranked.map((r) => r.credentialLabel),
+    ["healthy", "nearly-spent"],
+  );
+});
+
+Deno.test("rankQuotaCandidates - Codex all-low-but-usable picks the highest rate among the sub-floor credentials (#4502 review)", () => {
+  // Both under Codex's 10% floor: the floor band decides nothing between
+  // them, so the rate does (a: 5% over 12 h beats b: 8% over 48 h), and the
+  // reason says the floor band was reached.
+  const ranking = rankQuotaCandidates(
+    [
+      known("a", "codex", [
+        { name: "primary", remainingFraction: 0.05, resetAt: NOW + 12 * HOUR },
+      ]),
+      known("b", "codex", [
+        { name: "primary", remainingFraction: 0.08, resetAt: NOW + 48 * HOUR },
+      ]),
+    ],
+    NOW,
+    CODEX_QUOTA_POLICY,
+  );
+  assertEquals(ranking.winner?.credentialLabel, "a");
+  assertEquals(ranking.reason, "low-rank-window-remaining-highest-rate");
   assertEquals(ranking.winner?.eligible, true);
 });
 

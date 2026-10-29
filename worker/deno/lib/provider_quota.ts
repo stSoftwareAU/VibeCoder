@@ -69,7 +69,7 @@ export interface QuotaPolicy {
   readonly rankWindow?: string;
   /**
    * What the rank window is scored on: its remaining share
-   * (`"remaining"`, Claude since the owner's 2026-10-29 decision) or its
+   * (`"remaining"`, Claude since Issue #4504) or its
    * remaining share per hour until it resets (`"remaining-per-hour"`, the
    * default — Codex).
    */
@@ -91,7 +91,7 @@ export type QuotaRankBy = "remaining" | "remaining-per-hour";
 
 /**
  * Claude's declared windows: the five-hour gate (#1623 / #1685) and the most
- * seven-day quota left (owner decision 2026-10-29, which replaced #1623's
+ * seven-day quota left (Issue #4504, which replaced #1623's
  * per-hour rate and its low-remaining floor).
  */
 export const CLAUDE_QUOTA_POLICY: QuotaPolicy = {

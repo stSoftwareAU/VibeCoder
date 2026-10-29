@@ -145,6 +145,29 @@ Deno.test("pool pace - one credential spent, the other not reopening for 100 h: 
   assertEquals(verdict.reading.nextReopenAt, NOW + 40 * HOUR_MS);
 });
 
+Deno.test("pool pace - the walk spends the largest share first, as token selection does (Issue #4504)", () => {
+  // provider has 30% left and reopens in 22 h; provider-2 has 75% left and
+  // reopens in 142 h. The burn rate is ~1.44%/h. Token selection spends the
+  // largest share first, so the shares level down together and provider's
+  // remaining ~15% lapses at 22 h; the pool then runs dry ~121 h out, before
+  // provider-2 reopens: engaged. The old soonest-expiring walk spent
+  // provider's 30% first, lost nothing at its reopening, and reported off.
+  const verdict = claudePoolWeekPaceVerdict([
+    credential("provider", 0.7, 22),
+    credential("provider-2", 0.25, 142),
+  ], NOW);
+  assertEquals(verdict.state, "engaged");
+  assert(verdict.state === "engaged");
+  // The reopening the pool fails to reach is provider-2's, 142 h out.
+  assertEquals(verdict.reading.nextReopenAt, NOW + 142 * HOUR_MS);
+  assert(verdict.reading.runsOutAt !== null);
+  assert(
+    verdict.reading.runsOutAt > NOW + 115 * HOUR_MS &&
+      verdict.reading.runsOutAt < NOW + 125 * HOUR_MS,
+    `runs out ~121 h out, got ${(verdict.reading.runsOutAt - NOW) / HOUR_MS} h`,
+  );
+});
+
 Deno.test("pool pace - a single credential behaves exactly as the single-token verdict", () => {
   // Every state and reason, across the grace, the threshold and a rolled-over
   // window, matches the pre-#2647 verdict.

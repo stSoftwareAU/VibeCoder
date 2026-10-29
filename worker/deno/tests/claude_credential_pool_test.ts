@@ -277,7 +277,7 @@ Deno.test("claude credential pool - 0% and 60% five-hour: the 60% token wins and
 
 Deno.test("claude credential pool - the most seven-day quota left wins among eligible tokens", async () => {
   // 75% of a week that resets in seven days against 22% that resets in
-  // eleven hours. Rewritten for the owner's 2026-10-29 decision: #1623's
+  // eleven hours. Rewritten for Issue #4504: #1623's
   // per-hour rule picked provider-2 (2%/h against 0.45%/h); the most weekly
   // quota left picks provider. The ranking is claude_token_selection.ts's and
   // this asserts the delegation.

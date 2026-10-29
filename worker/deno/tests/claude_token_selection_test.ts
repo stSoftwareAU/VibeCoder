@@ -10,7 +10,7 @@
  *
  * Issue #1623 then made the five-hour window a gate and ranked on the
  * seven-day remaining share per hour until reset. The owner replaced that
- * per-hour rate on 2026-10-29: the token with the most seven-day quota left
+ * per-hour rate on 2026-10-29 (Issue #4504): the token with the most seven-day quota left
  * wins. Cases below that assert the new outcome where they used to assert the
  * old one say so at the point they do.
  *
@@ -196,10 +196,10 @@ Deno.test("ranking returns the passing token with the largest remaining share of
   );
 });
 
-Deno.test("ranking prefers 90% of a week resetting in six days over 20% resetting in six hours (owner decision 2026-10-29)", () => {
+Deno.test("ranking prefers 90% of a week resetting in six days over 20% resetting in six hours (Issue #4504)", () => {
   // The case that tells the two rules apart. Under #1623's per-hour rule
-  // provider won: 20%/6h is 3.33%/h against 90%/144h at 0.63%/h. The owner's
-  // 2026-10-29 decision is the most weekly quota left, so provider-2 wins.
+  // provider won: 20%/6h is 3.33%/h against 90%/144h at 0.63%/h. Issue #4504
+  // is the most weekly quota left, so provider-2 wins.
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
       fiveHour(0.95, NOW + 3 * HOUR),
@@ -274,7 +274,7 @@ Deno.test("the gate reads the utilisation the probe actually reports (Issue #162
   assertEquals(ranking.ranked[1]?.passesFiveHourGate, false);
 });
 
-Deno.test("ranking puts a nearly spent week last among the passing tokens, however soon it resets (owner decision 2026-10-29)", () => {
+Deno.test("ranking puts a nearly spent week last among the passing tokens, however soon it resets (Issue #4504)", () => {
   // provider resets in an hour, but 8% of a week is the least left of the
   // three, so it ranks last with no floor band of its own.
   const ranking = rankClaudeTokenBudgets([
@@ -299,7 +299,7 @@ Deno.test("ranking puts a nearly spent week last among the passing tokens, howev
   assertEquals(ranking.winner?.label, "provider-3");
 });
 
-Deno.test("ranking orders two nearly spent weeks by share then soonest reset, still ahead of a gate failure (owner decision 2026-10-29)", () => {
+Deno.test("ranking orders two nearly spent weeks by share then soonest reset, still ahead of a gate failure (Issue #4504)", () => {
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
       fiveHour(0.05, NOW + 2 * HOUR),
@@ -319,7 +319,7 @@ Deno.test("ranking orders two nearly spent weeks by share then soonest reset, st
     ranking.ranked.map((r) => r.label),
     ["provider-3", "provider-2", "provider"],
   );
-  // Rewritten for the owner's 2026-10-29 decision: the 10% floor band and its
+  // Rewritten for Issue #4504: the 10% floor band and its
   // `low-seven-day-remaining-highest-rate` reason are gone, so two equal 5%
   // shares are split by the sooner reset like any other tie.
   assertEquals(ranking.reason, "equal-seven-day-remaining-soonest-reset");
@@ -348,7 +348,7 @@ Deno.test("ranking orders gate-failing tokens by the soonest five-hour reset (Is
 
 Deno.test("ranking spends equal headroom that expires soonest first (Issue #919)", () => {
   // Equal headroom: spend the one that expires first, or it lapses unused.
-  // Rewritten for the owner's 2026-10-29 decision: under #1623 the sooner
+  // Rewritten for Issue #4504: under #1623 the sooner
   // reset was a higher rate; now it is the tie-break on an equal share.
   const ranking = rankClaudeTokenBudgets([
     known("provider", 0.5, NOW + 20 * HOUR),
@@ -359,8 +359,8 @@ Deno.test("ranking spends equal headroom that expires soonest first (Issue #919)
   assertEquals(ranking.reason, "equal-seven-day-remaining-soonest-reset");
 });
 
-Deno.test("ranking breaks an equal seven-day share towards the soonest reset (owner decision 2026-10-29)", () => {
-  // Rewritten for the owner's 2026-10-29 decision: this used to pin 40%/20h
+Deno.test("ranking breaks an equal seven-day share towards the soonest reset (Issue #4504)", () => {
+  // Rewritten for Issue #4504: this used to pin 40%/20h
   // against 20%/10h as an equal rate; equal shares are the tie now.
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
@@ -455,7 +455,7 @@ Deno.test("ranking falls back to the headline figure for a budget carrying no wi
   assertEquals(ranking.winner?.passesFiveHourGate, true, "no gate to fail");
 });
 
-Deno.test("ranking counts an elapsed seven-day window as 100% left (owner decision 2026-10-29)", () => {
+Deno.test("ranking counts an elapsed seven-day window as 100% left (Issue #4504)", () => {
   // The reset is behind us, so the week is full again: the stale 1% loses to
   // nothing, and beats a current 95%.
   const ranking = rankClaudeTokenBudgets([
