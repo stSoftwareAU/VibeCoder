@@ -64,8 +64,11 @@ export function createPushVerificationDeps(): PushVerificationDeps {
 /** The verdict on whether local work reached the remote. */
 export interface PushVerification {
   /**
-   * True only when the branch's remote head is known AND equals the local
-   * head. Every other case — including every failure to find out — is false.
+   * True when `verifyPushLanded` finds the branch's remote head known AND equal
+   * to the local head. `processPrFeedback` also sets it, with no `localSha` and
+   * `remoteSha` at the tip, when the gated-head fix branch on origin holds
+   * commits the PR head lacks. Every other case, including every failure to
+   * find out, is false.
    */
   landed: boolean;
   /** Local head SHA, when it could be read. */

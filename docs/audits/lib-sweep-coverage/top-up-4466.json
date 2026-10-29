@@ -1,0 +1,12 @@
+{
+  "issue": 4466,
+  "chunk": "top-up-4466",
+  "title": "top-up: remote view of a gated-head feedback fix branch",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4466",
+  "definition": "Reviewed the one module (Issue #4466). findCommitsAheadOnRemote fetches the PR head and the fix branch into their remote-tracking refs through buildFetchTrackingRefArgs (branch names validated as ref components), treats only git's 'couldn't find remote ref' on the fix branch as nothing stranded, ensures the merge base on shallow clones, and counts commits with rev-list --count. Any other fetch, count or resolve failure, or a non-numeric count, is an error rather than nothing ahead. The tip must be a full object id. No input is executed.",
+  "status": "claimed",
+  "sweptAt": "045cff76b01053b3d2e6aafd5158ab905a5cba25",
+  "paths": [
+    "worker/deno/lib/pr_feedback_fix_branch_remote.ts"
+  ]
+}

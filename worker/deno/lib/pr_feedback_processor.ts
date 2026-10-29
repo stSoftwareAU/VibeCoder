@@ -86,6 +86,7 @@ import {
 } from "./pr_feedback_drift_check.ts";
 import { runReviewFixMutationCheck } from "./pr_feedback_mutation_check.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
+import { findCommitsAheadOnRemote } from "./pr_feedback_fix_branch_remote.ts";
 import {
   milestoneFixBranchFor,
   raiseMilestoneFixPr,
@@ -1882,6 +1883,48 @@ async function _processFeedbackWithHeartbeat(
         branch: pushBranch,
         finalUnpushedCount: finalUnpushedCount ?? "not measured",
       });
+    }
+  }
+
+  // Issue #4466: on a gated head the fix lands through a fix PR, and the
+  // remote is the authority on whether a fix exists. The agent may have pushed
+  // the fix branch itself while the local change/push view still reads
+  // "nothing pushed" (HEAD off the branch, unpushed count not measured as 0).
+  // Commits on origin/<fixBranch> that the PR head lacks are a fix to deliver.
+  // A MEASURED positive unpushed count is excluded: the worker holds commits
+  // it could not push, so a partly pushed fix branch must not be read as
+  // delivered (the push-failed path owns that case).
+  const unpushedMeasuredPositive = finalUnpushedCount !== undefined &&
+    finalUnpushedCount > 0;
+  if (
+    fixBranch !== undefined && !(hasChanges && pushSucceeded) &&
+    !unpushedMeasuredPositive
+  ) {
+    const stranded = await findCommitsAheadOnRemote(
+      deps.git.runGitCommand,
+      fixBranch,
+      input.branchName,
+      { cwd: processorDeps.workDir },
+    );
+    if (!stranded.ok) {
+      logger.error(
+        "PR feedback: could not check the remote fix branch for commits the PR head lacks",
+        { repo, prNumber, fixBranch, error: stranded.error.message },
+      );
+    } else if (stranded.value !== null) {
+      logger.warn(
+        "PR feedback: the fix branch holds commits on origin that the local view missed — delivering them through the fix PR",
+        { repo, prNumber, fixBranch, ahead: stranded.value.ahead },
+      );
+      hasChanges = true;
+      pushSucceeded = true;
+      pushVerification = {
+        landed: true,
+        remoteSha: stranded.value.tipSha,
+        reason: `'${fixBranch}' on the remote is at ${
+          stranded.value.tipSha.slice(0, 8)
+        } (${stranded.value.ahead} commit(s) ahead of '${input.branchName}')`,
+      };
     }
   }
 
