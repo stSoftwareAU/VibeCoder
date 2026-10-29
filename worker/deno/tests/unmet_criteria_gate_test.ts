@@ -37,6 +37,10 @@ Deno.test("unmetCriteriaReason - counts the criteria and says the PR is raised a
 
 Deno.test("buildUnmetCriteriaGateComment - names each criterion and does not claim the PR is withheld", () => {
   const comment = buildUnmetCriteriaGateComment(UNMET);
+  assert(
+    comment.startsWith("### Acceptance criteria not met (Issue #4146)\n"),
+    "the note opens with its heading",
+  );
   assertStringIncludes(comment, "- **partial** — The router sends planning");
   assertStringIncludes(comment, "- **missing** — The docs table lists opus.");
   assertStringIncludes(comment, "raised and armed anyway");
