@@ -177,15 +177,17 @@ function fetchByToken(answer: (token: string) => Response) {
 // ---------------------------------------------------------------------------
 
 Deno.test("ranking returns the token with the most remaining budget per hour of its own window (Issue #1623)", () => {
-  // Different windows, different reset days — exactly the case the parent
-  // issue exists for. Only the fraction per hour is comparable across them.
-  // Rewritten for Issue #1623: until then this ranked on the largest share
-  // alone, so provider-2's 81% won although provider-3's 44% over four hours
-  // is worth sixteen times as much per hour.
+  // Different reset days — the case the parent issue exists for. Only the
+  // fraction per hour is comparable across them. Rewritten for Issue #1623:
+  // until then this ranked on the largest share alone, so provider-2's 81% won
+  // although provider-3's 44% over four hours is worth sixteen times as much
+  // per hour. Issue #4503: provider-3 holds a seven-day window too, because a
+  // five-hour-only rate is not comparable with the seven-day rate it is
+  // compared against.
   const ranking = rankClaudeTokenBudgets([
     known("provider", 0.10, NOW + 2 * HOUR, "five_hour"),
     known("provider-2", 0.81, NOW + 5 * 24 * HOUR, "seven_day"),
-    known("provider-3", 0.44, NOW + 4 * HOUR, "five_hour"),
+    known("provider-3", 0.44, NOW + 4 * HOUR, "seven_day"),
   ], NOW);
 
   assertEquals(ranking.winner?.label, "provider-3");
@@ -478,11 +480,218 @@ Deno.test("ranking nothing yields no winner and no reason (Issue #919)", () => {
   assertEquals(formatClaudeTokenSelectionLog(ranking), []);
 });
 
+// Issue #4503 (restoring #1731): inside a passing band, a token with a
+// seven-day window ranks ahead of every token without one, because a rate on a
+// five-hour window is not comparable with a seven-day rate. Weekless tokens are
+// ordered only among themselves, on the window they reported, and are never
+// dropped or made a gate.
+
+/** One Issue #4503 ordering case: the input, the full expected order, and the reason. */
+const WEEKLY_TELEMETRY_CASES: readonly {
+  name: string;
+  budgets: readonly ClaudeTokenBudget[];
+  order: readonly string[];
+  reason: string;
+}[] = [
+  {
+    name:
+      "weekly 50% reset in 144h beats weekless five-hour 60% reset in 4h (Issue #4503)",
+    budgets: [
+      known("weekless", 0.60, NOW + 4 * HOUR, "five_hour"),
+      known("weekly", 0.50, NOW + 144 * HOUR, "seven_day"),
+    ],
+    order: ["weekly", "weekless"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name: "weekless five-hour 95% ranks behind weekly 90% (Issue #4503)",
+    budgets: [
+      known("weekless", 0.95, NOW + 5 * HOUR, "five_hour"),
+      known("weekly", 0.90, NOW + 100 * HOUR, "seven_day"),
+    ],
+    order: ["weekly", "weekless"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name: "two weekly tokens still rank solely by rate (Issue #4503)",
+    budgets: [
+      known("slow", 0.5, NOW + 144 * HOUR, "seven_day"),
+      known("fast", 0.2, NOW + 24 * HOUR, "seven_day"),
+    ],
+    order: ["fast", "slow"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name:
+      "all weekless tokens are ordered by their own five-hour rate (Issue #4503)",
+    budgets: [
+      known("provider", 0.4, NOW + 2 * HOUR, "five_hour"),
+      known("provider-2", 0.6, NOW + 4 * HOUR, "five_hour"),
+      known("provider-3", 0.5, NOW + 2 * HOUR, "five_hour"),
+    ],
+    order: ["provider-3", "provider", "provider-2"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name:
+      "all weekless tokens with an equal rate tie-break on discovery order (Issue #4503)",
+    budgets: [
+      known("provider", 0.4, NOW + 2 * HOUR, "five_hour"),
+      known("provider-2", 0.4, NOW + 2 * HOUR, "five_hour"),
+    ],
+    order: ["provider", "provider-2"],
+    reason: "tied-discovery-order",
+  },
+  {
+    name:
+      "a mixed four-credential pool ranks weekly tokens first, each group by rate (Issue #4503)",
+    budgets: [
+      known("weekless-low", 0.3, NOW + 5 * HOUR, "five_hour"),
+      known("weekly-low", 0.5, NOW + 144 * HOUR, "seven_day"),
+      known("weekless-high", 0.6, NOW + 2 * HOUR, "five_hour"),
+      known("weekly-high", 0.5, NOW + 24 * HOUR, "seven_day"),
+    ],
+    order: ["weekly-high", "weekly-low", "weekless-high", "weekless-low"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name:
+      "a weekless token passing the gate ranks ahead of a weekly token failing it at 19% five-hour (Issue #4503)",
+    budgets: [
+      dual("weekly", [
+        fiveHour(0.19, NOW + HOUR),
+        sevenDay(0.9, NOW + 100 * HOUR),
+      ]),
+      known("weekless", 0.21, NOW + 5 * HOUR, "five_hour"),
+    ],
+    order: ["weekless", "weekly"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name:
+      "a weekly token passing the gate at 21% five-hour ranks ahead of a weekless token failing it at 19% (Issue #4503)",
+    budgets: [
+      known("weekless", 0.19, NOW + 4 * HOUR, "five_hour"),
+      dual("weekly", [
+        fiveHour(0.21, NOW + HOUR),
+        sevenDay(0.9, NOW + 100 * HOUR),
+      ]),
+    ],
+    order: ["weekly", "weekless"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name:
+      "a weekly token under 10% ranks behind a gate-passing weekless token (Issue #4503)",
+    budgets: [
+      known("weekly-low", 0.05, NOW + 2 * HOUR, "seven_day"),
+      known("weekless", 0.3, NOW + 5 * HOUR, "five_hour"),
+    ],
+    order: ["weekless", "weekly-low"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name:
+      "gate failures stay ordered by soonest five-hour reset, whatever their seven-day telemetry (Issue #4503)",
+    budgets: [
+      dual("weekly", [
+        fiveHour(0.10, NOW + 3 * HOUR),
+        sevenDay(0.8, NOW + 100 * HOUR),
+      ]),
+      known("weekless", 0.10, NOW + HOUR, "five_hour"),
+    ],
+    order: ["weekless", "weekly"],
+    reason: "five-hour-gate-failed-soonest-reset",
+  },
+  {
+    name: "an unknown budget stays last behind a weekless token (Issue #4503)",
+    budgets: [
+      unknown("provider"),
+      known("provider-2", 0.4, NOW + 2 * HOUR, "five_hour"),
+    ],
+    order: ["provider-2", "provider"],
+    reason: "highest-remaining-per-hour",
+  },
+  {
+    name:
+      "weekly beats weekless with an equal rate on a different window, reason is not a tie (Issue #4503)",
+    budgets: [
+      known("weekless", 0.5, NOW + 10 * HOUR, "five_hour"),
+      known("weekly", 0.5, NOW + 10 * HOUR, "seven_day"),
+    ],
+    order: ["weekly", "weekless"],
+    reason: "highest-remaining-per-hour",
+  },
+];
+
+for (const row of WEEKLY_TELEMETRY_CASES) {
+  Deno.test(row.name, () => {
+    const ranking = rankClaudeTokenBudgets(row.budgets, NOW);
+    assertEquals(ranking.ranked.length, row.budgets.length, "nothing dropped");
+    assertEquals(ranking.ranked.map((r) => r.label), [...row.order]);
+    assertEquals(ranking.winner?.label, row.order[0]);
+    assertEquals(ranking.reason, row.reason);
+  });
+}
+
+Deno.test("all weekless tokens with an equal rate pick the same winner on every call (Issue #4503)", () => {
+  const budgets = [
+    known("provider", 0.4, NOW + 2 * HOUR, "five_hour"),
+    known("provider-2", 0.4, NOW + 2 * HOUR, "five_hour"),
+  ];
+  for (let call = 0; call < 3; call++) {
+    const ranking = rankClaudeTokenBudgets(budgets, NOW);
+    assertEquals(ranking.winner?.label, "provider");
+    assertEquals(ranking.ranked.length, 2);
+  }
+});
+
+Deno.test("a later snapshot that reports a seven-day window restores weekly ranking (Issue #4503)", () => {
+  const before = rankClaudeTokenBudgets([
+    known("provider", 0.9, NOW + 100 * HOUR, "seven_day"),
+    known("provider-2", 0.95, NOW + 5 * HOUR, "five_hour"),
+  ], NOW);
+  assertEquals(before.ranked.map((r) => r.label), ["provider", "provider-2"]);
+
+  // The same label now reports both windows. Nothing is remembered between
+  // calls, so the seven-day rate decides: 50% in 24h beats 90% in 100h.
+  const after = rankClaudeTokenBudgets([
+    known("provider", 0.9, NOW + 100 * HOUR, "seven_day"),
+    dual("provider-2", [
+      fiveHour(0.95, NOW + 5 * HOUR),
+      sevenDay(0.5, NOW + 24 * HOUR),
+    ]),
+  ], NOW);
+  assertEquals(after.ranked.map((r) => r.label), ["provider-2", "provider"]);
+  assertEquals(after.winner?.hasSevenDayTelemetry, true);
+  assertEquals(after.reason, "highest-remaining-per-hour");
+});
+
+Deno.test("ranked entries report whether the probe reported a seven-day window (Issue #4503)", () => {
+  const ranking = rankClaudeTokenBudgets([
+    known("weekless", 0.4, NOW + 2 * HOUR, "five_hour"),
+    dual("both", [
+      fiveHour(0.9, NOW + 2 * HOUR),
+      sevenDay(0.5, NOW + 100 * HOUR),
+    ]),
+    known("weekly", 0.5, NOW + 100 * HOUR, "seven_day"),
+    unknown("unknown"),
+  ], NOW);
+  assertEquals(
+    Object.fromEntries(
+      ranking.ranked.map((r) => [r.label, r.hasSevenDayTelemetry]),
+    ),
+    { weekless: false, both: true, weekly: true, unknown: false },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // The decision log
 // ---------------------------------------------------------------------------
 
 Deno.test("the decision log names every candidate then the winner and its reason (Issue #1623)", () => {
+  // Issue #4503: provider holds a seven-day window and provider-2 does not, so
+  // provider now ranks first and wins; the line format is unchanged.
   const ranking = rankClaudeTokenBudgets([
     known("provider", 0.25, Date.UTC(2026, 8, 4, 5, 0, 0), "seven_day"),
     known("provider-2", 0.75, Date.UTC(2026, 8, 4, 2, 0, 0), "five_hour"),
@@ -493,14 +702,14 @@ Deno.test("the decision log names every candidate then the winner and its reason
   assertEquals(lines.length, 4, "one line per candidate, plus the winner");
   assertEquals(
     lines[0],
-    "[SECURITY] claude token candidate provider-2 (#2): five_hour=75.0% " +
-      "resets=2026-09-04T02:00:00.000Z seven_day=absent rate=37.50%/h " +
-      "gate=pass",
+    "[SECURITY] claude token candidate provider (#1): five_hour=absent " +
+      "seven_day=25.0% resets=2026-09-04T05:00:00.000Z rate=5.00%/h gate=pass",
   );
   assertEquals(
     lines[1],
-    "[SECURITY] claude token candidate provider (#1): five_hour=absent " +
-      "seven_day=25.0% resets=2026-09-04T05:00:00.000Z rate=5.00%/h gate=pass",
+    "[SECURITY] claude token candidate provider-2 (#2): five_hour=75.0% " +
+      "resets=2026-09-04T02:00:00.000Z seven_day=absent rate=37.50%/h " +
+      "gate=pass",
   );
   assertEquals(
     lines[2],
@@ -509,9 +718,9 @@ Deno.test("the decision log names every candidate then the winner and its reason
   );
   assertEquals(
     lines[3],
-    "[SECURITY] claude token selected provider-2 (#2) of 3: " +
-      "highest-remaining-per-hour rate=37.50%/h remaining=75.0% " +
-      "resets=2026-09-04T02:00:00.000Z",
+    "[SECURITY] claude token selected provider (#1) of 3: " +
+      "highest-remaining-per-hour rate=5.00%/h remaining=25.0% " +
+      "resets=2026-09-04T05:00:00.000Z",
   );
 });
 

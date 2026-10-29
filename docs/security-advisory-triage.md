@@ -155,21 +155,25 @@ standing change.
 This emergency path is purely about *expediting a legitimate fix* — it does not
 weaken the quarantine for any other dependency.
 
-**The CI-fix agent applies the same publish-age bypass automatically.** When a
+**The CI-fix agent applies the same publish-age bypass automatically, and only
+when every release that clears the advisory is inside the window.** When a
 dependency audit (`deno audit`, `cargo audit`, or any check whose log reports
 a `GHSA-` or `RUSTSEC-` advisory) is red on a pull request the worker maintains,
 the CI-fix prompt (`prompts/ci_fix/prompt.md`, "Dependency audit failures")
 tells the agent to apply the advisory-clearing change — a direct bump, a
 `deno.json` / `package.json` override for a transitive npm entry, or a
-`Cargo.toml` `[patch]` or parent-crate bump — regardless of the fixed
-version's publish age. Its **trigger** is narrower than the maintainer path
-above rather than the same: no judgement about active exploitation is made,
-and no maintainer approval is sought — a red audit naming an advisory against
+`Cargo.toml` `[patch]` or parent-crate bump — to the newest release outside
+the 24h window that clears the advisory; it is applied regardless of publish
+age only when every release that clears the advisory is still inside the
+window, the one case the emergency path above exists for: a fixed release
+inside the quarantine window (stSoftwareAU/VibeCoder#4471). Its **trigger**
+is narrower than the maintainer path above rather than the same: no judgement
+about active exploitation is made, and no maintainer approval is sought — a red audit naming an advisory against
 the version currently in the lockfile is the whole condition.
 
 The limit is the same as a maintainer's. The agent passes an explicit zero age
-for the advisory-clearing version only — the fixed package, or the parent
-crate's version that carries the fix (`deno outdated --update
+for the advisory-clearing version only, and only in that all-in-window case —
+the fixed package, or the parent crate's version that carries the fix (`deno outdated --update
 --minimum-dependency-age=0 <pkg>`; on Cargo, `cargo update -p <parent>
 --precise <version>` after raising its requirement) — and does **not** touch
 the repository's `minimumDependencyAge` config or its `exclude` globs, so there
