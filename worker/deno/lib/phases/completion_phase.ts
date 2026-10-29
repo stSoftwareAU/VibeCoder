@@ -615,8 +615,9 @@ interface SummaryRuleBlock {
   allowsTestChanges?: boolean;
   /**
    * The acceptance criteria the run has not met (Issue #4146). Non-empty
-   * means no PR may be raised or finalised: the recovery turn must finish
-   * them, and a later block fails the run as `criteria_unmet`.
+   * means the recovery turn is told to finish them. They are advice
+   * (Issue #4234): a criterion still unmet afterwards is named on the pull
+   * request, which is raised anyway.
    */
   unmetCriteria?: readonly DegradedShortfall[];
 }

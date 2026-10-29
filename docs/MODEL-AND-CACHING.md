@@ -3263,8 +3263,8 @@ resolves `opus` to `claude-opus-5-5` (2.1.261 resolved it to `claude-opus-5`).
 with its cache fixes. `CURRENT_TIER_MODELS` gained an `opus` row at the same
 time, so a container still serving `claude-opus-5` is reported as a previous
 generation — but only for the label and the stats comment. Delivery never
-depends on it: any unmet criterion blocks the PR whatever model served the run
-(Issue #4146).
+depends on it: an unmet criterion is handled the same way whatever model served
+the run (Issues #4146, #4234).
 
 **Moved a third time for Haiku 5.5 (PR #3432 review, Issue #3400).** #3400 set
 `MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is

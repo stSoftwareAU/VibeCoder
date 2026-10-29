@@ -1,22 +1,27 @@
 /**
- * Unmet acceptance criteria block the PR (Issue #4146).
+ * Unmet acceptance criteria are advice (Issues #4146, #4234).
  *
- * The owner's ruling: "If the criteria is not met then don't raise a PR, just
- * complete the job." A run whose PR summary closes a criterion out `partial`
- * or `missing` used to raise a PR that closed the issue on merge and file a
- * `Finish #N` follow-up for the rest (Issues #2562, #3506). "Partially
- * completed" is not a resolution, so an unmet criterion is now a completion
- * gate block like any other summary-rule gate:
+ * The owner's ruling in #4146 was "If the criteria is not met then don't
+ * raise a PR, just complete the job." A run whose PR summary closes a
+ * criterion out `partial` or `missing` used to raise a PR that closed the
+ * issue on merge and file a `Finish #N` follow-up for the rest (Issues #2562,
+ * #3506). #4146 made that a blocking gate; #4234 then made every completion
+ * summary gate advice, so the gate no longer withholds the pull request:
  *
  * ```mermaid
  * flowchart TD
  *     S["PR summary closure block"] --> U{"Any criterion<br/>partial, missing<br/>or unassessed?"}
  *     U -- no --> P["PR raised; it closes the issue"]
- *     U -- yes --> R["No PR. The agent is sent back in this run<br/>with the unmet criteria named"]
- *     R --> G{"Progress, and rounds<br/>left?"}
- *     G -- yes --> S
- *     G -- no --> F["Run failure: criteria_unmet.<br/>Branch stays pushed; the next run resumes it.<br/>No PR, no follow-up, no needs-human"]
+ *     U -- yes --> N["The agent is told once, in the session,<br/>with the unmet criteria named"]
+ *     N --> G{"Still unmet on the next pass?"}
+ *     G -- no --> P
+ *     G -- yes --> A["PR raised and armed anyway.<br/>The unmet criteria are named in one<br/>'Notes for the reviewer' comment.<br/>A `missing` entry makes the body `Part of #N`"]
  * ```
+ *
+ * No follow-up issue is filed and nothing is labelled `needs-human`.
+ *
+ * This module only assesses the criteria and words the note; the completion
+ * phase (`phases/completion_phase.ts`) decides what happens to the PR.
  *
  * Whether the run was degraded (served by a fallback model) changes nothing
  * here: the `Degraded:` run-stats line is telemetry, not a delivery decision.
@@ -85,7 +90,7 @@ export function unmetCriteriaReason(
   const n = unmet.length;
   return `${n} acceptance criteri${
     n === 1 ? "on is" : "a are"
-  } not met — no PR is raised until every criterion is met (Issue #4146)`;
+  } not met — named on the pull request, which is raised anyway (Issue #4146)`;
 }
 
 function quoted(text: string): string {
@@ -96,22 +101,25 @@ function quoted(text: string): string {
 }
 
 /**
- * The issue comment the gate posts: which criteria are unmet, and that the
- * run carries on rather than raising a partial PR.
+ * The note the gate produces: which criteria are unmet, and that they do not
+ * stop the pull request. It is shown to the agent once in the session, and
+ * posted on the pull request when criteria are still unmet afterwards.
  */
 export function buildUnmetCriteriaGateComment(
   unmet: readonly DegradedShortfall[],
 ): string {
   const lines = unmet.map((s) => `- **${s.status}** — ${quoted(s.criterion)}`);
   return [
-    "### ⛔ Acceptance criteria not met — no PR raised (Issue #4146)",
+    "### Acceptance criteria not met (Issue #4146)",
     "",
     "The PR summary does not show every acceptance criterion as `met`:",
     "",
     ...lines,
     "",
-    "A PR is raised only once every criterion is met. The worker sends the " +
-    "agent back in this run to finish the work; if it still cannot, the run " +
-    "fails and the next run resumes this branch. No follow-up issue is filed.",
+    "These do not block the pull request, which is raised and armed " +
+    "anyway. Finish what you can in this session; a criterion still unmet " +
+    "is named for the reviewer on the pull request. A `missing` entry makes " +
+    "the pull request body `Part of #N`, so the issue stays open. No " +
+    "follow-up issue is filed.",
   ].join("\n");
 }
