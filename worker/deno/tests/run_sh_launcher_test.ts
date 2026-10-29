@@ -2293,7 +2293,9 @@ Deno.test("run.sh - a host still short after the reclaim names its largest direc
   const largest =
     "/home/tester/src/big-project/target (8.2 GB); /tmp/vibe-cache (1.1 GB)";
   const unrecoveredLines = (stderr: string) =>
-    stderr.split("\n").filter((line) => line.includes("[WORK_VOLUME_UNRECOVERED]"));
+    stderr.split("\n").filter((line) =>
+      line.includes("[WORK_VOLUME_UNRECOVERED]")
+    );
   try {
     const store =
       `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
