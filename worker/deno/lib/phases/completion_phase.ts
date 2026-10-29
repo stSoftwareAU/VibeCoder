@@ -884,10 +884,11 @@ export async function recoverAndFinaliseExistingPr(
       await postFindingsComment(repo, prNumber, findingsComment, deps);
     }
     if (prNumber > 0) {
-      // Issue #4146: a timed-out run's draft continuation, now that every
-      // criterion is met (the unmet-criteria gate never lets a partial run
-      // reach here). Its body already says `Closes #N`; mark it ready so it
-      // takes the normal review and auto-merge path. Auto-merge waits for
+      // Issue #4146: a timed-out run's draft continuation. Unmet criteria
+      // are advice since Issue #4234, so a partial run reaches here too; its
+      // body says `Part of #N` when a criterion is `missing`, otherwise
+      // `Closes #N`. Mark it ready so it takes the normal review and
+      // auto-merge path. Auto-merge waits for
       // the ready-for-review CI to start: the draft's checks were skipped,
       // and a skipped required check counts as passing (Issue #4160).
       let ciStarted = true;
@@ -2921,8 +2922,9 @@ async function completionBody(
     reason: scrubProblem ?? "",
     comment: () => scrubProblem ?? "",
   };
-  // Issue #4146: an unmet criterion blocks the PR like any summary gate, and
-  // folds into every other gate's block so a recovery turn always sees it.
+  // Issue #4146: an unmet criterion is reported like any summary gate (advice
+  // since Issue #4234), and folds into every other gate's block so a
+  // recovery turn always sees it.
   const unmetCriteria = assessUnmetCriteria(ctx.issueBody, prBody);
   const unmetCriteriaVerdict: LateSummaryVerdict = {
     categories: ["criteria_unmet"],

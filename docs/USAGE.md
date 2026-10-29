@@ -114,8 +114,8 @@ is adopted (Issue #3804): rebuilt with the worker marker, digest and, when a
 criterion is `missing`, the withheld close (`Part of #N`). The issue run's
 completion phase adopts it at every exit, once the checkout's HEAD is the
 pushed head and the PR is open. A marker-less PR on any other branch is still left alone.
-A re-sync never files an issue: a criterion still `partial` or `missing`
-blocks the PR at completion instead (Issue #4146, see
+A re-sync never files an issue: a criterion still `partial` or `missing` is
+named on the PR at completion instead (Issues #4146, #4234, see
 [issue-processing.md](workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run)).
 
 The summary must describe the **final** state of the branch: it is rewritten,

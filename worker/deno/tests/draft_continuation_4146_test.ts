@@ -12,6 +12,8 @@
 
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
+  buildDraftContinuationBody,
+  buildUnmetDraftBody,
   convertToDraftContinuation,
   DRAFT_CONTINUATION_MARKER,
   ensureDraftContinuationPr,
@@ -160,3 +162,25 @@ Deno.test("#4146 - a failed draft creation is reported, never thrown", async () 
   });
   assertEquals(result.kind, "failed");
 });
+
+// The draft bodies the fleet publishes must describe the post-#4234 flow:
+// completion marks the draft ready even with a criterion unmet, and `Closes #N`
+// is conditional on no `missing` entry. A banner promising "ready once every
+// criterion is met" or "ready with `Closes`" is the belief #4469 and #4445
+// trace a wrong `Closes #N` to (#4490 review).
+const OLD_DRAFT_PROMISE =
+  /once every criterion is met|marks this PR ready with `Closes`|finishes the job/i;
+
+for (
+  const [name, body] of [
+    ["timed-out draft", buildDraftContinuationBody(4146)],
+    ["unmet-criteria draft", buildUnmetDraftBody(4146, "Closes #4146\n")],
+  ] as const
+) {
+  Deno.test(`draft continuation - the ${name} body does not promise ready only once every criterion is met`, () => {
+    assertFalse(OLD_DRAFT_PROMISE.test(body), body);
+    assert(body.includes("even with a criterion still unmet"), body);
+    assert(body.includes("unless an entry is `missing`"), body);
+    assert(body.includes("Part of #4146"), body);
+  });
+}
