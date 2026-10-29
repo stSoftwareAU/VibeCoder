@@ -79,3 +79,5 @@ flowchart TD
 - Callers of the changed functions: only `phases/completion_phase.ts` (the
   verdict's `reason` and `comment`); both strings flow into the in-session note
   and `postCompletionAdvisory` unchanged in shape.
+- `./quality.sh < /dev/null` on the final code: Result PASSED (with skipped
+  checks: config integration, checkov).
