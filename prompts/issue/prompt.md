@@ -942,8 +942,9 @@ reviewer's verdict on each one — one entry per stated criterion, in this shape
 - **unrequested** — <a change in the diff not traceable to the issue> — reviewer: unrequested — reason: <why it is here>
 ```
 
-Rules — a gate checks these before the PR is raised, and blocks PR creation when
-one is broken:
+Rules — the worker checks these before the PR is raised and tells you once in
+this run about any that are broken; the PR is then raised with what remains
+named in the reviewer note (Issue #4234):
 
 - **Every stated criterion gets an entry.** A criterion you did not touch is
   `missing`, not omitted. Write `<criterion>` in the issue's own words — the
@@ -986,7 +987,8 @@ one is broken:
   independent Spec reviewer above is the structural half of this rule — where
   your status differs from its verdict, the departure is recorded, never
   silent — and the pre-PR verifier then re-judges each `met` entry; a `partial`,
-  `missing` or absent verdict from it blocks.
+  `missing` or absent verdict from it is reported to you once and then named on
+  the PR (Issue #4234).
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria (an Acceptance Criteria or Definition of done
   list).

@@ -71,6 +71,10 @@ const STATED_ELSEWHERE: readonly { doc: string; title: string }[] = [
     doc: "docs/workflows/pr-feedback.md",
     title: "Every finding ends fixed or rebutted",
   },
+  {
+    doc: "docs/workflows/issue-processing.md",
+    title: "A `missing` criterion does not close the issue",
+  },
 ];
 
 /**
@@ -80,7 +84,7 @@ const STATED_ELSEWHERE: readonly { doc: string; title: string }[] = [
  * ready once every criterion is met" (the draft-continuation wording).
  */
 const STOPS_THE_PR =
-  /(partial|missing)[^.]*blocks the PR|raised only (when|once|if) every criterion|once every criterion is met/i;
+  /blocks PR creation|(partial|missing)[^.]*\bblocks\b|raised only (when|once|if) every criterion|once every criterion is met/i;
 
 Deno.test("prompt and docs - no section says an unmet criterion blocks the PR", async () => {
   for (const { doc, title } of STATED_ELSEWHERE) {
