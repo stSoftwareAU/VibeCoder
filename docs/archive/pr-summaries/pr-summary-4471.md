@@ -2,9 +2,8 @@
 
 The CI-fix audit prompt no longer exempts whichever fixed release the agent
 lands on from the 24h quarantine. The advisory-clearing bump now goes to the
-newest release outside the window that clears the advisory; the zero age
-applies only when every clearing release is still inside the window. Closes
-#4471.
+newest release outside the window that clears the advisory; the zero age applies
+only when every clearing release is still inside the window. Closes #4471.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -37,9 +36,10 @@ Version bump: `VERSION` is not touched by this change.
 
 ## Evidence
 
-Backend/prompt only, no UI. From `worker/deno`, `deno task test:unit
-tests/ci_fix_prompt_v4_test.ts`: 11 passed, 0 failed. `deno fmt --check` and
-`deno lint` on the test file exit 0.
+Backend/prompt only, no UI. From `worker/deno`,
+`deno task test:unit
+tests/ci_fix_prompt_v4_test.ts`: 11 passed, 0 failed.
+`deno fmt --check` and `deno lint` on the test file exit 0.
 
 Sections read: `prompts/ci_fix/prompt.md` "Dependency audit failures" (the
 paragraph above and the "Any other bump" paragraph that follows) and
@@ -53,19 +53,22 @@ historical record.
 ## Test Plan
 
 - `worker/deno/tests/ci_fix_prompt_v4_test.ts`:
-  - Edited `ci_fix - an advisory-clearing bump is exempt from the publish-age
-    floor (Issue #1847)`. Removed from
-    `worker/deno/tests/ci_fix_prompt_v4_test.ts`: the pin
+  - Edited
+    `ci_fix - an advisory-clearing bump is exempt from the publish-age
+    floor (Issue #1847)`.
+    Removed from `worker/deno/tests/ci_fix_prompt_v4_test.ts`: the pin
     `"applied regardless of the fixed version's publish age"`. Replaced by:
     `goes to the newest release outside the 24h window that clears the advisory`
-    and `only when every release that clears the advisory is still inside the
-    window is the fix applied regardless of its publish age`. Required by:
-    "the exemption is limited to the case its own reason describes" (issue
-    body). Every other assertion in that test is kept.
-  - Added `ci_fix - the advisory-clearing bump takes an aged fixed release over
+    and
+    `only when every release that clears the advisory is still inside the
+    window is the fix applied regardless of its publish age`.
+    Required by: "the exemption is limited to the case its own reason describes"
+    (issue body). Every other assertion in that test is kept.
+  - Added
+    `ci_fix - the advisory-clearing bump takes an aged fixed release over
     a newer in-window one (Issue #4471)`.
 - Red check: restoring the base `prompts/ci_fix/prompt.md` with the new tests
   kept turned both the edited and the new test red (9 passed, 2 failed);
   restored afterwards.
-- No callers: the prompt is rendered by the existing `renderAuditFailure`
-  helper only.
+- No callers: the prompt is rendered by the existing `renderAuditFailure` helper
+  only.
