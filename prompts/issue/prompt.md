@@ -1417,8 +1417,7 @@ The file MUST contain:
    version of the section the test reads (`git show <base>:<doc>`, narrowed
    to the same section title; in the Vibe Coder repository, `deno task
    drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
-   `worker/deno` does this), and record here that each pinned phrase is
-   absent from the base section; a phrase the base section already held is a
+   `worker/deno` does this); a phrase the base section already held is a
    blocking self-review finding. A pin that names a value a module or
    checked-in config file already holds is built from that source, never typed
    in (condition 3 of **Documentation-drift tests** in `CODING-STANDARDS.md`);

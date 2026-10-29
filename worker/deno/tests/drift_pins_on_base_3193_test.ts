@@ -11,7 +11,12 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertFalse,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   DRIFT_PINS_TASK,
   flat,
@@ -152,11 +157,14 @@ Deno.test("coding guidelines - a drift test's red run is checked per pinned phra
   assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
   assertStringIncludes(
     text,
-    "each pinned phrase is absent from the base section",
+    "the base section already held is a blocking self-review finding",
+  );
+  assertFalse(
+    text.includes("each pinned phrase is absent from the base section"),
   );
 });
 
-Deno.test("issue prompt - the Test Plan records each pinned phrase absent on base", async () => {
+Deno.test("issue prompt - a drift test's base check is per pinned phrase", async () => {
   const text = flat(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
   );
@@ -164,11 +172,14 @@ Deno.test("issue prompt - the Test Plan records each pinned phrase absent on bas
   assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
   assertStringIncludes(
     text,
-    "each pinned phrase is absent from the base section",
+    "the base section already held is a blocking self-review finding",
+  );
+  assertFalse(
+    text.includes("each pinned phrase is absent from the base section"),
   );
 });
 
-Deno.test("pr_feedback prompt - the Test Plan records each pinned phrase absent on base", async () => {
+Deno.test("pr_feedback prompt - a drift test's base check is per pinned phrase", async () => {
   const text = flat(
     section(
       await readRepoDoc("prompts/pr_feedback/prompt.md"),
@@ -179,6 +190,9 @@ Deno.test("pr_feedback prompt - the Test Plan records each pinned phrase absent 
   assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
   assertStringIncludes(
     text,
-    "each pinned phrase is absent from the base section",
+    "the base section already held is a blocking self-review finding",
+  );
+  assertFalse(
+    text.includes("each pinned phrase is absent from the base section"),
   );
 });
