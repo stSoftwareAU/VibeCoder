@@ -8,7 +8,10 @@ What remains is the label set: the push-note labels are one exported
 resolution commit message names every note that means a check did not run, so
 the merge commit never says the repository's own check passed when its note says
 `CHECK LEFT TO CI` or `TESTS LEFT TO CI`. The manuals now name the
-`TESTS LEFT TO CI:` note beside `CHECK LEFT TO CI:`, and `docs/CONTAINER.md`
+`TESTS LEFT TO CI:` note beside `CHECK LEFT TO CI:` and say that a resolution
+with both left to CI carries only the `CHECK LEFT TO CI:` note, whose detail
+names the suite too (`gateThenPushMilestoneBranch` checks `checkLeftToCi` first,
+PR #4459 review), and `docs/CONTAINER.md`
 says what a merge-only mixed tree does when nothing ran. Version bump: not
 applicable. Closes #4441.
 

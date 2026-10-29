@@ -513,7 +513,8 @@ async function readRef(
  * passed carries a `CARGO SKIPPED:` note, so the report does not claim the
  * cargo half passed. A resolved tree whose Deno task could not fetch its
  * remote modules (Issue #4422) carries a `TESTS LEFT TO CI:` note naming that
- * task, so the report does not claim it passed. A resolved tree whose Issue
+ * task (or a `CHECK LEFT TO CI:` note whose detail names it, when the type
+ * check was left to CI too), so the report does not claim it passed. A resolved tree whose Issue
  * #974 type check could not fetch its remote modules carries a
  * `CHECK LEFT TO CI:` note (Issue #4441) for the same reason.
  *

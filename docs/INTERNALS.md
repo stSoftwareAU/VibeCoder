@@ -4319,8 +4319,11 @@ ordinary failure and is refused. The unreachable task is not counted as passed
 and is not repaired. Every other task still runs, so a real failure elsewhere
 still refuses the resolution, and `quality.sh` is never substituted for an
 unreachable unit suite. The resolution then lands with the outcome field
-`suiteLeftToCi` and the `TESTS LEFT TO CI:` push note, naming the task and the
-cause, and the escalation comment says that task did not run and that the
+`suiteLeftToCi`. The push note is `TESTS LEFT TO CI:`, naming the task and the
+cause, unless the type check was also left to CI: the note then starts
+`CHECK LEFT TO CI:` and its detail names the task too (the labels are checked
+in the order `UNGATED:`, `CHECK LEFT TO CI:`, `TESTS LEFT TO CI:`,
+`CARGO SKIPPED:`). The escalation comment says that task did not run and that the
 milestone PR's CI runs it. A type check
 that cannot fetch its remote modules is left to CI only when another project's
 check passed: `verifyResolvedTree` then carries it as `checkLeftToCi`, and the
@@ -4487,7 +4490,9 @@ Three properties matter:
   remote module host this host cannot reach, which is reported as not run
   rather than counted as passed. In the resolution gate (Issue #4422, described
   in the merge-down section above) the resolution lands with `suiteLeftToCi`
-  and the `TESTS LEFT TO CI:` note, naming such a task. `checkMergedTree` leaves such a type check to CI too
+  and the `TESTS LEFT TO CI:` note, naming such a task, unless the type check
+  was also left to CI, when the note starts `CHECK LEFT TO CI:` and its detail
+  names the task. `checkMergedTree` leaves such a type check to CI too
   (Issue #4451). When another project's check passed, the verdict is `passed`
   with `checkLeftToCi` set, and the push carries a `CHECK LEFT TO CI:` note
   (Issue #4444). When nothing else was checked, the verdict is `skipped`: on a
