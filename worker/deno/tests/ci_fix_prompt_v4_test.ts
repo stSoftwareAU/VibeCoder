@@ -178,13 +178,41 @@ Deno.test("ci_fix - an advisory-clearing bump is exempt from the publish-age flo
   assertStringIncludes(prompt, "rustsec");
   assertStringIncludes(
     prompt,
-    "applied regardless of the fixed version's publish age",
+    "goes to the newest release outside the 24h window that clears the advisory",
+  );
+  assertStringIncludes(
+    prompt,
+    "only when every release that clears the advisory is still inside the window is the fix applied regardless of its publish age",
   );
 
   // The mechanism: an explicit zero age for that package, never a config edit.
   assertStringIncludes(prompt, "--minimum-dependency-age=0");
   assertStringIncludes(prompt, "edit the repository's");
   assertStringIncludes(prompt, "minimumdependencyage` config or its `exclude`");
+});
+
+Deno.test("ci_fix - the advisory-clearing bump takes an aged fixed release over a newer in-window one (Issue #4471)", async () => {
+  const prompt = await renderAuditFailure();
+
+  // An older release outside the window is taken in preference to a newer one
+  // still inside it; the zero age is only for the all-in-window case.
+  assertStringIncludes(prompt, "a choice, not a necessity");
+  assertStringIncludes(
+    prompt,
+    "when an older release outside the window already clears the same advisory",
+  );
+  assertStringIncludes(
+    prompt,
+    "Apply the zero age to the advisory-clearing version only, and only in that all-in-window case",
+  );
+  // The old unconditional sentence must not survive.
+  assertEquals(
+    prompt.includes(
+      "**That advisory-clearing bump is applied regardless of the fixed version's publish age.**",
+    ),
+    false,
+    "the unconditional advisory-clearing bump sentence remains in the prompt",
+  );
 });
 
 Deno.test("ci_fix - the audit exemption names all three override mechanisms (Issue #1847)", async () => {
