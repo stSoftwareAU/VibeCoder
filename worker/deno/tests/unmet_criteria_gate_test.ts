@@ -75,11 +75,12 @@ const STATED_ELSEWHERE: readonly { doc: string; title: string }[] = [
 
 /**
  * Claims that an unmet criterion stops the PR, in the wordings the docs have
- * used: "blocks the PR", and "a PR is raised only when every criterion is
- * met" (DESIGN-PRINCIPLES.md before the #4490 review).
+ * used: "blocks the PR", "a PR is raised only when every criterion is met"
+ * (DESIGN-PRINCIPLES.md before the #4490 review), and "the draft is marked
+ * ready once every criterion is met" (the draft-continuation wording).
  */
 const STOPS_THE_PR =
-  /(partial|missing)[^.]*blocks the PR|raised only (when|once|if) every criterion/i;
+  /(partial|missing)[^.]*blocks the PR|raised only (when|once|if) every criterion|once every criterion is met/i;
 
 Deno.test("prompt and docs - no section says an unmet criterion blocks the PR", async () => {
   for (const { doc, title } of STATED_ELSEWHERE) {
