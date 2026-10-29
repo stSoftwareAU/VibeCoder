@@ -2205,8 +2205,8 @@ Deno.test("run.sh - a host below its floor reclaims its build caches before any 
     VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
     VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
     STUB_RECLAIM_STDOUT: [
-      "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (2.0 GB, CACHEDIR.TAG, 40 days idle)",
-      "[HOST_CACHE_RECLAIM] summary: reclaimed 2.0 GB; host now 17.0 GB free, above the 15 GB floor",
+      "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (2048.0 MB, idle 960.0 h)",
+      "[HOST_CACHE_RECLAIM] freed 2048.0 MB; est. free 17408.0 MB vs floor 15360.0 MB",
     ].join("\n"),
     STUB_RECLAIM_AVAIL_KB_AFTER: String(17 * 1024 * 1024),
   });
@@ -2284,8 +2284,8 @@ Deno.test("run.sh - a host still short after the reclaim names its largest direc
     VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
     VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
     STUB_RECLAIM_STDOUT: [
-      "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (1.0 GB, CACHEDIR.TAG, 40 days idle)",
-      "[HOST_CACHE_RECLAIM] summary: reclaimed 1.0 GB; host still 11.0 GB free, below the 15 GB floor",
+      "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (1024.0 MB, idle 960.0 h)",
+      "[HOST_CACHE_RECLAIM] freed 1024.0 MB; est. free 11264.0 MB vs floor 15360.0 MB",
       "[HOST_CACHE_RECLAIM] largest host directories: /home/tester/src/big-project/target (8.2 GB); /tmp/vibe-cache (1.1 GB)",
     ].join("\n"),
     STUB_RECLAIM_AVAIL_KB_AFTER: String(11 * 1024 * 1024),

@@ -1359,7 +1359,7 @@ report_unrecovered() {
     log_run_core "${full}"
     return 0
   fi
-  digest="$(printf '%s' "${host_largest_dirs}" | sed -e 's/ ([0-9.]* GB)//g' | cksum)"
+  digest="$(printf '%s' "${host_largest_dirs}" | sed -e 's/ ([0-9.]* GB)//g' -e 's/ (unmeasured)//g' | cksum)"
   last_digest="$(cat "${stored}" 2>/dev/null || true)"
   mkdir -p "$(dirname "${stored}")" 2>/dev/null || true
   printf '%s\n' "${digest}" >"${stored}" 2>/dev/null || true

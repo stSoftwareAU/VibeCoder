@@ -1460,9 +1460,12 @@ The four keys live in `.config.json` (see the host-disk keys in
 **What the log says.** Every line the command prints goes to stderr and to
 `run_core.log`:
 
-- `[HOST_CACHE_RECLAIM] removed <path> (<size>)` — one per directory removed;
-- `[HOST_CACHE_RECLAIM] summary: …` — what was reclaimed, and what the host has
-  free now;
+- `[HOST_CACHE_RECLAIM] removed <path> (<size>, idle <h> h)` — one per directory
+  removed;
+- `[HOST_CACHE_RECLAIM] skipped <path>: <reason>` — a candidate the command
+  kept, and why;
+- `[HOST_CACHE_RECLAIM] freed <size>; est. free <size> vs floor <size>` — what
+  was reclaimed, and the host's estimated free space against the floor;
 - `[HOST_CACHE_RECLAIM] largest host directories: <path> (<GB> GB); …` — only
   when the host is still below its floor, naming where the space went;
 - `[HOST_CACHE_RECLAIM] failed - …` — the reclaim itself failed. The launch

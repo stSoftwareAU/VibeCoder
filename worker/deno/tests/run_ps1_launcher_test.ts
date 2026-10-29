@@ -1332,8 +1332,8 @@ Deno.test({
       VIBE_HOST_DISK_LOW_FLOOR_GB: String(floorGb),
       VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
       STUB_RECLAIM_STDOUT: [
-        "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (2.0 GB, CACHEDIR.TAG, 40 days idle)",
-        "[HOST_CACHE_RECLAIM] summary: reclaimed 2.0 GB",
+        "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (2048.0 MB, idle 960.0 h)",
+        "[HOST_CACHE_RECLAIM] freed 2048.0 MB; est. free 17408.0 MB vs floor 999999 GB",
       ].join("\n"),
     });
     try {
@@ -1361,7 +1361,7 @@ Deno.test({
       );
       assertStringIncludes(
         await runCoreLog(harness),
-        "[HOST_CACHE_RECLAIM] summary: reclaimed 2.0 GB",
+        "[HOST_CACHE_RECLAIM] freed 2048.0 MB",
       );
       assert(await recorded(harness, "run"), "the worker must still start");
     } finally {
