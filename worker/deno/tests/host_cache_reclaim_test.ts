@@ -517,6 +517,49 @@ Deno.test("two roots resolving to the same directory are walked once", async () 
   });
 });
 
+Deno.test("a cache a process names through the root's alias spelling is held open (#4500 review)", async () => {
+  // macOS: the root is given as /tmp (or $TMPDIR) but resolves to
+  // /private/tmp. A process started under the alias names the cache that
+  // way; the candidate is the resolved path. The guard must match both.
+  await withRoot(async (root) => {
+    const cache = await makeCache(root, "grq-a-target", { ageMs: STALE_MS });
+    await withRoot(async (holder) => {
+      const alias = join(holder, "tmp");
+      await Deno.symlink(root, alias);
+      const result = await reclaimHostCaches(
+        oneGibOptions([alias]),
+        reclaimDeps({
+          processSnapshot: async () => [
+            `${alias}/grq-a-target/release/server --serve`,
+          ],
+        }),
+      );
+      assertEquals(await exists(cache), true, "held via the alias, kept");
+      assertEquals(removedPaths(result), []);
+      const reason = result.skipped.find((s) => s.path === cache)?.reason;
+      assertStringIncludes(reason ?? "", "held open");
+    });
+  });
+});
+
+Deno.test("a root given through an alias still removes a stale cache no process names (#4500 review)", async () => {
+  // Positive control for the alias case above.
+  await withRoot(async (root) => {
+    const cache = await makeCache(root, "grq-a-target", { ageMs: STALE_MS });
+    await withRoot(async (holder) => {
+      const alias = join(holder, "tmp");
+      await Deno.symlink(root, alias);
+      const result = await reclaimHostCaches(
+        oneGibOptions([alias]),
+        reclaimDeps({
+          processSnapshot: async () => [`${alias}/other-target/debug/app`],
+        }),
+      );
+      assertEquals(removedPaths(result), [cache]);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Pure helpers.
 // ---------------------------------------------------------------------------

@@ -514,14 +514,23 @@ async function collectCandidates(
  * A missing root is normal on most hosts and is dropped silently. A root that
  * exists but cannot be read is reported. Two roots that resolve to the same
  * place (macOS `/tmp` is `/private/tmp`) are walked once.
+ *
+ * `spellings` keeps every way each real root was named — the path as given as
+ * well as its real path — because the process table is never resolved: a
+ * process started under `/tmp/...` names the cache that way, not as
+ * `/private/tmp/...` (#4500 review).
  */
 async function resolveRoots(
   roots: string[],
   fs: HostCacheFs,
-): Promise<{ paths: string[]; skipped: HostCacheSkip[] }> {
+): Promise<{
+  paths: string[];
+  skipped: HostCacheSkip[];
+  spellings: Map<string, string[]>;
+}> {
   const paths: string[] = [];
   const skipped: HostCacheSkip[] = [];
-  const seen = new Set<string>();
+  const spellings = new Map<string, string[]>();
   for (const root of roots) {
     try {
       const real = await fs.realPath(root);
@@ -532,8 +541,13 @@ async function resolveRoots(
         skipped.push({ path: root, reason: "root is not a directory" });
         continue;
       }
-      if (seen.has(real)) continue;
-      seen.add(real);
+      const given = root.replace(/[\\/]+$/, "") || root;
+      const known = spellings.get(real);
+      if (known !== undefined) {
+        if (!known.includes(given)) known.push(given);
+        continue;
+      }
+      spellings.set(real, given === real ? [real] : [real, given]);
       paths.push(real);
     } catch (error) {
       skipped.push({
@@ -542,7 +556,32 @@ async function resolveRoots(
       });
     }
   }
-  return { paths, skipped };
+  return { paths, skipped, spellings };
+}
+
+/**
+ * Every spelling of `path` (a real path under one of `spellings`' roots): the
+ * real path itself, then the same suffix under each other name its root was
+ * given by (#4500 review).
+ */
+function pathSpellings(
+  path: string,
+  spellings: ReadonlyMap<string, readonly string[]>,
+  style: LauncherPathStyle,
+): string[] {
+  let bestRoot = "";
+  for (const root of spellings.keys()) {
+    if (
+      dirContainsOrEquals(root, path, style) && root.length > bestRoot.length
+    ) {
+      bestRoot = root;
+    }
+  }
+  if (bestRoot === "") return [path];
+  const suffix = path.slice(bestRoot.length);
+  const all = new Set<string>([path]);
+  for (const name of spellings.get(bestRoot) ?? []) all.add(name + suffix);
+  return [...all];
 }
 
 /** Resolve protected paths so a symlinked one still matches (Issue #4498). */
@@ -586,6 +625,7 @@ async function judgeCandidate(
   protect: string[],
   processLines: string[],
   deps: HostCacheReclaimDeps,
+  spellings: readonly string[] = [path],
 ): Promise<Judgement> {
   let touchedMs: number;
   try {
@@ -632,8 +672,14 @@ async function judgeCandidate(
   }
 
   // Issue #4498: a cache a live process has open is never removed. This check
-  // is the guard the test suite proves by breaking it on purpose.
-  if (processLines.some((line) => namesPath(line, path))) {
+  // is the guard the test suite proves by breaking it on purpose. The process
+  // table is never resolved, so the cache is looked for under every spelling
+  // of its root (#4500 review).
+  if (
+    processLines.some((line) =>
+      spellings.some((spelling) => namesPath(line, spelling))
+    )
+  ) {
     return { kind: "skip", reason: "held open by a running process" };
   }
 
@@ -726,6 +772,7 @@ export async function reclaimHostCaches(
       protect,
       processLines,
       deps,
+      pathSpellings(path, roots.spellings, deps.style),
     );
     if (judgement.kind === "skip") {
       skipped.push({ path, reason: judgement.reason });
