@@ -928,7 +928,10 @@ done
 trim_refused_volumes=()
 # Whether this launch declined to recreate a work volume because the host is
 # still short after the recreate would clear nothing (Issue #4498). Set by
-# report_unrecovered, and written into the reading so the worker can see it.
+# report_unrecovered only when its caller passes --declined: the shortfall
+# gate, the repeat-reading gate and no resettable volume. A recreate that was
+# tried and failed, or that left the host short, is not a decline (#4500
+# review). Written into the reading so the worker can see it.
 work_volume_recreate_declined=false
 # The host's largest directories, as reported by reclaim-host-caches when the
 # host is still below its claiming floor after the cache reclaim (Issue #4498).
@@ -1345,10 +1348,15 @@ forget_host_largest_dirs() {
 # one is shown briefly on stderr - the full message stays in run_core.log. The
 # digest covers the paths only, not their sizes, so a directory that is merely
 # growing does not reopen the alert.
+#
+# Usage: report_unrecovered [--declined] <message>
 report_unrecovered() {
+  if [[ "${1:-}" == --declined ]]; then
+    work_volume_recreate_declined=true
+    shift
+  fi
   local message="$1" full digest last_digest=""
   local stored="${HEAL_STATE_FILE}-largest"
-  work_volume_recreate_declined=true
   if [[ -n "${host_largest_dirs}" ]]; then
     message="${message} - largest host directories: ${host_largest_dirs}"
   fi
@@ -1532,13 +1540,13 @@ reset_work_volumes_before_build() {
   if ((avail_kb < floor_kb)); then
     local recorded_kb held_kb required_kb
     if recorded_kb="$(unrecovered_free_kb "${avail_kb}")"; then
-      report_unrecovered "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "the work volumes")"
+      report_unrecovered --declined "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "the work volumes")"
       return 0
     fi
     required_kb="$(volume_reset_required_kb "${avail_kb}" "${floor_kb}")"
     if held_kb="$(resettable_held_kb ${volume_names[@]+"${volume_names[@]}"})" &&
       ((held_kb < required_kb)); then
-      report_unrecovered "$(volume_cannot_cover_detail "the resettable volumes" "${held_kb}" "$((floor_kb - avail_kb))" "${required_kb}")"
+      report_unrecovered --declined "$(volume_cannot_cover_detail "the resettable volumes" "${held_kb}" "$((floor_kb - avail_kb))" "${required_kb}")"
       return 0
     fi
   fi
@@ -1952,7 +1960,7 @@ heal_untrimmable_volumes() {
     fi
   done
   if ((${#resettable_refused[@]} == 0)); then
-    report_unrecovered "the runtime refused to trim ${trim_refused_volumes[*]} and none of them may be destroyed to reclaim disk - the host's missing space is somewhere else"
+    report_unrecovered --declined "the runtime refused to trim ${trim_refused_volumes[*]} and none of them may be destroyed to reclaim disk - the host's missing space is somewhere else"
     return 0
   fi
 
@@ -1963,7 +1971,7 @@ heal_untrimmable_volumes() {
   # changed by more than a gigabyte.
   local recorded_kb
   if recorded_kb="$(unrecovered_free_kb "${avail_kb}")"; then
-    report_unrecovered "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "${resettable_refused[*]}")"
+    report_unrecovered --declined "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "${resettable_refused[*]}")"
     return 0
   fi
 
@@ -1982,7 +1990,7 @@ heal_untrimmable_volumes() {
     fi
   done
   if ((measured)) && ((held_kb < sum_required_kb)); then
-    report_unrecovered "$(volume_cannot_cover_detail "${resettable_refused[*]}" "${held_kb}" "$((floor_kb - avail_kb))" "${sum_required_kb}")"
+    report_unrecovered --declined "$(volume_cannot_cover_detail "${resettable_refused[*]}" "${held_kb}" "$((floor_kb - avail_kb))" "${sum_required_kb}")"
     return 0
   fi
 
