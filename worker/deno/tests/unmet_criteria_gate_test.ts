@@ -53,9 +53,18 @@ Deno.test("buildUnmetCriteriaGateComment - names each criterion and does not cla
 /**
  * Each section that tells an agent or operator what an unmet criterion does.
  * The prompt's line matters most: an agent told that a partial PR is never
- * raised writes `Closes #N` on one (#4445).
+ * raised writes `Closes #N` on one (#4445). DESIGN-PRINCIPLES.md is the
+ * shared source of truth AGENTS.md sends agents to (#4490 review).
  */
 const STATED_ELSEWHERE: readonly { doc: string; title: string }[] = [
+  {
+    doc: "DESIGN-PRINCIPLES.md",
+    title: "An assigned issue is completed, never handed back",
+  },
+  {
+    doc: "DESIGN-PRINCIPLES.md",
+    title: "Unmet acceptance criteria are named, never a follow-up issue",
+  },
   { doc: "prompts/issue/prompt.md", title: "Acceptance-Criteria Closure" },
   { doc: "docs/USAGE.md", title: "PR Summary File" },
   {
@@ -64,13 +73,17 @@ const STATED_ELSEWHERE: readonly { doc: string; title: string }[] = [
   },
 ];
 
+/**
+ * Claims that an unmet criterion stops the PR, in the wordings the docs have
+ * used: "blocks the PR", and "a PR is raised only when every criterion is
+ * met" (DESIGN-PRINCIPLES.md before the #4490 review).
+ */
+const STOPS_THE_PR =
+  /(partial|missing)[^.]*blocks the PR|raised only (when|once|if) every criterion/i;
+
 Deno.test("prompt and docs - no section says an unmet criterion blocks the PR", async () => {
   for (const { doc, title } of STATED_ELSEWHERE) {
     const text = flat(section(await readRepoDoc(doc), title));
-    assertEquals(
-      /(partial|missing)[^.]*blocks the PR/.test(text),
-      false,
-      `${doc} § ${title}`,
-    );
+    assertEquals(STOPS_THE_PR.test(text), false, `${doc} § ${title}`);
   }
 });

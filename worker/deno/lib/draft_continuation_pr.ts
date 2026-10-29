@@ -7,9 +7,10 @@
  * #47, #218); this makes it visible as a DRAFT that says `Part of #N` — never
  * a closing keyword, never auto-merge (the sweep skips drafts, Issue #1800).
  * The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so
- * the next run re-claims the issue, resumes the branch (Issue #220) and
- * finishes; once every criterion is met, completion marks the draft ready
- * with `Closes #N` and it takes the normal review and auto-merge path.
+ * the next run re-claims the issue and resumes the branch (Issue #220). When
+ * that run completes, completion marks the draft ready and it takes the
+ * normal review and auto-merge path, even with a criterion still unmet
+ * (Issue #4234); the body says `Closes #N` unless an entry is `missing`.
  *
  * Best-effort: the branch is the deliverable that matters, so a `gh` failure
  * is reported, never thrown.
