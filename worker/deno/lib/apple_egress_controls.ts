@@ -78,22 +78,46 @@ export function appleControlFailures(
   return failures;
 }
 
-/** Bounded DNS/host probes distinguish unavailable services from isolation. */
+/**
+ * Bounded DNS/host probes distinguish unavailable services from isolation.
+ *
+ * In Apple internal mode the worker's own resolver is `127.0.0.1` (see
+ * `appleLaunch`), so the system resolver always fails. `VIBE_EGRESS_DNS_SERVER`
+ * names the internal network's gateway resolver, and the DNS and hostname
+ * probes ask it directly: any process in the worker can still query it, so
+ * the self-check measures that exposure rather than the loopback stub.
+ */
 export async function appleRawProbes(
   env: (name: string) => string | undefined,
   timeoutMs = 2000,
 ): Promise<AppleRawProbes> {
+  const server = env("VIBE_EGRESS_DNS_SERVER");
+  if (server !== undefined && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(server)) {
+    throw new Error(
+      `VIBE_EGRESS_DNS_SERVER must be an IPv4 address, got ${
+        JSON.stringify(server)
+      }`,
+    );
+  }
+  const resolve = (host: string) =>
+    Deno.resolveDns(host, "A", {
+      signal: AbortSignal.timeout(timeoutMs),
+      ...(server ? { nameServer: { ipAddr: server, port: 53 } } : {}),
+    });
   const direct = async (host: string) => {
+    let target = host;
     if (!host.includes(":") && !/^\d+\./.test(host)) {
       try {
-        await Deno.resolveDns(host, "A", {
-          signal: AbortSignal.timeout(timeoutMs),
-        });
+        // Dial what the probed resolver answered: re-resolving through the
+        // system resolver would fail at the loopback stub every time.
+        const [address] = await resolve(host);
+        if (!address) return "not_checked";
+        target = address;
       } catch {
         return "not_checked";
       }
     }
-    return await probeDirectTcp(host, 443, timeoutMs);
+    return await probeDirectTcp(target, 443, timeoutMs);
   };
   const hostTargets = (env("VIBE_EGRESS_HOST_TARGETS") ?? "").split(",").filter(
     Boolean,
@@ -127,9 +151,7 @@ export async function appleRawProbes(
       } catch { /* Already closed by the deadline. */ }
     }
   };
-  const dns = Deno.resolveDns("api.github.com", "A", {
-    signal: AbortSignal.timeout(timeoutMs),
-  })
+  const dns = resolve("api.github.com")
     .then(
       (answers) => answers.length ? "connected" : "not_checked",
       () => "not_checked",

@@ -224,11 +224,26 @@ export function appleLaunch(
     );
   const run = rewrite(plan.run);
   const proxyRun = rewrite(plan.proxyRun);
+  // The internal network has no reachable DNS, and Deno's fetch resolves the
+  // target before it uses HTTPS_PROXY: each new host waited ~10s for that
+  // lookup to time out. A resolver at 127.0.0.1 is refused at once, so the
+  // request goes straight to the proxy, which resolves and checks the host.
+  // The gateway resolver is still there for any process that asks it by
+  // address, so the startup self-check queries it through
+  // VIBE_EGRESS_DNS_SERVER (see `appleRawProbes`) and still records it.
+  const internalRun = (args: string[]) => {
+    const at = args.findIndex((arg, i) =>
+      arg === "--network" && args[i + 1] === network
+    );
+    return at === -1
+      ? args
+      : [...args.slice(0, at + 2), "--dns", "127.0.0.1", ...args.slice(at + 2)];
+  };
   return {
     network,
     proxy,
     mode,
-    run: mode === "internal" ? run : withoutNetwork(run),
+    run: mode === "internal" ? internalRun(run) : withoutNetwork(run),
     sidecar: {
       runtime: plan.runtime,
       egressEnforced: false,
@@ -292,6 +307,37 @@ export function appleWorkerArgs(
     else result.splice(1, 0, "--env", `${key}=${value}`);
   }
   return result;
+}
+
+/**
+ * The worker's startup environment on an Apple launch (Issue #4491 review).
+ *
+ * Internal mode runs the worker with `--dns 127.0.0.1`, so the system resolver
+ * fails at once and a proxied fetch is not held up. That also hides the
+ * internal network's own resolver from the self-check, which therefore asks
+ * it by address: `VIBE_EGRESS_DNS_SERVER` carries the internal network's
+ * gateway. Advisory mode keeps the default network and its DNS, so it gets no
+ * such variable. Keys keep the order `appleWorkerArgs` was always given.
+ */
+export function appleWorkerEnv(
+  mode: AppleEgressMode,
+  attachment: { address: string; gateway: string },
+  hostEnv: Record<string, string>,
+  runtimeEnv: Record<string, string>,
+): Record<string, string> {
+  const proxyUrl = `http://${attachment.address}:3128`;
+  return {
+    ...hostEnv,
+    ...(mode === "internal"
+      ? { VIBE_EGRESS_DNS_SERVER: attachment.gateway }
+      : {}),
+    VIBE_APPLE_EGRESS_MODE: mode,
+    ...runtimeEnv,
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+  };
 }
 
 export interface AppleOwnership {
