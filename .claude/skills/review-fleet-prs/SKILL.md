@@ -247,6 +247,11 @@ fields as follows:
   > `gh api repos/{repo}/contents/<path>?ref={baseRef}`, and search the repo's
   > open issues with `gh issue list -R {repo} --search "<words> in:title"`.
 
+  In a headless round started by `scripts/run.sh`, the round's prompt also
+  carries a "Shell commands you may run" paragraph. Add it, verbatim, after
+  this blockquote: the reviewer runs under the round's `--allowedTools`, so
+  it is refused the same commands (and WebFetch) the round is.
+
 - `{{NO_TEST_ADDED_NOTE}}` — when the entry's `noTestAdded` is true: "The PR
   changes code but adds no test: decide whether existing tests cover the
   supported behaviour or a new one is warranted."; otherwise empty.
