@@ -2,6 +2,7 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   appleControlFailures,
   appleControls,
+  appleRawProbes,
   compareReachability,
 } from "../lib/apple_egress_controls.ts";
 import {
@@ -12,6 +13,7 @@ import {
   appleProxyAddress,
   appleStateDirectory,
   appleWorkerArgs,
+  appleWorkerEnv,
   retryAppleEgress,
   staleAppleOwnership,
 } from "../lib/apple_egress_launch.ts";
@@ -194,6 +196,165 @@ Deno.test("Apple attaches networks at creation and resolves the selected interfa
   assertEquals(
     advisory.sidecar.proxyRunArgs.filter((arg) => arg === "--network").length,
     1,
+  );
+});
+
+Deno.test("Apple internal mode gives the worker a resolver that fails at once, so a proxied fetch is not held up", () => {
+  // The internal network has no reachable DNS. Deno's fetch resolves the
+  // target before it uses HTTPS_PROXY, so each new host waited ~10s for that
+  // lookup to time out, and every Claude budget probe (10s limit) timed out.
+  const launch = fixture();
+  const at = launch.run.indexOf("--dns");
+  assert(at > 0, "internal mode sets --dns");
+  assertEquals(launch.run[at + 1], "127.0.0.1");
+  assert(at < launch.run.indexOf("vibe:test"), "--dns precedes the image");
+  // Advisory mode keeps the default network and its DNS.
+  assertEquals(fixture("advisory").run.includes("--dns"), false);
+});
+
+Deno.test("Apple internal worker args name the internal network's gateway as the self-check resolver; advisory args do not", () => {
+  // The default and internal gateways differ, so passing the wrong attachment
+  // field (address, or the default network's gateway) fails here (#4491 review).
+  const inspect = (network: string) =>
+    JSON.stringify([{
+      status: {
+        networks: [{
+          network: "default",
+          ipv4Address: "192.168.64.2/24",
+          ipv4Gateway: "192.168.64.1",
+        }, {
+          network,
+          ipv4Address: "192.168.128.2/24",
+          ipv4Gateway: "192.168.128.1",
+        }],
+      },
+    }]);
+  const runtimeEnv = { VIBE_RUNTIME_VERSION: "0.6.0" };
+  const internal = fixture();
+  const internalArgs = appleWorkerArgs(
+    internal.run,
+    appleWorkerEnv(
+      "internal",
+      appleProxyAddress(inspect(internal.network), internal.network),
+      {},
+      runtimeEnv,
+    ),
+  );
+  const dns = internalArgs.filter((arg) =>
+    arg.startsWith("VIBE_EGRESS_DNS_SERVER=")
+  );
+  assertEquals(dns, ["VIBE_EGRESS_DNS_SERVER=192.168.128.1"]);
+  assert(internalArgs.includes("HTTPS_PROXY=http://192.168.128.2:3128"));
+  assert(internalArgs.includes("VIBE_APPLE_EGRESS_MODE=internal"));
+  assert(internalArgs.includes("VIBE_RUNTIME_VERSION=0.6.0"));
+
+  const advisory = fixture("advisory");
+  const advisoryArgs = appleWorkerArgs(
+    advisory.run,
+    appleWorkerEnv(
+      "advisory",
+      { address: "192.168.64.3", gateway: "192.168.64.1" },
+      {},
+      runtimeEnv,
+    ),
+  );
+  assertEquals(
+    advisoryArgs.some((arg) => arg.startsWith("VIBE_EGRESS_DNS_SERVER=")),
+    false,
+  );
+  assert(advisoryArgs.includes("VIBE_APPLE_EGRESS_MODE=advisory"));
+});
+
+/** Fake the network: record each lookup and dial, answer from `answers`. */
+async function withFakeNetwork<T>(
+  answers: string[] | Error,
+  body: (
+    lookups: { host: string; options?: Deno.ResolveDnsOptions }[],
+    dials: string[],
+  ) => Promise<T>,
+): Promise<T> {
+  const lookups: { host: string; options?: Deno.ResolveDnsOptions }[] = [];
+  const dials: string[] = [];
+  const resolveDns = Deno.resolveDns;
+  const connect = Deno.connect;
+  Object.assign(Deno, {
+    resolveDns: (
+      host: string,
+      _type: string,
+      options?: Deno.ResolveDnsOptions,
+    ) => {
+      lookups.push({ host, options });
+      return answers instanceof Error
+        ? Promise.reject(answers)
+        : Promise.resolve(answers);
+    },
+    connect: (options: { hostname?: string }) => {
+      dials.push(options.hostname ?? "");
+      return Promise.resolve({ close() {} });
+    },
+  });
+  try {
+    return await body(lookups, dials);
+  } finally {
+    Object.assign(Deno, { resolveDns, connect });
+  }
+}
+
+Deno.test("Apple internal self-check asks the internal network's gateway resolver, not the loopback system one", async () => {
+  // `--dns 127.0.0.1` makes the system resolver fail at once; the probes must
+  // still see whether the gateway resolver answers, or DNS and hostname
+  // escapes read as unknown on every launch.
+  const env = (name: string) =>
+    name === "VIBE_EGRESS_DNS_SERVER" ? "192.168.128.1" : undefined;
+  const observed = await withFakeNetwork(
+    ["203.0.113.7"],
+    async (lookups, dials) => {
+      const result = await appleRawProbes(env, 50);
+      assertEquals(lookups.map((lookup) => lookup.host), [
+        "api.github.com",
+        "api.github.com",
+      ]);
+      for (const lookup of lookups) {
+        assertEquals(lookup.options?.nameServer, {
+          ipAddr: "192.168.128.1",
+          port: 53,
+        });
+      }
+      // The hostname probe dials what that resolver answered.
+      assert(dials.includes("203.0.113.7"), `dials: ${dials.join(",")}`);
+      return result;
+    },
+  );
+  assertEquals(observed.dns, "connected");
+  assertEquals(observed.hostname, "connected");
+  assertEquals(
+    appleControlFailures(
+      "internal",
+      appleControls(good, observed, open),
+    ).includes("directHostname=reachable"),
+    true,
+  );
+});
+
+Deno.test("Apple self-check without a named resolver uses the system one, and a refusing resolver stays unknown", async () => {
+  await withFakeNetwork(new Error("connection refused"), async (lookups) => {
+    const observed = await appleRawProbes(() => undefined, 50);
+    assertEquals(lookups.length, 2);
+    assertEquals(lookups.every((lookup) => !lookup.options?.nameServer), true);
+    assertEquals(observed.dns, "not_checked");
+    assertEquals(observed.hostname, "not_checked");
+  });
+});
+
+Deno.test("Apple self-check refuses a malformed resolver address rather than measuring the wrong one", async () => {
+  await assertRejects(
+    () =>
+      appleRawProbes(
+        (name) => name === "VIBE_EGRESS_DNS_SERVER" ? "gateway" : undefined,
+        50,
+      ),
+    Error,
+    "VIBE_EGRESS_DNS_SERVER must be an IPv4 address",
   );
 });
 
