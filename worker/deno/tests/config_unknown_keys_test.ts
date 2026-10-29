@@ -14,6 +14,12 @@ import {
 } from "../lib/config_unknown_keys.ts";
 import { loadConfig } from "../lib/config.ts";
 import { validateConfigFileJson } from "../lib/validation.ts";
+import {
+  HOST_CACHE_RECLAIM_ENABLED_KEY,
+  HOST_CACHE_RECLAIM_HEADROOM_KEY,
+  HOST_CACHE_RECLAIM_MIN_AGE_KEY,
+  HOST_CACHE_RECLAIM_ROOTS_KEY,
+} from "../lib/host_cache_reclaim.ts";
 
 // --- Known keys completeness ---
 
@@ -421,4 +427,16 @@ Deno.test("config_unknown_keys - loadConfig defaults external orchestration to o
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }
+});
+
+Deno.test("the host cache reclaim keys are known config keys (Issue #4498, #4500 review)", () => {
+  // Built from the reclaim's own exported key names, so a renamed or added
+  // key that is not registered in KNOWN_CONFIG_KEYS fails here.
+  const record = {
+    [HOST_CACHE_RECLAIM_ENABLED_KEY]: false,
+    [HOST_CACHE_RECLAIM_MIN_AGE_KEY]: 48,
+    [HOST_CACHE_RECLAIM_HEADROOM_KEY]: 20,
+    [HOST_CACHE_RECLAIM_ROOTS_KEY]: ["/Volumes/scratch"],
+  };
+  assertEquals(detectUnknownConfigKeys(record), []);
 });
