@@ -20,18 +20,13 @@ import type { WorkerConfig } from "../types.ts";
 const ALICE = { login: "alice" };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function createTestCache(): IssueCache {
-  const dir = Deno.makeTempDirSync({ prefix: "label-window-test-" });
-  return new IssueCache(dir, 600);
-}
-
-function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
+function makeConfig(workDir: string): WorkerConfig {
   const base = buildDefaultWorkerConfig();
   return {
     ...base,
     // Issue #3874: the content-approval store must resolve from workDir, or
     // the integrity gate fails closed and blocks every candidate.
-    workDir: Deno.makeTempDirSync({ prefix: "label-window-workdir-" }),
+    workDir,
     repos: ["owner/repo-a"],
     issueLabels: ["help-wanted"],
     allowedAuthors: ["alice"],
@@ -45,8 +40,32 @@ function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     needsRevisionLabel: "needs-revision",
     needsHumanLabel: "needs-human",
     shuffleRepos: false,
-    ...overrides,
   };
+}
+
+/**
+ * Run `findOldestIssue` against `mockGh` inside one private temp directory,
+ * removed when the scan finishes. The cache and the work directory both live
+ * under it, and so does the `<workDir>-approval-state` sibling the
+ * content-approval store creates next to the work directory.
+ */
+async function runScan(
+  mockGh: (args: string[]) => Promise<string>,
+): Promise<Awaited<ReturnType<typeof findOldestIssue>>> {
+  const root = await Deno.makeTempDir({ prefix: "label-window-test-" });
+  try {
+    const workDir = `${root}/work`;
+    await Deno.mkdir(workDir);
+    return await findOldestIssue(makeConfig(workDir), {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: new IssueCache(`${root}/cache`, 600),
+      // Deterministic selection within the chosen tier.
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 }
 
 interface FixtureIssue {
@@ -156,13 +175,7 @@ Deno.test(
       }));
     const mockGh = createMockGh([blocker, ...oldest, ...newest]);
 
-    const result = await findOldestIssue(makeConfig(), {
-      githubUser: "bot",
-      ghCommandFn: mockGh,
-      cache: createTestCache(),
-      // Deterministic selection within the chosen tier.
-      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
-    });
+    const result = await runScan(mockGh);
 
     assertEquals(result.found, true);
     const selectedOneOfOldest = [101, 102, 103].some((number) =>
@@ -188,12 +201,7 @@ Deno.test(
       }));
     const mockGh = createMockGh(plain);
 
-    const result = await findOldestIssue(makeConfig(), {
-      githubUser: "bot",
-      ghCommandFn: mockGh,
-      cache: createTestCache(),
-      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
-    });
+    const result = await runScan(mockGh);
 
     assertEquals(result.found, true);
     assertEquals(result.output.startsWith("owner/repo-a|1|"), true);
@@ -230,12 +238,7 @@ for (
         }));
       const mockGh = createMockGh(plain, label);
 
-      const result = await findOldestIssue(makeConfig(), {
-        githubUser: "bot",
-        ghCommandFn: mockGh,
-        cache: createTestCache(),
-        selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
-      });
+      const result = await runScan(mockGh);
 
       assertEquals(result.found, true, result.output);
       assertEquals(result.output.startsWith("owner/repo-a|1|"), true);
