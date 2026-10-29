@@ -227,8 +227,11 @@ const TOOL_RUNTIME: RunFailureClassification = {
 /**
  * A refused repository-admin setting (Issue #4442).
  *
- * The category stays `internal_error`, but the refusal is a repository or
- * credential condition, so it is never auto-filed as a `worker-crash`.
+ * The refusal carries category `unknown` (Issue #4461), so it takes the
+ * failed-once ladder with its escalating cooldown rather than the flat
+ * transient retry an `internal_error` earns. The `repo-config` class is what
+ * keeps the run-failure filer from auto-filing it as a `worker-crash`: it is a
+ * repository or credential condition, not a worker defect.
  */
 export const REPO_ADMIN_REFUSED: RunFailureClassification = {
   fixability: "not_code_fixable",

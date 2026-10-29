@@ -49,8 +49,13 @@ the five changed files exit 0.
 Docs sweep: `docs/USAGE.md` (the "What is never escalated" paragraph) already
 says a repository-admin finding is "retried on the `failed-once` ladder when the
 token cannot", which is now true; no doc change was needed. Doc comments
-updated: `RECORD_ONLY_FAILURE_CLASSES` in `lib/coding_failure_ladder.ts` and the
-comment above the `admin_only_repair` block in `lib/issue_worker.ts`.
+updated: `RECORD_ONLY_FAILURE_CLASSES` in `lib/coding_failure_ladder.ts`, the
+comment above the `admin_only_repair` block in `lib/issue_worker.ts`, and the
+`REPO_ADMIN_REFUSED` doc comment in `lib/run_outcome_classifier.ts` (it said the
+category stays `internal_error`; PR #4479 review). Grepped `REPO_ADMIN_REFUSED`
+and `stays \`internal_error\``: the remaining hit in `lib/host_fault.ts` is about
+another category and is still true. The `run_failure_issue_test.ts` test title
+no longer says the refused fixture is `internal_error`.
 
 ## Test Plan
 
