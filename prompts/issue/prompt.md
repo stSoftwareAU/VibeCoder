@@ -956,9 +956,10 @@ one is broken:
   is not evidence.
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
   is a failure to surface, not a pass. The reason says what is left to do,
-  because a `partial` or `missing` entry blocks the PR (Issue #4146): the worker
-  sends you back in this run with those criteria named, and you finish them.
-  No follow-up issue is filed for the rest.
+  because the worker tells you once in this run which criteria are `partial`
+  or `missing` (Issue #4146), and you finish them. A criterion still unmet
+  after that does not stop the PR: it is raised anyway, with that criterion
+  named on it (Issue #4234). No follow-up issue is filed for the rest.
 - **Pending merge verification stays on this PR.** Record required CI/quality
   execution and the routine clean code review under `## Merge verification`
   as pending until observed. Waiting for those checks alone is not unfinished

@@ -4,9 +4,10 @@
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
  * sections — evidence, milestone, bump note, footer). A sync never files an
- * issue: a criterion still `partial` or `missing` blocks the PR at completion
- * instead (Issue #4146), so the degraded-run and partial-delivery sections and
- * the follow-up filing they carried (Issues #3350, #3506, #3678) are gone.
+ * issue: a criterion still `partial` or `missing` is named on the PR at
+ * completion instead (Issues #4146, #4234), so the degraded-run and
+ * partial-delivery sections and the follow-up filing they carried (Issues
+ * #3350, #3506, #3678) are gone.
  * Before Issue #3089, a review-fix run that
  * rewrote that summary file and pushed new commits never touched the PR body
  * again, so a reviewer reading the description kept seeing the original summary

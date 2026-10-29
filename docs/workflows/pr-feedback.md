@@ -263,7 +263,7 @@ clone it does not run in the maintenance lane. The module is
 `reconcilePrBodyDigests`.
 
 A re-sync never files a follow-up issue (Issue #4146): a criterion still
-`partial` or `missing` blocks the PR at completion instead.
+`partial` or `missing` is named on the PR at completion instead (Issue #4234).
 
 Writing `Refs #N` in the summary does not stop the rebuilt description from
 closing the issue, since the rebuild appends `Closes #N` unless a closing
