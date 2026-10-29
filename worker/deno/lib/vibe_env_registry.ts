@@ -387,6 +387,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     note:
       "non-secret random banner identifying this launch controlled test endpoint",
   },
+  VIBE_EGRESS_DNS_SERVER: {
+    role: "launch_plumbing",
+    note:
+      "the Apple internal network's gateway resolver, which the startup DNS and hostname probes query directly because the worker's own resolver is 127.0.0.1",
+  },
   VIBE_EGRESS_NEGATIVE_CONTROL: {
     role: "launch_plumbing",
     note: "observations from a credential-free default-network probe container",
