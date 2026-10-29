@@ -197,6 +197,19 @@ Deno.test("Apple attaches networks at creation and resolves the selected interfa
   );
 });
 
+Deno.test("Apple internal mode gives the worker a resolver that fails at once, so a proxied fetch is not held up", () => {
+  // The internal network has no reachable DNS. Deno's fetch resolves the
+  // target before it uses HTTPS_PROXY, so each new host waited ~10s for that
+  // lookup to time out, and every Claude budget probe (10s limit) timed out.
+  const launch = fixture();
+  const at = launch.run.indexOf("--dns");
+  assert(at > 0, "internal mode sets --dns");
+  assertEquals(launch.run[at + 1], "127.0.0.1");
+  assert(at < launch.run.indexOf("vibe:test"), "--dns precedes the image");
+  // Advisory mode keeps the default network and its DNS.
+  assertEquals(fixture("advisory").run.includes("--dns"), false);
+});
+
 Deno.test("Apple lifecycle never deletes resources before creating its own and skips Docker connect", async () => {
   const launch = fixture();
   const calls: string[][] = [];

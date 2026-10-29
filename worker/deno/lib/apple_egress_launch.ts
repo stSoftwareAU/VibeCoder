@@ -224,11 +224,23 @@ export function appleLaunch(
     );
   const run = rewrite(plan.run);
   const proxyRun = rewrite(plan.proxyRun);
+  // The internal network has no reachable DNS, and Deno's fetch resolves the
+  // target before it uses HTTPS_PROXY: each new host waited ~10s for that
+  // lookup to time out. A resolver at 127.0.0.1 is refused at once, so the
+  // request goes straight to the proxy, which resolves and checks the host.
+  const internalRun = (args: string[]) => {
+    const at = args.findIndex((arg, i) =>
+      arg === "--network" && args[i + 1] === network
+    );
+    return at === -1
+      ? args
+      : [...args.slice(0, at + 2), "--dns", "127.0.0.1", ...args.slice(at + 2)];
+  };
   return {
     network,
     proxy,
     mode,
-    run: mode === "internal" ? run : withoutNetwork(run),
+    run: mode === "internal" ? internalRun(run) : withoutNetwork(run),
     sidecar: {
       runtime: plan.runtime,
       egressEnforced: false,
