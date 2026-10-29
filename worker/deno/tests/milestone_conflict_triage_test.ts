@@ -24,6 +24,7 @@ import {
   parseFixReferences,
   parseStampedIssues,
   planConflictResolution,
+  SYNC_UNCHECKED_NOTE,
 } from "../lib/milestone_conflict_triage.ts";
 
 function file(over: Partial<ConflictedFile> = {}): ConflictedFile {
@@ -331,6 +332,33 @@ Deno.test("buildResolutionCommitMessage - records the reasoning for every file i
   assertStringIncludes(message, "lib/spawn_runner.ts");
   assertStringIncludes(message, "superset");
   assertStringIncludes(message, "Issue #1559");
+});
+
+Deno.test("buildResolutionCommitMessage - names every note that means a check did not run, never claiming it passed (Issue #4441)", () => {
+  const message = buildResolutionCommitMessage({
+    defaultBranch: "main",
+    milestoneBranch: "milestone/4441",
+    plan: planConflictResolution([
+      file({
+        path: "lib/a.ts",
+        ours: "const a = 1;\n",
+        theirs: "const a = 1;\nconst b = 2;\n",
+      }),
+    ]),
+  });
+  const notes = Object.values(SYNC_UNCHECKED_NOTE);
+  assertEquals(notes.length, 4);
+  for (const note of notes) {
+    assertStringIncludes(message, `${note} means`);
+  }
+  assertStringIncludes(
+    message,
+    `unless the sync's note says ${SYNC_UNCHECKED_NOTE.ungated}, ` +
+      `${SYNC_UNCHECKED_NOTE.checkLeftToCi}, ` +
+      `${SYNC_UNCHECKED_NOTE.suiteLeftToCi} or ` +
+      `${SYNC_UNCHECKED_NOTE.cargoSkipped}.`,
+  );
+  assertStringIncludes(message, "None of them means the check it names passed");
 });
 
 Deno.test("buildConflictAnalysisComment - carries both sides' exports, test names and the difference", () => {

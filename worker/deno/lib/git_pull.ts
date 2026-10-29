@@ -59,6 +59,7 @@ import {
   describeDecisionRung,
   MilestoneConflictEscalation,
   planConflictResolution,
+  SYNC_UNCHECKED_NOTE,
 } from "./milestone_conflict_triage.ts";
 import {
   climbConflictLadder,
@@ -469,14 +470,17 @@ async function gateThenPushMilestoneBranch(
   // A passed tree whose Deno task could not fetch its remote modules (Issue
   // #4422) is pushed, but that task did not run: the note says so, and the
   // detail already carries any cargo note.
+  // The labels are SYNC_UNCHECKED_NOTE's, which the resolution commit message
+  // names one by one (Issue #4441).
+  const n = SYNC_UNCHECKED_NOTE;
   const gateNote = outcome.status === "skipped"
-    ? `UNGATED: ${outcome.detail} (Issue #974) — `
+    ? `${n.ungated}: ${outcome.detail} (Issue #974) — `
     : outcome.checkLeftToCi
-    ? `CHECK LEFT TO CI: ${outcome.detail} (Issue #4441) — `
+    ? `${n.checkLeftToCi}: ${outcome.detail} (Issue #4441) — `
     : outcome.suiteLeftToCi
-    ? `TESTS LEFT TO CI: ${outcome.detail} (Issue #4422) — `
+    ? `${n.suiteLeftToCi}: ${outcome.detail} (Issue #4422) — `
     : outcome.cargoSkipped
-    ? `CARGO SKIPPED: ${outcome.detail} (Issue #4326) — `
+    ? `${n.cargoSkipped}: ${outcome.detail} (Issue #4326) — `
     : "";
   return { ok: true, value: `${gateNote}${pushNote.value}` };
 }
@@ -509,7 +513,8 @@ async function readRef(
  * passed carries a `CARGO SKIPPED:` note, so the report does not claim the
  * cargo half passed. A resolved tree whose Deno task could not fetch its
  * remote modules (Issue #4422) carries a `TESTS LEFT TO CI:` note naming that
- * task, so the report does not claim it passed. A resolved tree whose Issue
+ * task (or a `CHECK LEFT TO CI:` note whose detail names it, when the type
+ * check was left to CI too), so the report does not claim it passed. A resolved tree whose Issue
  * #974 type check could not fetch its remote modules carries a
  * `CHECK LEFT TO CI:` note (Issue #4441) for the same reason.
  *

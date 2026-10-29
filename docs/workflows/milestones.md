@@ -380,7 +380,7 @@ flowchart TD
     G -- yes --> X["Abort the merge — nothing pushed —<br/>escalate naming the failed rung, with both<br/>sides' exports, test names and the difference"]
     G -- no --> V["Commit each file's rung, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
     V -- green --> P["Push"]
-    V -- "unreachable module host (Issue #4422)" --> PU["Push, suiteLeftToCi names the task"]
+    V -- "unreachable module host (Issues #4422, #4441)" --> PU["Push, suiteLeftToCi or checkLeftToCi<br/>names what did not run"]
     V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate with both halves<br/>(cargo-only merge-only cycle, Issue #4326:<br/>pushed UNGATED, CI builds it;<br/>a mixed tree's red Deno check still rolls back)"]
 ```
 
@@ -489,9 +489,12 @@ cause such as `error sending request for url`, `unsuccessful tunnel` or
 task still runs, so a real failure elsewhere still refuses the resolution. A
 404, a certificate, a checksum or a type error is an ordinary failure and is
 refused. `quality.sh` is never substituted for an unreachable unit suite. The
-resolution lands with the outcome `suiteLeftToCi`, naming the task and the
-cause, and the report says that task did not run and that the milestone PR's
-CI runs it. A Deno type check that cannot fetch its remote modules is left to
+resolution lands with the outcome `suiteLeftToCi`. The push note is `TESTS LEFT
+TO CI:`, naming the task and the cause, unless the type check was also left to
+CI: the note then starts `CHECK LEFT TO CI:` and its detail names the task too.
+`gateThenPushMilestoneBranch` picks the first label that applies, in the order
+`UNGATED:`, `CHECK LEFT TO CI:`, `TESTS LEFT TO CI:`, `CARGO SKIPPED:`. The
+report says that task did not run and that the milestone PR's CI runs it. A Deno type check that cannot fetch its remote modules is left to
 CI only when another project's check passed: the outcome is then
 `checkLeftToCi`, the push note starts `CHECK LEFT TO CI:`, and the report says
 the type check did not fully run (Issue #4444). A tree where nothing else was
