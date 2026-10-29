@@ -26,9 +26,11 @@
  *   passing token ranks ahead of every failing one.
  * - **Passing tokens are ordered by remaining budget per hour** on the
  *   seven-day window: its remaining share divided by the hours until it
- *   resets. Inside a band, every token with a seven-day window ranks ahead of
- *   every token without one (Issue #4503, restoring #1731), because a rate on
- *   a five-hour window is not comparable with a seven-day rate. A response
+ *   resets. Among tokens that passed the five-hour gate, above or below the
+ *   floor, every token with a seven-day window ranks ahead of every token
+ *   without one (Issue #4503, restoring #1731), because a rate on a five-hour
+ *   window is not comparable with a seven-day rate. Gate failures are still
+ *   ordered by soonest five-hour reset, whatever their telemetry. A response
  *   that reported no seven-day window is ranked only among the tokens that
  *   also lack one, on the window it did report. It is never dropped and it is
  *   not a gate: if every candidate lacks a seven-day window, one is still

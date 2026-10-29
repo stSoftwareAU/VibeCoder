@@ -1147,10 +1147,13 @@ The candidates are ordered:
    are one question. A response that reported
    **no** five-hour window has no gate to fail, so it passes.
 3. **The highest remaining budget per hour wins**, measured on the seven-day
-   window: its remaining share divided by the hours until it resets. Within a
-   band, every token with a seven-day window ranks ahead of every token without
-   one (Issue #4503, restoring #1731), because a rate on a five-hour window is
-   not comparable with a seven-day rate. A response that reported no seven-day
+   window: its remaining share divided by the hours until it resets. Among
+   tokens that passed the five-hour gate, whether above or below the 10% floor
+   in rule 4, every token with a seven-day window ranks ahead of every token
+   without one (Issue #4503, restoring #1731), because a rate on a five-hour
+   window is not comparable with a seven-day rate. Tokens that failed the gate
+   are not reordered by this: they are still ordered by soonest five-hour
+   reset (rule 5), whatever their seven-day telemetry. A response that reported no seven-day
    window is never dropped and is not a gate: it is ordered only among the
    tokens that also lack one, on the window it did report. Comparing
    shares per hour rather than absolute totals is what makes subscriptions
@@ -1244,8 +1247,10 @@ both windows — a window the response did not report reads `absent` — plus
 window the response reported, when it carried no seven-day one), and
 `gate=pass|fail` for the five-hour gate. A `rate=` on a line whose response
 reported no seven-day window is the rate of that other window, so it is **not**
-comparable with a seven-day rate: such a token ranks behind every token that
-reported one in the same band (Issue #4503). A `selected` line for a token that
+comparable with a seven-day rate: among tokens that passed the five-hour gate,
+such a token ranks behind every token that reported one (Issue #4503), while
+tokens with `gate=fail` are still ordered by soonest five-hour reset, whatever
+their seven-day telemetry. A `selected` line for a token that
 failed the gate also carries the five-hour reset the choice was made on. Above, `provider` holds three times the share but
 `provider-2`'s 22% expires in eleven hours, so it is worth four times as much
 per hour and wins. The `[SECURITY]` prefix and the trailing `host=` field
@@ -1277,7 +1282,7 @@ carrying the credential. The last line names why the winner won:
 | `highest-remaining-per-hour` | The most remaining budget per hour of every candidate that passed the five-hour gate **and** holds at least 10% of its window, where a token with a seven-day window is preferred to one without, whatever the rates (Issue #4503). A token demoted by that floor can still show a higher rate — the floor is applied before the rate, not after it. Also shown when the runner-up holds an equal rate on a different window. |
 | `equal-remaining-per-hour-soonest-reset` | Level on budget per hour; won on the sooner reset. |
 | `tied-discovery-order` | Level on both rate and reset; won on discovery order. |
-| `low-seven-day-remaining-highest-rate` | Every candidate that passed the gate is under the 10% seven-day floor; the fastest-burning of them won. |
+| `low-seven-day-remaining-highest-rate` | Every candidate that passed the gate is under the 10% seven-day floor; the fastest-burning of them won, a token with a seven-day window ranking ahead of one without (Issue #4503). |
 | `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
 | `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
 

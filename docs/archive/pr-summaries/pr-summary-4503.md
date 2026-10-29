@@ -1,10 +1,13 @@
 ## Summary
 
 Claude token ranking no longer compares a five-hour rate with a seven-day rate.
-Inside a ranking band, every token whose probe reported a seven-day window now
-ranks ahead of every token that did not. Tokens without one are ordered only
-among themselves, on the window they reported. This re-applies the policy
-recorded in #1731, whose fix never reached main. Closes #4503.
+Among tokens that passed the five-hour gate (above or below the 10% floor),
+every token whose probe reported a seven-day window now ranks ahead of every
+token that did not. Tokens without one are ordered only among themselves, on the
+window they reported. Tokens that failed the gate are unchanged: they are still
+ordered by soonest five-hour reset, whatever their seven-day telemetry. This
+re-applies the policy recorded in #1731, whose fix never reached main. Closes
+#4503.
 
 Version bump: no `VERSION` change in this PR; the merged commit records the
 final version.
@@ -42,7 +45,7 @@ final version.
 ## Evidence
 
 Backend-only change; no UI files touched.
-`deno test --allow-all tests/claude_token_selection_test.ts`: 43 passed, 0
+`deno test --allow-all tests/claude_token_selection_test.ts`: 44 passed, 0
 failed. The credential-pool, pool-budget, token-isolation and week-pace suites:
 70 passed, 0 failed. `run_worker_test.ts`: 35 passed, 0 failed.
 
@@ -56,14 +59,19 @@ inherit the policy.
 - `worker/deno/tests/claude_token_selection_test.ts` gains table-driven cases
   `WEEKLY_TELEMETRY_CASES` (weekly beats weekless with a larger 5h rate; the
   issue's 95%-vs-90% scenario; two weekly tokens rank by rate; all weekless;
-  mixed four-credential pool; gate boundaries in both directions; sub-floor
-  weekly vs gate-passing weekless; unknown last), plus tests for deterministic
-  ties, a later snapshot restoring weekly ranking, `hasSevenDayTelemetry` flags,
-  and the reason for an equal rate on different windows.
+  mixed four-credential pool; gate boundaries in both directions; two gate
+  failures staying ordered by soonest five-hour reset whatever their telemetry;
+  sub-floor weekly vs gate-passing weekless; unknown last), plus tests for
+  deterministic ties, a later snapshot restoring weekly ranking,
+  `hasSevenDayTelemetry` flags, and the reason for an equal rate on different
+  windows.
 - Red checks: removing the comparator clause turned 6 tests red (37 passed, 6
   failed); removing the `winningReason` clause turned
   `weekly beats weekless with an equal rate on a different window, reason is not a tie (Issue #4503)`
-  red (42 passed, 1 failed). Both were restored.
+  red (42 passed, 1 failed). Both were restored. For the review round, moving
+  the telemetry step above the band-2 (gate failure) return turned
+  `gate failures stay ordered by soonest five-hour reset, whatever their seven-day telemetry (Issue #4503)`
+  red (43 passed, 1 failed); restored.
 - Removed from `worker/deno/tests/claude_token_selection_test.ts`:
   `known("provider-3", 0.44, NOW + 4 * HOUR, "five_hour")` in the test "ranking
   returns the token with the most remaining budget per hour of its own window

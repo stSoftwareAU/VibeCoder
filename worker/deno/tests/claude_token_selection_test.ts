@@ -591,6 +591,19 @@ const WEEKLY_TELEMETRY_CASES: readonly {
     reason: "highest-remaining-per-hour",
   },
   {
+    name:
+      "gate failures stay ordered by soonest five-hour reset, whatever their seven-day telemetry (Issue #4503)",
+    budgets: [
+      dual("weekly", [
+        fiveHour(0.10, NOW + 3 * HOUR),
+        sevenDay(0.8, NOW + 100 * HOUR),
+      ]),
+      known("weekless", 0.10, NOW + HOUR, "five_hour"),
+    ],
+    order: ["weekless", "weekly"],
+    reason: "five-hour-gate-failed-soonest-reset",
+  },
+  {
     name: "an unknown budget stays last behind a weekless token (Issue #4503)",
     budgets: [
       unknown("provider"),
