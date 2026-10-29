@@ -48,8 +48,53 @@ ROUND_TIMEOUT=${REVIEW_FLEET_PRS_ROUND_TIMEOUT:-3000}
 # timeout still claims: the lease is the smaller of the two (Issue #4398).
 MAX_CLAIM_TTL=7200
 LABEL="au.com.stsoftware.review-fleet-prs"
+# The shell commands a headless round may run, and the git subcommands that
+# only read (owner, 2026-10-29): without them about two commands a round were
+# refused (ls, mkdir, pipes into base64/head, git log), each costing the
+# reviewer a turn. The checkout is mounted read-only in any case. This is the
+# one list: round_bash_rules builds the round's --allowedTools Bash rules from
+# it and round_shell_paragraph the sentence the round and its reviewers are
+# told, so the two cannot drift apart (#4501 review).
+ROUND_SHELL_COMMANDS=(gh jq cat "deno run" ls mkdir cd base64 head tail wc sort
+  uniq cut tr grep diff which)
+ROUND_GIT_READ_SUBCOMMANDS=(log show diff grep blame cat-file rev-parse ls-files)
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+
+# A JSON array of the round's Bash(...) --allowedTools rules, one per entry
+# in ROUND_SHELL_COMMANDS and ROUND_GIT_READ_SUBCOMMANDS.
+round_bash_rules() {
+  local cmd
+  {
+    for cmd in "${ROUND_SHELL_COMMANDS[@]}"; do printf 'Bash(%s:*)\n' "$cmd"; done
+    for cmd in "${ROUND_GIT_READ_SUBCOMMANDS[@]}"; do
+      printf 'Bash(git %s:*)\n' "$cmd"
+    done
+  } | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+# "a, b, c": the words of its arguments joined for a sentence.
+round_join() {
+  local out="" word
+  for word in "$@"; do out="${out:+$out, }$word"; done
+  printf '%s' "$out"
+}
+
+# The allowed-commands paragraph for a round's prompt, built from the same
+# lists as round_bash_rules. The round passes it on to every reviewer it
+# launches: they run under the round's --allowedTools, so they are refused
+# exactly what the round is (#4501 review).
+round_shell_paragraph() {
+  cat <<PARAGRAPH
+Shell commands you may run: $(round_join "${ROUND_SHELL_COMMANDS[@]}"), and
+the read-only git subcommands ($(round_join "${ROUND_GIT_READ_SUBCOMMANDS[@]}")),
+run from the working directory without \`git -C\`. Any other command is
+refused, and a pipeline runs only when every command in it is on that list.
+WebFetch is refused too. Prefer \`gh api --jq\` and the Read tool. Every
+fleet-pr-reviewer agent you launch runs under these same rules: add this
+paragraph, verbatim, after the REVIEW_CONTEXT blockquote in its brief.
+PARAGRAPH
+}
 # A step's stderr goes to the log and the terminal, so its reason is seen.
 errors() { tee -a "$LOG" >&2; }
 # The last non-blank line of a captured stderr file: a one-line failure gist.
@@ -286,21 +331,13 @@ run_round() {
   # stream-json: the round's own result carries its per-model usage, which
   # price_round turns into each review's cost; the driver keeps the full
   # stream in the round's directory and logs only its readable lines.
-  # Read-only shell tools as well (owner, 2026-10-29): without them about two
-  # commands a round were refused (ls, mkdir, pipes into base64/head, git log),
-  # each costing the reviewer a turn. Only git subcommands that read are
-  # allowed; the checkout is mounted read-only in any case.
-  claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" '["--model",
+  # The read-only shell tools come from ROUND_SHELL_COMMANDS and
+  # ROUND_GIT_READ_SUBCOMMANDS, the same lists the prompt names.
+  claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" \
+    --argjson bash "$(round_bash_rules)" '["--model",
     "claude-opus-5-5", "--effort", "xhigh", "--output-format", "stream-json",
     "--verbose", "--allowedTools", "Agent",
-    "Read", "Grep", "Glob", $edit, "Bash(deno run:*)", "Bash(gh:*)",
-    "Bash(jq:*)", "Bash(cat:*)", "Bash(ls:*)", "Bash(mkdir:*)",
-    "Bash(cd:*)", "Bash(base64:*)", "Bash(head:*)", "Bash(tail:*)",
-    "Bash(wc:*)", "Bash(sort:*)", "Bash(uniq:*)", "Bash(cut:*)",
-    "Bash(tr:*)", "Bash(grep:*)", "Bash(diff:*)", "Bash(which:*)",
-    "Bash(git log:*)", "Bash(git show:*)", "Bash(git diff:*)",
-    "Bash(git grep:*)", "Bash(git blame:*)", "Bash(git cat-file:*)",
-    "Bash(git rev-parse:*)", "Bash(git ls-files:*)"]')
+    "Read", "Grep", "Glob", $edit] + $bash')
   perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
     "$ROUND_TIMEOUT" "$RUNTIME" "${ROUND_ARGS[@]}" review-round \
     --prompt-file "$C_DIR/prompt.md" --claude-args "$claude_args" \
@@ -652,12 +689,7 @@ and write its input files directly in $C_DIR (not a sub-directory: post.ts
 reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.
 
-Shell commands you may run: gh, jq, cat, deno run, ls, mkdir, cd, base64,
-head, tail, wc, sort, uniq, cut, tr, grep, diff, which, and the read-only git
-subcommands (log, show, diff, grep, blame, cat-file, rev-parse, ls-files),
-run from the working directory without \`git -C\`. Any other command is
-refused, and a pipeline runs only when every command in it is on that list.
-Prefer \`gh api --jq\` and the Read tool.
+$(round_shell_paragraph)
 PROMPT
   log "$key: round started: $dir"
   launch "$key" "$dir" review
