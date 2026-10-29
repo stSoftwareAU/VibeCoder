@@ -49,5 +49,4 @@ Version bump: no `VERSION` change; docs, prompts and one test only.
 - Red check: re-inserting "and record in the Test Plan that each pinned phrase is absent from the base section" into `prompts/pr_feedback/prompt.md` makes the pr_feedback test fail at the `assertFalse`; restored, 9 passed. The coding-guidelines and issue-prompt `assertFalse` lines were not individually red-checked.
 - `deno task test:unit tests/drift_pins_on_base_3193_test.ts tests/coding_guidelines_twin_drift_test.ts`: passed. `deno fmt --check` and `deno lint` on the test file: passed.
 - Twin copies: `CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md` both changed.
-- Full `./quality.sh` gate: not run in this run; CI runs it.
-  <!-- vibe-quality-gate-skipped reason="run budget spent on targeted checks; CI runs the full gate" -->
+- Full `./quality.sh` on the final head: markdownlint, mermaid, semgrep, deno lint, type check and fmt passed. `deno tests` failed on 3 tests unrelated to this change, in files the diff does not touch: `completion_phase_repo_formatters_test.ts` (2, "formatter should commit the Rust fix") and `pr_maintenance_command_test.ts:344` (1, merge-queue rules read). The parallel pass stopped there, so the serial pass did not run. I did not confirm these fail on the base branch.
