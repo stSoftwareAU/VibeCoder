@@ -353,6 +353,15 @@ help, and uses the dialect verified on Apple CLI 1.2.2 and macOS 26 or later:
 Custom-network bare-name DNS is unavailable, so the worker receives the
 proxy's inspected internal IPv4 address. No proxy port is published.
 
+In internal mode the worker also gets `run --dns 127.0.0.1`. The internal
+network's resolver does not answer, and Deno's `fetch` resolves the target
+before it uses `HTTPS_PROXY`, so each new host waited about 10 seconds for
+that lookup to time out. A loopback resolver is refused at once and the
+request goes straight to the proxy, which resolves and checks the host. This
+only changes the worker's default resolver: a process that asks the internal
+network's gateway resolver by address still reaches it, so the flag is not a
+DNS control and hides nothing from the self-check below.
+
 `VIBE_APPLE_EGRESS_MODE=auto` is the default. It selects `internal` when the
 measured CLI/macOS support that dialect, otherwise deliberately selects
 `advisory` and records the missing capability. `internal` explicitly refuses
@@ -361,9 +370,15 @@ without promising direct-egress restrictions. A failed setup never changes
 its selected mode or launches the worker on an unrestricted fallback.
 
 Before claims, the **actual worker** runs the shared CONNECT allow/deny checks
-and direct IPv4, IPv6, hostname, DNS and controlled host-listener probes. A
+and direct IPv4, IPv6, hostname, DNS and controlled host-listener probes. In
+internal mode its DNS and hostname probes ask the internal network's gateway
+resolver directly: the supervisor passes the gateway address it inspected as
+`VIBE_EGRESS_DNS_SERVER`, and the hostname probe dials the address that
+resolver returned. So `dns` and `directHostname` measure what any process in
+the worker could reach, not the loopback stub. A
 separate disposable default-network container runs the same direct probes as
-a negative control, with no agent, mounts or credentials. A failed connection
+a negative control, with no agent, mounts or credentials, using its own
+system resolver. A failed connection
 is called blocked only when the matching negative control connected. Missing
 IPv6, DNS failures, unavailable probes and untested controls remain unknown.
 The listener's random banner proves a host service really exists; a closed

@@ -228,6 +228,9 @@ export function appleLaunch(
   // target before it uses HTTPS_PROXY: each new host waited ~10s for that
   // lookup to time out. A resolver at 127.0.0.1 is refused at once, so the
   // request goes straight to the proxy, which resolves and checks the host.
+  // The gateway resolver is still there for any process that asks it by
+  // address, so the startup self-check queries it through
+  // VIBE_EGRESS_DNS_SERVER (see `appleRawProbes`) and still records it.
   const internalRun = (args: string[]) => {
     const at = args.findIndex((arg, i) =>
       arg === "--network" && args[i + 1] === network

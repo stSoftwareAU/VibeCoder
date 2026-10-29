@@ -287,6 +287,11 @@ try {
       const proxyUrl = `http://${attachment.address}:3128`;
       const runArgs = appleWorkerArgs(launch.run, {
         ...hostEnv,
+        // `--dns 127.0.0.1` hides the internal network's resolver from
+        // ordinary lookups; the self-check probes it here by address.
+        ...(mode === "internal"
+          ? { VIBE_EGRESS_DNS_SERVER: attachment.gateway }
+          : {}),
         VIBE_APPLE_EGRESS_MODE: mode,
         VIBE_RUNTIME_VERSION: caps.version,
         VIBE_EGRESS_MACOS_VERSION: caps.macOS,
