@@ -401,8 +401,7 @@ earns its place by meeting all four conditions:
    section already held and exits 1 when there is one. `<doc>` is relative to
    the repo root (`prompts/issue/prompt.md`, not `../../prompts/...`); a path
    it cannot resolve exits 2 naming the path, and a doc the base never had
-   prints one `doc not on base` line. Record the result for every pinned
-   phrase in the PR's Test Plan.
+   prints one `doc not on base` line.
 
 **Re-scoping an existing drift test.** Converting an existing whole-file drift
 test to `section()` moves pins whose phrases are meant to be on base, so
@@ -660,9 +659,8 @@ per test: one new pin turns a test red against the base and hides a vacuous
 pin beside it. Look for each phrase in the base branch's version of every
 section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
-<doc> <section> <phrase>...` from `worker/deno` does this), and record in the
-Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A pin that
+<doc> <section> <phrase>...` from `worker/deno` does this); a phrase the
+base section already held is a blocking self-review finding. A pin that
 names a value a module or a checked-in config file already holds — a flag, a
 command line, a function or export name, a status, marker, key, default,
 version or tag — is built from that module or file, never typed in: import it,
