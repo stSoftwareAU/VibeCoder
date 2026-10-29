@@ -636,24 +636,23 @@ suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
 [`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
-### No PR until every acceptance criterion is met
+### Unmet acceptance criteria are named, never a follow-up issue
 
 "Partially completed" is never a resolution (Issue #4146). A run whose PR
-summary leaves any criterion `partial`, `missing` or unassessed raises **no
-PR**: the unmet-criteria gate (`worker/deno/lib/unmet_criteria_gate.ts`) sends
-the agent back in the same run to finish the work, round after round while
-each one makes progress, and a run that still cannot finish fails as
-`criteria_unmet` with its branch kept for the next run. No follow-up issue is
-ever filed for the remainder — the issue was approved to be done, and a new
-issue would need a human to read and approve it — and nothing is labelled
-`needs-human`. **Incomplete PRs are drafts**, so CI and code review are not
-spent on them: a PR the agent raised itself with criteria unmet, or a run that
-**times out**, keeps a draft `Part of #N` PR
-(`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so the
-next run resumes the branch and finishes. Only once every criterion is met is
-the draft marked ready with `Closes #N`, and squash auto-merge is armed in the
-same step so it merges as soon as possible. Whether the run was degraded
-changes none of this. See
+summary leaves any criterion `partial`, `missing` or unassessed is told so once
+in the session: the unmet-criteria gate
+(`worker/deno/lib/unmet_criteria_gate.ts`) sends the agent back to finish the
+work. Since Issue #4234 that note is advice, so a criterion still unmet
+afterwards does not withhold the pull request. The PR is raised and armed, and
+the unmet criteria are named in one `## Notes for the reviewer` comment. A
+`missing` entry makes the body `Part of #N`, so the issue stays open. No
+follow-up issue is ever filed for the remainder — the issue was approved to be
+done, and a new issue would need a human to read and approve it — and nothing
+is labelled `needs-human`. A run that **times out** keeps a draft `Part of #N`
+PR (`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so
+the next run resumes the branch and finishes; once every criterion is met the
+draft is marked ready with `Closes #N` and squash auto-merge is armed. Whether
+the run was degraded changes none of this. See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run).
 
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)

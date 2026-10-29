@@ -9,11 +9,11 @@
  *
  * Its consumers decide what a shortfall means:
  *
- * - `unmet_criteria_gate.ts` (Issue #4146): any unmet criterion blocks the PR,
- *   and the run keeps working until every criterion is met. This replaced the
- *   degraded-delivery guard (#2562, #3506), which raised the partial PR anyway
- *   and filed a `Finish #N` follow-up for the rest — the owner ruled that
- *   "partially completed" is never a resolution.
+ * - `unmet_criteria_gate.ts` (Issues #4146, #4234): any unmet criterion is
+ *   told to the agent once in the session and, if still unmet, named on the
+ *   pull request, which is raised anyway. This replaced the degraded-delivery
+ *   guard (#2562, #3506), which filed a `Finish #N` follow-up for the rest —
+ *   the owner ruled that "partially completed" is never a resolution.
  * - `claim_freshness.ts`: a merged PR that still shows shortfalls does not
  *   count as having delivered the issue.
  *

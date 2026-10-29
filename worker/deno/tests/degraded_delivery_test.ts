@@ -5,8 +5,8 @@
  * shows as `met` (Issues #2562, #3128).
  *
  * Since Issue #4146 its main consumer is the unmet-criteria gate, which
- * blocks the PR on any shortfall; the follow-up filing these tests also used
- * to pin is gone.
+ * names any shortfall to the agent and on the pull request (Issue #4234); the
+ * follow-up filing these tests also used to pin is gone.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
