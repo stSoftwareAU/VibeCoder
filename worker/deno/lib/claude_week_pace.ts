@@ -422,7 +422,7 @@ function walkPoolCapacity(
   let at = nowMs;
   for (const reopenAt of reopenings) {
     const capacity = credentials.reduce((sum, c) => sum + c.remaining, 0);
-    let need = perMs * (reopenAt - at);
+    const need = perMs * (reopenAt - at);
     if (need >= capacity) {
       return { runsOutAt: at + capacity / perMs, nextReopenAt: reopenAt };
     }
