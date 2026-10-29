@@ -144,6 +144,8 @@ Deno.test("CODING-STANDARDS - condition 4 checks each pinned phrase, not each te
   assertStringIncludes(text, "per pinned phrase, not per test");
   assertStringIncludes(text, "hides a vacuous pin");
   assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
+  // Issue #4470 dropped the per-phrase Test Plan record from condition 4.
+  assertFalse(text.includes("Record the result for every pinned phrase"));
 });
 
 Deno.test("coding guidelines - a drift test's red run is checked per pinned phrase", async () => {
