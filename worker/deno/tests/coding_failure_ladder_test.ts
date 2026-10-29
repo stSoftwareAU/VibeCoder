@@ -237,9 +237,44 @@ Deno.test("applyCodingFailureLadder - the configured label names are passed thro
   assertEquals(calls[0]?.labels?.failedOnceLabel, "blocked-once");
 });
 
+Deno.test("applyCodingFailureLadder #4461 - a refused repository-admin setting calls the handler once, as category unknown", async () => {
+  const { calls, handleIssueFailure } = recordingHandler();
+
+  const outcome = await applyCodingFailureLadder({
+    repo: "owner/repo",
+    issueNumber: 42,
+    githubUser: "vibe-bot",
+    failureReason:
+      "Repository-admin finding not applied: could not apply BP-REPO-RULESET-NO-REVIEW: HTTP 403",
+    category: "unknown",
+    classification: REPO_ADMIN_REFUSED,
+    failurePhase: "admin_only_repair",
+  }, { handleIssueFailure });
+
+  assertEquals(outcome.decision.disposition, "ladder");
+  assertEquals(outcome.ladder?.markedAsFailedOnce, true);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]?.category, "unknown");
+});
+
 // ---------------------------------------------------------------------------
 // Host faults are the host's, not the issue's (Issue #1949)
 // ---------------------------------------------------------------------------
+
+Deno.test("classifyCodingFailure #4461 - a repo_config category without the repo-config class is not record-only", () => {
+  const decision = classifyCodingFailure(
+    "Repository rule blocked the push",
+    "repo_config",
+    {
+      fixability: "not_code_fixable",
+      failureClass: "agent-outcome",
+      rationale: "Not a repo-config class.",
+    },
+  );
+  assertEquals(decision.category, "repo_config");
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.cooldownKind, "non_transient");
+});
 
 Deno.test("classifyCodingFailure - a full disk is the host's fault, not the issue's", () => {
   const decision = classifyCodingFailure(
@@ -424,6 +459,21 @@ Deno.test("planCodingFailure - a record-only milestone-branch refusal in setup k
   assertEquals(plan.decision?.disposition, "record-only");
 });
 
+Deno.test("planCodingFailure #4461 - a refused repository-admin setting in admin_only_repair steps the ladder and its cooldown", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "admin_only_repair",
+    reason:
+      "Repository-admin finding not applied: could not apply BP-REPO-RULESET-NO-REVIEW: HTTP 403",
+    category: "unknown",
+    classification: REPO_ADMIN_REFUSED,
+  });
+  assertEquals(plan.applyLadder, true);
+  assertEquals(plan.cooldownKind, "non_transient");
+  assertEquals(plan.decision?.disposition, "ladder");
+});
+
 // ---------------------------------------------------------------------------
 // isSetupFault
 // ---------------------------------------------------------------------------
@@ -530,14 +580,26 @@ Deno.test("declared failure causes outrank quoted deadline and timeout wording (
   assertEquals(classifyCodingFailure(reason).disposition, "transient");
 });
 
-Deno.test("classifyCodingFailure #4442 - a refused repository-admin setting is transient here, never a record-only repo-config", () => {
-  // REPO_ADMIN_REFUSED carries `repo-config` for the run-failure filer only:
-  // its category stays internal_error, so this ladder writes no record.
+Deno.test("classifyCodingFailure #4461 - a refused repository-admin setting enters the failed-once ladder, not record-only", () => {
+  // REPO_ADMIN_REFUSED carries `repo-config`, but its category is `unknown`
+  // (Issue #4461), so it takes the normal ladder and its escalating cooldown.
+  const decision = classifyCodingFailure(
+    "Repository-admin finding not applied: could not apply BP-REPO-RULESET-NO-REVIEW: HTTP 403",
+    "unknown",
+    REPO_ADMIN_REFUSED,
+  );
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.failureClass, "repo-config");
+  assertEquals(decision.cooldownKind, "non_transient");
+});
+
+Deno.test("classifyCodingFailure #4442 - an unmapped or hardener-fault repository-admin repair stays transient", () => {
+  // No REPO_ADMIN_REFUSED classification and category internal_error: a worker
+  // defect, not a declared refusal, so it stays transient (Issue #4442).
   const decision = classifyCodingFailure(
     "Repository-admin finding not applied: could not apply BP-REPO-RULESET-NO-REVIEW: HTTP 403",
     "internal_error",
-    REPO_ADMIN_REFUSED,
   );
   assertEquals(decision.disposition, "transient");
-  assertEquals(decision.failureClass, "repo-config");
+  assertEquals(decision.cooldownKind, undefined);
 });

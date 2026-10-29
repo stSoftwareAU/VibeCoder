@@ -518,8 +518,11 @@ async function workOnIssueCore(
     // before cloning the repo or running Claude, and closes the finding
     // (Issue #4298). A token that cannot apply it is recorded as a failure on
     // the normal `failed-once` ladder and retried — never handed to a human.
-    // A setting the repository or its token refused is classed `repo-config`,
-    // not a `worker-crash`; any other failure stays a worker-crash (Issue #4442).
+    // A setting the repository or its token refused is category `unknown` with
+    // class `repo-config` (Issue #4461): it steps the failed-once ladder and its
+    // escalating cooldown, and the run-failure filer suppresses it as repo-config.
+    // Any other failure stays `internal_error`, a worker-crash that is transient
+    // (Issue #4442).
     if (isAdminOnlyRepoSettingsIssue(ctx.issueBody)) {
       logger.info(
         "Repository-admin finding — applying the setting before running Claude (Issue #4298)",
@@ -539,7 +542,7 @@ async function workOnIssueCore(
             // a worker-crash (Issue #4442).
             refusedByRepo = applied.error instanceof RepoAdminRefusalError;
             return {
-              category: "internal_error",
+              category: refusedByRepo ? "unknown" : "internal_error",
               status: "failure",
               reason:
                 `Repository-admin finding not applied: ${applied.error.message}`,

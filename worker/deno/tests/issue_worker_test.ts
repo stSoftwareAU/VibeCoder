@@ -3371,7 +3371,7 @@ Deno.test("workOnIssue #4298 - a refused repository-admin fix is a failure to re
 
   assertEquals(result.success, false);
   assertEquals(result.phase, "admin_only_repair");
-  assertEquals(result.category, "internal_error");
+  assertEquals(result.category, "unknown");
   assertStringIncludes(result.reason, "Must have admin rights");
   // A refused setting is a repo/credential fault, not a worker crash (Issue #4442).
   assertEquals(result.classification?.fixability, "not_code_fixable");

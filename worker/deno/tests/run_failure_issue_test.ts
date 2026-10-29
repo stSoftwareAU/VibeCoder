@@ -415,7 +415,7 @@ Deno.test("run failure issue - the same marker issue authored by a fleet login i
   }
 });
 
-Deno.test("run failure issue #4442 - a refused repository-admin setting is suppressed as repo-config, the same internal_error without the classification files as worker-crash", async () => {
+Deno.test("run failure issue #4442 - a refused repository-admin setting is suppressed as repo-config, an internal_error without the classification files as worker-crash", async () => {
   const dir = await tmp();
   try {
     const { ghFn, rec } = fakeGh();
@@ -426,7 +426,7 @@ Deno.test("run failure issue #4442 - a refused repository-admin setting is suppr
       report: {
         ...OOM_REPORT,
         outcome: noPrOutcome({
-          category: "internal_error",
+          category: "unknown",
           classification: REPO_ADMIN_REFUSED,
           success: false,
           phase: "admin_only_repair",
