@@ -30,17 +30,18 @@
  *   floor, every token with a seven-day window ranks ahead of every token
  *   without one (Issue #4503, restoring #1731), because a rate on a five-hour
  *   window is not comparable with a seven-day rate. Gate failures are still
- *   ordered by soonest five-hour reset, whatever their telemetry. A response
- *   that reported no seven-day window is ranked only among the tokens that
- *   also lack one, on the window it did report. It is never dropped and it is
- *   not a gate: if every candidate lacks a seven-day window, one is still
- *   selected.
+ *   ordered by soonest five-hour reset, whatever their telemetry. Among
+ *   gate-passing tokens, a response that reported no seven-day window is
+ *   ranked only among the tokens that also lack one, on the window it did
+ *   report. It is never dropped and it is not a gate: if every candidate lacks
+ *   a seven-day window, one is still selected.
  * - **A passing token under {@link CLAUDE_SEVEN_DAY_LOW_REMAINING} of its
  *   seven-day window (or, without one, of the window it reported) ranks behind
  *   every passing token above that floor**,
  *   whatever its rate — a near-exhausted week divided by an imminent reset
  *   scores highly and would stall a run almost immediately. Sub-floor tokens
- *   are ordered among themselves by rate, and still beat every gate failure.
+ *   are ordered among themselves by seven-day telemetry first, then by rate,
+ *   and still beat every gate failure.
  * - A token whose `resetAt` has already passed is treated as a fresh, FULL
  *   window, in both the gate and the rate. The probe reports the window that
  *   was current when the figure was produced; once that instant is behind us

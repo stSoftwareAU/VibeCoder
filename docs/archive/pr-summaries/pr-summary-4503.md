@@ -3,8 +3,8 @@
 Claude token ranking no longer compares a five-hour rate with a seven-day rate.
 Among tokens that passed the five-hour gate (above or below the 10% floor),
 every token whose probe reported a seven-day window now ranks ahead of every
-token that did not. Tokens without one are ordered only among themselves, on the
-window they reported. Tokens that failed the gate are unchanged: they are still
+token that did not. Among gate-passing tokens, those without one are ordered only
+among themselves, on the window they reported. Tokens that failed the gate are unchanged: they are still
 ordered by soonest five-hour reset, whatever their seven-day telemetry. This
 re-applies the policy recorded in #1731, whose fix never reached main. Closes
 #4503.
@@ -65,13 +65,13 @@ inherit the policy.
   deterministic ties, a later snapshot restoring weekly ranking,
   `hasSevenDayTelemetry` flags, and the reason for an equal rate on different
   windows.
-- Red checks: removing the comparator clause turned 6 tests red (37 passed, 6
-  failed); removing the `winningReason` clause turned
+- Red checks, all in `worker/deno/tests/claude_token_selection_test.ts` (44
+  tests at head): removing the comparator clause turned 6 tests red; removing
+  the `winningReason` clause turned
   `weekly beats weekless with an equal rate on a different window, reason is not a tie (Issue #4503)`
-  red (42 passed, 1 failed). Both were restored. For the review round, moving
-  the telemetry step above the band-2 (gate failure) return turned
+  red; moving the telemetry step above the band-2 (gate failure) return turned
   `gate failures stay ordered by soonest five-hour reset, whatever their seven-day telemetry (Issue #4503)`
-  red (43 passed, 1 failed); restored.
+  red. Each was restored.
 - Removed from `worker/deno/tests/claude_token_selection_test.ts`:
   `known("provider-3", 0.44, NOW + 4 * HOUR, "five_hour")` in the test "ranking
   returns the token with the most remaining budget per hour of its own window
@@ -88,8 +88,9 @@ inherit the policy.
   decision-log test in `claude_token_selection_test.ts` pins this: a
   five-hour-only 75% beats a seven-day 25%." Red check: that test failed with
   the comparator clause removed.
-- Docs: `docs/SETUP.md` rule 3, the `rate=` field paragraph and the
-  `highest-remaining-per-hour` reason row. Related siblings read:
+- Docs: `docs/SETUP.md` rule 3, rule 4, the `rate=` field paragraph and the
+  `highest-remaining-per-hour` and `low-seven-day-remaining-highest-rate`
+  reason rows. Related siblings read:
   `docs/PROVIDER-PARITY.md` line 39 (still true) and the week-pace paragraph in
   SETUP.md (about the pace gate, not ranking).
 - `./quality.sh` on the final head: Result: PASSED (with skipped checks);

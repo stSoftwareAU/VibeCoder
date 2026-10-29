@@ -1154,8 +1154,9 @@ The candidates are ordered:
    window is not comparable with a seven-day rate. Tokens that failed the gate
    are not reordered by this: they are still ordered by soonest five-hour
    reset (rule 5), whatever their seven-day telemetry. A response that reported no seven-day
-   window is never dropped and is not a gate: it is ordered only among the
-   tokens that also lack one, on the window it did report. Comparing
+   window is never dropped and is not a gate: among gate-passing tokens it is
+   ordered only among the tokens that also lack one, on the window it did
+   report; as a gate failure it is ordered by five-hour reset like any other. Comparing
    shares per hour rather than absolute totals is what makes subscriptions
    whose windows reset on different days at different times comparable at all.
    A window whose reset instant has already passed counts as **full**: the
@@ -1167,7 +1168,9 @@ The candidates are ordered:
    window left ranks behind every passing token above that floor, whatever its
    rate: a nearly spent week divided by an imminent reset scores highly and
    would stall a run almost immediately. Those tokens are ordered among
-   themselves by rate, and still rank ahead of every gate failure.
+   themselves by seven-day telemetry first (a token with a seven-day window
+   ahead of one without) and by rate only after that, and still rank ahead of
+   every gate failure.
 5. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
    so when nothing can be spent now the token that refills first is the one
    chosen.
