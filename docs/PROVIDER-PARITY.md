@@ -33,12 +33,16 @@ flowchart TD
 
 A provider adapter supplies real windows, reset timestamps and an
 identity label. The shared ranker (`worker/deno/lib/provider_quota.ts`)
-uses remaining-fraction / hours-to-reset. Unknown budgets stay unknown
-— they are never treated as zero.
+scores the rank window as each policy declares (`rankBy`): remaining
+fraction, or remaining-fraction / hours-to-reset. Unknown budgets stay
+unknown — they are never treated as zero.
 
-- **Claude** keeps the five-hour soft gate and the seven-day rate
-  (#1623 / #1685). All-low-but-usable credentials still run.
-- **Codex** uses the rollout `token_count` snapshot from
+- **Claude** keeps the five-hour soft gate (#1623 / #1685) and ranks on
+  the most seven-day quota left (owner decision 2026-10-29, which replaced
+  the per-hour rate and its 10% floor). All-low-but-usable credentials
+  still run.
+- **Codex** ranks on remaining-fraction / hours-to-reset of its `primary`
+  window, with a 10% low-remaining floor. It uses the rollout `token_count` snapshot from
   [Codex Budget Sources](CODEX-BUDGET-SOURCES.md). An API-key account
   has no subscription window (`api-key-account`). Explicit exhaustion
   excludes that credential until reset.

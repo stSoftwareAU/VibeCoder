@@ -275,10 +275,12 @@ Deno.test("claude credential pool - 0% and 60% five-hour: the 60% token wins and
   assertEquals(log.includes("token-provider"), false);
 });
 
-Deno.test("claude credential pool - the higher seven-day remaining-per-hour wins among eligible tokens", async () => {
-  // The parent's figures: 75% of a week that resets in seven days is worth
-  // 0.45%/h, while 22% that resets in eleven hours is worth 2%/h. Use it or
-  // lose it — the ranking is #1623's and this asserts the delegation.
+Deno.test("claude credential pool - the most seven-day quota left wins among eligible tokens", async () => {
+  // 75% of a week that resets in seven days against 22% that resets in
+  // eleven hours. Rewritten for the owner's 2026-10-29 decision: #1623's
+  // per-hour rule picked provider-2 (2%/h against 0.45%/h); the most weekly
+  // quota left picks provider. The ranking is claude_token_selection.ts's and
+  // this asserts the delegation.
   const probe = fetchWith({
     "token-provider": {
       fiveHourRemaining: 0.91,
@@ -304,10 +306,10 @@ Deno.test("claude credential pool - the higher seven-day remaining-per-hour wins
   });
 
   const chosen = await pool.selectEligible(NOW);
-  assertEquals(chosen?.label, "provider-2");
+  assertEquals(chosen?.label, "provider");
   assertStringIncludes(
     lines.join("\n"),
-    "selected provider-2 (#2) of 2: highest-remaining-per-hour",
+    "selected provider (#1) of 2: most-seven-day-remaining",
   );
 });
 

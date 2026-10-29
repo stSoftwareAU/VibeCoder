@@ -1333,7 +1333,8 @@ export interface RecordContainerOutcomeOptions {
    * — every single-subscription host — makes no probe and behaves exactly as
    * before. When it answers true the pause takes the base cadence instead of
    * the hour-long quota cadence: worker start already ranks the pool and takes
-   * the token worth the most per hour (Issue #1623), so the only thing keeping
+   * the token with the most seven-day quota left (owner decision 2026-10-29,
+   * gated on the five-hour window by Issue #1623), so the only thing keeping
    * this host idle is the sleep, and the spent token — having burned its
    * five-hour window — fails that ranking's gate on the next pass.
    *

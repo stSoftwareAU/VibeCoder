@@ -2,14 +2,15 @@
  * The process-wide Claude credential pool (Issue #1668, parent #1653).
  *
  * Worker start already ranks the host's Claude subscriptions and exports the
- * winner (#919, reshaped by #1623), but that decision was taken once and never
+ * winner (#919, reshaped by #1623 and the owner's 2026-10-29 decision), but
+ * that decision was taken once and never
  * revisited: a subscription that ran out part-way through a run took the retry
  * ladder and failed the run while another token in the pool sat untouched, and
  * nothing on the record said which candidates existed or why one was chosen.
  *
  * This module is the missing middle. It holds one **budget snapshot per
- * token**, refreshes only what has gone stale, applies #1623's gate and
- * ranking on demand, and replaces the run's single exported token when asked:
+ * token**, refreshes only what has gone stale, applies the five-hour gate
+ * and most-seven-day-remaining ranking of `claude_token_selection.ts` on demand, and replaces the run's single exported token when asked:
  *
  * - {@link ClaudeCredentialPool.recordBudget} takes figures the run already
  *   has — the latest `rate_limit_event`, or a probe made elsewhere — so a
