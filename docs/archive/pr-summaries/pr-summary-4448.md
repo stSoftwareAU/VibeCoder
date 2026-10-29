@@ -121,3 +121,12 @@ Backend-only change; no UI files. Verification is by tests (below).
   reference(s)" (`templateReferenceCount`); the two allow-list plan step titles
   name "the workflow-sync templates"; `docs/EXTENDING.md` no longer describes
   the removed Mermaid step.
+- PR #4473 CI fix (parallel-safety cap, Issue #880): the command tests in
+  `worker/deno/tests/setup_repo_settings_harden_test.ts` set
+  `VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH` in the shared process environment.
+  `worker/deno/commands/repo_settings_harden.ts` now exposes
+  `runHardenCommand(args, defaultBranchCachePath?)`; `execute` calls it with no
+  override (production path) and the tests pass the cache file through it, so
+  no test touches the process environment. Re-ran
+  `deno task test:unit tests/setup_repo_settings_harden_test.ts` from
+  `worker/deno` on the head: 40 passed, 0 failed, parallel-safety pass green.
