@@ -3,11 +3,11 @@
 Claude token ranking no longer compares a five-hour rate with a seven-day rate.
 Among tokens that passed the five-hour gate (above or below the 10% floor),
 every token whose probe reported a seven-day window now ranks ahead of every
-token that did not. Among gate-passing tokens, those without one are ordered only
-among themselves, on the window they reported. Tokens that failed the gate are unchanged: they are still
-ordered by soonest five-hour reset, whatever their seven-day telemetry. This
-re-applies the policy recorded in #1731, whose fix never reached main. Closes
-#4503.
+token that did not. Among gate-passing tokens, those without one are ordered
+only among themselves, on the window they reported. Tokens that failed the gate
+are unchanged: they are still ordered by soonest five-hour reset, whatever their
+seven-day telemetry. This re-applies the policy recorded in #1731, whose fix
+never reached main. Closes #4503.
 
 Version bump: no `VERSION` change in this PR; the merged commit records the
 final version.
@@ -89,9 +89,8 @@ inherit the policy.
   five-hour-only 75% beats a seven-day 25%." Red check: that test failed with
   the comparator clause removed.
 - Docs: `docs/SETUP.md` rule 3, rule 4, the `rate=` field paragraph and the
-  `highest-remaining-per-hour` and `low-seven-day-remaining-highest-rate`
-  reason rows. Related siblings read:
-  `docs/PROVIDER-PARITY.md` line 39 (still true) and the week-pace paragraph in
-  SETUP.md (about the pace gate, not ranking).
+  `highest-remaining-per-hour` and `low-seven-day-remaining-highest-rate` reason
+  rows. Related siblings read: `docs/PROVIDER-PARITY.md` line 39 (still true)
+  and the week-pace paragraph in SETUP.md (about the pace gate, not ranking).
 - `./quality.sh` on the final head: Result: PASSED (with skipped checks);
   checkov was skipped by the gate.
