@@ -1148,10 +1148,12 @@ The candidates are ordered:
    **no** five-hour window has no gate to fail, so it passes.
 3. **The highest remaining budget per hour wins**, measured on the seven-day
    window: its remaining share divided by the hours until it resets. Among
-   tokens that passed the five-hour gate, whether above or below the 10% floor
-   in rule 4, every token with a seven-day window ranks ahead of every token
-   without one (Issue #4503, restoring #1731), because a rate on a five-hour
-   window is not comparable with a seven-day rate. Tokens that failed the gate
+   tokens that passed the five-hour gate, within the same floor band of rule 4
+   (at or above the 10% floor, or under it), a token with a seven-day window
+   ranks ahead of one without (Issue #4503, restoring #1731), because a rate on
+   a five-hour window is not comparable with a seven-day rate. The floor band
+   is decided first, so a gate-passing weekless token above the floor still
+   beats a weekly token under it. Tokens that failed the gate
    are not reordered by this: they are still ordered by soonest five-hour
    reset (rule 5), whatever their seven-day telemetry. A response that reported no seven-day
    window is never dropped and is not a gate: among gate-passing tokens it is
@@ -1250,8 +1252,9 @@ both windows — a window the response did not report reads `absent` — plus
 window the response reported, when it carried no seven-day one), and
 `gate=pass|fail` for the five-hour gate. A `rate=` on a line whose response
 reported no seven-day window is the rate of that other window, so it is **not**
-comparable with a seven-day rate: among tokens that passed the five-hour gate,
-such a token ranks behind every token that reported one (Issue #4503), while
+comparable with a seven-day rate: among tokens that passed the five-hour gate
+and sit in the same floor band (rule 4), such a token ranks behind every token
+that reported one (Issue #4503); the floor band is decided first, while
 tokens with `gate=fail` are still ordered by soonest five-hour reset, whatever
 their seven-day telemetry. A `selected` line for a token that
 failed the gate also carries the five-hour reset the choice was made on. Above, `provider` holds three times the share but

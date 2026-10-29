@@ -1,13 +1,15 @@
 ## Summary
 
 Claude token ranking no longer compares a five-hour rate with a seven-day rate.
-Among tokens that passed the five-hour gate (above or below the 10% floor),
-every token whose probe reported a seven-day window now ranks ahead of every
-token that did not. Among gate-passing tokens, those without one are ordered
-only among themselves, on the window they reported. Tokens that failed the gate
-are unchanged: they are still ordered by soonest five-hour reset, whatever their
-seven-day telemetry. This re-applies the policy recorded in #1731, whose fix
-never reached main. Closes #4503.
+Within the same floor band of tokens that passed the five-hour gate (at or above
+the 10% floor, or under it), a token whose probe reported a seven-day window now
+ranks ahead of one that did not; the floor band is decided first, so a
+gate-passing weekless token above the floor still beats a weekly token under it.
+Among gate-passing tokens, those without one are ordered only among themselves,
+on the window they reported. Tokens that failed the gate are unchanged: they are
+still ordered by soonest five-hour reset, whatever their seven-day telemetry.
+This re-applies the policy recorded in #1731, whose fix never reached main.
+Closes #4503.
 
 Version bump: no `VERSION` change in this PR; the merged commit records the
 final version.
