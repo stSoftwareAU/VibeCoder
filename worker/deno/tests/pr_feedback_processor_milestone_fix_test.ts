@@ -867,8 +867,10 @@ Deno.test("processPrFeedback - gated head: fix branch absent from origin => no f
   const deps = createMockDeps({
     claude: makeClaudeOk(),
     github: makeMockGithub(captured, { gated: true }),
+    // A count of "2" is what the mock would report if the absent branch were
+    // still counted, so only the absent-branch handling keeps the PR unraised.
     git: makeSelfPushedFixGit(gitCalls, {
-      aheadCount: "0",
+      aheadCount: "2",
       fixFetchFailure: {
         code: 128,
         stderr: "fatal: couldn't find remote ref refs/heads/milestone-fix",
@@ -894,6 +896,10 @@ Deno.test("processPrFeedback - gated head: fix branch absent from origin => no f
   );
   assertEquals(created, undefined);
   assertEquals(result.value.changesPushed, false);
+  assertEquals(
+    gitCalls.some((c) => c[0] === "rev-list" && c[1] === "--count"),
+    false,
+  );
 });
 
 Deno.test("processPrFeedback - gated head: origin unreachable while reading the fix branch => no fabricated fix PR, still ok (Issue #4466)", async () => {
