@@ -851,6 +851,16 @@ Deno.test("command: a missing --config is refused", async () => {
   assertStringIncludes(result.message, "--config");
 });
 
+Deno.test("command: execute delegates to runReclaimHostCaches", async () => {
+  // The command ignores the worker config, so an empty stand-in suffices.
+  const result = await reclaimHostCachesCommand.execute(
+    { "free-kb": "0", "floor-kb": "1" },
+    {} as Parameters<typeof reclaimHostCachesCommand.execute>[1],
+  );
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "--config");
+});
+
 Deno.test("command: garbage numeric flags are refused", async () => {
   await withRoot(async (root) => {
     const config = await writeConfig(root, {});
@@ -859,6 +869,11 @@ Deno.test("command: garbage numeric flags are refused", async () => {
       [{ "free-kb": "0", "floor-kb": "-5" }, "--floor-kb"],
       [{ "free-kb": "0", "floor-kb": "1.5" }, "--floor-kb"],
       [{ "free-kb": 2.5, "floor-kb": "1" }, "--free-kb"],
+      [{ "free-kb": -1, "floor-kb": "1" }, "--free-kb"],
+      [{ "free-kb": 0, "floor-kb": -1 }, "--floor-kb"],
+      [{ "floor-kb": "1" }, "--free-kb"],
+      [{ "free-kb": true, "floor-kb": "1" }, "--free-kb"],
+      [{ "free-kb": "0", "floor-kb": null }, "--floor-kb"],
     ];
     for (const [flags, flagName] of badValues) {
       const result = await runReclaimHostCaches(
