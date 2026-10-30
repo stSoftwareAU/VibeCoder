@@ -154,7 +154,8 @@ flowchart LR
   stage reports `SKIPPED` and names both remedies; `--strict` turns that
   into a failure. Inside the fleet container image, where semgrep is baked
   in, a missing binary is `FAILED` (an image fault, Issue #3726); an
-  unreachable rule registry or an over-deadline scan stays `SKIPPED`.
+  unreachable rule registry, a timed-out version/image probe or an
+  over-deadline scan stays `SKIPPED`, with the cause reported.
 - **A docs-only change costs nothing.** No scannable changed file means
   no scan.
 - **`detect-non-literal-regexp` has one standard remedy.** Build the

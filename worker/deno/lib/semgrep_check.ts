@@ -645,7 +645,8 @@ function formatFindings(
  *      diff base → SKIPPED (never PASSED); nothing scannable → PASSED.
  *   2. Detect an invocation. None → SKIPPED on a host, but FAILED inside the
  *      fleet container image, which bakes semgrep in (Issue #3726). Registry
- *      and deadline outcomes below stay SKIPPED in both places.
+ *      and deadline outcomes below stay SKIPPED in both places. A detection
+ *      probe that times out also returns SKIPPED, with its cause preserved.
  *   3. Scan, bounded by {@link SEMGREP_DEADLINE_MS}. Over deadline, or an
  *      unreachable rule registry → SKIPPED.
  *   4. Findings → FAILED (with the `detect-non-literal-regexp` remedy when
@@ -677,7 +678,17 @@ export async function runSemgrepCheck(
   }
 
   const detect = options.detectInvocation ?? detectSemgrepInvocation;
-  const invocation = await detect(scriptDir);
+  let invocation: SemgrepInvocation | null;
+  try {
+    invocation = await detect(scriptDir);
+  } catch (error) {
+    // A stalled version/image probe is not evidence of a missing binary or
+    // a clean scan. Keep the same explicit skip policy as scan deadlines.
+    if (!isCommandTimeoutError(error)) throw error;
+    return skipped(
+      `invocation detection timed out: ${error.message} — the scan did not run`,
+    );
+  }
   if (invocation === null) {
     if (runningInContainerImage(options.env ?? processEnvLookup)) {
       return {
