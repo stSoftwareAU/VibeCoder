@@ -2,14 +2,17 @@
  * The process-wide Claude credential pool (Issue #1668, parent #1653).
  *
  * Worker start already ranks the host's Claude subscriptions and exports the
- * winner (#919, reshaped by #1623), but that decision was taken once and never
+ * winner (#919, reshaped by #1623 and Issue #4504), but
+ * that decision was taken once and never
  * revisited: a subscription that ran out part-way through a run took the retry
  * ladder and failed the run while another token in the pool sat untouched, and
  * nothing on the record said which candidates existed or why one was chosen.
  *
  * This module is the missing middle. It holds one **budget snapshot per
- * token**, refreshes only what has gone stale, applies #1623's gate and
- * ranking on demand, and replaces the run's single exported token when asked:
+ * token**, refreshes only what has gone stale, applies the five-hour gate,
+ * weekly-exhaustion check and most-seven-day-remaining ranking of
+ * `claude_token_selection.ts` on demand, and replaces the run's single
+ * exported token when asked:
  *
  * - {@link ClaudeCredentialPool.recordBudget} takes figures the run already
  *   has — the latest `rate_limit_event`, or a probe made elsewhere — so a
@@ -41,11 +44,13 @@
  *
  * ## What it costs
  *
- * Nothing, on the hosts that cannot use it. Fewer than two pool candidates —
- * every single-token host, and every other vendor — means zero requests, zero
- * log lines, and behaviour identical to today. Otherwise a selection probes
- * only the candidates whose snapshot has gone stale, and concurrent
- * selections share one in-flight probe per token rather than issuing one each.
+ * Start-up selection, {@link ClaudeCredentialPool.selectEligible} and
+ * {@link ClaudeCredentialPool.readPoolBudgets} skip probing and ranking logs
+ * with fewer than two pool candidates. Unlike those paths,
+ * {@link ClaudeCredentialPool.selectAvailable} ranks even a single remaining
+ * candidate, probing stale budgets and logging the ranking. A selection probes
+ * only candidates whose snapshot has gone stale, and concurrent selections
+ * share one in-flight probe per token rather than issuing one each.
  *
  * The environment is shared by every slot on the host, so a switch affects
  * spawns that start **after** it; agents already running keep the environment
@@ -368,9 +373,11 @@ export function createClaudeCredentialPool(
       if (pool.length < 2) return null;
       const ranking = await rankPool(pool, now);
       const winner = ranking.winner;
-      // The gate is the switch's own question — "is this worth running
-      // against?" — so a winner that fails it is no selection at all.
-      if (winner === null || !winner.passesFiveHourGate) return null;
+      // The five-hour gate decides whether a window can run now. A spent
+      // seven-day window is a separate exhaustion check.
+      if (
+        winner === null || !winner.passesFiveHourGate || winner.sevenDaySpent
+      ) return null;
       return pool[winner.index] ?? null;
     },
 

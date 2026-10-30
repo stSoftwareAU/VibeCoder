@@ -48,27 +48,73 @@ function unknown(
   };
 }
 
-Deno.test("rankQuotaCandidates - Claude policy spends the highest remaining per hour", () => {
+/** 20% of a week resetting in six hours against 90% resetting in six days. */
+function soonSmallAgainstLateLarge(
+  providerId: string,
+  windowName: string,
+): QuotaCandidate[] {
+  return [
+    known("soon-small", providerId, [
+      { name: "five_hour", remainingFraction: 0.9, resetAt: NOW + 5 * HOUR },
+      { name: windowName, remainingFraction: 0.2, resetAt: NOW + 6 * HOUR },
+    ]),
+    known("late-large", providerId, [
+      { name: "five_hour", remainingFraction: 0.9, resetAt: NOW + 5 * HOUR },
+      {
+        name: windowName,
+        remainingFraction: 0.9,
+        resetAt: NOW + 6 * 24 * HOUR,
+      },
+    ]),
+  ];
+}
+
+Deno.test("rankQuotaCandidates - Claude policy spends the most seven-day quota left (Issue #4504)", () => {
+  // Rewritten for Issue #4504: under #1623's per-hour
+  // rule 20%/6h (3.33%/h) beat 90%/144h (0.63%/h); now the larger share wins.
+  const ranking = rankQuotaCandidates(
+    soonSmallAgainstLateLarge("claude", "seven_day"),
+    NOW,
+    CLAUDE_QUOTA_POLICY,
+  );
+  assertEquals(ranking.winner?.credentialLabel, "late-large");
+  assertEquals(ranking.reason, "most-remaining");
+});
+
+Deno.test("rankQuotaCandidates - Codex policy still ranks by remaining per hour", () => {
+  // Issue #4504 changes Claude; Codex keeps the per-hour
+  // rate, so the same figures pick the other credential.
+  const ranking = rankQuotaCandidates(
+    soonSmallAgainstLateLarge("codex", "primary"),
+    NOW,
+    CODEX_QUOTA_POLICY,
+  );
+  assertEquals(ranking.winner?.credentialLabel, "soon-small");
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
+});
+
+Deno.test("rankQuotaCandidates - equal Claude weekly shares prefer the sooner reset over discovery order", () => {
   const ranking = rankQuotaCandidates(
     [
-      known("provider", "claude", [
-        { name: "five_hour", remainingFraction: 0.9, resetAt: NOW + 5 * HOUR },
+      known("later-discovered-first", "claude", [
         {
           name: "seven_day",
-          remainingFraction: 0.2,
-          resetAt: NOW + 168 * HOUR,
+          remainingFraction: 0.4,
+          resetAt: NOW + 100 * HOUR,
         },
       ]),
-      known("provider-2", "claude", [
-        { name: "five_hour", remainingFraction: 0.9, resetAt: NOW + 5 * HOUR },
-        { name: "seven_day", remainingFraction: 0.5, resetAt: NOW + 24 * HOUR },
+      known("sooner-discovered-last", "claude", [
+        { name: "seven_day", remainingFraction: 0.4, resetAt: NOW + 24 * HOUR },
       ]),
     ],
     NOW,
     CLAUDE_QUOTA_POLICY,
   );
-  assertEquals(ranking.winner?.credentialLabel, "provider-2");
-  assertEquals(ranking.reason, "highest-remaining-per-hour");
+  assertEquals(ranking.ranked.map((c) => c.credentialLabel), [
+    "sooner-discovered-last",
+    "later-discovered-first",
+  ]);
+  assertEquals(ranking.reason, "equal-remaining-soonest-reset");
 });
 
 Deno.test("rankQuotaCandidates - Claude five-hour gate is a filter, not a score", () => {
@@ -95,7 +141,7 @@ Deno.test("rankQuotaCandidates - Claude five-hour gate is a filter, not a score"
   assertEquals(ranking.ranked[1]?.eligible, false);
 });
 
-Deno.test("rankQuotaCandidates - all-low-but-usable still selects (soft guard)", () => {
+Deno.test("rankQuotaCandidates - all-low-but-usable still selects the most left (soft guard)", () => {
   const ranking = rankQuotaCandidates(
     [
       known("a", "claude", [
@@ -118,7 +164,48 @@ Deno.test("rankQuotaCandidates - all-low-but-usable still selects (soft guard)",
     NOW,
     CLAUDE_QUOTA_POLICY,
   );
-  assertEquals(ranking.winner?.credentialLabel, "a");
+  // Rewritten for Issue #4504: Claude has no low floor
+  // any more and no rate, so b's 8% beats a's 5% although a resets sooner.
+  assertEquals(ranking.winner?.credentialLabel, "b");
+  assertEquals(ranking.reason, "most-remaining");
+  assertEquals(ranking.winner?.eligible, true);
+});
+
+Deno.test("rankQuotaCandidates - Codex demotes a sub-10% primary window despite its higher rate", () => {
+  const ranking = rankQuotaCandidates(
+    [
+      known("low-fast", "codex", [
+        { name: "primary", remainingFraction: 0.05, resetAt: NOW + HOUR },
+      ]),
+      known("healthy", "codex", [
+        { name: "primary", remainingFraction: 0.1, resetAt: NOW + 100 * HOUR },
+      ]),
+    ],
+    NOW,
+    CODEX_QUOTA_POLICY,
+  );
+  assertEquals(ranking.ranked.map((c) => c.credentialLabel), [
+    "healthy",
+    "low-fast",
+  ]);
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
+  assertEquals(ranking.winner?.eligible, true);
+});
+
+Deno.test("rankQuotaCandidates - Codex all-low primary windows keep the highest rate and low-floor reason", () => {
+  const ranking = rankQuotaCandidates(
+    [
+      known("a", "codex", [
+        { name: "primary", remainingFraction: 0.05, resetAt: NOW + 12 * HOUR },
+      ]),
+      known("b", "codex", [
+        { name: "primary", remainingFraction: 0.08, resetAt: NOW + 48 * HOUR },
+      ]),
+    ],
+    NOW,
+    CODEX_QUOTA_POLICY,
+  );
+  assertEquals(ranking.ranked.map((c) => c.credentialLabel), ["a", "b"]);
   assertEquals(ranking.reason, "low-rank-window-remaining-highest-rate");
   assertEquals(ranking.winner?.eligible, true);
 });
