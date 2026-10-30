@@ -20,7 +20,8 @@
  *   probing to be told so again is a request spent to learn nothing.
  * - {@link ClaudeCredentialPool.selectEligible} refreshes any snapshot older
  *   than {@link CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS}, ranks the pool, and
- *   returns the winner **only when it passes the five-hour gate**. Nothing
+ *   returns the winner **only when it passes the five-hour gate and its
+ *   seven-day window is not spent**. Nothing
  *   worth switching to means `null`, never a token that would stall on its
  *   first call.
  * - {@link ClaudeCredentialPool.selectToken} is the same ranking wired as the

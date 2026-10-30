@@ -1083,8 +1083,9 @@ shares, so it affects agents spawned **after** it; an agent already running
 keeps the environment it was given. And the pool answers `null` rather than
 naming a token when nothing passes the gate below — a switch to a token that
 would stall on its first call is worse than staying put. A *start* never
-refuses: with every token low the run still begins, on the one whose five-hour
-window refills first.
+refuses: with every token low the run still begins, on the one that can spend
+again first (its five-hour window, or its seven-day one when the week is
+spent).
 
 **Claude is drained before any fallback provider** (Issue #2637). When the
 cycle-start health check reports the held token usage-limited, the health
@@ -1133,8 +1134,8 @@ The candidates are ordered:
 1. **A measured budget beats an unmeasured one.** A token whose probe failed
    ranks behind every token whose probe answered.
 2. **The five-hour gate.** A token that has used **less than 80%** of its
-   five-hour window passes, and every passing token ranks ahead of every
-   failing one; at exactly 80% used — 20% left — it fails. A token that has
+   five-hour window passes, and ranks ahead of every failing token unless its
+   week is spent (item 3); at exactly 80% used — 20% left — it fails. A token that has
    burned its five hours cannot spend whatever its week still holds, so no
    weekly share it reports is worth acting on. The threshold is a fixed constant in the
    worker, not a setting: it describes how Anthropic's windows behave, not how
@@ -1249,8 +1250,10 @@ seven-day one), and `gate=pass|fail` for the five-hour gate. A `remaining=` on
 a line whose response reported no seven-day window is the share of that other
 window, so it is **not** comparable with a seven-day share: among tokens that
 passed the five-hour gate, such a token ranks behind every token that reported
-one (Issue #4503), while tokens with `gate=fail` are still ordered by soonest
-five-hour reset, whatever their seven-day telemetry. A `selected` line
+one (Issue #4503), while tokens that cannot spend now (`gate=fail`, or
+`week=spent`) are ordered by when they can spend again: a gate failure by its
+five-hour reset, and one whose week is also spent by the later of its
+five-hour and seven-day resets. A `selected` line
 for a token that failed the gate also carries the five-hour reset the choice
 was made on. Above, `provider-2`'s 22% resets in eleven hours, but `provider`
 holds 75% of its week, so `provider` wins. The `[SECURITY]` prefix and the trailing `host=` field
@@ -1282,8 +1285,8 @@ carrying the credential. The last line names why the winner won:
 | `most-seven-day-remaining` | Strictly the largest remaining share of the seven-day window (or of the only window reported) of every candidate that passed the five-hour gate, where a token with a seven-day window is preferred to one without, whatever the shares (Issue #4503). Also shown when the runner-up holds an equal share on a different window. |
 | `equal-seven-day-remaining-soonest-reset` | Level on remaining share; won on the sooner reset. |
 | `tied-discovery-order` | Level on both remaining share and reset; won on discovery order. |
-| `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
-| `seven-day-spent-soonest-reset` | No candidate could run: the winner passed the five-hour gate but every candidate's seven-day window is at 0%, and the winner's week reopens first. The candidate lines carry `week=spent`. |
+| `five-hour-gate-failed-soonest-reset` | No candidate could run and the winner failed the five-hour gate. It won on the soonest time it can spend again: its five-hour reset, or the later of its five-hour and seven-day resets when its week is also spent. |
+| `seven-day-spent-soonest-reset` | No candidate could run and the winner passed the five-hour gate but has its seven-day window at 0%; its week reopens first. Other candidates may have failed the gate instead. The spent candidates' lines carry `week=spent`. |
 | `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
 
 Absence of these lines is itself informative: a host with one token, or with

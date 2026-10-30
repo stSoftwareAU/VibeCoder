@@ -23,8 +23,9 @@
  *
  * - **The five-hour window is a gate, not a score.** A token that has used
  *   less than {@link CLAUDE_FIVE_HOUR_GATE_MAX_USED} of it passes; one that
- *   has used 80% or more cannot spend whatever its week still holds, so every
- *   passing token ranks ahead of every failing one.
+ *   has used 80% or more cannot spend whatever its week still holds, so a
+ *   passing token ranks ahead of every failing one unless its week is spent
+ *   (see the next rule).
  * - **Passing tokens are ordered by remaining share** of the seven-day window
  *   (100% less its utilisation), largest first. A nearly spent week has no
  *   floor band of its own and still ranks ahead of every gate-passing token
@@ -42,8 +43,8 @@
  *   no seven-day window is ranked only among the tokens that also lack one, on
  *   the remaining share of the window it did report. It is never dropped and
  *   it is not a gate: if every candidate lacks a seven-day window, one is
- *   still selected. Gate failures are still ordered by soonest five-hour
- *   reset, whatever their telemetry.
+ *   still selected. Tokens that cannot spend now are ordered by when they can
+ *   spend again (see the last rule), not by their telemetry.
  * - A token whose `resetAt` has already passed is treated as a fresh, FULL
  *   window, in both the gate and the ranking. The probe reports the window
  *   that was current when the figure was produced; once that instant is behind
@@ -51,8 +52,10 @@
  *   that no longer exists.
  * - A tie on remaining share goes to the **soonest** reset, then to discovery
  *   order.
- * - **Gate failures are ordered by the soonest five-hour reset**, so the
- *   token that refills first is the one used when nothing can be spent now.
+ * - **Tokens that cannot spend now are ordered by when they can**: the
+ *   five-hour reset for a gate failure, the seven-day reset for a spent week,
+ *   the later of the two when both apply. The token that refills first is the
+ *   one used when nothing can be spent now.
  * - A token whose budget is unknown (`{ known: false }`) ranks **last**,
  *   behind every token with a known budget. It is never dropped: a probe
  *   failure must not make a configured subscription disappear, and with every
@@ -196,13 +199,15 @@ export type ClaudeTokenSelectionReason =
   /** Level on remaining share and reset; won on #917's discovery order. */
   | "tied-discovery-order"
   /**
-   * No candidate passed the five-hour gate; the winner is the one whose
-   * five-hour window refills first.
+   * No candidate could run and the winner failed the five-hour gate; it is
+   * the one that can spend again first (its five-hour reset, or the later of
+   * its two resets when its week is also spent).
    */
   | "five-hour-gate-failed-soonest-reset"
   /**
    * No candidate could run: the winner passed the five-hour gate but has no
-   * seven-day quota left, and is the one whose week reopens first.
+   * seven-day quota left, and is the one whose week reopens first (other
+   * candidates may have failed the gate instead).
    */
   | "seven-day-spent-soonest-reset"
   /** No candidate had a known budget; #917's discovery order decided. */
@@ -398,7 +403,7 @@ function refillAt(candidate: RankedClaudeToken): number {
  * Order two candidates: by band, then — inside the passing band — by seven-day
  * telemetry (a token with a seven-day window first, Issue #4503), then by the
  * most remaining share, soonest reset, and finally discovery order. Gate
- * failures are ordered by which five-hour window refills first.
+ * failures and spent weeks are ordered by which refills first ({@link refillAt}).
  */
 function compareCandidates(
   a: RankedClaudeToken,

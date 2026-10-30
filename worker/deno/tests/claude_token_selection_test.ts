@@ -398,6 +398,22 @@ Deno.test("ranking puts an unknown budget behind every known one without droppin
   assertEquals(ranking.ranked.at(-1)?.remainingFraction, null);
 });
 
+Deno.test("ranking never marks an unknown budget's week as spent (Issue #4504 review)", () => {
+  // Nothing was measured, so there is no week to call spent: the field is an
+  // explicit false, and the unknown token is not a spent-week candidate.
+  const ranking = rankClaudeTokenBudgets([
+    unknown("provider", "http-401"),
+    known("provider-2", 0.5, NOW + HOUR, "seven_day"),
+  ], NOW);
+
+  const unmeasured = ranking.ranked.find((r) => r.label === "provider");
+  assertEquals(unmeasured?.sevenDaySpent, false);
+  assertEquals(
+    ranking.ranked.find((r) => r.label === "provider-2")?.sevenDaySpent,
+    false,
+  );
+});
+
 Deno.test("ranking falls back to discovery order when every budget is unknown (Issue #919)", () => {
   // #917 lists the primary provider.env first, so the run still starts on
   // today's token rather than refusing to start.
