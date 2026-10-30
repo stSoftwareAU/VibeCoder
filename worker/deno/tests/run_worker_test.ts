@@ -139,6 +139,7 @@ function stubDeps(
       rec.setEnv[name] = value;
     },
     log: () => {},
+    logWarning: () => {},
     logError: () => {},
     // The production check opens sockets when the flag is set. Tests do not
     // set it, and still must not inherit a check that could (Issue #4048).
@@ -1193,10 +1194,12 @@ Deno.test("runWorker - an unproved egress policy exits before any claim (Issue #
 Deno.test("runWorker - a non-enforcing dialect warns and still claims (Issue #4048)", async () => {
   const rec = newRecorder();
   const warnings: string[] = [];
+  const errors: string[] = [];
   const result = await runWorker(
     baseOptions(),
     stubDeps(rec, {
-      logError: (message) => warnings.push(message),
+      logWarning: (message) => warnings.push(message),
+      logError: (message) => errors.push(message),
       checkEgress: () =>
         Promise.resolve({
           verdict: "not_enforced",
@@ -1211,6 +1214,7 @@ Deno.test("runWorker - a non-enforcing dialect warns and still claims (Issue #40
   assertEquals(result.outcome, "completed");
   assertEquals(result.exitCode, 0);
   assert(rec.calls.includes("loop"));
+  assertEquals(errors, []);
   assert(
     warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
     warnings.join("\n"),
@@ -1222,6 +1226,8 @@ Deno.test("runWorker records actual Apple controls before claiming and refuses a
   try {
     for (const broken of [true, false]) {
       const rec = newRecorder();
+      const warnings: string[] = [];
+      const errors: string[] = [];
       const options = {
         ...baseOptions(),
         env: (name: string) =>
@@ -1230,6 +1236,8 @@ Deno.test("runWorker records actual Apple controls before claiming and refuses a
       const result = await runWorker(
         options,
         stubDeps(rec, {
+          logWarning: (message) => warnings.push(message),
+          logError: (message) => errors.push(message),
           checkEgress: () =>
             checkEgressPolicy({
               env: (name) =>
@@ -1253,6 +1261,22 @@ Deno.test("runWorker records actual Apple controls before claiming and refuses a
       );
       assertEquals(result.exitCode, broken ? EGRESS_SELFCHECK_EXIT_STATUS : 0);
       assertEquals(rec.calls.includes("loop"), !broken);
+      assertEquals(rec.calls.includes("github-user"), !broken);
+      assertEquals(rec.cleanupCalled, true);
+      assert(
+        warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
+        warnings.join("\n"),
+      );
+      assertEquals(
+        errors.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
+        false,
+        errors.join("\n"),
+      );
+      assertEquals(
+        errors.some((line) => line.includes(EGRESS_SELFCHECK_FAILURE_MARKER)),
+        broken,
+        errors.join("\n"),
+      );
       const log = await Deno.readTextFile(`${home}/logs/run_core.log`);
       assert(log.includes('"hostLan":"reachable"'));
       assert(log.includes('"directInternetV6":"unknown"'));

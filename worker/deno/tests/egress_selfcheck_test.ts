@@ -5,6 +5,8 @@
  */
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
+import { egressSelfcheckCommand } from "../commands/egress_selfcheck.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   checkEgressPolicy,
   classifyEgressProbes,
@@ -205,6 +207,58 @@ Deno.test("checkEgressPolicy - a false flag does not run probes", async () => {
   assertEquals(decision.verdict, "not_enforced");
   assertEquals(decision.exitCode, 0);
   assert(decision.warning?.includes("apple-container"));
+});
+
+Deno.test("egress-selfcheck - emits warnings with warn and failures with error", async () => {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  console.error = (...args: unknown[]) => errors.push(args.join(" "));
+  console.log = () => {};
+  try {
+    const seams = {
+      env: (name: string) =>
+        ({
+          VIBE_EGRESS_ENFORCED: "false",
+          VIBE_RUNTIME_KIND: "apple-container",
+          VIBE_APPLE_EGRESS_MODE: "internal",
+          VIBE_RUNTIME_VERSION: "1.2.2",
+          VIBE_EGRESS_MACOS_VERSION: "27.0.1",
+        })[name],
+      probes: probes({ proxyAllowed: "succeeded" }),
+      appleObserved: { ipv4: "refused", host: "connected" },
+      appleControl: { ipv4: "connected", host: "connected" },
+    };
+    const config = buildDefaultWorkerConfig();
+    await egressSelfcheckCommand.execute({}, config, seams);
+    assert(warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)));
+    assertEquals(
+      errors.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
+      false,
+    );
+
+    warnings.length = 0;
+    errors.length = 0;
+    await egressSelfcheckCommand.execute(
+      {},
+      config,
+      { ...seams, probes: probes({ proxyAllowed: "failed" }) },
+    );
+    assertEquals(
+      warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
+      true,
+    );
+    assert(
+      errors.some((line) => line.includes(EGRESS_SELFCHECK_FAILURE_MARKER)),
+    );
+  } finally {
+    console.warn = originalWarn;
+    console.error = originalError;
+    console.log = originalLog;
+  }
 });
 
 Deno.test("formatEgressPolicyRecord - refuses a field that is not one token", () => {

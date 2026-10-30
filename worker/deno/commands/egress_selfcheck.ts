@@ -49,7 +49,7 @@ export const egressSelfcheckCommand: EgressSelfcheckCommand = {
       ...(seams.date ? { date: seams.date } : {}),
       ...(seams.timeoutMs !== undefined ? { timeoutMs: seams.timeoutMs } : {}),
     });
-    if (decision.warning) console.error(decision.warning);
+    if (decision.warning) console.warn(decision.warning);
     if (decision.marker) console.error(decision.marker);
     console.log(decision.record);
     if (decision.exitCode === 0) {
