@@ -25,16 +25,21 @@ it.
 - `worker/deno/lib/config_unknown_keys.ts`: the four `host_cache_reclaim_*` keys
   are known config keys, so setting them no longer prints an "is not recognised
   and will be ignored" warning on every launch.
-- `run.sh` / `run.ps1`: call the command before deciding to recreate the work
-  volume, both before a build and on the steady-state heal step when the image
-  already exists, and report `[WORK_VOLUME_UNRECOVERED]` when a recreate would
-  not help. `run.sh` records the recreate as declined
-  (`workVolumeRecreateDeclined`) only when it really declines one: the shortfall
-  gate, the repeat-reading gate, or no resettable volume. A recreate the runtime
-  failed is retried on the next launch, so it is not reported as declined. A
-  recreate step that ran and left the host short (whether or not it recreated a
-  volume), with its reading recorded so the next launch declines, sets
-  `workVolumeRecreateUnrecovered` (written only then).
+- `run.sh`: calls the command before deciding to recreate the work volume, both
+  before a build and on the steady-state heal step when the image already
+  exists, and reports `[WORK_VOLUME_UNRECOVERED]` when a recreate would not
+  help. It records the recreate as declined (`workVolumeRecreateDeclined`) only
+  when it really declines one: the shortfall gate, the repeat-reading gate, or
+  no resettable volume. A recreate the runtime failed is retried on the next
+  launch, so it is not reported as declined. A recreate step that ran and left
+  the host short (whether or not it recreated a volume), with its reading
+  recorded so the next launch declines, sets `workVolumeRecreateUnrecovered`
+  (written only then).
+- `run.ps1`: has no heal step and no work-volume recreate, so it only runs one
+  inline reclaim before its hard disk floor (which re-measures the drive and
+  judges what the reclaim left). It does not report `[WORK_VOLUME_UNRECOVERED]`
+  and writes neither the declined nor the unrecovered flag; those are `run.sh`
+  only.
 - `host_disk.ts` / `heavy_build_gate.ts`: the launch-end stop reason no longer
   promises a recreate once the launcher has declined one or a recreate it ran
   left the host short (it says the recreate was tried and is not repeated until
@@ -75,7 +80,7 @@ the mutation and watching a test go red:
 
 ## Test Plan
 
-- `worker/deno/tests/host_cache_reclaim_test.ts` (52 tests at head, all pass):
+- `worker/deno/tests/host_cache_reclaim_test.ts` (57 tests at head, all pass):
   - a root reached through a symlink, with a process line naming the cache by
     the alias spelling, keeps the cache (red with the realpath-only guard); a
     positive control removes an unnamed cache through the same alias;
@@ -127,7 +132,7 @@ cannot credit its removal and the largest-directories line shows it as
 
 ## Mutation check (PR #4500 review)
 
-- `worker/deno/lib/host_cache_reclaim.ts:406` — dropped operand
+- `worker/deno/lib/host_cache_reclaim.ts:407` — dropped operand
   `!info.isSymlink`: exempt (untestable): equivalent mutant. `Deno.lstat` never
   follows a link, so an entry that is a symlink reports `isDirectory: false` and
   the first operand already excludes it. The other nine mutants listed for lines
