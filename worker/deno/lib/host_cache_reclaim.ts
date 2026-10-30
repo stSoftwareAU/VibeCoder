@@ -372,7 +372,8 @@ export interface SizeWalkOptions {
  * (Windows) (#4500 review). Sums allocated blocks where the platform reports
  * them, else apparent sizes; symlinks are counted as links and never followed.
  * Null when the walk exceeds its entry or time budget or the root cannot be
- * read: the size is unmeasured, never a partial sum.
+ * read: the size is unmeasured. An unreadable subdirectory is skipped, so the
+ * figure can omit it.
  */
 export async function walkDirSizeBytes(
   path: string,

@@ -1101,3 +1101,154 @@ Deno.test("command: an unreadable config is refused", async () => {
     assertStringIncludes(result.message, "not a JSON object");
   });
 });
+
+/** Runs `fn` with `Deno[name]` replaced, restoring it afterwards. */
+async function withDenoPatch<K extends "open" | "lstat" | "readDir">(
+  name: K,
+  patch: (original: (typeof Deno)[K]) => (typeof Deno)[K],
+  fn: () => Promise<void>,
+): Promise<void> {
+  const original = Deno[name];
+  // deno-lint-ignore no-explicit-any
+  (Deno as any)[name] = patch(original);
+  try {
+    await fn();
+  } finally {
+    // deno-lint-ignore no-explicit-any
+    (Deno as any)[name] = original;
+  }
+}
+
+Deno.test("reading a tag prefix closes the file it opened (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const tag = join(root, CACHEDIR_TAG_FILENAME);
+    await Deno.writeTextFile(tag, `${CACHEDIR_TAG_SIGNATURE}\n`);
+    let opened = 0;
+    let closed = 0;
+    await withDenoPatch("open", (original) =>
+      // deno-lint-ignore no-explicit-any
+      (async (...args: any[]) => {
+        // deno-lint-ignore no-explicit-any
+        const file = await (original as any)(...args);
+        opened++;
+        const close = file.close.bind(file);
+        file.close = () => {
+          closed++;
+          close();
+        };
+        return file;
+      }) as typeof Deno.open, async () => {
+      const reading = await realHostCacheFs.readTagFile(tag);
+      assertEquals(reading.state, "file");
+    });
+    assertEquals(opened, 1);
+    assertEquals(closed, 1);
+  });
+});
+
+Deno.test("walkDirSizeBytes counts a sparse file by its allocated blocks, and by apparent size where the platform reports none (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const tree = join(root, "tree");
+    await Deno.mkdir(tree);
+    const sparse = join(tree, "sparse.bin");
+    await Deno.writeTextFile(sparse, "x");
+    await Deno.truncate(sparse, 50_000_000);
+    const real = await Deno.lstat(sparse);
+    if (real.blocks === null) return; // a platform that reports no blocks
+    const allocated = await walkDirSizeBytes(tree);
+    assert(
+      allocated !== null && allocated < 5_000_000,
+      `counted apparent size ${allocated}`,
+    );
+
+    // Where blocks are unreported (Windows), the apparent size is summed.
+    await withDenoPatch("lstat", (original) =>
+      (async (path: string | URL) => {
+        const info = await original(path);
+        return { ...info, blocks: null } as Deno.FileInfo;
+      }) as typeof Deno.lstat, async () => {
+      const apparent = await walkDirSizeBytes(tree);
+      assert(
+        apparent !== null && apparent >= 50_000_000,
+        `counted allocated blocks ${apparent}`,
+      );
+    });
+  });
+});
+
+Deno.test("walkDirSizeBytes stops when the budget runs out inside a subdirectory, and descends only into real directories (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const tree = join(root, "tree");
+    await Deno.mkdir(join(tree, "sub"), { recursive: true });
+    for (let i = 0; i < 5; i++) {
+      await Deno.writeTextFile(join(tree, "sub", `f${i}`), "x");
+    }
+    await Deno.writeTextFile(join(tree, "plain.txt"), "x");
+    // One top-level directory, then the budget runs out among its files.
+    assertEquals(await walkDirSizeBytes(tree, { maxEntries: 4 }), null);
+    assert(await walkDirSizeBytes(tree, { maxEntries: 7 }) !== null);
+
+    // Positive control above; now see which paths the walk lists.
+    const listed: string[] = [];
+    await withDenoPatch("readDir", (original) =>
+      ((path: string | URL) => {
+        listed.push(String(path));
+        return original(path);
+      }) as typeof Deno.readDir, async () => {
+      assert(await walkDirSizeBytes(tree) !== null);
+    });
+    assertEquals(listed.sort(), [tree, join(tree, "sub")].sort());
+  });
+});
+
+Deno.test("walkDirSizeBytes skips an unreadable subdirectory but not an unreadable root (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const tree = join(root, "tree");
+    const locked = join(tree, "locked");
+    await Deno.mkdir(locked, { recursive: true });
+    await Deno.writeFile(join(tree, "a.bin"), new Uint8Array(100_000));
+    await Deno.writeFile(join(locked, "hidden.bin"), new Uint8Array(100_000));
+    await withDenoPatch("readDir", (original) =>
+      ((path: string | URL) => {
+        if (String(path) === locked) {
+          throw new Deno.errors.PermissionDenied("locked");
+        }
+        return original(path);
+      }) as typeof Deno.readDir, async () => {
+      const partial = await walkDirSizeBytes(tree);
+      assert(partial !== null && partial >= 100_000, `measured ${partial}`);
+      assert(partial < 200_000, `read the locked directory: ${partial}`);
+      assertEquals(await walkDirSizeBytes(locked), null);
+    });
+  });
+});
+
+Deno.test("defaultDirSizeBytes takes a valid du figure and walks instead for an unusable one (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    await Deno.writeFile(join(root, "a.bin"), new Uint8Array(100_000));
+    const du = (stdout: string) => async () => ({
+      ok: true as const,
+      value: { timedOut: false, stdout, stderr: "", success: true },
+    });
+    assertEquals(
+      // deno-lint-ignore no-explicit-any
+      await defaultDirSizeBytes(root, du(`12\t${root}\n`) as any),
+      12 * 1024,
+    );
+    assertEquals(
+      // deno-lint-ignore no-explicit-any
+      await defaultDirSizeBytes(root, du(`0\t${root}\n`) as any),
+      0,
+    );
+    for (
+      const bad of [`-5\t${root}\n`, `Infinity\t${root}\n`, "not a size\n"]
+    ) {
+      // deno-lint-ignore no-explicit-any
+      const bytes = await defaultDirSizeBytes(root, du(bad) as any);
+      assert(
+        bytes !== null && Number.isFinite(bytes) && bytes >= 100_000,
+        `${JSON.stringify(bad)} gave ${bytes}`,
+      );
+    }
+  });
+});

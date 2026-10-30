@@ -973,8 +973,9 @@ write_host_disk_reading() {
   ((${#trim_refused_volumes[@]})) && trim_refused=true
   # Issue #4498: whether a work volume recreate was declined this launch, and
   # the host's largest directories when a cache reclaim left the host short.
-  # Present only when there is a list, so the worker's strict parser sees the
-  # same shape as before on every other launch.
+  # The list is present only when there is one, and workVolumeRecreateUnrecovered
+  # only after a recreate step that left the host short, so the worker's strict
+  # parser sees the same shape as before on a launch with neither.
   local declined=false largest_field="" unrecovered_field=""
   [[ "${work_volume_recreate_declined}" == true ]] && declined=true
   if [[ "${work_volume_recreate_unrecovered}" == true ]]; then

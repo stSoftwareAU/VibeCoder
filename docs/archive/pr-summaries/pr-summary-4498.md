@@ -32,7 +32,7 @@ it.
   (`workVolumeRecreateDeclined`) only when it really declines one: the
   shortfall gate, the repeat-reading gate, or no resettable volume. A recreate
   the runtime failed is retried on the next launch, so it is not reported as
-  declined. A recreate that ran and left the host short, with its reading
+  declined. A recreate step that ran and left the host short (whether or not it recreated a volume), with its reading
   recorded so the next launch declines, sets `workVolumeRecreateUnrecovered`
   (written only then).
 - `host_disk.ts` / `heavy_build_gate.ts`: the launch-end stop reason no longer
@@ -124,3 +124,13 @@ the mutation and watching a test go red:
 Not covered: a `du` timeout leaves a cache unmeasured (null), so the stop rule
 cannot credit its removal and the largest-directories line shows it as
 `(unmeasured)`; that is rare and reported rather than guessed.
+
+## Mutation check (PR #4500 review)
+
+- `worker/deno/lib/host_cache_reclaim.ts:406` — dropped operand
+  `!info.isSymlink`: exempt (untestable): equivalent mutant. `Deno.lstat` never
+  follows a link, so an entry that is a symlink reports `isDirectory: false`
+  and the first operand already excludes it. The other nine mutants listed for
+  lines 224, 405–407 and 433 are killed by new tests in
+  `worker/deno/tests/host_cache_reclaim_test.ts`, each re-run red against the
+  mutation and green on the head.

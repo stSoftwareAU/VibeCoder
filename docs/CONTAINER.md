@@ -1491,8 +1491,9 @@ the last launch (details in the run log)`, and the full message stays in
 `run_core.log`. The digest is kept in `~/.vibe-coder/work-volume-heal-largest`.
 A launch that declines to recreate a work volume records
 `workVolumeRecreateDeclined: true` in `host-disk.json`, with the list in
-`largestHostDirectories`. A launch that recreated a volume and found the host
-still short records `workVolumeRecreateUnrecovered: true` instead (the field is
+`largestHostDirectories`. A launch that reached the recreate step (it recreated a
+volume, or found every resettable volume below the reset minimum) and still
+found the host short records `workVolumeRecreateUnrecovered: true` instead (the field is
 written only then): the reading is also kept, so the next launch declines until
 the free-space reading moves by more than the reset minimum, and the worker's
 stop reason says the recreate was tried and will not be repeated.

@@ -429,8 +429,8 @@ export function inFlightParkReason(deferral: string | null): string | null {
  * blocks. Ending the launch discards the container's ephemeral layer, and the
  * launcher then either recreates the volume, if the host is still below the
  * floor, or, when it declined to recreate or a recreate it ran left the host
- * short (Issue #4498), says the missing space is elsewhere on the host and that
- * nothing in the worker will free it. Above the floor, or where the trim is honoured, the build is parked and the launch
+ * short (Issue #4498), says the missing space is elsewhere on the host (after a
+ * declined recreate it adds that nothing in the worker will free it). Above the floor, or where the trim is honoured, the build is parked and the launch
  * continues: fstrim can return the blocks, and a recreate would not.
  *
  * @returns The reason to end the launch, naming the floor, or null to continue.
