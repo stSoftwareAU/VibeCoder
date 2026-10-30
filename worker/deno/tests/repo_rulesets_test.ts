@@ -605,6 +605,16 @@ Deno.test("repo_rulesets - an unpinned live check stays unpinned", () => {
   assertFalse("integration_id" in unpinned);
 });
 
+Deno.test("repo_rulesets - a null live integration_id stays unpinned (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(
+      ["gate"],
+      detailWithChecks([{ context: "gate", integration_id: null }]),
+    ),
+    [{ context: "gate" }],
+  );
+});
+
 Deno.test("repo_rulesets - a new worker context is written without an integration_id beside the live checks (Issue #4487)", () => {
   const body = buildDefaultBranchRulesetUpdateBody(
     "Vibe",
@@ -768,6 +778,66 @@ Deno.test("repo_rulesets - a live check entry that is not an object throws (Issu
   assertEquals(
     unionChecksOf(["worker-check"], detailWithChecks([{ context: "gate" }])),
     [{ context: "worker-check" }, { context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - primitive live check entries refuse the update as non-objects (Issue #4487)", () => {
+  for (const entry of ["gate", 7, false]) {
+    assertThrows(
+      () => unionChecksOf(["worker-check"], detailWithChecks([entry])),
+      Error,
+      "live required check 0 of rule 0 is not an object",
+    );
+  }
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "gate" }])),
+    [{ context: "worker-check" }, { context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - non-object live rules are ignored while valid checks and other rules survive (Issue #4487)", () => {
+  const detail = detailWithChecks([{ context: "gate", integration_id: 111 }]);
+  const body = buildDefaultBranchRulesetUpdateBody("Vibe", ["worker-check"], {
+    ...detail,
+    rules: [
+      undefined,
+      null,
+      "ignored",
+      7,
+      false,
+      { type: "deletion" },
+      ...detail.rules!,
+    ] as never,
+  });
+  assertEquals(body.rules, [
+    { type: "deletion" },
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: true,
+        required_status_checks: [
+          { context: "worker-check" },
+          { context: "gate", integration_id: 111 },
+        ],
+      },
+    },
+  ]);
+});
+
+Deno.test("repo_rulesets - null required-check parameters refuse the update with the cause (Issue #4487)", () => {
+  const detail: RulesetDetail = {
+    id: 47,
+    name: "Vibe",
+    rules: [{ type: "required_status_checks", parameters: null }] as never,
+  };
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rule 0 has no parameters object",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([])),
+    [{ context: "worker-check" }],
   );
 });
 

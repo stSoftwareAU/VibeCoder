@@ -543,12 +543,19 @@ Deno.test("ruleset - a malformed live check refuses the update and writes nothin
     gh,
   );
 
+  assertEquals(result.ok, false);
   assert(!result.ok);
   assert(result.error.message.includes("Refusing to update ruleset 42"));
   assert(
     result.error.message.includes(
       'has a non-integer integration_id for context "gitleaks"',
     ),
+  );
+  assertEquals(
+    result.error.message,
+    "Refusing to update ruleset 42 in org/malformed: " +
+      "Refusing to rewrite required checks: live required check 0 of rule 0 " +
+      'has a non-integer integration_id for context "gitleaks"',
   );
   assertEquals(rulesetWrites(calls).length, 0);
 

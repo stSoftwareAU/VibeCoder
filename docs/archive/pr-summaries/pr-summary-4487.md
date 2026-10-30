@@ -111,8 +111,9 @@ Related existing rules checked: `docs/MERGE.md` additive-convergence text
 - **violation** — malformed live checks dropped silently — evidence:
   `worker/deno/lib/repo_rulesets.ts:486` — reason: fixed in this diff (throws;
   the plan refuses the update)
-- **clean** — Australian English, no existing test edited or assertion removed,
-  helpers private and used by production, doc comments and `docs/MERGE.md` agree
+- **clean** — Australian English, existing assertions retained and the malformed
+  caller test strengthened, helpers private and used by production, doc comments
+  and `docs/MERGE.md` agree
 
 ## Test Plan
 
@@ -141,7 +142,9 @@ Related existing rules checked: `docs/MERGE.md` additive-convergence text
 - The strict and empty-bypass assertions run successfully against base before
   the new union assertion fails; these acceptance behaviours were already
   present and are not claimed as changes introduced here.
-- No existing test was edited and no assertion removed.
+- Existing assertions are retained. The malformed live-check caller test now
+  also asserts `ok` is exactly `false` and the full refusal message, so a
+  missing discriminator or an incorrectly stringified `Error` fails the test.
 - `deno task test:unit tests/repo_rulesets_test.ts tests/default_branch_ruleset_test.ts tests/default_branch_ruleset_merge_queue_test.ts tests/default_branch_ruleset_audit_test.ts`:
   110 passed, 0 failed.
 - `deno fmt --check`, `deno lint`, and `deno check --frozen --lock=deno.lock` on
@@ -158,3 +161,29 @@ Related existing rules checked: `docs/MERGE.md` additive-convergence text
   the full Deno test phase completed.
 - `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4487-body.md --labels work-on ../../docs/archive/pr-summaries/pr-summary-4487.md`:
   passed, 0 blocked, 0 not checked.
+
+### Completion retry — required item 1
+
+Added four builder tests in `worker/deno/tests/repo_rulesets_test.ts` and
+strengthened the malformed live-check test in
+`worker/deno/tests/default_branch_ruleset_test.ts`. Production code is unchanged
+by this retry. Each reported mutation was applied alone, its named test was run
+with `deno test --no-check --frozen --lock=deno.lock` and the usual unit-test
+permissions plus `--filter`, and the production file was restored afterwards.
+Every run failed at runtime (0 passed, 1 failed), rather than relying on a
+TypeScript compilation failure. No exemptions are needed.
+
+| Reported mutation                                                            | Test and observed failure                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worker/deno/lib/default_branch_ruleset.ts:520` — negated ternary condition  | `ruleset - a malformed live check refuses the update and writes nothing (Issue #4487)` — the full refusal message gains an unwanted `Error:` prefix.                                                                                   |
+| `worker/deno/lib/default_branch_ruleset.ts:522` — deleted `ok` property      | Same caller test — `result.ok` is `undefined` instead of `false`.                                                                                                                                                                      |
+| `worker/deno/lib/repo_rulesets.ts:492` — dropped `typeof rule !== "object"`  | `repo_rulesets - non-object live rules are ignored while valid checks and other rules survive (Issue #4487)` — an undefined rule entry throws instead of building the body with the valid check and deletion rule retained.            |
+| `worker/deno/lib/repo_rulesets.ts:497` — dropped `parameters === null`       | `repo_rulesets - null required-check parameters refuse the update with the cause (Issue #4487)` — null parameters give a generic property-access error instead of the specific refusal; an empty checks array is the accepted control. |
+| `worker/deno/lib/repo_rulesets.ts:517` — dropped `typeof entry !== "object"` | `repo_rulesets - primitive live check entries refuse the update as non-objects (Issue #4487)` — a primitive entry gives the wrong refusal cause; an object check is the accepted control.                                              |
+| `worker/deno/lib/repo_rulesets.ts:532` — dropped `integrationId !== null`    | `repo_rulesets - a null live integration_id stays unpinned (Issue #4487)` — a valid null app ID is rejected instead of writing an unpinned check.                                                                                      |
+
+- After restoring production code,
+  `deno task test:unit tests/repo_rulesets_test.ts tests/default_branch_ruleset_test.ts tests/default_branch_ruleset_merge_queue_test.ts tests/default_branch_ruleset_audit_test.ts`:
+  114 passed, 0 failed.
+- `deno fmt --check`, `deno lint`, and `deno check --frozen --lock=deno.lock` on
+  the two modified test files: passed.
