@@ -4,46 +4,46 @@ The Vibe Coder ships a Linux container definition under
 [`container/`](../container/) so the worker runs against a toolchain the image
 owns, rather than whatever a host happens to have installed.
 
-`run.sh` and `run.ps1` launch the worker inside that image, and both build the
-same launch plan, so a Windows host is contained exactly as a macOS one is. The
-image is also built and exercised by CI
-(`.github/workflows/container-build.yml`) — on a pull request only when it
-touches something that can change the image (`container/**` — the Containerfile,
-entrypoint, tools manifest, provider scripts — or the workflow itself); any
-other PR gets the required `container` check reported as passed without a build.
-That decision is made by
+`run.sh` and `run.ps1` launch the worker inside
+that image, and both build the same launch plan, so a Windows host is
+contained exactly as a macOS one is. The image is also built and exercised by
+CI (`.github/workflows/container-build.yml`) — on a pull request only when it
+touches something that can change the image (`container/**` — the
+Containerfile, entrypoint, tools manifest, provider scripts — or the workflow
+itself); any other PR gets the required `container` check reported as passed
+without a build. That decision is made by
 [`.github/scripts/detect-image-changes.sh`](../.github/scripts/detect-image-changes.sh),
 which fails the job loudly when the diff cannot run rather than skipping the
-build (Issue #1929). A weekly scheduled sweep (and `workflow_dispatch`) rebuilds
-the image regardless, so drift from `worker/**` or `quality.sh` — the paths the
-pull-request filter deliberately skips — is still caught. Inside the image CI
-runs the container-specific checks (`deno check` plus the entrypoint,
-launch-plan, runtime, manifest, run-mode and launcher-contract tests), not the
-whole test suite — the unit suite runs on the same commit in the sharded
+build (Issue #1929). A weekly scheduled sweep (and `workflow_dispatch`)
+rebuilds the image regardless, so drift from `worker/**` or `quality.sh` — the
+paths the pull-request filter deliberately skips — is still caught. Inside the image CI runs the
+container-specific checks (`deno check` plus the entrypoint, launch-plan,
+runtime, manifest, run-mode and launcher-contract tests), not the whole test
+suite — the unit suite runs on the same commit in the sharded
 `validate (tests N/4)` legs, and the integration suites in the separate,
-non-required `integration tests` job (PR #1170). The second-engine (Podman)
-build is an acceptance criterion of the scheduled sweep rather than of every
-pull request.
+non-required `integration tests` job (PR #1170). The second-engine (Podman) build is an acceptance criterion of the
+scheduled sweep rather than of every pull request.
 
-**Container is the only mode** (Issue #4). The former host-native opt-in and the
-macOS `seatbelt` profile were removed by Issue #4 — containment is mandatory. A
-configuration that still names one fails loud with the removal explained, and a
-missing container runtime stays the loud failure it is today, with no host path
-to fall back to. See [`run_mode`](CONFIGURATION.md#-run-mode) for the setting
-and [Containment](CONTAINMENT.md) for the boundary.
+**Container is the only mode** (Issue #4). The former host-native
+opt-in and the macOS `seatbelt` profile were
+removed by Issue #4 — containment is mandatory. A configuration that still
+names one fails loud with the removal explained, and a missing container
+runtime stays the loud failure it is today, with no host path to
+fall back to. See [`run_mode`](CONFIGURATION.md#-run-mode) for the
+setting and [Containment](CONTAINMENT.md) for the boundary.
 
 ## What is in the image
 
-| Component                                                                                  | Source                                                                                                   | Pinned by                                                                                        |
-| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `bash`, GNU coreutils (`timeout`), `git` (≥ 2.41), `curl`, CA certificates, `ruby` (≥ 3.1) | `docker.io/library/ruby:3.4-trixie` base image                                                           | Image digest                                                                                     |
-| `deno`                                                                                     | `docker.io/denoland/deno:bin-*` build stage                                                              | Image digest                                                                                     |
-| `gh`                                                                                       | GitHub release tarball                                                                                   | Version + SHA-256 per architecture                                                               |
-| `jq`                                                                                       | GitHub release binary                                                                                    | Version + SHA-256 per architecture                                                               |
-| the coding-agent binaries (`claude`, …)                                                    | one `container/providers/<id>.sh` per id in `AGENT_PROVIDERS`                                            | Version + SHA-256 per architecture                                                               |
-| the monitored-repository toolchains (below)                                                | `toolchains` layers                                                                                      | Version + SHA-256 per architecture                                                               |
-| `graft` (`@nanonets/graft`, worker runtime — the repo-context code graph)                  | npm tarball, then a rebuild of its seven native modules in the image                                     | Version + SHA-256 (noarch tarball; the native modules are compiled, not downloaded)              |
-| `playwright-core` + headless Chromium                                                      | npm tarball, then checksum-verified Chromium, headless-shell and ffmpeg zips, then `install --with-deps` | Version + SHA-256 (noarch tarball + chromium_* / headless_shell_* / ffmpeg_*); apt deps residual |
+| Component                        | Source                                             | Pinned by                       |
+| -------------------------------- | -------------------------------------------------- | ------------------------------- |
+| `bash`, GNU coreutils (`timeout`), `git` (≥ 2.41), `curl`, CA certificates, `ruby` (≥ 3.1) | `docker.io/library/ruby:3.4-trixie` base image | Image digest                    |
+| `deno`                           | `docker.io/denoland/deno:bin-*` build stage                   | Image digest                    |
+| `gh`                             | GitHub release tarball                              | Version + SHA-256 per architecture |
+| `jq`                             | GitHub release binary                               | Version + SHA-256 per architecture |
+| the coding-agent binaries (`claude`, …) | one `container/providers/<id>.sh` per id in `AGENT_PROVIDERS` | Version + SHA-256 per architecture |
+| the monitored-repository toolchains (below) | `toolchains` layers            | Version + SHA-256 per architecture |
+| `graft` (`@nanonets/graft`, worker runtime — the repo-context code graph) | npm tarball, then a rebuild of its seven native modules in the image | Version + SHA-256 (noarch tarball; the native modules are compiled, not downloaded) |
+| `playwright-core` + headless Chromium | npm tarball, then checksum-verified Chromium, headless-shell and ffmpeg zips, then `install --with-deps` | Version + SHA-256 (noarch tarball + chromium_* / headless_shell_* / ffmpeg_*); apt deps residual |
 
 Every version lives in [`container/tools.json`](../container/tools.json);
 `container/Containerfile` only restates those values as build `ARG`s. Nothing
@@ -51,31 +51,32 @@ resolves to `latest`, and there is no package-manager install step to rot,
 because the digest-pinned base already ships the system tools.
 
 The base is the official Ruby image, which is itself built on
-`buildpack-deps:trixie`, so one digest supplies the system tools _and_ the
-`ruby` the manifest still lists — a leftover of the GitHub Pages pipeline Issue
-#1344 removed, tracked for removal in Issue #1376. Two floors are load-bearing
-and are recorded as `minVersions` in `container/tools.json`: `git` ≥ 2.41, below
-which a literal `--end-of-options` survives into `argv` and is taken as a
-revision , and `ruby` ≥ 3.1 for `Psych.safe_load_file`. `container-build.yml`
-asserts the built image clears both, so a base-image downgrade fails at build
-time rather than as a puzzling test failure.
+`buildpack-deps:trixie`, so one digest supplies the system tools *and* the
+`ruby` the manifest still lists — a leftover of the GitHub Pages pipeline
+Issue #1344 removed, tracked for removal in Issue #1376. Two floors are load-bearing and are
+recorded as `minVersions` in `container/tools.json`: `git` ≥ 2.41, below which
+a literal `--end-of-options` survives into `argv` and is taken as a revision
+, and `ruby` ≥ 3.1 for `Psych.safe_load_file`.
+`container-build.yml` asserts the built image clears both, so a base-image
+downgrade fails at build time rather than as a puzzling test failure.
 
-Because GNU coreutils is present, `timeout` resolves directly — the `gtimeout`
-fallback that `worker/deno/lib/path_bootstrap.ts` reasons about is a macOS-host
-concern only. The image also bakes a PATH with no Homebrew directories, so those
-host-specific assumptions cannot leak into worker behaviour inside the
-container.
+Because GNU coreutils is present, `timeout` resolves directly — the
+`gtimeout` fallback that `worker/deno/lib/path_bootstrap.ts` reasons about is a
+macOS-host concern only. The image also bakes a PATH with no Homebrew
+directories, so those host-specific assumptions cannot leak into worker
+behaviour inside the container.
 
 ## Monitored-repository toolchains
 
 The worker does not only run this repository's gate — it runs each monitored
-repository's own `quality.sh`. Those gates were previously satisfied by whatever
-the host had installed (a Homebrew `shellcheck`, a `rustup` toolchain), which is
-exactly the host leakage the image exists to end. The toolchains below were
-enumerated by reading each `repos` entry in `.config.json` at its own quality
-gate, and each records in `container/tools.json` the repositories it exists for
-— so a repository leaving the fleet makes its toolchain removable rather than
-permanent image weight.
+repository's own `quality.sh`. Those gates were previously satisfied by
+whatever the host had installed (a Homebrew `shellcheck`, a `rustup`
+toolchain), which is exactly the host leakage the image exists to end. The
+toolchains below were enumerated by reading each `repos` entry in
+`.config.json` at its own quality gate, and each records in
+`container/tools.json` the repositories it exists for — so a repository
+leaving the fleet makes its toolchain removable rather than permanent image
+weight.
 
 One entry in the table is not a gate tool at all: `graft` is a worker
 **runtime** tool (Issue #2097), pinned and probed through the same manifest
@@ -83,68 +84,68 @@ machinery because that is what makes it checked, not because a `quality.sh`
 calls it. Its row says so, and it is deliberately absent from
 `REQUIRED_REPO_TOOLCHAIN_COMMANDS`.
 
-| Toolchain                                                                     | Commands (or modules)                       | Exists for                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ----------------------------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rust` 1.99.1 (standalone rust-lang distribution)                             | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `cargo-deny`                                                                  | `cargo-deny`                                | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `cargo-mutants` 27.1.0 (arm64 built from source)                              | `cargo-mutants`                             | The Rust crates' diff-scoped mutation check (`cargo mutants --in-diff`, Issue #3393)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `shellcheck`                                                                  | `shellcheck`                                | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `actionlint`                                                                  | `actionlint`                                | NEAT-AI-scorer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `gitleaks` 8.30.1                                                             | `gitleaks`                                  | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `pwsh` 7.6.8 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`)         | `pwsh`                                      | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `bats-core` 1.14.0                                                            | `bats`                                      | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `codespell` 2.4.3 (wheel in a `/opt/codespell` venv)                          | `codespell`                                 | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`)                  | _module_ `yaml` — no command                | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `codegraph` 1.6.2 (bundle in `/opt/codegraph`, symlinked onto the PATH)       | `codegraph`                                 | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `rtk` 1.0.1 (bare binary in `/usr/local/bin`)                                 | `rtk`                                       | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `floci` 2.3.0 (native binary from the digest-pinned `floci/floci` image)      | `floci`                                     | This repo's worker **runtime** and the pre-push gate's Floci CloudFormation check (Issue #3727): the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint; that check runs `infra/cloudformation/test-floci.sh`, which starts it on demand. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
-| `node` (LTS) + `markdownlint-cli2`                                            | `node`, `npm`, `markdownlint-cli2`          | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `cspell` 10.4.0 (npm tarball, checksum-verified)                              | `cspell`                                    | The pre-push gate's spelling stage for a repository that tracks a cspell config and whose CI runs cspell, e.g. GRQ's `docs/cspell.json` (Issue #3689)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `semgrep` 1.182.1 (wheel in a `/opt/semgrep` venv)                            | `semgrep`                                   | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `graft` 0.25.0 (npm tarball, then seven native modules compiled in the image) | `graft`                                     | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Toolchain                                          | Commands (or modules)                     | Exists for                                                                                    |
+| -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `rust` 1.99.1 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
+| `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
+| `cargo-mutants` 27.1.0 (arm64 built from source)    | `cargo-mutants`                           | The Rust crates' diff-scoped mutation check (`cargo mutants --in-diff`, Issue #3393)              |
+| `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
+| `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
+| `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
+| `pwsh` 7.6.8 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it  |
+| `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
+| `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
+| `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
+| `codegraph` 1.6.2 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
+| `rtk` 1.0.1 (bare binary  in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
+| `floci` 2.3.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** and the pre-push gate's Floci CloudFormation check (Issue #3727): the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint; that check runs `infra/cloudformation/test-floci.sh`, which starts it on demand. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
+| `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
+| `cspell` 10.4.0 (npm tarball, checksum-verified)    | `cspell`                                  | The pre-push gate's spelling stage for a repository that tracks a cspell config and whose CI runs cspell, e.g. GRQ's `docs/cspell.json` (Issue #3689) |
+| `semgrep` 1.182.1 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
+| `graft` 0.25.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
-`rust`, `cargo-deny`, `cargo-mutants`, `shellcheck`, `actionlint`, `gitleaks`,
-`pwsh`, `bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci` and
-`brief` are installed by per-toolchain **fragments** —
-`container/toolchains/<id>.sh`, run by `container/install-toolchains.sh` with
-the ids the Containerfile names (Issue #1594). Each fragment reads its own
-version and per-architecture SHA-256 out of `container/tools.json` with `jq`, so
-the Containerfile carries ids rather than `ARG` blocks; see
+`rust`, `cargo-deny`, `cargo-mutants`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
+`bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`container/install-toolchains.sh` with the ids the Containerfile names
+(Issue #1594). Each fragment reads its own version and per-architecture
+SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
+ids rather than `ARG` blocks; see
 [How the pins stay honest](#how-the-pins-stay-honest) for the rule that keeps
-that exemption honest. Adding one is a fragment, a `container/tools.json` entry
-carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id added to
-one of the Containerfile's `install-toolchains.sh` runs.
+that exemption honest. Adding one is a fragment, a `container/tools.json`
+entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
+added to one of the Containerfile's `install-toolchains.sh` runs.
 
 Nine consequences worth knowing:
 
 - **Rust is pinned to 1.99.1, not `stable`.** That is the 1.99 channel
   NEAT-AI-scorer, NEAT-AI-Discovery, NEAT-AI-Lamarck and NEAT-AI-Backpropagation
   pin in their `rust-toolchain.toml`; they also declare `rust-version = "1.99"`,
-  so on the 1.98.0 image every `cargo check` on them failed with exit 101 (Issue
-  #3258). NEAT-AI-Forests, NEAT-AI-Ockham, NEAT-AI-Rebase and NEAT-AI-Refinery
-  have their 1.99.0 pin open as PRs under NEAT-AI-core#747; GRQ-AutoTrader,
-  GRQ-AutoTraderBackTesting and template-rust still pin 1.98.0 (Issue #309
-  enumerated `rust-toolchain.toml` across the fleet). There is no `rustup` in
-  the image, so that file is not consulted here and every crate builds with the
-  baked 1.99.1. Bump those repos and this pin together — a new stable's clippy
-  lints break their `-D warnings` gates with no code change.
+  so on the 1.98.0 image every `cargo check` on them failed with exit 101
+  (Issue #3258). NEAT-AI-Forests, NEAT-AI-Ockham, NEAT-AI-Rebase and
+  NEAT-AI-Refinery have their 1.99.0 pin open as PRs under NEAT-AI-core#747;
+  GRQ-AutoTrader, GRQ-AutoTraderBackTesting and template-rust still pin
+  1.98.0 (Issue #309 enumerated `rust-toolchain.toml` across the fleet).
+  There is no `rustup` in the image, so that file is not consulted here and
+  every crate builds with the baked 1.99.1. Bump those repos and this pin
+  together — a new stable's clippy lints break their `-D warnings` gates with
+  no code change.
 - **There is no `rustup`.** The toolchain is installed into `/usr/local`, so
   nothing updates at run time. FLEET-taxation's gate would otherwise call
   `rustup update stable`, so the image sets `QUALITY_SKIP_RUST_UPDATE=1` and
   that gate uses the baked toolchain.
-- **`semgrep` is pinned to the version CI runs, not the newest.** It must match
-  `SEMGREP_IMAGE_TAG` in `worker/deno/lib/pinned_actions.ts` — the image
-  `.github/workflows/semgrep.yml` runs — so a local pass predicts a CI pass; the
-  manifest test fails the gate on drift. It is a Python wheel installed into a
-  `/opt/semgrep` virtualenv rather than a single binary, and at roughly 350 MB
-  it is the image's largest toolchain — see
+- **`semgrep` is pinned to the version CI runs, not the newest.** It must
+  match `SEMGREP_IMAGE_TAG` in `worker/deno/lib/pinned_actions.ts` — the image
+  `.github/workflows/semgrep.yml` runs — so a local pass predicts a CI pass;
+  the manifest test fails the gate on drift. It is a Python wheel installed
+  into a `/opt/semgrep` virtualenv rather than a single binary, and at roughly
+  350 MB it is the image's largest toolchain — see
   [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
 - **`gitleaks` is enforced in CI, not by a `quality.sh`.** Neither
   GRQ-AutoTrader (which has no `quality.sh`) nor NEAT-AI-Explore runs the
   scanner from its local gate, so it is here for the agent's benefit: with the
   binary in the image the same scan an agent's PR will face can be run before
-  the PR exists. The amd64 checksum is deliberately the digest the gitleaks CLI
-  fallback pins in both that scan and this repository's own
+  the PR exists. The amd64 checksum is deliberately the digest the gitleaks
+  CLI fallback pins in both that scan and this repository's own
   `.github/workflows/gitleaks.yml`; the local half of that claim is enforced —
   `container_manifest_test.ts` fails the gate when the manifest pin and that
   workflow's `GITLEAKS_VERSION` / `GITLEAKS_SHA256` drift apart.
@@ -157,27 +158,26 @@ Nine consequences worth knowing:
   `worker/deno/tests/pwsh_suites_in_the_gate_test.ts` fails the gate on a host
   without PowerShell rather than letting them report "ignored". The `setup.ps1`
   suites stay integration tests, enforced by
-  `.github/workflows/validate-scripts.yml`, which fails loud without PowerShell.
-  The image sets `POWERSHELL_UPDATECHECK=Off` and
+  `.github/workflows/validate-scripts.yml`, which fails loud without
+  PowerShell. The image sets `POWERSHELL_UPDATECHECK=Off` and
   `POWERSHELL_TELEMETRY_OPTOUT=1`: no update nag and no telemetry round trip
   from an unattended container, the same reasoning as
-  `SEMGREP_ENABLE_VERSION_CHECK`. No apt step either — the runtime libraries the
-  .NET host needs (`libicu76`, `libssl3t64`, `libstdc++6`, `libgssapi-krb5-2`)
-  are already in the digest-pinned base, and the fragment's `pwsh --version`
-  assertion is what proves it.
+  `SEMGREP_ENABLE_VERSION_CHECK`. No apt step either — the runtime libraries
+  the .NET host needs (`libicu76`, `libssl3t64`, `libstdc++6`,
+  `libgssapi-krb5-2`) are already in the digest-pinned base, and the
+  fragment's `pwsh --version` assertion is what proves it.
 - **`bats-core` and `codespell` replace two skipped gate lines.** Both
   NEAT-AI-core and NEAT-AI-scorer drive a BATS suite from their own
-  `quality.sh`, and without the runner each printed
-  `bats not installed —
-  skipping` while their CI apt-installed it and ran the
-  suites — NEAT-AI-core PR 597 skipped all 394 tests locally. `codespell` is the
-  same story on NEAT-AI-core and worse on NEAT-AI-scorer, whose
-  `scripts/spell-check.sh` preflight exits 1 when the binary is absent, so that
-  gate failed outright in the image. `bats-core` publishes no release asset, so
-  the pinned artefact is the tag's GitHub source tarball installed by its own
-  bundled `install.sh`; `codespell` is a wheel in a `/opt/codespell` virtualenv,
-  following semgrep (see [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md)). Both are
-  pure text, so one `noarch` digest covers each.
+  `quality.sh`, and without the runner each printed `bats not installed —
+  skipping` while their CI apt-installed it and ran the suites — NEAT-AI-core
+  PR 597 skipped all 394 tests locally. `codespell` is the same story on
+  NEAT-AI-core and worse on NEAT-AI-scorer, whose `scripts/spell-check.sh`
+  preflight exits 1 when the binary is absent, so that gate failed outright in
+  the image. `bats-core` publishes no release asset, so the pinned artefact is
+  the tag's GitHub source tarball installed by its own bundled `install.sh`;
+  `codespell` is a wheel in a `/opt/codespell` virtualenv, following semgrep
+  (see [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md)). Both are pure text, so one
+  `noarch` digest covers each.
 - **`pyyaml` is a library, not a command** (Issue #1628). With the BATS suites
   executing rather than skipping, 31 of NEAT-AI-core's tests failed here with
   `ModuleNotFoundError: No module named 'yaml'`: its workflow-assertion suites
@@ -186,70 +186,71 @@ Nine consequences worth knowing:
   `python3` script that imports PyYAML, which their CI runners carry and the
   image did not. So this toolchain declares the `modules` it makes importable
   instead of `commands`, and the codespell pattern does not transfer: the
-  consumer is the image's own `python3`, which would never see a `/opt/<tool>`
-  virtualenv. The pinned wheel is installed by the pinned pip with `--target`
-  into the interpreter's own `purelib` directory — the admin install location
-  already on its `sys.path` — which also leaves the PEP 668 externally-managed
-  system environment untouched, and leaves virtualenvs built later (semgrep's,
-  codespell's) unable to shadow their own pinned dependencies with it. PyYAML
-  ships a C extension, so the wheel is per-architecture and its name carries the
-  `cp<major><minor>` interpreter tag; the fragment derives that tag from the
-  running `python3` rather than restating it, so a base-image interpreter bump
-  404s the fetch instead of installing bytes the manifest never pinned.
-- **`codegraph` exists for the worker, not for a monitored gate** (Issue #2153,
-  parent #2145). It is the one toolchain here no repository's `quality.sh`
-  invokes: CodeGraph is trialled as a second repo-context candidate, so the
-  consumer is the worker's own runs. `repos` still names this repository because
-  `parseContainerManifest` rejects an empty list, and it is absent from
-  `REQUIRED_REPO_TOOLCHAIN_COMMANDS` because no gate would miss it. The release
-  is a bundle rather than a bare binary (a `bin/codegraph` shell launcher, its
-  own `node` runtime and `lib/`), so the fragment installs the whole tree under
+  consumer is the image's own `python3`, which would never see a
+  `/opt/<tool>` virtualenv. The pinned wheel is installed by the pinned pip
+  with `--target` into the interpreter's own `purelib` directory — the admin
+  install location already on its `sys.path` — which also leaves the PEP 668
+  externally-managed system environment untouched, and leaves virtualenvs
+  built later (semgrep's, codespell's) unable to shadow their own pinned
+  dependencies with it. PyYAML ships a C extension, so the wheel is
+  per-architecture and its name carries the `cp<major><minor>` interpreter
+  tag; the fragment derives that tag from the running `python3` rather than
+  restating it, so a base-image interpreter bump 404s the fetch instead of
+  installing bytes the manifest never pinned.
+- **`codegraph` exists for the worker, not for a monitored gate** (Issue
+  #2153, parent #2145). It is the one toolchain here no repository's
+  `quality.sh` invokes: CodeGraph is trialled as a second repo-context
+  candidate, so the consumer is the worker's own runs. `repos` still names
+  this repository because `parseContainerManifest` rejects an empty list, and
+  it is absent from `REQUIRED_REPO_TOOLCHAIN_COMMANDS` because no gate would
+  miss it. The release is a bundle rather than a bare binary (a
+  `bin/codegraph` shell launcher, its own `node` runtime and `lib/`), so the
+  fragment installs the whole tree under
   `/opt/codegraph` and symlinks `/usr/local/bin/codegraph` at the launcher,
   which resolves symlinks itself to find its bundle directory. That bundle is
   about 62 MB downloaded and 280 MB unpacked, so it is the third-largest
   toolchain in the image after `rust` and `semgrep`.
-- **`floci` is the one fragment whose binary comes from a container image, not a
-  download** (Issue #3367, parent #3346). The Containerfile adds a digest-pinned
-  `FROM ${FLOCI_IMAGE} AS floci` stage and
-  `COPY --from=floci
-  /app/application /tmp/floci-application` — floci
-  publishes no standalone release binary, and the image's `/app/application` is
-  a native Quarkus binary linking only libc — so the fragment's sha256 in
-  `container/tools.json` is per-architecture against the binary inside that
-  digest-pinned image, not against a fetched tarball. It installs to
-  `/usr/local/lib/floci/application` and writes a `/usr/local/bin/floci`
-  wrapper: the native binary has no `--version` flag (passing one starts the
-  server), so the wrapper answers `--version` with `floci 2.3.0` itself and
-  otherwise execs straight through. The build then smoke-checks it — starts
-  floci in the background bound to `127.0.0.1`, runs a bounded
-  `curl --retry … --retry-connrefused` against `http://127.0.0.1:4566/`, logs
-  the HTTP status, fails the build on no response, then stops the process and
-  removes the copied binary — so a broken image fails on the pull request rather
-  than the worker's first run. Like `codegraph`, it exists for the worker's own
-  runs, not a monitored repository's gate, except that the pre-push gate's Floci
-  check (Issue #3727) runs `test-floci.sh` in a repository that tracks it;
-  `container/entrypoint.sh` does not start it, and whatever needs the LocalStack
-  drop-in on port 4566 (the script included) starts it itself.
+- **`floci` is the one fragment whose binary comes from a container image,
+  not a download** (Issue #3367, parent #3346). The Containerfile adds a
+  digest-pinned `FROM ${FLOCI_IMAGE} AS floci` stage and `COPY --from=floci
+  /app/application /tmp/floci-application` — floci publishes no standalone
+  release binary, and the image's `/app/application` is a native Quarkus
+  binary linking only libc — so the fragment's sha256 in `container/tools.json`
+  is per-architecture against the binary inside that digest-pinned image, not
+  against a fetched tarball. It installs to `/usr/local/lib/floci/application`
+  and writes a `/usr/local/bin/floci` wrapper: the native binary has no
+  `--version` flag (passing one starts the server), so the wrapper answers
+  `--version` with `floci 2.3.0` itself and otherwise execs straight through.
+  The build then smoke-checks it — starts floci in the background bound to
+  `127.0.0.1`, runs a bounded `curl --retry … --retry-connrefused` against
+  `http://127.0.0.1:4566/`, logs the HTTP status, fails the build on no
+  response, then stops the process and removes the copied binary — so a
+  broken image fails on the pull request rather than the worker's first run.
+  Like `codegraph`, it exists for the worker's own runs, not a monitored
+  repository's gate, except that the pre-push gate's Floci check (Issue #3727)
+  runs `test-floci.sh` in a repository that tracks it; `container/entrypoint.sh`
+  does not start it, and whatever needs the LocalStack drop-in on port 4566
+  (the script included) starts it itself.
 
-Node.js is the runtime `markdownlint-cli2`, Graft, Playwright and the Gemini CLI
-provider need; the worker itself is Deno. Graft is the one consumer that also
-needs the headers this layer leaves in `/usr/local/include/node`, which is what
-lets its own rebuild compile offline. Its layer is built **before** the
-coding-agent provider layer, because a provider whose CLI ships as a JavaScript
-bundle needs the runtime at install time to prove the agent runs — the image
-contents are the same either way, only the layer order changed. The npm release
-tarball is downloaded and checksum-verified before installation, so a
-compromised registry response fails the build rather than shipping.
+Node.js is the runtime `markdownlint-cli2`, Graft, Playwright and the Gemini
+CLI provider need; the worker itself is Deno. Graft is the one consumer that
+also needs the headers this layer leaves in `/usr/local/include/node`, which
+is what lets its own rebuild compile offline. Its layer is built **before** the
+coding-agent provider layer, because a provider whose CLI ships as a
+JavaScript bundle needs the runtime at install time to prove the agent runs
+ — the image contents are the same either way, only the layer
+order changed. The npm release tarball is downloaded and checksum-verified
+before installation, so a compromised registry response fails the build rather
+than shipping.
 
 `container-build.yml` asserts, for every toolchain in the manifest, that each
 declared command resolves on the image's own PATH **as the non-root `vibe`
 user** and that the toolchain's representative command reports the pinned
-version. It then runs the stages a monitored Rust gate runs —
-`cargo fmt
---check`, `cargo clippy -- -D warnings`, `cargo test`,
-`cargo deny check` — against a crate created inside the container, so an image
-that would leave a monitored repository unbuildable fails on the pull request
-rather than mid-run on an unattended host.
+version. It then runs the stages a monitored Rust gate runs — `cargo fmt
+--check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo deny check` —
+against a crate created inside the container, so an image that would leave a
+monitored repository unbuildable fails on the pull request rather than
+mid-run on an unattended host.
 
 ```mermaid
 flowchart TD
@@ -267,24 +268,25 @@ flowchart TD
 
 The worker captures PR evidence through the Playwright MCP server, and a
 contained worker has no host browser and no desktop session to borrow. So the
-image bakes Chromium at build time: `container/Containerfile` installs the
-checksum-verified `playwright-core` tarball, then downloads the Chromium,
-chromium-headless-shell and ffmpeg zips Playwright would otherwise fetch
-mid-install — `install chromium` resolves to all three, not just Chromium itself
-— verifies each against the committed `chromium_*` / `headless_shell_*` /
-`ffmpeg_*` digests in `container/tools.json` (Issues #274, #3256), and extracts
-them into `PLAYWRIGHT_BROWSERS_PATH` (`/opt/playwright-browsers`), then runs
+image bakes Chromium at build time: `container/Containerfile`
+installs the checksum-verified `playwright-core` tarball, then downloads
+the Chromium, chromium-headless-shell and ffmpeg zips Playwright would
+otherwise fetch mid-install — `install chromium` resolves to all three,
+not just Chromium itself — verifies each against the committed
+`chromium_*` / `headless_shell_*` / `ffmpeg_*` digests in
+`container/tools.json` (Issues #274, #3256), and extracts them into
+`PLAYWRIGHT_BROWSERS_PATH` (`/opt/playwright-browsers`), then runs
 `playwright-core install --with-deps chromium` so apt still installs the
-system-library set. The tree is made readable to the non-root `vibe` user, and
-the build launches the browser once so a missing system library fails the build
-rather than the first screenshot. Apt packages stay unpinned — Debian's signed
-repos on the digest-pinned trixie base are the accepted trust root for those
-libraries.
+system-library set. The tree is made readable to the non-root `vibe` user,
+and the build launches the browser once so a missing system library fails
+the build rather than the first screenshot. Apt packages stay unpinned —
+Debian's signed repos on the digest-pinned trixie base are the accepted
+trust root for those libraries.
 
-**The Playwright version is not a free choice.** Playwright resolves browsers as
-`chromium-<revision>` and every release pins its own revision, so the image must
-bake exactly the version `@playwright/mcp` depends on — a near-miss bakes a
-browser the MCP server ignores and then downloads the right one mid-run.
+**The Playwright version is not a free choice.** Playwright resolves browsers
+as `chromium-<revision>` and every release pins its own revision, so the image
+must bake exactly the version `@playwright/mcp` depends on — a near-miss bakes
+a browser the MCP server ignores and then downloads the right one mid-run.
 `container/tools.json` and `PLAYWRIGHT_INSTALLER_VERSION` in
 `worker/deno/setup/screenshot.ts` therefore carry the same value, and
 `container_manifest_test.ts` fails the gate when they drift.
@@ -310,61 +312,63 @@ flowchart TD
   `--network none`: a browser fetch there would fail outright.
 - **Profile state is disposable.** `--user-data-dir` points at
   `/tmp/vibe-playwright-profile-<user>` — per-account since Issue #1242, so no
-  other account on the host can create it first — and the launcher mounts `/tmp`
-  as a `tmpfs`, so the profile dies with the container. Generating a config
-  whose profile directory sits inside the mounted checkout throws rather than
-  writing browser state into the repository. `VIBE_BROWSER_PROFILE_DIR`
-  overrides the location; it must be an absolute path, and containment is
-  decided on whole path segments after `.`/`..` are resolved, using the
-  platform's own separators and case rules — so a `..` walk back into the
-  checkout, or a Windows path the old hard-coded `/` never matched, is refused
-  too (Issue #1293).
+  other account on the host can create it first — and the launcher mounts
+  `/tmp` as a `tmpfs`, so
+  the profile dies with the container. Generating a config whose profile
+  directory sits inside the mounted checkout throws rather than writing browser
+  state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location;
+  it must be an absolute path, and containment is decided on whole path
+  segments after `.`/`..` are resolved, using the platform's own separators and
+  case rules — so a `..` walk back into the checkout, or a Windows path the old
+  hard-coded `/` never matched, is refused too (Issue #1293).
 - **`--no-sandbox` only inside the image.** Chromium's own sandbox needs user
   namespaces the container runtime may not grant, and the container boundary is
   the isolation that matters there. On a host with no baked browser the sandbox
   stays on.
 - **The secrets denylist is unchanged.** `--deny-env` still hides the worker's
-  tokens and keys from the MCP process, and the npm registry age gate still
-  guards the pinned specifiers. Since Issue #1288 the same names are also
-  blanked in the server's `env` block, because a permission flag binds the Deno
-  runtime and not the children it spawns under `--allow-run`.
-- **The server is handed to the agent on every run unless the repository sets
-  `skip_screenshot_check`** (Issue #2925). Issue #192 wired it only on an
-  explicit need signal (the `needs-screenshot` label or `requires_screenshots`),
-  but the evidence gate judges "UI change" from the diff afterwards: a UI change
-  with no label had no tool to take the screenshot the gate then demanded, and
-  failed. Starting the browser costs seconds; a failed run and its retry cost an
-  hour. The issue-work paths (the main fleet loop in `phases/execute_phase.ts`
-  and the standalone `execute-claude-phase` command), PR-feedback runs and
-  CI-fix runs all ask `browserGranted` (`lib/browser_grant.ts`). A repo that
-  sets `skip_screenshot_check` gets neither the gate nor the browser (Issue
-  #1584). Planning, question and grill-me runs change no code and get no
-  browser. The guards above (metadata origins blocked, disposable profile,
-  secrets denied) are what contain a prompt-injected agent's use of it. When the
-  browser is granted the worker generates this configuration per clone into
-  `${WORK_DIR}/.vibe-cache/mcp/` and passes it as `--mcp-config` on that Claude
-  invocation — it does not depend on a `.mcp.json` in a directory the agent
-  never runs from. The server is told `--browser chromium` (its default `chrome`
-  channel is Google Chrome, which the image does not ship), and its
-  `--output-dir` is scratch beside the browser profile
-  (`/tmp/vibe-playwright-output-<user>`) because every `browser_navigate` writes
-  an accessibility snapshot there; screenshots named explicitly
+  tokens and keys from the MCP process, and the npm registry age
+  gate still guards the pinned specifiers. Since Issue #1288 the same names are
+  also blanked in the server's `env` block, because a permission flag binds the
+  Deno runtime and not the children it spawns under `--allow-run`.
+- **The server is handed to the agent on every run unless the repository
+  sets `skip_screenshot_check`** (Issue #2925). Issue #192 wired it only on an
+  explicit need signal (the `needs-screenshot` label or
+  `requires_screenshots`), but the evidence gate judges "UI change" from the
+  diff afterwards: a UI change with no label had no tool to take the
+  screenshot the gate then demanded, and failed. Starting the browser costs
+  seconds; a failed run and its retry cost an hour. The issue-work paths
+  (the main fleet loop in `phases/execute_phase.ts` and the standalone
+  `execute-claude-phase` command), PR-feedback runs and CI-fix runs all ask
+  `browserGranted` (`lib/browser_grant.ts`). A repo that sets
+  `skip_screenshot_check` gets neither the gate nor the browser (Issue #1584).
+  Planning, question and grill-me runs change no code and get no browser.
+  The guards above (metadata origins blocked, disposable profile, secrets
+  denied) are what contain a prompt-injected agent's use of it.
+  When the browser is granted the worker generates this configuration per
+  clone into `${WORK_DIR}/.vibe-cache/mcp/` and passes it as `--mcp-config` on
+  that Claude invocation — it does not depend on a `.mcp.json` in a directory
+  the agent never runs from. The server is told `--browser chromium` (its
+  default `chrome` channel is Google Chrome, which the image does not ship),
+  and its `--output-dir` is scratch beside the browser profile
+  (`/tmp/vibe-playwright-output-<user>`) because every `browser_navigate` writes an
+  accessibility snapshot there; screenshots named explicitly
   (`filename: docs/evidence/<name>.png`) resolve against the clone and land
-  where the evidence gate and the PR expect them. `container-build.yml` drives
-  the generated server end to end (initialize → navigate → screenshot → PNG on
-  disk), so a channel or version drift fails the build.
-- **Other MCP servers ride the same file without needing that grant** (Issue
-  #2156). `mcpConfig` also takes an object —
+  where the evidence gate and the PR expect them. `container-build.yml`
+  drives the generated server end to end (initialize → navigate → screenshot
+  → PNG on disk), so a channel or version drift fails the build.
+- **Other MCP servers ride the same file without needing that grant**
+  (Issue #2156). `mcpConfig` also takes an object —
   `{ playwright?: boolean; servers?: Record<string, { command; args?; env? }> }`
-  — so a run can be handed a server such as CodeGraph with `playwright: false`
-  and get a config carrying that entry and no browser entry at all. The browser
-  is still granted only where the caller asks for it: `playwright` defaults to
-  `true`, so an object that leaves it unset asks for the browser as plainly as
-  `mcpConfig: true` does, and an additional server named `playwright` is refused
-  rather than allowed to replace the hardened entry above. `mcpConfig: true`
-  remains exactly the Playwright-only request described above, byte-for-byte.
-  The file keeps its `playwright-mcp-*.json` name, and Codex still reads the
-  same file as `-c mcp_servers.<name>.*` overrides, so no provider changes.
+  — so a run can be handed a server such as CodeGraph with
+  `playwright: false` and get a config carrying that entry and no browser
+  entry at all. The browser is still granted only where the caller asks for
+  it: `playwright` defaults to `true`, so an object that leaves it unset asks
+  for the browser as plainly as `mcpConfig: true` does, and an additional
+  server named `playwright` is refused rather than allowed to replace the
+  hardened entry above. `mcpConfig: true` remains exactly the Playwright-only
+  request described above, byte-for-byte. The file keeps its
+  `playwright-mcp-*.json` name, and Codex still reads the same file as
+  `-c mcp_servers.<name>.*` overrides, so no provider changes.
 - **The prompts say so too.** The coding-guidelines template (from v37 onward)
   tells the agent it runs unattended in a sandboxed container with no host
   browser or desktop, mandates this headless browser for every browser task, and
@@ -384,10 +388,10 @@ flowchart LR
     style B fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-`worker/deno/tests/container_manifest_test.ts` parses the committed manifest and
-Containerfile on every quality-gate run, so a version bumped in one file and not
-the other fails locally and in CI. The CI workflow then builds the image with
-both Docker and Podman and runs `./quality.sh` inside it.
+`worker/deno/tests/container_manifest_test.ts` parses the committed manifest
+and Containerfile on every quality-gate run, so a version bumped in one file
+and not the other fails locally and in CI. The CI workflow then builds the
+image with both Docker and Podman and runs `./quality.sh` inside it.
 
 **A toolchain carries exactly one of `versionArg` or `fragment`** — never both,
 never neither, and `parseContainerManifest` rejects the manifest otherwise.
@@ -396,21 +400,20 @@ restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
-`codegraph`, `rtk`, `floci` and `rust` are fragments (Issues #1594, #1595,
-#1596, #1628, #2153, #2381 and #3367) — they are the fetch-verify-extract
-toolchains, whose `ARG` blocks and `RUN` bodies were the bulk of the
-Containerfile's size. `node`, `npm`, `markdownlint-cli2`, `graft` and `semgrep`
-keep `versionArg`: Node's layer must precede the provider layer, and the npm-
-and pip-installed tools have their own steps.
+`codegraph`, `rtk`, `floci` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153, #2381 and #3367) —
+they are the fetch-verify-extract toolchains, whose `ARG` blocks
+and `RUN` bodies were the bulk of the Containerfile's size. `node`, `npm`,
+`markdownlint-cli2`, `graft` and `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
+the npm- and pip-installed tools have their own steps.
 
 The exemption from the `ARG` rule is only safe while something else proves the
 fragment is real, so `findToolchainInstallViolations` requires that the
 Containerfile copies `toolchains/*.sh`, that **every** fragment-bearing
 toolchain id is named by some `install-toolchains.sh` run — a pin the build
-never installs is a violation, because absence of a failure is not success — and
-that each fragment verifies its download with `sha256sum -c`, carries the shared
-`${CURL_RETRY}` policy, pipes nothing into a shell, and restates no version the
-manifest already pins. A `curl`/`wget` command is exempt from the
+never installs is a violation, because absence of a failure is not success —
+and that each fragment verifies its download with `sha256sum -c`, carries the
+shared `${CURL_RETRY}` policy, pipes nothing into a shell, and restates no
+version the manifest already pins. A `curl`/`wget` command is exempt from the
 `${CURL_RETRY}` check only when every URL it names is loopback (`127.0.0.1` or
 `localhost`) — a build-time smoke probe of a server the fragment itself just
 started, as `floci.sh` runs against `http://127.0.0.1:4566/` (Issue #3367), is
@@ -420,15 +423,15 @@ not a download.
 
 The build-time assertions above run inside a `RUN` layer, so a cached layer
 skips them and a forced-platform build passes them under emulation. The tag
-guarantees a rebuild when the _inputs_ change, not that the _running_ image is
+guarantees a rebuild when the *inputs* change, not that the *running* image is
 the one those inputs describe — and two tooling faults in one week cost whole
-runs: an `actionlint` that would not execute on the host's CPU architecture, and
-a `python3` that could not import `yaml`. Both were discovered by the agent
+runs: an `actionlint` that would not execute on the host's CPU architecture,
+and a `python3` that could not import `yaml`. Both were discovered by the agent
 mid-run, after the claim.
 
 So the worker probes the image before it claims anything
-(`worker/deno/lib/toolchain_selfcheck.ts`, run from `run_worker.ts` ahead of the
-prompt-immutability check):
+(`worker/deno/lib/toolchain_selfcheck.ts`, run from `run_worker.ts` ahead of
+the prompt-immutability check):
 
 ```mermaid
 flowchart TD
@@ -446,26 +449,24 @@ flowchart TD
 
 - **The probe list is the manifest**, never a second copy: a toolchain's
   `versionCommand` (or `versionModule`, for a library like PyYAML) is what is
-  run, and the pinned `version` is what the output is compared against. Adding a
-  toolchain to `container/tools.json` adds its probe with no other edit, so the
-  check cannot drift out of step with the install list. A command with no
-  `--version` flag names its own arguments in `versionArgs`: `markdownlint-cli2`
-  treats every argument as a glob, and a bare `--version` linted the worker's
-  whole checkout on every launch — one lint finding on `main` away from parking
-  the fleet (Issues #2070–#2073). Its entry probes with `--no-globs --version`,
-  which prints the banner and lints nothing.
+  run, and the pinned `version` is what the output is compared against. Adding
+  a toolchain to `container/tools.json` adds its probe with no other edit, so
+  the check cannot drift out of step with the install list. A command with no
+  `--version` flag names its own arguments in `versionArgs`:
+  `markdownlint-cli2` treats every argument as a glob, and a bare `--version`
+  linted the worker's whole checkout on every launch — one lint finding on
+  `main` away from parking the fleet (Issues #2070–#2073). Its entry probes
+  with `--no-globs --version`, which prints the banner and lints nothing.
 - **Concurrent and bounded.** The probes run together and each is bounded by
-  `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather than
-  the sum of all of them. Measured in the image when it carried thirteen
-  toolchains — Graft is the fourteenth — all thirteen together cost **0.64 s**
-  against a warm page cache and **1.99 s** on the first run after the image is
-  written — the tools' own start-up, not the check's: `markdownlint-cli2` alone
-  is 1.9 s of a cold run and `semgrep` 0.65 s. A binary that hangs on this
-  architecture costs seconds, not the run.
-- **One line per toolchain** reaches the run log —
-  `toolchain-selfcheck: ok
-  actionlint 1.7.12`, or `FAILED …` with the probe's
-  own words.
+  `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather
+  than the sum of all of them. Measured in the image when it carried thirteen
+  toolchains — Graft is the fourteenth — all thirteen together cost
+  **0.64 s** against a warm page cache and **1.99 s** on the first run after
+  the image is written — the tools' own start-up, not the check's:
+  `markdownlint-cli2` alone is 1.9 s of a cold run and `semgrep` 0.65 s. A
+  binary that hangs on this architecture costs seconds, not the run.
+- **One line per toolchain** reaches the run log — `toolchain-selfcheck: ok
+  actionlint 1.7.12`, or `FAILED …` with the probe's own words.
 - **A failure is refused, not charged.** The worker exits
   `TOOLCHAIN_SELFCHECK_EXIT_STATUS` (89) before resolving its GitHub identity,
   so no issue is claimed and no attempt is spent.
@@ -478,30 +479,32 @@ flowchart TD
   remove the content-derived image reference — an absent reference is exactly
   the rebuild signal the launch reads. The removal verb rides the launch plan
   (`image-remove=`), so Apple `container`'s `image delete` is not guessed at.
-- **Exactly one rebuild per reference.** The tag is derived from the definition,
-  so a rebuild produces the same tag; the reference removed is recorded under
-  `~/.vibe-coder/toolchain-selfcheck-rebuild`, and a second failure of the same
-  reference is reported as `[TOOLCHAIN_SELFCHECK_UNRECOVERED]` rather than
-  removing and rebuilding a multi-gigabyte image on every cycle for ever. A
-  launch that gets past the check clears the record.
+- **Exactly one rebuild per reference.** The tag is derived from the
+  definition, so a rebuild produces the same tag; the reference removed is
+  recorded under `~/.vibe-coder/toolchain-selfcheck-rebuild`, and a second
+  failure of the same reference is reported as
+  `[TOOLCHAIN_SELFCHECK_UNRECOVERED]` rather than removing and rebuilding a
+  multi-gigabyte image on every cycle for ever. A launch that gets past the
+  check clears the record.
 - **Outside the image there is nothing to verify.** On a developer's own host
-  the check reports itself skipped, the same boundary `prompt_immutability.ts`
-  draws.
+  the check reports itself skipped, the same boundary
+  `prompt_immutability.ts` draws.
 - **The pin must stand as a whole token, and a letter prefix is not part of
   it.** `1.7.1` does not match an installed `1.7.12`, and `11.7.12` does not
-  match `1.7.12`; but `node --version` prints `v24.19.0` and `markdownlint-cli2`
-  prints `v0.23.2`, and counting that `v` as part of the token took every host
-  out of service against a correctly built image (Issues #2070–#2073). The real
-  output of every pinned toolchain, captured inside the image, is a fixture in
-  `toolchain_selfcheck_test.ts` that the committed manifest is checked against;
-  a toolchain pinned without its fixture fails the test.
-- **CI runs the same check, in the built image.** `container-build.yml` invokes
-  `worker/deno/mod.ts toolchain-selfcheck` inside the image it has just built,
-  over the checkout mounted at `/workspace` — the command path the worker itself
-  takes — so the verdict the fleet will reach is reached on the pull request. A
-  change to the check, its manifest parser or its command is an image-affecting
-  change (`detect-image-changes.sh`), so a worker-only PR can no longer alter
-  the rule without a build proving it.
+  match `1.7.12`; but `node --version` prints `v24.19.0` and
+  `markdownlint-cli2` prints `v0.23.2`, and counting that `v` as part of the
+  token took every host out of service against a correctly built image
+  (Issues #2070–#2073). The real output of every pinned toolchain, captured
+  inside the image, is a fixture in `toolchain_selfcheck_test.ts` that the
+  committed manifest is checked against; a toolchain pinned without its
+  fixture fails the test.
+- **CI runs the same check, in the built image.** `container-build.yml`
+  invokes `worker/deno/mod.ts toolchain-selfcheck` inside the image it has just
+  built, over the checkout mounted at `/workspace` — the command path the
+  worker itself takes — so the verdict the fleet will reach is reached on the
+  pull request. A change to the check, its manifest parser or its command is
+  an image-affecting change (`detect-image-changes.sh`), so a worker-only PR
+  can no longer alter the rule without a build proving it.
 
 ## Image identity — the tag is the definition's hash
 
@@ -515,35 +518,36 @@ deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash
 ```
 
 The hash covers an **explicitly enumerated** input list — never a walk of the
-workspace, because the worker's checkout is mutable working state and hashing it
-would invalidate the image on every commit:
+workspace, because the worker's checkout is mutable working state and hashing
+it would invalidate the image on every commit:
 
-| Input                                  | Why it is in the hash                                           |
-| -------------------------------------- | --------------------------------------------------------------- |
-| `container/Containerfile`              | The build instructions themselves                               |
-| `container/entrypoint.sh`              | Baked into the image at `/usr/local/bin`                        |
-| `container/tools.json`                 | The pinned versions the build must agree with                   |
-| `container/install-*.sh`               | The provider, toolchain and tool installers the build runs      |
-| `container/providers/*.sh`             | The coding-agent provider layer the build installs              |
-| `container/toolchains/*.sh`            | The monitored-repository toolchain layer the build installs     |
-| `container/install-tools.sh`           | The installer the build runs over the deployer's tool selection |
-| `worker/deno/deno.lock`                | The dependency set the image caches                             |
-| `container_tools` (`.config.json`)     | The extra tools this deployment bakes in                        |
-| `agent_providers` (`.config.json`)     | The coding-agent CLIs this deployment bakes in                  |
-| `container_extension` (`.config.json`) | The private extension directory this deployment builds on top   |
+| Input                     | Why it is in the hash                       |
+| ------------------------- | ------------------------------------------- |
+| `container/Containerfile` | The build instructions themselves            |
+| `container/entrypoint.sh` | Baked into the image at `/usr/local/bin`     |
+| `container/tools.json`    | The pinned versions the build must agree with |
+| `container/install-*.sh`  | The provider, toolchain and tool installers the build runs |
+| `container/providers/*.sh` | The coding-agent provider layer the build installs |
+| `container/toolchains/*.sh` | The monitored-repository toolchain layer the build installs |
+| `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
+| `worker/deno/deno.lock`   | The dependency set the image caches          |
+| `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
+| `agent_providers` (`.config.json`) | The coding-agent CLIs this deployment bakes in |
+| `container_extension` (`.config.json`) | The private extension directory this deployment builds on top |
 
-The last three are not committed files. `container_tools` is the deployment's
-own selection (see
+The last three are not committed files. `container_tools` is the deployment's own
+selection (see
 [Deployer-supplied build-time tools](CONTAINER-IMAGE.md#deployer-supplied-build-time-tools)),
-and the build bakes it into the image, so two hosts that select different tool
-sets must get different tags — otherwise one host's cached `vibe-coder:<hash>`
+and the
+build bakes it into the image, so two hosts that select different tool sets
+must get different tags — otherwise one host's cached `vibe-coder:<hash>`
 silently satisfies the other's requirement and the tool is quietly missing. It
 is mixed in as a canonical, key-sorted serialisation of the **validated** spec,
-so re-ordering keys in `.config.json` does not churn the tag while any change of
-id, version, URL or checksum does. A deployment that selects no tools gets
+so re-ordering keys in `.config.json` does not churn the tag while any change
+of id, version, URL or checksum does. A deployment that selects no tools gets
 exactly the tag it got before the selection existed, so no existing host
-rebuilds. A malformed spec exits non-zero naming the offending field rather than
-falling back to a tools-free tag.
+rebuilds. A malformed spec exits non-zero naming the offending field rather
+than falling back to a tools-free tag.
 
 `agent_providers` works the same way (Issue #729): the launch plan carries the
 deployment's enabled set into the build as `--build-arg AGENT_PROVIDERS=<ids>`
@@ -557,32 +561,30 @@ was.
 operator syncs their own private repository into it — a `Containerfile` built
 `FROM` the standard image, optionally a start script, and whatever the build
 copies in beside them. `container_extension_digest.ts` reduces the directory to
-one digest and the tag mixes that digest in, so editing **any** file under it —
-a `.sql` dump or a pipeline definition included — rebuilds, which is the point:
+one digest and the tag mixes that digest in, so editing **any** file under it
+— a `.sql` dump or a pipeline definition included — rebuilds, which is the point:
 those bytes end up in the image. The digest covers the declared `containerfile`
 and `start` too, since pointing the same directory at `Containerfile.dev` is a
-different image; it does **not** cover the directory's _path_, so two hosts that
+different image; it does **not** cover the directory's *path*, so two hosts that
 sync the same extension to different directories share one image. Entries are
 sorted byte-wise and framed by path, mode and length, so adding, deleting,
 renaming, moving bytes between two files, or making `start.sh` executable each
 move the tag, and file bytes reach the digest in 64 KiB chunks so a
 multi-gigabyte dump costs one buffer rather than the worker's heap. An absent
-directory, an unreadable file or a symlink resolving outside the extension exits
-non-zero naming the entry rather than hashing a partial view. A deployment that
-configures no extension gets exactly the tag it got before, so no existing host
-rebuilds.
+directory, an unreadable file or a symlink resolving outside the extension
+exits non-zero naming the entry rather than hashing a partial view. A
+deployment that configures no extension gets exactly the tag it got before, so
+no existing host rebuilds.
 
-**A configured extension is built as a second image, never instead of the
-first** (Issue #980). The launch plan then carries two builds, and both
-launchers run them in order:
+**A configured extension is built as a second image, never instead of the first**
+(Issue #980). The launch plan then carries two builds, and both launchers run
+them in order:
 
 1. `build --file <checkout>/container/Containerfile --tag vibe-coder:<baseHash>
-   <checkout>/container`
-   — the standard image, exactly as every host builds it;
+   <checkout>/container` — the standard image, exactly as every host builds it;
 2. `build --file <extension>/<containerfile> --tag vibe-coder:<extensionHash>
-   --build-arg VIBE_BASE_IMAGE=vibe-coder:<baseHash> <extension>`
-   — the operator's own layer, whose build context is the extension directory
-   alone.
+   --build-arg VIBE_BASE_IMAGE=vibe-coder:<baseHash> <extension>` — the
+   operator's own layer, whose build context is the extension directory alone.
 
 The container runs `vibe-coder:<extensionHash>`, and the image-presence check
 names it too: an absent layer runs both builds, a present one runs neither. A
@@ -591,8 +593,8 @@ that was never produced — and either failure aborts the launch. The extension'
 Containerfile is required to open with `ARG VIBE_BASE_IMAGE` and
 `FROM ${VIBE_BASE_IMAGE}`; one that names its own base is refused while the plan
 is built, naming the file, so "layered on the standard image" is a guarantee
-rather than a comment. The layer changes what the image _contains_, never what
-the container may _reach_: no host path is mounted into the build, no port is
+rather than a comment. The layer changes what the image *contains*, never what
+the container may *reach*: no host path is mounted into the build, no port is
 published, and the run arguments are the same contained set (`--read-only` and
 its scratch tmpfs included) that the standard image runs under.
 
@@ -608,10 +610,10 @@ flowchart LR
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-**A declared start script runs before the worker, or the run fails** (Issue
-#981). An extension's services — a database server, a CI server — have to be
-running before the agent starts work, so the framework supervises exactly one
-thing and makes its failure loud. The operator's Containerfile copies the
+**A declared start script runs before the worker, or the run fails**
+(Issue #981). An extension's services — a database server, a CI server — have to
+be running before the agent starts work, so the framework supervises exactly
+one thing and makes its failure loud. The operator's Containerfile copies the
 extension into the image at the fixed path `/opt/vibe-extension/` (the posture
 `/opt/vibe-tools/<id>` already takes for `container_tools`), the launch plan
 hands the container `VIBE_EXTENSION_START=<start>` when — and only when — the
@@ -620,7 +622,7 @@ block declares one, and `container/entrypoint.sh` runs
 account, after the writable-path policy and the tools PATH, before the Deno
 driver.
 
-Every way that start can fail _and return_ aborts the launch with exit status
+Every way that start can fail *and return* aborts the launch with exit status
 **76** and never runs the driver: a script that is absent from the image, one
 that is not executable, and one that exits non-zero — the last naming its own
 status. A start that **hangs** is the exception: it is not time-bounded here,
@@ -633,9 +635,9 @@ container-start range (125–127); the worker records the abort as a **failed
 run**, backs off and escalates like any other run failure, and
 `launcher_failure_evidence.ts` names it rather than sending the reader to the
 container runtime. Service ports stay container-internal — nothing is published
-to the host, the agent reaches the services inside the sandbox, and the operator
-observes the work through GitHub. With no `start` declared the block is inert,
-so the public Vibe Coder's entrypoint behaves exactly as it did.
+to the host, the agent reaches the services inside the sandbox, and the
+operator observes the work through GitHub. With no `start` declared the block
+is inert, so the public Vibe Coder's entrypoint behaves exactly as it did.
 
 ```mermaid
 sequenceDiagram
@@ -655,67 +657,61 @@ sequenceDiagram
 ```
 
 **The definition is proved to be there before either build runs** (Issue #982).
-The validator checks what the operator _wrote_; the launch preflight checks what
-is actually _there_, while the plan is built — so a definition that is not on
-the host costs a sentence rather than the minutes a build takes to reach the
-same conclusion. Every refusal opens with
-`Cannot launch: the
-container_extension`, names the offending path, and says
-what was expected:
+The validator checks what the operator *wrote*; the launch preflight checks
+what is actually *there*, while the plan is built — so a definition that is not
+on the host costs a sentence rather than the minutes a build takes to reach the
+same conclusion. Every refusal opens with `Cannot launch: the
+container_extension`, names the offending path, and says what was expected:
 
-| Fault                                            | What the launcher prints                                                                                                                                                                                                                                                            |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The directory is absent                          | `Cannot launch: the container_extension directory <path> does not exist. The operator syncs their own extension into it — the Vibe Coder clones nothing.`                                                                                                                           |
-| The path is a file, not a directory              | `Cannot launch: the container_extension path <path> is not a directory.`                                                                                                                                                                                                            |
-| The directory cannot be read                     | `Cannot launch: the container_extension directory <path> is unreadable (<reason>).`                                                                                                                                                                                                 |
-| The declared `containerfile` is absent           | `Cannot launch: the container_extension Containerfile <path> does not exist. container_extension.containerfile names it, relative to <directory>.`                                                                                                                                  |
-| The declared `containerfile` is not a file       | `Cannot launch: the container_extension Containerfile <path> is not a file. container_extension.containerfile names it, relative to <directory>.`                                                                                                                                   |
-| The declared `containerfile` cannot be read      | `Cannot launch: the container_extension Containerfile <path> is unreadable (<reason>).` — the launcher appends `The operator syncs their own extension into <directory>.` when the read itself failed                                                                               |
-| The declared `start` is absent                   | `Cannot launch: the container_extension start script <path> does not exist. container_extension.start names it, relative to <directory>.`                                                                                                                                           |
-| The declared `start` is not a file               | `Cannot launch: the container_extension start script <path> is not a file. container_extension.start names it, relative to <directory>.`                                                                                                                                            |
-| An entry cannot be resolved (a dangling symlink) | `Cannot launch: the container_extension entry <entry> (<path>) cannot be resolved (<reason>).`                                                                                                                                                                                      |
-| A symlink points out of the directory            | `Cannot launch: the container_extension symlink <entry> escapes the extension directory: it resolves to <target>, outside <directory>. Copy what the build needs into the extension directory — a link out of it would fold host content the operator never synced into the image.` |
-| A directory loops back into itself               | `Cannot launch: the container_extension directory loops: <entry> resolves to <target>, a directory it is already inside — the build would never finish copying it.`                                                                                                                 |
+| Fault | What the launcher prints |
+| ----- | ------------------------ |
+| The directory is absent | `Cannot launch: the container_extension directory <path> does not exist. The operator syncs their own extension into it — the Vibe Coder clones nothing.` |
+| The path is a file, not a directory | `Cannot launch: the container_extension path <path> is not a directory.` |
+| The directory cannot be read | `Cannot launch: the container_extension directory <path> is unreadable (<reason>).` |
+| The declared `containerfile` is absent | `Cannot launch: the container_extension Containerfile <path> does not exist. container_extension.containerfile names it, relative to <directory>.` |
+| The declared `containerfile` is not a file | `Cannot launch: the container_extension Containerfile <path> is not a file. container_extension.containerfile names it, relative to <directory>.` |
+| The declared `containerfile` cannot be read | `Cannot launch: the container_extension Containerfile <path> is unreadable (<reason>).` — the launcher appends `The operator syncs their own extension into <directory>.` when the read itself failed |
+| The declared `start` is absent | `Cannot launch: the container_extension start script <path> does not exist. container_extension.start names it, relative to <directory>.` |
+| The declared `start` is not a file | `Cannot launch: the container_extension start script <path> is not a file. container_extension.start names it, relative to <directory>.` |
+| An entry cannot be resolved (a dangling symlink) | `Cannot launch: the container_extension entry <entry> (<path>) cannot be resolved (<reason>).` |
+| A symlink points out of the directory | `Cannot launch: the container_extension symlink <entry> escapes the extension directory: it resolves to <target>, outside <directory>. Copy what the build needs into the extension directory — a link out of it would fold host content the operator never synced into the image.` |
+| A directory loops back into itself | `Cannot launch: the container_extension directory loops: <entry> resolves to <target>, a directory it is already inside — the build would never finish copying it.` |
 
-Three further refusals share those shapes:
-`Cannot launch: the
-container_extension directory <path> cannot be resolved (<reason>)`
-when the directory's own real path cannot be read,
-`Cannot launch: the
-container_extension entry <entry> (<path>) is unreadable (<reason>)`
-when a stat under it fails, and the same `is unreadable` wording for a declared
+Three further refusals share those shapes: `Cannot launch: the
+container_extension directory <path> cannot be resolved (<reason>)` when the
+directory's own real path cannot be read, `Cannot launch: the
+container_extension entry <entry> (<path>) is unreadable (<reason>)` when a
+stat under it fails, and the same `is unreadable` wording for a declared
 `start script`.
 
 The escaping-symlink case is the one the digest also refuses; the preflight runs
 first so the operator hears it **once, early, with the remedy attached** instead
-of as a hashing failure. What is inside the _built_ image —
-`/opt/vibe-extension/<start>` present and executable — is not checked here:
-nothing host-side can see inside an image that has not been built, so that
-contract is enforced at sandbox start.
+of as a hashing failure. What is inside the *built* image — `/opt/vibe-extension/<start>`
+present and executable — is not checked here: nothing host-side can see inside
+an image that has not been built, so that contract is enforced at sandbox start.
 
 **`./setup.sh` reports the extension beside the runtime and the image.** A
 deployment that configures one gets a third line naming the configured path,
-whether the definition is readable, and the layered tag —
-`container_extension
+whether the definition is readable, and the layered tag — `container_extension
 /srv/vibe-extension is readable — the layered image is vibe-coder:<extensionHash>`
 — so the `Worker image vibe-coder:<tag> is not built yet` line beneath it names
-the tag that _includes_ the extension rather than one no extension deployment
+the tag that *includes* the extension rather than one no extension deployment
 ever builds. A definition that is not there fails setup with the same preflight
-text the launcher prints, rather than being reported as an unbuildable image. A
-deployment that configures no extension sees exactly the two lines it saw
+text the launcher prints, rather than being reported as an unbuildable image.
+A deployment that configures no extension sees exactly the two lines it saw
 before.
 
-**Every caller reads all three selections through one reader.** Because the tag
-is derived from the deployment's own configuration, anything that _names_ the
+**Every caller reads all three selections through one reader.** Because the tag is
+derived from the deployment's own configuration, anything that *names* the
 image must read that configuration too — otherwise it names a tag the launcher
 never builds. Setup's worker-image check and the security tabletop runner did
 not, and reported a built image as missing on any host that selected tools or a
 provider set (Issues #743, #749). Both now call
 [`readDeploymentImageSelection`](../worker/deno/lib/container_image_selection.ts),
-as does `container-image-hash` itself, and `container_image_selection_test.ts`
-pins their answer to the launcher's — so a fourth input added to the hash cannot
-be added to the launcher alone. `container_extension` was that fourth input, and
-it went in through the reader.
+as does `container-image-hash` itself, and
+`container_image_selection_test.ts` pins their answer to the launcher's — so a
+fourth input added to the hash cannot be added to the launcher alone.
+`container_extension` was that fourth input, and it went in through the reader.
 
 ```mermaid
 flowchart LR
@@ -738,12 +734,12 @@ flowchart LR
 
 `worker/deno/lib/container_image_hash.ts` owns the single naming rule
 (`resolveContainerImageReference`), and the `container-image-hash` command
-exposes it so `run.sh` and `run.ps1` can obtain the reference without restating
-the hashing logic in shell and PowerShell. Adding a setup script under
-`container/` means adding it to `CONTAINER_IMAGE_INPUTS`;
+exposes it so `run.sh` and `run.ps1` can obtain the reference without
+restating the hashing logic in shell and PowerShell. Adding a setup script
+under `container/` means adding it to `CONTAINER_IMAGE_INPUTS`;
 `worker/deno/tests/container_image_hash_test.ts` fails the quality gate when a
-committed `container/` file is not enumerated. A missing enumerated input exits
-non-zero naming the path rather than hashing a shorter list and quietly
+committed `container/` file is not enumerated. A missing enumerated input
+exits non-zero naming the path rather than hashing a shorter list and quietly
 producing a different tag.
 
 ### Superseded tags are pruned, every launch
@@ -763,26 +759,26 @@ deno run --allow-env --allow-read --allow-run worker/deno/mod.ts \
 # [container-image-prune] removed superseded image vibe-coder:0a1b2c3d4e5f
 ```
 
-The references this checkout resolves to are the only ones a future launch of it
-can use, so **every other `vibe-coder` tag is removed** and each removal is
+The references this checkout resolves to are the only ones a future launch of
+it can use, so **every other `vibe-coder` tag is removed** and each removal is
 named on the host log.
 
 `--keep` takes the launch's whole **image dependency chain**, comma separated:
-the launch plan's `keep` key carries the reference the container runs plus every
-image that one is built `FROM`, and both launchers pass it through unchanged. A
-deployment with a private extension layer builds two images —
-`vibe-coder:<baseHash>` and `vibe-coder:<extensionHash>` built `FROM` it — and a
-prune told only the tag being run untagged its own base on every single launch
-(Issue #1059). Nothing special-cases two tags: the keep set is a list, so a
-deeper chain rides the same key.
+the launch plan's `keep` key carries the reference the container runs plus
+every image that one is built `FROM`, and both launchers pass it through
+unchanged. A deployment with a private extension layer builds two images —
+`vibe-coder:<baseHash>` and `vibe-coder:<extensionHash>` built `FROM` it — and
+a prune told only the tag being run untagged its own base on every single
+launch (Issue #1059). Nothing special-cases two tags: the keep set is a list,
+so a deeper chain rides the same key.
 
 Three boundaries keep that safe on a machine nobody is watching:
 
-| Boundary                | Behaviour                                                                                                                                                                                                                    |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Only our own image      | Same repository as a kept reference (Podman's `localhost/` prefix included) and a tag none of them names. A foreign `vibe-coder` from a registry, a dangling `<none>` layer and every other image are untouched              |
-| The builder cache stays | Never pruned — it is what makes a definition-change rebuild, or a rollback, cheap                                                                                                                                            |
-| Fails loud              | A refused listing, unreadable output, a `--keep` reference that does not parse, or a refused removal exits non-zero and is logged; the launcher treats it as a warning and launches anyway, and the next launch prunes again |
+| Boundary                | Behaviour                                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| Only our own image      | Same repository as a kept reference (Podman's `localhost/` prefix included) and a tag none of them names. A foreign `vibe-coder` from a registry, a dangling `<none>` layer and every other image are untouched |
+| The builder cache stays | Never pruned — it is what makes a definition-change rebuild, or a rollback, cheap                     |
+| Fails loud | A refused listing, unreadable output, a `--keep` reference that does not parse, or a refused removal exits non-zero and is logged; the launcher treats it as a warning and launches anyway, and the next launch prunes again |
 
 `worker/deno/lib/container_image_prune.ts` owns the rule and each runtime's
 listing/removal spelling lives with the rest of its dialect in
@@ -790,25 +786,25 @@ listing/removal spelling lives with the rest of its dialect in
 
 ### A builder that ran out of storage heals itself
 
-Pruning stops the store filling; this is what happens when it filled anyway. On
-host-23 the host dropped to 135 MiB free and `container build` died mid-export
-with `no space left on device`. Freeing host space did **not** fix it: Apple
-container's BuildKit builder VM had remounted its own filesystem read-only after
-the ENOSPC and stayed that way, so every later launch failed with
-`open /tmp/1326465203: read-only file system` before it built anything.
-`loop.sh` backed off 120 s → 240 s → … → 960 s and would have retried for ever;
-a human ran `container builder stop && container builder start` and the host
-came back at once.
+Pruning stops the store filling; this is what happens when it filled anyway.
+On host-23 the host dropped to 135 MiB free and `container build` died
+mid-export with `no space left on device`. Freeing host space did **not** fix
+it: Apple container's BuildKit builder VM had remounted its own filesystem
+read-only after the ENOSPC and stayed that way, so every later launch failed
+with `open /tmp/1326465203: read-only file system` before it built anything.
+`loop.sh` backed off 120 s → 240 s → … → 960 s and would have retried for
+ever; a human ran `container builder stop && container builder start` and the
+host came back at once.
 
-So a failed build is now classified from its own output, and only a failure that
-is the **builder's** is healed: one carrying a builder-storage signature, or —
-Issue #2089 — one whose failing step exited **without printing a byte**. Every
-step this image builds says why it failed; on GRQ-23 the deno-seed step exited 1
-in the same second it started, three launches running, on a builder the store
-prune had recreated, while the identical step passed inside that image, inside a
-fresh builder, and in CI. The excerpt BuildKit prints (`> [stage] RUN …:`
-followed straight by `------`) is the signature, and deleting the builder was
-the fix.
+So a failed build is now classified from its own output, and only a
+failure that is the **builder's** is healed: one carrying a builder-storage
+signature, or — Issue #2089 — one whose failing step exited **without
+printing a byte**. Every step this image builds says why it failed; on GRQ-23
+the deno-seed step exited 1 in the same second it started, three launches
+running, on a builder the store prune had recreated, while the identical step
+passed inside that image, inside a fresh builder, and in CI. The excerpt
+BuildKit prints (`> [stage] RUN …:` followed straight by `------`) is the
+signature, and deleting the builder was the fix.
 
 ```mermaid
 flowchart TD
@@ -836,20 +832,20 @@ deno run --allow-env --allow-read --allow-run worker/deno/mod.ts \
 The command's **exit status is the launcher's instruction**, so "healed" and
 "not my problem" are never confused with each other:
 
-| Status | Meaning                                    | What the launcher does          |
-| ------ | ------------------------------------------ | ------------------------------- |
-| `0`    | The builder was restarted                  | Retries the build exactly once  |
-| `3`    | The build failed for its own reasons       | Fails, exactly as it always has |
-| other  | The failure was healable, the heal was not | Fails, and says why             |
+| Status | Meaning                                       | What the launcher does        |
+| ------ | --------------------------------------------- | ----------------------------- |
+| `0`    | The builder was restarted                     | Retries the build exactly once |
+| `3`    | The build failed for its own reasons          | Fails, exactly as it always has |
+| other  | The failure was healable, the heal was not     | Fails, and says why           |
 
 Four boundaries keep that safe on a machine nobody is watching:
 
-| Boundary                  | Behaviour                                                                                                                                                                                                                                                       |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A narrow signature list   | Only `no space left on device`, `read-only file system`, `ENOSPC` and BuildKit's `ResourceExhausted` are healed. A broken `RUN` step, a missing package or a syntax error is untouched — "healing" a genuine build error is how a launcher starts looping on it |
-| One retry, never a loop   | Exactly one heal and one retry per launch. A second failure in the same launch escalates to a builder _recreate_ (`builder delete` + `builder start`) so the **next** launch starts clean, and this launch still fails                                          |
-| Per-runtime, in one place | Apple container bounces its builder VM; Docker and Podman build in-process and prune the build cache instead. Both spellings live with the rest of the dialect in `container_runtime.ts`                                                                        |
-| Fails loud                | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `run_core.log` in the host log directory                                                                       |
+| Boundary                | Behaviour                                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| A narrow signature list | Only `no space left on device`, `read-only file system`, `ENOSPC` and BuildKit's `ResourceExhausted` are healed. A broken `RUN` step, a missing package or a syntax error is untouched — "healing" a genuine build error is how a launcher starts looping on it |
+| One retry, never a loop | Exactly one heal and one retry per launch. A second failure in the same launch escalates to a builder *recreate* (`builder delete` + `builder start`) so the **next** launch starts clean, and this launch still fails |
+| Per-runtime, in one place | Apple container bounces its builder VM; Docker and Podman build in-process and prune the build cache instead. Both spellings live with the rest of the dialect in `container_runtime.ts` |
+| Fails loud | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `run_core.log` in the host log directory |
 
 `worker/deno/lib/container_build_heal.ts` owns the classifier and the
 escalation; the runtime is driven through an injected seam, so the tests never
@@ -859,34 +855,35 @@ start a builder VM.
 
 The classification alone is not diagnosable. GRQ-23 wrote
 `build failed for a reason the builder heal does not cover` seven times in four
-hours while the build's own output — the one thing that named the reason — was a
-`mktemp` file the launcher reaped on its way out (Issue #1019). An operator
+hours while the build's own output — the one thing that named the reason — was
+a `mktemp` file the launcher reaped on its way out (Issue #1019). An operator
 could not tell a genuine build defect from the host-egress stall above without
 reproducing the build by hand.
 
 So both launchers now record the failing step's own words, on the not-healable
 branch and on the `could not heal the builder` branch alike:
 
-| What is recorded                  | Where                                                                                     |
-| --------------------------------- | ----------------------------------------------------------------------------------------- |
-| A bounded excerpt (last 40 lines) | `run_core.log`, under the decision line                                                   |
+| What is recorded                  | Where                                                                      |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| A bounded excerpt (last 40 lines) | `run_core.log`, under the decision line                                     |
 | The full output                   | `build-failures/<UTC stamp>-<build\|heal>-output-<pid>.log` beside it, named in that line |
-| The heal's own output             | The same, and appended to the evidence the `image_build` escalation quotes                |
+| The heal's own output             | The same, and appended to the evidence the `image_build` escalation quotes  |
 
 Both live in the launcher's own log directory — the platform default unless
-`log_dir` in `.config.json` moves it — so the preserved copies are always beside
-the `run_core.log` line that names them.
+`log_dir` in `.config.json` moves it — so the preserved copies are always
+beside the `run_core.log` line that names them.
 
 Retention is count-based, like the launch logs `loop.sh` keeps: the newest 20
-files stay and the rest go, so a host that fails several times a day cannot turn
-its log directory into an unbounded archive. The UTC stamp leads each filename,
-so name order is chronological order and the newest is never the one dropped.
+files stay and the rest go, so a host that fails several times a day cannot
+turn its log directory into an unbounded archive. The UTC stamp leads each
+filename, so name order is chronological order and the newest is never the one
+dropped.
 
 ## A host whose containers cannot reach the network parks itself
 
 Pruning and the builder heal both assume the build can still talk to the
-internet. On GRQ-23 it could not, and the launcher said the wrong thing about it
-for hours (Issue #997, incident #991):
+internet. On GRQ-23 it could not, and the launcher said the wrong thing about
+it for hours (Issue #997, incident #991):
 
 ```text
 #9 134.8 curl: (28) Failed to connect to github.com port 443 after 134719 ms
@@ -894,7 +891,7 @@ Error: failed to build vibe-coder:8bbfff3c47f5
 Failure phase: image_build (container image build)
 ```
 
-The image was fine. The network was fine — the _host_ reached `github.com` in
+The image was fine. The network was fine — the *host* reached `github.com` in
 0.1 s throughout. What was broken was egress from inside a container: a reject
 route on the container bridge (`default link#22 UCSIg bridge100 !`) while a
 Tailscale `utun` interface held a default route on the same host. The build was
@@ -914,16 +911,16 @@ One short container opens a TCP connection to a **literal address**
 (`1.1.1.1:443` by default; `VIBE_EGRESS_PROBE_TARGET` or `--target` to change
 it). A name is refused outright: `192.168.64.1` is the host itself, so DNS
 answers while every packet past the gateway is dropped, and a probe that only
-resolved a name would report a cut-off host as healthy. The same address is then
-tried **from the host**, and that comparison is what tells the three conditions
-apart:
+resolved a name would report a cut-off host as healthy. The same address is
+then tried **from the host**, and that comparison is what tells the three
+conditions apart:
 
-| container  | host       | verdict          | Exit | What the launcher does                                                                                          |
-| ---------- | ---------- | ---------------- | ---- | --------------------------------------------------------------------------------------------------------------- |
-| reaches it | –          | `reachable`      | `0`  | Builds and launches, as before                                                                                  |
-| blocked    | reaches it | `egress_blocked` | `3`  | Writes the `container_egress` phase marker, parks (launcher exit **88**), escalates once with the evidence      |
-| blocked    | blocked    | `network_down`   | `4`  | Waits — the evidence carries the network-unavailable marker, so the streak never climbs the ladder (Issue #949) |
-| not run    | –          | `inconclusive`   | `0`  | Launches exactly as before                                                                                      |
+| container | host | verdict | Exit | What the launcher does |
+| --- | --- | --- | --- | --- |
+| reaches it | – | `reachable` | `0` | Builds and launches, as before |
+| blocked | reaches it | `egress_blocked` | `3` | Writes the `container_egress` phase marker, parks (launcher exit **88**), escalates once with the evidence |
+| blocked | blocked | `network_down` | `4` | Waits — the evidence carries the network-unavailable marker, so the streak never climbs the ladder (Issue #949) |
+| not run | – | `inconclusive` | `0` | Launches exactly as before |
 
 The escalation carries the hop table, the host's reject routes and any tunnel
 interface holding a default route, which is what makes the fault diagnosable in
@@ -941,12 +938,12 @@ Fleet capacity: this host is unavailable — reason: container_egress_blocked.
 
 Four boundaries keep that safe on a machine nobody is watching:
 
-| Boundary                                 | Behaviour                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Never blocks a launch on its own failure | No image in the store, an unsupported runtime, or a runtime that refused to run the probe container (its own `125`/`126`/`127`) — all `inconclusive`, and the launch proceeds exactly as it did before. A probe that _ran_ and did not answer inside its bound is a blocked hop, not an inconclusive one: a silently dropped packet hangs rather than failing fast, and that is the incident |
-| An address, never a name                 | `--target` is validated as an IP literal and refused otherwise, so a resolver on the host bridge cannot make a blocked host look healthy                                                                                                                                                                                                                                                     |
-| Parks, does not retry                    | A blocked host backs off at the ceiling (30 minutes), escalates on the **first** occurrence, and reports itself as unavailable capacity with the reason `container_egress_blocked` — the reject route is host state a non-root process cannot change, so nothing here pretends it can be healed                                                                                              |
-| The link is not the host                 | Both hops blocked is a network outage: it waits at the base cadence and escalates nobody                                                                                                                                                                                                                                                                                                     |
+| Boundary | Behaviour |
+| --- | --- |
+| Never blocks a launch on its own failure | No image in the store, an unsupported runtime, or a runtime that refused to run the probe container (its own `125`/`126`/`127`) — all `inconclusive`, and the launch proceeds exactly as it did before. A probe that *ran* and did not answer inside its bound is a blocked hop, not an inconclusive one: a silently dropped packet hangs rather than failing fast, and that is the incident |
+| An address, never a name | `--target` is validated as an IP literal and refused otherwise, so a resolver on the host bridge cannot make a blocked host look healthy |
+| Parks, does not retry | A blocked host backs off at the ceiling (30 minutes), escalates on the **first** occurrence, and reports itself as unavailable capacity with the reason `container_egress_blocked` — the reject route is host state a non-root process cannot change, so nothing here pretends it can be healed |
+| The link is not the host | Both hops blocked is a network outage: it waits at the base cadence and escalates nobody |
 
 `worker/deno/lib/container_egress_probe.ts` owns the classification, the
 routing-table parsing and the evidence; the runtime and the socket are injected
@@ -954,9 +951,9 @@ seams, so the tests never start a container.
 
 ## Runtime detection — which runtime the launchers use
 
-`run.sh` and `run.ps1` must resolve a supported container runtime before they do
-anything else, and the rule lives in one tested module rather than twice in two
-thin launchers:
+`run.sh` and `run.ps1` must resolve a supported container runtime before they
+do anything else, and the rule lives in one tested module rather than twice in
+two thin launchers:
 
 ```bash
 OUTPUT_JSON=true deno run --allow-run --allow-env \
@@ -964,11 +961,11 @@ OUTPUT_JSON=true deno run --allow-run --allow-env \
 # /usr/local/bin/docker
 ```
 
-| Platform | Runtimes probed, in order                               |
-| -------- | ------------------------------------------------------- |
+| Platform | Runtimes probed, in order            |
+| -------- | ------------------------------------ |
 | macOS    | Apple [`container`](https://github.com/apple/container) |
-| Linux    | Docker, then Podman                                     |
-| Windows  | Docker, then Podman                                     |
+| Linux    | Docker, then Podman                  |
+| Windows  | Docker, then Podman                  |
 
 Two properties matter more than the list:
 
@@ -980,27 +977,28 @@ Two properties matter more than the list:
 - **Detection never falls back to the host.** In container mode the outcome is
   either a descriptor naming a container runtime or a non-zero exit whose
   message names the platform, every runtime probed with the reason it was
-  rejected, and how to install one. There is no host mode (Issue #4), so nothing
-  here can select one because a runtime is absent.
+  rejected, and how to install one. There is no host mode
+  (Issue #4), so nothing here can select one because a runtime is absent.
 
-**The runtime is not a manual-only checklist**. Run `./setup.sh` in a terminal
-and the same probe drives an offer to fix what it found, with the exact commands
-shown before they run:
+**The runtime is not a manual-only checklist**. Run
+`./setup.sh` in a terminal and the same probe drives an offer to fix what it
+found, with the exact commands shown before they run:
 
-| Platform | Absent binary                                                                                    | Present but not answering                              |
-| -------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| macOS    | `brew install container` then `container system start`                                           | `container system start`                               |
-| Linux    | `sudo apt-get install -y docker.io`, or `sudo apt-get install -y podman` when Docker is declined | `sudo systemctl start docker` / `podman machine start` |
-| Windows  | —                                                                                                | —                                                      |
+| Platform | Absent binary | Present but not answering |
+| -------- | ------------- | ------------------------- |
+| macOS | `brew install container` then `container system start` | `container system start` |
+| Linux | `sudo apt-get install -y docker.io`, or `sudo apt-get install -y podman` when Docker is declined | `sudo systemctl start docker` / `podman machine start` |
+| Windows | — | — |
 
 The offer needs a package manager the plan table knows (Homebrew or apt) and a
 terminal — or the explicit `--auto-install` flag (Issue #33), which consents to
 every offer in advance so a scripted setup run installs the runtime with no
 terminal to prompt on. Without either, nothing runs, the manual instructions
-above stand, and the report says the offer was withheld and why. The runtime is
-re-probed in the same setup run, so a step that exits zero while the runtime
-still cannot answer keeps the check failed. See Deployment for the full flow and
-the `VIBE_NO_AUTO_INSTALL` escape hatch.
+above stand, and the report says the offer was withheld and why.
+The runtime is re-probed in the same setup run, so a step that exits zero while
+the runtime still cannot answer keeps the check failed. See
+Deployment for the full
+flow and the `VIBE_NO_AUTO_INSTALL` escape hatch.
 
 ```mermaid
 flowchart TD
@@ -1022,9 +1020,9 @@ The command reports the executable on stdout and, with `OUTPUT_JSON=true`, the
 whole descriptor: `kind`, `executable`, `probed`, and the `dialect` the
 launchers need — `mountFlag`, `readOnlyMountSuffix`, the image-inspect
 sub-command (`image inspect` for Docker/Podman, `images inspect` for Apple
-`container`), and whether `--userns`, `--security-opt`, `--cap-drop`, `--tmpfs`
-and `--read-only` are understood (Apple `container` supports none of them: each
-container is already its own lightweight VM). Passing
+`container`), and whether `--userns`, `--security-opt`, `--cap-drop`,
+`--tmpfs` and `--read-only` are understood (Apple `container` supports none of
+them: each container is already its own lightweight VM). Passing
 `--platform <darwin|linux|windows>` resolves for another platform, and
 `worker/deno/lib/container_runtime.ts` takes both the platform and the probe as
 parameters, so `worker/deno/tests/container_runtime_test.ts` exercises every
@@ -1033,51 +1031,54 @@ branch on a host with none of the runtimes installed.
 ## Per-launch caches — nothing is re-downloaded each cycle
 
 The container is replaced every cycle (`--rm`), which used to throw away the
-Deno module/emit cache and re-fetch plus re-type-check the entire worker graph
-on every launch, and to read the worker's ~1,500-file module graph over the
-virtiofs `/workspace` mount. The entrypoint now:
+Deno module/emit cache and re-fetch plus re-type-check the entire worker
+graph on every launch, and to read the worker's ~1,500-file module graph
+over the virtiofs `/workspace` mount. The entrypoint now:
 
 - points `DENO_DIR` at `~/auto-issue-work/.deno-cache` on the durable
-  `vibe-work` volume, so every launch after the first is a warm start. Override
-  with `VIBE_DENO_CACHE_DIR`; the `deno-cache-guard` housekeeping step wipes the
-  cache when it exceeds `DENO_CACHE_MAX_BYTES` (default 2 GiB — a cold start is
-  the only cost of losing it);
-- stages `worker/deno` into VM-local storage (`${VIBE_SCRATCH_DIR}/worker-src` —
-  the per-launch scratch root, see
+  `vibe-work` volume, so every launch after the first is a warm start.
+  Override with `VIBE_DENO_CACHE_DIR`; the `deno-cache-guard` housekeeping
+  step wipes the cache when it exceeds `DENO_CACHE_MAX_BYTES` (default
+  2 GiB — a cold start is the only cost of losing it);
+- stages `worker/deno` into VM-local storage (`${VIBE_SCRATCH_DIR}/worker-src`
+  — the per-launch scratch root, see
   [Containment → the writable-path rule](CONTAINMENT.md#the-writable-path-rule))
   and runs the driver from there, so module reads stop crossing virtiofs. The
-  mounted checkout stays the source of truth (`--base-dir` still points at it),
-  and any staging failure falls back loudly to the previous behaviour.
+  mounted checkout stays the source of truth (`--base-dir` still points at
+  it), and any staging failure falls back loudly to the previous behaviour.
 
 ## The work volume has two tiers (Issue #242)
 
 Not everything on the `vibe-work` volume is a repository the worker is
-responsible for. A monitored repo's `quality.sh` or bench scripts clone sibling
-**data** repos as `../<name>`, and on GRQ-23 those siblings
-(`GRQ-shareprices2026Q2` 7.3 GB, `GRQ-listing` 3.9 GB, `GRQ-companyreports` 2.1
-GB, …) were ~15 GB of the 43 directories in the work root, while the 15
-monitored clones the worker actually wants to keep warm were a couple of GB. The
-work root is therefore tiered, from the monitored list the worker already has:
+responsible for. A monitored repo's `quality.sh` or bench scripts clone
+sibling **data** repos as `../<name>`, and on GRQ-23 those siblings
+(`GRQ-shareprices2026Q2` 7.3 GB, `GRQ-listing` 3.9 GB, `GRQ-companyreports`
+2.1 GB, …) were ~15 GB of the 43 directories in the work root, while the 15
+monitored clones the worker actually wants to keep warm were a couple of GB.
+The work root is therefore tiered, from the monitored list the worker
+already has:
 
-- **Tier 1 — monitored repos.** Persistent. Never removed by either path below,
-  so a large clone is not re-downloaded every cycle; the build output and caches
-  _inside_ them stay bounded by the `work-volume-prune` step.
-- **Tier 2 — everything else.** Disposable. Aged out by the `work-volume-tiers`
-  housekeeping step after `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` idle days
-  (default 3 — long enough that a nightly gate's data repo stays warm), and
-  removed **largest first** the moment the host-disk monitor reports `low`,
-  _before_ the gate stops claiming.
+- **Tier 1 — monitored repos.** Persistent. Never removed by either path
+  below, so a large clone is not re-downloaded every cycle; the build output
+  and caches *inside* them stay bounded by the `work-volume-prune` step.
+- **Tier 2 — everything else.** Disposable. Aged out by the
+  `work-volume-tiers` housekeeping step after
+  `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` idle days (default 3 — long enough
+  that a nightly gate's data repo stays warm), and removed **largest first**
+  the moment the host-disk monitor reports `low`, *before* the gate stops
+  claiming.
 
-**Reserved names are neither tier (Issue #337).** `logs`, the ext4 `lost+found`,
-and the `audit` trail (with its `audit.roster.jsonl`, `audit.roster.seen` and
-`audit.roster.jsonl.torn-<n>` sidecars) are worker- or filesystem-owned state,
-so every sweep — the tier reclaim, the stale-workdir scan, the worktree cleanup
-and the 90%-disk `nukeWorkDir` — skips them. `audit/` carries no `.git` and sits
-untouched between sweeps, so before #337 it tiered as disposable and the worker
-deleted its own tamper-evident journals; `audit-chain-verify` then reported
-`[SECURITY] [AUDIT_CHAIN_BROKEN]` on every swept host. A genuine deletion is
-still detected — the roster beside the directory is what makes it detectable,
-and it is untouched by this change.
+**Reserved names are neither tier (Issue #337).** `logs`, the ext4
+`lost+found`, and the `audit` trail (with its `audit.roster.jsonl`,
+`audit.roster.seen` and `audit.roster.jsonl.torn-<n>` sidecars) are worker- or
+filesystem-owned state, so every
+sweep — the tier reclaim, the stale-workdir scan, the worktree cleanup and
+the 90%-disk `nukeWorkDir` — skips them. `audit/` carries no `.git` and sits
+untouched between sweeps, so before #337 it tiered as disposable and the
+worker deleted its own tamper-evident journals; `audit-chain-verify` then
+reported `[SECURITY] [AUDIT_CHAIN_BROKEN]` on every swept host. A genuine
+deletion is still detected — the roster beside the directory is what makes it
+detectable, and it is untouched by this change.
 
 ```mermaid
 flowchart TD
@@ -1097,14 +1098,14 @@ flowchart TD
     style L fill:#c9184a,stroke:#800f2f,color:#fff
 ```
 
-Nothing is removed while a slot is mid-execute — a gate may be reading the clone
-right now — unpushed commits are pushed first with the same rescue the
-stale-workdir sweep uses (a clone whose push fails is kept), and a `.git`-less
-or unreadable directory goes without a rescue because it has no commits to save.
-Removal is safe because the consuming scripts re-fetch on demand: GRQ's
-`worker/model_fetch.sh` clones the sibling when the directory is absent and
-fetches when it is present, so a removed data repo costs one clone, not a failed
-gate.
+Nothing is removed while a slot is mid-execute — a gate may be reading the
+clone right now — unpushed commits are pushed first with the same rescue the
+stale-workdir sweep uses (a clone whose push fails is kept), and a
+`.git`-less or unreadable directory goes without a rescue because it has no
+commits to save. Removal is safe because the consuming scripts re-fetch on
+demand: GRQ's `worker/model_fetch.sh` clones the sibling when the directory
+is absent and fetches when it is present, so a removed data repo costs one
+clone, not a failed gate.
 
 Both paths log the split before anything goes, e.g.
 `work volume: monitored 2.1 GB in 15 repos; side/data 15.2 GB in 8 dirs;
@@ -1114,27 +1115,27 @@ removed 2 (11.0 GB, disk-low)`.
 
 Neither path above reaches a data repo a gate refreshes **every** cycle: it is
 never idle, and the disk-low reclaim only fires once the host is already below
-the floor. That is how `side/data` climbed 0.7 GB → 10.8 GB in one afternoon on
-an otherwise idle GRQ-23 — one directory, roughly 0.2 GB per cycle. The writer
-is the refresh itself: `GRQ/quality.sh` → `worker/repos.sh` → `model_fetch.sh`
-running `git fetch` + `git reset --hard origin/Develop` in
+the floor. That is how `side/data` climbed 0.7 GB → 10.8 GB in one afternoon
+on an otherwise idle GRQ-23 — one directory, roughly 0.2 GB per cycle. The
+writer is the refresh itself: `GRQ/quality.sh` → `worker/repos.sh` →
+`model_fetch.sh` running `git fetch` + `git reset --hard origin/Develop` in
 `GRQ-shareprices2026Q2`.
 
 The refresh is legitimate; what it leaves behind is not. In a **blobless**
 partial clone the hard reset lazily backfills a whole tree of blobs into a new
-`.promisor` pack, and git never prunes those — `git repack` deliberately leaves
-promisor packs alone, so `git gc --prune=now` reclaims nothing. Measured on the
-host: a 1.5 GB `.git` holding an 871 MB pack (24 Aug) and a 650 MB pack (25
-Aug), one per refresh, on a 6.5 GB working tree.
+`.promisor` pack, and git never prunes those — `git repack` deliberately
+leaves promisor packs alone, so `git gc --prune=now` reclaims nothing.
+Measured on the host: a 1.5 GB `.git` holding an 871 MB pack (24 Aug) and a
+650 MB pack (25 Aug), one per refresh, on a 6.5 GB working tree.
 
 So the age sweep also takes a tier-2 clone whose `.git` exceeds
 **`WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES`** (default 2 GiB; `0` disables the
 guard), warm or not — bounding the object store the way `deno-cache-guard`
-bounds the Deno cache. The next gate run re-clones it blobless and backfills one
-tree, which is about what a single refresh already cost, so the disk is bounded
-without multiplying the download. Every existing protection still applies:
-nothing goes while a slot is mid-execute, unpushed commits are rescued first,
-and tier 1 is never a candidate. The removal names its reason:
+bounds the Deno cache. The next gate run re-clones it blobless and backfills
+one tree, which is about what a single refresh already cost, so the disk is
+bounded without multiplying the download. Every existing protection still
+applies: nothing goes while a slot is mid-execute, unpushed commits are
+rescued first, and tier 1 is never a candidate. The removal names its reason:
 
 ```text
 work volume: removed disposable GRQ-shareprices2026Q2 (7.9 GB, 0.0 days idle,
@@ -1145,26 +1146,25 @@ and the summary line carries `git-ratchet: GRQ-shareprices2026Q2`.
 
 ### Side/data repo clones are blobless (Issue #243)
 
-Reclaiming a tier-2 clone only helps if re-fetching it is cheap, and it was not:
-`GRQ-shareprices2026Q2` is 7.3 GB with an 832 MB `.git` of daily data commits,
-so every reclaim bought disk back at the price of a full re-download on the next
-gate run — on every fleet host. The worker therefore exports
-**`VIBE_SIDE_REPO_CLONE_ARGS`** (default `--filter=blob:none`) in the bootstrap
-prelude, so every gate and agent it spawns inherits it:
+Reclaiming a tier-2 clone only helps if re-fetching it is cheap, and it was
+not: `GRQ-shareprices2026Q2` is 7.3 GB with an 832 MB `.git` of daily data
+commits, so every reclaim bought disk back at the price of a full
+re-download on the next gate run — on every fleet host. The worker therefore
+exports **`VIBE_SIDE_REPO_CLONE_ARGS`** (default `--filter=blob:none`) in the
+bootstrap prelude, so every gate and agent it spawns inherits it:
 
-| Value                   | Effect                                                                     |
-| ----------------------- | -------------------------------------------------------------------------- |
-| unset (the default)     | `--filter=blob:none` — a **blobless partial clone**                        |
-| any `git clone` options | Used verbatim (e.g. `--filter=tree:0`, `--filter=blob:limit=1m --no-tags`) |
-| empty string            | No extra arguments — the documented way back to a full clone               |
+| Value                            | Effect                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| unset (the default)              | `--filter=blob:none` — a **blobless partial clone**                       |
+| any `git clone` options          | Used verbatim (e.g. `--filter=tree:0`, `--filter=blob:limit=1m --no-tags`) |
+| empty string                     | No extra arguments — the documented way back to a full clone               |
 
 A blobless clone keeps the **whole commit history**, so `git log`, `git
-blame`
-and pulls all behave; only file contents are fetched lazily, which for a data
-repo checked out at one revision is roughly its working tree rather than every
-blob ever committed. A `--depth` shallow clone is smaller still but breaks
-history-based tooling, which is why blobless — not shallow — is the fleet
-default.
+blame` and pulls all behave; only file contents are fetched lazily, which for
+a data repo checked out at one revision is roughly its working tree rather
+than every blob ever committed. A `--depth` shallow clone is smaller still
+but breaks history-based tooling, which is why blobless — not shallow — is
+the fleet default.
 
 A monitored repository adopts it in the script that clones the sibling:
 
@@ -1177,13 +1177,13 @@ git clone ${CLONE_ARGS[@]+"${CLONE_ARGS[@]}"} "git@github.com:org/${REPO}.git"
 
 Two boundaries hold:
 
-- **New clones only.** A partial clone already on disk is left exactly as it is
-  — nothing re-clones a checkout to shrink it, because that costs the very
+- **New clones only.** A partial clone already on disk is left exactly as it
+  is — nothing re-clones a checkout to shrink it, because that costs the very
   download the filter exists to avoid.
-- **An override is validated, never mangled.** The value is word-split unquoted
-  by adopting scripts, so a token that is not a plain `git clone` option (shell
-  metacharacters, a bare word) is refused loudly in `run_core.log` and the
-  blobless default stands.
+- **An override is validated, never mangled.** The value is word-split
+  unquoted by adopting scripts, so a token that is not a plain `git clone`
+  option (shell metacharacters, a bare word) is refused loudly in
+  `run_core.log` and the blobless default stands.
 
 ```mermaid
 flowchart LR
@@ -1198,12 +1198,12 @@ flowchart LR
 ## The volume image only grows — the launch-time trim (Issue #384)
 
 Reclaiming inside the guest does not give the **host** its disk back. A named
-volume is a thin-provisioned disk image (`volumes/vibe-work/volume.img`): blocks
-are allocated to it when the guest writes and are never returned when the guest
-deletes. The guest filesystem marks them free; the image keeps them. GRQ-23 had
-36.5 GB allocated on the host for ~13 GB of real content, and every guest-side
-sweep — the tier reclaim above, the 90 %-disk `nukeWorkDir` — returned exactly
-**zero** bytes to the host:
+volume is a thin-provisioned disk image (`volumes/vibe-work/volume.img`):
+blocks are allocated to it when the guest writes and are never returned when
+the guest deletes. The guest filesystem marks them free; the image keeps
+them. GRQ-23 had 36.5 GB allocated on the host for ~13 GB of real content,
+and every guest-side sweep — the tier reclaim above, the 90 %-disk
+`nukeWorkDir` — returned exactly **zero** bytes to the host:
 
 ```text
 [HOST_DISK_LOW] reclaimed 0 bytes … host 6.5 GB free (1.4%) of 460.4 GB,
@@ -1213,24 +1213,24 @@ floor 46.0 GB — below the floor
 That ran every few minutes for days while the worker claimed nothing. Three
 things make the floor reachable again:
 
-- **`fstrim` at every launch.** `container/volume-init.sh` already runs as root
-  with the volumes mounted, so it discards each block-device volume's unused
-  blocks — which punches them out of the image and hands them back to the host.
-  It runs on every launch, with no operator incantation. A runtime whose virtual
-  disk cannot discard, or an image without `fstrim`, says so loudly, names the
-  volume on stdout as `VOLUME_TRIM_REFUSED <target>` (see the self-heal below),
-  and the launch still proceeds.
-- **The hard free-disk floor is checked _after_ the init.** Gating first made
-  the floor unreachable by construction: a host below it refused the launch, so
-  the volume was never trimmed, so the host never got its blocks back. Both
-  launchers now create the volumes, run the init, and only then measure the
-  floor.
+- **`fstrim` at every launch.** `container/volume-init.sh` already runs as
+  root with the volumes mounted, so it discards each block-device volume's
+  unused blocks — which punches them out of the image and hands them back to
+  the host. It runs on every launch, with no operator incantation. A runtime
+  whose virtual disk cannot discard, or an image without `fstrim`, says so
+  loudly, names the volume on stdout as `VOLUME_TRIM_REFUSED <target>` (see
+  the self-heal below), and the launch still proceeds.
+- **The hard free-disk floor is checked *after* the init.** Gating first made
+  the floor unreachable by construction: a host below it refused the launch,
+  so the volume was never trimmed, so the host never got its blocks back.
+  Both launchers now create the volumes, run the init, and only then measure
+  the floor.
 - **The host estimate tracks the volume's high-water mark, not its current
   size.** `estimateHostFree` used the current reading, so a guest-side sweep
   that deleted 18 GB raised the estimate by 18 GB the host never received and
-  reported `healed`. The estimate now only ever falls within a run, and the gap
-  below the peak is named for what it is — dead space inside the image the
-  launch-time trim returns.
+  reported `healed`. The estimate now only ever falls within a run, and the
+  gap below the peak is named for what it is — dead space inside the image
+  the launch-time trim returns.
 
 ```mermaid
 flowchart TD
@@ -1243,8 +1243,8 @@ flowchart TD
     style H fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-The disk-low alarm says which of the two it is, rather than reading as a cleanup
-that failed:
+The disk-low alarm says which of the two it is, rather than reading as a
+cleanup that failed:
 
 ```text
 [HOST_DISK_LOW] reclaimed 11811160064 bytes of disposable space INSIDE the
@@ -1259,48 +1259,50 @@ snapshots re-baseline. A recreate that does not clear the floor is logged as
 [WORK_VOLUME_UNRECOVERED] (Issues #384, #478)
 ```
 
-Once the launcher has reported the trim refused (`workVolumeTrimRefused` in its
-`host-disk.json` reading), or the image is measurably ratcheted, the disk-low
-pass **does not delete inside the guest at all** (Issue #2080): on GRQ-23 it was
-deleting a 3.3 GB Rust `target/` every eight minutes that the next maintenance
-pass rebuilt into fresh image blocks — 45 GB of image for 1.2 GB of live data in
-eleven hours. The log says `[HOST_DISK_LOW] guest
-reclaim skipped: …` and the
-host is left to the launcher's volume reset (Issue #2077).
+Once the launcher has reported the trim refused (`workVolumeTrimRefused` in
+its `host-disk.json` reading), or the image is measurably ratcheted, the
+disk-low pass **does not delete inside the guest at all** (Issue #2080): on
+GRQ-23 it was deleting a 3.3 GB Rust `target/` every eight minutes that the
+next maintenance pass rebuilt into fresh image blocks — 45 GB of image for
+1.2 GB of live data in eleven hours. The log says `[HOST_DISK_LOW] guest
+reclaim skipped: …` and the host is left to the launcher's volume reset
+(Issue #2077).
 
 ### HOST_DISK_LOW pauses the shared-clone ref sweep (Issue #2889)
 
-A host below its claiming floor stops claiming new issues, but every maintenance
-pass keeps running each cycle, because those passes land the PRs already open
-(Issue #226). There are two exceptions: a maintenance build, which waits for the
-host to recover ([below](#host_disk_low-defers-maintenance-builds-issue-3178)),
-and the shared-clone ref sweep: it stands down while the disk is low and reclaim
-did not heal it, since a ref write interrupted by low disk is exactly what it
-repairs. The one-time-per-episode `[HOST_DISK_LOW]` warning described above is
-unchanged; there is no separate warn line for the pause.
+A host below its claiming floor stops claiming new issues, but every
+maintenance pass keeps running each cycle, because those passes land the
+PRs already open (Issue #226). There are two exceptions: a maintenance
+build, which waits for the host to recover
+([below](#host_disk_low-defers-maintenance-builds-issue-3178)), and the
+shared-clone ref sweep: it stands down while the disk is low and reclaim did
+not heal it,
+since a ref write interrupted by low disk is exactly what it repairs. The
+one-time-per-episode `[HOST_DISK_LOW]` warning described above is unchanged;
+there is no separate warn line for the pause.
 
 As soon as the episode ends — reclaim reports `healed`, or the next cycle's
-reading is no longer low — the shared-clone ref sweep runs straight away rather
-than waiting out its usual hourly cadence, on the reasoning above: see
+reading is no longer low — the shared-clone ref sweep runs straight away
+rather than waiting out its usual hourly cadence, on the reasoning above: see
 [Shared clone ref sweep](INTERNALS.md#shared-clone-ref-sweep-issue-2889) in
 INTERNALS.md for the sweep itself.
 
 ### HOST_DISK_LOW defers maintenance builds (Issue #3178)
 
 The claim gate stops the cheap thing; it used to let the expensive thing
-through. On GRQ-23 (2026-10-03) a launch started at 38.8 GB free against a 46.0
-GB floor, claimed nothing, and then ran a milestone sync whose verification and
-two agent repair rounds built and tested a large Rust workspace: 23 GB into
-`/var/tmp/vibe-cargo-target` in 23 minutes, until the host could not back the
-guest's writes and `/` went read-only.
+through. On GRQ-23 (2026-10-03) a launch started at 38.8 GB free against a
+46.0 GB floor, claimed nothing, and then ran a milestone sync whose
+verification and two agent repair rounds built and tested a large Rust
+workspace: 23 GB into `/var/tmp/vibe-cargo-target` in 23 minutes, until the
+host could not back the guest's writes and `/` went read-only.
 
-So a maintenance pass now asks before it runs the repository's own build or test
-(`worker/deno/lib/heavy_build_gate.ts`), reading the same `HostDiskMonitor` and
-the same floor the claim gate does:
+So a maintenance pass now asks before it runs the repository's own build or
+test (`worker/deno/lib/heavy_build_gate.ts`), reading the same
+`HostDiskMonitor` and the same floor the claim gate does:
 
-- **Below the floor, the build waits.** A milestone sync that would merge — the
-  periodic sweep and the pre-cut sync alike — is deferred before the merge, so
-  neither its verification nor its repair rounds run. The deferral is not a
+- **Below the floor, the build waits.** A milestone sync that would merge —
+  the periodic sweep and the pre-cut sync alike — is deferred before the merge,
+  so neither its verification nor its repair rounds run. The deferral is not a
   failure: it charges and paces nothing in the conflict ledger. The log names
   the floor:
 
@@ -1317,70 +1319,71 @@ probe must not stop every build in the fleet.
 
 ### In-flight builds stop at the same floor (Issue #4360)
 
-The maintenance deferral above does not cover a build that is already running.
-On GRQ-23 (2026-10-25) a security-fix discrimination `cargo` started with about
-60 GB free and the host was at 0 forty minutes later. The worker's reading of
-`host-disk.json` can be minutes old (the launcher refreshes it on
+The maintenance deferral above does not cover a build that is already
+running. On GRQ-23 (2026-10-25) a security-fix discrimination `cargo` started
+with about 60 GB free and the host was at 0 forty minutes later. The worker's
+reading of `host-disk.json` can be minutes old (the launcher refreshes it on
 `HOST_DISK_REFRESH_SECONDS`, default five minutes), so the claim gate did not
 drain the pool until after the filesystem had gone read-only.
 
-Before an agent invocation in a checkout, a quality-gate run, a mutation check
-or a discrimination `cargo`/`deno`, the worker reads the same monitor with the
-cache skipped (`check({ force: true })`) and parks the step when the host is
-below the floor or, where the trim is refused, short of the floor plus the 25 GB
-headroom. The headroom park applies only to a checkout that holds a cargo
-project, because only cargo writes to the ephemeral cargo root; a Deno-only
-checkout is parked only below the floor (Issue #4413). The park is
-infrastructure: the reason carries `Parked as infrastructure (Issue #4360)`, it
-is not a security-fix or mutation gate verdict, and it does not earn
-`failed-once`. It keeps the `disk-full` diagnostic class but is not
-code-fixable, so the worker does not auto-file a worker-fault issue for a
-protective release; an actual ENOSPC or read-only filesystem failure remains
-code-fixable. The same stop is not a repository fast failure: a host below its
-floor would otherwise back the repository off after three tallies, including
-when the manager quotes `host disk below its floor` without the park note (Issue
-#4388). A `Read-only file system` /`os error 30` failure is classified the same
-way. While an agent, `cargo` or `deno` is running, polling stops the child only
-when the host crosses the floor. The 25 GB is admission headroom that the
-running work may consume; requiring it afresh on every poll killed admitted
-agents at 66.4 GB free on a host with a 46 GB floor (Issue #4390). The next
-build step still needs the admission budget, less what the checkout's own target
-directories already hold (capped at the 25 GB, so the floor is never relaxed):
-its build is incremental, and a run that was admitted and built is not refused a
-later step for the space its own build used (Issue #4423). Active polling does
-not prune other checkouts.
+Before an agent invocation in a checkout, a quality-gate run, a mutation
+check or a discrimination `cargo`/`deno`, the worker reads the same monitor
+with the cache skipped (`check({ force: true })`) and parks the step when the
+host is below the floor or, where the trim is refused, short of the floor
+plus the 25 GB headroom. The headroom park applies only to a checkout that
+holds a cargo project, because only cargo writes to the ephemeral cargo root;
+a Deno-only checkout is parked only below the floor (Issue #4413). The park is
+infrastructure: the reason carries
+`Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
+gate verdict, and it does not earn `failed-once`. It keeps the `disk-full`
+diagnostic class but is not code-fixable, so the worker does not auto-file a
+worker-fault issue for a protective release; an actual ENOSPC or read-only
+filesystem failure remains code-fixable. The same stop is not a
+repository fast failure: a host below its floor would otherwise back the
+repository off after three tallies, including when the manager quotes
+`host disk below its floor` without the park note (Issue #4388). A
+`Read-only file system`
+/`os error 30` failure is classified the same way. While an agent, `cargo`
+or `deno` is running, polling stops the child only when the host crosses the
+floor. The 25 GB is admission headroom that the running work may consume;
+requiring it afresh on every poll killed admitted agents at 66.4 GB free on
+a host with a 46 GB floor (Issue #4390). The next build step still needs the
+admission budget, less what the checkout's own target directories already
+hold (capped at the 25 GB, so the floor is never relaxed): its build is
+incremental, and a run that was admitted and built is not refused a later
+step for the space its own build used (Issue #4423). Active polling does not
+prune other checkouts.
 
-A recognised host-disk failure is released with its original cause and is not
-retried in-process: repeating the agent invocation cannot replenish the budget.
-A later scheduled cycle reads the host again. This does not turn a disk failure
-into a successful run or a scheduled finish-deadline release.
+A recognised host-disk failure is released with its original cause and is
+not retried in-process: repeating the agent invocation cannot replenish the
+budget. A later scheduled cycle reads the host again. This does not turn a
+disk failure into a successful run or a scheduled finish-deadline release.
 
 Where the runtime refuses the trim **and** the host is below the floor, the
-launch ends with status 74. Deleting files in that volume does not return host
-blocks; leaving the container discards the ephemeral layer, and the next
-launch's heal recreates the volume if the host is still short. Above the floor,
-or where the trim is honoured, the build is parked where the park applies (Issue
-#4413), and the launch continues.
+launch ends with status 74. Deleting files in that volume does not return
+host blocks; leaving the container discards the ephemeral layer, and the next
+launch's heal recreates the volume if the host is still short. Above the
+floor, or where the trim is honoured, the build is parked where the park
+applies (Issue #4413), and the launch continues.
 
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 
 Above the floor, a build can still be refused by the ephemeral cargo root's
-budget (described under _The root has a budget_ below), on a runtime that
-refuses the trim. Before Issue #4326 that refusal kept the milestone behind
-indefinitely: the over-budget build was refused every cycle (GRQ-23, 2026-10-24:
-about 150 refusals, 27 issues held). Now the sync still lands that cycle, in
-**merge-only** mode, unless its conflict needs the agent. Merge-only applies to
-a tree that holds a cargo project, because only a cargo build writes to the
+budget (described under *The root has a budget* below), on a runtime that
+refuses the trim. Before Issue #4326 that refusal kept the milestone
+behind indefinitely: the over-budget build was refused every cycle (GRQ-23,
+2026-10-24: about 150 refusals, 27 issues held). Now the sync still lands that
+cycle, in **merge-only** mode, unless its conflict needs the agent. Merge-only applies
+to a tree that holds a cargo project, because only a cargo build writes to the
 ephemeral cargo root. A repository with no cargo project keeps its own check
-(the repository's own type check) and the normal agent. Only cargo checks and
-cargo unit suites are skipped. Mixed trees still run and must pass their Deno
-checks and unit suites. A Deno check whose module host this host cannot reach is
-left to CI and named as not run (`TESTS LEFT TO CI:` or `CHECK LEFT TO CI:`,
-Issues #4422 and #4441) only when some other check ran. Cargo is skipped in this
-mode, so when a mixed tree's only Deno type check cannot reach its module host,
-nothing ran: a conflict-free merge is pushed with the `UNGATED:` note, and a
-resolved conflict is refused, because the merge-only gate marks only a
-cargo-only tree `landUnverified`. For a cargo-only tree:
+(the repository's own type check) and the normal agent. Only cargo checks and cargo unit suites are skipped. Mixed trees still run
+and must pass their Deno checks and unit suites. A Deno check whose module host
+this host cannot reach is left to CI and named as not run (`TESTS LEFT TO CI:`
+or `CHECK LEFT TO CI:`, Issues #4422 and #4441) only when some other check
+ran. Cargo is skipped in this mode, so when a mixed tree's only Deno type check
+cannot reach its module host, nothing ran: a conflict-free merge is pushed with
+the `UNGATED:` note, and a resolved conflict is refused, because the merge-only
+gate marks only a cargo-only tree `landUnverified`. For a cargo-only tree:
 
 - **A conflict-free merge is pushed unverified.** The sync outcome carries the
   existing `UNGATED:` note (Issue #974), and the milestone PR's own CI builds
@@ -1402,99 +1405,103 @@ The log names the reason:
 [HOST_DISK_BUDGET] Milestone sync for '2285 …' in stSoftwareAU/GRQ-AutoTrader uses cargo-only build deferral; Deno projects keep their normal checks: ephemeral cargo root over budget (…) — pruned … of idle target dirs and … is still short …; cargo builds wait for CI; Deno projects keep their normal checks (Issue #4326)
 ```
 
-The deferred cargo build cannot consume the host's remaining headroom. No
-further reclaim step is taken: on a runtime that refuses the trim, deleting
-artefacts inside the guest returns nothing to the host, so the ephemeral root's
-idle target directories, already pruned first, are the only space the worker can
-hand back.
+The deferred cargo build cannot consume the host's remaining headroom. No further reclaim step is taken: on a runtime that refuses the
+trim, deleting artefacts inside the guest returns nothing to the host, so the
+ephemeral root's idle target directories, already pruned first, are the only
+space the worker can hand back.
+
 
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
-On the Apple `container` runtime the trim above has **never** worked. As root,
-on a device that advertises discard (`/sys/block/vdc/queue/discard_max_bytes` =
-549755813888), the ioctl is refused outright:
+On the Apple `container` runtime the trim above has **never** worked. As
+root, on a device that advertises discard
+(`/sys/block/vdc/queue/discard_max_bytes` = 549755813888), the ioctl is
+refused outright:
 
 ```text
 $ container exec --user root vibe-coder-26896 fstrim -v /home/vibe/auto-issue-work
 fstrim: /home/vibe/auto-issue-work: FITRIM ioctl failed: Operation not permitted
 ```
 
-So GRQ-23 carried a 26 GB volume image for 12.1 GB of live data, sat below its
-floor for three days claiming nothing out of 43 claimable issues, and the only
-remedy on offer — a hand-run `volume delete vibe-work` — was addressed to a
-human who was not there. An unattended host has no human, so the launcher takes
-it:
+So GRQ-23 carried a 26 GB volume image for 12.1 GB of live data, sat below
+its floor for three days claiming nothing out of 43 claimable issues, and the
+only remedy on offer — a hand-run `volume delete vibe-work` — was addressed to
+a human who was not there. An unattended host has no human, so the launcher
+takes it:
 
 1. **The refusal is a fact, not a warning.** `volume-init.sh` prints
    `VOLUME_TRIM_REFUSED <target>` on stdout; `run.sh` maps each target back to
    its named volume and records the refusal in `run_core.log`. A launch where
-   FITRIM was refused is never recorded as a successful trim. The refusal never
-   _causes_ a disk decision — the heal below needs the host to be below its
-   claiming floor as well, and the hard floor is a measurement of the host — but
-   because a runtime that cannot discard never returns the guest's freed blocks,
-   it is usually the reason the reading is what it is. So every disk decision
-   taken after a refusal names it (Issue #734): an operator reading
-   `refusing to launch: 900 MB free` with no mention of the refused trim is left
-   with an unexplained work refusal.
+   FITRIM was refused is never recorded as a successful trim. The refusal
+   never *causes* a disk decision — the heal below needs the host to be below
+   its claiming floor as well, and the hard floor is a measurement of the host
+   — but because a runtime that cannot discard never returns the guest's freed
+   blocks, it is usually the reason the reading is what it is. So every disk
+   decision taken after a refusal names it (Issue #734): an operator reading
+   `refusing to launch: 900 MB free` with no mention of the refused trim is
+   left with an unexplained work refusal.
 2. **A host below its claiming floor is healed.** When the refusal coincides
-   with less free space than the floor the worker stops claiming at — the larger
-   of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and `VIBE_HOST_DISK_LOW_FLOOR_PERCENT`
-   (10 %), the same floor `worker/deno/lib/host_disk.ts` applies — the launcher
-   deletes and recreates the volume, then runs the init again to re-own it. This
-   happens **before any container starts**, so no work is in flight: the clones
-   re-clone. The approval snapshots are never in that set (point 3). The removal
-   verb comes from the launch plan, because the runtimes disagree about it —
-   Docker and Podman say `volume rm`, Apple `container` says `volume delete` —
-   and a removal that leaves the volume in place is reported in the runtime's
-   own words rather than followed by a `volume create` that is certain to fail
-   with "already exists" (Issue #731).
-3. **Role decides what may be destroyed, before any size does (Issue #2216).**
-   The launch plan names the volumes a disk reset may recreate — `vibe-work` and
-   `vibe-agent-state`, clones and caches — and `vibe-approval-state` is not
-   among them. It is the tamper baseline for every issue the worker may claim,
-   and a recreated store reads as a genuine first encounter, so every tracked
-   issue re-baselines against its body as it stands _now_ and content edited
-   after approval verifies as unchanged. Size cannot carry that guard on its
-   own: the launcher measures the Apple container store, Docker and Podman keep
-   their volumes elsewhere, and an unmeasurable store used to fall straight
-   through the minimum below.
+   with less free space than the floor the worker stops claiming at — the
+   larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and
+   `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), the same floor
+   `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
+   the volume, then runs the init again to re-own it. This happens **before
+   any container starts**, so no work is in flight: the clones re-clone. The
+   approval snapshots are never in that set (point 3). The removal verb comes
+   from the launch
+   plan, because the runtimes disagree about it — Docker and Podman say
+   `volume rm`, Apple `container` says `volume delete` — and a removal that
+   leaves the volume in place is reported in the runtime's own words rather
+   than followed by a `volume create` that is certain to fail with
+   "already exists" (Issue #731).
+3. **Role decides what may be destroyed, before any size does
+   (Issue #2216).** The launch plan names the volumes a disk reset may
+   recreate — `vibe-work` and `vibe-agent-state`, clones and caches — and
+   `vibe-approval-state` is not among them. It is the tamper baseline for
+   every issue the worker may claim, and a recreated store reads as a genuine
+   first encounter, so every tracked issue re-baselines against its body as
+   it stands *now* and content edited after approval verifies as unchanged.
+   Size cannot carry that guard on its own: the launcher measures the Apple
+   container store, Docker and Podman keep their volumes elsewhere, and an
+   unmeasurable store used to fall straight through the minimum below.
 4. **The reset must be able to return the missing space (Issue #2313).** What
-   the resettable volumes hold in the store is measured next, and compared with
-   the host's **shortfall** — `floor − free`. A set of volumes holding less than
-   `VIBE_WORK_VOLUME_HEAL_SHORTFALL_PERCENT` (100 %) of that shortfall is
-   reported as `[WORK_VOLUME_UNRECOVERED]` and left **intact**: recreating it
-   cannot clear the floor, so it would destroy the clones, the lane worktrees
-   and the Graft graphs for nothing. GRQ-23 sat just under a 47 GB floor for 30
-   hours because the Mac's own data had grown — 185 GB under `~/src`, 37 GB of
-   Cursor cache — and the launcher recreated `vibe-work` six times against a
-   volume holding 364 MB. A fixed minimum could not catch that: on a
-   trim-refused runtime the image ratchets past 1 GB within a cycle or two. Each
-   volume is still judged on its own size against `VIBE_WORK_VOLUME_HEAL_MIN_GB`
-   (1 GB) as well (Issue #2117), because resetting a small one gains nothing.
+   the resettable volumes hold in the store is measured next, and compared
+   with the host's **shortfall** — `floor − free`. A set of volumes holding
+   less than `VIBE_WORK_VOLUME_HEAL_SHORTFALL_PERCENT` (100 %) of that
+   shortfall is reported as `[WORK_VOLUME_UNRECOVERED]` and left **intact**:
+   recreating it cannot clear the floor, so it would destroy the clones, the
+   lane worktrees and the Graft graphs for nothing. GRQ-23 sat just under a
+   47 GB floor for 30 hours because the Mac's own data had grown — 185 GB
+   under `~/src`, 37 GB of Cursor cache — and the launcher recreated
+   `vibe-work` six times against a volume holding 364 MB. A fixed minimum
+   could not catch that: on a trim-refused runtime the image ratchets past
+   1 GB within a cycle or two. Each volume is still judged on its own size
+   against `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) as well (Issue #2117),
+   because resetting a small one gains nothing.
 5. **The reset is never held back by the clock, and never silent.** Where the
-   volumes _can_ cover the shortfall, a host below the floor resets them on
-   **every launch it is below it**, however recent the last reset: the volume is
-   disposable and the host is not (Issue #2077 — a 24 h interval once left
+   volumes *can* cover the shortfall, a host below the floor resets them on
+   **every launch it is below it**, however recent the last reset: the volume
+   is disposable and the host is not (Issue #2077 — a 24 h interval once left
    GRQ-23, re-ratcheted to 45 GB in eleven hours with 1.2 GB live and at 3%
    free, claiming nothing for thirteen hours). The last reset is recorded in
    `~/.vibe-coder/work-volume-heal` so the log says how fast the image is
-   ratcheting. Free space is **re-measured** after the recreate: a heal that did
-   not clear the floor is reported as `[WORK_VOLUME_UNRECOVERED]` on stderr and
-   in `run_core.log`, never as a fix, and that reading is recorded in
-   `~/.vibe-coder/work-volume-heal-unrecovered`. Until the host's free space
-   moves by more than `VIBE_WORK_VOLUME_HEAL_MIN_GB`, the next launch reports
-   the same unrecovered reading rather than destroying the clones again (Issue
-   #2313) — a recreate that has already been proved fruitless is not repeated
-   against an unchanged host.
-6. **The launch still proceeds.** Only the hard floor refuses a launch — a host
-   that cannot claim must still run and report, or it vanishes from the fleet
-   board (Issue #477).
+   ratcheting. Free space is **re-measured** after the recreate: a heal that
+   did not clear the floor is reported as `[WORK_VOLUME_UNRECOVERED]` on
+   stderr and in `run_core.log`, never as a fix, and that reading is recorded
+   in `~/.vibe-coder/work-volume-heal-unrecovered`. Until the host's free
+   space moves by more than `VIBE_WORK_VOLUME_HEAL_MIN_GB`, the next launch
+   reports the same unrecovered reading rather than destroying the clones
+   again (Issue #2313) — a recreate that has already been proved fruitless is
+   not repeated against an unchanged host.
+6. **The launch still proceeds.** Only the hard floor refuses a launch — a
+   host that cannot claim must still run and report, or it vanishes from the
+   fleet board (Issue #477).
 7. **A host that cannot build can still reset (Issue #2092).** The init above
    runs inside the image, so a host whose image build is failing would never
    reach it — GRQ-23 fell from 24 GB free to 11 GB in under an hour while
-   `loop.sh` retried a broken builder (#2089). So before any build, a host below
-   its floor makes the same measurements — the shortfall gate of point 4
-   included — and resets any _resettable_ volume holding at least
+   `loop.sh` retried a broken builder (#2089). So before any build, a host
+   below its floor makes the same measurements — the shortfall gate of point
+   4 included — and resets any *resettable* volume holding at least
    `VIBE_WORK_VOLUME_HEAL_MIN_GB`, logged as
    `work-volume: pre-build reset of vibe-work …`; the init after the build
    re-owns the fresh volume as it does after the heal.
@@ -1525,11 +1532,11 @@ flowchart TD
 
 The heal above returns the blocks; it does not stop them being written. On a
 trim-refused runtime every block a `cargo build` touches **inside the volume**
-is allocated to the sparse image for good, so GRQ-23 held 22 GB of image for 6.4
-GB of live data and grew 15–20 GB an hour through a Rust-heavy cycle — one
-`target/` in the shared clone the merge-conflict pass builds in reached 16 GB on
-its own. The recreate then fired every cycle: 20–30 idle minutes an hour and a
-cold cache at every launch.
+is allocated to the sparse image for good, so GRQ-23 held 22 GB of image for
+6.4 GB of live data and grew 15–20 GB an hour through a Rust-heavy cycle — one
+`target/` in the shared clone the merge-conflict pass builds in reached 16 GB
+on its own. The recreate then fired every cycle: 20–30 idle minutes an hour
+and a cold cache at every launch.
 
 The container's **own** root filesystem is a separate sparse image, ephemeral
 per container — its host allocation (`containers/<id>`, 11–12 GB mid-cycle) is
@@ -1538,73 +1545,77 @@ released at every relaunch. So when the launcher reports
 `CARGO_TARGET_DIR=/var/tmp/vibe-cargo-target/<checkout key>` for every
 subprocess it runs against a checkout — the coding agent, the repository's own
 quality gate, the milestone merge gate and the milestone resolution gate
-(`worker/deno/lib/ephemeral_build_cache.ts`). The volume then keeps only clones,
-worktrees and state, and the `Work volume:` line below reports **0** build
-artefacts.
+(`worker/deno/lib/ephemeral_build_cache.ts`). The volume then keeps only
+clones, worktrees and state, and the `Work volume:` line below reports **0**
+build artefacts.
 
-- **One directory per checkout.** Cargo locks the target directory for the whole
-  build, so a single shared one would serialise two slots' Rust builds. The key
-  is derived from the checkout path, which covers a lane worktree
+- **One directory per checkout.** Cargo locks the target directory for the
+  whole build, so a single shared one would serialise two slots' Rust builds.
+  The key is derived from the checkout path, which covers a lane worktree
   (`worktrees/<slot>/<repo>`) and the shared clone the maintenance passes use
   alike.
 - **One directory per account.** The repository's own commands run as `agent`
   and the worker's as `vibe` (Issue #571); neither can write a directory the
   other created, so the account the command drops to is part of the key.
-- **Nothing changes where the trim is honoured.** No launcher reading, an older
-  launcher that writes no flag, a runtime that trims, or an explicit
-  `CARGO_TARGET_DIR` — all leave the environment exactly as it was. The explicit
-  setting that counts is the one in the environment **that child** would
-  otherwise have had (Issue #2291): the repository's own command gets an
+- **Nothing changes where the trim is honoured.** No launcher reading, an
+  older launcher that writes no flag, a runtime that trims, or an explicit
+  `CARGO_TARGET_DIR` — all leave the environment exactly as it was. The
+  explicit setting that counts is the one in the environment **that child**
+  would otherwise have had (Issue #2291): the repository's own command gets an
   environment built from a named source, and that same source is what the
   placement decision reads, so the decision and the environment it applies to
-  can never disagree. A caller — and every test — states that source rather than
-  inheriting it; production states none and gets the worker's own.
-- **The registry caches stay durable.** `CARGO_HOME` (`${VIBE_STATE_DIR}/cargo`)
-  and `DENO_DIR` (`~/auto-issue-work/.deno-cache`) stay on the volume where the
-  entrypoint puts them. A download cache grows by what it fetched and is read
-  back next launch; a `target/` is _rewritten_ every build, and that rewrite is
-  what allocates fresh image blocks. Moving them would buy a cold download at
-  every launch for space the measurements do not attribute the growth to.
-- **The placement travels in argv for the untrusted account.** The image's sudo
-  rule carries no `SETENV` tag, so `env_reset` strips a variable handed to
+  can never disagree. A caller — and every test — states that source rather
+  than inheriting it; production states none and gets the worker's own.
+- **The registry caches stay durable.** `CARGO_HOME`
+  (`${VIBE_STATE_DIR}/cargo`) and `DENO_DIR` (`~/auto-issue-work/.deno-cache`)
+  stay on the volume where the entrypoint puts them. A download cache grows by
+  what it fetched and is read back next launch; a `target/` is *rewritten*
+  every build, and that rewrite is what allocates fresh image blocks. Moving
+  them would buy a cold download at every launch for space the measurements do
+  not attribute the growth to.
+- **The placement travels in argv for the untrusted account.** The image's
+  sudo rule carries no `SETENV` tag, so `env_reset` strips a variable handed to
   `sudo` in the child environment; the quality gate's spawn therefore becomes
   `sudo -n -u agent -- env CARGO_TARGET_DIR=… bash -c './quality.sh'`.
 - **An unusable root is a reported fallback, not a broken build.** If
   `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
   the build stays on the volume.
-- **The root has a budget (Issues #3178, #4326, #4360).** The layer is released
-  at every relaunch, but **within** a launch every byte written there is real
-  host disk. Before a maintenance build, the host must have its floor **plus 25
-  GB of headroom** free where the trim is refused. Before each new agent,
-  quality, mutation or discrimination step, the same holds in a checkout that
-  holds a cargo project; a checkout with no cargo project is held to the floor
-  only, and nothing is pruned for its step (Issue #4413). The cargo checkout's
-  own target directories count towards the headroom for such a step, up to the
-  25 GB (Issue #4423); a maintenance build gets no such credit. Short of the
-  headroom, other checkouts' target directories are pruned, largest first,
-  skipping any written to in the last 20 minutes and the building checkout's own
-  incremental cache. If the build is still not covered, the new step is parked.
-  Once started, active-process polling enforces the host floor; it does not
-  demand another 25 GB while the admitted work consumes its headroom (Issue
-  #4390). A cargo-only milestone tree can still land that cycle without its
-  cargo build: a conflict-free or deterministically resolved merge is pushed
-  unverified. A Deno-only tree and a mixed tree keep their Deno checks and
-  suites and are rolled back when those are red. A conflict that needs the agent
-  on a cargo tree waits, uncharged, until the host has room (see
+- **The root has a budget (Issues #3178, #4326, #4360).** The layer is
+  released at every relaunch, but **within** a launch every byte written there
+  is real host disk. Before a maintenance build, the host must have its floor
+  **plus 25 GB of headroom** free where the trim is refused. Before each new
+  agent, quality, mutation or discrimination step, the same holds in a
+  checkout that holds a cargo project; a checkout with no cargo project is
+  held to the floor only, and nothing is pruned for its step (Issue #4413).
+  The cargo checkout's own target directories count towards the headroom for
+  such a step, up to the 25 GB (Issue #4423); a maintenance build gets no
+  such credit.
+  Short of the headroom, other checkouts' target directories are pruned,
+  largest first, skipping any written to in the last 20 minutes and the
+  building checkout's own incremental cache. If the build is still not covered,
+  the new step is parked. Once started, active-process
+  polling enforces the host floor;
+  it does not demand another 25 GB while the admitted work consumes its
+  headroom (Issue #4390). A cargo-only milestone tree can still land that cycle
+  without its cargo build: a conflict-free or deterministically resolved merge
+  is pushed unverified. A Deno-only tree and a mixed tree keep their Deno
+  checks and suites and are rolled back when those are red. A conflict that
+  needs the agent on a cargo tree waits, uncharged, until the host has room
+  (see
   [HOST_DISK_BUDGET](#host_disk_budget-merges-without-the-build-issue-4326)).
-  Pruning counts as room even where the trim is refused: the guest reuses the
-  freed blocks, so a build writing into them does not grow the host image again.
-  It does not return those blocks to the host. When the host is below the floor
-  and the trim was refused, the launch ends so the layer is discarded and the
-  next launch can recreate the volume.
+  Pruning counts as room even where the trim is refused: the guest reuses
+  the freed blocks, so a build writing into them does not grow the host image
+  again. It does not return those blocks to the host. When the host is below
+  the floor and the trim was refused, the launch ends so the layer is
+  discarded and the next launch can recreate the volume.
 
 - **A pass releases what it built.** When the milestone sync's pass over a
-  repository ends, that clone's target directories are removed rather than left
-  to the relaunch.
+  repository ends, that clone's target directories are removed rather than
+  left to the relaunch.
 
-Incremental builds are lost at relaunch. They were lost at every recreate anyway
-— and a recreate now happens only when live data outgrows the floor, not every
-cycle.
+Incremental builds are lost at relaunch. They were lost at every recreate
+anyway — and a recreate now happens only when live data outgrows the floor,
+not every cycle.
 
 ```mermaid
 flowchart TD
@@ -1619,12 +1630,13 @@ flowchart TD
 
 ## Standing totals at cycle start and end of run (Issues #244, #345)
 
-Those lines say what was _removed_. Every disk problem on GRQ-23 was invisible
-until the host hit 95 % because nothing said what the volume still _held_: the
-launcher's `container-store:` line was the only per-launch signal, and the
-host-disk monitor reports free space, not where it went. The worker therefore
-logs the standing totals by category at cycle start, beside the `Concurrency:`
-line, and again in the `work-volume-prune` housekeeping summary:
+Those lines say what was *removed*. Every disk problem on GRQ-23 was
+invisible until the host hit 95 % because nothing said what the volume still
+*held*: the launcher's `container-store:` line was the only per-launch
+signal, and the host-disk monitor reports free space, not where it went. The
+worker therefore logs the standing totals by category at cycle start, beside
+the `Concurrency:` line, and again in the `work-volume-prune` housekeeping
+summary:
 
 ```text
 Work volume: total 18.4 GB — monitored repos 2.1 GB (15) · side/data clones
@@ -1634,60 +1646,62 @@ caches 0.6 GB · other 0.2 GB
 ```
 
 - The four **disjoint** buckets — monitored repos, side/data clones, worker
-  caches (`.deno-cache`, `.vibe-cache`, `.gh-*-cache`, `.claude-*`) and other
-  (reserved names, remaining state directories and the state files in the work
-  root) — sum to the total.
-- **Build artefacts are a cross-cut, not a fifth bucket.** A `target/` dir (the
-  same discovery `work-volume-prune` uses) lives _inside_ a clone — or inside a
-  lane worktree under `worktrees/<lane>/<repo>`, which both the usage line and
-  the prune now descend into (Issue #1725) — so its bytes are already counted
-  there; naming it says which clone the space is in.
-- The top three side/data clones and artefact dirs are **named inline**, so the
-  log line alone says where the space went.
+  caches (`.deno-cache`, `.vibe-cache`, `.gh-*-cache`, `.claude-*`) and
+  other (reserved names, remaining state directories and the state files in
+  the work root) — sum to the total.
+- **Build artefacts are a cross-cut, not a fifth bucket.** A `target/` dir
+  (the same discovery `work-volume-prune` uses) lives *inside* a clone — or
+  inside a lane worktree under `worktrees/<lane>/<repo>`, which both the
+  usage line and the prune now descend into (Issue #1725) — so
+  its bytes are already counted there; naming it says which clone the space
+  is in.
+- The top three side/data clones and artefact dirs are **named inline**, so
+  the log line alone says where the space went.
 - The walk is **depth-1 and bounded**: one `du -sk` per top-level directory
-  under a single 120 s budget. Over budget it stops and the line says how many
-  directories it measured and how many it skipped — an incomplete total is
-  reported as a floor, never as a clean reading. A directory `du` could not size
-  is named as `unmeasured (counted as 0)` — the filesystem's own root-only
-  `lost+found` lands here, so a permanent permission denial never drowns out a
-  real fault; a work root that cannot be read **at all** is reported as an error
-  on the same line rather than as an empty volume.
+  under a single 120 s budget. Over budget it stops and the line says how
+  many directories it measured and how many it skipped — an incomplete total
+  is reported as a floor, never as a clean reading. A directory `du` could
+  not size is named as `unmeasured (counted as 0)` — the filesystem's own
+  root-only `lost+found` lands here, so a permanent permission denial never
+  drowns out a real fault; a work root that cannot be read **at all** is
+  reported as an error on the same line rather than as an empty volume.
 - `work-volume-prune` prints the breakdown **before** its sweep, and again
-  **after** when it actually removed something, so a reclamation's before/after
-  is visible. An idle prune pays for one walk, not two.
+  **after** when it actually removed something, so a reclamation's
+  before/after is visible. An idle prune pays for one walk, not two.
 
-Without a monitored list the totals are **refused**, not guessed — every clone
-would otherwise read as side/data — and the line says so.
+Without a monitored list the totals are **refused**, not guessed — every
+clone would otherwise read as side/data — and the line says so.
 
 ### A blind probe is `unknown`, never `0.0 GB` (Issue #345)
 
-GRQ-23 crashed out of disk on 2026-08-21 with both of its disk signals blind and
-both advertised as `available`. The cause was one word in each probe: `duBytes`
-and `probeDiskReading` asked `runWithTimeout` for `quiet: true`, which sets
-`stdout: "null"` and returns an empty string — and stdout _is_ the reading. `df`
-therefore answered "unreadable" (the known #226 symptom) while `du` answered a
-confident `0` for every directory, so the standing totals read `total 0.0 GB`
-beside a count of twelve clones and five `target/` dirs, every cycle, for days.
-Nothing echoes stdout either way, so `quiet` bought nothing and cost both
-signals.
+GRQ-23 crashed out of disk on 2026-08-21 with both of its disk signals blind
+and both advertised as `available`. The cause was one word in each probe:
+`duBytes` and `probeDiskReading` asked `runWithTimeout` for `quiet: true`,
+which sets `stdout: "null"` and returns an empty string — and stdout *is* the
+reading. `df` therefore answered "unreadable" (the known #226 symptom) while
+`du` answered a confident `0` for every directory, so the standing totals
+read `total 0.0 GB` beside a count of twelve clones and five `target/` dirs,
+every cycle, for days. Nothing echoes stdout either way, so `quiet` bought
+nothing and cost both signals.
 
 Four boundaries hold now:
 
 - **Zero is not a measurement.** Empty or non-numeric `du` output is
-  `unmeasured` (null), never 0 bytes. A walk that measured N > 0 directories and
-  still totals 0 — or that could not read the work root, or ran out of budget
-  before measuring anything — is reported as `Work volume: unknown —
-  <why>`,
-  exactly as the `df` path already reports itself. A **genuinely empty** work
-  root still reads as a clean `0.0 GB`: that is a measurement, and it is right.
-- **A probe that cannot produce a value is `degraded`.** `Feature host-disk` is
-  `available` only on an `ok` reading (an `unknown` one is degraded), and
-  `Feature work-volume` only when the volume has surfaced no I/O fault **and**
-  its standing totals are measurable.
-- **Both signals blind marks the host unhealthy.** One blind signal is named in
-  the telemetry notes; losing both is a health condition in its own right — the
-  iteration logs `[DISK_TELEMETRY_BLIND]` once and the host reports unhealthy.
-  It gates nothing: a monitoring fault must not stop the fleet working.
+  `unmeasured` (null), never 0 bytes. A walk that measured N > 0 directories
+  and still totals 0 — or that could not read the work root, or ran out of
+  budget before measuring anything — is reported as `Work volume: unknown —
+  <why>`, exactly as the `df` path already reports itself. A **genuinely
+  empty** work root still reads as a clean `0.0 GB`: that is a measurement,
+  and it is right.
+- **A probe that cannot produce a value is `degraded`.** `Feature host-disk`
+  is `available` only on an `ok` reading (an `unknown` one is degraded), and
+  `Feature work-volume` only when the volume has surfaced no I/O fault
+  **and** its standing totals are measurable.
+- **Both signals blind marks the host unhealthy.** One blind signal is named
+  in the telemetry notes; losing both is a health condition in its own
+  right — the iteration logs `[DISK_TELEMETRY_BLIND]` once and the host
+  reports unhealthy. It gates nothing: a monitoring fault must not stop the
+  fleet working.
 - **Measure where the bytes are.** The cycle-start walk lands ~2 minutes in,
   before the clones a cycle creates exist, so it is sampled **again at end of
   run** — when the volume is at its fullest — as `Work volume (end of run):`.
@@ -1716,25 +1730,25 @@ flowchart LR
 ## The launcher — `run.sh` is the containment boundary
 
 `run.sh` is a thin, trusted, host-side launcher. It asks the
-`container-launch-plan` command what to run and then runs exactly that, so every
-containment decision lives in one auditable Deno module
+`container-launch-plan` command what to run and then runs exactly that, so
+every containment decision lives in one auditable Deno module
 ([`container_launch.ts`](../worker/deno/lib/container_launch.ts)) instead of
-being restated in shell — code running _inside_ the container cannot broaden its
-own mounts or capabilities by editing the launcher.
+being restated in shell — code running *inside* the container cannot broaden
+its own mounts or capabilities by editing the launcher.
 
-It resolves the run mode first so that a configuration naming a removed mode
-fails loud in one place (Issue #4), then updates the worker checkout host-side
-(Issue #512) — `worker-checkout-update` fetches `origin` and resets the checkout
-to `origin/<default-branch>`, the only update of that checkout since Issue #513
-retired the in-container reset, so nothing inside the container writes to
-`/workspace` — and then builds the launch plan below. A failed update warns and
-the launch continues on the existing checkout; `VIBE_SKIP_CHECKOUT_UPDATE` turns
-the step off for a development checkout or a CI tree. Under
-`update_mode: "frozen"` the checkout is held at `pinned_ref` rather than reset
-to the tip, and the skip is logged with its mode and ref (Issue #624), and a
-frozen host pinned behind the newest release is told so in one line before the
-plan is built (Issue #690) — a notice only, which never blocks the launch. There
-is no other branch: the worker runs in the container or not at all.
+It resolves the run mode first so that a configuration naming a
+removed mode fails loud in one place (Issue #4), then updates the worker
+checkout host-side (Issue #512) — `worker-checkout-update` fetches `origin`
+and resets the checkout to `origin/<default-branch>`, the only update of that
+checkout since Issue #513 retired the in-container reset, so nothing inside
+the container writes to `/workspace` — and then builds the launch plan below. A failed update warns and the launch continues on the existing
+checkout; `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for a development
+checkout or a CI tree. Under `update_mode: "frozen"` the checkout is held at
+`pinned_ref` rather than reset to the tip, and the skip is logged with its
+mode and ref (Issue #624), and a frozen host pinned behind the newest release
+is told so in one line before the plan is built (Issue #690) — a notice only,
+which never blocks the launch. There is no other branch: the worker runs in the
+container or not at all.
 
 ```mermaid
 flowchart TD
@@ -1771,26 +1785,27 @@ flowchart TD
 
 ### The mount set
 
-| Source (host path or named volume)    | In container                                    | Mode |
-| ------------------------------------- | ----------------------------------------------- | ---- |
-| the worker checkout                   | `/workspace`                                    | ro   |
-| volume `vibe-work`                    | `/home/vibe/auto-issue-work`                    | rw   |
-| volume `vibe-approval-state`          | `…/auto-issue-work-approval-state`              | rw   |
-| the worker log directory              | `/home/vibe/logs`                               | rw   |
-| `.config.json`                        | `/workspace/.config.json`                       | ro   |
-| `…/credentials/gh`                    | `/home/vibe/.vibe-coder/credentials/gh`         | ro   |
-| `…/credentials/<provider>`            | `/home/vibe/.vibe-coder/credentials/<provider>` | ro   |
-| each `custom_label_prompts` directory | `/home/vibe/.vibe-coder/custom-prompts/<n>`     | ro   |
+| Source (host path or named volume) | In container                   | Mode |
+| ---------------------------- | ------------------------------------ | ---- |
+| the worker checkout          | `/workspace`                         | ro   |
+| volume `vibe-work`           | `/home/vibe/auto-issue-work`         | rw   |
+| volume `vibe-approval-state` | `…/auto-issue-work-approval-state`   | rw   |
+| the worker log directory     | `/home/vibe/logs`                    | rw   |
+| `.config.json`               | `/workspace/.config.json`            | ro   |
+| `…/credentials/gh`           | `/home/vibe/.vibe-coder/credentials/gh` | ro |
+| `…/credentials/<provider>`   | `/home/vibe/.vibe-coder/credentials/<provider>` | ro |
+| each `custom_label_prompts` directory | `/home/vibe/.vibe-coder/custom-prompts/<n>` | ro |
 
-One credential mount per **enabled** provider, so a multi-provider run carries
-three of them and a default run exactly one.
+One credential mount per **enabled** provider, so a
+multi-provider run carries three of them and a default run exactly one.
 
 The custom-prompt mounts exist **only** when an operator configures
-`custom_label_prompts` (Issue #850): the containing directory of each configured
-prompt file, read-only, one mount per distinct directory. The directory rather
-than the file, because Apple `container` cannot bind a single file. The staged
-`.config.json` still names the operator's _host_ paths — one file serves the
-host-side launcher and the container alike — so the plan also carries
+`custom_label_prompts` (Issue #850): the containing directory of each
+configured prompt file, read-only, one mount per distinct directory. The
+directory rather than the file, because Apple `container` cannot bind a single
+file. The staged `.config.json` still names the operator's *host* paths — one
+file serves the host-side launcher and the container alike — so the plan also
+carries
 `VIBE_CUSTOM_PROMPT_PATHS`, a JSON map from each configured host path to where
 the mount makes it readable, which the config loader applies. Every source goes
 through the same allowlist as any other mount, so a prompt path under the host
@@ -1799,76 +1814,77 @@ launch loudly instead of launching without it. With nothing configured there is
 no mount and no variable.
 
 The checkout is the worker's own code, not host data: the image ships only the
-entrypoint, so without it there is no driver to run. It is mounted **read-only**
-(Issue #514) — the checkout is updated on the host before launch, so nothing
-inside the container has any business writing to it. The rest is the persistent
-state: named volumes for the workspace and the approval snapshots (no browsable
-copy of the worker's repositories on the host, and no host `~/auto-issue-work`),
-host directories for the logs and configuration. Their in-container paths are
+entrypoint, so without it there is no driver to run. It is mounted
+**read-only** (Issue #514) — the checkout is updated on the host before launch,
+so nothing inside the container has any business writing to it. The rest is the
+persistent state: named volumes
+for the workspace and the approval snapshots (no browsable copy of the
+worker's repositories on the host, and no host `~/auto-issue-work`), host
+directories for the logs and configuration. Their in-container paths are
 deliberately the ones the worker resolves for itself from `HOME` — no
-environment plumbing points it at them. `.config.json` is layered read-only over
-the checkout, so the worker cannot rewrite its own configuration from inside the
-container.
+environment plumbing points it at them.
+`.config.json` is layered read-only over the checkout, so the worker cannot
+rewrite its own configuration from inside the container.
 
-Credentials are exposed **per sub-directory**, not wholesale: the worker's own
-`gh` material and each _enabled_ provider's, and nothing else that happens to
-sit beside them. The sub-directory names come from the provider descriptors, so
-which credential directories are mounted follows the enabled set without
-touching the mount construction. A provider that is not enabled has no mount at
-all — its secret cannot be read from inside the container, which is what lets
-one run authenticate several vendors without either seeing the other's key.
+Credentials are exposed **per sub-directory**, not wholesale: the worker's own `gh` material and each *enabled* provider's,
+and nothing else that happens to sit beside them. The sub-directory names come
+from the provider descriptors, so which credential directories are mounted
+follows the enabled set without touching the mount construction. A provider
+that is not enabled has no mount at all — its secret cannot be read from
+inside the container, which is what lets one run authenticate several vendors
+without either seeing the other's key.
 
-Building a plan **fails loud** rather than emitting a broadened one when a mount
-source is the host home directory (or an ancestor of it), a container-runtime
-control socket, a relative path, or a path carrying characters the launcher's
-NUL framing could not pass. The finished argument list is re-checked for
-`--privileged`, `--cap-add`, `--device`, published ports and host namespaces
-before it is returned.
+Building a plan **fails loud** rather than emitting a broadened one when a
+mount source is the host home directory (or an ancestor of it), a
+container-runtime control socket, a relative path, or a path carrying
+characters the launcher's NUL framing could not pass. The finished argument
+list is re-checked for `--privileged`, `--cap-add`, `--device`, published
+ports and host namespaces before it is returned.
 
 ### VM sizing — generous by default, tunable per host
 
-The launch plan sizes the VM from the host: memory is everything minus an 8 GiB
-reserve (8 GiB floor), and CPUs are the host's cores minus a reserve of `4`
-(floor 4, never above the host's count). The CPU reserve exists because an
-8-vCPU VM on a shared 10-core laptop stalled wholesale under host bursts; a
-dedicated fleet host has nothing to defend against and should hand the VM every
-core:
+The launch plan sizes the VM from the host: memory is everything minus an
+8 GiB reserve (8 GiB floor), and CPUs are the host's cores minus a reserve
+of `4` (floor 4, never above the host's count). The CPU reserve exists
+because an 8-vCPU VM on a shared 10-core laptop stalled wholesale under
+host bursts; a dedicated fleet host has nothing to defend against
+and should hand the VM every core:
 
-| Env                          | Effect                                                             |
-| ---------------------------- | ------------------------------------------------------------------ |
-| `VIBE_CONTAINER_MEMORY`      | Verbatim `--memory` (e.g. `24g`)                                   |
-| `VIBE_CONTAINER_CPUS`        | Verbatim `--cpus`                                                  |
+| Env | Effect |
+| --- | --- |
+| `VIBE_CONTAINER_MEMORY` | Verbatim `--memory` (e.g. `24g`) |
+| `VIBE_CONTAINER_CPUS` | Verbatim `--cpus` |
 | `VIBE_CONTAINER_CPU_RESERVE` | Cores kept back from the VM (default `4`; `0` on a dedicated host) |
 
-The guest has no swap: a swapfile needs `CAP_SYS_ADMIN`, which the launch plan
-forbids (see below), so a memory peak inside the VM is an exit-137 SIGKILL of
-the agent, not a slowdown. What _can_ be done from inside the boundary is
-bounding the blast radius: the WIP-checkpoint loop probes `/proc/meminfo` every
-minute and, when available memory drops under 10 %, takes an early checkpoint
-with a loud warning — so a kill loses at most the last minute, and the warning
-tells you the VM needs more memory (or the host needs its batch jobs
-deprioritised: `taskpolicy -c background` / `nice` for anything sharing the
-machine).
+The guest has no swap: a swapfile needs `CAP_SYS_ADMIN`, which the launch
+plan forbids (see below), so a memory peak inside the VM is an exit-137
+SIGKILL of the agent, not a slowdown. What *can* be done from inside the
+boundary is bounding the blast radius: the WIP-checkpoint loop
+probes `/proc/meminfo` every minute and, when available memory drops under
+10 %, takes an early checkpoint with a loud warning — so a kill loses at
+most the last minute, and the warning tells you the VM needs more memory
+(or the host needs its batch jobs deprioritised: `taskpolicy -c background`
+/ `nice` for anything sharing the machine).
 
 ### Least privilege and lifecycle
 
-- No `--privileged`, no host networking, no published ports — outbound only, on
-  the runtime's bridge network.
+- No `--privileged`, no host networking, no published ports — outbound only,
+  on the runtime's bridge network.
 - `--cap-drop ALL` and `--security-opt no-new-privileges` where the runtime
   understands them. `--rm` removes the container on exit.
 - **`--read-only`** where the runtime understands it (Issue #516): the root
-  filesystem is immutable, and the writable exceptions are the mounts, the named
-  volumes and two scratch `tmpfs` mounts — `/tmp`
+  filesystem is immutable, and the writable exceptions are the mounts, the
+  named volumes and two scratch `tmpfs` mounts — `/tmp`
   (`rw,nosuid,nodev,exec,mode=1777`) and `/var/tmp`
   (`rw,nosuid,nodev,noexec,mode=1777`). The flag and its `tmpfs` mounts are one
   decision: a runtime that takes no `tmpfs` (Apple `container`) gets neither,
   and a dialect claiming one without the other is refused loudly. See
   [Containment](CONTAINMENT.md#the-container-root-filesystem-is-read-only).
-- The image is rebuilt only when its content-derived reference is absent locally
-  (`image inspect` / `images inspect`).
+- The image is rebuilt only when its content-derived reference is absent
+  locally (`image inspect` / `images inspect`).
 - `SIGTERM` and `SIGINT` are forwarded to the container so the Deno driver's
-  graceful-shutdown handling still runs, and `run.sh` exits with the container's
-  exit status so the outer supervisor sees real failures.
+  graceful-shutdown handling still runs, and `run.sh` exits with the
+  container's exit status so the outer supervisor sees real failures.
 - No supported runtime is a non-zero exit carrying the detection module's
   message. There is no fallback to running the worker on the host.
 - The wait on the runtime client is **bounded** by the plan's `watchdog`
@@ -1878,18 +1894,19 @@ machine).
   wedged VM costs one cycle instead of blocking the supervisor indefinitely.
 
 `worker/deno/tests/run_sh_launcher_test.ts` runs the real `run.sh` against a
-recording stub in place of the runtime executable and asserts on the invocation
-it constructs, so a future edit that broadens the container's privileges fails
-in the `Validate Scripts` workflow.
+recording stub in place of the runtime executable and asserts on the
+invocation it constructs, so a future edit that broadens the container's
+privileges fails in the `Validate Scripts` workflow.
 
 ### Containment is tested from inside the container
 
-Those tests assert on _arguments_. `container_containment_test.ts` asserts on
-_reachability_: it starts the real container from a real launch plan and asks
-the container itself what it can get at. A launcher or image change that exposes
-a prohibited host path, a container-runtime socket, or the host home directory
-fails the `Container Build` workflow rather than surfacing after deployment —
-the boundary showed cannot be enforced by prompts or application policy.
+Those tests assert on *arguments*. `container_containment_test.ts`
+asserts on *reachability*: it starts the real container from a real launch
+plan and asks the container itself what it can get at. A launcher or
+image change that exposes a prohibited host path, a container-runtime socket,
+or the host home directory fails the `Container Build` workflow rather than
+surfacing after deployment — the boundary showed cannot be enforced by
+prompts or application policy.
 
 ```mermaid
 flowchart LR
@@ -1904,49 +1921,49 @@ flowchart LR
 
 - **Prohibited locations** — `~/Documents`, `~/Desktop`, `~/Pictures`, the
   operator's `~/.ssh`, the macOS `~/Library` (Keychain material included), and
-  the host filesystem above the mounts, each probed under its own identifier so
-  a failure names exactly what became reachable.
+  the host filesystem above the mounts, each probed under its own identifier
+  so a failure names exactly what became reachable.
 - **Runtime sockets** — the Docker, Podman (including rootless) and Apple
-  `container` control-socket paths must not merely be unreadable; they must not
-  exist inside the container at all.
-- **The intended mounts** — the work and log directories are written to and the
-  writes are checked back on the host; `.config.json` and each credential
-  sub-directory are read _and_ a write is attempted, which must fail.
-- **The host home** — a canary file planted outside every mount is searched for
-  across the image filesystem and every mount, and must not be found. The search
-  is bounded and a timeout is reported as a timeout, never as a pass.
+  `container` control-socket paths must not merely be unreadable; they must
+  not exist inside the container at all.
+- **The intended mounts** — the work and log directories are written to and
+  the writes are checked back on the host; `.config.json` and each credential
+  sub-directory are read *and* a write is attempted, which must fail.
+- **The host home** — a canary file planted outside every mount is searched
+  for across the image filesystem and every mount, and must not be found. The
+  search is bounded and a timeout is reported as a timeout, never as a pass.
 - **No inbound ports** — asked of the runtime (`inspect`) for the running
   container, not inferred from the launcher's arguments.
 
-Only the _process_ is substituted: the plan's own `runArgs` are executed with
-`--entrypoint bash`, so every mount and privilege flag under test is the one the
-launcher produced. Nothing of the operator's is touched — the fixture is a
+Only the *process* is substituted: the plan's own `runArgs` are executed with
+`--entrypoint bash`, so every mount and privilege flag under test is the one
+the launcher produced. Nothing of the operator's is touched — the fixture is a
 synthetic home under a temporary directory.
 
 The tests skip, naming the reason, when no supported runtime answers its probe
 or the image is not present locally (they never build it — that is the
 launcher's job). `.github/workflows/container-build.yml` sets
 `VIBE_CONTAINMENT_REQUIRED=1`, which turns that skip into a failure, so the
-suite cannot end up silently skipped everywhere. Point them at an existing image
-with `VIBE_CONTAINMENT_IMAGE`.
+suite cannot end up silently skipped everywhere. Point them at an existing
+image with `VIBE_CONTAINMENT_IMAGE`.
 
 ## The coding-agent provider layer
 
-The coding agent is a **separable layer**, so Codex can be added without
-redesigning containment. One module —
+The coding agent is a **separable layer**, so Codex can be added
+without redesigning containment. One module —
 [`worker/deno/lib/agent_provider.ts`](../worker/deno/lib/agent_provider.ts) —
 describes a provider as data, and the worker resolves everything provider-
 specific through it:
 
-| The descriptor defines                       | Consumed by                                                                                         |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| provider id                                  | `.config.json` `agent_provider` / `agent_providers`, `VIBE_AGENT_PROVIDER` / `VIBE_AGENT_PROVIDERS` |
-| binary                                       | `claude_runner.ts` (the spawned executable, the dependency check)                                   |
-| credential sub-directory, file and variables | `credential_preflight.ts`, and the launcher's credential mounts                                     |
-| child environment (allowlist / denylist)     | the agent subprocess                                                                                |
-| invocation (the CLI argument list)           | `claude_runner.ts`                                                                                  |
-| installation fragment                        | `container/providers/<id>.sh`, one per id in the `AGENT_PROVIDERS` build set                        |
-| output adapter                               | `claude_runner.ts` asks it to decode the CLI's events and classify the run's failure                |
+| The descriptor defines | Consumed by |
+| ---------------------- | ----------- |
+| provider id            | `.config.json` `agent_provider` / `agent_providers`, `VIBE_AGENT_PROVIDER` / `VIBE_AGENT_PROVIDERS` |
+| binary                 | `claude_runner.ts` (the spawned executable, the dependency check) |
+| credential sub-directory, file and variables | `credential_preflight.ts`, and the launcher's credential mounts |
+| child environment (allowlist / denylist) | the agent subprocess |
+| invocation (the CLI argument list) | `claude_runner.ts` |
+| installation fragment  | `container/providers/<id>.sh`, one per id in the `AGENT_PROVIDERS` build set |
+| output adapter         | `claude_runner.ts` asks it to decode the CLI's events and classify the run's failure |
 
 ```mermaid
 flowchart LR
@@ -1963,21 +1980,22 @@ flowchart LR
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-The **enabled set** — which providers are provisioned, preflighted and mounted
-for a run — is the `.config.json` `agent_providers` key, then
+The **enabled set** — which providers are provisioned, preflighted and
+mounted for a run — is the `.config.json` `agent_providers` key, then
 `VIBE_AGENT_PROVIDERS` (comma-separated), then the active provider alone, so a
-deployment that configures neither is unchanged. A set that excludes the active
-provider fails loudly: its agent would have no credential mounted.
+deployment that configures neither is unchanged. A set that
+excludes the active provider fails loudly: its agent would have no credential
+mounted.
 
-Selection of the _active_ provider is the `.config.json` `agent_provider` key,
-then `VIBE_AGENT_PROVIDER`, then Claude. An id that is set but not registered
-fails loudly at startup with the supported ids named — it never falls back to
-the default, which would run the wrong agent under an explicit selection.
+Selection of the *active* provider is the `.config.json` `agent_provider` key,
+then `VIBE_AGENT_PROVIDER`, then Claude. An id that is set but not
+registered fails loudly at startup with the supported ids named — it never
+falls back to the default, which would run the wrong agent under an explicit
+selection.
 
-> **Changed in 1.4.0 (Issue #1032).** The two variables used to _override_ the
+> **Changed in 1.4.0 (Issue #1032).** The two variables used to *override* the
 > file. They no longer do: the `.config.json` key wins, which is the rule every
-> other setting follows
-> ([RELEASE-NOTES.md](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)).
+> other setting follows ([RELEASE-NOTES.md](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)).
 > A host that sets both now runs the provider the file names, and a run that
 > still takes its provider from a variable says so once at startup.
 
@@ -1989,15 +2007,15 @@ the adapter its descriptor names — `claude_output_adapter.ts` for Claude and
 DeepSeek (one CLI, one event shape), `codex_output_adapter.ts` for Codex. The
 runner asks the descriptor; it never tests a vendor id.
 
-The decode carries the agent's answer **and where it came from**, the provider's
-session identity, token usage, progress, the terminal status its events
-reported, and every structured error event verbatim. The classification carries
-one named category — `authentication`, `model-unavailable`, `quota-exhausted`,
-`rate-limit`, `network`, `invalid-session`, `timeout`, `out-of-memory`,
-`cancelled`, `task-failure` — with the evidence it was read from (`structured`,
-`prose` or `process`), the quota scope and reset where the provider stated them,
-and any retry-after. Both reach the caller on the run result as `agentOutput`
-and `agentFailure`.
+The decode carries the agent's answer **and where it came from**, the
+provider's session identity, token usage, progress, the terminal status its
+events reported, and every structured error event verbatim. The classification
+carries one named category — `authentication`, `model-unavailable`,
+`quota-exhausted`, `rate-limit`, `network`, `invalid-session`, `timeout`,
+`out-of-memory`, `cancelled`, `task-failure` — with the evidence it was read
+from (`structured`, `prose` or `process`), the quota scope and reset where the
+provider stated them, and any retry-after. Both reach the caller on the run
+result as `agentOutput` and `agentFailure`.
 
 ```mermaid
 flowchart LR
@@ -2018,8 +2036,8 @@ vendor's output with another's parser:
 - **A JSON envelope is not prose.** An adapter that finds no answer reports
   `textSource: "none"` rather than handing back the event stream.
 - **A success is a success.** Classification runs only on a failed process, so
-  an agent _quoting_ "429 Too Many Requests" in its answer is not a refusal; on
-  a failure it is the CLI's own error surface that is read, not the agent's
+  an agent *quoting* "429 Too Many Requests" in its answer is not a refusal;
+  on a failure it is the CLI's own error surface that is read, not the agent's
   answer.
 - **A status code is not a diagnosis.** 401/403 is `authentication` unless the
   refusal also names the model; 429 is a transient `rate-limit`, never an
@@ -2040,16 +2058,16 @@ written to a documented event shape.
 ### Per-invocation selection
 
 Selection above is process-wide — it answers "which agent does this run use?".
-Quorum needs a different question answered: "which agent does _this call_ use?",
-with two planners and a judge live in one worker process. So an invocation may
-**name** its provider:
+Quorum needs a different question answered: "which agent does *this call*
+use?", with two planners and a judge live in one worker process. So an
+invocation may **name** its provider:
 
 - `runClaudeWithTimeout` / `runClaudeWithRetry` take `agentProvider` (a
   registered id or a descriptor) on `RunClaudeOptions`;
-- `runExecuteClaudePhase` takes the same `agentProvider` option. It forwards the
-  named provider to the runner, except that an issue run the pre-spawn planner
-  (`planIssueRunProvider`) reroutes to Claude (outcome `rerouted-to-claude`,
-  Issue #4109) is forwarded as `claude` instead;
+- `runExecuteClaudePhase` takes the same `agentProvider` option. It forwards
+  the named provider to the runner, except that an issue run the pre-spawn
+  planner (`planIssueRunProvider`) reroutes to Claude (outcome
+  `rerouted-to-claude`, Issue #4109) is forwarded as `claude` instead;
 - `selectAgentProvider(selector?)` in `agent_provider.ts` is the resolution
   point for a call: with no argument it is `activeAgentProvider()`, so
   **omitting it reproduces today's behaviour exactly**. The issue-run phases
@@ -2059,9 +2077,9 @@ with two planners and a judge live in one worker process. So an invocation may
 
 Naming a provider changes nothing process-wide — not `agent_provider`, not
 `VIBE_AGENT_PROVIDER`. The descriptor is resolved **once per call** and held as
-a local for the whole invocation, so the binary, the argument list and the child
-environment cannot be changed mid-run by a concurrent call naming another
-provider.
+a local for the whole invocation, so the binary, the argument list and the
+child environment cannot be changed mid-run by a concurrent call naming
+another provider.
 
 ```mermaid
 sequenceDiagram
@@ -2081,11 +2099,11 @@ sequenceDiagram
     J-->>Q: verdict (provider "gemini")
 ```
 
-Every result is attributed to the agent that produced it: the run result and its
-`runStats` carry a `provider` id, the credit-log entry records `provider`, and
-the runner's log lines name the provider's display name. Naming a provider the
-running image did not install fails loudly at the call, listing what the image
-did install — it never falls back to the default.
+Every result is attributed to the agent that produced it: the run result and
+its `runStats` carry a `provider` id, the credit-log entry records `provider`,
+and the runner's log lines name the provider's display name. Naming a provider
+the running image did not install fails loudly at the call, listing what the
+image did install — it never falls back to the default.
 
 Model and effort routing stays **per provider**. Claude applies the per-phase
 `buildClaudeModelArgs` / `buildClaudeEffortArgs` chain; Codex carries effort in
@@ -2099,40 +2117,42 @@ construction and the containment boundary do not change.
 
 ### Registered providers
 
-| id         | binary     | fragment                          | credential variables                                                   | notes                                                                                                                         |
-| ---------- | ---------- | --------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `claude`   | `claude`   | `container/providers/claude.sh`   | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build                                                                               |
-| `codex`    | `codex`    | `container/providers/codex.sh`    | `OPENAI_API_KEY`, `CODEX_API_KEY`                                      | Pinned and selectable; enable it in `agent_providers` and the launcher builds it in                                           |
-| `gemini`   | `gemini`   | `container/providers/gemini.sh`   | `GEMINI_API_KEY`, `GOOGLE_API_KEY`                                     | Quorum's judge; pinned and selectable, enable it in `agent_providers` and the launcher builds it in                           |
-| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY`                                                     | Carried on the Claude CLI under its own command and its own pin; enable it in `agent_providers` and the launcher builds it in |
+| id       | binary   | fragment | credential variables               | notes |
+| -------- | -------- | -------- | ---------------------------------- | ----- |
+| `claude` | `claude` | `container/providers/claude.sh` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build |
+| `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; enable it in `agent_providers` and the launcher builds it in |
+| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, enable it in `agent_providers` and the launcher builds it in |
+| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY` | Carried on the Claude CLI under its own command and its own pin; enable it in `agent_providers` and the launcher builds it in |
 
 Each vendor's credential is provisioned into its own
 `<credential dir>/<id>/provider.env` by `setup.sh` — the variables per vendor
-are in Deployment, and the rule that no vendor's credential reaches another
-vendor's subprocess is in Quorum.
+are in Deployment, and the rule that no
+vendor's credential reaches another vendor's subprocess is in
+Quorum.
 
-`provider.env` is the only file `setup.sh` writes, but it is not necessarily the
-only file in the sub-directory: a host with several Claude subscriptions may
-hold hand-written `claude/provider-2.env`, `provider-3.env` … files as well
-([Several Claude tokens](SETUP.md#several-claude-tokens)). The mount is the
-sub-directory, so every file in it is readable inside the container, while
+`provider.env` is the only file `setup.sh` writes, but it is not necessarily
+the only file in the sub-directory: a host with several Claude subscriptions
+may hold hand-written `claude/provider-2.env`, `provider-3.env` … files as
+well ([Several Claude tokens](SETUP.md#several-claude-tokens)). The mount is
+the sub-directory, so every file in it is readable inside the container, while
 exactly one of them is exported into the run's environment — the worker picks
-the token with the most seven-day quota left at start, gated on the five-hour
-window, and logs which one it chose.
+the passing token with the largest remaining weekly share at start, gated on
+the five-hour window, and logs which one it chose.
 
-Codex was the first addition made purely through the seam. Two Codex facts shape
-its descriptor, and both are handled in the Codex-owned modules
-(`codex_executor.ts`, `codex_env.ts`, `codex_auth.ts`) rather than in the
-registry:
+Codex was the first addition made purely through the seam. Two
+Codex facts shape its descriptor, and both are handled in the Codex-owned
+modules (`codex_executor.ts`, `codex_env.ts`, `codex_auth.ts`) rather than in
+the registry:
 
 - **`codex exec` takes one prompt and no `--system-prompt`.** The static system
-  prompt — which is how the sandboxed-environment guidance of reaches the agent
-  — is composed into that single prompt rather than dropped, as is any
-  disallowed-tools list, since Codex has no per-tool disable flag. Session
-  continuity across phases is `codex exec resume <SESSION_ID>` with the thread
-  the previous phase of _this_ issue reported — never `--last`, which would
-  resume another issue's session when slots share a working directory.
-- **No credential crosses vendors.** Each provider's denylist names the _other_
+  prompt — which is how the sandboxed-environment guidance of
+  reaches the agent — is composed into that single prompt rather than dropped,
+  as is any disallowed-tools list, since Codex has no per-tool disable flag.
+  Session continuity across phases is `codex exec resume <SESSION_ID>` with
+  the thread the previous phase of *this* issue reported — never `--last`,
+  which would resume another issue's session when slots share a working
+  directory.
+- **No credential crosses vendors.** Each provider's denylist names the *other*
   vendor's credentials explicitly, so the Anthropic key cannot reach the Codex
   child (or the OpenAI key the Claude child) even if a future allowlist edit
   would otherwise let it through. `worker/deno/lib/agent_env.ts` holds the
@@ -2143,55 +2163,55 @@ a separate release asset that `container/providers/codex.sh` verifies against
 `codeModeHost.sha256` in `container/tools.json` and installs beside the CLI;
 without it every session runs with no tools (Issue #4323).
 
-Gemini is the third, and in Quorum mode it is the **judge** rather than a
-planner: it reads the two planners' candidate plans and picks a winner. That
-role shapes two of its facets:
+Gemini is the third, and in Quorum mode it is the **judge**
+rather than a planner: it reads the two planners' candidate plans and picks a
+winner. That role shapes two of its facets:
 
 - **The verdict is parsed, not scraped.** `buildInvocation()` asks for
   `--output-format stream-json`, the CLI's structured mode. The streaming form
   is chosen over the single-object `json` because `claude_runner.ts` kills a
   child that produces no stdout for the silence timeout, so a verdict emitted
-  only at the very end would risk a long judging run being killed as silent. As
-  with Codex, the system prompt and any disallowed-tools list are composed into
-  the one prompt the CLI takes (`agent_prompt.ts` holds that shared
+  only at the very end would risk a long judging run being killed as silent.
+  As with Codex, the system prompt and any disallowed-tools list are composed
+  into the one prompt the CLI takes (`agent_prompt.ts` holds that shared
   composition); the CLI has no reasoning-effort option, so an effort is not
   translated into a flag that does not exist.
 - **It ships as a JavaScript bundle.** The published package declares no
-  dependencies and carries the whole CLI, so one `noarch` checksum covers every
-  architecture and `container/providers/gemini.sh` installs the bundle plus a
-  small `node` launcher on `PATH`.
+  dependencies and carries the whole CLI, so one `noarch` checksum covers
+  every architecture and `container/providers/gemini.sh` installs the bundle
+  plus a small `node` launcher on `PATH`.
 
 DeepSeek is the fourth pinned provider, and the only one whose artefact is not
 its own: DeepSeek serves an Anthropic-compatible API, so
 `container/providers/deepseek.sh` installs the **Claude Code CLI**. Two things
 about that entry are deliberate and must not be "de-duplicated" away:
 
-- **It installs `/usr/local/bin/deepseek`**, from the manifest's `binary` field.
-  `claude.sh` and `deepseek.sh` both run in an image built with
+- **It installs `/usr/local/bin/deepseek`**, from the manifest's `binary`
+  field. `claude.sh` and `deepseek.sh` both run in an image built with
   `AGENT_PROVIDERS="claude,deepseek"`, so a shared command name would mean one
   fragment silently overwriting the other. `parseContainerManifest` rejects two
   `providers[]` entries that share a `binary` for exactly that reason.
 - **Its version is pinned independently of `claude`.** DeepSeek's endpoint is a
-  third party tracking Anthropic's API surface, so being able to hold `deepseek`
-  on a known-good CLI version while `claude` moves ahead is the point of the
-  second pin.
+  third party tracking Anthropic's API surface, so being able to hold
+  `deepseek` on a known-good CLI version while `claude` moves ahead is the
+  point of the second pin.
 
 Selecting `codex`, `gemini` or `deepseek` needs that provider's credential in
 `<credential dir>/<id>/provider.env` — `setup.sh` offers every registered
-provider its own variables and writes only the files it has credentials for.
-DeepSeek's is the case worth stating outright: the binary is Anthropic's, but
-`deepseek/provider.env` holds a **DeepSeek** key (`DEEPSEEK_API_KEY`,
-provisioned from `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`), and Anthropic's own
-credentials are denied to the DeepSeek child. A default image build still
-installs Claude alone, but the launcher builds whatever `agent_providers`
-enables — it passes the set as `--build-arg AGENT_PROVIDERS` and mixes it into
-the image tag (Issue #729), so selecting another provider is one decision, not
-two.
+provider its own variables and writes only the files it has
+credentials for. DeepSeek's is the case worth stating outright: the binary is
+Anthropic's, but `deepseek/provider.env` holds a **DeepSeek** key
+(`DEEPSEEK_API_KEY`, provisioned from `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`), and
+Anthropic's own credentials are denied to the DeepSeek child. A default image
+build still installs Claude alone, but the launcher builds whatever
+`agent_providers` enables — it passes the set as `--build-arg AGENT_PROVIDERS`
+and mixes it into the image tag (Issue #729), so selecting another provider is
+one decision, not two.
 
-Each fragment reads its pins from `container/tools.json` with `jq`, verifies the
-download against the pinned SHA-256 (per architecture, or one `noarch` digest
-for an architecture-independent artefact), and installs the binary — nothing is
-piped into a shell and no floating `latest` is resolved.
+Each fragment reads its pins from `container/tools.json` with `jq`, verifies
+the download against the pinned SHA-256 (per architecture, or one `noarch`
+digest for an architecture-independent artefact), and installs the
+binary — nothing is piped into a shell and no floating `latest` is resolved.
 `findProviderInstallViolations` in
 [`container_manifest.ts`](../worker/deno/lib/container_manifest.ts) fails the
 quality gate when a fragment stops verifying its download, restates a version
@@ -2200,10 +2220,11 @@ manifest's provider set.
 
 ### One image, a set of providers
 
-Quorum mode needs several agent CLIs resident in **one** container, so the build
-installs a **set**: `AGENT_PROVIDERS` is a comma-separated list of provider ids,
-defaulting to `container/tools.json`'s `installedProviders` — today just
-`claude`, so the default image is what it always was.
+Quorum mode needs several agent CLIs resident in **one** container, so the
+build installs a **set**: `AGENT_PROVIDERS` is a comma-separated
+list of provider ids, defaulting to `container/tools.json`'s
+`installedProviders` — today just `claude`, so the default image is what it
+always was.
 
 ```bash
 # One image carrying all four agent CLIs
@@ -2215,25 +2236,27 @@ docker build -f container/Containerfile \
 `container/install-providers.sh` runs one fragment per requested id, in the
 requested order, and validates the whole set before installing anything — an
 empty list, an empty entry, a malformed or duplicated id, an id with no
-fragment, or a fragment that fails aborts the build naming the fragments that do
-exist. Nothing is half-installed and nothing is skipped silently.
+fragment, or a fragment that fails aborts the build naming the fragments that
+do exist. Nothing is half-installed and nothing is skipped
+silently.
 
 Two invariants keep the set honest:
 
 - **The tag follows the set.** `AGENT_PROVIDERS`' default lives in the
   Containerfile and `container/install-providers.sh` is an enumerated hash
-  input, so changing the set changes `vibe-coder:<hash>` instead of reusing a
-  tag whose contents differ.
+  input, so changing the set changes `vibe-coder:<hash>` instead
+  of reusing a tag whose contents differ.
 - **The image says what it carries.** The build stamps
-  `VIBE_IMAGE_AGENT_PROVIDERS` into the image; `imageAgentProviderIds()` in
-  `agent_provider.ts` reads it back and `resolveAgentProviderId()` fails loudly
-  when a phase asks for a provider the running image did not install — rather
-  than a "command not found" mid-run. With no stamp — absent, or blank, which is
-  the same thing (Issue #1262): an uncontained worker on a host — there is no
-  image set to check against, and the check stands aside. Every reader of the
-  stamp asks `runningInContainerImage()` in `worker/deno/lib/container_stamp.ts`
-  rather than spelling the test itself, so "blank is a host" holds at all of
-  them and not only at the three #1262 converted (Issue #1493).
+  `VIBE_IMAGE_AGENT_PROVIDERS` into the image;
+  `imageAgentProviderIds()` in `agent_provider.ts` reads it back and
+  `resolveAgentProviderId()` fails loudly when a phase asks for a provider the
+  running image did not install — rather than a "command not found" mid-run.
+  With no stamp — absent, or blank, which is the same thing (Issue #1262):
+  an uncontained worker on a host — there is no image set to check against,
+  and the check stands aside. Every reader of the stamp asks
+  `runningInContainerImage()` in `worker/deno/lib/container_stamp.ts` rather
+  than spelling the test itself, so "blank is a host" holds at all of them and
+  not only at the three #1262 converted (Issue #1493).
 
 ```mermaid
 flowchart LR
@@ -2250,9 +2273,8 @@ flowchart LR
 
 ### Adding a further provider
 
-Four providers are registered today; a further one is four files and no redesign
-— neither the Containerfile nor `container/install-providers.sh` names a
-provider.
+Four providers are registered today; a further one is four files and no redesign —
+neither the Containerfile nor `container/install-providers.sh` names a provider.
 
 1. **Pin it** — add a `providers` entry to `container/tools.json`: the `id`, the
    `binary` on `PATH`, the `fragment` path, the `version`, the upstream
@@ -2266,35 +2288,35 @@ provider.
    quality gate when a fragment stops verifying its download or restates a
    version the manifest already pins.
 3. **Describe it to the worker** — add a descriptor to
-   [`agent_provider.ts`](../worker/deno/lib/agent_provider.ts): id, display
-   name, binary, credential sub-directory and variables (including the
+   [`agent_provider.ts`](../worker/deno/lib/agent_provider.ts): id, display name,
+   binary, credential sub-directory and variables (including the
    `VIBE_LAUNCHAGENT_*` provisioning variable `setup.sh` reads), the child
-   environment allowlist/denylist — naming the _other_ vendors' credential
+   environment allowlist/denylist — naming the *other* vendors' credential
    variables so none crosses — and the invocation the CLI takes.
 4. **Enable it** — add the id to `agent_providers` in `.config.json`; the
-   launcher passes the set to the build as `AGENT_PROVIDERS` on the next launch.
-   Add it to `installedProviders` in the manifest only if a _default_ image
-   build should carry it.
+   launcher passes the set to the build as `AGENT_PROVIDERS` on the next
+   launch. Add it to `installedProviders` in the manifest only if a *default*
+   image build should carry it.
 
 The image tag follows the set, so the new provider produces a new
 `vibe-coder:<hash>` rather than reusing a tag whose contents differ. A trio in
-`quorum_planners` / `quorum_judge` can then name it — as `deepseek` already does
-— see Quorum.
+`quorum_planners` / `quorum_judge` can then name it — as `deepseek` already
+does — see Quorum.
 
 ## Deployer-supplied build-time tools
 
-The image carries the toolchains above because _this_ fleet's monitored
+The image carries the toolchains above because *this* fleet's monitored
 repositories need them. A deployment whose repositories need something else
-declares it as a top-level `container_tools` array in `.config.json`, and the
-build bakes it in. The default is an empty selection: the fleet image installs
-nothing extra, so a deployment that wants nothing pays nothing.
+declares it as a top-level `container_tools` array in `.config.json`, and the build bakes it in. The
+default is an empty selection: the fleet image installs nothing extra, so a
+deployment that wants nothing pays nothing.
 
 A deployment whose environment needs more than an archive install — a package
 from the distribution's repositories, a database loaded from dumps at build
-time, a service running before the agent starts — reaches for the private image
-layer instead, and the two mechanisms are meant to be used together:
-[Container Extension](CONTAINER-EXTENSION.md) works an example that installs its
-toolchains through `container_tools` and its services through the layer.
+time, a service running before the agent starts — reaches for the private
+image layer instead, and the two mechanisms are meant to be used together:
+[Container Extension](CONTAINER-EXTENSION.md) works an example that installs
+its toolchains through `container_tools` and its services through the layer.
 
 Each entry is a **declarative archive install** — download, verify the declared
 SHA-256, extract, expose `bin` directories on PATH, set `env`. There are no
@@ -2308,19 +2330,19 @@ set it is handed, so a bad entry never leaves a half-installed image behind.
 
 ### The spec
 
-| Field             | Required          | Meaning                                                                                                                                                                                             |
-| ----------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`              | yes               | Lower-case letters, digits and hyphens, starting with a letter — the same rule as a provider id. Unique within the array, and the directory name under the install prefix.                          |
-| `version`         | yes               | The pinned version, for the reader. Nothing resolves it: the URL and digest are what the build uses.                                                                                                |
-| `url`             | yes               | Download per architecture — `amd64`, `arm64` and/or `noarch`. `https:` only. The extension decides the extractor: `.tar.gz`/`.tgz`, `.tar.xz` or `.zip`; anything else aborts rather than guessing. |
-| `sha256`          | yes               | 64 hex characters per architecture. **Mandatory** — a `url` without a matching `sha256` (or the reverse) is rejected, because that would be an unverified download.                                 |
-| `stripComponents` | no (default `0`)  | Leading path components dropped on extraction, as `tar --strip-components`. Most distributions ship one top-level directory, so `1` is usual.                                                       |
-| `bin`             | no (default none) | Directories, **relative to the install prefix**, prepended to PATH. `""` is the prefix root.                                                                                                        |
-| `env`             | no (default none) | Environment variables set at container start, each value **relative to the install prefix**. `""` is the prefix root — that is how a `*_HOME` variable is expressed.                                |
+| Field | Required | Meaning |
+| ---------------- | ---------------------- | ------------------------------------------------------------------------------------------------- |
+| `id` | yes | Lower-case letters, digits and hyphens, starting with a letter — the same rule as a provider id. Unique within the array, and the directory name under the install prefix. |
+| `version` | yes | The pinned version, for the reader. Nothing resolves it: the URL and digest are what the build uses. |
+| `url` | yes | Download per architecture — `amd64`, `arm64` and/or `noarch`. `https:` only. The extension decides the extractor: `.tar.gz`/`.tgz`, `.tar.xz` or `.zip`; anything else aborts rather than guessing. |
+| `sha256` | yes | 64 hex characters per architecture. **Mandatory** — a `url` without a matching `sha256` (or the reverse) is rejected, because that would be an unverified download. |
+| `stripComponents` | no (default `0`) | Leading path components dropped on extraction, as `tar --strip-components`. Most distributions ship one top-level directory, so `1` is usual. |
+| `bin` | no (default none) | Directories, **relative to the install prefix**, prepended to PATH. `""` is the prefix root. |
+| `env` | no (default none) | Environment variables set at container start, each value **relative to the install prefix**. `""` is the prefix root — that is how a `*_HOME` variable is expressed. |
 
-A deployment that builds for one architecture may supply only that architecture;
-the build resolves its own `amd64`/`arm64` and falls back to `noarch`, and a
-tool with neither aborts the build naming the id.
+A deployment that builds for one architecture may supply only that
+architecture; the build resolves its own `amd64`/`arm64` and falls back to
+`noarch`, and a tool with neither aborts the build naming the id.
 
 **The install prefix is fixed at `/opt/vibe-tools/<id>`**, and every `bin` and
 `env` value is relative to it. An absolute path, a `~`, a newline, or a `..`
@@ -2395,9 +2417,9 @@ the mechanism inspects them.
 ```
 
 Where one tool needs to find another, express that with an `env` entry — the
-example gives each a `*_HOME` pointing at its own prefix. Order matters only for
-readability; every entry is applied before the worker starts. Inside a container
-built from that selection:
+example gives each a `*_HOME` pointing at its own prefix. Order matters only
+for readability; every entry is applied before the worker starts. Inside a
+container built from that selection:
 
 ```text
 $ echo "$TOOL_A_HOME"
@@ -2408,11 +2430,12 @@ $ command -v tool-a
 /opt/vibe-tools/tool-a/bin/tool-a
 ```
 
-The pins are the deployment's, not the fleet's: they are deliberately _not_ in
+The pins are the deployment's, not the fleet's: they are deliberately *not* in
 [`container/tools.json`](../container/tools.json), which pins what every image
 carries. Keep the versions current the way you would any other dependency, and
-observe the 24-hour quarantine in [Coding Standards](../CODING-STANDARDS.md) —
-do not pin a release published in the last day.
+observe the 24-hour quarantine in
+[Coding Standards](../CODING-STANDARDS.md) — do not pin a release published in
+the last day.
 
 ### Finding a published checksum for a new tool
 
@@ -2426,7 +2449,7 @@ bytes against themselves.
   computing it from your own copy.
 
 - **When the publisher publishes a different digest** — a `.sha512` beside the
-  artefact, say — verify the download against _that_ first, then record the
+  artefact, say — verify the download against *that* first, then record the
   SHA-256 of the file you just verified:
 
   ```bash
@@ -2439,11 +2462,13 @@ bytes against themselves.
   The `sha512sum -c` must print `OK` before the `sha256sum` output is worth
   recording — otherwise you are pinning bytes nobody vouched for.
 
-- **When the software you need is not published as an archive at all** — it
-  ships as a distribution package, or as source that must be compiled — build or
-  unpack it once yourself, produce a `.tar.gz` of the result, host it where your
-  build can reach it, and pin its digest like any other entry. The installer
-  does not care where an archive came from; it verifies the digest you declared.
+- **When the software you need is not published as an archive at all** —
+  it ships as a distribution package, or as source that must be compiled —
+  build or unpack it once yourself, produce a `.tar.gz` of the result, host it
+  where your build can reach it, and pin its digest like any other entry. The
+  installer does not care where an archive came from; it verifies the digest
+  you declared.
+
 
 ### When a checksum stops matching
 
@@ -2464,9 +2489,9 @@ no flag to skip the digest, and adding one would remove the only thing standing
 between a compromised mirror and a container that runs your repositories'
 builds. Instead:
 
-1. Fetch the upstream's currently published checksum (above) and compare it with
-   the digest in `.config.json`. If upstream's own published value has changed
-   too, the artefact was legitimately re-published.
+1. Fetch the upstream's currently published checksum (above) and compare it
+   with the digest in `.config.json`. If upstream's own published value has
+   changed too, the artefact was legitimately re-published.
 2. Read the upstream's release notes for that respin before you accept it. A
    changed artefact with **no** upstream announcement is a supply-chain event —
    treat it as one, and do not pin it.
@@ -2482,8 +2507,8 @@ The image tag is the hash of the container definition, and
 installer produces a new `vibe-coder:<hash>`. The **selection**, though, travels
 as the `VIBE_CONTAINER_TOOLS` build argument out of `.config.json`, not as a
 committed file, so editing `container_tools` alone does not yet change the tag;
-folding it into the hash is Issue #73. Until it lands, force the rebuild after a
-selection change — see
+folding it into the hash is Issue #73. Until it lands, force the rebuild after
+a selection change — see
 [Deployment](DEPLOYMENT.md#-changing-container_tools-forces-an-image-rebuild).
 
 ## Building and running locally
@@ -2510,22 +2535,24 @@ ownership.
 
 `container/entrypoint.sh` does no host-specific PATH guessing: it resolves the
 repository (`VIBE_BASE_DIR`, defaulting to the repository the script ships in)
-and `exec`s `worker/deno/mod.ts run-entrypoint` with the same `--frozen --lock`
-and permission set `run.sh` uses. A missing `deno` or a missing worker tree
-exits non-zero with a named cause rather than failing quietly.
+and `exec`s `worker/deno/mod.ts run-entrypoint` with the same
+`--frozen --lock` and permission set `run.sh` uses. A missing `deno` or a
+missing worker tree exits non-zero with a named cause rather than failing
+quietly.
 
 ## Bumping a pin
 
 1. Update the version (and per-architecture SHA-256, or the image digest) in
    `container/tools.json`.
-2. Mirror the same value into the matching `ARG` in `container/Containerfile`.
-   Provider pins have no `ARG` to mirror — the fragment reads them from the
-   manifest, and restating one there fails the gate.
+2. Mirror the same value into the matching `ARG` in
+   `container/Containerfile`. Provider pins have no `ARG` to mirror — the
+   fragment reads them from the manifest, and restating one there fails the
+   gate.
 3. Run `./quality.sh` — the manifest test fails until the two agree.
 
-A new base image must keep supplying everything in `provides` (the manifest test
-fails when a command the gate runs is no longer supplied) and must still clear
-every `minVersions` floor (asserted by CI against the built image).
+A new base image must keep supplying everything in `provides` (the manifest
+test fails when a command the gate runs is no longer supplied) and must still
+clear every `minVersions` floor (asserted by CI against the built image).
 
 External tools follow the 24-hour quarantine in
 [Coding Standards](../CODING-STANDARDS.md): do not pin a release published in

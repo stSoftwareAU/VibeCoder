@@ -3,18 +3,18 @@
 This is the document you read to get a Vibe Coder configured on a host — by
 script or by hand — on macOS, Linux or Windows. It ends where the
 [Deployment Guide](DEPLOYMENT.md) begins: once the worker runs correctly by
-hand, the background-service setup (cron, launchd, systemd or Task Scheduler) is
-[DEPLOYMENT.md](DEPLOYMENT.md)'s job, and this document links to it rather than
-repeating it.
+hand, the background-service setup (cron, launchd, systemd or Task Scheduler)
+is [DEPLOYMENT.md](DEPLOYMENT.md)'s job, and this document links to it rather
+than repeating it.
 
 There are two supported routes, and they produce the same end state:
 
 - **The automated route** — `./setup.sh` on macOS and Linux, `setup.ps1` on
   Windows. The script probes prerequisites, provisions credentials and
   configuration, syncs the monitored repositories and installs the hooks.
-- **The manual route** — every step by hand, so the script is never required. An
-  operator who cannot or will not run the script can still bring a bare host to
-  exactly the state a scripted run would have produced.
+- **The manual route** — every step by hand, so the script is never required.
+  An operator who cannot or will not run the script can still bring a bare
+  host to exactly the state a scripted run would have produced.
 
 ## 📋 Table of Contents
 
@@ -29,108 +29,111 @@ There are two supported routes, and they produce the same end state:
 
 ## What the automated setup does
 
-`./setup.sh` (macOS and Linux) and `setup.ps1` (Windows) run the same ten phases
-in the same order — the two entry points (`main()` in `setup.sh`,
+`./setup.sh` (macOS and Linux) and `setup.ps1` (Windows) run the same ten
+phases in the same order — the two entry points (`main()` in `setup.sh`,
 `Invoke-VibeSetupMain` in `setup.ps1`) are deliberately step-for-step
 equivalent, and `worker/deno/tests/setup_parity_test.ts` holds them that way.
 The scripts themselves are thin orchestrators that own the terminal I/O; the
-real work is delegated to the Deno setup CLI (`worker/deno/setup/setup_cli.ts`).
-This section describes the behaviour that is identical on all three platforms;
-where they genuinely diverge — which background service is offered, where files
-land — is covered in
+real work is delegated to the Deno setup CLI
+(`worker/deno/setup/setup_cli.ts`). This section describes the behaviour that
+is identical on all three platforms; where they genuinely diverge — which
+background service is offered, where files land — is covered in
 [Platform differences in the automated setup](#platform-differences-in-the-automated-setup).
 
-1. **Prerequisites probe** — `setup prerequisites`. Verifies the host tools, the
-   container runtime, the worker image and — on a deployment that configures one
-   — the private `container_extension` before anything is changed. A host-fatal
-   gap **exits 1** and stops the whole run; informational gaps are reported and
-   never fail setup. In a terminal (or with `--auto-install`) each failed check
-   with an install plan is offered as an interactive install, and the final
-   verdict always comes from a re-probe. The classification table and the
-   install-offer flow are documented in
+1. **Prerequisites probe** — `setup prerequisites`. Verifies the host tools,
+   the container runtime, the worker image and — on a deployment that
+   configures one — the private `container_extension` before anything is
+   changed. A
+   host-fatal gap **exits 1** and stops the whole run; informational gaps are
+   reported and never fail setup. In a terminal (or with `--auto-install`)
+   each failed check with an install plan is offered as an interactive
+   install, and the final verdict always comes from a re-probe. The
+   classification table and the install-offer flow are documented in
    [Deployment — Initial Setup](DEPLOYMENT.md#-initial-setup), so they are not
    repeated here.
 
 2. **Credential provisioning** — writes the dedicated credential directory
    (`~/.vibe-coder/credentials` by default) non-interactively from the
    `VIBE_LAUNCHAGENT_*` environment variables: the GitHub token into
-   `gh/hosts.yml`, and each enabled coding-agent provider's credential into its
-   own sub-directory. It runs before any prompt, so the `gh` config directory
-   can default to it and no login prompt is offered for it. With no credential
-   variables set it leaves the directory unchanged, warns, and the run
-   continues. The variable table lives in
+   `gh/hosts.yml`, and each enabled coding-agent provider's credential into
+   its own sub-directory. It runs before any prompt, so the `gh` config
+   directory can default to it and no login prompt is offered for it. With no
+   credential variables set it leaves the directory unchanged, warns, and the
+   run continues. The variable table lives in
    [Deployment — Credential Provisioning](DEPLOYMENT.md#-credential-provisioning-non-interactive).
 
 3. **Interactive credential top-up** — skipped entirely when no terminal is
-   attached. Fills whatever phase 2 left empty: offers to copy the existing `gh`
-   identity into the credential directory, then runs **one credential flow per
-   configured coding-agent provider**, in the order `.config.json` enables them
-   (Issue #730). Claude's flow is the one it always was — setup offers to run
-   `claude setup-token` for you and proves the token with a live call before
-   storing it. The owner-only pty transcript that capture reads the token out of
-   is removed on **every** exit path, including a Ctrl-C at the browser sign-in,
-   so the token never rests in the temp directory (Issue #1300). Every other
-   provider gets a hidden paste of its own credential variable, written to
-   `<provider>/provider.env` with the same owner-only permissions. A Codex-only
-   host is asked for `OPENAI_API_KEY` and never sees a Claude prompt. The flows
-   the run will drive are named before it drives them, so a misconfigured
-   provider set is visible rather than silent. An existing credential file is
-   never overwritten without an explicit `y`, and declining an offer never fails
-   the run. `setup.ps1` does the same on Windows, from the same
-   `agent-providers` answer (Issue #745), and `setup_parity_test.ts` fails the
-   quality gate if either script drops the gate and goes back to prompting for
-   Claude regardless.
+   attached. Fills whatever phase 2 left empty: offers to copy the existing
+   `gh` identity into the credential directory, then runs **one credential
+   flow per configured coding-agent provider**, in the order
+   `.config.json` enables them (Issue #730). Claude's flow is the one it
+   always was — setup offers to run `claude setup-token` for you and proves
+   the token with a live call before storing it. The owner-only pty transcript
+   that capture reads the token out of is removed on **every** exit path,
+   including a Ctrl-C at the browser sign-in, so the token never rests in the
+   temp directory (Issue #1300). Every other provider gets a
+   hidden paste of its own credential variable, written to
+   `<provider>/provider.env` with the same owner-only permissions. A
+   Codex-only host is asked for `OPENAI_API_KEY` and never sees a Claude
+   prompt. The flows the run will drive are named before it drives them, so a
+   misconfigured provider set is visible rather than silent. An existing
+   credential file is never overwritten without an explicit `y`, and
+   declining an offer never fails the run. `setup.ps1` does the same on
+   Windows, from the same `agent-providers` answer (Issue #745), and
+   `setup_parity_test.ts` fails the quality gate if either script drops the
+   gate and goes back to prompting for Claude regardless.
 
-4. **Interactive configuration prompts** — also terminal-only. Collects the key
-   configuration answers (repositories to monitor, allowed authors, service
-   accounts, SSH key path, `gh` config directory, screenshot-upload key),
-   showing any existing value as the default. Nothing is written yet — the
-   answers are held for the next phase. What each key means is the
-   [Configuration Reference](CONFIGURATION.md)'s job.
+4. **Interactive configuration prompts** — also terminal-only. Collects the
+   key configuration answers (repositories to monitor, allowed authors,
+   service accounts, SSH key path, `gh` config directory, screenshot-upload
+   key), showing any existing value as the default.
+   Nothing is written yet — the answers are held for the next phase. What
+   each key means is the [Configuration Reference](CONFIGURATION.md)'s job.
 
 5. **Config write** — `setup config` writes `.config.json` from the `VIBE_*`
-   environment variables, and then the interactive answers are merged over the
-   result. The order matters: an answered prompt wins over the environment, and
-   a prompt left at its default keeps the environment's value — the prompts do
-   not lose the environment, and the environment does not lose the prompts. A
-   failure here stops the run.
+   environment variables, and then the interactive answers are merged over
+   the result. The order matters: an answered prompt wins over the
+   environment, and a prompt left at its default keeps the environment's
+   value — the prompts do not lose the environment, and the environment does
+   not lose the prompts. A failure here stops the run.
 
 6. **Update mode** — `setup update-mode` (Issue #626), run by both `setup.sh`
    and `setup.ps1`. It asks whether this host is `dynamic` or `frozen`. The
    default is `frozen` only on a fresh host with no pre-existing `.config.json`
    (Issue #692); otherwise it is whatever the host already runs, and a
    `.config.json` with no `update_mode` key counts as `dynamic`. A `frozen`
-   answer asks for the pinned ref — defaulting to the latest release tag, and
-   validated by fetching origin and resolving it in this very checkout, so a ref
-   that does not resolve is rejected by name and asked again rather than saved —
-   and then for one exact version per tool, each defaulting to the version that
-   release recorded, so accepting every default reproduces a released, tested
-   combination. Blank accepts the default everywhere, so pressing Enter through
-   a frozen host's prompts leaves `.config.json` byte-for-byte unchanged.
-   Without a terminal nothing is asked: existing values are left alone, and a
-   fresh config is pinned to the latest release when one resolves with its
-   manifest — otherwise it stays `dynamic` with one warning line saying why. The
-   prompts in the order they are asked are
-   [Update mode: dynamic or frozen](#update-mode-dynamic-or-frozen) below; what
-   the fields mean is the
+   answer asks for the pinned ref — defaulting to the latest release
+   tag, and validated by fetching origin and resolving it in this very
+   checkout, so a ref that does not resolve is rejected by name and asked
+   again rather than saved — and then for one exact version per tool, each
+   defaulting to the version that release recorded, so accepting every default
+   reproduces a released, tested combination. Blank accepts the default
+   everywhere, so pressing Enter through a frozen host's prompts leaves
+   `.config.json` byte-for-byte unchanged. Without a terminal nothing is
+   asked: existing values are left alone, and a fresh config is pinned to the
+   latest release when one resolves with its manifest — otherwise it stays
+   `dynamic` with one warning line saying why. The prompts in the order they
+   are asked are
+   [Update mode: dynamic or frozen](#update-mode-dynamic-or-frozen) below;
+   what the fields mean is the
    [Configuration Reference](CONFIGURATION.md#-update-mode)'s job.
 
-   Straight after it, on both `setup.sh` and `setup.ps1`,
-   `setup
+   Straight after it, on both `setup.sh` and `setup.ps1`, `setup
    copilot-review-mode` (Issue #2701) asks one question:
    `Copilot code review (on/off/leave)`. Copilot code review is **billed per
    review, never free — even on a public repository**: GitHub charges each
    automatic review to the pull request author's Copilot plan, or to the
    organisation. `on` has `repo-settings-harden` request a review on every PR
-   into the default branch, `off` removes the review rule from every repository
-   ruleset, and `leave` changes nothing. The default is this host's current
-   answer, `leave` on a fresh host, so Enter never changes anything. The answer
-   is recorded as `copilot_code_review` in `.config.json`; without a terminal
-   nothing is asked and nothing is written. A failure is a warning, never fatal.
+   into the default branch, `off` removes the review rule from every
+   repository ruleset, and `leave` changes nothing. The default is this
+   host's current answer, `leave` on a fresh host, so Enter never changes
+   anything. The answer is recorded as `copilot_code_review` in
+   `.config.json`; without a terminal nothing is asked and nothing is
+   written. A failure is a warning, never fatal.
 
-7. **Repository sync phases** — eight subcommands, each acting on the monitored
-   GitHub repositories rather than the host, each idempotent, and each
-   **non-fatal**:
+7. **Repository sync phases** — eight subcommands, each acting on the
+   monitored GitHub repositories rather than the host, each idempotent, and
+   each **non-fatal**:
 
    - `label-sync` — standardises the worker's label set in every monitored
      repository.
@@ -139,12 +142,12 @@ land — is covered in
      resolved when the issue was filed.
    - `best-practices-sync` — audits the same workflows for best-practice
      findings.
-   - `gitignore-sync` — applies the canonical `.gitignore` safety block to every
-     monitored repository.
-   - `verify-monitored-collaborator` — checks the worker account has push access
-     on every monitored repository (triage is not enough: the trusted-author
-     refresh lists collaborators, which needs push), filing an issue where it
-     has not.
+   - `gitignore-sync` — applies the canonical `.gitignore` safety block to
+     every monitored repository.
+   - `verify-monitored-collaborator` — checks the worker account has push
+     access on every monitored repository (triage is not enough: the
+     trusted-author refresh lists collaborators, which needs push), filing an
+     issue where it has not.
    - `branch-protection-sync` — applies the default-branch ruleset to every
      monitored repository, then **creates or aligns** each repository's
      `milestone/**` ruleset to the GRQ-AutoTrader template, with no prompt on
@@ -154,20 +157,19 @@ land — is covered in
      mirrored from the default branch, each keeping its `integration_id`, with
      `strict_required_status_checks_policy: false` and
      `do_not_enforce_on_create: true`; bypass actors are mirrored from the
-     default-branch ruleset. With no default-branch checks to mirror it carries
-     the first two rules only. A missing ruleset is created `active`.
+     default-branch ruleset. With no default-branch checks to mirror it
+     carries the first two rules only. A missing ruleset is created `active`.
 
      **The merge queue** (Issue #4424). The same step also decides whether the
      default-branch ruleset carries a merge queue, where GitHub allows one. It
-     prints one line per repository: the queue is enabled, or the reason it fell
-     back (opted out with the `no-merge-queue` topic, unavailable, a required
-     check that cannot report on `merge_group`, or unverified). See
+     prints one line per repository: the queue is enabled, or the reason it
+     fell back (opted out with the `no-merge-queue` topic, unavailable, a
+     required check that cannot report on `merge_group`, or unverified). See
      [MERGE.md → Merge queue](MERGE.md#merge-queue). Settling availability may
-     create and then delete a disabled probe ruleset
-     (`Vibe Coder merge queue
-     probe`); the read-only
-     `audit-default-branch-rulesets` sweep never creates one. Enabling it needs
-     each required check's workflow to run on `merge_group` as well as on
+     create and then delete a disabled probe ruleset (`Vibe Coder merge queue
+     probe`); the read-only `audit-default-branch-rulesets` sweep never creates
+     one. Enabling it needs each
+     required check's workflow to run on `merge_group` as well as on
      `pull_request`:
 
      ```yaml
@@ -177,78 +179,80 @@ land — is covered in
      ```
 
      In a `merge_group` run the base and head are
-     `github.event.merge_group.base_sha` and
-     `github.event.merge_group.head_sha`, not `github.event.pull_request.*`. A
-     job that selects work from the diff must read those for a merge-group run,
-     and when the diff cannot be read the job must run everything. This
-     repository's own workflows are not changed by Issue #4424.
+     `github.event.merge_group.base_sha` and `github.event.merge_group.head_sha`,
+     not `github.event.pull_request.*`. A job that selects work from the diff must
+     read those for a merge-group run, and when the diff cannot be read the job
+     must run everything. This repository's own workflows are not changed by
+     Issue #4424.
 
-     **The owner's spec** (Issue #2684). `milestone/**`: required status checks
-     must pass, the branch need **not** be up to date
+     **The owner's spec** (Issue #2684). `milestone/**`: required status
+     checks must pass, the branch need **not** be up to date
      (`strict_required_status_checks_policy: false`), and there is **no**
      `pull_request` rule, so no approval is required. The default branch: at
      least one approving review, required status checks, and
      `strict_required_status_checks_policy: true` (`false` while a merge queue
-     is enabled, as above). The milestone template cannot express a strict
-     policy or a `pull_request` rule, and aligning removes either from a ruleset
-     setup owns.
+     is enabled, as above). The milestone template
+     cannot express a strict policy or a `pull_request` rule, and aligning
+     removes either from a ruleset setup owns.
 
      **Only checks a milestone PR reports are mirrored** (Issue #2684). The
      default branch's checks are intersected with the check names reported by
-     the last few _merged_ PRs into a milestone branch — the same rule the
+     the last few *merged* PRs into a milestone branch — the same rule the
      default-branch ruleset follows. A check whose workflow runs only for PRs
      into the default branch (a `pull_request.branches: [Develop]` filter, a
      version bump, CodeQL's default-branch analysis) never reports on a
      milestone PR, and requiring it held every milestone PR BLOCKED for ever.
      The checks left off are named on the repository's line. Open PRs are not
-     sampled: one still running has not reported its last jobs, and anyone who
-     can open a PR chooses which workflows it runs. With no merged milestone PR
-     to sample, a new ruleset requires no checks and an existing one keeps the
-     ones it has — setup never adds an unproven check, and never strips a gate
-     an armed PR is waiting on. When the default branch requires checks but
-     **none** of them reports on a milestone PR (TagsTS), requiring nothing
-     would let milestone PRs merge on no CI at all, so setup requires instead
-     the checks **every** sampled merged milestone PR reported, and names both
-     lists on the repository's line. A ruleset whose include is exactly
-     `refs/heads/milestone/**` and which differs in name, rules, checks, strict
-     policy, create exemption or bypass actors is rewritten to match — any other
-     rule is removed, and a later hand edit is reverted on the next run — but
-     its enforcement is never changed: a `disabled` or `evaluate` ruleset keeps
-     it, with a warning. A broader ruleset that merely also covers milestone
-     branches is left alone. Each write prints one success line, each failure
-     one warning; an already-aligned ruleset gets neither. A service account
-     that cannot bypass the ruleset is the intended policy and earns no warning:
-     its refused sync push raises or updates a sync PR instead (Issue #589). The
-     write runs as the operator, re-reading the rulesets under that identity
-     (Issue #595), and a read that fails is a warning — never "missing" (Issue
-     #678). Every ruleset failure is non-fatal and named: a **private repository
-     on a free plan** cannot take a ruleset at all — GitHub answers HTTP 403,
+     sampled: one still running has not reported its last jobs, and anyone
+     who can open a PR chooses which workflows it runs. With no merged
+     milestone PR to sample, a new ruleset requires no checks and an existing
+     one keeps the ones it has — setup never adds an unproven check, and never
+     strips a gate an armed PR is waiting on. When the default branch requires
+     checks but **none** of them reports on a milestone PR (TagsTS), requiring
+     nothing would let milestone PRs merge on no CI at all, so setup requires
+     instead the checks **every** sampled merged milestone PR reported, and
+     names both lists on the repository's line.
+     A ruleset whose include is exactly `refs/heads/milestone/**` and which
+     differs in name, rules, checks, strict policy, create exemption or bypass
+     actors is rewritten to match — any other rule is removed, and a later
+     hand edit is reverted on the next run — but its enforcement is never
+     changed: a `disabled` or `evaluate` ruleset keeps it, with a warning. A
+     broader ruleset that merely also covers milestone branches is left
+     alone. Each write prints one success line, each failure one warning;
+     an already-aligned ruleset gets neither. A service account that cannot
+     bypass the ruleset is the intended policy and earns no warning: its
+     refused sync push raises or updates a sync PR instead (Issue #589). The
+     write runs as the operator,
+     re-reading the rulesets under that identity (Issue #595), and a read
+     that fails is a warning — never "missing" (Issue #678).
+     Every ruleset failure is non-fatal and named: a **private repository on
+     a free plan** cannot take a ruleset at all — GitHub answers HTTP 403,
      because rulesets there need GitHub Pro — and setup says exactly that,
      naming the repository, rather than printing the same line a missing token
-     scope or an organisation policy would (Issue #733). Any other failure names
-     the repository and the HTTP status. Setup finishes either way; the branch
-     is simply left unprotected.
+     scope or an organisation policy would (Issue #733). Any other failure
+     names the repository and the HTTP status. Setup finishes either way; the
+     branch is simply left unprotected.
 
      It also **repairs a `milestone/**` ruleset that refuses branch creation**
-     (Issue #2067). GitHub evaluates `required_status_checks` against the pushed
-     commit, so a branch that does not exist yet has no check runs and the push
-     that would open it is declined — every run on that repository then dies
-     inside a minute in `setup` with "push declined due to repository rule
-     violations". Setup sets `do_not_enforce_on_create` on that rule in place,
-     preserving every other rule, condition and bypass actor, and prints what it
-     changed; the checks still gate every merge, and the rule stays present so
-     auto-merge can still be armed. Only a ruleset whose ref patterns are _all_
-     under `refs/heads/milestone/` is written — one reaching wider (`~ALL`, the
-     default branch) is reported for a human instead. Setup is not the only
-     place this is repaired: the worker makes the same repair in the run that
-     meets the refusal (Issue #2079), because a repository nobody re-runs setup
-     against stays trapped — it clears the block, retries the branch creation
-     once, and when the write is refused (a ruleset write needs `admin`; an
-     account holding only `write` gets a 404) it hands the issue to a human with
-     what it tried.
+     (Issue #2067). GitHub evaluates `required_status_checks` against the
+     pushed commit, so a branch that does not exist yet has no check runs and
+     the push that would open it is declined — every run on that repository
+     then dies inside a minute in `setup` with "push declined due to
+     repository rule violations". Setup sets `do_not_enforce_on_create` on
+     that rule in place, preserving every other rule, condition and bypass
+     actor, and prints what it changed; the checks still gate every merge, and
+     the rule stays present so auto-merge can still be armed. Only a ruleset
+     whose ref patterns are *all* under `refs/heads/milestone/` is written —
+     one reaching wider (`~ALL`, the default branch) is reported for a human
+     instead. Setup is not the only place this is repaired: the worker makes
+     the same repair in the run that meets the refusal (Issue #2079), because
+     a repository nobody re-runs setup against stays trapped — it clears the
+     block, retries the branch creation once, and when the write is refused
+     (a ruleset write needs `admin`; an account holding only `write` gets a
+     404) it hands the issue to a human with what it tried.
    - `repo-settings-harden` — hardens every monitored repository's GitHub
-     settings on every run, writing **only what has drifted** (Issue #2628). See
-     [Repository settings hardening](#repository-settings-hardening).
+     settings on every run, writing **only what has drifted** (Issue #2628).
+     See [Repository settings hardening](#repository-settings-hardening).
    - `backfill-idle-task-labels` — adds the `idle-task` label to existing
      security-scan wrapper issues that lack it; already-labelled wrappers are
      not touched again.
@@ -259,36 +263,37 @@ land — is covered in
    part of the security posture, not a nicety.
 
 9. **Obsolete work-directory clean-up** — handles any leftover host work
-   directories (such as `~/auto-issue-work`) that the container's named volumes
-   made obsolete, in two distinct cases. A directory holding nothing beyond a
-   stale `.vibe-cache` from an earlier setup is **removed**, with a report of
-   what went: setup keeps no cache on the host any more — it re-queries the
-   GitHub API for default branches each run instead — so such a directory is
-   setup's own leftover and safe to reclaim. A directory holding real worker
-   data still only gets a **reminder** with its size and the command to reclaim
-   the space — deleting operator data is never setup's call. Neither case can
-   fail the run.
+   directories (such as `~/auto-issue-work`) that the container's named
+   volumes made obsolete, in two distinct cases. A directory holding nothing
+   beyond a stale `.vibe-cache` from an earlier setup is **removed**, with a
+   report of what went: setup keeps no cache on the host any more — it
+   re-queries the GitHub API for default branches each run instead — so such
+   a directory is setup's own leftover and safe to reclaim. A directory
+   holding real worker data still only gets a **reminder** with its size and
+   the command to reclaim the space — deleting operator data is never setup's
+   call. Neither case can fail the run.
 
 10. **Background-service offer** — platform-specific and terminal-only: each
-    platform offers its own supervision mechanism, and declining also offers to
-    remove a service an earlier run installed. Which platform offers what is
-    covered in
-    [Platform differences in the automated setup](#platform-differences-in-the-automated-setup),
-    and the services themselves in
-    [Deployment — Running as a Background Service](DEPLOYMENT.md#-running-as-a-background-service).
-    Declining never fails the run.
+   platform offers its own supervision mechanism, and declining also offers
+   to remove a service an earlier run installed. Which platform offers what
+   is covered in
+   [Platform differences in the automated setup](#platform-differences-in-the-automated-setup),
+   and the services themselves in
+   [Deployment — Running as a Background Service](DEPLOYMENT.md#-running-as-a-background-service).
+   Declining never fails the run.
 
 11. **Optional screenshot support** — runs only when
-    `VIBE_SETUP_SCREENSHOT_SUPPORT=true` is set; otherwise the phase is skipped
-    entirely. See
+    `VIBE_SETUP_SCREENSHOT_SUPPORT=true` is set; otherwise the phase is
+    skipped entirely. See
     [Deployment — Screenshot Support Setup](DEPLOYMENT.md#-screenshot-support-setup).
 
 **Fatal versus non-fatal, and why setup is re-runnable.** The sync phases
-(phase 7) warn and continue by design, so a rate-limited or partly-permissioned
-run still finishes configuring the host — only the prerequisites probe, the
-config write and the hooks install stop the run. And because every phase is
-idempotent, the recovery from any warning is simply to re-run setup: nothing is
-duplicated, and already-correct state is left alone.
+(phase 7) warn and continue by design, so a rate-limited or
+partly-permissioned run still finishes configuring the host — only the
+prerequisites probe, the config write and the hooks install stop the run.
+And because every phase is idempotent, the recovery from any warning is
+simply to re-run setup: nothing is duplicated, and already-correct state is
+left alone.
 
 ```mermaid
 flowchart TD
@@ -327,26 +332,27 @@ flowchart TD
 `repo-settings-harden` runs straight after the ruleset sync.
 
 **Identity.** Every write it makes needs repository **admin**, so it runs as
-**your own `gh` login** — the one `gh auth status` shows with no `GH_CONFIG_DIR`
-set, the same `operator` identity the milestone-ruleset aligner uses — and never
-as the fleet account in `gh_config_dir`, which holds `write` by design (Issue
-#2685). Its first line names the login. Before touching a repository it checks
-that login holds admin there (`repos/{repo}` `.permissions.admin`). A repository
-without it is left alone, and one line lists them all:
+**your own `gh` login** — the one `gh auth status` shows with no
+`GH_CONFIG_DIR` set, the same `operator` identity the milestone-ruleset
+aligner uses — and never as the fleet account in `gh_config_dir`, which
+holds `write` by design (Issue #2685). Its first line names the login.
+Before touching a repository it checks that login holds admin there
+(`repos/{repo}` `.permissions.admin`). A repository without it is left
+alone, and one line lists them all:
 
 ```text
 Repo-settings hardening needs an admin login: someone is not an admin on 2 repo(s) (owner/a, owner/b), so they were left alone. Run setup logged in to gh as a repository admin (gh auth login).
 ```
 
 So run setup logged in to `gh` as a repository admin. The fleet worker is
-unaffected: at run time it keeps using the fleet token, and nothing here widens
-that token's rights.
+unaffected: at run time it keeps using the fleet token, and nothing here
+widens that token's rights.
 
-**Dry run.** `setup_cli.ts repo-settings-harden --dry-run` reads and plans every
-repository and writes nothing: no setting, no CODEOWNERS file, no audit-issue
-comment or close. Each line then counts `planned` instead of `applied` and lists
-the steps it `would apply`. A subcommand without a dry run refuses `--dry-run`
-rather than ignoring it and writing for real.
+**Dry run.** `setup_cli.ts repo-settings-harden --dry-run` reads and plans
+every repository and writes nothing: no setting, no CODEOWNERS file, no
+audit-issue comment or close. Each line then counts `planned` instead of
+`applied` and lists the steps it `would apply`. A subcommand without a dry
+run refuses `--dry-run` rather than ignoring it and writing for real.
 
 For each monitored repository, in order:
 
@@ -360,110 +366,113 @@ For each monitored repository, in order:
      approve pull requests;
    - actions must be pinned to a full-length commit SHA;
    - `allowed_actions` is `selected`, and every `owner/repo@*` the workflows
-     need, including the actions their composite actions call, is **added to**
-     the existing allow-list. Nothing on the list is removed. The workflows
-     (`.github/workflows/*.yml`) and local composite actions
-     (`.github/actions/**/action.yml`) are read through the GitHub API at the
-     default branch, so no checkout is needed (Issue #2685);
+     need, including the actions their composite actions call, is **added
+     to** the existing allow-list. Nothing on the list is removed. The
+     workflows (`.github/workflows/*.yml`) and local composite actions
+     (`.github/actions/**/action.yml`) are read through the GitHub API at
+     the default branch, so no checkout is needed (Issue #2685);
    - the list also includes the third-party actions of the workflow-sync
-     templates that workflow sync would file for the repository: the missing and
-     partial workflows for its detected languages. A verbatim template then
-     runs, rather than failing with `startup_failure` against an allow-list that
-     never named its action (Issue #4448). GitHub-owned actions stay implicit,
-     as above. A template set that cannot be read is warned on the repository's
-     line (the rest of the list is still written), so a short list is never
-     silent;
+     templates that workflow sync would file for the repository: the missing
+     and partial workflows for its detected languages. A verbatim template
+     then runs, rather than failing with `startup_failure` against an
+     allow-list that never named its action (Issue #4448). GitHub-owned
+     actions stay implicit, as above. A template set that cannot be read is
+     warned on the repository's line (the rest of the list is still
+     written), so a short list is never silent;
    - secret scanning and push protection are turned on for **public**
      repositories only. A private repository needs the paid GitHub Secret
      Protection add-on, so the step is skipped there and its line says so;
    - **CodeQL default setup** is turned on for **public** repositories only
-     (Issue #2704), behind the same visibility check as secret scanning: it is
-     free there, and includes Copilot Autofix at no charge, while a private
-     repository would need paid GitHub Code Security, so setup makes no
-     code-scanning call there and the line says it was skipped. It reads
+     (Issue #2704), behind the same visibility check as secret scanning: it
+     is free there, and includes Copilot Autofix at no charge, while a
+     private repository would need paid GitHub Code Security, so setup makes
+     no code-scanning call there and the line says it was skipped. It reads
      `code-scanning/default-setup` and writes
      `{"state":"configured","query_suite":"default"}` only when the state is
-     `not-configured`. The `default` suite is used, not `extended`, to keep the
-     alert noise down, and a repository already configured on either suite is
-     left as it is. A repository that runs its own CodeQL workflow (**advanced
-     setup**: a workflow named `*codeql*`, or one calling
+     `not-configured`. The `default` suite is used, not `extended`, to keep
+     the alert noise down, and a repository already configured on either
+     suite is left as it is. A repository that runs its own CodeQL workflow
+     (**advanced setup**: a workflow named `*codeql*`, or one calling
      `github/codeql-action/init` or `analyze`) is left alone and reported as
      `skipped: codeql-default-setup: advanced setup: …`. A 403 or 404 on the
-     read is reported as skipped on that repository's line and does not fail the
-     run;
+     read is reported as skipped on that repository's line and does not fail
+     the run;
    - **private vulnerability reporting** is turned on for **public**
-     repositories only (Issue #3267), behind the same visibility check as secret
-     scanning, since GitHub offers it on public repositories only. It reads
-     `private-vulnerability-reporting` and sends a bare `PUT` to it only when it
-     reads `"enabled": false`; a repository already reporting `true` is left as
-     it is, and a 404 on the read plans nothing. Any other read error, or a
-     refused write, fails that repository's line. A private or internal
-     repository is not read, and its line says
-     `private
+     repositories only (Issue #3267), behind the same visibility check as
+     secret scanning, since GitHub offers it on public repositories only. It
+     reads `private-vulnerability-reporting` and sends a bare `PUT` to it
+     only when it reads `"enabled": false`; a repository already reporting
+     `true` is left as it is, and a 404 on the read plans nothing. Any other
+     read error, or a refused write, fails that repository's line. A private
+     or internal repository is not read, and its line says `private
      vulnerability reporting: skipped — available on public repositories
      only`;
    - the default branch requires **one approving review** (Issue #2680), so
      fleet PRs wait for the `/review-fleet-prs` skill or the owner instead of
-     auto-merging unreviewed. A `pull_request` rule below one is raised in the
-     ruleset that carries it, keeping its other rules, parameters and bypass
-     actors. With no `pull_request` rule, one is added to the worker's own
-     `Vibe Coder default branch` ruleset, which is created if absent — a ruleset
-     someone else manages is never given a rule. A default branch that takes
-     direct pushes (seen in its recent history, or opted out with the
-     `direct-push` topic or the `.vibe/no-default-branch-ruleset` marker) gets
-     no `pull_request` rule, because it would refuse every push; its line
-     reports `skipped: default-branch-approval: direct-push branch (…)` for the
+     auto-merging unreviewed. A `pull_request` rule below one is raised in
+     the ruleset that carries it, keeping its other rules, parameters and
+     bypass actors. With no `pull_request` rule, one is added to the
+     worker's own `Vibe Coder default branch` ruleset, which is created if
+     absent — a ruleset someone else manages is never given a rule. A
+     default branch that takes direct pushes (seen in its recent history,
+     or opted out with the `direct-push` topic or the
+     `.vibe/no-default-branch-ruleset` marker) gets no `pull_request` rule,
+     because it would refuse every push; its line reports
+     `skipped: default-branch-approval: direct-push branch (…)` for the
      owner to decide. Milestone branches never get one;
-   - code-owner review is turned **off** in every repository ruleset that
-     requires it, found by each `pull_request` rule's `ruleset_id`, never by
-     name (Issue #2685), and never turned back on. The fleet reviewer is a
-     GitHub App, which cannot be a code owner, so its approval is the gate;
-     CODEOWNERS only routes review requests (see residual risk R14 in
-     [THREAT-MODEL.md](THREAT-MODEL.md)). An organisation ruleset that requires
-     it is reported for an owner to change;
-   - **merge commits are allowed** on the repository, so a milestone sync PR
-     lands as a real merge commit and the milestone branch reads level
-     afterwards without an admin bypass (Issue #2690). A squashed sync leaves
-     the default branch outside the milestone branch's history for ever. The
-     default branch stays **squash-only** through its ruleset's `pull_request`
-     rule (`allowed_merge_methods: ["squash"]`), written first and only into a
-     ruleset that targets the default branch alone, so ordinary PRs are
-     unchanged and milestone branches (which carry no `pull_request` rule)
-     accept the merge commit. A default branch that cannot be kept squash-only,
-     such as a direct-push branch, keeps merge commits off and its line says so;
-   - every fleet account (`fleet_pr_authors` and `service_accounts`) is set to
-     **write** on the repository, never admin or maintain (Issue #2690). Write
-     covers everything the fleet does: branches, pushes, labels, PRs and
-     milestone-branch creation. An account that is an **owner of the
-     organisation** is admin on every repository and no repository setting can
-     lower that, so setup reports it once with the setting to change
-     (Organisation → People → the account → Change role → Member) and never
-     changes organisation membership itself. An account below write is left to
-     the collaborator precheck, which prints the commands that grant it;
-   - **Copilot code review** follows the host's `copilot_code_review` (Issue
-     #2701), because each automatic review is billed to the PR author's Copilot
-     plan or the organisation. `off` removes the `copilot_code_review` rule from
-     every repository ruleset that carries it — a ruleset left with no rules is
-     deleted, one with other rules is rewritten with those rules intact — and an
-     **organisation** ruleset carrying it is reported as skipped, since a
-     repository cannot edit it. `on` makes sure a Copilot review rule applies to
-     the default branch (`review_on_push: false`,
-     `review_draft_pull_requests: false`), creating a
-     `Vibe Coder Copilot review` ruleset on `~DEFAULT_BRANCH` when none does.
-     `leave` — the default, and what an absent key means — reads and writes
-     nothing for it. Each change is named on the repository's line.
-3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the run
-   fixed are commented on and closed. The issue lane does the same for a single
-   finding someone labels `work-on`: it applies that finding's step with the
-   worker's token and closes the issue (Issue #4298).
+   - code-owner review is turned **off** in every repository ruleset
+     that requires it, found by each `pull_request` rule's `ruleset_id`,
+     never by name (Issue #2685), and never turned back on. The fleet
+     reviewer is a GitHub App, which cannot be a code owner, so its
+     approval is the gate; CODEOWNERS only routes review requests (see
+     residual risk R14 in [THREAT-MODEL.md](THREAT-MODEL.md)). An
+     organisation ruleset that requires it is reported for an owner to
+     change;
+   - **merge commits are allowed** on the repository, so a milestone sync
+     PR lands as a real merge commit and the milestone branch reads level
+     afterwards without an admin bypass (Issue #2690). A squashed sync
+     leaves the default branch outside the milestone branch's history for
+     ever. The default branch stays **squash-only** through its ruleset's
+     `pull_request` rule (`allowed_merge_methods: ["squash"]`), written
+     first and only into a ruleset that targets the default branch alone,
+     so ordinary PRs are unchanged and milestone branches (which carry no
+     `pull_request` rule) accept the merge commit. A default branch that
+     cannot be kept squash-only, such as a direct-push branch, keeps merge
+     commits off and its line says so;
+   - every fleet account (`fleet_pr_authors` and `service_accounts`) is
+     set to **write** on the repository, never admin or maintain
+     (Issue #2690). Write covers everything the fleet does: branches,
+     pushes, labels, PRs and milestone-branch creation. An account that is
+     an **owner of the organisation** is admin on every repository and no
+     repository setting can lower that, so setup reports it once with the
+     setting to change (Organisation → People → the account → Change role →
+     Member) and never changes organisation membership itself. An account
+     below write is left to the collaborator precheck, which prints the
+     commands that grant it;
+   - **Copilot code review** follows the host's `copilot_code_review`
+     (Issue #2701), because each automatic review is billed to the PR
+     author's Copilot plan or the organisation. `off` removes the
+     `copilot_code_review` rule from every repository ruleset that carries
+     it — a ruleset left with no rules is deleted, one with other rules is
+     rewritten with those rules intact — and an **organisation** ruleset
+     carrying it is reported as skipped, since a repository cannot edit it.
+     `on` makes sure a Copilot review rule applies to the default branch
+     (`review_on_push: false`, `review_draft_pull_requests: false`),
+     creating a `Vibe Coder Copilot review` ruleset on `~DEFAULT_BRANCH` when
+     none does. `leave` — the default, and what an absent key means — reads
+     and writes nothing for it. Each change is named on the repository's
+     line.
+3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
+   run fixed are commented on and closed. The issue lane does the same for a
+   single finding someone labels `work-on`: it applies that finding's step
+   with the worker's token and closes the issue (Issue #4298).
 
 What it **never** changes: it never lowers an approval count, never adds a
-`pull_request` rule to a direct-push default branch or a milestone branch, never
-removes an entry from the action allow-list, never edits an existing CODEOWNERS
-file, never buys or asks for GitHub Secret Protection or Code Security, never
-replaces a repository's own CodeQL workflow or changes the query suite of CodeQL
-already set up, and never touches Copilot code review unless
-`copilot_code_review` says `on` or `off`.
+`pull_request` rule to a direct-push default branch or a milestone branch,
+never removes an entry from the action allow-list, never edits an existing
+CODEOWNERS file, never buys or asks for GitHub Secret Protection or Code
+Security, never replaces a repository's own CodeQL workflow or changes the
+query suite of CodeQL already set up, and never touches Copilot code review unless `copilot_code_review` says `on` or `off`.
 
 Each repository prints one line, followed by a totals line:
 
@@ -472,19 +481,20 @@ owner/repo: 2 applied, 3 unchanged, 0 skipped, 0 failed; codeowners: skipped (pr
 Repo-settings hardening: 2 applied, 3 unchanged, 0 skipped, 0 failed across 1 repo(s); 0 repo(s) failed
 ```
 
-A failed step is named on its repository's line with GitHub's message. Each
-repository runs on its own, so one repository's failure never stops the next.
-The step is non-fatal: setup prints a warning and carries on, the same as the
-other repository sync phases. `setup.sh` and `setup.ps1` both call the same
-`repo-settings-harden` subcommand of the Deno setup CLI, so Windows and macOS
-behave the same.
+A failed step is named on its repository's line with GitHub's message.
+Each repository runs on its own, so one repository's failure never stops the
+next. The step is non-fatal: setup prints a warning and carries on, the same
+as the other repository sync phases.
+`setup.sh` and `setup.ps1` both call the same `repo-settings-harden`
+subcommand of the Deno setup CLI, so Windows and macOS behave the same.
 
 ## Update mode: dynamic or frozen
 
-Phase 6 (`setup update-mode`) is the one phase that decides how this host tracks
-Vibe Coder releases, so it gets its own walkthrough. What the fields mean once
-written is the [Configuration Reference](CONFIGURATION.md#-update-mode)'s job;
-this section is only what setup asks and in what order.
+Phase 6 (`setup update-mode`) is the one phase that decides how this host
+tracks Vibe Coder releases, so it gets its own walkthrough. What the fields
+mean once written is the
+[Configuration Reference](CONFIGURATION.md#-update-mode)'s job; this section is
+only what setup asks and in what order.
 
 The conversation is three questions deep, and a `dynamic` answer ends it after
 the first:
@@ -493,11 +503,10 @@ the first:
    `Update mode (dynamic/frozen)`. The accepted answers are `dynamic` and
    `frozen`; the answer **defaults to `frozen`** on a fresh host (Issue #692)
    and, on a re-run, to whatever the host already says. Blank accepts that
-   default, and anything else is refused by name
-   (`… is not an update mode.
-   Accepted values: dynamic, frozen.`) and asked
-   again. `dynamic` stays a valid typed answer — the deliberate, opt-in
-   exception for a host that should follow the tip.
+   default, and anything else is refused by name (`… is not an update mode.
+   Accepted values: dynamic, frozen.`) and asked again. `dynamic` stays a
+   valid typed answer — the deliberate, opt-in exception for a host that
+   should follow the tip.
 2. **The pinned ref** (`frozen` only) — `pinned_ref` in `.config.json`. Setup
    fetches origin first, so a tag pushed since the last launch resolves, then
    asks `Pinned ref`, offering the **latest release tag** as the default on a
@@ -506,8 +515,8 @@ the first:
    very checkout. A ref that does not resolve is rejected by name —
    `"v9.9.9" does not resolve to a commit in … — it was not saved` — and asked
    again, so nothing unusable reaches the file. A resolved ref is echoed with
-   the commit it points at. A fetch that fails is reported and the conversation
-   continues against the refs the checkout already has.
+   the commit it points at. A fetch that fails is reported and the
+   conversation continues against the refs the checkout already has.
 3. **One exact version per tool** (`frozen` only) — the three
    `pinned_tool_versions` entries, asked in this order:
    `pinned_tool_versions.claude` (`Claude CLI version`), then
@@ -518,17 +527,17 @@ the first:
    rather than assembling a set no release ever shipped. On a re-run the
    existing pin is the default instead. Where the latest release cannot be
    resolved, or carries no manifest, the defaults fall back to the versions
-   `dynamic` mode would install today and setup says so in one line — no version
-   prompt is ever left without a default. Where even that cannot be worked out —
-   no network, or the release-age quarantine has nothing eligible yet — the
-   reason is printed and the version is typed by hand.
+   `dynamic` mode would install today and setup says so in one line — no
+   version prompt is ever left without a default. Where even that cannot be
+   worked out — no network, or the release-age quarantine has nothing eligible
+   yet — the reason is printed and the version is typed by hand.
 
-The conversation prints in the same house style as the rest of setup (Issue
-#870): `ℹ` in blue explains, `✓` in green confirms an answer, `⚠` in yellow
-reports a rejected answer or a fallback taken, and a question that has a default
-shows it in brackets. A question with no default to offer renders bare — never a
-stray `[]`. Colour is emitted only to a terminal, and never when `NO_COLOR` is
-set, so a captured, unstyled run stays byte-clean.
+The conversation prints in the same house style as the rest of setup
+(Issue #870): `ℹ` in blue explains, `✓` in green confirms an answer, `⚠` in
+yellow reports a rejected answer or a fallback taken, and a question that has a
+default shows it in brackets. A question with no default to offer renders bare
+— never a stray `[]`. Colour is emitted only to a terminal, and never when
+`NO_COLOR` is set, so a captured, unstyled run stays byte-clean.
 
 ```text
 ℹ  Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;
@@ -552,32 +561,31 @@ ends mid-conversation, **fails loudly and writes nothing** — `.config.json` is
 left exactly as it was rather than half-answered.
 
 **A non-interactive run never asks.** With no terminal attached — cron, a
-LaunchAgent, CI — setup skips the conversation entirely: a host that already has
-`update_mode` keeps every value untouched, and a pre-existing `.config.json`
-with no `update_mode` is left unwritten and runs `dynamic`. Only a
-`.config.json` this run creates is pinned to the latest release —
+LaunchAgent, CI — setup skips the conversation entirely: a host that already
+has `update_mode` keeps every value untouched, and a pre-existing
+`.config.json` with no `update_mode` is left unwritten and runs `dynamic`.
+Only a `.config.json` this run creates is pinned to the latest release —
 `update_mode: "frozen"`, the release tag, and the three versions its manifest
 records — when that release resolves. When it does not, or it carries no
-manifest, the host is written with `update_mode: "dynamic"` and one warning line
-naming what could not be resolved: a ref without the versions it ships with is
-the partial pin frozen mode exists to prevent, so nothing is half-pinned behind
-an operator's back.
+manifest, the host is written with
+`update_mode: "dynamic"` and one warning line naming what could not be
+resolved: a ref without the versions it ships with is the partial pin frozen
+mode exists to prevent, so nothing is half-pinned behind an operator's back.
 
 **After setup, the pin moves by command, not by re-running setup.** A freshly
 pinned host stays on the release setup chose: later releases never move it, and
 each launch prints one `WARNING:` line naming the newer release and the command
 that installs it (`Run ./run.sh upgrade to install it.`) — on stderr as
-`[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on Windows) and in `run_core.log`.
-`run.ps1 upgrade` does not exist yet, so a Windows host moves its pin by hand.
-Running `./run.sh upgrade` rewrites `pinned_ref` and all three
-`pinned_tool_versions` to that release, and the next launch installs exactly
-them. Setup is not part of that loop — see
+`[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on Windows) and in
+`run_core.log`. `run.ps1 upgrade` does not exist yet, so a Windows host moves
+its pin by hand. Running `./run.sh upgrade`
+rewrites `pinned_ref` and all three `pinned_tool_versions` to that release, and
+the next launch installs exactly them. Setup is not part of that loop — see
 [Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
 
-**On a fresh host `dynamic` is not the default, and it is for a particular
-reader.** It stays available and supported — typed in at the first prompt — but
-a fresh host that takes the defaults ends up frozen on a tag that cannot
-afterwards be deleted or moved
+**On a fresh host `dynamic` is not the default, and it is for a particular reader.** It stays
+available and supported — typed in at the first prompt — but a fresh host that takes
+the defaults ends up frozen on a tag that cannot afterwards be deleted or moved
 ([Release integrity](RELEASE-TAGGING.md#release-integrity)). Choose `dynamic`
 when you are testing Vibe Coder itself, or running a fleet that should move
 together at every launch.
@@ -586,8 +594,8 @@ together at every launch.
 `update_mode` the config already holds, so a host that already says `frozen` is
 offered `frozen` again. With no `update_mode` key, setup offers `frozen` only
 when no `.config.json` existed before the run. A pre-existing `.config.json`
-with **no** `update_mode` key is offered `dynamic` in setup, and it still loads
-as `dynamic` — see [Configuration — Update Mode](CONFIGURATION.md#-update-mode).
+with **no** `update_mode` key is offered `dynamic` in setup, and it still
+loads as `dynamic` — see [Configuration — Update Mode](CONFIGURATION.md#-update-mode).
 
 **Blank answers keep what the host runs.** Re-running setup and pressing Enter
 through every prompt re-writes the same values on a frozen host and leaves a
@@ -607,88 +615,91 @@ downstream is the shared Deno code, so `run.ps1` honours a frozen pin through
 ## Platform differences in the automated setup
 
 The phase sequence is the same everywhere; this section is the short list of
-everywhere the platforms actually diverge. Read the shared walkthrough plus your
-platform's column and you have the whole picture — nothing below repeats what
-another document owns.
+everywhere the platforms actually diverge. Read the shared walkthrough plus
+your platform's column and you have the whole picture — nothing below repeats
+what another document owns.
 
-|                              | macOS                                        | Linux (Debian/Ubuntu)             | Windows                                         |
-| ---------------------------- | -------------------------------------------- | --------------------------------- | ----------------------------------------------- |
-| Entry point                  | `./setup.sh` (bash)                          | `./setup.sh` (bash)               | `.\setup.ps1` (PowerShell)                      |
-| Unattended consent           | `./setup.sh --auto-install`                  | `./setup.sh --auto-install`       | `.\setup.ps1 -AutoInstall`                      |
-| Install offers use           | Homebrew (`brew install …`)                  | apt (`sudo apt-get install -y …`) | `winget install --exact --id … --source winget` |
-| Container runtime            | Apple `container`, installed **and** started | Docker, then Podman               | Docker Desktop, then Podman                     |
-| Credential/config protection | `chmod` 0700 / 0600                          | `chmod` 0700 / 0600               | Inheritance-stripped ACL, current identity only |
-| Background-service offer     | LaunchAgent prompt                           | None at setup time                | Scheduled-task prompt                           |
-| Update-mode prompts          | `setup update-mode`                          | `setup update-mode`               | `setup update-mode`                             |
-| Home directory               | `$HOME`                                      | `$HOME`                           | `%USERPROFILE%` (then `HOME`)                   |
+| | macOS | Linux (Debian/Ubuntu) | Windows |
+|---|---|---|---|
+| Entry point | `./setup.sh` (bash) | `./setup.sh` (bash) | `.\setup.ps1` (PowerShell) |
+| Unattended consent | `./setup.sh --auto-install` | `./setup.sh --auto-install` | `.\setup.ps1 -AutoInstall` |
+| Install offers use | Homebrew (`brew install …`) | apt (`sudo apt-get install -y …`) | `winget install --exact --id … --source winget` |
+| Container runtime | Apple `container`, installed **and** started | Docker, then Podman | Docker Desktop, then Podman |
+| Credential/config protection | `chmod` 0700 / 0600 | `chmod` 0700 / 0600 | Inheritance-stripped ACL, current identity only |
+| Background-service offer | LaunchAgent prompt | None at setup time | Scheduled-task prompt |
+| Update-mode prompts | `setup update-mode` | `setup update-mode` | `setup update-mode` |
+| Home directory | `$HOME` | `$HOME` | `%USERPROFILE%` (then `HOME`) |
 
 **Entry point and invocation.** macOS and Linux run `./setup.sh` under bash;
 Windows runs `setup.ps1` under PowerShell. The unattended-consent switch —
-`./setup.sh --auto-install`, `.\setup.ps1 -AutoInstall` — consents in advance to
-every install the run would otherwise offer interactively. It is deliberately a
-flag typed on that one invocation, never an environment variable, so consent
-cannot leak into later runs.
+`./setup.sh --auto-install`, `.\setup.ps1 -AutoInstall` — consents in advance
+to every install the run would otherwise offer interactively. It is
+deliberately a flag typed on that one invocation, never an environment
+variable, so consent cannot leak into later runs.
 
 **What an install offer can resolve to.** When the prerequisites probe finds a
 tool missing, the offer resolves to a package-manager command from a fixed
-per-platform table (`worker/deno/setup/prerequisite_install_plan.ts`): Homebrew
-on macOS, apt on Debian/Ubuntu (these steps may prompt for `sudo`), and
-`winget --source winget` on Windows (winget elevates through UAC itself). The
-table has holes you close by hand:
+per-platform table (`worker/deno/setup/prerequisite_install_plan.ts`):
+Homebrew on macOS, apt on Debian/Ubuntu (these steps may prompt for `sudo`),
+and `winget --source winget` on Windows (winget elevates through UAC itself).
+The table has holes you close by hand:
 
-- **No package manager, no plan.** On a macOS host without Homebrew, or a Linux
-  host without apt, every offer is withheld and the report falls back to a
-  manual install hint — the script never runs a remote install script for you.
+- **No package manager, no plan.** On a macOS host without Homebrew, or a
+  Linux host without apt, every offer is withheld and the report falls back
+  to a manual install hint — the script never runs a remote install script
+  for you.
 - **No `deno` package exists for Debian/Ubuntu**, so Deno is never offered
   there; you install it yourself.
 - **`git` has no install plan on macOS or Linux** (it arrives with the Xcode
   command line tools, or is already present as a bootstrap dependency); only
   Windows can have it installed for you (winget `Git.Git`).
 
-**Container runtime.** macOS accepts only Apple `container` — Docker Desktop is
-not the containment boundary there — and its install offer both installs the
-Homebrew formula and starts the service, because the probe checks the running
-service rather than the binary's presence. Linux and Windows probe Docker first,
-then Podman. What the runtime runs and how the image is built is
+**Container runtime.** macOS accepts only Apple `container` — Docker Desktop
+is not the containment boundary there — and its install offer both installs
+the Homebrew formula and starts the service, because the probe checks the
+running service rather than the binary's presence. Linux and Windows probe
+Docker first, then Podman. What the runtime runs and how the image is built is
 [CONTAINER.md](CONTAINER.md); why containment is mandatory is
 [CONTAINMENT.md](CONTAINMENT.md).
 
 **File permissions on credential and config files.** On macOS and Linux the
-credential directories are `chmod` 0700 and the files within 0600 — and they are
-_created_ owner-only, under a `umask 077`, rather than created under the host's
-ambient umask and narrowed afterwards, so no window exists in which a
+credential directories are `chmod` 0700 and the files within 0600 — and they
+are *created* owner-only, under a `umask 077`, rather than created under the
+host's ambient umask and narrowed afterwards, so no window exists in which a
 co-resident local account can enumerate them (Issue #1374). `setup.ps1` creates
-its credential _directories_ the same way on a POSIX host —
+its credential *directories* the same way on a POSIX host —
 `New-VibeCredentialDirectory` runs one `mkdir -p` under `umask 077`, exactly as
 `setup.sh` does — and narrows the files within to 0600 immediately afterwards,
 which is safe because the directory holding them is already owner-only. On
 Windows the same protection is an ACL: each missing directory is created
 carrying an explicit, de-inherited ACL granting the current identity alone, and
 `Protect-VibePath` (`setup.ps1`) re-applies it to a directory that already
-existed, so a profile that gives _Users_ read access cannot leak a credential.
-Windows also writes every credential and config file LF-terminated and without a
-byte-order mark (`Write-VibeTextFile`), because the container reads them on
-Linux — hand-edit these files on Windows with the same discipline.
+existed, so a profile that gives *Users* read access cannot leak a
+credential. Windows also writes every credential and config file LF-terminated
+and without a byte-order mark (`Write-VibeTextFile`), because the container
+reads them on Linux — hand-edit these files on Windows with the same
+discipline.
 
 **Background-service offer.** A terminal-attached run ends with a
-platform-specific offer: macOS offers to install the LaunchAgent (launchd starts
-the worker every five minutes), Windows offers to register the scheduled task
-(Task Scheduler, every five minutes and at logon). Linux gets no offer at setup
-time — the operator wires cron or systemd from [DEPLOYMENT.md](DEPLOYMENT.md),
-which owns background-service configuration on every platform.
+platform-specific offer: macOS offers to install the LaunchAgent (launchd
+starts the worker every five minutes), Windows offers to register the
+scheduled task (Task Scheduler, every five minutes and at logon). Linux gets
+no offer at setup time — the operator wires cron or systemd from
+[DEPLOYMENT.md](DEPLOYMENT.md), which owns background-service configuration on
+every platform.
 
 **Where paths differ.** The credential directory defaults to
-`~/.vibe-coder/credentials` on every platform. On Windows, `~` means the profile
-directory: `setup.ps1` resolves the home directory as `USERPROFILE`, falling
-back to `HOME` (`Get-VibeHomeDirectory`), so the default lands at
+`~/.vibe-coder/credentials` on every platform. On Windows, `~` means the
+profile directory: `setup.ps1` resolves the home directory as `USERPROFILE`,
+falling back to `HOME` (`Get-VibeHomeDirectory`), so the default lands at
 `%USERPROFILE%\.vibe-coder\credentials`, and the same resolution expands a
 leading `~` in the paths setup handles.
 
 ## Manual setup: prerequisites
 
 This section brings a bare host to a passing prerequisites probe entirely by
-hand — no `setup.sh`, no `setup.ps1`. The end state is exactly what the scripted
-probe demands, so once the probe passes you continue with the
+hand — no `setup.sh`, no `setup.ps1`. The end state is exactly what the
+scripted probe demands, so once the probe passes you continue with the
 [credentials](#manual-setup-credentials) and
 [`.config.json`](#manual-setup-writing-configjson) sections.
 
@@ -702,37 +713,38 @@ same set, stated as the state your host must reach:
 
 - [ ] **`git`** installed — host-fatal.
 - [ ] **`gh`** installed **and authenticated** (`gh auth status` passes) —
-      host-fatal.
+  host-fatal.
 - [ ] **`deno`** installed — host-fatal.
-- [ ] **`claude`** (the Claude Code CLI) installed — host-fatal **on a host that
-      runs Claude**, even though the worker runs the coding agent inside the
-      container: setup mints and validates the worker's OAuth token with
-      `claude setup-token`, so the host needs the CLI too. A host whose
-      `agent_provider` / `agent_providers` selects other vendors is not asked
-      for it at all (Issue #730) — the probe reports
-      `claude CLI not required — this host is configured for codex` and moves
-      on. On the **very first** run there is no `.config.json` to read yet, so
-      the probe falls back to the default provider (Claude). Say which agent
-      that host runs on the command line instead —
-      `VIBE_AGENT_PROVIDER=codex ./setup.sh` — and the same gate applies from
-      the first probe.
-- [ ] **A container runtime** installed _and answering its probe_ — host-fatal.
-      The **worker image** must be present or buildable from the committed
-      definition; a missing image is fine (the launcher builds it on first run),
-      a missing `container/` definition is not. The image itself is the
-      [Container Image guide](CONTAINER.md)'s subject.
-- [ ] **A configured `container_extension`** — host-fatal, and only checked on a
-      deployment that declares one (Issue #982). The probe reports the
-      configured path, that the definition is readable, and the layered image
-      tag; a directory that is not there fails with the same text the launcher
-      prints, because every launch would abort on it. See
-      [Image identity](CONTAINER.md#image-identity--the-tag-is-the-definitions-hash).
-- [ ] **`jq`** and **`timeout`** — informational only. The [image](CONTAINER.md)
-      provides both to the worker, so a host without them still passes.
+- [ ] **`claude`** (the Claude Code CLI) installed — host-fatal **on a host
+  that runs Claude**, even though the worker runs the coding agent inside the
+  container: setup mints and validates the worker's OAuth token with
+  `claude setup-token`, so the host needs the CLI too. A host whose
+  `agent_provider` / `agent_providers` selects other vendors is not asked for
+  it at all (Issue #730) — the probe reports
+  `claude CLI not required — this host is configured for codex` and moves on.
+  On the **very first** run there is no `.config.json` to read yet, so the
+  probe falls back to the default provider (Claude). Say which agent that host
+  runs on the command line instead — `VIBE_AGENT_PROVIDER=codex ./setup.sh` —
+  and the same gate applies from the first probe.
+- [ ] **A container runtime** installed *and answering its probe* —
+  host-fatal. The **worker image** must be present or buildable from the
+  committed definition; a missing image is fine (the launcher builds it on
+  first run), a missing `container/` definition is not. The image itself is
+  the [Container Image guide](CONTAINER.md)'s subject.
+- [ ] **A configured `container_extension`** — host-fatal, and only checked on
+  a deployment that declares one (Issue #982). The probe reports the
+  configured path, that the definition is readable, and the layered image tag;
+  a directory that is not there fails with the same text the launcher prints,
+  because every launch would abort on it. See
+  [Image identity](CONTAINER.md#image-identity--the-tag-is-the-definitions-hash).
+- [ ] **`jq`** and **`timeout`** — informational only. The
+  [image](CONTAINER.md) provides both to the worker, so a host without them
+  still passes.
 
 The three recipes below install the whole list, `claude` included. Skip the
 `claude` step on a host whose configured providers do not include Claude — the
-probe does not ask for it there (Issue #730), and nothing else in setup uses it.
+probe does not ask for it there (Issue #730), and nothing else in setup uses
+it.
 
 ### macOS
 
@@ -827,9 +839,9 @@ winget install --exact --id Docker.DockerDesktop --source winget
 winget install --exact --id jqlang.jq --source winget
 ```
 
-An installed runtime must also be _answering_: start Docker Desktop (it is a GUI
-application) or initialise the Podman machine before probing. `timeout` has no
-Windows package at all — it stays informational there, as the
+An installed runtime must also be *answering*: start Docker Desktop (it is a
+GUI application) or initialise the Podman machine before probing. `timeout`
+has no Windows package at all — it stays informational there, as the
 [Windows table](DEPLOYMENT.md#the-windows-table) explains.
 
 ### Clone the repository — a dedicated one
@@ -838,23 +850,24 @@ Windows package at all — it stays informational there, as the
 gh repo clone <your-org>/VibeCoder
 ```
 
-The clone the worker runs from is an appliance checkout: the worker hard-resets
-and cleans it on every cycle, so never point it at a clone you also develop in.
-The [Deployment Guide](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)
+The clone the worker runs from is an appliance checkout: the worker
+hard-resets and cleans it on every cycle, so never point it at a clone you
+also develop in. The
+[Deployment Guide](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)
 explains the failure modes in both directions.
 
 ### Verify — run the probe on its own
 
-The probe runs standalone, so you can confirm the host is ready before writing
-any credential or configuration:
+The probe runs standalone, so you can confirm the host is ready before
+writing any credential or configuration:
 
 ```bash
 cd worker/deno
 deno task setup prerequisites
 ```
 
-On an interactive terminal a failing probe offers to install what it can — that
-is the [automated path's installer](DEPLOYMENT.md#interactive-install-offer);
+On an interactive terminal a failing probe offers to install what it can —
+that is the [automated path's installer](DEPLOYMENT.md#interactive-install-offer);
 decline the offers to stay manual. A pass prints one `✓` line per check
 (informational gaps print as `ℹ`), ends with the headline, and exits `0`:
 
@@ -883,30 +896,30 @@ headline, and exits `1`:
 ℹ  VIBE_SKIP_PREREQ_CHECK=true skips the whole probe (CI only — it hides real gaps).
 ```
 
-The claude CLI appears in that sentence only when Claude is among the configured
-providers; a Codex-only host is told what _it_ needs, and never
+The claude CLI appears in that sentence only when Claude is among the
+configured providers; a Codex-only host is told what *it* needs, and never
 `VIBE_SKIP_PREREQ_CHECK` as a workaround for a provider it does not run.
 
 Out of scope here: credentials beyond `gh auth login`
 ([next section](#manual-setup-credentials)), `.config.json`
-([its own section](#manual-setup-writing-configjson)), and background services
-([Deployment Guide](DEPLOYMENT.md)).
+([its own section](#manual-setup-writing-configjson)), and background
+services ([Deployment Guide](DEPLOYMENT.md)).
 
 ## Manual setup: credentials
 
-The worker authenticates from files, never from a login. This section builds by
-hand exactly what the scripted route's credential provisioning would have
-written: one dedicated directory, read by the worker and mounted read-only into
-the container. The authoritative layout, and the `VIBE_LAUNCHAGENT_*`
+The worker authenticates from files, never from a login. This section builds
+by hand exactly what the scripted route's credential provisioning would have
+written: one dedicated directory, read by the worker and mounted read-only
+into the container. The authoritative layout, and the `VIBE_LAUNCHAGENT_*`
 environment variables that provision it automatically instead, are in
 [Deployment — Credential Provisioning](DEPLOYMENT.md#-credential-provisioning-non-interactive);
-those variables are the scripted route, and everything below is the by-hand one.
-Pointing `gh_config_dir` at the result is part of
+those variables are the scripted route, and everything below is the by-hand
+one. Pointing `gh_config_dir` at the result is part of
 [writing `.config.json`](#manual-setup-writing-configjson), the next section.
 
 The invariant a manual setup must respect: **no runtime step may reach an
-interactive credential mechanism** — no browser login, no `gh auth login` on the
-run path, no macOS Keychain lookup. The credential is a file the operator
+interactive credential mechanism** — no browser login, no `gh auth login` on
+the run path, no macOS Keychain lookup. The credential is a file the operator
 writes, not a login the worker performs.
 
 ### The layout to reproduce
@@ -931,14 +944,14 @@ sub-directory when you stop enabling it.
 
 Write the token inline — never a keychain reference, because the container
 cannot reach a host credential store. On macOS in particular, a `hosts.yml`
-taken from an ordinary `gh auth login` may contain no token at all (gh keeps it
-in the Keychain); such a file fails the preflight even though `gh` works fine on
-the host.
+taken from an ordinary `gh auth login` may contain no token at all (gh keeps
+it in the Keychain); such a file fails the preflight even though `gh` works
+fine on the host.
 
 ```yaml
 github.com:
-  oauth_token: ghp_your_token
-  git_protocol: ssh
+    oauth_token: ghp_your_token
+    git_protocol: ssh
 ```
 
 The preflight accepts any `oauth_token:` (or `token:`) line with a non-blank
@@ -946,9 +959,9 @@ value; a blank or empty-quoted value counts as no token.
 
 ### `<provider>/provider.env`
 
-A single `NAME=value` line per file, using a variable name that vendor accepts.
-`#` comment lines and an `export` prefix are tolerated, and quotes around the
-value are stripped, but one plain line is the canonical form:
+A single `NAME=value` line per file, using a variable name that vendor
+accepts. `#` comment lines and an `export ` prefix are tolerated, and quotes
+around the value are stripped, but one plain line is the canonical form:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-your_key
@@ -956,74 +969,74 @@ ANTHROPIC_API_KEY=sk-ant-your_key
 
 The file is **data, never a shell script**. Every reader — `setup.sh`,
 `setup.ps1` and the worker's credential preflight — splits each line on the
-first `=` and takes the remainder verbatim, so a value holding a space, a `;`, a
-`#` or `$(...)` is stored and read as those characters rather than executed
+first `=` and takes the remainder verbatim, so a value holding a space, a `;`,
+a `#` or `$(...)` is stored and read as those characters rather than executed
 (Issue #1301). One consequence: the whole value must fit on one line, so
 `setup.sh` and `setup.ps1` both refuse to write a credential containing a line
 break instead of storing a truncated token behind a success message — a
 credential pasted with a trailing CR or LF is reported and nothing is written.
 
-| Vendor                            | File                    | Accepted variable names                                                |
-| --------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
-| Claude Code                       | `claude/provider.env`   | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
-| Codex CLI                         | `codex/provider.env`    | `OPENAI_API_KEY`, `CODEX_API_KEY`                                      |
-| Gemini CLI                        | `gemini/provider.env`   | `GEMINI_API_KEY`, `GOOGLE_API_KEY`                                     |
-| DeepSeek (on the Claude Code CLI) | `deepseek/provider.env` | `DEEPSEEK_API_KEY`                                                     |
+| Vendor | File | Accepted variable names |
+|--------|------|-------------------------|
+| Claude Code | `claude/provider.env` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
+| Codex CLI | `codex/provider.env` | `OPENAI_API_KEY`, `CODEX_API_KEY` |
+| Gemini CLI | `gemini/provider.env` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| DeepSeek (on the Claude Code CLI) | `deepseek/provider.env` | `DEEPSEEK_API_KEY` |
 
 DeepSeek has no interactive login, so its file is the only way to authenticate
 it: `setup.sh` writes it from `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY` (or a plain
 `DEEPSEEK_API_KEY` in the environment), using a key issued at
-<https://platform.deepseek.com/api_keys>. The binary it runs is Anthropic's, but
-the credential is DeepSeek's — an `ANTHROPIC_API_KEY` in `deepseek/provider.env`
-is not accepted, and Anthropic's credentials are withheld from the DeepSeek
-subprocess.
+<https://platform.deepseek.com/api_keys>. The binary it runs is Anthropic's,
+but the credential is DeepSeek's — an `ANTHROPIC_API_KEY` in
+`deepseek/provider.env` is not accepted, and Anthropic's credentials are
+withheld from the DeepSeek subprocess.
 
 Any of the listed names works; the first is the one `setup.sh` writes. This
-table mirrors `vibe_provider_credential_table` in `setup.sh` and the descriptors
-in `worker/deno/lib/agent_provider.ts`, which remain the source of truth — a
-quality-gate test fails when they drift.
+table mirrors `vibe_provider_credential_table` in `setup.sh` and the
+descriptors in `worker/deno/lib/agent_provider.ts`, which remain the source of
+truth — a quality-gate test fails when they drift.
 
-One file per vendor is the rule, and Claude is its one exception: a host holding
-more than one Claude **subscription** may add `claude/provider-2.env`,
-`provider-3.env` and so on, of which each run uses exactly one
-([Several Claude tokens](#several-claude-tokens) below). Every other vendor
-takes exactly the one file its row names.
+One file per vendor is the rule, and Claude is its one exception: a host
+holding more than one Claude **subscription** may add
+`claude/provider-2.env`, `provider-3.env` and so on, of which each run uses
+exactly one ([Several Claude tokens](#several-claude-tokens) below). Every
+other vendor takes exactly the one file its row names.
 
 #### Several Claude tokens
 
 > **Advanced, and optional.** Everything above is complete on its own. A host
-> with one Claude credential needs nothing from this section: it makes no extra
-> request, writes no extra log line, and behaves exactly as it did before the
-> option existed.
+> with one Claude credential needs nothing from this section: it makes no
+> extra request, writes no extra log line, and behaves exactly as it did
+> before the option existed.
 
-An operator holding more than one Claude subscription may add extra token files
-beside `claude/provider.env`, named `provider-2.env`, `provider-3.env` and so
-on, each holding a `CLAUDE_CODE_OAUTH_TOKEN`. They are ordinary credential
-files: the same `600` permissions, the same read-only mount, and every one of
-them is permission-checked by the preflight. The worker exports exactly **one**
-of them into a run, so an unused subscription's token never reaches the coding
-agent's environment. No other vendor takes extra files, and a metered
-`ANTHROPIC_API_KEY` is not one of these: a host with one credential — key or
-token — behaves exactly as it always has.
+An operator holding more than one Claude subscription may add extra token
+files beside `claude/provider.env`, named `provider-2.env`, `provider-3.env`
+and so on, each holding a `CLAUDE_CODE_OAUTH_TOKEN`. They are ordinary
+credential files: the same `600` permissions, the same read-only mount, and
+every one of them is permission-checked by the preflight. The worker exports
+exactly **one** of them into a run, so an unused subscription's token never
+reaches the coding agent's environment. No other vendor takes extra files, and
+a metered `ANTHROPIC_API_KEY` is not one of these: a host with one credential —
+key or token — behaves exactly as it always has.
 
 What that guarantee does and does not cover: the coding agent's environment
-carries the selected token and no other, and a suffixed or indexed variant of an
-accepted variable name (`CLAUDE_CODE_OAUTH_TOKEN_2`) is refused rather than
-inherited. It is an **environment** guarantee. The whole `claude/` sub-directory
-is mounted read-only into the container, so a process with filesystem read
-access inside the container can read every token file there, selected or not —
-recorded as residual risk R9 in
-[the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks), where it is an
-open gap: the container's outbound network is not restricted, so a token read
-there can leave the container until egress is default-deny (#3698). Add a second
+carries the selected token and no other, and a suffixed or indexed variant of
+an accepted variable name (`CLAUDE_CODE_OAUTH_TOKEN_2`) is refused rather than
+inherited. It is an **environment** guarantee. The whole `claude/`
+sub-directory is mounted read-only into the container, so a process with
+filesystem read access inside the container can read every token file there,
+selected or not — recorded as residual risk R9 in
+[the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks), where it is an open
+gap: the container's outbound network is not restricted, so a token read there
+can leave the container until egress is default-deny (#3698). Add a second
 subscription knowing that every token file in `claude/` carries that exposure,
 whatever the environment policy selected.
 
 **Writing the files is your own step.** `setup.sh` provisions
 `claude/provider.env` and nothing else: there is no `VIBE_LAUNCHAGENT_*`
-variable for a second token, no launcher change and no crontab change. The extra
-files are an operator's edit on the host, made with the permissions the primary
-file already carries:
+variable for a second token, no launcher change and no crontab change. The
+extra files are an operator's edit on the host, made with the permissions the
+primary file already carries:
 
 ```bash
 umask 077
@@ -1036,20 +1049,20 @@ Three rules the file has to satisfy:
 
 - **The name is `provider-<number>.env`.** `provider-2.env`, `provider-3.env`,
   `provider-10.env`. The number orders them — numerically, so `provider-10.env`
-  comes after `provider-2.env` rather than before it — and gaps in the numbering
-  are harmless. A name outside that pattern (`provider-backup.env`,
+  comes after `provider-2.env` rather than before it — and gaps in the
+  numbering are harmless. A name outside that pattern (`provider-backup.env`,
   `provider.env.old`) is not a token file at all: it is never read, never
   selected, and never reported, so a token parked under such a name is simply
   invisible to the worker.
-- **The variable is `CLAUDE_CODE_OAUTH_TOKEN`.** Only a subscription token has a
-  budget to compare. A numbered file holding `ANTHROPIC_API_KEY` or
+- **The variable is `CLAUDE_CODE_OAUTH_TOKEN`.** Only a subscription token has
+  a budget to compare. A numbered file holding `ANTHROPIC_API_KEY` or
   `ANTHROPIC_AUTH_TOKEN` is still read and still permission-checked, but it
   joins no pool and is never weighed against a subscription — a metered key is
   priced, not rationed, so it stays on the single-credential path it has always
   taken.
-- **The mode is `600`, inside the `700` directory.** Every discovered token file
-  is permission-checked, not only the primary one, so a `provider-2.env` left
-  group-readable fails the startup preflight with
+- **The mode is `600`, inside the `700` directory.** Every discovered token
+  file is permission-checked, not only the primary one, so a `provider-2.env`
+  left group-readable fails the startup preflight with
   `credential-permissions-too-open` naming that file and the `chmod` to run.
 
 #### Which Claude token a run uses
@@ -1061,28 +1074,29 @@ snapshot per token, re-measures only a snapshot older than **ten minutes**
 (`CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS`), and answers a later question with the
 same gate, the same ranking and the same shape of log line as the start. So a
 re-pick mid-run is one call rather than a second startup, and when it happens
-the run's single Claude token variable is _replaced_ — nothing else is exported,
-so the environment still carries exactly one subscription's credential.
+the run's single Claude token variable is *replaced* — nothing else is
+exported, so the environment still carries exactly one subscription's
+credential.
 
 Two consequences worth knowing. A switch changes the environment the host
 shares, so it affects agents spawned **after** it; an agent already running
 keeps the environment it was given. And the pool answers `null` rather than
 naming a token when nothing passes the gate below — a switch to a token that
-would stall on its first call is worse than staying put. A _start_ never
+would stall on its first call is worse than staying put. A *start* never
 refuses: with every token low the run still begins, on the one whose five-hour
 window refills first.
 
 **Claude is drained before any fallback provider** (Issue #2637). When the
-cycle-start health check reports the held token usage-limited, the health gate
-asks the pool for another token that still has budget on **both** its five-hour
-window and its weekly limit, and switches the run to it; the
-`agent_provider_fallback` alternatives are probed only once every token in the
-pool is exhausted. A token is exhausted while one of its windows reads zero and
-has not yet reset; a token whose budget could not be measured is not switched
-to, so a failed probe cannot bounce the run between two spent subscriptions.
-While a fallback stands in, the gate re-checks the pool at most once every ten
-minutes and switches back as soon as one token's window has reopened. The log
-names each step:
+cycle-start health check reports the held token usage-limited, the health
+gate asks the pool for another token that still has budget on **both** its
+five-hour window and its weekly limit, and switches the run to it; the
+`agent_provider_fallback` alternatives are probed only once every token in
+the pool is exhausted. A token is exhausted while one of its windows reads
+zero and has not yet reset; a token whose budget could not be measured is
+not switched to, so a failed probe cannot bounce the run between two spent
+subscriptions. While a fallback stands in, the gate re-checks the pool at
+most once every ten minutes and switches back as soon as one token's window
+has reopened. The log names each step:
 
 ```text
 [provider-fallback] the held credential is exhausted but provider-3 still has budget — rotating to it rather than switching provider (Issue #2637)
@@ -1090,8 +1104,8 @@ names each step:
 [provider-fallback] claude/provider has budget again — switching back from the fallback provider (Issue #2637)
 ```
 
-The weekly pace projection below never takes part in this: an engaged pace gate
-drops the backlog tiers and switches nothing.
+The weekly pace projection below never takes part in this: an engaged pace
+gate drops the backlog tiers and switches nothing.
 
 With **fewer than two** subscription tokens there is nothing to choose between,
 so nothing is done — no request, no delay, no log line, and the same token file
@@ -1102,84 +1116,79 @@ With two or more, worker start measures each of them. One request per token,
 issued concurrently and each bounded by a ten-second timeout, goes to
 Anthropic's `POST /v1/messages` asking for `max_tokens: 0` — the cheapest valid
 request there is, because the figures the worker needs come back in the
-response's `anthropic-ratelimit-unified-*` headers and a _rejected_ request
+response's `anthropic-ratelimit-unified-*` headers and a *rejected* request
 carries none of them. Each probe bills the handful of input tokens in a
 one-character prompt and generates nothing.
 
-Anthropic reports two windows, a five-hour and a seven-day one, and names one of
-them representative. The worker uses **both**, and not as one combined score:
-the five-hour window is a _gate_, and the seven-day window sets the _order_. The
-rule is **the most weekly quota left wins** (Issue
-[#4504](https://github.com/stSoftwareAU/VibeCoder/issues/4504)): a token holding
-90% of its week that resets in six days is used before one holding 20% that
-resets in six hours. This replaced Issue #1623's remaining-budget-per-hour rule,
-under which the 20% token won.
+Anthropic reports two windows, a five-hour and a seven-day one, and names one
+of them representative. The worker uses **both**: the five-hour window is a
+*gate*, and among passing credentials with weekly telemetry, the largest
+remaining seven-day share wins. A token holding 90% of its week is chosen
+before one holding 20%, even when the latter resets sooner. A weekly window at
+zero with a future reset is exhausted; this exhaustion check is separate from
+the removed 10% low-share band.
 
 The candidates are ordered:
 
 1. **A measured budget beats an unmeasured one.** A token whose probe failed
    ranks behind every token whose probe answered.
 2. **The five-hour gate.** A token that has used **less than 80%** of its
-   five-hour window passes, and every passing token ranks ahead of every failing
-   one; at exactly 80% used — 20% left — it fails. A token that has burned its
-   five hours cannot spend whatever its week still holds, so no weekly share it
-   reports is worth acting on. The threshold is a fixed constant in the worker,
-   not a setting: it describes how Anthropic's windows behave, not how one host
-   is configured. It is stated **once**, as
+   five-hour window passes, and every passing token ranks ahead of every
+   failing one; at exactly 80% used — 20% left — it fails. A token that has
+   burned its five hours cannot spend whatever its week still holds, so no rate
+   it scores is worth acting on. The threshold is a fixed constant in the
+   worker, not a setting: it describes how Anthropic's windows behave, not how
+   one host is configured. It is stated **once**, as
    `CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2` in `claude_token_selection.ts`;
    `CLAUDE_FIVE_HOUR_GATE_MAX_USED` is its exact complement and
    `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "is another subscription
-   worth restarting for?" — is the same constant read against the same five-hour
-   window, because _worth restarting for_ and _worth switching to_ are one
-   question. A response that reported **no** five-hour window has no gate to
-   fail, so it passes.
-3. **Weekly telemetry has precedence** (Issue #4503): among non-exhausted
-   passing tokens, one that reported its seven-day window ranks ahead of one
-   without. Within each group, the largest remaining share wins; a response
-   without a seven-day window uses the remaining share of the window it did
-   report, rather than being dropped. A window whose reset instant has already
-   passed counts as **full** (100% left): the figure describes the window that
-   was current when it was measured, and once that instant is behind us the
-   window has rolled over. A weekly window at **0% with its reset still ahead is
-   exhausted**. It ranks after every other five-hour-passing token, including
-   the weekless fallback, but still ahead of five-hour gate failures. This is a
-   separate exhaustion check, not the removed 10% low-remaining band; a reset
-   window counts as full.
-4. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
+   worth restarting for?" — is the same constant read against the same
+   five-hour window, because *worth restarting for* and *worth switching to*
+   are one question. A response that reported
+   **no** five-hour window has no gate to fail, so it passes.
+3. **Weekly telemetry takes precedence** over a reported non-weekly fallback
+   window among passing credentials (Issue #4503). Credentials with weekly
+   telemetry rank by largest remaining share; equal shares use the soonest
+   weekly reset, then discovery order. A weekly window whose reset has elapsed
+   counts as full. A reported non-weekly window remains a fallback and ranks
+   only against other credentials without weekly telemetry.
+4. **No Claude 10% low-share band.** Remaining shares are compared directly;
+   the former per-hour score and 10% floor do not apply to Claude. A week at
+   zero with a future reset is still exhausted and ranks behind usable passing
+   credentials.
+5. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
    so when nothing can be spent now the token that refills first is the one
    chosen.
-5. **A remaining tie goes to the soonest seven-day reset, then to discovery
-   order** — `provider.env` first, then the numbered files in ascending numeric
-   order.
+6. **A remaining tie goes to the soonest reset, then to discovery order** —
+   `provider.env` first, then the numbered files in ascending numeric order.
 
-A probe can fail in ordinary ways: the host cannot reach the endpoint, the token
-has been revoked (`http-401`), the probe is itself throttled (`http-429`), or
-the response carries no rate-limit headers (`unrecognised-response-shape`). That
-token's budget is _unknown_. It ranks last, but it is never dropped and it never
-blocks a start — a probe failure must not make a configured subscription
-disappear. When **every** budget is unknown, discovery order decides and the run
-starts on `provider.env`, which is exactly what a host with no network path to
-the endpoint does today.
+A probe can fail in ordinary ways: the host cannot reach the endpoint, the
+token has been revoked (`http-401`), the probe is itself throttled
+(`http-429`), or the response carries no rate-limit headers
+(`unrecognised-response-shape`). That token's budget is *unknown*. It ranks
+last, but it is never dropped and it never blocks a start — a probe failure
+must not make a configured subscription disappear. When **every** budget is
+unknown, discovery order decides and the run starts on `provider.env`, which is
+exactly what a host with no network path to the endpoint does today.
 
 One exception to "unknown ranks last" (Issue #2002). A usage-limit signal left
-by the previous run — the health check or the runner met
-`You've hit your
-weekly limit` — names the **provider and the credential file**
-that ran out (`.rate_limit_signal` carries `provider: "claude"` and
+by the previous run — the health check or the runner met `You've hit your
+weekly limit` — names the **provider and the credential file** that ran out
+(`.rate_limit_signal` carries `provider: "claude"` and
 `credentialLabel: "provider-2"`, never a token value). The next start reads it
 before ranking and records that token as spent until the signal's reset, so it
 is **left out of the start-up ranking while another candidate exists** — even
-when every probe fails. Without that, a recorded exhaustion is a _measured_
-budget and would rank ahead of the unmeasured fresh tokens, which is how a start
-once re-exported a weekly-spent subscription and re-armed an 80-hour pause. The
-exclusion is logged:
+when every probe fails. Without that, a recorded exhaustion is a *measured*
+budget and would rank ahead of the unmeasured fresh tokens, which is how a
+start once re-exported a weekly-spent subscription and re-armed an 80-hour
+pause. The exclusion is logged:
 
 ```text
 [SECURITY] claude token pool: the active usage-limit signal names provider as the spent subscription — recording it before the start-up ranking
 [SECURITY] claude token pool: provider is recorded as spent until 2026-09-15T01:00:00.000Z — left out of the start-up ranking
 ```
 
-The same label scopes the pause. A run that holds a _different_ credential of
+The same label scopes the pause. A run that holds a *different* credential of
 the same provider than the one the signal names — a restart that picked a fresh
 subscription — is **not** paused by that signal; the GitHub pre-flight ignores
 usage signals altogether (they are not a GitHub quota fact), and the work loop
@@ -1190,20 +1199,20 @@ says once why it is not pausing:
 ```
 
 A signal written by an older worker carries no label. On a host with **one**
-subscription it keeps pausing the whole host, exactly as before — it can only be
-about that token. On a pool of **two or more** it cannot say which token ran
-out, and honouring it host-wide while the launcher restarts for the token that
-has budget is a loop with no exit (Issue #2024), so the next start **retires**
-it and lets the cycle-start health check re-probe the token the run actually
-holds — which, if spent, writes a labelled signal:
+subscription it keeps pausing the whole host, exactly as before — it can only
+be about that token. On a pool of **two or more** it cannot say which token
+ran out, and honouring it host-wide while the launcher restarts for the token
+that has budget is a loop with no exit (Issue #2024), so the next start
+**retires** it and lets the cycle-start health check re-probe the token the
+run actually holds — which, if spent, writes a labelled signal:
 
 ```text
 [SECURITY] claude token pool: the active usage-limit signal names no credential (written before Issue #2002) — with 3 subscriptions in the pool it cannot say which one ran out, so it is retired and the start-up health check re-probes the selected one (Issue #2024)
 ```
 
-Whenever the work loop _does_ honour a usage pause it says, once, which
-credential the signal names, which one the run holds and why that pauses — so
-the selection line and the pause line read together:
+Whenever the work loop *does* honour a usage pause it says, once, which
+credential the signal names, which one the run holds and why that pauses —
+so the selection line and the pause line read together:
 
 ```text
 [quota] the usage-limit signal names claude/provider-3 as spent; this run holds claude/provider-3 — pausing the host: this run holds the spent subscription (Issue #2024)
@@ -1213,38 +1222,42 @@ the selection line and the pause line read together:
 candidate, best first, then the winner:
 
 ```text
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=91.0% resets=2026-09-05T01:00:00.000Z seven_day=75.0% resets=2026-09-11T05:00:00.000Z remaining=75.0% gate=pass host=vibe-host:5312
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): five_hour=88.0% resets=2026-09-05T02:00:00.000Z seven_day=22.0% resets=2026-09-05T09:00:00.000Z remaining=22.0% gate=pass host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): five_hour=88.0% resets=2026-09-05T02:00:00.000Z seven_day=22.0% resets=2026-09-05T09:00:00.000Z rate=2.03%/h gate=pass host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=91.0% resets=2026-09-05T01:00:00.000Z seven_day=75.0% resets=2026-09-11T05:00:00.000Z rate=0.50%/h gate=pass host=vibe-host:5312
 [2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-3 (#3): remaining=unknown reason=http-401 host=vibe-host:5312
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider (#1) of 3: most-seven-day-remaining remaining=75.0% resets=2026-09-11T05:00:00.000Z host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider-2 (#2) of 3: highest-remaining-per-hour rate=2.03%/h remaining=22.0% resets=2026-09-05T09:00:00.000Z host=vibe-host:5312
 ```
 
-`(#2)` is the discovery position, so `provider-2 (#2)` is the second file found;
-`of 3` is how many candidates were ranked. Each candidate line carries both
-windows — a window the response did not report reads `absent` — plus
-`remaining=`, the remaining share the token was ranked on (the seven-day
-window's, or the only window the response reported when it carried no seven-day
-one), and `gate=pass|fail` for the five-hour gate. A zero weekly share with a
-future reset adds `week=spent`; this records the separate exhaustion check, not
-a low-share band. A `selected` line for a token that failed the gate also
-carries the five-hour reset the choice was made on. Above, `provider-2`'s 22%
-resets in eleven hours, but `provider` holds 75% of its week, so `provider`
-wins. The `[SECURITY]` prefix and the trailing `host=` field belong to the
-logger, not to this decision — every worker line carries them. A candidate whose
-window had already rolled over reads
+`(#2)` is the discovery position, so `provider-2 (#2)` is the second file
+found; `of 3` is how many candidates were ranked. Each candidate line carries
+both windows — a window the response did not report reads `absent` — plus
+`rate=`, the remaining share per hour of the seven-day window (or of the only
+window the response reported, when it carried no seven-day one), and
+`gate=pass|fail` for the five-hour gate. A `rate=` on a line whose response
+reported no seven-day window is the rate of that other window, so it is **not**
+comparable with a seven-day rate: among tokens that passed the five-hour gate
+and sit in the same floor band (rule 4), such a token ranks behind every token
+that reported one (Issue #4503); the floor band is decided first, while
+tokens with `gate=fail` are still ordered by soonest five-hour reset, whatever
+their seven-day telemetry. A `selected` line for a token that
+failed the gate also carries the five-hour reset the choice was made on. Above, `provider` holds three times the share but
+`provider-2`'s 22% expires in eleven hours, so it is worth four times as much
+per hour and wins. The `[SECURITY]` prefix and the trailing `host=` field
+belong to the logger, not to this decision — every worker line carries them. A
+candidate whose window had already rolled over reads
 `five_hour=100.0% … (window already elapsed, counted as full)`.
 
-A **spent** subscription reads as one too. Anthropic answers an exhausted token
-with `429` and still sends the rate-limit headers, so that response is the quota
-answer rather than a failed probe (Issue #2040) and the line carries both
-windows and when they come back:
+A **spent** subscription reads as one too. Anthropic answers an exhausted
+token with `429` and still sends the rate-limit headers, so that response is
+the quota answer rather than a failed probe (Issue #2040) and the line carries
+both windows and when they come back:
 
 ```text
-[2026-09-12 10:49:43Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=0.0% resets=2026-09-12T14:00:00.000Z seven_day=0.0% resets=2026-09-15T01:00:00.000Z remaining=0.0% gate=fail host=vibe-host:5312
+[2026-09-12 10:49:43Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=0.0% resets=2026-09-12T14:00:00.000Z seven_day=0.0% resets=2026-09-15T01:00:00.000Z rate=0.00%/h gate=fail host=vibe-host:5312
 ```
 
-Only a `429` is read this way. A `429` that carries no rate-limit headers is the
-probe itself being throttled and still reads
+Only a `429` is read this way. A `429` that carries no rate-limit headers is
+the probe itself being throttled and still reads
 `remaining=unknown reason=http-429`, and a `401` or a `5xx` is unknown however
 many headers it carries — a revoked token's figures are not trusted.
 
@@ -1253,17 +1266,17 @@ value: no part of a token, not even a prefix, is an input to these lines, so an
 operator can read which subscription a run consumed without the log ever
 carrying the credential. The last line names why the winner won:
 
-| Reason                                    | What it means                                                                                                                                                                 |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `most-seven-day-remaining`                | Strictly the largest remaining share of the seven-day window (or of the only window reported) of every candidate that passed the five-hour gate.                              |
-| `equal-seven-day-remaining-soonest-reset` | Level on remaining share; won on the sooner reset.                                                                                                                            |
-| `tied-discovery-order`                    | Level on both remaining share and reset; won on discovery order.                                                                                                              |
-| `seven-day-spent-soonest-reset`           | Every five-hour-passing candidate has a weekly window at 0% with its reset ahead; the soonest weekly reset wins. This exhaustion check is separate from the removed 10% band. |
-| `five-hour-gate-failed-soonest-reset`     | No candidate passed the five-hour gate; the one whose five-hour window refills first won.                                                                                     |
-| `budget-unknown-discovery-order`          | No candidate's budget could be measured; discovery order decided.                                                                                                             |
+| Reason | What it means |
+|--------|---------------|
+| `highest-remaining-per-hour` | The most remaining budget per hour of every candidate that passed the five-hour gate **and** holds at least 10% of its window, where a token with a seven-day window is preferred to one without, whatever the rates (Issue #4503). A token demoted by that floor can still show a higher rate — the floor is applied before the rate, not after it. Also shown when the runner-up holds an equal rate on a different window. |
+| `equal-remaining-per-hour-soonest-reset` | Level on budget per hour; won on the sooner reset. |
+| `tied-discovery-order` | Level on both rate and reset; won on discovery order. |
+| `low-seven-day-remaining-highest-rate` | Every candidate that passed the gate is under the 10% seven-day floor; the fastest-burning of them won, a token with a seven-day window ranking ahead of one without (Issue #4503). |
+| `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
+| `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
 
-Absence of these lines is itself informative: a host with one token, or with one
-token plus a metered key, logs none of them, because it makes no probe.
+Absence of these lines is itself informative: a host with one token, or with
+one token plus a metered key, logs none of them, because it makes no probe.
 
 A selection taken **after** the start logs the same candidate and `selected`
 lines, so the two read alike, and the pool adds one line of its own for each
@@ -1274,28 +1287,29 @@ thing it does without a probe or does to the environment:
 [2026-09-09 13:27:23Z] INFO: [SECURITY] claude token pool: run environment switched to provider-2 (CLAUDE_CODE_OAUTH_TOKEN)
 ```
 
-The first is a usage-limit result being taken at its word — the response already
-said the window is gone, so the pool records it rather than spending a request
-to be told again. The second is the switch itself, naming the one variable that
-was replaced. Neither carries a token value.
+The first is a usage-limit result being taken at its word — the response
+already said the window is gone, so the pool records it rather than spending a
+request to be told again. The second is the switch itself, naming the one
+variable that was replaced. Neither carries a token value.
 
 #### The weekly quota also paces what work is picked up
 
 The seven-day window does one more thing beyond ranking tokens (Issue #1885).
-Once per scan cycle the worker projects it — `used share ÷ elapsed share` — and
-while that projection is **at or above 1.0**, with at least 24 hours of the
-168-hour window elapsed, the Priority 2 scan claims no `low-priority` or
+Once per scan cycle the worker projects it — `used share ÷ elapsed share` —
+and while that projection is **at or above 1.0**, with at least 24 hours of
+the 168-hour window elapsed, the Priority 2 scan claims no `low-priority` or
 `idle-task` issue. The quota that remains goes to `top-priority` and `work-on`
 work instead of to backlog and busywork, so a week that will not last is spent
 on the issues that matter most.
 
 The reading uses the same probe and the same ten-minute snapshot age as the
 selection above — it keeps its **own** snapshot rather than the credential
-pool's, because the pool is built at worker start and the scan loop cannot reach
-it — so it costs at most one extra request per ten minutes. A host with no
-Claude subscription token, or one running a different coding agent, makes none
-at all, and a mid-run token switch discards the previous token's reading rather
-than judging the new subscription on it. The gate names itself in the log:
+pool's, because the pool is built at worker start and the scan loop cannot
+reach it — so it costs at most one extra request per ten minutes. A host with
+no Claude subscription token, or one running a different coding agent, makes
+none at all, and a mid-run token switch discards the previous token's reading
+rather than judging the new subscription on it. The gate names itself in the
+log:
 
 ```text
 [2026-09-10 04:31:12Z] INFO: claude-week-pace: engaged — used=62.0% elapsed=50.0% projected=124.0% at reset 2026-09-13T12:00:00.000Z; skipping low-priority and idle-task pickup so the remaining weekly quota goes to top-priority and work-on issues (Issue #1885)
@@ -1310,101 +1324,102 @@ capacity forward through the reset times — adding a full window as each week
 reopens — and engages only if capacity reaches zero before the next reopening
 would refill it. The readings are the credential pool's own ten-minute
 snapshots, so the pool costs no requests beyond the ones selection already
-makes; a single-token host is judged on its one token exactly as above, and the
-five-hour window plays no part in either. The pool line reports the figures,
-never a token:
+makes; a single-token host is judged on its one token exactly as above, and
+the five-hour window plays no part in either. The pool line reports the
+figures, never a token:
 
 ```text
 [2026-09-25 06:54:56Z] INFO: claude-week-pace: engaged — pool counted=3/3 rated=3 remaining=43.0% burn=2.95%/h runs-out=2026-09-27T07:26:49.497Z next-reopen=2026-09-29T01:00:00.000Z; the pool runs out before capacity reopens, so low-priority and idle-task pickup is skipped and the remaining weekly quota goes to top-priority and work-on issues (Issues #1885, #2647)
 ```
 
 The line is emitted when the verdict or the figures behind it change, not once
-per scan cycle per slot — the state is what an operator needs, and repeating one
-sentence thousands of times over an engaged week buries it. A probe that fails,
-or a response carrying no seven-day window, logs one `claude-week-pace: unknown`
-WARNING and leaves **every** tier eligible — a failed probe never refuses work.
-The 1.0 threshold and the 24-hour grace are code constants beside the five-hour
-gate's own, not `.config.json` keys. The full rules are in
+per scan cycle per slot — the state is what an operator needs, and
+repeating one sentence thousands of times over an engaged week buries it. A
+probe that fails, or a response carrying no seven-day window, logs one
+`claude-week-pace: unknown` WARNING and leaves **every** tier eligible — a
+failed probe never refuses work. The 1.0 threshold and the 24-hour grace are
+code constants beside the five-hour gate's own, not `.config.json` keys. The
+full rules are in
 [Weekly Claude quota pace gate](workflows/issue-processing.md#-weekly-claude-quota-pace-gate-tiers-3-and-4).
 
-**What the choice isolates.** Selection decides what the run's _environment_
+**What the choice isolates.** Selection decides what the run's *environment*
 carries — one token file's variables, and no other subscription's. It decides
-nothing about the credential _mount_, which still exposes every token file in
-`claude/` to the container. That boundary, and the residual risk R9 that records
-the part of it which is not closed, are stated under
+nothing about the credential *mount*, which still exposes every token file in
+`claude/` to the container. That boundary, and the residual risk R9 that
+records the part of it which is not closed, are stated under
 [Several Claude tokens](#several-claude-tokens) above and in
 [the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks).
 
 One last precedence note: a `CLAUDE_CODE_OAUTH_TOKEN` already present in the
 worker's own environment is never overwritten by a file, so an
-environment-supplied token wins — the probes still run and the decision is still
-logged, but the export is skipped. On a contained host that case does not arise:
-the container is started with no token variables passed through, so the
+environment-supplied token wins — the probes still run and the decision is
+still logged, but the export is skipped. On a contained host that case does not
+arise: the container is started with no token variables passed through, so the
 credential directory is the only route in.
 
 #### Several Vibe Coders sharing a set of subscriptions
 
-Everything above describes one host. A fleet has one more decision, and it turns
-on what you are trying to achieve.
+Everything above describes one host. A fleet has one more decision, and it
+turns on what you are trying to achieve.
 
 **The token files are ordinary files and nothing binds one to a host**, so
 copying `claude/` from one machine to another works — same `600` files, same
 `700` directory.
 
-**For the usual fleet goal — keep the subscriptions draining roughly evenly, and
-never leave a worker idle while another subscription still has quota — put every
-token on every machine.** Each worker start ranks the whole set and takes
-whichever is furthest ahead, so no worker begins a run on a subscription that is
-spent while a fresh one sits unused. That is the arrangement to choose by
-default.
+**For the usual fleet goal — keep the subscriptions draining roughly evenly,
+and never leave a worker idle while another subscription still has quota —
+put every token on every machine.** Each worker start ranks the whole set and
+takes whichever is furthest ahead, so no worker begins a run on a subscription
+that is spent while a fresh one sits unused. That is the arrangement to choose
+by default.
 
 Splitting the subscriptions instead — one token per machine, each as its own
 `provider.env` — is the wrong shape for that goal, even though it looks tidier.
-A machine given one token can only ever use that token: when its subscription is
-exhausted, that Vibe Coder stops for the rest of the window while another
+A machine given one token can only ever use that token: when its subscription
+is exhausted, that Vibe Coder stops for the rest of the window while another
 machine's subscription still has budget, and nothing can move the work across.
 Split them only when you deliberately want a worker pinned to a particular
 subscription — billing separation, or an experiment you want isolated.
 
-**What sharing a pool does and does not give you.** Ranking is deterministic: it
-carries no host identity, no random tie-break and no state shared between
+**What sharing a pool does and does not give you.** Ranking is deterministic:
+it carries no host identity, no random tie-break and no state shared between
 machines, so two workers that start at the same moment measure the same
-candidates and pick the _same_ token, leaving the other idle until the next
+candidates and pick the *same* token, leaving the other idle until the next
 start:
 
 | Worker start | token A | token B | machine 1 | machine 2 |
-| ------------ | ------- | ------- | --------- | --------- |
-| first        | 100%    | 100%    | tie, so A | tie, so A |
-| second       | 60%     | 100%    | B         | B         |
-| third        | 60%     | 70%     | B         | B         |
+|--------------|---------|---------|-----------|-----------|
+| first | 100% | 100% | tie, so A | tie, so A |
+| second | 60% | 100% | B | B |
+| third | 60% | 70% | B | B |
 
 They alternate together rather than spreading apart, so a pool is a way to keep
 subscriptions **evenly drained over time**, not a way to run two subscriptions
 in parallel at one instant. For the goal above that is exactly what is wanted:
-consumption stays level, and every start lands on the subscription with the most
-left.
+consumption stays level, and every start lands on the subscription with the
+most left.
 
 **The remaining gap: a spawn is not yet quota-gated.** The runner now has a
 route back to the decision — the credential pool above re-ranks on demand,
 records an exhausted window from a usage-limit result without a probe, and
-switches the run's token in one call, and the cycle-start health gate now uses
-it to rotate off a spent token (Issue #2637) — but nothing consults it _before_
-an agent spawn yet. So a subscription that runs out mid-run still takes the
-retry ladder (two retries, roughly five then ten minutes) and then fails the
-run, even when another token in the pool is untouched. The next worker start
+switches the run's token in one call, and the cycle-start health gate now
+uses it to rotate off a spent token (Issue #2637) — but nothing consults it
+*before* an agent spawn yet. So a subscription that runs out mid-run still takes the retry
+ladder (two retries, roughly five then ten minutes) and then fails the run,
+even when another token in the pool is untouched. The next worker start
 reselects, ranks the spent token last and picks a fresh one, so the fleet
 recovers on its own; what is lost is the remainder of that one run, not the
-machine. Until the pre-spawn gate lands, shorter and more frequent worker starts
-narrow that window; nothing else does.
+machine. Until the pre-spawn gate lands, shorter and more frequent worker
+starts narrow that window; nothing else does.
 
 **The windows are not synchronised.** Two subscriptions bought at different
 times have seven-day windows that reset hours or days apart, and each token is
-ranked on the share of its own week it still holds, whenever that week resets.
-Expect the worker to favour a freshly rolled-over subscription (100% left) and
-to keep spending whichever holds the most, which tends to even the pool out; a
-subscription close to its reset with little left is used last and may let that
-little lapse. That is the ranking working (Issue
-[#4504](https://github.com/stSoftwareAU/VibeCoder/issues/4504)), not a fault.
+ranked against its own window as a fraction *per hour until that window resets*
+— the only way subscriptions on different clocks compare at all. Expect the
+worker to favour whichever subscription is closest to its reset while it still
+has budget, and to leave a freshly rolled-over one alone until the urgent
+budget is spent. That is the ranking working, not a fault: the alternative is
+letting one subscription's week lapse unused.
 
 **Several Vibe Coders on one machine** share `~/.vibe-coder/credentials` unless
 you separate them, so pinning one to its own subscription needs a credential
@@ -1414,8 +1429,8 @@ not file configuration.
 
 ### Permissions
 
-On macOS and Linux, directories are owner-only `700` and files `600` (substitute
-the vendors you actually built):
+On macOS and Linux, directories are owner-only `700` and files `600`
+(substitute the vendors you actually built):
 
 ```bash
 chmod 700 ~/.vibe-coder/credentials \
@@ -1428,24 +1443,24 @@ chmod 600 ~/.vibe-coder/credentials/gh/hosts.yml \
 On Windows there is no POSIX mode; the equivalent — what `setup.ps1`'s
 `Protect-VibePath` does — is to break ACL inheritance, remove every inherited
 rule, and grant full control to the current identity alone. A credential
-directory left inheriting the profile's `Users` read access is exactly the state
-the preflight exists to reject:
+directory left inheriting the profile's `Users` read access is exactly the
+state the preflight exists to reject:
 
 ```powershell
 icacls "$env:USERPROFILE\.vibe-coder\credentials" `
     /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" /t
 ```
 
-`/inheritance:r` drops the inherited rules, `/grant:r` replaces the grants with
-full control for you alone, and `/t` applies the same to every file and
+`/inheritance:r` drops the inherited rules, `/grant:r` replaces the grants
+with full control for you alone, and `/t` applies the same to every file and
 sub-directory inside.
 
 ### Line endings on Windows
 
-These files are read by Deno inside a Linux container: write them LF-terminated
-and without a byte-order mark. That is **not** what Windows PowerShell's
-`Set-Content` or `Out-File` produce by default, so write them the way
-`setup.ps1` does:
+These files are read by Deno inside a Linux container: write them
+LF-terminated and without a byte-order mark. That is **not** what
+Windows PowerShell's `Set-Content` or `Out-File` produce by default, so write
+them the way `setup.ps1` does:
 
 ```powershell
 [System.IO.File]::WriteAllText(
@@ -1461,26 +1476,26 @@ line ending LF.
 
 Every worker start runs the credential preflight
 (`worker/deno/lib/credential_preflight.ts`) before any work begins; when the
-directory is wrong the worker exits with a named, actionable failure rather than
-degrading into a mid-run auth error. So the verification of a hand-built
+directory is wrong the worker exits with a named, actionable failure rather
+than degrading into a mid-run auth error. So the verification of a hand-built
 directory is simply the
 [first foreground run](#manual-setup-repo-sync-steps-and-verification) — and
 each failure it can name maps to a specific hand-editing mistake:
 
-| Preflight failure                  | The hand-editing mistake that causes it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `credential-dir-missing`           | The directory was never created at the path the worker resolves — a typo in the path, the wrong user's home, or `VIBE_CREDENTIAL_DIR` pointing somewhere else.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `credential-dir-not-a-directory`   | A _file_ named `credentials` was created where the directory belongs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `credential-dir-unreadable`        | The directory itself cannot be read by the worker — created as another user (or root, e.g. with `sudo mkdir`), or its read permission stripped instead of set to `700`.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `credential-dir-empty`             | The directory exists but the files were written elsewhere — for example into `~/.vibe-coder` itself, or under a mistyped sub-directory name.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `github-credentials-missing`       | `gh/hosts.yml` is absent, or present without a usable inline token: copied from a macOS Keychain-backed `gh` install (no `oauth_token:` line), a blank or empty-quoted token value, or the file/token line otherwise malformed.                                                                                                                                                                                                                                                                                                                                                                          |
-| `provider-credentials-missing`     | The named vendor's `provider.env` is absent, uses a variable name that vendor does not accept (see the table above), or carries a blank value. The failure names the vendor and the variable that provisions it, so a multi-vendor host knows which file to fix.                                                                                                                                                                                                                                                                                                                                         |
-| `credential-permissions-too-open`  | A credential file is group- or world-readable — `chmod 600` was skipped, or the file was created with a default umask (e.g. mode `644`). The message names the file and the exact `chmod` to run.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Preflight failure | The hand-editing mistake that causes it |
+|-------------------|------------------------------------------|
+| `credential-dir-missing` | The directory was never created at the path the worker resolves — a typo in the path, the wrong user's home, or `VIBE_CREDENTIAL_DIR` pointing somewhere else. |
+| `credential-dir-not-a-directory` | A *file* named `credentials` was created where the directory belongs. |
+| `credential-dir-unreadable` | The directory itself cannot be read by the worker — created as another user (or root, e.g. with `sudo mkdir`), or its read permission stripped instead of set to `700`. |
+| `credential-dir-empty` | The directory exists but the files were written elsewhere — for example into `~/.vibe-coder` itself, or under a mistyped sub-directory name. |
+| `github-credentials-missing` | `gh/hosts.yml` is absent, or present without a usable inline token: copied from a macOS Keychain-backed `gh` install (no `oauth_token:` line), a blank or empty-quoted token value, or the file/token line otherwise malformed. |
+| `provider-credentials-missing` | The named vendor's `provider.env` is absent, uses a variable name that vendor does not accept (see the table above), or carries a blank value. The failure names the vendor and the variable that provisions it, so a multi-vendor host knows which file to fix. |
+| `credential-permissions-too-open` | A credential file is group- or world-readable — `chmod 600` was skipped, or the file was created with a default umask (e.g. mode `644`). The message names the file and the exact `chmod` to run. |
 | `provider-token-file-unrecognised` | An additional token file (`claude/provider-2.env` and friends) holds no variable name the vendor accepts — a typo in the variable, or a bare token with no `NAME=` at all. The message names the file and the variables it could have used. It is reported rather than skipped, so a token you added is never silently ignored. It applies to the **numbered** files only: an empty or unrecognised primary `provider.env` is reported as `provider-credentials-missing` instead, and a file whose name is outside the `provider-<number>.env` pattern is not a token file, so it raises nothing at all. |
-| `unexpected-credential-material`   | A stray entry sits directly inside the credential directory: a backup copy, a notes file, or a sub-directory for a vendor that is not enabled. Only `gh/` and the enabled providers' sub-directories belong there (`.DS_Store` is ignored).                                                                                                                                                                                                                                                                                                                                                              |
+| `unexpected-credential-material` | A stray entry sits directly inside the credential directory: a backup copy, a notes file, or a sub-directory for a vendor that is not enabled. Only `gh/` and the enabled providers' sub-directories belong there (`.DS_Store` is ignored). |
 
 Two notes on reading a result. First, `github-credentials-missing` and
-`provider-credentials-missing` fire only when _neither_ the file _nor_ the
+`provider-credentials-missing` fire only when *neither* the file *nor* the
 corresponding environment variables supply the credential — but on a contained
 host the directory is the only route that reaches the worker, because the
 container is started with no token variables passed through (see
@@ -1491,34 +1506,35 @@ whole list before re-running rather than one failure at a time.
 ## Token scopes for derived trust
 
 The token in `gh/hosts.yml` must be able to **read collaborators** on every
-monitored repository. That is already implied by write access to those repos
-(the worker clones, pushes, and assigns issues), but it becomes a
+monitored repository. That is already implied by write access to those
+repos (the worker clones, pushes, and assigns issues), but it becomes a
 **trust-resolution** dependency: since Issue #1066 the trusted-author set is
 derived from repository collaborators on every cycle. Listing collaborators is
-`GET /repos/<owner>/<repo>/collaborators`; a token that can push but cannot read
-the collaborator list is mis-scoped for derived trust.
+`GET /repos/<owner>/<repo>/collaborators`; a token that can push but
+cannot read the collaborator list is mis-scoped for derived trust.
 
-When `exclusion_team` is set, the token also needs the **`read:org`** scope
-(classic) / Organisation members read (fine-grained). The worker calls
-`GET /orgs/<org>/teams/<slug>/members` once per cycle; without `read:org` that
-call returns **403**.
+When `exclusion_team` is set, the token also needs the **`read:org`**
+scope (classic) / Organisation members read (fine-grained). The worker
+calls `GET /orgs/<org>/teams/<slug>/members` once per cycle; without
+`read:org` that call returns **403**.
 
 A missing scope is **fail-closed and loud**, never silently permissive:
 
-| Symptom                                                        | What it means                                                                                                                    | What the worker does                                                                                                  |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `[TRUST_REFRESH] … collaborator fetch 403` (or `HTTP 403`)     | The token cannot list collaborators on a monitored repo — usually a missing repository-administration / collaborator-read grant. | The cycle is **skipped**. No issue is claimed, no PR is maintained, no local `allowed_authors` leftover is consulted. |
-| `[TRUST_REFRESH] … Team fetch 403 … token is missing read:org` | `exclusion_team` is set and the token lacks `read:org`.                                                                          | Same skip. The worker will not derive an allowlist with team exclusion silently off.                                  |
+| Symptom | What it means | What the worker does |
+| ------- | ------------- | -------------------- |
+| `[TRUST_REFRESH] … collaborator fetch 403` (or `HTTP 403`) | The token cannot list collaborators on a monitored repo — usually a missing repository-administration / collaborator-read grant. | The cycle is **skipped**. No issue is claimed, no PR is maintained, no local `allowed_authors` leftover is consulted. |
+| `[TRUST_REFRESH] … Team fetch 403 … token is missing read:org` | `exclusion_team` is set and the token lacks `read:org`. | Same skip. The worker will not derive an allowlist with team exclusion silently off. |
 
-Search the worker log for `[TRUST_REFRESH]` or `403` if a host appears idle. The
-host is marked unhealthy for that cycle so the fleet report cannot claim
-otherwise. Restoring the scope (or unsetting `exclusion_team` if the team fetch
-is the failure) is the fix; there is no config flag that says "proceed without
-exclusions".
+Search the worker log for `[TRUST_REFRESH]` or `403` if a host appears idle.
+The host is marked
+unhealthy for that cycle so the fleet report cannot claim otherwise.
+Restoring the scope (or unsetting `exclusion_team` if the team fetch is
+the failure) is the fix; there is no config flag that says "proceed
+without exclusions".
 
-The rest of the token — `repo` (or the fine-grained equivalent) plus `workflow`
-if the worker must edit GitHub Actions files — is unchanged. See
-[SECURITY.md — Token Security](../SECURITY.md#-token-security) and
+The rest of the token — `repo` (or the fine-grained equivalent) plus
+`workflow` if the worker must edit GitHub Actions files — is unchanged.
+See [SECURITY.md — Token Security](../SECURITY.md#-token-security) and
 [CONFIGURATION.md — Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
 
 ### The `workflow` scope
@@ -1527,9 +1543,8 @@ Every monitored repository in this fleet carries `.github/workflows/`, and
 GitHub refuses a push from **any** OAuth token that creates or updates a file
 there unless the token has the `workflow` scope — the rejection reads
 `refusing to allow an OAuth App to create or update workflow … without
-'workflow' scope`,
-and it arrives only at the push, after the agent has done its work. A token
-minted by a plain `gh auth login` does **not** carry it.
+'workflow' scope`, and it arrives only at the push, after the agent has done
+its work. A token minted by a plain `gh auth login` does **not** carry it.
 
 The worker reads the scope at start-up and, without it (Issue #1475):
 
@@ -1537,12 +1552,12 @@ The worker reads the scope at start-up and, without it (Issue #1475):
 - **skips** an issue whose title names a workflow or GitHub Actions, or whose
   body names `.github/workflows` (skip reason `workflow-scope-missing`);
 - **fails a run before the push** when the branch's diff touches
-  `.github/workflows/`, naming the files and the fix, and classifies it as the
-  host's credential (`token-scope`), never the issue's fault.
+  `.github/workflows/`, naming the files and the fix, and classifies it as
+  the host's credential (`token-scope`), never the issue's fault.
 
-Either refusal releases the issue for a host that can push it (Issue #2689): no
-attempt is consumed and no `failed-once`, `failed` or `needs-human` label is
-added, so a host whose token has the scope claims it on its next scan. The
+Either refusal releases the issue for a host that can push it (Issue #2689):
+no attempt is consumed and no `failed-once`, `failed` or `needs-human` label
+is added, so a host whose token has the scope claims it on its next scan. The
 refusing host logs, once per process at WARN, that its token lacks the
 `workflow` OAuth scope, with the fix.
 
@@ -1550,31 +1565,32 @@ Because the release consumes no attempt, two bounds stop it repeating:
 
 - **The refused host never re-claims it.** The refusal is recorded in the
   cooldown state in the host's work directory, keyed on the install uuid in
-  `.machine-id` (never the container hostname, which changes every launch) and
-  on the scope verdict it happened under. The claim scan skips it
-  (`workflow-scope-missing`) on every route while that verdict stands, for up to
-  30 days; granting the scope changes the verdict and lifts it at once.
+  `.machine-id` (never the container hostname, which changes every launch)
+  and on the scope verdict it happened under. The claim scan skips it
+  (`workflow-scope-missing`) on every route while that verdict stands, for up
+  to 30 days; granting the scope changes the verdict and lifts it at once.
 - **The fleet stops after three in a row.** After each refusal the host reads
   the attempt tally on the issue's release comment. At three consecutive
-  `token-scope` releases it posts one comment naming the missing scope and the
-  fix. From then on a host whose token is not known to have the scope leaves the
-  issue before claiming it, and a host whose verdict is `granted` still claims
-  it. No label is added: granting the scope on any host is all it takes.
+  `token-scope` releases it posts one comment naming the missing scope and
+  the fix. From then on a host whose token is not known to have the scope
+  leaves the issue before claiming it, and a host whose verdict is `granted`
+  still claims it. No label is added: granting the scope on any host is all
+  it takes.
 
 Neither check is allowed to pass by silence (Issue #1952):
 
 - the start-up verdict is recorded whenever detection established one, and a
-  detection that could not — `gh auth status` failed, or the token is a GitHub
-  App installation token whose `workflows` permission it cannot read — says so
-  at WARN, so "nothing recorded" is never read as "has the scope";
+  detection that could not — `gh auth status` failed, or the token is a
+  GitHub App installation token whose `workflows` permission it cannot read —
+  says so at WARN, so "nothing recorded" is never read as "has the scope";
 - the pre-push check asks `git diff`, falls back to the branch's commit list
   when the diff cannot answer, logs that it was skipped when neither can, and
   names which of the two supplied the paths it acted on;
-- with no verdict recorded, a branch that touches `.github/workflows/` is logged
-  at WARN rather than failed — GitHub decides at the push;
-- a push that still reaches GitHub's refusal fails the run, with the fix in the
-  message and the run recorded as `token-scope` — no merge recovery and no
-  in-process retry, because neither can supply a missing scope.
+- with no verdict recorded, a branch that touches `.github/workflows/` is
+  logged at WARN rather than failed — GitHub decides at the push;
+- a push that still reaches GitHub's refusal fails the run, with the fix in
+  the message and the run recorded as `token-scope` — no merge recovery and
+  no in-process retry, because neither can supply a missing scope.
 
 ```mermaid
 flowchart TD
@@ -1598,8 +1614,8 @@ flowchart TD
 ```
 
 Setup checks the fleet token on every run, on every host (`setup.sh` and
-`setup.ps1` both run `token-scope-preflight`, Issue #2690). It reads the token
-in `gh_config_dir` with `gh auth status` and warns when any of `repo`,
+`setup.ps1` both run `token-scope-preflight`, Issue #2690). It reads the
+token in `gh_config_dir` with `gh auth status` and warns when any of `repo`,
 `workflow` or `read:org` is missing (`write:org` or `admin:org` carries
 `read:org`), printing the exact command that adds them:
 
@@ -1608,8 +1624,8 @@ GH_CONFIG_DIR="$HOME/.config/gh-vibe" gh auth refresh -h github.com -s workflow,
 ```
 
 A fine-grained or GitHub App token has no scope list, so setup names the
-repository permissions it needs instead of reporting every scope missing. The
-fix, for the worker account:
+repository permissions it needs instead of reporting every scope missing.
+The fix, for the worker account:
 
 ```bash
 gh auth refresh -s workflow     # adds the scope to the existing login
@@ -1622,19 +1638,19 @@ worker.
 
 `.config.json` lives in the root of the VibeCoder checkout — every script
 defaults to `<checkout>/.config.json`, and the `CONFIG_FILE` environment
-variable can point elsewhere (`CONFIG_PATH` is accepted as its alias; a relative
-value resolves against the checkout, and setting both to different files is
-refused — see
-[One config file, one name](CONFIGURATION.md#one-config-file-one-name-issue-750)).
-On the automated route the file is composed in two passes: the Deno setup CLI's
-`config` subcommand merges any `VIBE_*` environment variables over whatever the
-file already holds and writes only values that differ from the built-in
-defaults, then `setup.sh` merges the interactive terminal answers into the same
-file. The manual route is the operator writing that same JSON in an editor.
-Either way the file must stay private: setup creates it owner-only (permissions
-`600`), it is git-ignored, and the pre-commit hook refuses to commit it. Its
-overrides-only semantics — defaults are never written, so changed defaults flow
-through on upgrade — are covered in the
+variable can point elsewhere (`CONFIG_PATH` is accepted as its alias; a
+relative value resolves against the checkout, and setting both to different
+files is refused — see
+[One config file, one name](CONFIGURATION.md#one-config-file-one-name-issue-750)). On the automated route the file is composed in
+two passes: the Deno setup CLI's `config` subcommand merges any `VIBE_*`
+environment variables over whatever the file already holds and writes only
+values that differ from the built-in defaults, then `setup.sh` merges the
+interactive terminal answers into the same file. The manual route is the
+operator writing that same JSON in an editor. Either way the file must stay
+private: setup creates it owner-only (permissions `600`), it is git-ignored,
+and the pre-commit hook refuses to commit it. Its overrides-only semantics —
+defaults are never written, so changed defaults flow through on upgrade — are
+covered in the
 [Configuration File section](CONFIGURATION.md#-configuration-file) of the
 Configuration Reference.
 
@@ -1653,13 +1669,14 @@ PRs, what it monitors, and how it authenticates:
 }
 ```
 
-- `allowed_authors` — **no longer a trust grant** (Issue #1066). Who may raise,
-  label and schedule work is derived from each repo's write collaborators, minus
-  the Vibe Coder logins and bots. The key is parsed only as the default PR
-  reviewer / assignee when `pr_reviewers` is unset — set `pr_reviewers` and drop
-  it. See [Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
-- `pr_reviewers` — logins requested as reviewers on every PR the worker raises;
-  see [Multiple PR Reviewers](CONFIGURATION.md#-multiple-pr-reviewers).
+- `allowed_authors` — **no longer a trust grant** (Issue #1066). Who may
+  raise, label and schedule work is derived from each repo's write
+  collaborators, minus the Vibe Coder logins and bots. The key is parsed
+  only as the default PR reviewer / assignee when `pr_reviewers` is unset —
+  set `pr_reviewers` and drop it. See
+  [Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
+- `pr_reviewers` — logins requested as reviewers on every PR the worker
+  raises; see [Multiple PR Reviewers](CONFIGURATION.md#-multiple-pr-reviewers).
 - `repos` — the monitored repository list, `owner/name` per entry; see
   [Monitored Repositories](CONFIGURATION.md#-monitored-repositories).
 - `ssh_key_path` — the service account's SSH private key, used for all git
@@ -1672,8 +1689,8 @@ PRs, what it monitors, and how it authenticates:
 ### A fuller worked example
 
 `.config.json` is strict JSON: a comment is a parse error, so a hand-written
-file can never carry inline annotations. The keys below are therefore explained
-beneath the block, never inside it.
+file can never carry inline annotations. The keys below are therefore
+explained beneath the block, never inside it.
 
 ```json
 {
@@ -1700,18 +1717,19 @@ beneath the block, never inside it.
   [Service Account Authentication](CONFIGURATION.md#-service-account-authentication-ssh--gh-auth)
   and
   [Service accounts are fleet PR authors too](CONFIGURATION.md#service-accounts-are-fleet-pr-authors-too).
-- `authorized_commenters` — the **known** logins whose input the worker acts on:
-  Copilot, Actions, and any other bot you name. A GitHub App is never a
-  repository collaborator, so this cannot be derived. It never grants the right
-  to direct work, except that a listed bot's `idle-task` label add is honoured
-  (Issue #2882). Note the key itself is spelt `authorized_commenters`. Defaults
-  to `["github-copilot[bot]", "github-actions[bot]"]` when absent. See
+- `authorized_commenters` — the **known** logins whose input the worker acts
+  on: Copilot, Actions, and any other bot you name. A GitHub App is never a
+  repository collaborator, so this cannot be derived. It never grants the
+  right to direct work, except that a listed bot's `idle-task` label add is
+  honoured (Issue #2882). Note the key itself is spelt
+  `authorized_commenters`. Defaults to
+  `["github-copilot[bot]", "github-actions[bot]"]` when absent. See
   [Authorised Commenters](CONFIGURATION.md#-authorised-commenters) and
   [Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
 - `exclusion_team` — optional **additional** exclusion from the derived
-  directing set, on top of the Vibe Coder logins that are always excluded. Trust
-  resolution needs collaborator read on every monitored repo, and `read:org`
-  when `exclusion_team` is set; a 403 skips the cycle. See
+  directing set, on top of the Vibe Coder logins that are always excluded.
+  Trust resolution needs collaborator read on every monitored repo, and
+  `read:org` when `exclusion_team` is set; a 403 skips the cycle. See
   [Token scopes for derived trust](#token-scopes-for-derived-trust).
 - `claude_model`, `claude_timeout`, `sleep_interval` — operational overrides.
   Write them only when they must differ from the defaults; the file holds
@@ -1730,10 +1748,10 @@ The worker is provider agnostic: `claude` (Claude Code) is the default, and
 `codex` (the OpenAI Codex CLI), `gemini` (the Gemini CLI) and `deepseek` are
 registered alongside it. `deepseek` is the Claude Code CLI installed under its
 own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it
-authenticates with a **DeepSeek** key rather than an Anthropic one. Nothing else
-in the configuration changes with the choice — `agent_provider` names the agent
-a run uses, and `agent_providers` names every vendor whose credentials are
-provisioned, preflighted and mounted:
+authenticates with a **DeepSeek** key rather than an Anthropic one. Nothing
+else in the configuration changes with the choice —
+`agent_provider` names the agent a run uses, and `agent_providers` names every
+vendor whose credentials are provisioned, preflighted and mounted:
 
 ```json
 {
@@ -1742,36 +1760,37 @@ provisioned, preflighted and mounted:
 }
 ```
 
-A mixed host that wants **opt-in** failover after a classified outage lists the
-alternative in `agent_provider_fallback`. The default is pinned — Claude stays
-Claude, Codex stays Codex — and a Claude usage limit does not pause Codex work
-(Issue #1696 / #1700). Multiple Codex subscription files (`codex/provider.env`,
-`codex/provider-2.env`) are ranked by the same quota policy; only the selected
-account's secrets reach the child (Issue #1698). See
-[Provider parity](PROVIDER-PARITY.md).
+A mixed host that wants **opt-in** failover after a classified outage lists
+the alternative in `agent_provider_fallback`. The default is pinned — Claude
+stays Claude, Codex stays Codex — and a Claude usage limit does not pause
+Codex work (Issue #1696 / #1700). Multiple Codex subscription files
+(`codex/provider.env`, `codex/provider-2.env`) are ranked by the same
+quota policy; only the selected account's secrets reach the child
+(Issue #1698). See [Provider parity](PROVIDER-PARITY.md).
 
 Omit both and the worker uses Claude Code alone, exactly as a deployment that
 predates the choice. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
 (comma-separated) select the provider on a host whose file names none — since
 1.4.0 they no longer override the file, because the file wins
 ([Issue #1032](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)).
-The enabled set must include the active provider — a set that excludes it fails
-loudly at startup, because its agent would have no credential mounted, as does
-an id that is not registered.
+The enabled set must include
+the active provider — a set that excludes it fails loudly at startup, because
+its agent would have no credential mounted, as does an id that is not
+registered.
 
 Each enabled vendor needs its own `<provider>/provider.env` from
 [the credential layout above](#providerproviderenv). The image itself follows
 the same key: the launcher builds it with the enabled set (`AGENT_PROVIDERS`)
-and the set is part of the image tag, so a host that adds a provider rebuilds on
-its next launch — see
+and the set is part of the image tag, so a host that adds a provider rebuilds
+on its next launch — see
 [the coding-agent provider layer](CONTAINER.md#the-coding-agent-provider-layer)
 in the Container Guide.
 
 ### Where the full reference lives
 
 This section deliberately stops at the two examples above. The
-[Configuration Reference](CONFIGURATION.md) owns the complete key catalogue, the
-defaults table and the operational constants;
+[Configuration Reference](CONFIGURATION.md) owns the complete key catalogue,
+the defaults table and the operational constants;
 [Per-Repository Configuration](CONFIGURATION.md#-per-repository-configuration)
 owns the `repo_config` block. The `container_tools` key is documented in the
 [Configuration Reference](CONFIGURATION.md) and the
@@ -1783,91 +1802,94 @@ The worker parses the file with `JSON.parse` and stops with
 `Config file ... contains invalid JSON` on anything non-strict, so check the
 file before the first run rather than during it:
 
-- **Validate the JSON.** `jq . .config.json` from the checkout root. A trailing
-  comma, a `//` or `#` comment, and a UTF-8 byte-order mark are all parse
-  errors. A misspelt key parses fine but is caught at startup by the unknown-key
-  check, which warns and suggests the likely intended key.
+- **Validate the JSON.** `jq . .config.json` from the checkout root. A
+  trailing comma, a `//` or `#` comment, and a UTF-8 byte-order mark are all
+  parse errors. A misspelt key parses fine but is caught at startup by the
+  unknown-key check, which warns and suggests the likely intended key.
 - **Make the paths real.** `ssh_key_path` and `gh_config_dir` are applied as
   given, with no existence probe on the host — a missing key file or `gh`
-  directory does not fail startup, it fails every subsequent git and `gh` call.
-  Check them with `test -f` and `test -d` before running.
-- **Know what `~` does.** Only a _leading_ `~` is expanded, by replacing it with
-  the `HOME` environment variable when the worker applies the value. `~user` and
-  a `~` anywhere else in the path are passed through literally.
+  directory does not fail startup, it fails every subsequent git and `gh`
+  call. Check them with `test -f` and `test -d` before running.
+- **Know what `~` does.** Only a *leading* `~` is expanded, by replacing it
+  with the `HOME` environment variable when the worker applies the value.
+  `~user` and a `~` anywhere else in the path are passed through literally.
 - **On Windows, mind encoding and path syntax.** Save the file as UTF-8
-  _without_ a BOM and with LF line endings — the same discipline as the
-  credential files (Windows PowerShell 5.1's `Out-File` defaults to an encoding
-  that breaks both; use an editor or PowerShell 7's `utf8NoBOM`). Write paths
-  either with escaped backslashes (`"C:\\Users\\me\\key"`) or with forward
-  slashes (`"C:/Users/me/key"`), which Windows accepts. A single backslash is
-  either a parse error or a silently mangled path — `"C:\temp"` parses, but the
-  `\t` in it becomes a tab character. `HOME` is usually unset on Windows, so
-  prefer full absolute paths over `~` there.
-- **Keep it private.** Match what setup does: `chmod 600 .config.json` (or the
-  Windows ACL equivalent) — the file can hold API keys.
+  *without* a BOM and with LF line endings — the same discipline as the
+  credential files (Windows PowerShell 5.1's `Out-File` defaults to an
+  encoding that breaks both; use an editor or PowerShell 7's
+  `utf8NoBOM`). Write paths either with escaped backslashes
+  (`"C:\\Users\\me\\key"`) or with forward slashes (`"C:/Users/me/key"`),
+  which Windows accepts. A single backslash is either a parse error or a
+  silently mangled path — `"C:\temp"` parses, but the `\t` in it becomes a
+  tab character. `HOME` is usually unset on Windows, so prefer full absolute
+  paths over `~` there.
+- **Keep it private.** Match what setup does: `chmod 600 .config.json` (or
+  the Windows ACL equivalent) — the file can hold API keys.
 
 ## Manual setup: repo sync steps and verification
 
-Everything the setup script does beyond the interactive layer lives in one Deno
-CLI, `worker/deno/setup/setup_cli.ts`, and every phase of it is invocable on its
-own. The manual path is exactly that: run the CLI one subcommand at a time.
+Everything the setup script does beyond the interactive layer lives in one
+Deno CLI, `worker/deno/setup/setup_cli.ts`, and every phase of it is
+invocable on its own. The manual path is exactly that: run the CLI one
+subcommand at a time.
 
 ```bash
 cd worker/deno
 deno task setup <subcommand> --script-dir ../.. --config-path ../../.config.json
 ```
 
-The two flags matter when running by hand. The script passes the checkout root
-as `--script-dir` and the root `.config.json` as `--config-path`; the CLI's
-defaults are the current directory (`worker/deno` after the `cd`), which is not
-where the hooks or the config live. Pass both, every time, exactly as above.
+The two flags matter when running by hand. The script passes the checkout
+root as `--script-dir` and the root `.config.json` as `--config-path`; the
+CLI's defaults are the current directory (`worker/deno` after the `cd`),
+which is not where the hooks or the config live. Pass both, every time,
+exactly as above.
 
 ### The subcommands
 
-In the order the CLI lists them (`deno task setup --help`). "Repo-side" means
-the subcommand acts on the monitored repositories over the GitHub API; the rest
-act only on the host. Every subcommand is idempotent — a re-run converges on the
-same state rather than piling up duplicates.
+In the order the CLI lists them (`deno task setup --help`). "Repo-side"
+means the subcommand acts on the monitored repositories over the GitHub
+API; the rest act only on the host. Every subcommand is idempotent — a
+re-run converges on the same state rather than piling up duplicates.
 
-| Subcommand                      | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Skippable?                                                                                                                                  |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prerequisites`                 | Probes the host: `git`, an authenticated `gh`, `deno`, the `claude` CLI, and a working container runtime plus worker image. Changes nothing on GitHub. On an interactive host each missing tool is offered as an install, one prompt at a time; `--auto-install` consents to every offer in advance.                                                                                                                                                                                                                                                                                                                                                                                                               | No — it is the first row of the checklist below.                                                                                            |
-| `config`                        | Writes `.config.json` from `VIBE_*` environment variables. Host-only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Yes, if you hand-wrote the file per [the config section](#manual-setup-writing-configjson). The file itself is not optional.                |
-| `launchagent`                   | Installs the macOS LaunchAgent (background service). `--status` asks launchd (`launchctl print gui/<uid>/<label>`) and reports `installed`, `plist-not-loaded` (the plist is on disk but launchd has no such service — nothing is running the worker), or `not-installed`; `--uninstall` removes it. Re-running `launchagent` on a `plist-not-loaded` host bootstraps the agent back rather than reporting it up to date.                                                                                                                                                                                                                                                                                          | Yes — background services are the [Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service)'s job, after the first foreground run. |
-| `screenshot`                    | Installs Playwright MCP on the host so the worker can capture page screenshots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Yes — a convenience; nothing else depends on it.                                                                                            |
-| `label-sync`                    | Repo-side. Creates or updates the worker's canonical labels (`work-on`, `top-priority`, `needs-human`, `question`, `planning`, …) in every monitored repository, with canonical colours and descriptions, and deletes the worker labels that have since been retired. GitHub's stock `good first issue` and `help wanted` are never deleted. Supports `--dry-run`.                                                                                                                                                                                                                                                                                                                                                 | Not in practice — see below for what skipping it breaks.                                                                                    |
-| `workflow-sync`                 | Repo-side. Audits each monitored repository's GitHub Actions workflows and raises issues for missing protections. Writes nothing but issues. Each body's YAML is rendered with the action pins **resolved at filing time** — once per run, shared by every repository — so the implementer is handed the highest release past the supply-chain quarantine window rather than the catalogue's frozen SHA; an action whose lookup fails keeps its catalogue SHA and logs one `[workflow-sync] pin resolution failed:` line. The body tells the implementer to copy the YAML and its pins as given, and lists the file-scoped checks the committed file must pass. A `--dry-run` renders no body and resolves no pin. | Yes — idempotent housekeeping; the audit simply runs later.                                                                                 |
-| `best-practices-sync`           | Repo-side. Audits workflows for best-practice findings and files (or updates) one follow-up issue per repository.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Yes — same housekeeping category.                                                                                                           |
-| `best-practices-relabel`        | Repo-side. One-off back-fill of severity and category labels onto best-practice issues filed before those labels existed. Supports `--dry-run`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Yes — internal maintenance; not part of `setup all`, and a fresh setup has nothing to relabel.                                              |
-| `gitignore-sync`                | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Yes, but recommended — the safety blocks exist for a reason.                                                                                |
-| `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty.                                                                                                                                                                                                                                                                                                                                                                        | Yes, but it is the step that tells you access is wrong _before_ the first run does.                                                         |
-| `branch-protection-sync`        | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Yes — but without it merges are not gated the way a scripted setup leaves them.                                                             |
-| `copilot-review-mode`           | Host-only. Asks whether `repo-settings-harden` turns Copilot code review on, off, or leaves it, stating that each review is billed, and records the answer as `copilot_code_review` in `.config.json`. Never prompts or writes without a terminal.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Yes — an unanswered host is `leave`, which changes nothing.                                                                                 |
-| `repo-settings-harden`          | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use and what the workflow-sync templates bring, secret scanning, CodeQL default setup and private vulnerability reporting on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), code-owner review once CODEOWNERS is on the default branch, and Copilot code review on or off as `copilot_code_review` says. See [Repository settings hardening](#repository-settings-hardening).                                                                | Yes — but the repositories stay open to the settings findings the weekly audit files.                                                       |
-| `backfill-idle-task-labels`     | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Yes — a fresh setup has nothing to back-fill.                                                                                               |
-| `label-colour-reconcile`        | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`.                                                                                                                                                                                                                                                                                                                                                                                    | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table.                                          |
-| `hooks`                         | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | No.                                                                                                                                         |
-| `scheduled-task`                | Registers the Windows Task Scheduler entry — the LaunchAgent's twin. `--status` / `--uninstall` as for `launchagent`; `--powershell` names the PowerShell host the task should run under.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Yes — same hand-off to the [Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service).                                              |
-| `all`                           | The default. Runs the full sequence: `prerequisites` (fatal on failure), then `config`, the repo-side syncs and back-fill (each non-fatal), then `hooks`. `launchagent` and `screenshot` join in only when `VIBE_SETUP_LAUNCHAGENT=true` / `VIBE_SETUP_SCREENSHOT_SUPPORT=true`. `best-practices-relabel` is never part of it.                                                                                                                                                                                                                                                                                                                                                                                     | —                                                                                                                                           |
+| Subcommand | What it does | Skippable? |
+| --- | --- | --- |
+| `prerequisites` | Probes the host: `git`, an authenticated `gh`, `deno`, the `claude` CLI, and a working container runtime plus worker image. Changes nothing on GitHub. On an interactive host each missing tool is offered as an install, one prompt at a time; `--auto-install` consents to every offer in advance. | No — it is the first row of the checklist below. |
+| `config` | Writes `.config.json` from `VIBE_*` environment variables. Host-only. | Yes, if you hand-wrote the file per [the config section](#manual-setup-writing-configjson). The file itself is not optional. |
+| `launchagent` | Installs the macOS LaunchAgent (background service). `--status` asks launchd (`launchctl print gui/<uid>/<label>`) and reports `installed`, `plist-not-loaded` (the plist is on disk but launchd has no such service — nothing is running the worker), or `not-installed`; `--uninstall` removes it. Re-running `launchagent` on a `plist-not-loaded` host bootstraps the agent back rather than reporting it up to date. | Yes — background services are the [Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service)'s job, after the first foreground run. |
+| `screenshot` | Installs Playwright MCP on the host so the worker can capture page screenshots. | Yes — a convenience; nothing else depends on it. |
+| `label-sync` | Repo-side. Creates or updates the worker's canonical labels (`work-on`, `top-priority`, `needs-human`, `question`, `planning`, …) in every monitored repository, with canonical colours and descriptions, and deletes the worker labels that have since been retired. GitHub's stock `good first issue` and `help wanted` are never deleted. Supports `--dry-run`. | Not in practice — see below for what skipping it breaks. |
+| `workflow-sync` | Repo-side. Audits each monitored repository's GitHub Actions workflows and raises issues for missing protections. Writes nothing but issues. Each body's YAML is rendered with the action pins **resolved at filing time** — once per run, shared by every repository — so the implementer is handed the highest release past the supply-chain quarantine window rather than the catalogue's frozen SHA; an action whose lookup fails keeps its catalogue SHA and logs one `[workflow-sync] pin resolution failed:` line. The body tells the implementer to copy the YAML and its pins as given, and lists the file-scoped checks the committed file must pass. A `--dry-run` renders no body and resolves no pin. | Yes — idempotent housekeeping; the audit simply runs later. |
+| `best-practices-sync` | Repo-side. Audits workflows for best-practice findings and files (or updates) one follow-up issue per repository. | Yes — same housekeeping category. |
+| `best-practices-relabel` | Repo-side. One-off back-fill of severity and category labels onto best-practice issues filed before those labels existed. Supports `--dry-run`. | Yes — internal maintenance; not part of `setup all`, and a fresh setup has nothing to relabel. |
+| `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |
+| `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
+| `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
+| `copilot-review-mode` | Host-only. Asks whether `repo-settings-harden` turns Copilot code review on, off, or leaves it, stating that each review is billed, and records the answer as `copilot_code_review` in `.config.json`. Never prompts or writes without a terminal. | Yes — an unanswered host is `leave`, which changes nothing. |
+| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use and what the workflow-sync templates bring, secret scanning, CodeQL default setup and private vulnerability reporting on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), code-owner review once CODEOWNERS is on the default branch, and Copilot code review on or off as `copilot_code_review` says. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
+| `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
+| `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
+| `hooks` | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only. | No. |
+| `scheduled-task` | Registers the Windows Task Scheduler entry — the LaunchAgent's twin. `--status` / `--uninstall` as for `launchagent`; `--powershell` names the PowerShell host the task should run under. | Yes — same hand-off to the [Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service). |
+| `all` | The default. Runs the full sequence: `prerequisites` (fatal on failure), then `config`, the repo-side syncs and back-fill (each non-fatal), then `hooks`. `launchagent` and `screenshot` join in only when `VIBE_SETUP_LAUNCHAGENT=true` / `VIBE_SETUP_SCREENSHOT_SUPPORT=true`. `best-practices-relabel` is never part of it. | — |
 
 ### Required versus convenience
 
 Two things are genuinely not optional: **`hooks`** and a **valid
 `.config.json`** (however produced). Everything repo-side is idempotent
-housekeeping that the automated run performs non-fatally — a failure there warns
-and moves on, and a later re-run converges.
+housekeeping that the automated run performs non-fatally — a failure there
+warns and moves on, and a later re-run converges.
 
 **`label-sync` deserves special mention.** The worker's discovery is
-label-driven: humans steer it by applying labels (`top-priority`, `work-on`, …)
-and the worker reports back through labels (`needs-human`, `question`, `failed`,
-…). Skip `label-sync` and none of those labels exist in the monitored
-repositories — issues cannot be labelled for pickup, and the worker's own
-labelling calls fail. Run it.
+label-driven: humans steer it by applying labels (`top-priority`,
+`work-on`, …) and the worker reports back through labels (`needs-human`,
+`question`, `failed`, …). Skip `label-sync` and none of those labels exist
+in the monitored repositories — issues cannot be labelled for pickup, and
+the worker's own labelling calls fail. Run it.
 
-It is also the one repo-side phase that **deletes**, so it takes a `--dry-run`
-(Issue #1295). Label deletion is irreversible — the label's attachment to every
-issue goes with it — so on a repository you have just added, plan first and read
-the report before letting the real pass run:
+It is also the one repo-side phase that **deletes**, so it takes a
+`--dry-run` (Issue #1295). Label deletion is irreversible — the label's
+attachment to every issue goes with it — so on a repository you have just
+added, plan first and read the report before letting the real pass run:
 
 ```bash
 cd worker/deno && deno task setup label-sync --script-dir ../.. \
@@ -1880,23 +1902,23 @@ and delete. The two labels GitHub ships with every repository —
 `good first issue` and `help wanted` — are never deleted, whatever the
 deprecated list says.
 
-An operator who wants the script's entire repo-side effect without any of its
-prompts can run `setup all` — it is the same sequence the script drives, minus
-the interactive layer.
+An operator who wants the script's entire repo-side effect without any of
+its prompts can run `setup all` — it is the same sequence the script drives,
+minus the interactive layer.
 
 ### Equivalence checklist
 
-A manual setup is equivalent to a scripted one when every row below ticks. All
-commands run from the checkout root.
+A manual setup is equivalent to a scripted one when every row below ticks.
+All commands run from the checkout root.
 
-| Check                                              | Proven by                                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites probe passes                         | `cd worker/deno && deno task setup prerequisites --script-dir ../.. --config-path ../../.config.json` ends `All host prerequisites satisfied (run mode: container)`.                                                                                                                                                                            |
-| Credential directory passes the startup preflight  | `~/.vibe-coder/credentials` exists with mode `0700`, files `0600`, holding the material described in [the credentials section](#manual-setup-credentials). The first run proves this: a bad directory aborts with a [named preflight error](TROUBLESHOOTING.md#-the-worker-exits-on-a-credential-preflight-error).                              |
-| `.config.json` parses and names the intended repos | Every repo-side subcommand loads it and fails loudly on a parse error; `verify-monitored-collaborator` additionally confirms the repos it names are reachable as the worker identity.                                                                                                                                                           |
-| Labels present in each monitored repo              | `gh label list --repo <owner>/<repo>` shows the worker's labels — or re-run `label-sync` and see every repository report `0 created, 0 updated`.                                                                                                                                                                                                |
-| Hooks installed                                    | `.git/hooks/pre-commit` exists in the checkout and delegates to `hooks/pre-commit`.                                                                                                                                                                                                                                                             |
-| Worker image present                               | `deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash` names the tag, and the runtime's `image inspect` finds it locally ([which image is this host meant to run?](TROUBLESHOOTING.md#which-image-is-this-host-meant-to-run)). A missing image is not a failure — the first run builds it, at the cost of several minutes. |
+| Check | Proven by |
+| --- | --- |
+| Prerequisites probe passes | `cd worker/deno && deno task setup prerequisites --script-dir ../.. --config-path ../../.config.json` ends `All host prerequisites satisfied (run mode: container)`. |
+| Credential directory passes the startup preflight | `~/.vibe-coder/credentials` exists with mode `0700`, files `0600`, holding the material described in [the credentials section](#manual-setup-credentials). The first run proves this: a bad directory aborts with a [named preflight error](TROUBLESHOOTING.md#-the-worker-exits-on-a-credential-preflight-error). |
+| `.config.json` parses and names the intended repos | Every repo-side subcommand loads it and fails loudly on a parse error; `verify-monitored-collaborator` additionally confirms the repos it names are reachable as the worker identity. |
+| Labels present in each monitored repo | `gh label list --repo <owner>/<repo>` shows the worker's labels — or re-run `label-sync` and see every repository report `0 created, 0 updated`. |
+| Hooks installed | `.git/hooks/pre-commit` exists in the checkout and delegates to `hooks/pre-commit`. |
+| Worker image present | `deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash` names the tag, and the runtime's `image inspect` finds it locally ([which image is this host meant to run?](TROUBLESHOOTING.md#which-image-is-this-host-meant-to-run)). A missing image is not a failure — the first run builds it, at the cost of several minutes. |
 
 ### First run
 
@@ -1908,26 +1930,27 @@ Run the worker once, in the foreground, from the checkout root:
 ```
 
 This is one cycle, not a loop, and it is the moment the manual path proves
-itself. A healthy first run: the launcher resolves the run mode to `container`,
-finds the worker image (or builds it — several minutes, once), launches the
-least-privilege container, the credential preflight passes silently, and the
-worker syncs its clone and polls the monitored repositories. On a fresh setup
-with no labelled work it finds nothing to claim and exits cleanly — that _is_
-success. Activity lands in `worker.log` in the host log directory
+itself. A healthy first run: the launcher resolves the run mode to
+`container`, finds the worker image (or builds it — several minutes, once),
+launches the least-privilege container, the credential preflight passes
+silently, and the worker syncs its clone and polls the monitored
+repositories. On a fresh setup with no labelled work it finds nothing to
+claim and exits cleanly — that *is* success. Activity lands in
+`worker.log` in the host log directory
 ([Where the logs go](CONFIGURATION.md#-where-the-logs-go)).
 
 An unhealthy first run fails loudly with a named cause — a
 [credential preflight error](TROUBLESHOOTING.md#-the-worker-exits-on-a-credential-preflight-error)
-such as `credential-dir-missing`, a run-mode or runtime-detection failure, or an
-image build failure. Every one of them is covered in the
+such as `credential-dir-missing`, a run-mode or runtime-detection failure,
+or an image build failure. Every one of them is covered in the
 [Troubleshooting Guide](TROUBLESHOOTING.md).
 
-**Patching the launcher while you debug?** Every launch updates this checkout to
-its default branch first (Issue #512), so a fix applied by hand — the sort a new
-platform tends to need, next to the runtime the host actually has (Podman as
-well as Docker on Linux) and the providers `.config.json` names — is discarded
-by the next run. The update says so when it discards work, naming the opt-out;
-set it for the launcher and the checkout is left exactly as it is:
+**Patching the launcher while you debug?** Every launch updates this checkout
+to its default branch first (Issue #512), so a fix applied by hand — the sort a
+new platform tends to need, next to the runtime the host actually has (Podman
+as well as Docker on Linux) and the providers `.config.json` names — is
+discarded by the next run. The update says so when it discards work, naming the
+opt-out; set it for the launcher and the checkout is left exactly as it is:
 
 ```bash
 VIBE_SKIP_CHECKOUT_UPDATE=1 ./run.sh     # macOS / Linux
@@ -1940,7 +1963,7 @@ set never picks up new code. See
 
 ### Hand-off
 
-Once a foreground run is clean, setup is done. Making it run unattended — cron,
-systemd, launchd or Task Scheduler — is the
-[Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service)'s job, and
-this document stops here.
+Once a foreground run is clean, setup is done. Making it run unattended —
+cron, systemd, launchd or Task Scheduler — is the
+[Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service)'s job,
+and this document stops here.
