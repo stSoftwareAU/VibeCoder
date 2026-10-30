@@ -1076,6 +1076,7 @@ Deno.test("sweepMergedPrIssues - a merged PR whose title only mentions #N in pas
   assertEquals(result.closed, 0);
   assertEquals(result.candidates, 0);
   assertEquals(result.records.length, 1, JSON.stringify(result.records));
+  assertEquals(result.records[0]?.repo, "org/repo");
   assertEquals(result.records[0]?.outcome, "skipped");
   assertEquals(result.records[0]?.issueNumber, 2463);
   assertEquals(result.records[0]?.prNumber, 2472);
@@ -1107,6 +1108,50 @@ Deno.test("sweepMergedPrIssues - the same body with the delimited (Issue #N) tit
 
   assertEquals(result.closed, 1);
   assertEquals(calls.closes.map((c) => c.issue), ["2463"]);
+});
+
+Deno.test("sweepMergedPrIssues - a closed-unmerged PR that bare-mentions #N alone leaves no record (Issue #4478)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const world = landedWorld({
+    issues: [{
+      number: 2463,
+      title: "Record the env readers in the chunk-13 ledger",
+      labels: ["bug"],
+      createdAt: "2026-08-26T00:00:00Z",
+    }],
+    prs: [{
+      number: 2466,
+      title: "Chunk 13d draft: file #2463 for the ledger",
+      mergedAt: null,
+      closedAt: new Date().toISOString(),
+    }],
+  });
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(world, calls),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(result.records, []);
+  assertEquals(result.closed, 0);
+  assertEquals(calls.closes, []);
+});
+
+Deno.test("sweepMergedPrIssues - a merged PR that does not mention #N at all leaves no record (Issue #4478)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(
+      bareMentionWorld({ title: "Tidy the ledger formatting", body: "" }),
+      calls,
+    ),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(result.records, []);
+  assertEquals(result.closed, 0);
+  assertEquals(calls.closes, []);
 });
 
 Deno.test("sweepMergedPrIssues - a bare-mention PR already recorded as processed adds no record and closes nothing (Issue #4478)", async () => {

@@ -118,3 +118,20 @@ stages only the branch's .rs files, not an unrelated uncommitted edit"). Both
 are Rust-formatter tests unrelated to this change (31,099 other tests passed); I
 did not run them against the base branch here, and the serial pass did not run
 because the parallel pass failed. `deno task pr-summary-check`: 0 gates blocked.
+
+## Mutation check: changed lines are pinned
+
+Three mutants of changed lines in `worker/deno/lib/merged_pr_issue_sweep.ts`
+survived the first run; each now turns a test red (verified by applying each
+mutation alone, then restoring the file):
+
+- `:430` dropped operand `pr.merged === true` → "a closed-unmerged PR that
+  bare-mentions #N alone leaves no record" is red (a record is pushed for the
+  unmerged PR).
+- `:430` dropped operand `prTitleReferencesIssue(pr.title, issue.number)` → "a
+  merged PR that does not mention #N at all leaves no record" is red.
+- `:436` deleted object property `repo` → the bare-mention test now asserts
+  `records[0].repo === "org/repo"` and is red (checked with `--no-check`, as the
+  deletion is also a type error).
+
+`deno test -A tests/merged_pr_issue_sweep_test.ts`: 37 passed, 0 failed.
