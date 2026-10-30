@@ -53,24 +53,24 @@ Prompt and docs only; no UI files touched.
 
 Related existing rules checked: the "never file a follow-up issue" rules in
 `prompts/issue/prompt.md`, `prompts/coding_guidelines/prompt.md` and
-`prompts/pr_feedback/prompt.md` (unchanged, still true: the undone part stays
-on the same open issue); the #3761 Standards Review rule for criteria-less
-issues (kept intact); `prompt_builder.ts:321`, which already says `Part of`
-when the block marks a criterion `missing`. Applying the change to this PR's
-own diff: this issue has no criteria heading and nothing in it is left undone,
-so `Closes #4477` is the right line under the new rule.
+`prompts/pr_feedback/prompt.md` (unchanged, still true: the undone part stays on
+the same open issue); the #3761 Standards Review rule for criteria-less issues
+(kept intact); `prompt_builder.ts:321`, which already says `Part of` when the
+block marks a criterion `missing`. Applying the change to this PR's own diff:
+this issue has no criteria heading and nothing in it is left undone, so
+`Closes #4477` is the right line under the new rule.
 
 ## Test Plan
 
 - New `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts`, six
   tests, all named `(Issue #4477)`:
-  - Behavioural, on real code: an issue under `## Wanted` yields no criteria;
-    a summary with one `missing` entry and no `reviewer:` field passes
+  - Behavioural, on real code: an issue under `## Wanted` yields no criteria; a
+    summary with one `missing` entry and no `reviewer:` field passes
     `validateAcceptanceClosure` (not applicable) and `validateIndependentReview`
     and assembles to `Part of #123` plus `## Not closing #123` with no closing
     keyword; the same issue with no block still assembles to `Closes #123`.
-    These pin the premise the prompt change relies on, so they are green on
-    base by design.
+    These pin the premise the prompt change relies on, so they are green on base
+    by design.
   - Prompt pins: the closure section drops the old phrase and gains
     `states no criteria heading`; the issue prompt carries the new bullet and
     the "no reviewer provenance marker" instruction; the pr_feedback prompt
