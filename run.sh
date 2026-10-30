@@ -926,6 +926,30 @@ done
 # Declared here so the first reading below can consult it under `set -u`; the
 # volume init later resets and fills it (Issue #478).
 trim_refused_volumes=()
+# Whether this launch declined to recreate a work volume because the host is
+# still short after the recreate would clear nothing (Issue #4498). Set by
+# report_unrecovered only when its caller passes --declined: the shortfall
+# gate, the repeat-reading gate and no resettable volume. A recreate that was
+# tried and failed, or that left the host short, is not a decline (#4500
+# review). Written into the reading so the worker can see it.
+work_volume_recreate_declined=false
+# Whether this launch recreated a work volume and the host was still below its
+# floor afterwards, with that reading recorded so the next launch will not
+# recreate again against an unchanged reading (Issue #4498, #4500 review).
+# Distinct from the declined flag: the recreate ran. Written into the reading
+# so the worker's stop reason does not promise another recreate.
+work_volume_recreate_unrecovered=false
+# The host's largest directories, as reported by reclaim-host-caches when the
+# host is still below its claiming floor after the cache reclaim (Issue #4498).
+# Empty until a reclaim reports one.
+host_largest_dirs=""
+
+# JSON string content: backslash and double quote escaped, control characters
+# dropped. The directory names come from the host filesystem, so they are not
+# trusted to be JSON-safe (Issue #4498).
+json_escape_string() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '[:cntrl:]'
+}
 
 write_host_disk_reading() {
   local gate="${HOME}" store="${HOME:-}/Library/Application Support/com.apple.container"
@@ -947,8 +971,21 @@ write_host_disk_reading() {
   # rebuild — that rebuild is the ratchet.
   local trim_refused=false
   ((${#trim_refused_volumes[@]})) && trim_refused=true
-  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s","workVolumeTrimRefused":%s}\n' \
-    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" "${trim_refused}" >"${tmp}" 2>/dev/null &&
+  # Issue #4498: whether a work volume recreate was declined this launch, and
+  # the host's largest directories when a cache reclaim left the host short.
+  # The list is present only when there is one, and workVolumeRecreateUnrecovered
+  # only after a recreate step that left the host short, so the worker's strict
+  # parser sees the same shape as before on a launch with neither.
+  local declined=false largest_field="" unrecovered_field=""
+  [[ "${work_volume_recreate_declined}" == true ]] && declined=true
+  if [[ "${work_volume_recreate_unrecovered}" == true ]]; then
+    unrecovered_field=',"workVolumeRecreateUnrecovered":true'
+  fi
+  if [[ -n "${host_largest_dirs}" ]]; then
+    largest_field=",\"largestHostDirectories\":\"$(json_escape_string "${host_largest_dirs}")\""
+  fi
+  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s","workVolumeTrimRefused":%s,"workVolumeRecreateDeclined":%s%s%s}\n' \
+    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" "${trim_refused}" "${declined}" "${unrecovered_field}" "${largest_field}" >"${tmp}" 2>/dev/null &&
     mv -f "${tmp}" "${file}" 2>/dev/null; then
     return 0
   fi
@@ -1141,6 +1178,11 @@ fi
 # the floor is reported as `[WORK_VOLUME_UNRECOVERED]` rather than as a fix.
 # The launch continues either way: a host that cannot claim must still run and
 # report (Issue #477), and the hard floor below is what stops it.
+#
+# Order (Issue #4498): the first thing either path does on a host below its
+# floor is reclaim regenerable build caches (reclaim_host_caches). Only then
+# does any decision here weigh recreating a volume, and a reclaim that brings
+# the host back above its floor means no volume is destroyed at all.
 HEAL_STATE_FILE="${VIBE_WORK_VOLUME_HEAL_STATE:-${HOME}/.vibe-coder/work-volume-heal}"
 
 # Whether the previous launch recorded that this runtime refused to trim the
@@ -1221,11 +1263,131 @@ volume_store_kb() {
   du -sk "${path}" 2>/dev/null | awk 'END {print $1}'
 }
 
+# Host build-cache reclaim (Issue #4498). A developer host below its claiming
+# floor is mostly regenerable build caches - stale cargo `target` directories
+# and their kind - and nothing ever removed them, so the launcher went on
+# recreating work volumes it could not make room with. Before any decision
+# that destroys a work volume, the launch asks reclaim-host-caches to remove
+# the caches that are old, unused and tagged CACHEDIR.TAG, oldest first, until
+# the floor and its headroom are met. Every decision lives in that command;
+# this shell runs it once per launch, logs what it says, and carries on
+# whatever it finds.
+#
+# Its stdout lines are prefixed [HOST_CACHE_RECLAIM]. The last one, present
+# only when the host is still below the floor, names the largest host
+# directories; the text after `largest host directories: ` is kept in
+# host_largest_dirs for the unrecovered message and the host-disk reading.
+# Exit 0 whenever the command ran. Any other status means the reclaim itself
+# failed: that is said loudly and never fatal, because a launch that cannot
+# reclaim must still run and report (Issue #477).
+host_cache_reclaim_done=""
+
+# Logs a failed reclaim on stderr and in run_core.log. Never fatal.
+host_cache_reclaim_failed() {
+  local detail="[HOST_CACHE_RECLAIM] failed - $1; the launch carries on without the host cache reclaim (Issue #4498)"
+  echo "[run.sh] ${detail}" >&2
+  log_run_core "${detail}"
+}
+
+# Arguments: the claiming floor, in kilobytes. Runs the reclaim at most once per
+# launch: the pre-build reset and the post-init heal both reach it, and the
+# second call must not reclaim again. Always returns 0.
+reclaim_host_caches() {
+  local floor_kb="$1" avail_kb out line status=0
+  [[ -z "${host_cache_reclaim_done}" ]] || return 0
+  host_cache_reclaim_done=1
+  avail_kb="$(host_disk_field_kb 2)"
+  if ! [[ "${avail_kb}" =~ ^[0-9]+$ ]]; then
+    host_cache_reclaim_failed "the host's free space could not be measured, so reclaim-host-caches was not run"
+    return 0
+  fi
+  if [[ -z "${DENO_CMD}" ]]; then
+    host_cache_reclaim_failed "there is no Deno runtime to run reclaim-host-caches"
+    return 0
+  fi
+  log_run_core "host-cache-reclaim: $((avail_kb / 1024)) MB free on ${disk_gate_path} is below the claiming floor of $((floor_kb / 1024)) MB - reclaiming regenerable build caches before any work volume is touched (Issue #4498)"
+  out="$(bounded 600 "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write --allow-run \
+    "${BASE_DIR}/worker/deno/mod.ts" reclaim-host-caches \
+    --base-dir "${BASE_DIR}" \
+    --free-kb "${avail_kb}" \
+    --floor-kb "${floor_kb}" \
+    --protect "${BASE_DIR}" </dev/null)" || status=$?
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    echo "${line}" >&2
+    log_run_core "${line}"
+    case "${line}" in
+      "[HOST_CACHE_RECLAIM] largest host directories: "*)
+        host_largest_dirs="${line#*largest host directories: }" ;;
+    esac
+  done <<<"${out}"
+  if ((status != 0)); then
+    host_cache_reclaim_failed "reclaim-host-caches exited ${status}"
+  fi
+  return 0
+}
+
+# Runs the reclaim only when the host is below its claiming floor. Called
+# before the heal decides anything, so a launch whose pre-build reset was never
+# reached (the image already exists) still reclaims first. Always returns 0.
+reclaim_host_caches_if_short() {
+  local avail_kb total_kb floor_kb
+  avail_kb="$(host_disk_field_kb 2)"
+  total_kb="$(host_disk_field_kb 4)"
+  [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[1-9][0-9]*$ ]] || return 0
+  floor_kb="$(claim_floor_kb "${total_kb}")"
+  if ((avail_kb < floor_kb)); then
+    reclaim_host_caches "${floor_kb}"
+  fi
+  return 0
+}
+
+# The host is above its floor, so no unrecovered report is outstanding and the
+# last one's list is no longer the one to deduplicate against (Issue #4498).
+forget_host_largest_dirs() {
+  rm -f "${HEAL_STATE_FILE}-largest" 2>/dev/null || true
+}
+
 # A heal that did not clear the floor reports what is still wrong. Never a
 # silent retry, and never dressed up as a fix.
+#
+# Issue #4498: the message names the host's largest directories when the cache
+# reclaim reported them, and a launch that reports the same paths as the last
+# one is shown briefly on stderr - the full message stays in run_core.log. The
+# digest covers the paths only, not their sizes, so a directory that is merely
+# growing does not reopen the alert.
+#
+# Usage: report_unrecovered [--declined] <message>
 report_unrecovered() {
-  echo "[run.sh] [WORK_VOLUME_UNRECOVERED] $1 (Issues #478, #226)" >&2
-  log_run_core "[WORK_VOLUME_UNRECOVERED] $1 (Issues #478, #226)"
+  if [[ "${1:-}" == --declined ]]; then
+    work_volume_recreate_declined=true
+    shift
+  fi
+  local message="$1" full digest last_digest=""
+  local stored="${HEAL_STATE_FILE}-largest"
+  if [[ -n "${host_largest_dirs}" ]]; then
+    message="${message} - largest host directories: ${host_largest_dirs}"
+  fi
+  full="[WORK_VOLUME_UNRECOVERED] ${message} (Issues #478, #226)"
+  if [[ -z "${host_largest_dirs}" ]]; then
+    rm -f "${stored}" 2>/dev/null || true
+    echo "[run.sh] ${full}" >&2
+    log_run_core "${full}"
+    return 0
+  fi
+  digest="$(printf '%s' "${host_largest_dirs}" | sed -e 's/ ([0-9.]* GB)//g' -e 's/ (unmeasured)//g' | cksum)"
+  last_digest="$(cat "${stored}" 2>/dev/null || true)"
+  mkdir -p "$(dirname "${stored}")" 2>/dev/null || true
+  printf '%s\n' "${digest}" >"${stored}" 2>/dev/null || true
+  if [[ "${digest}" == "${last_digest}" ]]; then
+    echo "[run.sh] [WORK_VOLUME_UNRECOVERED] unchanged since the last launch (details in the run log)" >&2
+    log_run_core "${full}"
+    return 0
+  fi
+  echo "[run.sh] ${full}" >&2
+  log_run_core "${full}"
 }
 
 # The size below which a volume is never reset (Issue #2117). Resetting a
@@ -1336,6 +1498,11 @@ unrecovered_repeat_detail() {
     "${disk_gate_path}" "$(($1 / 1024))" "$(($2 / 1024))" "$3"
 }
 
+# Issue #4498: a host below its claiming floor first reclaims its regenerable
+# build caches (reclaim_host_caches, once per launch), and only a host still
+# short after that is weighed against the volumes below. A reclaim that brings
+# the host back above the floor returns here with no volume destroyed.
+#
 # Issue #2092: a host below its claiming floor resets any work volume big
 # enough to matter BEFORE the image build. The reset the volume init drives
 # (below) needs an image — the init runs inside it — so a host whose build is
@@ -1357,7 +1524,22 @@ reset_work_volumes_before_build() {
   [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[1-9][0-9]*$ ]] || return 0
   floor_kb="$(claim_floor_kb "${total_kb}")"
   host_disk_trim_refused && trim_refused=true
-  [[ "${trim_refused}" != true ]] && ((avail_kb >= floor_kb)) && return 0
+
+  # Issue #4498: reclaim regenerable build caches first. Nothing below may
+  # destroy a work volume until the host has been given the chance to recover
+  # from its own caches, and a reclaim that recovers it is the whole fix.
+  if ((avail_kb < floor_kb)); then
+    reclaim_host_caches "${floor_kb}"
+    local reclaimed_kb
+    reclaimed_kb="$(host_disk_field_kb 2)"
+    if [[ "${reclaimed_kb}" =~ ^[0-9]+$ ]]; then
+      avail_kb="${reclaimed_kb}"
+    fi
+  fi
+  if [[ "${trim_refused}" != true ]] && ((avail_kb >= floor_kb)); then
+    forget_host_largest_dirs
+    return 0
+  fi
   floor_detail="$(claim_floor_detail "${total_kb}")"
   local min_kb need_kb
   min_kb="$(volume_reset_min_kb)"
@@ -1368,13 +1550,13 @@ reset_work_volumes_before_build() {
   if ((avail_kb < floor_kb)); then
     local recorded_kb held_kb required_kb
     if recorded_kb="$(unrecovered_free_kb "${avail_kb}")"; then
-      report_unrecovered "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "the work volumes")"
+      report_unrecovered --declined "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "the work volumes")"
       return 0
     fi
     required_kb="$(volume_reset_required_kb "${avail_kb}" "${floor_kb}")"
     if held_kb="$(resettable_held_kb ${volume_names[@]+"${volume_names[@]}"})" &&
       ((held_kb < required_kb)); then
-      report_unrecovered "$(volume_cannot_cover_detail "the resettable volumes" "${held_kb}" "$((floor_kb - avail_kb))" "${required_kb}")"
+      report_unrecovered --declined "$(volume_cannot_cover_detail "the resettable volumes" "${held_kb}" "$((floor_kb - avail_kb))" "${required_kb}")"
       return 0
     fi
   fi
@@ -1750,6 +1932,10 @@ run_volume_init
 # exists, else HOME (the same filesystem on macOS).
 
 heal_untrimmable_volumes() {
+  # Issue #4498: a host below its floor reclaims its build caches before this
+  # heal may destroy anything. Normally a no-op: the pre-build reset has already
+  # reclaimed this launch, and reclaim_host_caches runs once per launch.
+  reclaim_host_caches_if_short
   ((${#trim_refused_volumes[@]})) || return 0
 
   local avail_kb total_kb floor_kb volume
@@ -1766,6 +1952,7 @@ heal_untrimmable_volumes() {
     # The host is above its floor, so whatever a past recreate failed to
     # recover has been recovered by something else (Issue #2313).
     forget_unrecovered_free_kb
+    forget_host_largest_dirs
     log_run_core "work-volume: trim refused for ${trim_refused_volumes[*]}; $((avail_kb / 1024)) MB free is above the claiming ${floor_detail} - the image is ratcheting but the host is not short (Issue #478)"
     return 0
   fi
@@ -1783,7 +1970,7 @@ heal_untrimmable_volumes() {
     fi
   done
   if ((${#resettable_refused[@]} == 0)); then
-    report_unrecovered "the runtime refused to trim ${trim_refused_volumes[*]} and none of them may be destroyed to reclaim disk - the host's missing space is somewhere else"
+    report_unrecovered --declined "the runtime refused to trim ${trim_refused_volumes[*]} and none of them may be destroyed to reclaim disk - the host's missing space is somewhere else"
     return 0
   fi
 
@@ -1794,7 +1981,7 @@ heal_untrimmable_volumes() {
   # changed by more than a gigabyte.
   local recorded_kb
   if recorded_kb="$(unrecovered_free_kb "${avail_kb}")"; then
-    report_unrecovered "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "${resettable_refused[*]}")"
+    report_unrecovered --declined "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "${resettable_refused[*]}")"
     return 0
   fi
 
@@ -1813,7 +2000,7 @@ heal_untrimmable_volumes() {
     fi
   done
   if ((measured)) && ((held_kb < sum_required_kb)); then
-    report_unrecovered "$(volume_cannot_cover_detail "${resettable_refused[*]}" "${held_kb}" "$((floor_kb - avail_kb))" "${sum_required_kb}")"
+    report_unrecovered --declined "$(volume_cannot_cover_detail "${resettable_refused[*]}" "${held_kb}" "$((floor_kb - avail_kb))" "${sum_required_kb}")"
     return 0
   fi
 
@@ -1857,13 +2044,18 @@ heal_untrimmable_volumes() {
   avail_kb="$(host_disk_field_kb 2)"
   if [[ "${avail_kb}" =~ ^[0-9]+$ ]] && ((avail_kb >= floor_kb)); then
     forget_unrecovered_free_kb
+    forget_host_largest_dirs
     log_run_core "work-volume: the recreate returned ${disk_gate_path} to $((avail_kb / 1024)) MB free, above the $((floor_kb / 1024)) MB claiming floor (Issue #478)"
     return 0
   fi
   # Remember the reading that proved it (Issue #2313), so the next launch
   # reports where the space went rather than destroying the clones again.
+  # Flagged only when the reading was recorded: the next launch declines
+  # against that record, so an unrecorded reading would be followed by a
+  # recreate and the flag would promise the opposite.
   if [[ "${avail_kb}" =~ ^[0-9]+$ ]]; then
     record_unrecovered_free_kb "${avail_kb}"
+    work_volume_recreate_unrecovered=true
   fi
   report_unrecovered "the recreate left ${disk_gate_path} with $((avail_kb / 1024)) MB free, still below the $((floor_kb / 1024)) MB claiming floor - the work volume is not where this host's space went"
 }

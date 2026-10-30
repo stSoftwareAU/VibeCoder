@@ -96,6 +96,12 @@ function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, BASH_LAUNCHER);
 }
 
+/** The value that follows `flag` in a recorded argument list (Issue #4498). */
+function argAfter(args: string[], flag: string): string | undefined {
+  const at = args.indexOf(flag);
+  return at === -1 ? undefined : args[at + 1];
+}
+
 /**
  * `run.sh` under the usual 022 umask (Issue #1299).
  *
@@ -2083,6 +2089,341 @@ Deno.test("run.sh - the pre-build reset spares the approval store however much i
     const log = await runCoreLog(harness);
     assertStringIncludes(log, `pre-build reset of ${WORK_VOLUME_NAME}`);
     assertStringIncludes(log, `leaving ${APPROVAL_STATE_VOLUME_NAME} alone`);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- Reclaiming regenerable host build caches before a volume is touched (#4498)
+
+Deno.test("run.sh - a host below its floor reclaims its build caches before any work volume is recreated (Issue #4498)", async () => {
+  // A developer host below its floor is mostly stale cargo `target` trees. The
+  // work volume here could cover the shortfall, so without the reclaim the
+  // pre-build reset would destroy it. Once the reclaim brings the host back
+  // above the floor, the reset has nothing to do and the volume survives.
+  const floorKb = 15 * 1024 * 1024;
+  const availKb = floorKb - 32 * 1024;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_DF_AVAIL_KB: String(availKb),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+    STUB_RECLAIM_STDOUT: [
+      "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (2048.0 MB, idle 960.0 h)",
+      "[HOST_CACHE_RECLAIM] freed 2048.0 MB; est. free 17408.0 MB vs floor 15360.0 MB",
+    ].join("\n"),
+    STUB_RECLAIM_AVAIL_KB_AFTER: String(17 * 1024 * 1024),
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The command ran with the contract's arguments.
+    const args = await recorded(harness, "reclaim-host-caches");
+    assert(args, "a host below its floor must run reclaim-host-caches");
+    assertEquals(argAfter(args, "--free-kb"), String(availKb));
+    assertEquals(argAfter(args, "--floor-kb"), String(floorKb));
+    // The command resolves the host config itself from the checkout, so a
+    // host that moved it with CONFIG_FILE / CONFIG_PATH is honoured (#750).
+    assertEquals(argAfter(args, "--base-dir"), REPO_ROOT);
+    assertEquals(
+      args.includes("--config"),
+      false,
+      `the launcher must not pin the checkout's .config.json, got ${args}`,
+    );
+    assert(args.includes("--protect"), `--protect missing from ${args}`);
+
+    // The reclaim comes before the build, and no volume is removed by any
+    // step of this launch.
+    const order = await invocationOrder(harness);
+    assert(
+      order.indexOf("reclaim-host-caches") >= 0 &&
+        order.indexOf("reclaim-host-caches") < order.indexOf("build"),
+      `the reclaim must run before the image build, got ${order}`,
+    );
+    assertEquals(
+      order.filter((step) => /^volume-(rm|delete|remove)$/.test(step)),
+      [],
+      "the work volume must survive a reclaim that recovers the host",
+    );
+    assertEquals(await removedVolumes(harness), []);
+
+    // The worker still launched, and the reclaim's lines reached the console.
+    assert(await recorded(harness, "run"), "the worker must still start");
+    assertStringIncludes(
+      outcome.stderr,
+      "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target",
+    );
+    assertEquals(
+      outcome.stderr.includes("[WORK_VOLUME_UNRECOVERED]"),
+      false,
+      outcome.stderr,
+    );
+
+    // A recovered host reports no declined recreate and no largest list.
+    const reading = JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+    assertEquals(reading.workVolumeRecreateDeclined, false);
+    assertEquals("largestHostDirectories" in reading, false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a host still short after the reclaim names its largest directories, and an unchanged list is reported briefly (Issue #4498)", async () => {
+  // Still 4 GB short after the reclaim, with a 64 MB work volume that cannot
+  // make up the difference: the recreate is declined, and the alert says where
+  // the space went.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_DF_AVAIL_KB: String(10 * 1024 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    STUB_RECLAIM_STDOUT: [
+      "[HOST_CACHE_RECLAIM] removed /home/tester/src/old-project/target (1024.0 MB, idle 960.0 h)",
+      "[HOST_CACHE_RECLAIM] freed 1024.0 MB; est. free 11264.0 MB vs floor 15360.0 MB",
+      "[HOST_CACHE_RECLAIM] largest host directories: /home/tester/src/big-project/target (8.2 GB); /tmp/vibe-cache (1.1 GB)",
+    ].join("\n"),
+    STUB_RECLAIM_AVAIL_KB_AFTER: String(11 * 1024 * 1024),
+  });
+  const largest =
+    "/home/tester/src/big-project/target (8.2 GB); /tmp/vibe-cache (1.1 GB)";
+  const unrecoveredLines = (stderr: string) =>
+    stderr.split("\n").filter((line) =>
+      line.includes("[WORK_VOLUME_UNRECOVERED]")
+    );
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    // First launch: the full alert, with the largest directories, on stderr.
+    const first = await runLauncher(harness);
+    assertEquals(first.code, 0, first.stderr);
+    const firstLines = unrecoveredLines(first.stderr);
+    assertEquals(firstLines.length, 1, first.stderr);
+    assertStringIncludes(
+      firstLines[0] ?? "",
+      `largest host directories: ${largest}`,
+    );
+    assertEquals(await removedVolumes(harness), [], "the recreate is declined");
+
+    const reading = JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+    assertEquals(reading.workVolumeRecreateDeclined, true);
+    assertEquals(reading.largestHostDirectories, largest);
+
+    // Second, identical launch: the same paths, so the alert is one short line
+    // on stderr, and the full message stays in the run log.
+    const second = await runLauncher(harness);
+    assertEquals(second.code, 0, second.stderr);
+    assertEquals(
+      unrecoveredLines(second.stderr),
+      [
+        "[run.sh] [WORK_VOLUME_UNRECOVERED] unchanged since the last launch (details in the run log)",
+      ],
+    );
+    assertStringIncludes(
+      await runCoreLog(harness),
+      `largest host directories: ${largest}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a host above its claiming floor does not run the cache reclaim (Issue #4498)", async () => {
+  // Above the floor nothing is short, so the reclaim is never asked to remove
+  // anything - even on the build path, where the pre-build reset is the one
+  // that would otherwise look.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_DF_AVAIL_KB: String(100 * 1024 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertEquals(
+      await recorded(harness, "reclaim-host-caches"),
+      null,
+      "a host above its floor must not reclaim",
+    );
+    assertEquals(outcome.stderr.includes("[HOST_CACHE_RECLAIM]"), false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+/** A 64 MB work-volume image in the Apple store, so a recreate has something to hold. */
+async function seedWorkVolume(harness: { tmpDir: string }): Promise<void> {
+  const store =
+    `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+  await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, { recursive: true });
+  await Deno.writeFile(
+    `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+    new Uint8Array(64 * 1024 * 1024),
+  );
+}
+
+/** 32 MB below a 15 GB floor on a 460 GB disk, with the trim refused. */
+const SHORT_HOST_STEADY_STATE = {
+  // The image already exists: the steady-state path, heal_untrimmable_volumes.
+  STUB_IMAGE_INSPECT_EXIT: "0",
+  STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+  STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 32 * 1024),
+  STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+  VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+  VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+  VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+};
+
+Deno.test("run.sh - with the image built, the cache reclaim runs before a trim-refused volume is touched, and a recovered host keeps it (#4500 review)", async () => {
+  const harness = await setupHarness({
+    ...SHORT_HOST_STEADY_STATE,
+    STUB_RECLAIM_STDOUT:
+      "[HOST_CACHE_RECLAIM] freed 2048.0 MB; est. free 17408.0 MB vs floor 15360.0 MB",
+    STUB_RECLAIM_AVAIL_KB_AFTER: String(17 * 1024 * 1024),
+  });
+  try {
+    await seedWorkVolume(harness);
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const order = await invocationOrder(harness);
+    assert(
+      order.includes("reclaim-host-caches"),
+      `the heal step must run the reclaim, got ${order}`,
+    );
+    assertEquals(order.includes("build"), false, "the image already exists");
+    assertEquals(
+      order.filter((step) => /^volume-(rm|delete|remove)$/.test(step)),
+      [],
+      "a reclaim that recovers the host leaves the volume intact",
+    );
+    assertEquals(await removedVolumes(harness), []);
+    assert(await recorded(harness, "run"), "the worker must still start");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - with the image built, a reclaim that does not recover the host still runs before the volume removal (#4500 review)", async () => {
+  // Same host, but the reclaim frees nothing: the volume is then recreated,
+  // and the reclaim must have been asked first.
+  const harness = await setupHarness(SHORT_HOST_STEADY_STATE);
+  try {
+    await seedWorkVolume(harness);
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const order = await invocationOrder(harness);
+    const reclaimAt = order.indexOf("reclaim-host-caches");
+    const removeAt = order.findIndex((step) =>
+      /^volume-(rm|delete|remove)$/.test(step)
+    );
+    assert(reclaimAt >= 0, `the reclaim must run, got ${order}`);
+    assert(removeAt >= 0, `the volume must then be recreated, got ${order}`);
+    assert(reclaimAt < removeAt, `reclaim before removal, got ${order}`);
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a failed cache reclaim is reported and the launch carries on (#4500 review)", async () => {
+  const harness = await setupHarness({
+    ...SHORT_HOST_STEADY_STATE,
+    STUB_RECLAIM_EXIT: "3",
+  });
+  try {
+    await seedWorkVolume(harness);
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertStringIncludes(
+      outcome.stderr + (await runCoreLog(harness)),
+      "[HOST_CACHE_RECLAIM] failed - reclaim-host-caches exited 3",
+    );
+    assert(await recorded(harness, "run"), "the worker must still start");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a recreate the runtime fails is not reported as a declined one (#4500 review)", async () => {
+  // The volume could cover the shortfall, so the launcher tries the recreate;
+  // the runtime fails the removal and the volume is still there. The next
+  // launch tries again, so host-disk.json must not tell the worker the
+  // launcher declined.
+  const harness = await setupHarness({
+    ...SHORT_HOST_STEADY_STATE,
+    STUB_VOLUME_DELETE_EXIT: "1",
+    STUB_VOLUME_INSPECT_EXIT: "0",
+  });
+  try {
+    await seedWorkVolume(harness);
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, `${WORK_VOLUME_NAME} could not be recreated`);
+    const reading = JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+    assertEquals(reading.workVolumeRecreateDeclined, false);
+    // The recreate failed, so nothing was recorded and nothing is promised.
+    assertEquals("workVolumeRecreateUnrecovered" in reading, false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a recreate that leaves the host short is flagged as tried, and the next launch declines it (#4500 review)", async () => {
+  // The volume can cover the shortfall, so the launcher recreates it; the
+  // stubbed host stays 32 MB short, so the recreate returned nothing. The
+  // reading must say the recreate ran (not that it was declined), and the
+  // next launch must decline against the recorded reading.
+  const harness = await setupHarness(SHORT_HOST_STEADY_STATE);
+  const readReading = async () =>
+    JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+  try {
+    await seedWorkVolume(harness);
+    const first = await runLauncher(harness);
+    assertEquals(first.code, 0, first.stderr);
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    const afterRecreate = await readReading();
+    assertEquals(afterRecreate.workVolumeRecreateUnrecovered, true);
+    assertEquals(afterRecreate.workVolumeRecreateDeclined, false);
+
+    // The promise matches the behaviour: the next launch recreates nothing.
+    const second = await runLauncher(harness);
+    assertEquals(second.code, 0, second.stderr);
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    const afterDecline = await readReading();
+    assertEquals(afterDecline.workVolumeRecreateDeclined, true);
+    assertEquals("workVolumeRecreateUnrecovered" in afterDecline, false);
   } finally {
     await harness.cleanup();
   }

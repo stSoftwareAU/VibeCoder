@@ -1,0 +1,13 @@
+{
+  "issue": 4498,
+  "chunk": "top-up-4498",
+  "title": "top-up: host build-cache reclaim",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4498",
+  "definition": "New host-cache reclaim command and library introduced by Issue #4498; owns configuration parsing, cache discovery, process and filesystem guards, removal and reporting.",
+  "status": "claimed",
+  "sweptAt": "cbfa4e6c41e1393a44374b36885cad68527da137",
+  "paths": [
+    "worker/deno/commands/reclaim_host_caches.ts",
+    "worker/deno/lib/host_cache_reclaim.ts"
+  ]
+}

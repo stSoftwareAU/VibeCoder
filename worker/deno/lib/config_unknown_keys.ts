@@ -292,6 +292,16 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Custom label → non-public prompt file mappings (Issue #846, part of #843)
   "custom_label_prompts",
+
+  // Host build-cache reclaim before a work-volume recreate (Issue #4498).
+  // Literals, not the HOST_CACHE_RECLAIM_*_KEY constants: host_cache_reclaim.ts
+  // reaches config.ts through its imports, so importing it here would read
+  // them before that module finished initialising. A test builds a record
+  // from the constants and asserts none is reported unknown.
+  "host_cache_reclaim_enabled",
+  "host_cache_reclaim_min_age_hours",
+  "host_cache_reclaim_headroom_gb",
+  "host_cache_reclaim_roots",
 ]);
 
 /**

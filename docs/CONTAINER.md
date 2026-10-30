@@ -1362,9 +1362,11 @@ disk failure into a successful run or a scheduled finish-deadline release.
 Where the runtime refuses the trim **and** the host is below the floor, the
 launch ends with status 74. Deleting files in that volume does not return
 host blocks; leaving the container discards the ephemeral layer, and the next
-launch's heal recreates the volume if the host is still short. Above the
-floor, or where the trim is honoured, the build is parked where the park
-applies (Issue #4413), and the launch continues.
+launch's heal recreates the volume if the host is still short. If that
+recreate ran and left the host short, or the heal declined to recreate, the
+stop reason says so instead and does not promise another recreate (Issue 4498).
+Above the floor, or where the trim is honoured, the build is parked
+where the park applies (Issue #4413), and the launch continues.
 
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 
@@ -1411,6 +1413,123 @@ ephemeral root's idle target directories, already pruned first, are the only
 space the worker can hand back.
 
 
+## Host build caches are reclaimed before a work volume is touched (Issue #4498)
+
+A developer host below its claiming floor is often short for a reason no
+volume can fix: regenerable build caches. A `target/` directory a Rust build
+left behind months ago can hold tens of gigabytes, and recreating the work
+volume returns nothing towards the floor while those caches are still on the
+disk. So before any decision that could destroy a work volume, the launchers
+ask `reclaim-host-caches` to remove the caches that are safe to regenerate,
+oldest first.
+
+```mermaid
+flowchart TD
+    B{"host below its<br/>claiming floor?"} -->|"no"| N["nothing reclaimed"]
+    B -->|"yes, once per launch"| C["reclaim-host-caches<br/>removes stale caches,<br/>oldest first"]
+    C --> F{"floor still<br/>not met?"}
+    F -->|"no"| OK["host recovered —<br/>no work volume touched"]
+    F -->|"yes"| V["work-volume heal<br/>(recreate, or decline and<br/>name the largest directories)"]
+    style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style V fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
+**What is removed.** A directory is a candidate only when all three hold:
+
+- it carries a `CACHEDIR.TAG` whose first line is the standard signature,
+  `Signature: 8a477f597d28d172789f06886806bc55`, which build tools write into
+  their output directories;
+- it is older than `host_cache_reclaim_min_age_hours` (24 by default);
+- no running process names a path inside it. On macOS and Linux the check
+  reads each process's command line (`ps`) and, from `lsof`, the files each
+  process has as its working directory (`cwd`) and program text (`txt`), plus
+  its memory-mapped files (`mem`) on Linux. So a server started as
+  `./target/release/server` still holds its cache, through the executable path
+  `lsof` reports. Other open files (ordinary file descriptors) are not read. On
+  Windows the check reads each process's command line and its executable path
+  (`Win32_Process` `CommandLine` and `ExecutablePath`).
+
+If that check cannot be completed, the reclaim removes nothing on that launch
+and logs `[HOST_CACHE_RECLAIM] process table unreadable — removed nothing: …`
+with the reason: `ps` (or PowerShell on Windows) fails, or `lsof` is not
+installed, times out (30 s), or exits non-zero without naming any file. An
+`lsof` that exits non-zero but still lists files is used, because `lsof` does
+that whenever it cannot inspect some process. The command still exits
+non-zero, and it still prints the `largest host directories:` line, because
+sizing directories does not need the process table. On a host without `lsof`,
+install it (for example `apt install lsof` or `dnf install lsof`) to let the
+reclaim run.
+
+Candidates go oldest first, and the reclaim stops once the host has the
+claiming floor plus `host_cache_reclaim_headroom_gb` (10 by default) free.
+
+The roots include world-writable scratch directories, where another account
+could swap a directory it owns for a symlink between the walk and the delete.
+So a cache is removed only when it and every directory between its root and it
+belong to the account running the launcher and are not writable by group or
+others, and only when its real path is still itself immediately before the
+delete. A cache that fails either check is kept, with the reason in a
+`skipped` line. (The root itself is the configured boundary and is not judged.
+Windows has no uid, so only the real-path check applies there.)
+
+The tag is read as at most its first 512 bytes, so a huge or sparse file named
+`CACHEDIR.TAG` in a shared scratch directory is not loaded whole; a first line
+longer than that does not carry the signature and the directory is kept. Each
+cache is sized with `du -sk`, or, where `du` cannot run (Windows), by a bounded
+walk of the tree that does not follow symlinks. A size neither can give (a
+timeout, or a tree over the walk's entry budget) is reported as `unmeasured`.
+
+**Where it looks.** `~/src`, `/tmp`, `/private/tmp` and `$TMPDIR`, plus any
+absolute directories listed in `host_cache_reclaim_roots`. The launcher's own
+checkout is passed to the command as a protected path.
+
+The four keys live in the host's one `.config.json` (see the host-disk keys in
+[CONFIGURATION.md](CONFIGURATION.md)). The launchers pass the checkout as
+`--base-dir`, and the command resolves the file exactly as
+`container-launch-plan` does: `CONFIG_FILE`, else its alias `CONFIG_PATH`, else
+`<checkout>/.config.json` (Issue #750). A host whose configuration has moved
+therefore has its reclaim settings honoured, and `host_cache_reclaim_enabled:
+false` in the moved file switches the reclaim off:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `host_cache_reclaim_enabled` | `true` | `false` switches the reclaim off. No environment variable overrides it. |
+| `host_cache_reclaim_min_age_hours` | `24` | A cache must be at least this old to be removed. |
+| `host_cache_reclaim_headroom_gb` | `10` | Free space to reach beyond the claiming floor before the reclaim stops. |
+| `host_cache_reclaim_roots` | none | Extra absolute directories to search, in addition to the locations above. |
+
+**What the log says.** Every line the command prints goes to stderr and to
+`run_core.log`:
+
+- `[HOST_CACHE_RECLAIM] removed <path> (<size>, idle <h> h)` — one per directory
+  removed;
+- `[HOST_CACHE_RECLAIM] skipped <path>: <reason>` — a candidate the command
+  kept, and why;
+- `[HOST_CACHE_RECLAIM] freed <size>; est. free <size> vs floor <size>` — what
+  was reclaimed, and the host's estimated free space against the floor;
+- `[HOST_CACHE_RECLAIM] largest host directories: <path> (<GB> GB); …` — only
+  when the host is still below its floor, naming where the space went;
+- `[HOST_CACHE_RECLAIM] failed - …` — the reclaim itself failed. The launch
+  carries on without it: a failed reclaim is said loudly and is never fatal.
+
+`run.ps1` runs the same reclaim, before its hard floor gate. Windows has no
+work-volume heal to follow it.
+
+**The unrecovered alert names where the space went.** `[WORK_VOLUME_UNRECOVERED]`
+ends with `- largest host directories: …` when the reclaim reported them. It is
+also deduplicated. When the paths (not the sizes) match the last launch's,
+stderr carries one line, `[run.sh] [WORK_VOLUME_UNRECOVERED] unchanged since
+the last launch (details in the run log)`, and the full message stays in
+`run_core.log`. The digest is kept in `~/.vibe-coder/work-volume-heal-largest`.
+A launch that declines to recreate a work volume records
+`workVolumeRecreateDeclined: true` in `host-disk.json`, with the list in
+`largestHostDirectories`. A launch that reached the recreate step (it recreated a
+volume, or found every resettable volume below the reset minimum) and still
+found the host short records `workVolumeRecreateUnrecovered: true` instead (the field is
+written only then): the reading is also kept, so the next launch declines until
+the free-space reading moves by more than the reset minimum, and the worker's
+stop reason says the recreate was tried and will not be repeated.
+
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
 On the Apple `container` runtime the trim above has **never** worked. As
@@ -1444,9 +1563,10 @@ takes it:
    with less free space than the floor the worker stops claiming at — the
    larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and
    `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), the same floor
-   `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
-   the volume, then runs the init again to re-own it. This happens **before
-   any container starts**, so no work is in flight: the clones re-clone. The
+   `worker/deno/lib/host_disk.ts` applies — and only once the host build-cache
+   reclaim above has had its chance (Issue #4498), the launcher deletes and
+   recreates the volume, then runs the init again to re-own it. This happens
+   **before any container starts**, so no work is in flight: the clones re-clone. The
    approval snapshots are never in that set (point 3). The removal verb comes
    from the launch
    plan, because the runtimes disagree about it — Docker and Podman say
@@ -1479,8 +1599,9 @@ takes it:
    against `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) as well (Issue #2117),
    because resetting a small one gains nothing.
 5. **The reset is never held back by the clock, and never silent.** Where the
-   volumes *can* cover the shortfall, a host below the floor resets them on
-   **every launch it is below it**, however recent the last reset: the volume
+   volumes *can* cover the shortfall, a host still below the floor after the
+   cache reclaim resets them on **every launch it is below it**, however
+   recent the last reset: the volume
    is disposable and the host is not (Issue #2077 — a 24 h interval once left
    GRQ-23, re-ratcheted to 45 GB in eleven hours with 1.2 GB live and at 3%
    free, claiming nothing for thirteen hours). The last reset is recorded in
@@ -1500,7 +1621,8 @@ takes it:
    runs inside the image, so a host whose image build is failing would never
    reach it — GRQ-23 fell from 24 GB free to 11 GB in under an hour while
    `loop.sh` retried a broken builder (#2089). So before any build, a host
-   below its floor makes the same measurements — the shortfall gate of point
+   still below its floor after the cache reclaim (Issue #4498) makes the same
+   measurements — the shortfall gate of point
    4 included — and resets any *resettable* volume holding at least
    `VIBE_WORK_VOLUME_HEAL_MIN_GB`, logged as
    `work-volume: pre-build reset of vibe-work …`; the init after the build
@@ -1518,7 +1640,7 @@ flowchart TD
     U -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]<br/>volumes left intact"]
     U -->|"no"| S{"volumes hold less than<br/>the shortfall (floor − free)?"}
     S -->|"yes"| E
-    S -->|"no"| D["delete + create volume,<br/>re-run the init<br/>(every launch below the floor)"]
+    S -->|"no"| D["delete + create volume,<br/>re-run the init<br/>(every launch still below the floor after the reclaim)"]
     D --> M{"floor cleared?<br/>(re-measured)"}
     M -->|"yes"| H["host recovered<br/>without an operator"]
     M -->|"no"| E
