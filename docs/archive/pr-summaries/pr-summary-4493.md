@@ -1,8 +1,8 @@
 ## Summary
 
-The egress self-check now waits for the proxy's listener before it probes, writes
-every probe attempt to the launch log, and names the failing probe and what it
-saw on the failure marker, for example
+The egress self-check now waits for the proxy's listener before it probes,
+writes every probe attempt to the launch log, and names the failing probe and
+what it saw on the failure marker, for example
 `[EGRESS-SELFCHECK-FAILED] proxy_unavailable proxyAllowed=failed (refused ×3)`.
 Closes #4493.
 
@@ -15,8 +15,8 @@ final version.
 
 - The failed launch gave `proxyAllowlist=failed` and nothing else: the
   per-attempt lines went to `console.warn`, outside the worker's logger, and the
-  marker carried no cause. The 5 s failure also means the attempts ended fast
-  (a refusal or an unexpected answer), not on three 5 s timeouts.
+  marker carried no cause. The 5 s failure also means the attempts ended fast (a
+  refusal or an unexpected answer), not on three 5 s timeouts.
 - Each probe now keeps a short `observed` token (`refused`, `timeout`,
   `closed without an answer`, or the first line of an unexpected answer such as
   `HTTP/1.1 502 Bad Gateway`). The allowed probe counts them (`refused ×3`).
@@ -29,14 +29,14 @@ final version.
   or a timeout. A permission error or unusable proxy URL returns `listening`, so
   the CONNECT probe still reports `not_checked`.
 - `runEgressProbes` waits once, before the denied probe, because the denied
-  probe is not retried. If nothing listens it returns `proxyDenied: not_checked`,
-  `proxyAllowed: failed` and spends no attempts.
+  probe is not retried. If nothing listens it returns
+  `proxyDenied: not_checked`, `proxyAllowed: failed` and spends no attempts.
 - `probeProxyAllowed` keeps its signature and does not wait; it now returns
   `failed` (not `through`) when no attempt connected, which `runEgressProbes`
   already treated the same way.
 - Markers for probes without `observed` detail are byte-for-byte unchanged.
-  `run.sh` and `run.ps1` key on exit status 90 and echo the marker constant only,
-  so the appended text is safe.
+  `run.sh` and `run.ps1` key on exit status 90 and echo the marker constant
+  only, so the appended text is safe.
 
 ### Undiscoverable Facts
 
@@ -59,34 +59,36 @@ Backend only; no UI files touched.
 - Callers of the changed helpers: `probeProxyConnect` (also used by
   `apple_egress_controls.ts` `appleAllowedPaths`, unchanged behaviour: it is a
   wrapper), `probeProxyAllowed` (only `runEgressProbes` before; now only tests),
-  `checkEgressPolicy` (`run_worker.ts`, `commands/egress_selfcheck.ts`; both pass
-  `diagnostics` through).
+  `checkEgressPolicy` (`run_worker.ts`, `commands/egress_selfcheck.ts`; both
+  pass `diagnostics` through).
 - Fakes: the stub proxy in the scenarios file stands in for
-  `lib/egress_proxy.ts`; the property relied on is that a connect-then-close with
-  no bytes is ignored, read from `serveClient`.
+  `lib/egress_proxy.ts`; the property relied on is that a connect-then-close
+  with no bytes is ignored, read from `serveClient`.
 
 ## Reproduction
 
 - **symptom** — the egress self-check failed in about 5 s with only
   `proxyAllowlist=failed`; the retry attempts were absent from the launch log.
-- **status** — `partial` — the missing log lines, missing cause on the marker and
-  the closed-port burn are reproduced with loopback stubs; the actual Apple
+- **status** — `partial` — the missing log lines, missing cause on the marker
+  and the closed-port burn are reproduced with loopback stubs; the actual Apple
   proxy answer on GRQ-23 was not.
 - **reason** — the launch needs the Apple container runtime and its proxy
   container. Against the base `lib/egress_selfcheck.ts` the new scenarios file
   fails at load (no `probeProxyAllowedDetailed` export), so the new tests are
   red on base.
-- **regression test** — `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts::an allowlisted CONNECT waits for a late listener and spends no attempts (Issue #4493)`
+- **regression test** —
+  `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts::an allowlisted CONNECT waits for a late listener and spends no attempts (Issue #4493)`
 
 ## Test Plan
 
 - `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts` (run under
-  `--allow-net=127.0.0.1` by `worker/deno/tests/egress_allowed_probe_retry_test.ts`,
-  which lists the six new names): late listener (injected sleep binds the stub on
-  the third check, no attempt lines); nothing ever listens (failed, no attempts,
-  log line); 502 every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3;
-  `runEgressProbes` with a live proxy gives the enforced set; `runEgressProbes`
-  with a proxy that never listens.
+  `--allow-net=127.0.0.1` by
+  `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the six
+  new names): late listener (injected sleep binds the stub on the third check,
+  no attempt lines); nothing ever listens (failed, no attempts, log line); 502
+  every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3; `runEgressProbes` with
+  a live proxy gives the enforced set; `runEgressProbes` with a proxy that never
+  listens.
 - `worker/deno/tests/egress_selfcheck_test.ts`: marker with `observed`
   (`proxyAllowed=failed (refused ×3)`), unchanged marker without it (control),
   Apple marker, diagnostics carried, `describeProbeFailures` cases.
@@ -95,8 +97,8 @@ Backend only; no UI files touched.
 - Red checks (one break at a time, then restored): marker drops `proxyAllowed` →
   3 red; decision drops diagnostics → 1; `run_worker` skips the log loop → 1;
   `waitForProxyListener` never waits → 3; `observed` without counts → 2; refused
-  labelled `timeout` → 1; Apple branch drops details → 1; `runEgressProbes` skips
-  the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2; the
+  labelled `timeout` → 1; Apple branch drops details → 1; `runEgressProbes`
+  skips the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2; the
   `probeProxyAllowed` wrapper waiting for the listener → 2 (the original
   scenarios).
 - Not red-checked: the `egress-selfcheck` command's stderr printing, and the
