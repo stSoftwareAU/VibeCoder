@@ -1597,8 +1597,8 @@ such an issue and writing the marker would claim a review that never happened:
 ```markdown
 ## Summary
 
-Fixed the button alignment issue by updating CSS flexbox properties. Closes
-#{{ISSUE_NUMBER}}.
+Fixed the button alignment issue by updating CSS flexbox properties; the tablet
+breakpoint is still outstanding. Part of #{{ISSUE_NUMBER}}.
 
 ## Spec
 
