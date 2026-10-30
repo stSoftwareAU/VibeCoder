@@ -362,6 +362,13 @@ export interface HostDiskRefresh {
    */
   workVolumeRecreateDeclined?: boolean;
   /**
+   * Whether the launcher recreated the work volume this launch and the host
+   * was still below its floor afterwards, with that reading recorded so the
+   * next launch declines against it instead of recreating again (Issue #4498).
+   * Absent from older launchers, which reads as `false`.
+   */
+  workVolumeRecreateUnrecovered?: boolean;
+  /**
    * The text of the largest host directories line the launcher logged, for
    * the stop reason. Control characters are stripped and the length capped
    * (see {@link MAX_LARGEST_HOST_DIRECTORIES_CHARS}); absent or blank reads as
@@ -414,6 +421,10 @@ export function parseHostDiskRefresh(text: string): HostDiskRefresh | null {
   if (refused !== undefined && typeof refused !== "boolean") return null;
   const declined = o.workVolumeRecreateDeclined;
   if (declined !== undefined && typeof declined !== "boolean") return null;
+  const unrecovered = o.workVolumeRecreateUnrecovered;
+  if (unrecovered !== undefined && typeof unrecovered !== "boolean") {
+    return null;
+  }
   const dirs = o.largestHostDirectories;
   if (dirs !== undefined && typeof dirs !== "string") return null;
   const largest = dirs === undefined
@@ -425,6 +436,9 @@ export function parseHostDiskRefresh(text: string): HostDiskRefresh | null {
     measuredAt: at,
     ...(refused === undefined ? {} : { workVolumeTrimRefused: refused }),
     ...(declined === undefined ? {} : { workVolumeRecreateDeclined: declined }),
+    ...(unrecovered === undefined
+      ? {}
+      : { workVolumeRecreateUnrecovered: unrecovered }),
     ...(largest === undefined ? {} : { largestHostDirectories: largest }),
   };
 }
@@ -563,6 +577,8 @@ export class HostDiskMonitor {
   private trimRefused = false;
   /** The launcher's word that it declined to recreate the work volume. */
   private recreateDeclined = false;
+  /** The launcher's word that a recreate ran and left the host short. */
+  private recreateUnrecovered = false;
   /** The launcher's largest-host-directories text, if it wrote one. */
   private largestDirs: string | undefined = undefined;
   private baselined = false;
@@ -621,6 +637,7 @@ export class HostDiskMonitor {
     // below: the flag is a property of this launch, not of one sample.
     this.trimRefused = refresh.workVolumeTrimRefused === true;
     this.recreateDeclined = refresh.workVolumeRecreateDeclined === true;
+    this.recreateUnrecovered = refresh.workVolumeRecreateUnrecovered === true;
     this.largestDirs = refresh.largestHostDirectories;
     const measuredMs = refresh.measuredAt * 1000;
     if (measuredMs <= this.adoptedMeasuredAtMs) return;
@@ -691,6 +708,15 @@ export class HostDiskMonitor {
    */
   get workVolumeRecreateDeclined(): boolean {
     return this.recreateDeclined;
+  }
+
+  /**
+   * Did the launcher recreate the work volume this launch and find the host
+   * still below its floor? The next launch will not recreate it again until
+   * the free-space reading moves. Absent reads as `false` (Issue #4498).
+   */
+  get workVolumeRecreateUnrecovered(): boolean {
+    return this.recreateUnrecovered;
   }
 
   /**

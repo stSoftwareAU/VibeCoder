@@ -222,6 +222,7 @@ async function stopFromMonitor(
       : monitor.floorBytesFor(status.totalBytes),
     trimRefused: monitor.workVolumeTrimRefused,
     recreateDeclined: monitor.workVolumeRecreateDeclined,
+    recreateUnrecovered: monitor.workVolumeRecreateUnrecovered,
     largestHostDirectories: monitor.largestHostDirectories,
   });
   return { stop, monitor };
@@ -277,6 +278,81 @@ Deno.test("Issue #4498 - an old-shape host-disk.json through the monitor keeps t
     assert(stop !== null);
     assertStringIncludes(stop!, OLD_PROMISE);
     assertEquals(stop!.includes("declined"), false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("#4500 review - a recreate that left the host short says it was tried and will not be repeated, with no recreate promise", () => {
+  const stop = hostDiskLaunchStopReason(
+    reading({ recreateUnrecovered: true, largestHostDirectories: LARGEST }),
+  );
+  assert(stop !== null);
+  assertStringIncludes(stop!, "46.0 GB");
+  assertStringIncludes(
+    stop!,
+    "recreated the work volume this launch and it did not return the missing space",
+  );
+  assertStringIncludes(
+    stop!,
+    "will not recreate the volume again until the host's free-space reading moves",
+  );
+  assertStringIncludes(stop!, `Largest host directories: ${LARGEST}.`);
+  assertStringIncludes(stop!, HOST_DISK_PARK_NOTE);
+  assertEquals(stop!.includes("the next launch recreates"), false);
+  assertEquals(stop!.includes(OLD_PROMISE), false);
+  // Positive control: the same low, trim-refused host without the flag still
+  // gets the promise, so the wording above comes from the flag alone.
+  assertStringIncludes(hostDiskLaunchStopReason(reading())!, OLD_PROMISE);
+  // A declined recreate keeps its own wording when both flags are present.
+  assertStringIncludes(
+    hostDiskLaunchStopReason(
+      reading({ recreateDeclined: true, recreateUnrecovered: true }),
+    )!,
+    "declined to recreate the work volume",
+  );
+});
+
+Deno.test("#4500 review - the parser reads workVolumeRecreateUnrecovered, rejects a wrong type, and an old-shape file reads as false", () => {
+  const base =
+    '"availableBytes":1024,"totalBytes":4096,"measuredAt":1700000000';
+  assertEquals(
+    parseHostDiskRefresh(`{${base},"workVolumeRecreateUnrecovered":true}`)
+      ?.workVolumeRecreateUnrecovered,
+    true,
+  );
+  assertEquals(
+    parseHostDiskRefresh(`{${base},"workVolumeRecreateUnrecovered":"yes"}`),
+    null,
+  );
+  assertEquals(
+    parseHostDiskRefresh(`{${base}}`)?.workVolumeRecreateUnrecovered ?? false,
+    false,
+  );
+});
+
+Deno.test("#4500 review - an unrecovered-recreate host-disk.json on disk reaches the launch-end text through the monitor", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const refreshFile = `${root}/host-disk.json`;
+    await Deno.writeTextFile(
+      refreshFile,
+      JSON.stringify({
+        availableBytes: 6.9 * GB,
+        totalBytes: 460 * GB,
+        measuredAt: 900,
+        workVolumeTrimRefused: true,
+        workVolumeRecreateDeclined: false,
+        workVolumeRecreateUnrecovered: true,
+        largestHostDirectories: LARGEST,
+      }),
+    );
+    const { stop, monitor } = await stopFromMonitor(refreshFile);
+    assertEquals(monitor.workVolumeRecreateUnrecovered, true);
+    assertEquals(monitor.workVolumeRecreateDeclined, false);
+    assert(stop !== null);
+    assertStringIncludes(stop!, "did not return the missing space");
+    assertEquals(stop!.includes("the next launch recreates"), false);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

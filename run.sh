@@ -933,6 +933,12 @@ trim_refused_volumes=()
 # tried and failed, or that left the host short, is not a decline (#4500
 # review). Written into the reading so the worker can see it.
 work_volume_recreate_declined=false
+# Whether this launch recreated a work volume and the host was still below its
+# floor afterwards, with that reading recorded so the next launch will not
+# recreate again against an unchanged reading (Issue #4498, #4500 review).
+# Distinct from the declined flag: the recreate ran. Written into the reading
+# so the worker's stop reason does not promise another recreate.
+work_volume_recreate_unrecovered=false
 # The host's largest directories, as reported by reclaim-host-caches when the
 # host is still below its claiming floor after the cache reclaim (Issue #4498).
 # Empty until a reclaim reports one.
@@ -969,13 +975,16 @@ write_host_disk_reading() {
   # the host's largest directories when a cache reclaim left the host short.
   # Present only when there is a list, so the worker's strict parser sees the
   # same shape as before on every other launch.
-  local declined=false largest_field=""
+  local declined=false largest_field="" unrecovered_field=""
   [[ "${work_volume_recreate_declined}" == true ]] && declined=true
+  if [[ "${work_volume_recreate_unrecovered}" == true ]]; then
+    unrecovered_field=',"workVolumeRecreateUnrecovered":true'
+  fi
   if [[ -n "${host_largest_dirs}" ]]; then
     largest_field=",\"largestHostDirectories\":\"$(json_escape_string "${host_largest_dirs}")\""
   fi
-  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s","workVolumeTrimRefused":%s,"workVolumeRecreateDeclined":%s%s}\n' \
-    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" "${trim_refused}" "${declined}" "${largest_field}" >"${tmp}" 2>/dev/null &&
+  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s","workVolumeTrimRefused":%s,"workVolumeRecreateDeclined":%s%s%s}\n' \
+    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" "${trim_refused}" "${declined}" "${unrecovered_field}" "${largest_field}" >"${tmp}" 2>/dev/null &&
     mv -f "${tmp}" "${file}" 2>/dev/null; then
     return 0
   fi
@@ -2040,8 +2049,12 @@ heal_untrimmable_volumes() {
   fi
   # Remember the reading that proved it (Issue #2313), so the next launch
   # reports where the space went rather than destroying the clones again.
+  # Flagged only when the reading was recorded: the next launch declines
+  # against that record, so an unrecorded reading would be followed by a
+  # recreate and the flag would promise the opposite.
   if [[ "${avail_kb}" =~ ^[0-9]+$ ]]; then
     record_unrecovered_free_kb "${avail_kb}"
+    work_volume_recreate_unrecovered=true
   fi
   report_unrecovered "the recreate left ${disk_gate_path} with $((avail_kb / 1024)) MB free, still below the $((floor_kb / 1024)) MB claiming floor - the work volume is not where this host's space went"
 }

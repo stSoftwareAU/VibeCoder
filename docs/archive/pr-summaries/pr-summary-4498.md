@@ -16,7 +16,12 @@ it.
   running process names is never removed. The process table is not resolved,
   so each cache is looked for under every spelling of its root: the root as
   given (`/tmp`, `$TMPDIR`) as well as its real path (`/private/tmp`,
-  `/private/var/folders/...` on macOS).
+  `/private/var/folders/...` on macOS). A `CACHEDIR.TAG` is read as at most its
+  first 512 bytes, so a huge or sparse file of that name in a shared scratch
+  directory is not loaded whole. Sizes come from `du -sk`, or from a bounded
+  Deno walk (`walkDirSizeBytes`, no symlinks followed) where `du` cannot run,
+  so the Windows `run.ps1` reclaim still stops at floor plus headroom and the
+  largest-directories line is size-ordered.
 - `worker/deno/lib/config_unknown_keys.ts`: the four `host_cache_reclaim_*`
   keys are known config keys, so setting them no longer prints an "is not
   recognised and will be ignored" warning on every launch.
@@ -27,10 +32,19 @@ it.
   (`workVolumeRecreateDeclined`) only when it really declines one: the
   shortfall gate, the repeat-reading gate, or no resettable volume. A recreate
   the runtime failed is retried on the next launch, so it is not reported as
-  declined.
+  declined. A recreate that ran and left the host short, with its reading
+  recorded so the next launch declines, sets `workVolumeRecreateUnrecovered`
+  (written only then).
 - `host_disk.ts` / `heavy_build_gate.ts`: the launch-end stop reason no longer
-  promises a recreate once the launcher has declined one, and names the largest
-  host directories.
+  promises a recreate once the launcher has declined one or a recreate it ran
+  left the host short (it says the recreate was tried and is not repeated until
+  the free-space reading moves), and names the largest host directories.
+- `worker/deno/tests/fixtures/launcher_harness.ts`: the shared Deno stub
+  always answers `reclaim-host-caches` (records its arguments and order,
+  `STUB_RECLAIM_*`), and the shared `df` stub reads back the free space a stubbed
+  reclaim left. The per-file wrappers in the run.sh and run.ps1 launcher tests
+  are gone, so no suite that uses the shared harness can run the real command
+  against the host's `/tmp`.
 - `docs/CONFIGURATION.md`, `docs/CONTAINER.md`: document the new settings.
 
 ## Reproduction
@@ -61,25 +75,52 @@ the mutation and watching a test go red:
 
 ## Test Plan
 
-- `worker/deno/tests/host_cache_reclaim_test.ts`: a root reached through a
-  symlink, with a process line naming the cache by the alias spelling, keeps
-  the cache (red with the realpath-only guard). A positive control removes an
-  unnamed cache through the same alias. 46 passed.
+- `worker/deno/tests/host_cache_reclaim_test.ts` (52 tests at head, all pass):
+  - a root reached through a symlink, with a process line naming the cache by
+    the alias spelling, keeps the cache (red with the realpath-only guard); a
+    positive control removes an unnamed cache through the same alias;
+  - a sparse 3 GiB `CACHEDIR.TAG` is read as at most 512 characters and still
+    shows its signature; a tag with a long first line and a 2 GiB sparse size
+    is skipped for its signature and the run completes. Reading the tag whole
+    turns both red (`failed to allocate string; buffer exceeds maximum length`);
+  - `walkDirSizeBytes` sums a tree without following a symlink out of it, and
+    returns null past its entry budget, its clock or for a missing root;
+  - with `du` unable to run, `defaultDirSizeBytes` falls back to the walk, a
+    `du` timeout stays null, the reclaim stops at its target on walked sizes
+    and `largestHostDirectories` is size-ordered. Replacing the fallback with
+    `null` turns two of these red.
 - `worker/deno/tests/config_unknown_keys_test.ts`: a record built from the
   exported `HOST_CACHE_RECLAIM_*_KEY` constants gives no unknown-key warning
   (red without the registration). 36 passed.
-- `worker/deno/tests/run_sh_launcher_test.ts` on the path where the image
-  already exists:
-  - the reclaim runs, and one that recovers the host leaves the trim-refused
-    volume intact;
-  - a reclaim that does not recover runs before the volume removal;
-  - a reclaim that exits non-zero logs `[HOST_CACHE_RECLAIM] failed` and the
-    launch carries on;
+- `worker/deno/tests/host_disk_recreate_declined_4498_test.ts` (11 tests at
+  head, all pass): the stop reason for `recreateUnrecovered` says the recreate
+  was tried, will not be repeated until the reading moves, and makes no
+  recreate promise; the old-shape reading still gets the promise; the parser
+  reads and type-checks the new field; a file on disk reaches the text through
+  the monitor. Removing the `recreateUnrecovered` branch turns two red.
+- `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` (2 tests, pass): a
+  below-floor launch built with the plain shared `setupHarness` records the
+  stubbed reclaim and prints the stub's sentinel; an above-floor launch does
+  not reclaim. Not red-checked against the unstubbed harness, because that
+  would run the real command on this host's `/tmp`.
+- `worker/deno/tests/run_sh_launcher_test.ts` (119 tests at head, all pass):
+  - on the path where the image already exists, the reclaim runs, and one that
+    recovers the host leaves the trim-refused volume intact; a reclaim that
+    does not recover runs before the volume removal; a reclaim that exits
+    non-zero logs `[HOST_CACHE_RECLAIM] failed` and the launch carries on;
   - a volume removal the runtime fails leaves `workVolumeRecreateDeclined`
-    false.
+    false and writes no `workVolumeRecreateUnrecovered`;
+  - a recreate that leaves the host short writes
+    `workVolumeRecreateUnrecovered: true` with declined false, and the next
+    launch recreates nothing and writes declined true. Dropping the
+    `work_volume_recreate_unrecovered=true` assignment turns it red.
+- The suites that build launches through the shared harness
+  (`launcher_parity_test`, `launcher_signal_readiness_test`,
+  `launcher_egress_probe_test`, `launcher_toolchain_selfcheck_test`,
+  `run_sh_upgrade_test`, `outcome_record_gate_test`,
+  `recovery_authority_4417_test`, `run_ps1_launcher_test`) ran with 121
+  passed, 0 failed, together with the new harness test.
 
-  Removing the heal-step reclaim call turns the first two red. Setting the
-  declined flag for every unrecovered report turns the last one red. The whole
-  launcher suite ran with 114 passed. The four Issue #980 extension-build cases
-  that failed also fail on unmodified `main` in the same sandbox, whose
-  `@std/crypto` stand-in cannot hash a stream.
+Not covered: a `du` timeout leaves a cache unmeasured (null), so the stop rule
+cannot credit its removal and the largest-directories line shows it as
+`(unmeasured)`; that is rare and reported rather than guessed.

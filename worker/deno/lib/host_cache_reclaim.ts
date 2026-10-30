@@ -61,7 +61,7 @@ export const DEFAULT_HEADROOM_GB = 10;
  */
 export const DEFAULT_WALK_DEPTH = 4;
 
-/** Per-call budget for `du`; a call over it is reported as unmeasured. */
+/** Per-call budget for `du` and for the portable walk; over it is unmeasured. */
 export const DU_TIMEOUT_MS = 60_000;
 
 /** How much of a CACHEDIR.TAG is read: far more than the signature line needs. */
@@ -186,7 +186,7 @@ export interface HostCacheReclaimResult {
 /** One directory and its size, for naming where the space went. */
 export interface HostDirectorySize {
   path: string;
-  /** Bytes; null when `du` timed out or failed (unmeasured, not dropped). */
+  /** Bytes; null when the size timed out or failed (unmeasured, not dropped). */
   bytes: number | null;
 }
 

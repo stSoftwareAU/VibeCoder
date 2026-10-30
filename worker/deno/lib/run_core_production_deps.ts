@@ -5730,8 +5730,9 @@ export async function createProductionRunCoreDeps(
       // Below the floor with the trim refused, nothing inside this container
       // returns the bytes a build wrote. Ending the launch discards the
       // ephemeral layer; the launcher then recreates the volume if the host is
-      // still short, or, when it declined to recreate (Issue #4498), says the
-      // space is elsewhere on the host (Issue #4360). The same status as a
+      // still short, or, when it declined to recreate or a recreate it ran left
+      // the host short (Issue #4498), says the space is elsewhere on the host
+      // (Issue #4360). The same status as a
       // read-only root, so the launcher relaunches promptly, and the log names
       // the floor.
       const status = await hostDisk.check({ force: true });
@@ -5742,6 +5743,7 @@ export async function createProductionRunCoreDeps(
           : hostDisk.floorBytesFor(status.totalBytes),
         trimRefused: hostDisk.workVolumeTrimRefused,
         recreateDeclined: hostDisk.workVolumeRecreateDeclined,
+        recreateUnrecovered: hostDisk.workVolumeRecreateUnrecovered,
         largestHostDirectories: hostDisk.largestHostDirectories,
       });
       if (!stop) return null;

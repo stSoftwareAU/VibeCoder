@@ -1362,9 +1362,11 @@ disk failure into a successful run or a scheduled finish-deadline release.
 Where the runtime refuses the trim **and** the host is below the floor, the
 launch ends with status 74. Deleting files in that volume does not return
 host blocks; leaving the container discards the ephemeral layer, and the next
-launch's heal recreates the volume if the host is still short. Above the
-floor, or where the trim is honoured, the build is parked where the park
-applies (Issue #4413), and the launch continues.
+launch's heal recreates the volume if the host is still short. If that
+recreate ran and left the host short, or the heal declined to recreate, the
+stop reason says so instead and does not promise another recreate (Issue 4498).
+Above the floor, or where the trim is honoured, the build is parked
+where the park applies (Issue #4413), and the launch continues.
 
 ### HOST_DISK_BUDGET merges without the build (Issue #4326)
 
@@ -1443,6 +1445,13 @@ flowchart TD
 Candidates go oldest first, and the reclaim stops once the host has the
 claiming floor plus `host_cache_reclaim_headroom_gb` (10 by default) free.
 
+The tag is read as at most its first 512 bytes, so a huge or sparse file named
+`CACHEDIR.TAG` in a shared scratch directory is not loaded whole; a first line
+longer than that does not carry the signature and the directory is kept. Each
+cache is sized with `du -sk`, or, where `du` cannot run (Windows), by a bounded
+walk of the tree that does not follow symlinks. A size neither can give (a
+timeout, or a tree over the walk's entry budget) is reported as `unmeasured`.
+
 **Where it looks.** `~/src`, `/tmp`, `/private/tmp` and `$TMPDIR`, plus any
 absolute directories listed in `host_cache_reclaim_roots`. The launcher's own
 checkout is passed to the command as a protected path.
@@ -1482,7 +1491,11 @@ the last launch (details in the run log)`, and the full message stays in
 `run_core.log`. The digest is kept in `~/.vibe-coder/work-volume-heal-largest`.
 A launch that declines to recreate a work volume records
 `workVolumeRecreateDeclined: true` in `host-disk.json`, with the list in
-`largestHostDirectories`.
+`largestHostDirectories`. A launch that recreated a volume and found the host
+still short records `workVolumeRecreateUnrecovered: true` instead (the field is
+written only then): the reading is also kept, so the next launch declines until
+the free-space reading moves by more than the reset minimum, and the worker's
+stop reason says the recreate was tried and will not be repeated.
 
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 

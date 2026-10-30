@@ -32,6 +32,15 @@ export const REPO_ROOT = FIXTURE_PATH.replace(
  */
 const DF_STUB = `#!/bin/bash
 set -u
+# Free space a stubbed reclaim-host-caches left behind (Issue #4498): once it
+# has written df-avail-kb, the host reads that figure, as if the reclaim freed it.
+if [[ -f "\${VIBE_STUB_RECORD:-/nonexistent}/df-avail-kb" && -n "\${STUB_DF_TOTAL_KB:-}" ]]; then
+  avail="$(cat "\${VIBE_STUB_RECORD}/df-avail-kb")"
+  used=$(( STUB_DF_TOTAL_KB - avail ))
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+  printf 'stub %s %s %s 50%% /\\n' "\${STUB_DF_TOTAL_KB}" "\${used}" "\${avail}"
+  exit 0
+fi
 if [[ -n "\${STUB_DF_AVAIL_KB:-}" && -n "\${STUB_DF_TOTAL_KB:-}" ]]; then
   used=$(( STUB_DF_TOTAL_KB - STUB_DF_AVAIL_KB ))
   printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
@@ -385,6 +394,10 @@ const RECORDED_DENO_COMMANDS = [
  * are running from. `STUB_CHECKOUT_UPDATE_EXIT` makes it fail, which is how
  * the "a failed update still launches" behaviour is exercised.
  *
+ * `reclaim-host-caches` is always intercepted as well (Issue #4498): on a
+ * host under its disk floor the launchers run it, and the real command deletes
+ * idle build caches from the host's own scratch directories.
+ *
  * `release-notice` is always intercepted too (Issue #690): it would otherwise
  * reach GitHub for the newest release. `STUB_RELEASE_NOTICE_STDOUT` is the
  * notice the check found, and `STUB_RELEASE_NOTICE_EXIT` makes the check
@@ -485,6 +498,22 @@ for arg in "\$@"; do
         printf 'cannot update the worker checkout\\n' >&2
       fi
       exit "\${status}"
+      ;;
+    reclaim-host-caches)
+      # Never really walk and delete this host's caches (Issue #4498): it
+      # would remove idle CACHEDIR.TAG directories from the real /tmp whenever
+      # the host is under its disk floor. STUB_RECLAIM_STDOUT is what it
+      # prints, STUB_RECLAIM_EXIT how it exits, and STUB_RECLAIM_AVAIL_KB_AFTER
+      # the free space the df stub reports once it has run.
+      printf '%s\\0' "\$@" > "\${record_dir}/reclaim-host-caches.args"
+      printf '%s\\n' "reclaim-host-caches" >> "\${record_dir}/order.log"
+      if [[ -n "\${STUB_RECLAIM_STDOUT:-}" ]]; then
+        printf '%s\\n' "\${STUB_RECLAIM_STDOUT}"
+      fi
+      if [[ -n "\${STUB_RECLAIM_AVAIL_KB_AFTER:-}" ]]; then
+        printf '%s' "\${STUB_RECLAIM_AVAIL_KB_AFTER}" > "\${record_dir}/df-avail-kb"
+      fi
+      exit "\${STUB_RECLAIM_EXIT:-0}"
       ;;
     upgrade)
       # Never really rewrite this checkout's .config.json (Issue #691).

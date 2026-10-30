@@ -124,6 +124,12 @@ export interface HeavyBuildDiskReading {
    */
   recreateDeclined?: boolean;
   /**
+   * Did the launcher recreate the work volume this launch and find the host
+   * still below its floor (Issue #4498)? The next launch will not recreate it
+   * again until the free-space reading moves. Absent reads as false.
+   */
+  recreateUnrecovered?: boolean;
+  /**
    * The largest host directories the launcher reported (Issue #4498). Absent
    * or blank names none.
    */
@@ -422,9 +428,9 @@ export function inFlightParkReason(deferral: string | null): string | null {
  * Deleting files inside a volume whose trim was refused does not return host
  * blocks. Ending the launch discards the container's ephemeral layer, and the
  * launcher then either recreates the volume, if the host is still below the
- * floor, or, when it declined to recreate (Issue #4498), says the missing space
- * is elsewhere on the host and that nothing in the worker will free it. Above
- * the floor, or where the trim is honoured, the build is parked and the launch
+ * floor, or, when it declined to recreate or a recreate it ran left the host
+ * short (Issue #4498), says the missing space is elsewhere on the host and that
+ * nothing in the worker will free it. Above the floor, or where the trim is honoured, the build is parked and the launch
  * continues: fstrim can return the blocks, and a recreate would not.
  *
  * @returns The reason to end the launch, naming the floor, or null to continue.
@@ -444,6 +450,15 @@ export function hostDiskLaunchStopReason(
       `the worker volumes).${dirs} Nothing in the worker will free it until ` +
       `the host has room, so this launch ends and the ephemeral build layer ` +
       `is discarded (Issue #4498). ${HOST_DISK_PARK_NOTE}`;
+  }
+  if (reading.recreateUnrecovered === true) {
+    const largest = reading.largestHostDirectories?.trim();
+    const dirs = largest ? ` Largest host directories: ${largest}.` : "";
+    return `${deferral} The launcher recreated the work volume this launch ` +
+      `and it did not return the missing space; it will not recreate the ` +
+      `volume again until the host's free-space reading moves (the missing ` +
+      `space is elsewhere on the host).${dirs} This launch ends and the ephemeral build layer is discarded ` +
+      `(Issue #4498). ${HOST_DISK_PARK_NOTE}`;
   }
   return `${deferral} The work volume trim was refused, so this launch ends ` +
     `and the ephemeral build layer is discarded; the next launch recreates ` +

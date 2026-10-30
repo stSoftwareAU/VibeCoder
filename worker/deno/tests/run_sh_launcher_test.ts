@@ -72,7 +72,7 @@ import {
   runCoreLog,
   runErrFifoModes,
   runLauncher as runHarnessLauncher,
-  setupHarness as setupBaseHarness,
+  setupHarness,
   spawnLauncher as spawnHarnessLauncher,
   waitForRecord,
 } from "./fixtures/launcher_harness.ts";
@@ -94,100 +94,6 @@ function runLauncher(harness: Harness): Promise<LaunchOutcome> {
 /** Start `run.sh` under the shared launcher harness. */
 function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, BASH_LAUNCHER);
-}
-
-/**
- * A stand-in for `reclaim-host-caches` that answers its contract (Issue #4498).
- *
- * The shared Deno stub does not know this sub-command, so without this every
- * launch in this file would run the real command against the runner's own
- * `/tmp` and home directories. The stand-in records its arguments and the order
- * it ran in, prints `STUB_RECLAIM_STDOUT` (the `[HOST_CACHE_RECLAIM]` lines),
- * and exits `STUB_RECLAIM_EXIT` (0 unless a test exercises a failed reclaim).
- * `STUB_RECLAIM_AVAIL_KB_AFTER` is the host's free space once the reclaim has
- * run, read back through the df stand-in below. Every other sub-command goes
- * to the shared stub unchanged.
- *
- * @param bin - The harness's stub directory
- * @returns The stand-in's script source
- */
-function reclaimDenoStub(bin: string): string {
-  return `#!/bin/bash
-set -u
-for arg in "\$@"; do
-  if [[ "\${arg}" == "reclaim-host-caches" ]]; then
-    record_dir="\${VIBE_STUB_RECORD}"
-    mkdir -p "\${record_dir}"
-    printf '%s\\0' "\$@" > "\${record_dir}/reclaim-host-caches.args"
-    printf '%s\\n' "reclaim-host-caches" >> "\${record_dir}/order.log"
-    if [[ -n "\${STUB_RECLAIM_STDOUT:-}" ]]; then
-      printf '%s\\n' "\${STUB_RECLAIM_STDOUT}"
-    fi
-    if [[ -n "\${STUB_RECLAIM_AVAIL_KB_AFTER:-}" ]]; then
-      printf '%s' "\${STUB_RECLAIM_AVAIL_KB_AFTER}" > "\${record_dir}/df-avail-kb"
-    fi
-    exit "\${STUB_RECLAIM_EXIT:-0}"
-  fi
-done
-exec "${bin}/deno-harness" "\$@"
-`;
-}
-
-/**
- * A stand-in for `df` that reads the free space a reclaim left behind
- * (Issue #4498). It answers only once a reclaim has written `df-avail-kb`;
- * before that, and for every other call, the shared stub answers.
- *
- * @param bin - The harness's stub directory
- * @returns The stand-in's script source
- */
-function reclaimDfStub(bin: string): string {
-  return `#!/bin/bash
-set -u
-if [[ -f "\${VIBE_STUB_RECORD}/df-avail-kb" && -n "\${STUB_DF_TOTAL_KB:-}" ]]; then
-  avail="$(cat "\${VIBE_STUB_RECORD}/df-avail-kb")"
-  used=$(( STUB_DF_TOTAL_KB - avail ))
-  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
-  printf 'stub %s %s %s 50%% /\\n' "\${STUB_DF_TOTAL_KB}" "\${used}" "\${avail}"
-  exit 0
-fi
-exec "${bin}/df-harness" "\$@"
-`;
-}
-
-/**
- * Put the reclaim stand-in in front of the harness's own deno and df stubs
- * (Issue #4498). The shared stubs move aside as `deno-harness` and `df-harness`
- * and keep answering everything they answered before.
- *
- * @param harness - The harness whose stub directory is changed
- */
-async function installReclaimStub(harness: Harness): Promise<void> {
-  const bin = `${harness.tmpDir}/bin`;
-  await Deno.rename(`${bin}/deno`, `${bin}/deno-harness`);
-  await Deno.writeTextFile(`${bin}/deno`, reclaimDenoStub(bin));
-  await Deno.chmod(`${bin}/deno`, 0o755);
-  await Deno.rename(`${bin}/df`, `${bin}/df-harness`);
-  await Deno.writeTextFile(`${bin}/df`, reclaimDfStub(bin));
-  await Deno.chmod(`${bin}/df`, 0o755);
-}
-
-/**
- * The shared launcher harness, with the reclaim stand-in installed (Issue
- * #4498). Every harness this file builds goes through here, so no test can
- * reach the real reclaim command.
- *
- * @param extraEnv - Stub behaviour overrides, as for the shared harness
- * @param options - As for the shared harness
- * @returns The harness the launcher runs under
- */
-async function setupHarness(
-  extraEnv: Record<string, string> = {},
-  options: Parameters<typeof setupBaseHarness>[1] = {},
-): Promise<Harness> {
-  const harness = await setupBaseHarness(extraEnv, options);
-  await installReclaimStub(harness);
-  return harness;
 }
 
 /** The value that follows `flag` in a recorded argument list (Issue #4498). */
@@ -2481,6 +2387,39 @@ Deno.test("run.sh - a recreate the runtime fails is not reported as a declined o
       await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
     ) as Record<string, unknown>;
     assertEquals(reading.workVolumeRecreateDeclined, false);
+    // The recreate failed, so nothing was recorded and nothing is promised.
+    assertEquals("workVolumeRecreateUnrecovered" in reading, false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a recreate that leaves the host short is flagged as tried, and the next launch declines it (#4500 review)", async () => {
+  // The volume can cover the shortfall, so the launcher recreates it; the
+  // stubbed host stays 32 MB short, so the recreate returned nothing. The
+  // reading must say the recreate ran (not that it was declined), and the
+  // next launch must decline against the recorded reading.
+  const harness = await setupHarness(SHORT_HOST_STEADY_STATE);
+  const readReading = async () =>
+    JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+  try {
+    await seedWorkVolume(harness);
+    const first = await runLauncher(harness);
+    assertEquals(first.code, 0, first.stderr);
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    const afterRecreate = await readReading();
+    assertEquals(afterRecreate.workVolumeRecreateUnrecovered, true);
+    assertEquals(afterRecreate.workVolumeRecreateDeclined, false);
+
+    // The promise matches the behaviour: the next launch recreates nothing.
+    const second = await runLauncher(harness);
+    assertEquals(second.code, 0, second.stderr);
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    const afterDecline = await readReading();
+    assertEquals(afterDecline.workVolumeRecreateDeclined, true);
+    assertEquals("workVolumeRecreateUnrecovered" in afterDecline, false);
   } finally {
     await harness.cleanup();
   }

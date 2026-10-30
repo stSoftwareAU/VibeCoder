@@ -58,7 +58,7 @@ import {
   REPO_ROOT,
   runCoreLog,
   runLauncher as runHarnessLauncher,
-  setupHarness as setupBaseHarness,
+  setupHarness,
   spawnLauncher as spawnHarnessLauncher,
   tempFileModes,
   waitForRecord,
@@ -82,57 +82,6 @@ function runLauncher(harness: Harness): Promise<LaunchOutcome> {
 /** Start `run.ps1` under the shared launcher harness. */
 function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, POWERSHELL_LAUNCHER!);
-}
-
-/**
- * A stand-in for `reclaim-host-caches` that answers its contract (Issue #4498).
- *
- * The shared Deno stub does not know this sub-command, and run.ps1 would
- * otherwise run the real command against this runner's own directories. The
- * stand-in records its arguments, prints `STUB_RECLAIM_STDOUT` and exits 0.
- * Every other sub-command goes to the shared stub unchanged. This mirrors the
- * stand-in in run_sh_launcher_test.ts, which this file cannot import.
- *
- * @param bin - The harness's stub directory
- * @returns The stand-in's script source
- */
-function reclaimDenoStub(bin: string): string {
-  return `#!/bin/bash
-set -u
-for arg in "\$@"; do
-  if [[ "\${arg}" == "reclaim-host-caches" ]]; then
-    record_dir="\${VIBE_STUB_RECORD}"
-    mkdir -p "\${record_dir}"
-    printf '%s\\0' "\$@" > "\${record_dir}/reclaim-host-caches.args"
-    if [[ -n "\${STUB_RECLAIM_STDOUT:-}" ]]; then
-      printf '%s\\n' "\${STUB_RECLAIM_STDOUT}"
-    fi
-    exit 0
-  fi
-done
-exec "${bin}/deno-harness" "\$@"
-`;
-}
-
-/**
- * The shared launcher harness, with the reclaim stand-in installed (Issue
- * #4498). Every harness this file builds goes through here, so no test can
- * reach the real reclaim command.
- *
- * @param extraEnv - Stub behaviour overrides, as for the shared harness
- * @param options - As for the shared harness
- * @returns The harness the launcher runs under
- */
-async function setupHarness(
-  extraEnv: Record<string, string> = {},
-  options: Parameters<typeof setupBaseHarness>[1] = {},
-): Promise<Harness> {
-  const harness = await setupBaseHarness(extraEnv, options);
-  const bin = `${harness.tmpDir}/bin`;
-  await Deno.rename(`${bin}/deno`, `${bin}/deno-harness`);
-  await Deno.writeTextFile(`${bin}/deno`, reclaimDenoStub(bin));
-  await Deno.chmod(`${bin}/deno`, 0o755);
-  return harness;
 }
 
 /** The value that follows `flag` in a recorded argument list (Issue #4498). */
