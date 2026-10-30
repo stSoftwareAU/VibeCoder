@@ -837,7 +837,9 @@ and reporting them together lets one mask the other — so the closing summary
 names the worst issue **within each axis**, never one winner across both.
 
 Both blocks carry a provenance marker recording what the reviewer was given, so
-the summary says who judged it:
+the summary says who judged it. (The one exception is the criteria-less
+`missing`-only block described under the closure rules: no reviewer ran, so it
+carries no marker.)
 
 ```markdown
 ## Acceptance Criteria
@@ -854,7 +856,8 @@ the summary says who judged it:
 - **clean** — <the areas the reviewer checked and found compliant>
 ```
 
-- **Every criterion entry names the reviewer's verdict** — `reviewer: met`,
+- **When the issue states criteria, every criterion entry names the reviewer's
+  verdict** — `reviewer: met`,
   `reviewer: partial`, `reviewer: missing` or `reviewer: unrequested`. **Every
   entry, `unrequested` included**: an `unrequested` line is the Spec reviewer's
   own finding, so it carries `reviewer: unrequested` exactly like the other
@@ -1363,9 +1366,10 @@ The file MUST contain:
 5. **Acceptance Criteria** (when the issue states criteria, or when you leave
    part of an issue with no criteria heading undone — then only `missing`
    entries, quoting the issue): the closure block described in [Acceptance-Criteria Closure](#acceptance-criteria-closure--answer-the-criteria-before-the-pr)
-   — the Spec reviewer's provenance marker, then one `met` / `partial` /
-   `missing` entry per criterion with its `reviewer:` verdict, plus any
-   `unrequested` change, which carries `reviewer: unrequested` and a `reason:`.
+   — when the issue states criteria, the Spec reviewer's provenance marker,
+   then one `met` / `partial` / `missing` entry per criterion with its
+   `reviewer:` verdict, plus any `unrequested` change, which carries
+   `reviewer: unrequested` and a `reason:`.
    For an issue with no criteria heading the block holds only `missing`
    entries, each with a `reason:`, and no provenance marker and no `reviewer:`
    field, because no reviewer runs for such an issue

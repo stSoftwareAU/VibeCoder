@@ -95,9 +95,12 @@ this issue has no criteria heading and nothing in it is left undone, so
   a review that never happened`, and the pr_feedback `When the issue states no
   criteria heading` each turned the file from 7 passed to 6 passed, 1 failed;
   restored, 7 passed, 0 failed.
-- `deno test --allow-all` over `tests/issue_prompt_*.ts`,
-  `tests/coding_guidelines_*.ts`, `tests/prompt_builder_test.ts` and the new
-  file: 160 passed, 0 failed.
+- `deno test --allow-all` from `worker/deno` over `tests/issue_prompt_*.ts`,
+  `tests/coding_guidelines_*.ts` and `tests/prompt_builder_test.ts` (69 tests
+  at head, run only as a regression check; this PR does not change it). The
+  new `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts` is
+  among the `issue_prompt_*` files (7 tests at head). Combined run at head:
+  160 passed, 0 failed.
 - No existing assertion was removed or edited.
 - Docs: `deno fmt --check` already fails on `DESIGN-PRINCIPLES.md` and
   `docs/workflows/issue-processing.md` on base; not reformatted.
