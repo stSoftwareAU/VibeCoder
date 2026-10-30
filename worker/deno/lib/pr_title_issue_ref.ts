@@ -11,8 +11,9 @@
  *    own PR titles carry. Used where a *positive* identification is needed.
  *  - {@link prTitleReferencesIssue} — the delimited form, or a bare `#N` that
  *    is neither another repository's issue nor a pull-request number. Used by
- *    the duplicate-PR guard, which would rather over-match a human's
- *    unconventional title than let a second PR be opened.
+ *    the open and closed-unmerged PR guards, which would rather over-match a
+ *    human's unconventional title than let a second PR be opened. Since Issue
+ *    #4478 the merged verdict in `isBlockedByRecentlyClosedPR` does not use it.
  *
  * Neither builds a `RegExp` from the issue number: interpolating an external
  * value into a pattern is a ReDoS risk, and `issue_query.ts` carries
@@ -88,6 +89,11 @@ function isPullRequestQualifiedReference(before: string): boolean {
  * for issue #209 alone. The previous bare-`#N` test read it as a PR for
  * #178, #184, #187, #188 *and* #209, and because a merged PR blocks
  * permanently (Issue #3151), stranded four issues for good.
+ *
+ * Since Issue #4478 the merged verdict in `isBlockedByRecentlyClosedPR` uses
+ * {@link prTitleMatchesIssue} (or the body's closing references) instead, so a
+ * bare `#N` no longer blocks permanently. This matcher serves only the open
+ * and closed-unmerged PR guards.
  */
 export function prTitleReferencesIssue(
   title: string,
