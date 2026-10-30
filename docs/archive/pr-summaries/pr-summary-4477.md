@@ -64,8 +64,8 @@ this issue has no criteria heading and nothing in it is left undone, so
 
 ## Test Plan
 
-- New `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts`
-  (7 tests at head), all named `(Issue #4477)`:
+- New `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts` (7
+  tests at head), all named `(Issue #4477)`:
   - Behavioural, on real code (3 tests): an issue under `## Wanted` yields no
     criteria; a summary with one `missing` entry and no `reviewer:` field passes
     `validateAcceptanceClosure` (not applicable) and `validateIndependentReview`
@@ -80,27 +80,30 @@ this issue has no criteria heading and nothing in it is left undone, so
     "Acceptance-Criteria Closure" gains the criteria-less bullet and "no
     reviewer provenance marker and no `reviewer:` field"; "PR Summary File"
     (item 5 of the file's contents and the skeleton lead-in) gains "the block
-    holds only `missing` entries, each with a `reason:`, and no provenance marker
-    and no `reviewer:` field" and "writing the marker would claim a review that
-    never happened"; the pr_feedback "Making Changes" section carries
-    `When the issue states no criteria heading`.
+    holds only `missing` entries, each with a `reason:`, and no provenance
+    marker and no `reviewer:` field" and "writing the marker would claim a
+    review that never happened"; the pr_feedback "Making Changes" section
+    carries `When the issue states no criteria heading`.
 - Pins on base: `deno task drift-pins-on-base main <doc> <section> <phrase>...`
   reports every pinned phrase above as absent on base for its section. The
   earlier bare `missing` and `Part of #{{ISSUE_NUMBER}}` pins, which the base
   section already held, were dropped.
 - Red check, per pin, by editing the phrase in its own section only and running
   the file: closure `record each undone`, closure `nothing it asks is`, the
-  bullet's "no reviewer provenance marker and no `reviewer:` field", item 5 `For
-  an issue with no criteria heading the block holds only`, skeleton `would claim
-  a review that never happened`, and the pr_feedback `When the issue states no
-  criteria heading` each turned the file from 7 passed to 6 passed, 1 failed;
-  restored, 7 passed, 0 failed.
+  bullet's "no reviewer provenance marker and no `reviewer:` field", item 5
+  `For
+  an issue with no criteria heading the block holds only`, skeleton
+  `would claim
+  a review that never happened`, and the pr_feedback
+  `When the issue states no
+  criteria heading` each turned the file from 7
+  passed to 6 passed, 1 failed; restored, 7 passed, 0 failed.
 - `deno test --allow-all` from `worker/deno` over `tests/issue_prompt_*.ts`,
-  `tests/coding_guidelines_*.ts` and `tests/prompt_builder_test.ts` (69 tests
-  at head, run only as a regression check; this PR does not change it). The
-  new `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts` is
-  among the `issue_prompt_*` files (7 tests at head). Combined run at head:
-  160 passed, 0 failed.
+  `tests/coding_guidelines_*.ts` and `tests/prompt_builder_test.ts` (69 tests at
+  head, run only as a regression check; this PR does not change it). The new
+  `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts` is among
+  the `issue_prompt_*` files (7 tests at head). Combined run at head: 160
+  passed, 0 failed.
 - No existing assertion was removed or edited.
 - Docs: `deno fmt --check` already fails on `DESIGN-PRINCIPLES.md` and
   `docs/workflows/issue-processing.md` on base; not reformatted.
