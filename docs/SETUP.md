@@ -1135,8 +1135,8 @@ The candidates are ordered:
 2. **The five-hour gate.** A token that has used **less than 80%** of its
    five-hour window passes, and every passing token ranks ahead of every
    failing one; at exactly 80% used — 20% left — it fails. A token that has
-   burned its five hours cannot spend whatever its week still holds, so no rate
-   it scores is worth acting on. The threshold is a fixed constant in the
+   burned its five hours cannot spend whatever its week still holds, so no
+   remaining share it reports is worth acting on. The threshold is a fixed constant in the
    worker, not a setting: it describes how Anthropic's windows behave, not how
    one host is configured. It is stated **once**, as
    `CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2` in `claude_token_selection.ts`;
@@ -1222,27 +1222,28 @@ so the selection line and the pause line read together:
 candidate, best first, then the winner:
 
 ```text
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): five_hour=88.0% resets=2026-09-05T02:00:00.000Z seven_day=22.0% resets=2026-09-05T09:00:00.000Z rate=2.03%/h gate=pass host=vibe-host:5312
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=91.0% resets=2026-09-05T01:00:00.000Z seven_day=75.0% resets=2026-09-11T05:00:00.000Z rate=0.50%/h gate=pass host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=91.0% resets=2026-09-05T01:00:00.000Z seven_day=75.0% resets=2026-09-11T05:00:00.000Z remaining=75.0% gate=pass host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): five_hour=88.0% resets=2026-09-05T02:00:00.000Z seven_day=22.0% resets=2026-09-05T09:00:00.000Z remaining=22.0% gate=pass host=vibe-host:5312
 [2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-3 (#3): remaining=unknown reason=http-401 host=vibe-host:5312
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider-2 (#2) of 3: highest-remaining-per-hour rate=2.03%/h remaining=22.0% resets=2026-09-05T09:00:00.000Z host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider (#1) of 3: most-seven-day-remaining remaining=75.0% resets=2026-09-11T05:00:00.000Z host=vibe-host:5312
 ```
 
-`(#2)` is the discovery position, so `provider-2 (#2)` is the second file
+`(#1)` is the discovery position, so `provider (#1)` is the first file
 found; `of 3` is how many candidates were ranked. Each candidate line carries
 both windows — a window the response did not report reads `absent` — plus
-`rate=`, the remaining share per hour of the seven-day window (or of the only
-window the response reported, when it carried no seven-day one), and
-`gate=pass|fail` for the five-hour gate. A `rate=` on a line whose response
-reported no seven-day window is the rate of that other window, so it is **not**
-comparable with a seven-day rate: among tokens that passed the five-hour gate
-and sit in the same floor band (rule 4), such a token ranks behind every token
-that reported one (Issue #4503); the floor band is decided first, while
-tokens with `gate=fail` are still ordered by soonest five-hour reset, whatever
-their seven-day telemetry. A `selected` line for a token that
-failed the gate also carries the five-hour reset the choice was made on. Above, `provider` holds three times the share but
-`provider-2`'s 22% expires in eleven hours, so it is worth four times as much
-per hour and wins. The `[SECURITY]` prefix and the trailing `host=` field
+`remaining=`, the remaining share of the seven-day window (or of the only
+window the response reported, when it carried no seven-day one) that ranked it,
+and `gate=pass|fail` for the five-hour gate. A `week=spent` suffix marks a
+seven-day window at zero whose reset is still ahead. A `remaining=` on a line
+whose response reported no seven-day window is the share of that other window,
+so it is **not** comparable with a seven-day share: among tokens that passed
+the five-hour gate, such a token ranks behind every token that reported a
+seven-day window that is not spent (rule 3, Issue #4503); tokens with
+`gate=fail` are still ordered by soonest five-hour reset, whatever their
+seven-day telemetry. A `selected` line for a token that failed the gate also
+carries the five-hour reset the choice was made on. Above, `provider` holds
+75% of its week against `provider-2`'s 22%, so `provider` wins even though
+`provider-2` resets sooner: the reset only breaks a tie on share. The `[SECURITY]` prefix and the trailing `host=` field
 belong to the logger, not to this decision — every worker line carries them. A
 candidate whose window had already rolled over reads
 `five_hour=100.0% … (window already elapsed, counted as full)`.
@@ -1253,7 +1254,7 @@ the quota answer rather than a failed probe (Issue #2040) and the line carries
 both windows and when they come back:
 
 ```text
-[2026-09-12 10:49:43Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=0.0% resets=2026-09-12T14:00:00.000Z seven_day=0.0% resets=2026-09-15T01:00:00.000Z rate=0.00%/h gate=fail host=vibe-host:5312
+[2026-09-12 10:49:43Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=0.0% resets=2026-09-12T14:00:00.000Z seven_day=0.0% resets=2026-09-15T01:00:00.000Z remaining=0.0% gate=fail week=spent host=vibe-host:5312
 ```
 
 Only a `429` is read this way. A `429` that carries no rate-limit headers is
@@ -1268,10 +1269,10 @@ carrying the credential. The last line names why the winner won:
 
 | Reason | What it means |
 |--------|---------------|
-| `highest-remaining-per-hour` | The most remaining budget per hour of every candidate that passed the five-hour gate **and** holds at least 10% of its window, where a token with a seven-day window is preferred to one without, whatever the rates (Issue #4503). A token demoted by that floor can still show a higher rate — the floor is applied before the rate, not after it. Also shown when the runner-up holds an equal rate on a different window. |
-| `equal-remaining-per-hour-soonest-reset` | Level on budget per hour; won on the sooner reset. |
-| `tied-discovery-order` | Level on both rate and reset; won on discovery order. |
-| `low-seven-day-remaining-highest-rate` | Every candidate that passed the gate is under the 10% seven-day floor; the fastest-burning of them won, a token with a seven-day window ranking ahead of one without (Issue #4503). |
+| `most-seven-day-remaining` | The largest remaining share of the seven-day window (or of the only window reported) of every candidate that passed the five-hour gate, a token with a seven-day window ranking ahead of one without (Issue #4503). Also shown when the runner-up holds an equal share on a different window. |
+| `equal-seven-day-remaining-soonest-reset` | Level on remaining share; won on the sooner reset. |
+| `tied-discovery-order` | Level on both remaining share and reset; won on discovery order. |
+| `seven-day-spent-soonest-reset` | Every candidate that passed the gate has a spent week (`week=spent`); the one whose week resets first won. |
 | `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
 | `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
 
@@ -1414,12 +1415,12 @@ starts narrow that window; nothing else does.
 
 **The windows are not synchronised.** Two subscriptions bought at different
 times have seven-day windows that reset hours or days apart, and each token is
-ranked against its own window as a fraction *per hour until that window resets*
-— the only way subscriptions on different clocks compare at all. Expect the
-worker to favour whichever subscription is closest to its reset while it still
-has budget, and to leave a freshly rolled-over one alone until the urgent
-budget is spent. That is the ranking working, not a fault: the alternative is
-letting one subscription's week lapse unused.
+ranked on the share of its own window that is left — the figure that compares
+across subscriptions on different clocks without needing their reset times.
+Expect the worker to favour whichever subscription holds the most of its week,
+including one that has just rolled over, and to leave a nearly spent one alone
+until the others fall below it. The reset time only breaks a tie on share. That
+is the ranking working, not a fault.
 
 **Several Vibe Coders on one machine** share `~/.vibe-coder/credentials` unless
 you separate them, so pinning one to its own subscription needs a credential

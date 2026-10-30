@@ -56,7 +56,18 @@ are included.
 - Operator sections read: `docs/SETUP.md`, "Several Claude tokens", and
   `docs/workflows/issue-processing.md`, the pool-wide weekly pace calculation.
   The branch updates those sections plus `docs/CONTAINER.md` and
-  `docs/PROVIDER-PARITY.md`.
+  `docs/PROVIDER-PARITY.md`. In `docs/SETUP.md` the ranking rules (2-4), the
+  decision-log examples and field description (`remaining=`, `week=spent`), the
+  reason table and the "windows are not synchronised" paragraph describe the
+  largest-share rule; the `container_restart_backoff.ts` doc comment names it
+  too (PR #4520 review).
+- PR #4520 review: the three Issue #4503 tests (repeat-call determinism,
+  later-snapshot telemetry, per-shape `hasSevenDayTelemetry` flags) and the
+  table loop's winner assertion are restored, with the later-snapshot test's
+  expected order and reason adapted to the share rule. The first ranking test
+  has provider-3 on a `seven_day` window again, so 81% against 44% between two
+  weekly tokens decides it; the old per-hour rule would have picked provider-3
+  (11%/h against 0.68%/h).
 - Real-code tests cover Claude ranking, selection, probing, restart decisions,
   pool pace projection and the shared Claude/Codex quota policies.
 - Mutation red checks ran with `deno test --no-check --allow-all` so a deleted
@@ -65,11 +76,12 @@ are included.
 
 ## Test Plan
 
-- Seven affected suites, with normal type-checking: **174 passed, 0 failed**:
-  `claude_token_selection_test.ts` (48), `claude_pool_budget_test.ts` (12),
-  `claude_credential_pool_test.ts` (33), `claude_token_budget_test.ts` (27),
-  `claude_week_pace_test.ts` (20), `claude_week_pace_pool_test.ts` (22), and
-  `provider_quota_test.ts` (12), all under `worker/deno/tests/`.
+- Seven affected suites, with normal type-checking: **177 passed, 0 failed**:
+  `claude_token_selection_test.ts` (51 tests at head),
+  `claude_pool_budget_test.ts` (12), `claude_credential_pool_test.ts` (33),
+  `claude_token_budget_test.ts` (27), `claude_week_pace_test.ts` (20),
+  `claude_week_pace_pool_test.ts` (22), and `provider_quota_test.ts` (12), all
+  under `worker/deno/tests/`.
 - `deno task check:manifests`: passed (846 passed, 0 failed, 1 ignored).
 - `deno lint` and `deno fmt --check` on the five changed TypeScript files:
   passed. `git diff --check`: passed.
@@ -113,9 +125,9 @@ correct. The two reason tests also assert the selected log line.
 ### Required item 1: equivalent mutations
 
 Each mutation below was applied alone with runtime checking and restored. The
-ranking suite stayed green for the comparator mutation (48 tests), and the pool
-pace suite stayed green for each mapping mutation (22 tests). The reasons
-explain why no supported input can distinguish them.
+ranking suite stayed green for the comparator mutation (51 tests, re-run at
+head), and the pool pace suite stayed green for each mapping mutation (22
+tests). The reasons explain why no supported input can distinguish them.
 
 - `worker/deno/lib/claude_token_selection.ts:371` — exempt (untestable):
   equal-reset spent weeks enter the stable sort in discovery order; returning

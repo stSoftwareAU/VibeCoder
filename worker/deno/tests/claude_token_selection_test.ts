@@ -175,13 +175,13 @@ function fetchByToken(answer: (token: string) => Response) {
 // ---------------------------------------------------------------------------
 
 Deno.test("ranking returns the passing token with the largest remaining share of its own window (Issue #4504)", () => {
-  // Different windows, different reset days. Under #1623's per-hour rule
-  // provider-3's 44% over four hours beat provider-2's 81% over five days;
-  // now the larger share wins whatever its reset.
+  // Different reset days between two weekly tokens. Under #1623's per-hour
+  // rule provider-3's 44% over four hours beat provider-2's 81% over five
+  // days; now the larger share wins whatever its reset.
   const ranking = rankClaudeTokenBudgets([
     known("provider", 0.10, NOW + 2 * HOUR, "five_hour"),
     known("provider-2", 0.81, NOW + 5 * 24 * HOUR, "seven_day"),
-    known("provider-3", 0.44, NOW + 4 * HOUR, "five_hour"),
+    known("provider-3", 0.44, NOW + 4 * HOUR, "seven_day"),
   ], NOW);
 
   assertEquals(ranking.winner?.label, "provider-2");
@@ -355,10 +355,68 @@ const WEEKLY_TELEMETRY_CASES: readonly {
 for (const row of WEEKLY_TELEMETRY_CASES) {
   Deno.test(row.name, () => {
     const ranking = rankClaudeTokenBudgets(row.budgets, NOW);
+    assertEquals(ranking.ranked.length, row.budgets.length, "nothing dropped");
     assertEquals(ranking.ranked.map((candidate) => candidate.label), row.order);
+    assertEquals(ranking.winner?.label, row.order[0]);
     assertEquals(ranking.reason, row.reason);
   });
 }
+
+Deno.test("all weekless tokens with an equal share pick the same winner on every call (Issue #4503)", () => {
+  const budgets = [
+    known("provider", 0.4, NOW + 2 * HOUR, "five_hour"),
+    known("provider-2", 0.4, NOW + 2 * HOUR, "five_hour"),
+  ];
+  for (let call = 0; call < 3; call++) {
+    const ranking = rankClaudeTokenBudgets(budgets, NOW);
+    assertEquals(ranking.winner?.label, "provider");
+    assertEquals(ranking.ranked.length, 2);
+  }
+});
+
+Deno.test("a later snapshot that reports a seven-day window restores weekly ranking (Issue #4503)", () => {
+  const before = rankClaudeTokenBudgets([
+    known("provider", 0.9, NOW + 100 * HOUR, "seven_day"),
+    known("provider-2", 0.95, NOW + 5 * HOUR, "five_hour"),
+  ], NOW);
+  assertEquals(before.ranked.map((r) => r.label), ["provider", "provider-2"]);
+  assertEquals(before.ranked[1]?.hasSevenDayTelemetry, false);
+
+  // The same label now reports both windows. Nothing is remembered between
+  // calls, so provider-2 is ranked on its seven-day 95% and now beats
+  // provider's 90%; had the weekless reading been remembered it would stay
+  // behind the weekly token.
+  const after = rankClaudeTokenBudgets([
+    known("provider", 0.9, NOW + 100 * HOUR, "seven_day"),
+    dual("provider-2", [
+      fiveHour(0.95, NOW + 5 * HOUR),
+      sevenDay(0.95, NOW + 24 * HOUR),
+    ]),
+  ], NOW);
+  assertEquals(after.ranked.map((r) => r.label), ["provider-2", "provider"]);
+  assertEquals(after.winner?.hasSevenDayTelemetry, true);
+  assertEquals(after.winner?.rankWindow?.window, "seven_day");
+  assertEquals(after.winner?.remainingFraction, 0.95);
+  assertEquals(after.reason, "most-seven-day-remaining");
+});
+
+Deno.test("ranked entries report whether the probe reported a seven-day window (Issue #4503)", () => {
+  const ranking = rankClaudeTokenBudgets([
+    known("weekless", 0.4, NOW + 2 * HOUR, "five_hour"),
+    dual("both", [
+      fiveHour(0.9, NOW + 2 * HOUR),
+      sevenDay(0.5, NOW + 100 * HOUR),
+    ]),
+    known("weekly", 0.5, NOW + 100 * HOUR, "seven_day"),
+    unknown("unknown"),
+  ], NOW);
+  assertEquals(
+    Object.fromEntries(
+      ranking.ranked.map((r) => [r.label, r.hasSevenDayTelemetry]),
+    ),
+    { weekless: false, both: true, weekly: true, unknown: false },
+  );
+});
 
 Deno.test("ranking gates on the five-hour window before it looks at the seven-day share (Issue #1623)", () => {
   // provider has twice the seven-day quota left, but 19% of its five-hour
