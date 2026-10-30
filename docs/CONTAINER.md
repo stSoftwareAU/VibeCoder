@@ -1454,7 +1454,9 @@ and logs `[HOST_CACHE_RECLAIM] process table unreadable — removed nothing: …
 with the reason: `ps` (or PowerShell on Windows) fails, or `lsof` is not
 installed, times out (30 s), or exits non-zero without naming any file. An
 `lsof` that exits non-zero but still lists files is used, because `lsof` does
-that whenever it cannot inspect some process. On a host without `lsof`,
+that whenever it cannot inspect some process. The command still exits
+non-zero, and it still prints the `largest host directories:` line, because
+sizing directories does not need the process table. On a host without `lsof`,
 install it (for example `apt install lsof` or `dnf install lsof`) to let the
 reclaim run.
 

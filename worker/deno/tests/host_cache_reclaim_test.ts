@@ -598,15 +598,23 @@ Deno.test("an lsof that exits 1 but still names files is used, as lsof does when
         code: 1,
       },
     });
+    // A 2 GiB floor with 1 GiB caches means removing `idle` (the oldest) does
+    // not reach the target, so the reclaim goes on to judge `held`. Only the
+    // lsof `n` line names it, so dropping those names on a non-zero exit
+    // would delete it.
     const result = await reclaimHostCaches(
-      oneGibOptions([root]),
+      oneGibOptions([root], { floorBytes: 2 * GIB }),
       reclaimDeps({
         processSnapshot: () => defaultProcessSnapshot("posix", run, "linux"),
       }),
     );
     assertEquals(result.processTableError, undefined);
     assertEquals(removedPaths(result), [idle]);
-    assertEquals(await exists(held), true);
+    assertEquals(await exists(held), true, "the held cache is kept");
+    const skipReasons = Object.fromEntries(
+      result.skipped.map((s) => [s.path, s.reason]),
+    );
+    assertStringIncludes(skipReasons[held] ?? "", "held open");
   });
 });
 
@@ -1703,6 +1711,46 @@ Deno.test("command: a process table failure is an unsuccessful run that removes 
     assertEquals(result.success, false);
     assertStringIncludes(result.message, "ps exited 1");
     assertEquals(await exists(cache), true);
+  });
+});
+
+Deno.test("command: a failing lsof still names the largest host directories, and the run stays unsuccessful (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const cache = await makeCache(root, "stale-target", { ageMs: STALE_MS });
+    await Deno.mkdir(join(root, "aaa"));
+    await Deno.mkdir(join(root, "mmm"));
+    const config = await writeConfig(root, {
+      host_cache_reclaim_roots: [root],
+    });
+    // A host without lsof: the reclaim removes nothing, but run.sh still needs
+    // the `largest host directories:` line for [WORK_VOLUME_UNRECOVERED] and
+    // host-disk.json, and sizing directories does not need the process table.
+    const run = runnerWithLsof({
+      ok: false,
+      error: new Error("lsof: command not found"),
+    });
+    const result = await runReclaimHostCaches(
+      { config, "free-kb": "0", "floor-kb": String(KIB_PER_GIB) },
+      commandDeps({
+        processSnapshot: () => defaultProcessSnapshot("posix", run, "linux"),
+        dirSizeBytes: async (path) =>
+          path.endsWith("/mmm") ? 9 * GIB : path.endsWith("/aaa") ? GIB : null,
+      }),
+    );
+    assertEquals(result.success, false, "the run is still unsuccessful");
+    assertEquals(await exists(cache), true, "nothing is deleted");
+    const lines = result.message.split("\n");
+    assertStringIncludes(
+      lines[0] ?? "",
+      `${HOST_CACHE_RECLAIM_TAG} process table unreadable — removed nothing`,
+    );
+    const largest = lines.find((line) =>
+      line.startsWith(`${HOST_CACHE_RECLAIM_TAG} largest host directories: `)
+    );
+    assert(largest !== undefined, "the largest-directories line is present");
+    const named = largest.split("largest host directories: ")[1]!.split("; ");
+    assertEquals(named[0], `${join(root, "mmm")} (9.0 GB)`);
+    assertEquals(named[1], `${join(root, "aaa")} (1.0 GB)`);
   });
 });
 

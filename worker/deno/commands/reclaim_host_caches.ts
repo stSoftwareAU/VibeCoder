@@ -141,6 +141,18 @@ function tagged(lines: string[]): string {
   return lines.map((line) => `${HOST_CACHE_RECLAIM_TAG} ${line}`).join("\n");
 }
 
+/** The `largest host directories: …` line run.sh keeps for its alert. */
+function largestLine(largest: HostDirectorySize[]): string {
+  const named = largest.length === 0
+    ? "none found"
+    : largest.map((dir) =>
+      dir.bytes === null
+        ? `${dir.path} (unmeasured)`
+        : `${dir.path} (${gigabytes(dir.bytes)})`
+    ).join("; ");
+  return `largest host directories: ${named}`;
+}
+
 /**
  * Do the work. Separated so the tests can call it without the registry.
  *
@@ -241,11 +253,18 @@ export async function runReclaimHostCaches(
   }, deps.reclaim ?? {});
 
   if (result.processTableError !== undefined) {
+    // Nothing was removed, so the host is still below its floor. Sizing the
+    // largest directories does not need the process table, and run.sh reads
+    // the `largest host directories:` line before it checks the exit status,
+    // so a host without lsof still gets the list in its unrecovered alert and
+    // host-disk.json (PR #4500 review). The run stays unsuccessful.
+    const largest = await largestHostDirectories(roots, deps.reclaim ?? {});
     return {
       success: false,
       message: tagged([
         "process table unreadable — removed nothing: " +
         result.processTableError,
+        largestLine(largest),
       ]),
     };
   }
@@ -279,14 +298,7 @@ export async function runReclaimHostCaches(
   let largest: HostDirectorySize[] | undefined;
   if (result.freeBytesAfter < floorBytes) {
     largest = await largestHostDirectories(roots, deps.reclaim ?? {});
-    const named = largest.length === 0
-      ? "none found"
-      : largest.map((dir) =>
-        dir.bytes === null
-          ? `${dir.path} (unmeasured)`
-          : `${dir.path} (${gigabytes(dir.bytes)})`
-      ).join("; ");
-    lines.push(`largest host directories: ${named}`);
+    lines.push(largestLine(largest));
   }
 
   const data: ReclaimHostCachesData = {
