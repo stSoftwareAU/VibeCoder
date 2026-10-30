@@ -1440,13 +1440,23 @@ flowchart TD
   `Signature: 8a477f597d28d172789f06886806bc55`, which build tools write into
   their output directories;
 - it is older than `host_cache_reclaim_min_age_hours` (24 by default);
-- no running process names a path inside it. The check reads each process's
-  command line (`ps`) and, where `lsof` is installed, the files each process
-  has as its working directory (`cwd`) and program text (`txt`), plus its
-  memory-mapped files (`mem`) on Linux. So a server started as
+- no running process names a path inside it. On macOS and Linux the check
+  reads each process's command line (`ps`) and, from `lsof`, the files each
+  process has as its working directory (`cwd`) and program text (`txt`), plus
+  its memory-mapped files (`mem`) on Linux. So a server started as
   `./target/release/server` still holds its cache, through the executable path
-  `lsof` reports. Other open files (ordinary file descriptors) are not read.
-  On Windows only the command lines are read.
+  `lsof` reports. Other open files (ordinary file descriptors) are not read. On
+  Windows the check reads each process's command line and its executable path
+  (`Win32_Process` `CommandLine` and `ExecutablePath`).
+
+If that check cannot be completed, the reclaim removes nothing on that launch
+and logs `[HOST_CACHE_RECLAIM] process table unreadable — removed nothing: …`
+with the reason: `ps` (or PowerShell on Windows) fails, or `lsof` is not
+installed, times out (30 s), or exits non-zero without naming any file. An
+`lsof` that exits non-zero but still lists files is used, because `lsof` does
+that whenever it cannot inspect some process. On a host without `lsof`,
+install it (for example `apt install lsof` or `dnf install lsof`) to let the
+reclaim run.
 
 Candidates go oldest first, and the reclaim stops once the host has the
 claiming floor plus `host_cache_reclaim_headroom_gb` (10 by default) free.

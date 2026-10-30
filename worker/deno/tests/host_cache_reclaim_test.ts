@@ -35,6 +35,7 @@ import {
   reclaimHostCaches,
   TAG_READ_BYTES,
   walkDirSizeBytes,
+  WINDOWS_PROCESS_QUERY,
 } from "../lib/host_cache_reclaim.ts";
 import {
   HOST_CACHE_RECLAIM_TAG,
@@ -384,6 +385,228 @@ Deno.test("positive control: the same stale cache is removed when lsof names not
     );
     assertEquals(removedPaths(result), [cache]);
     assertEquals(await exists(cache), false);
+  });
+});
+
+type SnapshotRunner = NonNullable<Parameters<typeof defaultProcessSnapshot>[1]>;
+
+/**
+ * A stand-in for `Get-CimInstance Win32_Process` (#4500 review): one process,
+ * a server started from cmd.exe as `target\\release\\server.exe`, so its
+ * CommandLine is relative and only its ExecutablePath is absolute. Like
+ * PowerShell, it prints a property only when the query names it, so the
+ * snapshot sees the image path only when it asks for `$_.ExecutablePath`.
+ */
+function fakeWindowsProcessTable(executablePath: string) {
+  const scripts: string[] = [];
+  const run = async (exe: string, args: string[]) => {
+    assertEquals(exe, "powershell");
+    const script = args[args.length - 1] ?? "";
+    scripts.push(script);
+    const out: string[] = [];
+    if (script.includes("$_.CommandLine")) {
+      out.push("target\\release\\server.exe --port 8080");
+    }
+    if (script.includes("$_.ExecutablePath")) out.push(executablePath);
+    return {
+      ok: true as const,
+      value: {
+        timedOut: false,
+        stdout: out.join("\r\n") + "\r\n",
+        stderr: "",
+        success: true,
+        code: 0,
+      },
+    };
+  };
+  return { run: run as unknown as SnapshotRunner, scripts };
+}
+
+Deno.test("Windows: a running executable inside a stale cache holds it open through its ExecutablePath, though its CommandLine is relative (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const cache = await makeCache(join(root, "repo"), "target", {
+      ageMs: STALE_MS,
+    });
+    const { run, scripts } = fakeWindowsProcessTable(
+      join(cache, "release", "server.exe"),
+    );
+    const result = await reclaimHostCaches(
+      oneGibOptions([root]),
+      reclaimDeps({
+        processSnapshot: () => defaultProcessSnapshot("windows", run),
+      }),
+    );
+    assertEquals(result.removed.length, 0, "the cache is kept");
+    assertEquals(await exists(cache), true, "the cache is kept");
+    assertStringIncludes(
+      result.skipped.find((s) => s.path === cache)?.reason ?? "",
+      "held open",
+    );
+    assertEquals(scripts, [WINDOWS_PROCESS_QUERY]);
+    assertStringIncludes(WINDOWS_PROCESS_QUERY, "$_.CommandLine");
+    assertStringIncludes(WINDOWS_PROCESS_QUERY, "$_.ExecutablePath");
+  });
+});
+
+Deno.test("Windows positive control: a stale cache no command line or image path names is removed (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const cache = await makeCache(join(root, "repo"), "target", {
+      ageMs: STALE_MS,
+    });
+    const { run } = fakeWindowsProcessTable(
+      "C:\\Program Files\\server\\server.exe",
+    );
+    const result = await reclaimHostCaches(
+      oneGibOptions([root]),
+      reclaimDeps({
+        processSnapshot: () => defaultProcessSnapshot("windows", run),
+      }),
+    );
+    assertEquals(removedPaths(result), [cache]);
+  });
+});
+
+/**
+ * A runner whose `ps` succeeds and whose `lsof` answers with `lsof`, or
+ * throws when `lsof` is an Error (a spawn that throws).
+ */
+function runnerWithLsof(
+  lsof:
+    | Error
+    | { ok: false; error: Error }
+    | {
+      ok: true;
+      value: {
+        timedOut: boolean;
+        stdout: string;
+        stderr: string;
+        success: boolean;
+        code: number;
+      };
+    },
+): SnapshotRunner {
+  const run = async (exe: string) => {
+    if (exe === "ps") {
+      return {
+        ok: true as const,
+        value: {
+          timedOut: false,
+          stdout: "./target/release/server\n",
+          stderr: "",
+          success: true,
+          code: 0,
+        },
+      };
+    }
+    if (lsof instanceof Error) throw lsof;
+    return lsof;
+  };
+  return run as unknown as SnapshotRunner;
+}
+
+const LSOF_FAILURES: {
+  label: string;
+  lsof: Parameters<typeof runnerWithLsof>[0];
+  reason: string;
+}[] = [
+  {
+    label: "is not installed",
+    lsof: { ok: false, error: new Error("lsof: command not found") },
+    reason: "could not run (lsof: command not found)",
+  },
+  {
+    label: "fails to spawn",
+    lsof: new Error("NotFound: Failed to spawn 'lsof'"),
+    reason: "could not run (NotFound: Failed to spawn 'lsof')",
+  },
+  {
+    label: "times out",
+    lsof: {
+      ok: true,
+      value: {
+        timedOut: true,
+        stdout: "p1\nfcwd\nn/",
+        stderr: "",
+        success: false,
+        code: 124,
+      },
+    },
+    reason: "timed out",
+  },
+  {
+    label: "exits non-zero naming no file",
+    lsof: {
+      ok: true,
+      value: {
+        timedOut: false,
+        stdout: "",
+        stderr: "lsof: unsupported option",
+        success: false,
+        code: 1,
+      },
+    },
+    reason: "exited 1 and named no open file: lsof: unsupported option",
+  },
+];
+
+for (const { label, lsof, reason } of LSOF_FAILURES) {
+  Deno.test(`an lsof that ${label} removes nothing and the reason is logged (#4500 review)`, async () => {
+    await withRoot(async (root) => {
+      const cache = await makeCache(root, "target", { ageMs: STALE_MS });
+      const processSnapshot = () =>
+        defaultProcessSnapshot("posix", runnerWithLsof(lsof), "linux");
+
+      const result = await reclaimHostCaches(
+        oneGibOptions([root]),
+        reclaimDeps({ processSnapshot }),
+      );
+      assertEquals(result.removed.length, 0);
+      assertEquals(await exists(cache), true, "nothing is deleted");
+      assertStringIncludes(result.processTableError ?? "", "lsof -w -a -d");
+      assertStringIncludes(result.processTableError ?? "", reason);
+
+      // The command reports it in the launch log, as it does a ps failure.
+      const config = await writeConfig(root, {
+        host_cache_reclaim_roots: [root],
+      });
+      const command = await runReclaimHostCaches(
+        { config, "free-kb": "0", "floor-kb": String(KIB_PER_GIB) },
+        commandDeps({ processSnapshot }),
+      );
+      assertEquals(command.success, false);
+      assertStringIncludes(
+        command.message,
+        `${HOST_CACHE_RECLAIM_TAG} process table unreadable — removed nothing`,
+      );
+      assertStringIncludes(command.message, reason);
+      assertEquals(await exists(cache), true, "the command deletes nothing");
+    });
+  });
+}
+
+Deno.test("an lsof that exits 1 but still names files is used, as lsof does when it cannot inspect some process (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const held = await makeCache(root, "held", { ageMs: STALE_MS });
+    const idle = await makeCache(root, "idle", { ageMs: VERY_STALE_MS });
+    const run = runnerWithLsof({
+      ok: true,
+      value: {
+        timedOut: false,
+        stdout: `p7\nftxt\nn${held}/release/server\n`,
+        stderr: "lsof: WARNING: can't stat() fuse file system",
+        success: false,
+        code: 1,
+      },
+    });
+    const result = await reclaimHostCaches(
+      oneGibOptions([root]),
+      reclaimDeps({
+        processSnapshot: () => defaultProcessSnapshot("posix", run, "linux"),
+      }),
+    );
+    assertEquals(result.processTableError, undefined);
+    assertEquals(removedPaths(result), [idle]);
+    assertEquals(await exists(held), true);
   });
 });
 

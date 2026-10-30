@@ -18,8 +18,12 @@ it.
   `lsof -w -a -d cwd,txt -Fn` reports (`cwd,txt,mem` on Linux): its working
   directory, its program text and, on Linux, its memory-mapped files, so a
   server started as `./target/release/server` holds its cache through the
-  executable path lsof reports. Ordinary open file descriptors are not read;
-  Windows reads only the command lines. The process table is not resolved, so
+  executable path lsof reports. Ordinary open file descriptors are not read.
+  Windows reads each process's `CommandLine` and `ExecutablePath` from
+  `Win32_Process`. When lsof cannot be started, times out, or exits non-zero
+  naming no file, the snapshot throws, so the reclaim removes nothing and logs
+  `[HOST_CACHE_RECLAIM] process table unreadable — removed nothing: …`, as for
+  a `ps` failure. The process table is not resolved, so
   each cache is looked for under every spelling of its root: the root as given
   (`/tmp`, `$TMPDIR`) as well as its real path (`/private/tmp`,
   `/private/var/folders/...` on macOS). A `CACHEDIR.TAG` is read as at most its
@@ -100,8 +104,20 @@ the mutation and watching a test go red:
 
 ## Test Plan
 
-- `worker/deno/tests/host_cache_reclaim_test.ts` (73 tests at head, all pass; 72
-  `Deno.test` calls, one registered for two variables):
+- `worker/deno/tests/host_cache_reclaim_test.ts` (80 tests at head, all pass; 76
+  `Deno.test` calls, one registered for two variables and one for four lsof
+  failures):
+  - held open on Windows: a stand-in for `Get-CimInstance` whose CommandLine is
+    relative (`target\release\server.exe`) and whose ExecutablePath is inside a
+    stale cache keeps the cache; with the query reading only `$_.CommandLine`
+    it goes red (`the cache is kept`). A positive control removes a cache that
+    neither names;
+  - lsof failures: an lsof that is not installed, fails to spawn, times out, or
+    exits 1 naming no file removes nothing, sets `processTableError`, and the
+    command logs `[HOST_CACHE_RECLAIM] process table unreadable — removed
+    nothing` with the reason. With the previous tolerant fallback all four go
+    red. An lsof that exits 1 but still names files is used (the held cache is
+    kept and an idle one removed);
   - held open through lsof: a stale cache whose only mention is an lsof `txt`
     line (a server started as `./target/release/server` from the repo, so ps
     shows a relative argv and the cwd is the repo) is kept on both macOS
@@ -112,7 +128,7 @@ the mutation and watching a test go red:
     lsof removes it;
   - host independence: every fixture directory is 0755 and every reclaim gets an
     explicit `ownerUid` read with lstat from a temporary directory the test
-    makes. The suite gives 73 passed under `umask 002`, `022` and `077`, with
+    makes. The suite gives 80 passed under `umask 002`, `022` and `077`, with
     `$HOME` unset and with `$HOME` owned by another uid; before this change
     `umask 002` gave 13 failures, and an unset or foreign-owned `$HOME` 12;
   - config: with `CONFIG_FILE` or `CONFIG_PATH` naming a moved file that sets
@@ -222,7 +238,7 @@ cannot credit its removal and the largest-directories line shows it as
   `removal: a candidate reached from two roots is judged
   from the shallower root, whichever root is listed first`.
 - Both re-run red against the mutation and green on the head
-  (`host_cache_reclaim_test.ts`, 73 tests at head).
+  (`host_cache_reclaim_test.ts`, 80 tests at head).
 
 ## Review fixes (PR #4500, fourth round)
 
@@ -233,3 +249,15 @@ cannot credit its removal and the largest-directories line shows it as
 - Test host state: `makeCache` sets the directories it creates to 0755, and
   `reclaimDeps` (and so `commandDeps`) pass `ownerUid` from the test's own
   temporary directory instead of `resolveOwnUid()`, which stats `$HOME`.
+
+## Review fixes (PR #4500, fifth round)
+
+- Windows held-open guard: the snapshot query is
+  `Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine; $_.ExecutablePath }`
+  (`WINDOWS_PROCESS_QUERY`), so a relative command line no longer hides a
+  running executable inside a cache.
+- POSIX: an lsof that cannot run, times out, or exits non-zero naming no file
+  no longer falls back silently to `ps` alone. The snapshot throws and the
+  reclaim removes nothing that launch, with the reason in the launch log.
+  `docs/CONTAINER.md` says so and names the Windows properties read. A host
+  without lsof therefore reclaims nothing until lsof is installed.

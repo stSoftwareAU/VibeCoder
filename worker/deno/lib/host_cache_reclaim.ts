@@ -24,7 +24,9 @@
  *   (free space at the start plus the bytes removed) reaches floor + headroom.
  *   No `df` is needed after the start.
  * - If the process table cannot be read, nothing is removed. A cache that
- *   cannot be proven idle is not deleted.
+ *   cannot be proven idle is not deleted. On POSIX the table includes lsof's
+ *   open-file names, so an lsof that cannot run or times out removes nothing
+ *   too, and says so.
  *
  * Every environment probe is injectable. The tests run against real temporary
  * directories with the process table and sizes supplied by the test.
@@ -316,14 +318,24 @@ export const realHostCacheFs: HostCacheFs = {
 /**
  * The production process snapshot (Issue #4498).
  *
- * POSIX: `ps -axww -o command=`, plus, from `lsof` where it is available, the
- * names of the files each process holds as its working directory (`cwd`) and
- * its program text (`txt`), and on Linux its memory-mapped files (`mem`:
- * shared libraries and other mapped files). So a binary started by a relative
- * path, such as `./target/release/server`, still holds its cache open through
- * the absolute executable path lsof reports. A failing `ps` throws. A missing
- * or failing `lsof` is tolerated, because `ps` alone still names every command
- * line. Windows: the command lines from `Get-CimInstance`; a failure throws.
+ * POSIX: `ps -axww -o command=`, plus, from `lsof`, the names of the files
+ * each process holds as its working directory (`cwd`) and its program text
+ * (`txt`), and on Linux its memory-mapped files (`mem`: shared libraries and
+ * other mapped files). So a binary started by a relative path, such as
+ * `./target/release/server`, still holds its cache open through the absolute
+ * executable path lsof reports.
+ *
+ * Windows: each process's command line and its absolute image path
+ * (`ExecutablePath`) from `Get-CimInstance Win32_Process`, so a server started
+ * as `target\release\server.exe` still holds its cache.
+ *
+ * A cache that cannot be proven idle is not deleted, so this throws, and the
+ * reclaim removes nothing and reports why, when the snapshot is incomplete:
+ * `ps` or PowerShell fails or times out, or lsof cannot be started (not
+ * installed), times out, or exits non-zero without naming a single file. A
+ * non-zero lsof exit that still lists files is accepted, because lsof exits 1
+ * whenever it could not inspect some process (another user's, or one that
+ * exited during the scan).
  *
  * `run` and `os` are injectable so a test can supply the process table.
  */
@@ -336,7 +348,7 @@ export async function defaultProcessSnapshot(
     const ps = await run("powershell", [
       "-NoProfile",
       "-Command",
-      "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }",
+      WINDOWS_PROCESS_QUERY,
     ], { timeoutMs: PROCESS_TIMEOUT_MS });
     return requireOutput(ps, "powershell Get-CimInstance").split(/\r?\n/);
   }
@@ -345,24 +357,55 @@ export async function defaultProcessSnapshot(
     timeoutMs: PROCESS_TIMEOUT_MS,
   });
   const lines = requireOutput(ps, "ps -axww -o command=").split("\n");
+  const lsofArgs = ["-w", "-a", "-d", lsofDescriptors(os), "-Fn"];
+  const label = `lsof ${lsofArgs.join(" ")}`;
+  let lsof: Awaited<ReturnType<typeof runWithTimeout>>;
   try {
-    const lsof = await run(
-      "lsof",
-      ["-w", "-a", "-d", lsofDescriptors(os), "-Fn"],
-      { timeoutMs: PROCESS_TIMEOUT_MS },
+    lsof = await run("lsof", lsofArgs, { timeoutMs: PROCESS_TIMEOUT_MS });
+  } catch (error) {
+    throw new Error(
+      `${label} could not run (${errorText(error)}); the open-file check ` +
+        "is needed to prove a cache idle",
     );
-    if (lsof.ok && !lsof.value.timedOut) {
-      for (const line of lsof.value.stdout.split("\n")) {
-        // `-Fn` names each field; only the `n` lines carry a file name. The
-        // `p` (process id) and `f` (descriptor) lines are dropped.
-        if (line.startsWith("n")) lines.push(line.slice(1));
-      }
+  }
+  if (!lsof.ok) {
+    throw new Error(
+      `${label} could not run (${lsof.error.message}); the open-file check ` +
+        "is needed to prove a cache idle",
+    );
+  }
+  if (lsof.value.timedOut) {
+    throw new Error(
+      `${label} timed out; the open-file check is needed to prove a cache idle`,
+    );
+  }
+  let named = 0;
+  for (const line of lsof.value.stdout.split("\n")) {
+    // `-Fn` names each field; only the `n` lines carry a file name. The
+    // `p` (process id) and `f` (descriptor) lines are dropped.
+    if (line.startsWith("n")) {
+      lines.push(line.slice(1));
+      named++;
     }
-  } catch {
-    // lsof is absent or broke: tolerated, because ps already succeeded.
+  }
+  if (!lsof.value.success && named === 0) {
+    const stderr = lsof.value.stderr.trim();
+    throw new Error(
+      `${label} exited ${lsof.value.code} and named no open file` +
+        `${stderr ? `: ${stderr}` : ""}`,
+    );
   }
   return lines;
 }
+
+/**
+ * The PowerShell query behind the Windows process snapshot: one line for each
+ * process's command line and one for its image path. A process whose value is
+ * null (a system process, or one this account cannot inspect) prints nothing
+ * for it.
+ */
+export const WINDOWS_PROCESS_QUERY =
+  "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine; $_.ExecutablePath }";
 
 /**
  * The lsof descriptor list the held-open guard reads (Issue #4498): the
