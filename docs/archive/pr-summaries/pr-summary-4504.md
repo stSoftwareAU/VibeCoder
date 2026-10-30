@@ -76,14 +76,16 @@ are included.
 
 ## Test Plan
 
-- Five changed test files, each re-run on the head: `claude_token_selection_test.ts`
-  (51 tests at head), `claude_pool_budget_test.ts` (12 tests at head),
+- Five changed test files, each re-run on the head:
+  `claude_token_selection_test.ts` (51 tests at head),
+  `claude_pool_budget_test.ts` (12 tests at head),
   `claude_credential_pool_test.ts` (33 tests at head),
-  `claude_week_pace_pool_test.ts` (22 tests at head) and `provider_quota_test.ts`
-  (12 tests at head), all under `worker/deno/tests/`: 130 passed, 0 failed.
-- Two unchanged regression suites also re-run on the head: `claude_token_budget_test.ts`
-  (27 tests at head) and `claude_week_pace_test.ts` (20 tests at head): 47
-  passed, 0 failed.
+  `claude_week_pace_pool_test.ts` (22 tests at head) and
+  `provider_quota_test.ts` (12 tests at head), all under `worker/deno/tests/`:
+  130 passed, 0 failed.
+- Two unchanged regression suites also re-run on the head:
+  `claude_token_budget_test.ts` (27 tests at head) and
+  `claude_week_pace_test.ts` (20 tests at head): 47 passed, 0 failed.
 - `deno task check:manifests`: passed (846 passed, 0 failed, 1 ignored).
 - `deno lint` and `deno fmt --check` on the five changed TypeScript files:
   passed. `git diff --check`: passed.
