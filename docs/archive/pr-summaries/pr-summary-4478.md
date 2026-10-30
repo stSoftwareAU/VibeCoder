@@ -101,3 +101,11 @@ Results: `deno task test:unit` over 18 test files that use the merged-PR verdict
 (sweep, query, census, diagnostics, collectors, skip-reason clearing and others):
 528 passed, 0 failed. `deno fmt --check`, `deno lint`, `deno check` clean on the
 changed code and test files.
+
+`./quality.sh` on this head: every stage passed except `deno tests`, which failed
+only on two tests in `worker/deno/tests/completion_phase_repo_formatters_test.ts`
+("an unformatted Rust change is formatted and committed, then passes the gate" and
+"cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit").
+Both are Rust-formatter tests unrelated to this change (31,099 other tests passed);
+I did not run them against the base branch here, and the serial pass did not run
+because the parallel pass failed. `deno task pr-summary-check`: 0 gates blocked.
