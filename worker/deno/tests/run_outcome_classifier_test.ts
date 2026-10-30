@@ -1050,3 +1050,115 @@ Deno.test("declared causes retain worker diagnosis without accepting quoted bill
     "out-of-credit",
   );
 });
+
+/** The real preflight refusal (`preflightRole`, Issue #4508). */
+const PROVIDER_UNAVAILABLE_MESSAGE =
+  "Claude execution failed: external orchestration: codex unavailable (observed-authentication-failure)";
+
+Deno.test("provider-unavailable - an unavailable external-orchestration provider is not a worker crash (Issue #4508)", () => {
+  const got = classifyRunFailure(
+    "internal_error",
+    PROVIDER_UNAVAILABLE_MESSAGE,
+    true,
+  );
+  assertEquals(got.failureClass, "provider-unavailable");
+  assertEquals(got.fixability, "not_code_fixable");
+  assert(
+    (RUN_FAILURE_CLASSES as readonly string[]).includes("provider-unavailable"),
+  );
+  const reasons = [
+    "observed-authentication-failure",
+    "observed-quota-exhaustion",
+    "authentication-rejected",
+  ];
+  for (const provider of ["codex", "claude"]) {
+    for (const reason of reasons) {
+      const message =
+        `Claude execution failed: external orchestration: ${provider} unavailable (${reason})`;
+      assertEquals(
+        classifyRunFailure("internal_error", message, true).failureClass,
+        "provider-unavailable",
+        message,
+      );
+    }
+  }
+});
+
+Deno.test("provider-unavailable - the ladder keeps the flat transient decision (Issue #4508)", () => {
+  const decision = classifyCodingFailure(
+    PROVIDER_UNAVAILABLE_MESSAGE,
+    "internal_error",
+  );
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.failureClass, "provider-unavailable");
+});
+
+Deno.test("provider-unavailable - other preflight refusals and quoted narration stay worker-crash (Issue #4508)", () => {
+  assertEquals(
+    classifyRunFailure(
+      "internal_error",
+      "Claude execution failed: external orchestration: codex CLI is not runnable; provision its subscription login and CLI on this host",
+      true,
+    ).failureClass,
+    "worker-crash",
+  );
+  const quoted = formatDetailedFailureMessage(
+    "Claude execution failed: TypeError: boom",
+    {
+      elapsedSeconds: 10,
+      clarityStatus: "assessed_clear",
+      lastOutputSnippet: redactedTail(
+        "external orchestration: codex unavailable (observed-authentication-failure)",
+        500,
+      ),
+    },
+  );
+  assert(
+    splitAgentNarration(quoted).agent.includes(
+      "external orchestration: codex unavailable (observed-authentication-failure)",
+    ),
+  );
+  assertEquals(
+    splitAgentNarration(quoted).worker.includes("external orchestration:"),
+    false,
+  );
+  assertEquals(
+    classifyRunFailure("internal_error", quoted, true).failureClass,
+    "worker-crash",
+  );
+});
+
+Deno.test("provider-unavailable - only an internal_error is provider-unavailable (Issue #4508)", () => {
+  assertEquals(
+    classifyRunFailure(
+      "summary_incomplete",
+      PROVIDER_UNAVAILABLE_MESSAGE,
+      true,
+    ).failureClass,
+    "agent-outcome",
+  );
+  for (
+    const cat of [
+      "killed",
+      "timeout",
+      "unknown",
+      "no_changes",
+      "zero_output",
+    ] as const
+  ) {
+    assert(
+      classifyRunFailure(cat, PROVIDER_UNAVAILABLE_MESSAGE, true)
+        .failureClass !==
+        "provider-unavailable",
+      cat,
+    );
+  }
+});
+
+Deno.test("provider-unavailable - a hostile long message completes without backtracking (Issue #4508)", () => {
+  const hostile = "external orchestration: " + "a".repeat(100_000) + " x";
+  assertEquals(
+    classifyRunFailure("internal_error", hostile, true).failureClass,
+    "worker-crash",
+  );
+});
