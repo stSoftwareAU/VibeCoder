@@ -79,4 +79,5 @@ tests/coding_failure_ladder_test.ts`: 91 passed, 0 failed. `deno lint`,
 - Docs: `docs/INTERNALS.md` gains a subsection beside the other failure-category
   notes. Greps of `docs/` (outside the archive) for `worker-crash` found only
   the two earlier INTERNALS passages about gate quotes, which stay true.
-- `./quality.sh` on the final head: see the result recorded below.
+- `./quality.sh` on the final head: Result: PASSED (with skipped checks);
+  checkov and config integration were skipped by the gate.
