@@ -69,6 +69,19 @@ export interface EgressProbeResults {
   directGithub: DirectTcpResult;
   proxyDenied: ConnectDenyResult;
   proxyAllowed: ConnectAllowResult;
+  /**
+   * What each CONNECT probe saw, as a short token such as `refused`,
+   * `timeout` or `HTTP/1.1 502 Bad Gateway ×3`. Read by
+   * {@link describeProbeFailures} to name the cause on the failure marker.
+   * Absent for injected probes, which leaves the marker unchanged.
+   */
+  observed?: { proxyDenied?: string; proxyAllowed?: string };
+  /**
+   * Per-attempt and listener-wait lines. Read by `run_worker` (written to the
+   * launch log) and by the `egress-selfcheck` command (printed on stderr).
+   * They never change the verdict.
+   */
+  diagnostics?: string[];
 }
 
 /**
@@ -130,6 +143,33 @@ export interface EgressPolicyDecision {
   record: string;
   /** Measured Apple controls must be persisted before claims. */
   requireRecord?: boolean;
+  /**
+   * Probe diagnostics (per-attempt lines, listener wait). Written to the launch
+   * log before the failure exit, and printed by the `egress-selfcheck` command.
+   */
+  diagnostics?: string[];
+}
+
+/**
+ * The cause tokens for the failure marker. A CONNECT probe that did not pass
+ * and has `observed` detail adds `proxyDenied=<value> (<observed>)` or
+ * `proxyAllowed=<value> (<observed>)`. A probe without detail adds nothing, so
+ * its marker is unchanged.
+ *
+ * @param probes - The probe results, with optional `observed` detail
+ * @returns The entries in order, possibly empty
+ */
+export function describeProbeFailures(probes: EgressProbeResults): string[] {
+  const details: string[] = [];
+  const denied = probes.observed?.proxyDenied;
+  if (probes.proxyDenied !== "denied" && denied) {
+    details.push(`proxyDenied=${probes.proxyDenied} (${denied})`);
+  }
+  const allowed = probes.observed?.proxyAllowed;
+  if (probes.proxyAllowed !== "succeeded" && allowed) {
+    details.push(`proxyAllowed=${probes.proxyAllowed} (${allowed})`);
+  }
+  return details;
 }
 
 /** Format the durable evidence line. Every field is one token. */
@@ -226,13 +266,17 @@ export function decideEgressPolicy(input: {
     ? classifyEgressProbes(input.probes)
     : "not_checked";
   const passed = egressVerdictPassed(verdict);
+  const details = input.probes ? describeProbeFailures(input.probes) : [];
+  const diagnostics = input.probes?.diagnostics;
   return {
     verdict,
     passed,
     exitCode: passed ? 0 : EGRESS_SELFCHECK_EXIT_STATUS,
-    ...(passed
-      ? {}
-      : { marker: `${EGRESS_SELFCHECK_FAILURE_MARKER} ${verdict}` }),
+    ...(passed ? {} : {
+      marker: [`${EGRESS_SELFCHECK_FAILURE_MARKER} ${verdict}`, ...details]
+        .join(" "),
+    }),
+    ...(diagnostics && diagnostics.length > 0 ? { diagnostics } : {}),
     record: formatEgressPolicyRecord({
       verdict,
       runtime,
@@ -290,35 +334,87 @@ export async function probeDirectTcp(
   }
 }
 
-type ConnectRaw = "denied" | "succeeded" | "through" | "failed" | "not_checked";
+/** What one CONNECT probe concluded, and a short token of what it saw. */
+export interface ConnectOutcome {
+  result: ConnectRaw;
+  /**
+   * `connected`, `denied`, `refused`, `timeout`, `closed without an answer`,
+   * `error: <message>`, `not checked`, or the first line of an unexpected answer.
+   */
+  observed: string;
+}
 
-/** Send one CONNECT and classify the status line. */
-export async function probeProxyConnect(
+export type ConnectRaw =
+  | "denied"
+  | "succeeded"
+  | "through"
+  | "failed"
+  | "not_checked";
+
+/** Longest `observed` token kept; a longer answer is cut to this. */
+const OBSERVED_MAX_CHARS = 80;
+
+/** The first line of an answer, control characters stripped, capped at 80 characters. */
+function observedToken(text: string): string {
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+  const printable = firstLine.replace(/\p{Cc}/gu, "").trim();
+  return Array.from(printable).slice(0, OBSERVED_MAX_CHARS).join("");
+}
+
+/** True when the error carries this `name` (DOM and Deno errors both do). */
+function errorNamed(error: unknown, name: string): boolean {
+  return typeof error === "object" && error !== null &&
+    (error as { name?: unknown }).name === name;
+}
+
+/** Host and usable port of a proxy URL, or undefined when it is unusable. */
+function proxyEndpoint(
   proxyUrl: string,
-  host: string,
-  timeoutMs: number,
-): Promise<ConnectRaw> {
+): { hostname: string; port: number } | undefined {
   let url: URL;
   try {
     url = new URL(proxyUrl);
   } catch {
-    return "not_checked";
+    return undefined;
   }
   const port = url.port === ""
     ? (url.protocol === "https:" ? 443 : 80)
     : Number(url.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return "not_checked";
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  return { hostname: url.hostname, port };
+}
+
+/**
+ * Send one CONNECT and classify the answer, keeping a short note of what was
+ * seen for the log and the failure marker.
+ *
+ * @param proxyUrl - The proxy URL from the environment
+ * @param host - The host to CONNECT to
+ * @param timeoutMs - Budget for the dial and for the answer
+ * @returns The classified result and its `observed` token
+ */
+export async function probeProxyConnectDetailed(
+  proxyUrl: string,
+  host: string,
+  timeoutMs: number,
+): Promise<ConnectOutcome> {
+  const endpoint = proxyEndpoint(proxyUrl);
+  if (endpoint === undefined) {
+    return { result: "not_checked", observed: "not checked" };
   }
   let conn: Deno.Conn | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   try {
     conn = await Deno.connect({
-      hostname: url.hostname,
-      port,
+      hostname: endpoint.hostname,
+      port: endpoint.port,
       signal: AbortSignal.timeout(timeoutMs),
     });
-    timer = setTimeout(() => conn?.close(), timeoutMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      conn?.close();
+    }, timeoutMs);
     const request =
       `CONNECT ${host}:${PROBE_PORT} HTTP/1.1\r\nHost: ${host}:${PROBE_PORT}\r\n\r\n`;
     await conn.write(new TextEncoder().encode(request));
@@ -326,14 +422,30 @@ export async function probeProxyConnect(
     const n = await conn.read(buf);
     const text = new TextDecoder().decode(buf.subarray(0, Math.max(0, n ?? 0)));
     if (text.includes("403") && text.includes(EGRESS_DENIED_MARKER)) {
-      return "denied";
+      return { result: "denied", observed: "denied" };
     }
-    if (/^HTTP\/1\.[01] 200\b/.test(text)) return "succeeded";
-    if (text.trim() === "") return "failed";
-    return "through";
+    if (/^HTTP\/1\.[01] 200\b/.test(text)) {
+      return { result: "succeeded", observed: "connected" };
+    }
+    if (text.trim() === "") {
+      return {
+        result: "failed",
+        observed: timedOut ? "timeout" : "closed without an answer",
+      };
+    }
+    return { result: "through", observed: observedToken(text) };
   } catch (error) {
-    if (isUnchecked(error)) return "not_checked";
-    return "failed";
+    if (isUnchecked(error)) {
+      return { result: "not_checked", observed: "not checked" };
+    }
+    if (error instanceof Deno.errors.ConnectionRefused) {
+      return { result: "failed", observed: "refused" };
+    }
+    if (timedOut || errorNamed(error, "TimeoutError")) {
+      return { result: "failed", observed: "timeout" };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return { result: "failed", observed: `error: ${observedToken(message)}` };
   } finally {
     clearTimeout(timer);
     try {
@@ -341,6 +453,96 @@ export async function probeProxyConnect(
     } catch {
       // Already closed.
     }
+  }
+}
+
+/** Send one CONNECT and classify the status line. Wraps {@link probeProxyConnectDetailed}. */
+export async function probeProxyConnect(
+  proxyUrl: string,
+  host: string,
+  timeoutMs: number,
+): Promise<ConnectRaw> {
+  return (await probeProxyConnectDetailed(proxyUrl, host, timeoutMs)).result;
+}
+
+/** Budget for the proxy to start listening (Issue #4493). */
+export const EGRESS_PROXY_LISTEN_TIMEOUT_MS = 30_000;
+
+/** Pause between listener checks. */
+const EGRESS_PROXY_LISTEN_INTERVAL_MS = 250;
+
+/** Budget for one plain TCP dial while waiting for the listener. */
+const LISTENER_DIAL_TIMEOUT_MS = 1_000;
+
+/** Outcome of {@link waitForProxyListener}. */
+export type ProxyListenerWait =
+  | { listening: true }
+  | { listening: false; observed: string };
+
+/** Default pause: a real timer. Tests inject their own. */
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Wait until the proxy accepts TCP connections (Issue #4493).
+ *
+ * The proxy logs `[EGRESS_PROXY] listening on <addr>` (see
+ * EGRESS_PROXY_LISTENING_MARKER in `lib/egress_proxy.ts`) once it is bound, and
+ * on Apple container it binds seconds after the worker starts. Each check is a
+ * plain TCP dial that closes at once and sends no bytes, so the proxy logs
+ * nothing for it. Only a refused dial or a timeout is retried, until the
+ * deadline. A permission error, a non-local failure, or an unusable proxy URL
+ * returns `listening: true`, so the CONNECT probe reports it as `not_checked`.
+ *
+ * @param proxyUrl - The proxy URL from the environment
+ * @param options - Budget, interval, and the sleep and clock seams (tests)
+ * @returns `listening: true`, or `listening: false` with what the last dial saw
+ */
+export async function waitForProxyListener(
+  proxyUrl: string,
+  options: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
+): Promise<ProxyListenerWait> {
+  const endpoint = proxyEndpoint(proxyUrl);
+  if (endpoint === undefined) return { listening: true };
+  const timeoutMs = options.timeoutMs ?? EGRESS_PROXY_LISTEN_TIMEOUT_MS;
+  const intervalMs = options.intervalMs ?? EGRESS_PROXY_LISTEN_INTERVAL_MS;
+  const sleep = options.sleep ?? pause;
+  const now = options.now ?? (() => Date.now());
+  const deadline = now() + timeoutMs;
+  let observed = "refused";
+  for (;;) {
+    let conn: Deno.Conn | undefined;
+    try {
+      conn = await Deno.connect({
+        hostname: endpoint.hostname,
+        port: endpoint.port,
+        signal: AbortSignal.timeout(LISTENER_DIAL_TIMEOUT_MS),
+      });
+      return { listening: true };
+    } catch (error) {
+      if (isUnchecked(error)) return { listening: true };
+      if (error instanceof Deno.errors.ConnectionRefused) {
+        observed = "refused";
+      } else if (errorNamed(error, "TimeoutError")) {
+        observed = "timeout";
+      } else {
+        return { listening: true };
+      }
+    } finally {
+      try {
+        conn?.close();
+      } catch {
+        // Already closed.
+      }
+    }
+    if (now() >= deadline) return { listening: false, observed };
+    await sleep(intervalMs);
   }
 }
 
@@ -357,6 +559,25 @@ export const EGRESS_ALLOWED_PROBE_TIMEOUT_MS = 5_000;
 /** Pause between allowlisted CONNECT attempts. */
 const EGRESS_ALLOWED_PROBE_DELAY_MS = 1_000;
 
+/** The `observed` text for a proxy that never started listening (Issue #4493). */
+function noListenerObserved(listenMs: number, observed: string): string {
+  return `no listener after ${listenMs}ms (${observed})`;
+}
+
+/** The log line for a proxy that never started listening (Issue #4493). */
+function noListenerLogLine(
+  host: string,
+  listenMs: number,
+  observed: string,
+): string {
+  return `[egress-selfcheck] proxy for ${host} is not accepting connections after ${listenMs}ms (${observed})`;
+}
+
+/** `refused ×3, timeout ×1`: counts in first-seen order. */
+function summariseObserved(counts: Map<string, number>): string {
+  return [...counts].map(([token, count]) => `${token} ×${count}`).join(", ");
+}
+
 /**
  * Probe an allowlisted CONNECT, retrying a slow or silent answer.
  *
@@ -364,12 +585,81 @@ const EGRESS_ALLOWED_PROBE_DELAY_MS = 1_000;
  * and cost the whole launch (`proxyAllowlist=failed`, worker claimed
  * nothing). A refusal is final at once: the proxy said no, and asking again
  * will not change its allowlist. Every attempt that did not succeed is logged
- * with what it saw.
+ * with what it saw, and the failed result's `observed` counts those answers.
+ *
+ * Unless `waitForListener` is false, the probe first waits for the proxy to
+ * accept connections (see {@link waitForProxyListener}). A proxy that never
+ * starts ends the probe with no attempts spent and an `observed` that says
+ * `no listener`.
+ *
+ * @param proxyUrl - The proxy URL from the environment
+ * @param host - An allowlisted host
+ * @param options - Attempts, per-attempt budget, pause, log sink, and listener
+ *   wait (budget, sleep, clock, on/off); the sleep and clock are for tests
+ * @returns `succeeded`, `denied` or `not_checked` as soon as one attempt gives
+ *   it; otherwise `failed` with the counts of what the attempts saw
+ */
+export async function probeProxyAllowedDetailed(
+  proxyUrl: string,
+  host: string,
+  options: {
+    attempts?: number;
+    timeoutMs?: number;
+    delayMs?: number;
+    log?: (line: string) => void;
+    listenTimeoutMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    waitForListener?: boolean;
+  } = {},
+): Promise<ConnectOutcome> {
+  const attempts = options.attempts ?? EGRESS_ALLOWED_PROBE_ATTEMPTS;
+  const timeoutMs = options.timeoutMs ?? EGRESS_ALLOWED_PROBE_TIMEOUT_MS;
+  const delayMs = options.delayMs ?? EGRESS_ALLOWED_PROBE_DELAY_MS;
+  const listenMs = options.listenTimeoutMs ?? EGRESS_PROXY_LISTEN_TIMEOUT_MS;
+  const sleep = options.sleep ?? pause;
+  const log = options.log ?? ((line: string) => console.warn(line));
+  if (options.waitForListener ?? true) {
+    const listener = await waitForProxyListener(proxyUrl, {
+      timeoutMs: listenMs,
+      sleep,
+      now: options.now,
+    });
+    if (!listener.listening) {
+      log(noListenerLogLine(host, listenMs, listener.observed));
+      return {
+        result: "failed",
+        observed: noListenerObserved(listenMs, listener.observed),
+      };
+    }
+  }
+  const counts = new Map<string, number>();
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const outcome = await probeProxyConnectDetailed(proxyUrl, host, timeoutMs);
+    if (
+      outcome.result === "succeeded" || outcome.result === "not_checked" ||
+      outcome.result === "denied"
+    ) {
+      return outcome;
+    }
+    counts.set(outcome.observed, (counts.get(outcome.observed) ?? 0) + 1);
+    log(
+      `[egress-selfcheck] allowlisted CONNECT to ${host} ${outcome.observed} (attempt ${attempt} of ${attempts})`,
+    );
+    if (attempt < attempts && delayMs > 0) await sleep(delayMs);
+  }
+  return { result: "failed", observed: summariseObserved(counts) };
+}
+
+/**
+ * {@link probeProxyAllowedDetailed} without the listener wait and without the
+ * detail: the attempts, the budget and the result only. The result is
+ * `failed` when no attempt connected, whatever the proxy answered.
  *
  * @param proxyUrl - The proxy URL from the environment
  * @param host - An allowlisted host
  * @param options - Attempts, per-attempt budget, pause and log sink (tests)
- * @returns The last attempt's result; `succeeded` as soon as one connects
+ * @returns The probe's result
  */
 export async function probeProxyAllowed(
   proxyUrl: string,
@@ -381,28 +671,11 @@ export async function probeProxyAllowed(
     log?: (line: string) => void;
   } = {},
 ): Promise<ConnectRaw> {
-  const attempts = options.attempts ?? EGRESS_ALLOWED_PROBE_ATTEMPTS;
-  const timeoutMs = options.timeoutMs ?? EGRESS_ALLOWED_PROBE_TIMEOUT_MS;
-  const delayMs = options.delayMs ?? EGRESS_ALLOWED_PROBE_DELAY_MS;
-  const log = options.log ?? ((line: string) => console.warn(line));
-  let result: ConnectRaw = "failed";
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    result = await probeProxyConnect(proxyUrl, host, timeoutMs);
-    if (
-      result === "succeeded" || result === "not_checked" || result === "denied"
-    ) {
-      return result;
-    }
-    log(
-      `[egress-selfcheck] allowlisted CONNECT to ${host} ${
-        result === "failed" ? `got no answer within ${timeoutMs}ms` : result
-      } (attempt ${attempt} of ${attempts})`,
-    );
-    if (attempt < attempts && delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-  return result;
+  const outcome = await probeProxyAllowedDetailed(proxyUrl, host, {
+    ...options,
+    waitForListener: false,
+  });
+  return outcome.result;
 }
 
 function proxyUrlFrom(
@@ -414,16 +687,37 @@ function proxyUrlFrom(
   return trimmed === "" ? undefined : trimmed;
 }
 
-/** Run the four probes. A missing proxy URL makes the CONNECT probes `not_checked` / `failed`. */
+/**
+ * Run the four probes. A missing proxy URL makes the CONNECT probes
+ * `not_checked`.
+ *
+ * The proxy's listener is awaited once, after the direct dials and before the
+ * CONNECT probes (Issue #4493). A proxy that never starts gives `proxyAllowed:
+ * failed` with `observed.proxyAllowed` saying `no listener`, and spends no
+ * attempts. The probe detail goes to `observed`, and the attempt lines to
+ * `diagnostics`.
+ *
+ * @param env - Environment lookup (`HTTPS_PROXY` and friends)
+ * @param timeoutMs - Budget for the direct dials and the denied CONNECT
+ * @param options - Seams: direct dial, sleep and clock, listener budget (tests)
+ * @returns The four results, with `observed` and `diagnostics` when present
+ */
 export async function runEgressProbes(
   env: (name: string) => string | undefined,
   timeoutMs?: number,
+  options: {
+    directTcp?: typeof probeDirectTcp;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    listenTimeoutMs?: number;
+  } = {},
 ): Promise<EgressProbeResults> {
   const allowedTimeoutMs = timeoutMs ?? EGRESS_ALLOWED_PROBE_TIMEOUT_MS;
   timeoutMs ??= EGRESS_PROBE_TIMEOUT_MS;
+  const directTcp = options.directTcp ?? probeDirectTcp;
   const [directCloudflare, directGithub] = await Promise.all([
-    probeDirectTcp(DIRECT_CLOUDFLARE, PROBE_PORT, timeoutMs),
-    probeDirectTcp(DIRECT_GITHUB, PROBE_PORT, timeoutMs),
+    directTcp(DIRECT_CLOUDFLARE, PROBE_PORT, timeoutMs),
+    directTcp(DIRECT_GITHUB, PROBE_PORT, timeoutMs),
   ]);
   const proxy = proxyUrlFrom(env);
   if (proxy === undefined) {
@@ -434,21 +728,53 @@ export async function runEgressProbes(
       proxyAllowed: "not_checked",
     };
   }
-  const denied = await probeProxyConnect(proxy, DENIED_HOST, timeoutMs);
-  const allowed = await probeProxyAllowed(proxy, ALLOWED_HOST, {
-    timeoutMs: allowedTimeoutMs,
+  const diagnostics: string[] = [];
+  const listenMs = options.listenTimeoutMs ?? EGRESS_PROXY_LISTEN_TIMEOUT_MS;
+  const listener = await waitForProxyListener(proxy, {
+    timeoutMs: listenMs,
+    sleep: options.sleep,
+    now: options.now,
   });
-  const proxyDenied: ConnectDenyResult = denied === "denied"
+  if (!listener.listening) {
+    diagnostics.push(
+      noListenerLogLine(ALLOWED_HOST, listenMs, listener.observed),
+    );
+    return {
+      directCloudflare,
+      directGithub,
+      proxyDenied: "not_checked",
+      proxyAllowed: "failed",
+      observed: {
+        proxyAllowed: noListenerObserved(listenMs, listener.observed),
+      },
+      diagnostics,
+    };
+  }
+  const denied = await probeProxyConnectDetailed(proxy, DENIED_HOST, timeoutMs);
+  const allowed = await probeProxyAllowedDetailed(proxy, ALLOWED_HOST, {
+    timeoutMs: allowedTimeoutMs,
+    sleep: options.sleep,
+    waitForListener: false,
+    log: (line) => diagnostics.push(line),
+  });
+  const proxyDenied: ConnectDenyResult = denied.result === "denied"
     ? "denied"
-    : denied === "succeeded" || denied === "through"
+    : denied.result === "succeeded" || denied.result === "through"
     ? "through"
     : "not_checked";
-  const proxyAllowed: ConnectAllowResult = allowed === "succeeded"
+  const proxyAllowed: ConnectAllowResult = allowed.result === "succeeded"
     ? "succeeded"
-    : allowed === "not_checked"
+    : allowed.result === "not_checked"
     ? "not_checked"
     : "failed";
-  return { directCloudflare, directGithub, proxyDenied, proxyAllowed };
+  return {
+    directCloudflare,
+    directGithub,
+    proxyDenied,
+    proxyAllowed,
+    observed: { proxyDenied: denied.observed, proxyAllowed: allowed.observed },
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
+  };
 }
 
 export interface CheckEgressPolicyInput {
@@ -530,12 +856,21 @@ export async function checkEgressPolicy(
       version,
       date,
     });
+    const details = describeProbeFailures(probes);
     return {
       ...decision,
       requireRecord: true,
       exitCode: failures.length ? EGRESS_SELFCHECK_EXIT_STATUS : 0,
       ...(failures.length
-        ? { marker: `${EGRESS_SELFCHECK_FAILURE_MARKER} ${failures.join(" ")}` }
+        ? {
+          marker: [
+            `${EGRESS_SELFCHECK_FAILURE_MARKER} ${failures.join(" ")}`,
+            ...details,
+          ].join(" "),
+        }
+        : {}),
+      ...(probes.diagnostics && probes.diagnostics.length > 0
+        ? { diagnostics: probes.diagnostics }
         : {}),
       warning:
         `${EGRESS_NOT_ENFORCED_MARKER} Apple ${appleMode}: host/LAN and DNS remain measured gaps; untested controls are unknown`,

@@ -4,11 +4,17 @@
  * Probe results are injected. Nothing here opens a socket.
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   checkEgressPolicy,
   classifyEgressProbes,
   decideEgressPolicy,
+  describeProbeFailures,
   EGRESS_NOT_ENFORCED_MARKER,
   EGRESS_SELFCHECK_EXIT_STATUS,
   EGRESS_SELFCHECK_FAILURE_MARKER,
@@ -16,6 +22,9 @@ import {
   type EgressVerdict,
   egressVerdictPassed,
   formatEgressPolicyRecord,
+  probeProxyConnectDetailed,
+  runEgressProbes,
+  waitForProxyListener,
 } from "../lib/egress_selfcheck.ts";
 
 const DATE = "2026-10-26";
@@ -224,4 +233,162 @@ Deno.test("formatEgressPolicyRecord - refuses a field that is not one token", ()
       date: "26 Oct 2026",
     })
   );
+});
+
+Deno.test("decideEgressPolicy - a failed allowlisted CONNECT names what it saw (Issue #4493)", () => {
+  const decision = decideEgressPolicy({
+    flag: "true",
+    dialect: "docker",
+    version: "27.1.1",
+    date: DATE,
+    probes: probes({
+      proxyAllowed: "failed",
+      observed: { proxyAllowed: "refused ×3" },
+    }),
+  });
+  assertEquals(
+    decision.marker,
+    `${EGRESS_SELFCHECK_FAILURE_MARKER} proxy_unavailable proxyAllowed=failed (refused ×3)`,
+  );
+  assertEquals(decision.exitCode, EGRESS_SELFCHECK_EXIT_STATUS);
+});
+
+Deno.test("decideEgressPolicy - probes without detail keep the old marker (Issue #4493)", () => {
+  const decision = decideEgressPolicy({
+    flag: "true",
+    dialect: "docker",
+    version: "27.1.1",
+    date: DATE,
+    probes: probes({ proxyAllowed: "failed" }),
+  });
+  assertEquals(
+    decision.marker,
+    `${EGRESS_SELFCHECK_FAILURE_MARKER} proxy_unavailable`,
+  );
+});
+
+Deno.test("describeProbeFailures - names each CONNECT probe that did not pass, with its detail (Issue #4493)", () => {
+  assertEquals(
+    describeProbeFailures(probes({
+      proxyAllowed: "failed",
+      observed: { proxyAllowed: "timeout ×1, HTTP/1.1 502 Bad Gateway ×2" },
+    })),
+    ["proxyAllowed=failed (timeout ×1, HTTP/1.1 502 Bad Gateway ×2)"],
+  );
+  assertEquals(
+    describeProbeFailures(probes({
+      proxyDenied: "through",
+      observed: { proxyDenied: "connected" },
+    })),
+    ["proxyDenied=through (connected)"],
+  );
+  // A probe that passed adds nothing, even with detail present.
+  assertEquals(
+    describeProbeFailures(probes({
+      observed: { proxyDenied: "denied", proxyAllowed: "connected" },
+    })),
+    [],
+  );
+  // No detail, no entry.
+  assertEquals(describeProbeFailures(probes({ proxyAllowed: "failed" })), []);
+});
+
+Deno.test("decideEgressPolicy - diagnostics are carried onto the decision (Issue #4493)", () => {
+  const lines = [
+    "[egress-selfcheck] allowlisted CONNECT to api.github.com refused (attempt 1 of 3)",
+  ];
+  const withLines = decideEgressPolicy({
+    flag: "true",
+    dialect: "docker",
+    version: "27.1.1",
+    date: DATE,
+    probes: probes({ proxyAllowed: "failed", diagnostics: lines }),
+  });
+  assertEquals(withLines.diagnostics, lines);
+  const without = decideEgressPolicy({
+    flag: "true",
+    dialect: "docker",
+    version: "27.1.1",
+    date: DATE,
+    probes: probes({ proxyAllowed: "failed" }),
+  });
+  assertEquals(without.diagnostics, undefined);
+});
+
+Deno.test("checkEgressPolicy - the Apple marker names the refused allowlisted CONNECT (Issue #4493)", async () => {
+  const lines = [
+    "[egress-selfcheck] proxy for api.github.com is not accepting connections after 30000ms (refused)",
+  ];
+  const decision = await checkEgressPolicy({
+    env: (name) =>
+      ({
+        VIBE_EGRESS_ENFORCED: "false",
+        VIBE_RUNTIME_KIND: "apple-container",
+        VIBE_APPLE_EGRESS_MODE: "advisory",
+      })[name],
+    probes: probes({
+      proxyDenied: "denied",
+      proxyAllowed: "failed",
+      observed: { proxyDenied: "denied", proxyAllowed: "refused ×3" },
+      diagnostics: lines,
+    }),
+    appleObserved: {},
+    date: DATE,
+  });
+  assertEquals(decision.exitCode, EGRESS_SELFCHECK_EXIT_STATUS);
+  assertStringIncludes(
+    decision.marker ?? "",
+    "proxyAllowlist=failed proxyAllowed=failed (refused ×3)",
+  );
+  assertEquals(decision.diagnostics, lines);
+});
+
+Deno.test("probeProxyConnectDetailed - an unusable proxy URL is not checked and opens no socket (Issue #4493)", async () => {
+  const outcome = await probeProxyConnectDetailed(
+    "not a url",
+    "example.com",
+    100,
+  );
+  assertEquals(outcome, { result: "not_checked", observed: "not checked" });
+  const zeroPort = await probeProxyConnectDetailed(
+    "http://127.0.0.1:0",
+    "example.com",
+    100,
+  );
+  assertEquals(zeroPort, { result: "not_checked", observed: "not checked" });
+});
+
+Deno.test("waitForProxyListener - an unusable proxy URL reports listening so the probe says not_checked (Issue #4493)", async () => {
+  assertEquals(await waitForProxyListener("not a url"), { listening: true });
+  assertEquals(
+    await waitForProxyListener("http://127.0.0.1:0"),
+    { listening: true },
+  );
+});
+
+Deno.test("runEgressProbes - no proxy URL reports not_checked with no detail (Issue #4493)", async () => {
+  const result = await runEgressProbes(() => undefined, 100, {
+    directTcp: async () => "refused",
+  });
+  assertEquals(result.directCloudflare, "refused");
+  assertEquals(result.directGithub, "refused");
+  assertEquals(result.proxyDenied, "not_checked");
+  assertEquals(result.proxyAllowed, "not_checked");
+  assertEquals(result.observed, undefined);
+  assertEquals(result.diagnostics, undefined);
+});
+
+Deno.test("runEgressProbes - an unusable proxy URL is not checked and opens no socket (Issue #4493)", async () => {
+  const result = await runEgressProbes(
+    (name) => (name === "HTTPS_PROXY" ? "not a url" : undefined),
+    100,
+    { directTcp: async () => "refused" },
+  );
+  assertEquals(result.proxyDenied, "not_checked");
+  assertEquals(result.proxyAllowed, "not_checked");
+  assertEquals(result.observed, {
+    proxyDenied: "not checked",
+    proxyAllowed: "not checked",
+  });
+  assertEquals(result.diagnostics, undefined);
 });

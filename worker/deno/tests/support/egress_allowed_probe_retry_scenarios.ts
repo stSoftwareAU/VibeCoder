@@ -12,8 +12,14 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { probeProxyAllowed } from "../../lib/egress_selfcheck.ts";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  classifyEgressProbes,
+  type DirectTcpResult,
+  probeProxyAllowed,
+  probeProxyAllowedDetailed,
+  runEgressProbes,
+} from "../../lib/egress_selfcheck.ts";
 
 /**
  * A fake proxy that stays silent for the first `silentFor` connections, then
@@ -88,4 +94,218 @@ Deno.test("an allowlisted CONNECT the proxy never answers still fails after ever
   } finally {
     await proxy.close();
   }
+});
+
+// -----------------------------------------------------------------------------
+// Issue #4493: the listener wait, the attempt summary and the probe detail.
+// These open loopback sockets, so they run under `--allow-net=127.0.0.1`.
+// -----------------------------------------------------------------------------
+
+const refused = async (): Promise<DirectTcpResult> => "refused";
+
+/** A port nothing listens on: bind port 0, read it, release it. */
+function freePort(): number {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const { port } = listener.addr as Deno.NetAddr;
+  listener.close();
+  return port;
+}
+
+const CONNECTED = "HTTP/1.1 200 Connection Established\r\n\r\n";
+
+/**
+ * A stub proxy on loopback. It counts only connections that sent a CONNECT.
+ * The listener wait dials and closes at once with no bytes, so that
+ * connection is read as empty and ignored, and no write is attempted on it.
+ */
+function startProxyStub(options: {
+  port?: number;
+  answer: (request: string) => string;
+}) {
+  const listener = Deno.listen({
+    hostname: "127.0.0.1",
+    port: options.port ?? 0,
+  });
+  let connects = 0;
+  const serving = (async () => {
+    for await (const conn of listener) {
+      try {
+        const buf = new Uint8Array(2048);
+        const n = await conn.read(buf);
+        if (n === null) continue;
+        const request = new TextDecoder().decode(buf.subarray(0, n));
+        if (!request.startsWith("CONNECT ")) continue;
+        connects++;
+        await conn.write(new TextEncoder().encode(options.answer(request)));
+      } catch {
+        // A probe that left early: nothing to answer.
+      } finally {
+        conn.close();
+      }
+    }
+  })().catch(() => {});
+  const { port } = listener.addr as Deno.NetAddr;
+  return {
+    port,
+    url: `http://127.0.0.1:${port}`,
+    connects: () => connects,
+    async close() {
+      listener.close();
+      await serving;
+    },
+  };
+}
+
+Deno.test("an allowlisted CONNECT waits for a late listener and spends no attempts (Issue #4493)", async () => {
+  const port = freePort();
+  let sleeps = 0;
+  let stub: ReturnType<typeof startProxyStub> | undefined;
+  const log: string[] = [];
+  try {
+    const outcome = await probeProxyAllowedDetailed(
+      `http://127.0.0.1:${port}`,
+      "api.github.com",
+      {
+        timeoutMs: 1000,
+        delayMs: 0,
+        log: (line) => log.push(line),
+        now: () => 0,
+        sleep: () => {
+          sleeps++;
+          // The proxy binds on the third check, as it would after a cold start.
+          if (sleeps === 3) {
+            stub = startProxyStub({ port, answer: () => CONNECTED });
+          }
+          return Promise.resolve();
+        },
+      },
+    );
+    assertEquals(outcome.result, "succeeded");
+    assertEquals(outcome.observed, "connected");
+    assert(sleeps >= 3, `expected at least 3 listener checks, got ${sleeps}`);
+    assertEquals(log.filter((line) => line.includes("attempt")).length, 0);
+    assertEquals(stub?.connects(), 1);
+  } finally {
+    await stub?.close();
+  }
+});
+
+Deno.test("an allowlisted CONNECT with no listener ever is failed and spends no attempts (Issue #4493)", async () => {
+  const port = freePort();
+  let clock = 0;
+  const log: string[] = [];
+  const outcome = await probeProxyAllowedDetailed(
+    `http://127.0.0.1:${port}`,
+    "api.github.com",
+    {
+      listenTimeoutMs: 1000,
+      delayMs: 0,
+      log: (line) => log.push(line),
+      now: () => clock,
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(outcome.result, "failed");
+  assert(
+    outcome.observed.startsWith("no listener after 1000ms"),
+    outcome.observed,
+  );
+  assertStringIncludes(
+    log.join("\n"),
+    "is not accepting connections after 1000ms",
+  );
+  assertEquals(log.some((line) => line.includes("attempt")), false);
+});
+
+Deno.test("an allowlisted CONNECT answered 502 every time fails and counts what it saw (Issue #4493)", async () => {
+  const stub = startProxyStub({
+    answer: () => "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n",
+  });
+  try {
+    const outcome = await probeProxyAllowedDetailed(
+      stub.url,
+      "api.github.com",
+      { timeoutMs: 1000, attempts: 3, delayMs: 0, log: () => {} },
+    );
+    assertEquals(outcome.result, "failed");
+    assertEquals(outcome.observed, "HTTP/1.1 502 Bad Gateway ×3");
+    assertEquals(stub.connects(), 3);
+  } finally {
+    await stub.close();
+  }
+});
+
+Deno.test("an allowlisted CONNECT refused three times says so (Issue #4493)", async () => {
+  const port = freePort();
+  const outcome = await probeProxyAllowedDetailed(
+    `http://127.0.0.1:${port}`,
+    "api.github.com",
+    {
+      timeoutMs: 1000,
+      attempts: 3,
+      delayMs: 0,
+      waitForListener: false,
+      log: () => {},
+    },
+  );
+  assertEquals(outcome.result, "failed");
+  assertEquals(outcome.observed, "refused ×3");
+});
+
+Deno.test("runEgressProbes with a live proxy fills the four-probe enforced set (Issue #4493)", async () => {
+  const stub = startProxyStub({
+    answer: (request) =>
+      request.startsWith("CONNECT example.com:")
+        ? "HTTP/1.1 403 Forbidden\r\nContent-Length: 40\r\n\r\n[EGRESS_DENIED] host=example.com reason=not-allowlisted\n"
+        : CONNECTED,
+  });
+  try {
+    const result = await runEgressProbes(
+      (name) => (name === "HTTPS_PROXY" ? stub.url : undefined),
+      1000,
+      { directTcp: refused },
+    );
+    assertEquals(classifyEgressProbes(result), "enforced");
+    assertEquals(result.proxyDenied, "denied");
+    assertEquals(result.proxyAllowed, "succeeded");
+    assertEquals(result.observed, {
+      proxyDenied: "denied",
+      proxyAllowed: "connected",
+    });
+    assertEquals(result.diagnostics, undefined);
+  } finally {
+    await stub.close();
+  }
+});
+
+Deno.test("runEgressProbes with a proxy that never listens fails the allowed probe without attempts (Issue #4493)", async () => {
+  const port = freePort();
+  let clock = 0;
+  const result = await runEgressProbes(
+    (name) => (name === "HTTPS_PROXY" ? `http://127.0.0.1:${port}` : undefined),
+    1000,
+    {
+      directTcp: refused,
+      listenTimeoutMs: 1000,
+      now: () => clock,
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result.proxyDenied, "not_checked");
+  assertEquals(result.proxyAllowed, "failed");
+  assert(
+    result.observed?.proxyAllowed?.startsWith("no listener after 1000ms"),
+    String(result.observed?.proxyAllowed),
+  );
+  assertEquals(result.diagnostics?.length, 1);
+  assertStringIncludes(
+    result.diagnostics?.[0] ?? "",
+    "is not accepting connections after 1000ms",
+  );
 });

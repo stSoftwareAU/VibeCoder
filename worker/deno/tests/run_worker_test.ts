@@ -1190,6 +1190,65 @@ Deno.test("runWorker - an unproved egress policy exits before any claim (Issue #
   assert(egressAt < rec.calls.indexOf("cleanup"));
 });
 
+Deno.test("runWorker - egress probe diagnostics reach the launch log before an unproved exit (Issue #4493)", async () => {
+  const rec = newRecorder();
+  const logged: string[] = [];
+  const attemptOne =
+    "[egress-selfcheck] allowlisted CONNECT to api.github.com refused (attempt 1 of 3)";
+  const attemptTwo =
+    "[egress-selfcheck] allowlisted CONNECT to api.github.com refused (attempt 2 of 3)";
+  const result = await runWorker(
+    baseOptions(),
+    stubDeps(rec, {
+      log: (message) => logged.push(message),
+      checkEgress: () => {
+        rec.calls.push("egress");
+        return Promise.resolve({
+          verdict: "proxy_unavailable",
+          passed: false,
+          exitCode: EGRESS_SELFCHECK_EXIT_STATUS,
+          marker:
+            `${EGRESS_SELFCHECK_FAILURE_MARKER} proxy_unavailable proxyAllowed=failed (refused ×3)`,
+          record:
+            "egress policy: proxy_unavailable runtime=docker version=27 date=2026-10-26",
+          diagnostics: [attemptOne, attemptTwo],
+        });
+      },
+    }),
+  );
+  assertEquals(result.outcome, "egress-unproven");
+  assertEquals(result.exitCode, EGRESS_SELFCHECK_EXIT_STATUS);
+  assert(logged.includes(`[run-worker] ${attemptOne}`), logged.join("\n"));
+  assert(logged.includes(`[run-worker] ${attemptTwo}`), logged.join("\n"));
+  assertEquals(rec.calls.includes("github-user"), false);
+});
+
+Deno.test("runWorker - an egress decision without diagnostics logs no probe lines (Issue #4493)", async () => {
+  const rec = newRecorder();
+  const logged: string[] = [];
+  await runWorker(
+    baseOptions(),
+    stubDeps(rec, {
+      log: (message) => logged.push(message),
+      checkEgress: () => {
+        rec.calls.push("egress");
+        return Promise.resolve({
+          verdict: "proxy_unavailable",
+          passed: false,
+          exitCode: EGRESS_SELFCHECK_EXIT_STATUS,
+          marker: `${EGRESS_SELFCHECK_FAILURE_MARKER} proxy_unavailable`,
+          record:
+            "egress policy: proxy_unavailable runtime=docker version=27 date=2026-10-26",
+        });
+      },
+    }),
+  );
+  assertEquals(
+    logged.filter((message) => message.includes("egress-selfcheck")),
+    [],
+  );
+});
+
 Deno.test("runWorker - a non-enforcing dialect warns and still claims (Issue #4048)", async () => {
   const rec = newRecorder();
   const warnings: string[] = [];
