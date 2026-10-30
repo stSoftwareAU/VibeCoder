@@ -46,6 +46,9 @@ failure output.
 - `worker/deno/tests/run_worker_test.ts` and
   `worker/deno/tests/egress_selfcheck_test.ts`: 46 passed, 0 failed on the final
   code head.
+- `worker/deno/tests/egress_selfcheck_test.ts::egress-selfcheck - emits warnings with warn and failures with error`:
+  the command emits accepted-gap output through `console.warn` and failed
+  self-check markers through `console.error`.
 - Base-route reproduction: before changing the warning sink, the new launch
   tests failed because `[EGRESS-NOT-ENFORCED]` was captured by `logError`
   instead of `logWarning`.
@@ -62,5 +65,7 @@ failure output.
 - `timeout 900 ./quality.sh < /dev/null`: timed out after 900 seconds with exit
   124 while the full Deno test/validation work was still running; no full-gate
   pass is claimed.
+- `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4492-body.md --labels bug,work-on ../../docs/archive/pr-summaries/pr-summary-4492.md`:
+  passed, 0 blocked and 0 not checked.
 - No existing test assertions were removed; the existing non-enforcing assertion
   now checks the warning sink and also asserts that the error sink stays empty.
