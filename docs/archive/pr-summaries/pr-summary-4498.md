@@ -85,15 +85,15 @@ the mutation and watching a test go red:
 
 - line 81 (`execute` returns `undefined`) —
   `command: execute delegates to runReclaimHostCaches`
-- line 97 (`value >= 0` dropped) — `command: garbage numeric flags are refused`
+- the `value >= 0` check in `reclaim_host_caches.ts` (dropped) — `command: garbage numeric flags are refused`
   with `free-kb: -1` and `floor-kb: -1`
-- line 99 (`typeof value === "string"` dropped) — the same test with a missing
+- the `typeof value === "string"` check in `reclaim_host_caches.ts` (dropped) — the same test with a missing
   `free-kb`, `free-kb: true` and `floor-kb: null`, which would otherwise throw
   on `.trim()` instead of being refused
 
 ## Test Plan
 
-- `worker/deno/tests/host_cache_reclaim_test.ts` (67 tests at head, all pass):
+- `worker/deno/tests/host_cache_reclaim_test.ts` (68 tests at head, all pass):
   - config: with `CONFIG_FILE` or `CONFIG_PATH` naming a moved file that sets
     `host_cache_reclaim_enabled: false`, nothing is removed, and the same setup
     without the variable (the checkout's enabled file) removes the cache; a
@@ -166,11 +166,11 @@ cannot credit its removal and the largest-directories line shows it as
 
 ## Mutation check (PR #4500 review)
 
-- `worker/deno/lib/host_cache_reclaim.ts:407` — dropped operand
+- `worker/deno/lib/host_cache_reclaim.ts`, `walkDirSizeBytes` — dropped operand
   `!info.isSymlink`: exempt (untestable): equivalent mutant. `Deno.lstat` never
   follows a link, so an entry that is a symlink reports `isDirectory: false` and
-  the first operand already excludes it. The other nine mutants listed for lines
-  224, 405–407 and 433 are killed by new tests in
+  the first operand already excludes it. The other nine mutants listed for the tag-prefix
+  read, the size walk and the `du` figure are killed by new tests in
   `worker/deno/tests/host_cache_reclaim_test.ts`, each re-run red against the
   mutation and green on the head.
 
@@ -188,3 +188,14 @@ cannot credit its removal and the largest-directories line shows it as
   group-writable (for example 002) skips every cache with a visible reason
   rather than removing it; the real tool was not run against a foreign-owned
   `/tmp` tree, whose ownership is injected in the tests.
+
+## Mutation check (PR #4500 review, third round)
+
+- `host_cache_reclaim.ts` `lstat` property `mode` (deleted) — killed by
+  `fs: the real lstat reports the permission bits and the owner of a directory`
+  (re-run with `--no-check`, since the mutant is also a type error).
+- `host_cache_reclaim.ts` operand `root.length < known.length` (replaced with
+  false) — killed by `removal: a candidate reached from two roots is judged
+  from the shallower root, whichever root is listed first`.
+- Both re-run red against the mutation and green on the head
+  (`host_cache_reclaim_test.ts`, 68 tests at head).

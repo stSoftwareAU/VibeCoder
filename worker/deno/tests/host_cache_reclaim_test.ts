@@ -870,6 +870,53 @@ Deno.test({
 
 Deno.test({
   name:
+    "removal: a candidate reached from two roots is judged from the shallower root, whichever root is listed first",
+  ...POSIX_ONLY,
+  fn: async () => {
+    for (const shallowFirst of [true, false]) {
+      await withRoot(async (root) => {
+        const { sub, cache } = await nestedCache(root);
+        const ownerUid = await ownUid(root);
+        // `sub` is foreign-owned: judged when it is an ancestor (root is the
+        // root), exempt when it is itself the root.
+        const roots = shallowFirst ? [root, sub] : [sub, root];
+        const result = await reclaimHostCaches(
+          oneGibOptions(roots),
+          reclaimDeps({
+            ownerUid,
+            fs: fsWith({ [sub]: { uid: ownerUid + 1 } }),
+          }),
+        );
+        assertEquals(removedPaths(result), [], `shallowFirst ${shallowFirst}`);
+        assertEquals(await exists(cache), true);
+        assertStringIncludes(
+          result.skipped.find((s) => s.path === cache)?.reason ?? "",
+          `owned by uid ${ownerUid + 1}`,
+        );
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "fs: the real lstat reports the permission bits and the owner of a directory",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      const dir = join(root, "perm");
+      await Deno.mkdir(dir);
+      await Deno.chmod(dir, 0o750);
+      const stat = await realHostCacheFs.lstat(dir);
+      assert(stat !== null);
+      assertEquals(stat.mode === null ? null : stat.mode & 0o777, 0o750);
+      assertEquals(stat.uid, await ownUid(root));
+    });
+  },
+});
+
+Deno.test({
+  name:
     "removal: the root itself is the boundary and is not judged, even when it is world-writable and foreign-owned like /tmp",
   ...POSIX_ONLY,
   fn: async () => {
