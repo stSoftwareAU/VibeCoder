@@ -893,10 +893,12 @@ the summary says who judged it:
   dispatched, quote the exact error in your final message and stop. Writing the
   marker for a review you did not run is the over-claim this gate exists to
   prevent.
-- **Issues with no acceptance criteria are unaffected** — no reviewers, neither
-  block. A `## Standards Review` the summary carries anyway is still read: each
-  `violation` in it is held to the reason rules above, so an own-line breach
-  left standing blocks the PR (Issue #3761).
+- **Issues with no acceptance criteria dispatch no reviewers** — neither review
+  block is required (a part of the issue you leave undone is still recorded as a
+  `missing` entry; see "Acceptance-Criteria Closure"). A `## Standards Review`
+  the summary carries anyway is still read: each `violation` in it is held to
+  the reason rules above, so an own-line breach left standing blocks the PR
+  (Issue #3761).
 
 A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
@@ -989,9 +991,15 @@ named in the reviewer note (Issue #4234):
   silent — and the pre-PR verifier then re-judges each `met` entry; a `partial`,
   `missing` or absent verdict from it is reported to you once and then named on
   the PR (Issue #4234).
-- **Issues with no acceptance criteria are unaffected** — emit the block only
-  when the issue states criteria (an Acceptance Criteria or Definition of done
-  list).
+- **An issue with no acceptance-criteria heading needs no block, unless you
+  leave part of it undone** — emit the block when the issue states criteria (an
+  Acceptance Criteria or Definition of done list). For an issue with no such
+  heading, a part you leave undone (it needs an owner's choice, or rights this
+  run lacks) is recorded as one `missing` entry per part, quoting the issue's own
+  words with a `reason:`, and the summary says `Part of #{{ISSUE_NUMBER}}`; add
+  no reviewer provenance marker and no `reviewer:` field, because no reviewer
+  runs for such an issue. The issue stays open and queued; file no follow-up
+  issue.
 
 One more rule no gate parses — a reviewer sends the PR back for it:
 
@@ -1211,10 +1219,14 @@ In your `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` file, write
 one of:
 
 - `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
-  criterion `missing`;
+  criterion `missing`. This includes an issue that states no criteria heading:
+  when you leave any part of what that issue asks undone, record each undone
+  part as a `missing` entry in the issue's own words, whatever heading the issue
+  used;
 - `Closes #{{ISSUE_NUMBER}}` (or `Fixes #{{ISSUE_NUMBER}}` / `Resolves
   #{{ISSUE_NUMBER}}`) otherwise: no criterion is `missing`, including when one
-  is `partial`, or the issue states no criteria.
+  is `partial`, or the issue states no criteria heading and nothing it asks is
+  left undone.
 
 In the `Part of` case, write no closing keyword for the issue anywhere in the
 summary. The worker raises the PR body the same way (`Part of #{{ISSUE_NUMBER}}`
@@ -1348,8 +1360,9 @@ The file MUST contain:
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
    regression test
-5. **Acceptance Criteria** (only when the issue states criteria): the closure
-   block described in [Acceptance-Criteria Closure](#acceptance-criteria-closure--answer-the-criteria-before-the-pr)
+5. **Acceptance Criteria** (when the issue states criteria, or when you leave
+   part of an issue with no criteria heading undone — then only `missing`
+   entries, quoting the issue): the closure block described in [Acceptance-Criteria Closure](#acceptance-criteria-closure--answer-the-criteria-before-the-pr)
    — the Spec reviewer's provenance marker, then one `met` / `partial` /
    `missing` entry per criterion with its `reviewer:` verdict, plus any
    `unrequested` change, which carries `reviewer: unrequested` and a `reason:`
@@ -1566,8 +1579,9 @@ placeholder token.
 
 This is the shape your own `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md`
 should take — these sections, in this order (the `## Reproduction` block only for
-a `bug`-labelled issue, the `## Acceptance Criteria` and `## Standards Review`
-blocks only when the issue states criteria):
+a `bug`-labelled issue, the `## Standards Review` block only when the issue
+states criteria, and the `## Acceptance Criteria` block when it does or when you
+leave part of a criteria-less issue undone):
 
 ```markdown
 ## Summary

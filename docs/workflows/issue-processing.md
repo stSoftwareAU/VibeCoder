@@ -1017,8 +1017,9 @@ fewer assessments than criteria, with a `met`/`partial` entry that names no
 evidence, or with a gap that carries no reason — an unexplained gap is a failure
 to surface, not a pass. The gate comments on the issue naming every rule broken
 and the required shape, so the next attempt is productive. Issues with **no**
-acceptance criteria (neither list) are unaffected: the gate does not apply and
-nothing changes.
+acceptance criteria (neither list) are outside the gate: it does not apply, so
+no closure block is required. A `missing` entry the run writes for a part it
+leaves undone still holds the issue open (see *At PR creation* below).
 
 **One shape, both gates.** The remediation comment prints
 [`REVIEW_BLOCK_TEMPLATE`](../../worker/deno/lib/review_block_template.ts) — the
@@ -1061,7 +1062,11 @@ reads that signal at both ends
   issue to `Part of #N`, adds a `## Not closing #N` section naming the missing
   criteria, and appends no `Closes #N`. The same assembly runs when the PR
   body is re-synced from the summary, so a later commit that finishes the
-  work (and marks the criteria `met`) restores the closing keyword.
+  work (and marks the criteria `met`) restores the closing keyword. The block is
+  read from the summary alone, so it also holds the issue open when the issue
+  lists its requirements under a heading the criteria parser does not read: the
+  prompt tells the run to record each part it leaves undone as a `missing` entry
+  quoting the issue, with no reviewer provenance marker (Issue #4477).
 - **At merge.** A fleet PR's title still names its issue (`(Issue #N)`), and
   the merged-PR closers read titles, so the PR body alone cannot hold the
   issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
