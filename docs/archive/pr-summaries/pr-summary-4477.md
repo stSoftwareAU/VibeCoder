@@ -85,3 +85,8 @@ so `Closes #4477` is the right line under the new rule.
 - No existing assertion was removed or edited.
 - Docs: `deno fmt --check` already fails on `DESIGN-PRINCIPLES.md` and
   `docs/workflows/issue-processing.md` on base; not reformatted.
+- `./quality.sh` on the final head: Result: PASSED (with skipped checks);
+  checkov was skipped by the gate. An earlier run of the gate failed once in
+  `tests/pr_maintenance_command_test.ts` (Issue #4424 merge-queue test): that
+  test passes alone and in the rerun, and is a host GitHub rate-limit cool-down
+  effect on earlier tests in the same file, unrelated to this diff.
