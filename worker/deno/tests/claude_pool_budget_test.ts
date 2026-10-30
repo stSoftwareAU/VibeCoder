@@ -167,6 +167,10 @@ Deno.test("poolHasAnotherTokenWithBudget - a metered key is not a pool member an
 /** A fetch that answers each token with per-window utilisations. */
 function fetchWindows(
   byToken: Record<string, { fiveHour: number; sevenDay: number }>,
+  resets: { fiveHour: number; sevenDay: number } = {
+    fiveHour: 1788660000,
+    sevenDay: 1789260000,
+  },
 ) {
   return (_url: string, init: RequestInit) => {
     const auth = String(
@@ -181,9 +185,9 @@ function fetchWindows(
         status: 200,
         headers: {
           "anthropic-ratelimit-unified-5h-utilization": String(util.fiveHour),
-          "anthropic-ratelimit-unified-5h-reset": "1788660000",
+          "anthropic-ratelimit-unified-5h-reset": String(resets.fiveHour),
           "anthropic-ratelimit-unified-7d-utilization": String(util.sevenDay),
-          "anthropic-ratelimit-unified-7d-reset": "1789260000",
+          "anthropic-ratelimit-unified-7d-reset": String(resets.sevenDay),
         },
       }),
     );
@@ -255,6 +259,74 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour wi
       { fetchFn: spentHoursFreshWeek },
     ),
     false,
+  );
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - a spent week with fresh five-hour capacity is not worth restarting for", async () => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const future = nowSeconds + 7 * 24 * 60 * 60;
+  const spentWeek = fetchWindows({
+    "token-provider": { fiveHour: 1, sevenDay: 1 },
+    "token-provider-2": { fiveHour: 0.1, sevenDay: 1 },
+  }, { fiveHour: future, sevenDay: future });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: spentWeek },
+    ),
+    false,
+  );
+
+  const elapsedWeek = fetchWindows({
+    "token-provider": { fiveHour: 1, sevenDay: 1 },
+    "token-provider-2": { fiveHour: 0.1, sevenDay: 1 },
+  }, { fiveHour: future, sevenDay: nowSeconds - 1 });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: elapsedWeek },
+    ),
+    true,
+    "a reset weekly window is full, not exhausted",
+  );
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - a positive weekly share before reset is worth restarting for", async () => {
+  const future = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+  const probe = fetchWindows({
+    "token-provider-2": { fiveHour: 0.1, sevenDay: 0.9 },
+  }, { fiveHour: future, sevenDay: future });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: probe },
+    ),
+    true,
+  );
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - an absent weekly reading does not exhaust a usable five-hour window", async () => {
+  const future = Math.floor(Date.now() / 1000) + 60 * 60;
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      {
+        fetchFn: () =>
+          Promise.resolve(
+            new Response("{}", {
+              headers: {
+                "anthropic-ratelimit-unified-5h-utilization": "0.1",
+                "anthropic-ratelimit-unified-5h-reset": String(future),
+              },
+            }),
+          ),
+      },
+    ),
+    true,
   );
 });
 

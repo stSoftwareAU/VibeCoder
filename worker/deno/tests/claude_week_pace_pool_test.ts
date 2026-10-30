@@ -145,6 +145,50 @@ Deno.test("pool pace - one credential spent, the other not reopening for 100 h: 
   assertEquals(verdict.reading.nextReopenAt, NOW + 40 * HOUR_MS);
 });
 
+Deno.test("pool pace - levelling largest shares differs from earliest-expiry consumption", () => {
+  // The soon share is 20% until 50h; the later share is 72.6% until 130h.
+  // Levelling leaves too little on the later credential to reach 130h, while
+  // spending the soon-expiring share first would leave enough.
+  const verdict = claudePoolWeekPaceVerdict([
+    credential("soon-small", 0.8, 50),
+    credential("late-large", 0.274, 130),
+  ], NOW);
+  assertEquals(verdict.state, "engaged");
+  assert(verdict.state === "engaged");
+  assertEquals(verdict.reading.nextReopenAt, NOW + 130 * HOUR_MS);
+  assert(verdict.reading.runsOutAt !== null);
+  assert(verdict.reading.runsOutAt > NOW + 120 * HOUR_MS);
+  assert(verdict.reading.runsOutAt < NOW + 130 * HOUR_MS);
+});
+
+Deno.test("pool pace - level the largest shares instead of draining one credential", () => {
+  // provider has 80% left until 143h; provider-2 has 40% left until 56h.
+  // Levelling leaves about 22.5% on provider at the first reopening, so the
+  // pool lasts to 143h. Draining provider first leaves 5% and runs out early.
+  const verdict = claudePoolWeekPaceVerdict([
+    credential("provider", 0.2, 143),
+    credential("provider-2", 0.6, 56),
+  ], NOW);
+  assertEquals(verdict.state, "off");
+  assert(verdict.state === "off");
+  assertEquals(verdict.reason, "on-pace");
+  assertEquals(verdict.reading.nextReopenAt, NOW + 56 * HOUR_MS);
+  assertEquals(verdict.reading.runsOutAt, null);
+});
+
+Deno.test("pool pace - equal remaining shares are levelled before the earlier reset", () => {
+  // Equal shares are consumed together; the first reopening then restores
+  // only the credential whose window reset.
+  const verdict = claudePoolWeekPaceVerdict([
+    credential("late", 0.6, 110),
+    credential("soon", 0.6, 24),
+  ], NOW);
+  assertEquals(verdict.state, "engaged");
+  assert(verdict.state === "engaged");
+  assertEquals(verdict.reading.nextReopenAt, NOW + 110 * HOUR_MS);
+  assert(verdict.reading.runsOutAt !== null);
+});
+
 Deno.test("pool pace - a single credential behaves exactly as the single-token verdict", () => {
   // Every state and reason, across the grace, the threshold and a rolled-over
   // window, matches the pre-#2647 verdict.

@@ -33,15 +33,19 @@ flowchart TD
 
 A provider adapter supplies real windows, reset timestamps and an
 identity label. The shared ranker (`worker/deno/lib/provider_quota.ts`)
-uses remaining-fraction / hours-to-reset. Unknown budgets stay unknown
+uses the ordering each provider policy declares. Unknown budgets stay unknown
 — they are never treated as zero.
 
-- **Claude** keeps the five-hour soft gate and the seven-day rate
-  (#1623 / #1685). All-low-but-usable credentials still run.
+- **Claude** keeps the five-hour soft gate (#1623 / #1685), prefers weekly
+  telemetry to the existing non-weekly fallback (#4503), and ranks weekly
+  credentials by largest remaining share. Equal shares use reset then discovery
+  order; an elapsed week counts as full. A zero weekly share with a future
+  reset is exhausted, separately from the removed 10% band.
 - **Codex** uses the rollout `token_count` snapshot from
   [Codex Budget Sources](CODEX-BUDGET-SOURCES.md). An API-key account
-  has no subscription window (`api-key-account`). Explicit exhaustion
-  excludes that credential until reset.
+  has no subscription window (`api-key-account`). It retains remaining-per-hour
+  ordering and its 10% low-remaining floor. Explicit exhaustion excludes that
+  credential until reset.
 
 A Claude usage limit writes `provider: "claude"` on the rate-limit
 signal. The host loop pauses only when every **enabled** provider is

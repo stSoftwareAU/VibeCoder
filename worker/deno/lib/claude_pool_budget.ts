@@ -3,8 +3,8 @@
  * (Issue #919 follow-up.)
  *
  * A quota pause belongs to the **token** that ran out, not to the host. Worker
- * start already ranks the pool and takes the token worth the most per hour
- * (Issue #1623), so once a
+ * start already ranks the pool and takes the token with the most seven-day
+ * quota left (Issue #4504), so once a
  * second subscription still has quota the only thing keeping the host idle is
  * the supervisor's hour-long re-probe cadence. On 2026-09-06 a host slept 59
  * minutes waiting for the spent token's window while its other subscription
@@ -58,10 +58,10 @@ export const POOL_BUDGET_FLOOR = CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING;
  * The five-hour share {@link POOL_BUDGET_FLOOR} is read against.
  *
  * The floor IS the five-hour selection gate, so it has to be applied to the
- * same window the gate is (Issue #1668). The headline `remainingFraction` is
- * the *most constrained* window, so measuring against it would refuse a
- * restart for a token with a fresh five hours and a nearly spent week — which
- * `rankClaudeTokenBudgets` would happily select and run against.
+ * same window the gate is (Issue #1668). Weekly exhaustion is checked
+ * separately: a zero weekly share with a future reset cannot run, even when
+ * the five-hour window is fresh. This is an exhaustion check, not a low-share
+ * floor.
  *
  * @param budget - A known probe result.
  * @returns The five-hour remaining share, or the headline figure for a
@@ -142,6 +142,14 @@ export async function poolHasAnotherTokenWithBudget(
 
   for (const { label, budget } of probes) {
     if (!budget.known) continue;
+    // A successful probe always reports at least one parsed window.
+    const sevenDay = budget.windows.find((window) =>
+      window.window === "seven_day"
+    );
+    if (
+      sevenDay !== undefined && sevenDay.remainingFraction <= 0 &&
+      sevenDay.resetAt > Date.now()
+    ) continue;
     const remaining = fiveHourRemaining(budget);
     // Strictly above, exactly as the five-hour gate reads it: at precisely
     // the floor the token has nothing worth restarting for.

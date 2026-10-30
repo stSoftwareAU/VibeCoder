@@ -49,8 +49,9 @@
  *    window has rolled over, has no trustworthy rate and is left out of it.
  * 2. **Capacity walk** — start from the sum of every credential's remaining
  *    share, and step through the reset times in order. Between resets the
- *    capacity is drawn down at the burn rate, soonest-expiring credential
- *    first; at each reset that credential's week reopens with a full window.
+ *    capacity is drawn down at the burn rate, largest remaining share first
+ *    (ties to the soonest reset), matching selection (Issue #4504); at each
+ *    reset that credential's week reopens with a full window.
  *    The walk ends at the latest reset in the pool (at most 168 hours out).
  * 3. **Verdict** — engaged if capacity reaches zero before the next
  *    reopening would refill it; off otherwise.
@@ -87,6 +88,7 @@ import {
   type ClaudeTokenBudget,
   probeClaudeTokenBudget,
 } from "./claude_token_budget.ts";
+import { CLAUDE_QUOTA_POLICY, rankQuotaCandidates } from "./provider_quota.ts";
 import { CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS } from "./claude_credential_pool.ts";
 import {
   CLAUDE_WEEK_PACE_GRACE_HOURS,
@@ -387,9 +389,11 @@ export function claudePoolWeekPaceVerdict(
  * Walk the pool's capacity forward through its reopenings.
  *
  * Between two reopenings the capacity is drawn down at the burn rate from the
- * soonest-expiring credential first (share still on a window when it reopens
- * is lost, so it is the share to spend first); at each reopening that
- * credential's window refills to a full one. Capacity reaching zero at or
+ * largest remaining shares first, levelling equal shares together. The shared
+ * ranking supplies a stable soonest-reset tie order at each interval
+ * (Issue #4504). Re-rank through the Claude quota policy; the weekly projection
+ * omits the five-hour gate. At each reopening that credential's window
+ * refills to a full one. Capacity reaching zero at or
  * before a reopening is "won't make it" — the single-token threshold, where a
  * projection landing exactly on the reset engages.
  *
@@ -416,16 +420,11 @@ function walkPoolCapacity(
   let at = nowMs;
   for (const reopenAt of reopenings) {
     const capacity = credentials.reduce((sum, c) => sum + c.remaining, 0);
-    let need = perMs * (reopenAt - at);
+    const need = perMs * (reopenAt - at);
     if (need >= capacity) {
       return { runsOutAt: at + capacity / perMs, nextReopenAt: reopenAt };
     }
-    credentials.sort((a, b) => a.resetAt - b.resetAt);
-    for (const credential of credentials) {
-      const draw = Math.min(credential.remaining, need);
-      credential.remaining -= draw;
-      need -= draw;
-    }
+    drawLargestFirst(credentials, need, at);
     for (const credential of credentials) {
       if (credential.resetAt === reopenAt) {
         credential.remaining = 1;
@@ -436,6 +435,54 @@ function walkPoolCapacity(
     at = reopenAt;
   }
   return { runsOutAt: null, nextReopenAt: firstReopen };
+}
+
+/** Draw down the highest shares together until they reach the next level. */
+function drawLargestFirst(
+  credentials: PoolCredential[],
+  amount: number,
+  nowMs: number,
+): void {
+  let need = amount;
+  while (need > 0) {
+    const ranking = rankQuotaCandidates(
+      credentials.map((credential, index) => ({
+        providerId: CLAUDE_PROVIDER_ID,
+        credentialLabel: String(index),
+        budget: {
+          known: true,
+          windows: [{
+            name: "seven_day",
+            remainingFraction: credential.remaining,
+            resetAt: credential.resetAt,
+          }],
+        },
+      })),
+      nowMs,
+      CLAUDE_QUOTA_POLICY,
+    );
+    const ranked = ranking.ranked;
+    const first = ranked[0]!;
+    const top = credentials[first.index]!.remaining;
+    const group = ranked.filter((candidate) =>
+      credentials[candidate.index]!.remaining === top
+    );
+    const next = ranked.find((candidate) =>
+      credentials[candidate.index]!.remaining < top
+    );
+    const nextShare = next === undefined
+      ? 0
+      : credentials[next.index]!.remaining;
+    const toLevel = (top - nextShare) * group.length;
+    if (toLevel <= 0) break;
+    const draw = Math.min(need, toLevel);
+    const perCredential = draw / group.length;
+    for (const candidate of group) {
+      credentials[candidate.index]!.remaining -= perCredential;
+    }
+    need -= draw;
+    if (draw < toLevel) break;
+  }
 }
 
 /** Render a share as a percentage. */

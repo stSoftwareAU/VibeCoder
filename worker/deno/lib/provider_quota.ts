@@ -2,10 +2,11 @@
  * Shared quota ranking for every coding-agent provider (Issue #1696,
  * parent #1694).
  *
- * Claude's five-hour gate and seven-day remaining-per-hour rule live in
+ * Claude's five-hour gate and most-seven-day-remaining rule live in
  * `claude_token_selection.ts` and stay Claude's. This module is the
- * extracted comparison: a provider **declares** which windows it has and
- * whether a soft gate applies; the ranker never invents a five-hour window
+ * extracted comparison: a provider **declares** which windows it has, whether
+ * a soft gate applies and what it ranks by; the ranker never invents a
+ * five-hour window
  * for a vendor that does not have one, and an unknown budget stays unknown
  * rather than becoming zero.
  *
@@ -57,32 +58,48 @@ export interface QuotaCandidate {
  *
  * A policy that names no `softGateWindow` has no five-hour-style filter.
  * A policy that names no `rankWindow` ranks on the first reported window.
+ * A policy that names no `rankBy` ranks by remaining share per hour.
  */
 export interface QuotaPolicy {
   /** Window that must stay below {@link softGateMaxUsed} to be eligible. */
   readonly softGateWindow?: string;
   /** Usage share at or above which the soft gate fails (Claude: 0.8). */
   readonly softGateMaxUsed?: number;
-  /** Window whose remaining/hour sets the score (Claude: `seven_day`). */
+  /** Window whose figure sets the score (Claude: `seven_day`). */
   readonly rankWindow?: string;
+  /**
+   * What the rank window is scored on: its remaining share
+   * (`"remaining"`, Claude since Issue #4504) or its
+   * remaining share per hour until it resets (`"remaining-per-hour"`, the
+   * default — Codex).
+   */
+  readonly rankBy?: QuotaRankBy;
   /** Rank-window remaining below which a passing token is demoted. */
   readonly lowRemainingFloor?: number;
   /** Nominal hours for named windows when a reset has already passed. */
   readonly nominalHours: Readonly<Record<string, number>>;
   /**
-   * Remaining share at or below which a known window is treated as
-   * exhausted (ineligible), not merely low. Codex uses `0`; Claude leaves
-   * this unset so the existing soft gate owns refusal.
+   * Remaining share at or below which a known rank window is treated as
+   * exhausted (ineligible), not merely low. Codex uses `0`; Claude's separate
+   * weekly-exhaustion check lives in its credential-pool selection path, and
+   * its five-hour refusal remains the soft gate.
    */
   readonly exhaustedAtOrBelow?: number;
 }
 
-/** Claude's declared windows — the #1623 / #1685 rule. */
+/** What a policy scores its rank window on. */
+export type QuotaRankBy = "remaining" | "remaining-per-hour";
+
+/**
+ * Claude's declared windows: the five-hour gate (#1623 / #1685) and the most
+ * seven-day quota left (Issue #4504, which replaced #1623's
+ * per-hour rate and its low-remaining floor).
+ */
 export const CLAUDE_QUOTA_POLICY: QuotaPolicy = {
   softGateWindow: "five_hour",
   softGateMaxUsed: 0.8,
   rankWindow: "seven_day",
-  lowRemainingFloor: 0.1,
+  rankBy: "remaining",
   nominalHours: { five_hour: 5, seven_day: 168 },
 };
 
@@ -103,6 +120,8 @@ const HOUR_MS = 3_600_000;
 
 /** Why the winner won — stable and safe to log. */
 export type QuotaSelectionReason =
+  | "most-remaining"
+  | "equal-remaining-soonest-reset"
   | "highest-remaining-per-hour"
   | "equal-remaining-per-hour-soonest-reset"
   | "tied-discovery-order"
@@ -125,6 +144,8 @@ export interface RankedQuotaCandidate {
   readonly index: number;
   readonly budget: QuotaBudget;
   readonly eligible: boolean;
+  /** The figure the policy ranks on, or null when it cannot be scored. */
+  readonly score: number | null;
   readonly remainingFraction: number | null;
   readonly ratePerHour: number | null;
   readonly resetAt: number | null;
@@ -179,6 +200,7 @@ function view(
       index,
       budget: candidate.budget,
       eligible: false,
+      score: null,
       remainingFraction: null,
       ratePerHour: null,
       resetAt: null,
@@ -205,6 +227,7 @@ function view(
     ? null
     : rateWindow.remainingFraction / hours;
   const remaining = rateWindow?.remainingFraction ?? null;
+  const score = policy.rankBy === "remaining" ? remaining : ratePerHour;
   const exhaustedFloor = policy.exhaustedAtOrBelow;
   const exhausted = exhaustedFloor !== undefined && remaining !== null &&
     remaining <= exhaustedFloor && !(rateWindow?.elapsed ?? false);
@@ -213,7 +236,8 @@ function view(
     credentialLabel: candidate.credentialLabel,
     index,
     budget: candidate.budget,
-    eligible: softGatePassed && !exhausted && ratePerHour !== null,
+    eligible: softGatePassed && !exhausted && score !== null,
+    score,
     remainingFraction: remaining,
     ratePerHour,
     resetAt: rateWindow?.resetAt ?? null,
@@ -225,7 +249,7 @@ function band(
   candidate: RankedQuotaCandidate,
   policy: QuotaPolicy,
 ): 0 | 1 | 2 | 3 {
-  if (candidate.ratePerHour === null) return 3;
+  if (candidate.score === null) return 3;
   if (!candidate.softGatePassed) return 2;
   const floor = policy.lowRemainingFloor;
   if (floor !== undefined && (candidate.remainingFraction ?? 0) < floor) {
@@ -249,9 +273,9 @@ function compare(
     if (left !== right) return left - right;
     return a.index - b.index;
   }
-  const rateA = a.ratePerHour ?? 0;
-  const rateB = b.ratePerHour ?? 0;
-  if (rateA !== rateB) return rateB - rateA;
+  const scoreA = a.score ?? 0;
+  const scoreB = b.score ?? 0;
+  if (scoreA !== scoreB) return scoreB - scoreA;
   const left = a.resetAt ?? Number.MAX_SAFE_INTEGER;
   const right = b.resetAt ?? Number.MAX_SAFE_INTEGER;
   if (left !== right) return left - right;
@@ -268,20 +292,23 @@ function winningReason(
   if (winnerBand === 3) return "budget-unknown-discovery-order";
   if (winnerBand === 2) return "soft-gate-failed-soonest-reset";
   if (winnerBand === 1) return "low-rank-window-remaining-highest-rate";
+  const byRemaining = policy.rankBy === "remaining";
   const runnerUp = ranked[1];
-  if (runnerUp === undefined || band(runnerUp, policy) !== 0) {
-    return "highest-remaining-per-hour";
+  if (
+    runnerUp === undefined || band(runnerUp, policy) !== 0 ||
+    runnerUp.score !== winner.score
+  ) {
+    return byRemaining ? "most-remaining" : "highest-remaining-per-hour";
   }
-  if (runnerUp.ratePerHour !== winner.ratePerHour) {
-    return "highest-remaining-per-hour";
-  }
-  return runnerUp.resetAt === winner.resetAt
-    ? "tied-discovery-order"
+  if (runnerUp.resetAt === winner.resetAt) return "tied-discovery-order";
+  return byRemaining
+    ? "equal-remaining-soonest-reset"
     : "equal-remaining-per-hour-soonest-reset";
 }
 
 /**
- * Rank credentials by remaining budget per hour under `policy`.
+ * Rank credentials under `policy` — by remaining share or remaining share per
+ * hour, as the policy's `rankBy` declares.
  *
  * Input order is the discovery order and the last tie-break. Nothing is
  * dropped: an unknown budget ranks last so a probe failure cannot hide a
