@@ -1445,6 +1445,15 @@ flowchart TD
 Candidates go oldest first, and the reclaim stops once the host has the
 claiming floor plus `host_cache_reclaim_headroom_gb` (10 by default) free.
 
+The roots include world-writable scratch directories, where another account
+could swap a directory it owns for a symlink between the walk and the delete.
+So a cache is removed only when it and every directory between its root and it
+belong to the account running the launcher and are not writable by group or
+others, and only when its real path is still itself immediately before the
+delete. A cache that fails either check is kept, with the reason in a
+`skipped` line. (The root itself is the configured boundary and is not judged.
+Windows has no uid, so only the real-path check applies there.)
+
 The tag is read as at most its first 512 bytes, so a huge or sparse file named
 `CACHEDIR.TAG` in a shared scratch directory is not loaded whole; a first line
 longer than that does not carry the signature and the directory is kept. Each
@@ -1456,8 +1465,13 @@ timeout, or a tree over the walk's entry budget) is reported as `unmeasured`.
 absolute directories listed in `host_cache_reclaim_roots`. The launcher's own
 checkout is passed to the command as a protected path.
 
-The four keys live in `.config.json` (see the host-disk keys in
-[CONFIGURATION.md](CONFIGURATION.md)):
+The four keys live in the host's one `.config.json` (see the host-disk keys in
+[CONFIGURATION.md](CONFIGURATION.md)). The launchers pass the checkout as
+`--base-dir`, and the command resolves the file exactly as
+`container-launch-plan` does: `CONFIG_FILE`, else its alias `CONFIG_PATH`, else
+`<checkout>/.config.json` (Issue #750). A host whose configuration has moved
+therefore has its reclaim settings honoured, and `host_cache_reclaim_enabled:
+false` in the moved file switches the reclaim off:
 
 | Key | Default | Meaning |
 |---|---|---|

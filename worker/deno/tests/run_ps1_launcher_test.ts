@@ -1296,9 +1296,13 @@ Deno.test({
         /^\d+$/.test(argAfter(args, "--free-kb") ?? ""),
         `--free-kb must be a whole number of kilobytes, got ${args}`,
       );
-      assert(
-        argAfter(args, "--config")?.endsWith("/.config.json"),
-        `--config must name the checkout's .config.json, got ${args}`,
+      // The command resolves the host config itself from the checkout, so a
+      // host that moved it with CONFIG_FILE / CONFIG_PATH is honoured (#750).
+      assertEquals(argAfter(args, "--base-dir"), REPO_ROOT);
+      assertEquals(
+        args.includes("--config"),
+        false,
+        `the launcher must not pin the checkout's .config.json, got ${args}`,
       );
       assert(args.includes("--protect"), `--protect missing from ${args}`);
 

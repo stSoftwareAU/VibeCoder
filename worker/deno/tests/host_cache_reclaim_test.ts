@@ -21,6 +21,8 @@ import {
   DEFAULT_HOST_CACHE_RECLAIM_CONFIG,
   defaultCacheRoots,
   defaultDirSizeBytes,
+  type FsStat,
+  type HostCacheFs,
   type HostCacheReclaimDeps,
   type HostCacheReclaimOptions,
   largestHostDirectories,
@@ -673,12 +675,19 @@ Deno.test("defaultDirSizeBytes measures by walking when du cannot run, as on Win
 
 Deno.test("with du unavailable, the reclaim still stops at the target and the largest list is size-ordered (#4500 review)", async () => {
   await withRoot(async (root) => {
-    // Four stale caches of different sizes; only the walk can size them.
-    const sizes = [300_000, 200_000, 100_000, 50_000];
-    for (let i = 0; i < sizes.length; i++) {
-      const cache = await makeCache(root, `target-${i}`, { ageMs: STALE_MS });
-      await Deno.writeFile(join(cache, "blob.bin"), new Uint8Array(sizes[i]!));
-      await ageTree(cache, STALE_MS * (sizes.length - i));
+    // Four stale caches whose size order runs against both their name order
+    // and, for the removal, their age order; only the walk can size them.
+    // zzz is the oldest and biggest, so it alone clears the floor.
+    const specs = [
+      { name: "zzz", size: 300_000, ageRank: 4 },
+      { name: "mmm", size: 200_000, ageRank: 3 },
+      { name: "bbb", size: 100_000, ageRank: 2 },
+      { name: "aaa", size: 50_000, ageRank: 1 },
+    ];
+    for (const spec of specs) {
+      const cache = await makeCache(root, spec.name, { ageMs: STALE_MS });
+      await Deno.writeFile(join(cache, "blob.bin"), new Uint8Array(spec.size));
+      await ageTree(cache, STALE_MS * spec.ageRank);
     }
     const noDu = async () => ({
       ok: false as const,
@@ -694,22 +703,278 @@ Deno.test("with du unavailable, the reclaim still stops at the target and the la
       roots: [root],
       protect: [],
     }, { processSnapshot: NO_PROCESSES, dirSizeBytes });
-    // Oldest first is target-0 (300 kB), which alone clears the floor.
-    assertEquals(removedPaths(result), [join(root, "target-0")]);
+    assertEquals(removedPaths(result), [join(root, "zzz")]);
     assert(
       (result.removed[0]?.bytes ?? 0) >= 300_000,
       "the removal is sized, not null",
     );
-    assertEquals(await exists(join(root, "target-1")), true);
+    assertEquals(await exists(join(root, "mmm")), true);
 
+    // Three directories remain. Size order is mmm, bbb, aaa; name order is
+    // the reverse, so a name-only sort fails this, and trimming to two keeps
+    // the largest rather than the alphabetically first.
     const largest = await largestHostDirectories([root], { dirSizeBytes });
     assertEquals(largest.map((d) => d.path), [
-      join(root, "target-1"),
-      join(root, "target-2"),
-      join(root, "target-3"),
+      join(root, "mmm"),
+      join(root, "bbb"),
+      join(root, "aaa"),
     ]);
     assert(largest.every((d) => d.bytes !== null));
+    const top = await largestHostDirectories([root], { dirSizeBytes }, 2);
+    assertEquals(top.map((d) => d.path), [
+      join(root, "mmm"),
+      join(root, "bbb"),
+    ]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Removal safety on world-writable roots (#4500 review).
+// ---------------------------------------------------------------------------
+
+const POSIX_ONLY = { ignore: Deno.build.os === "windows" };
+
+/** The real filesystem, with some paths' `lstat` or `realPath` answers replaced. */
+function fsWith(
+  stats: Record<string, Partial<FsStat>> = {},
+  realPaths: Record<string, string | null> = {},
+): HostCacheFs {
+  return {
+    ...realHostCacheFs,
+    async lstat(path) {
+      const real = await realHostCacheFs.lstat(path);
+      const override = stats[path];
+      return real !== null && override !== undefined
+        ? { ...real, ...override }
+        : real;
+    },
+    realPath(path) {
+      return path in realPaths
+        ? Promise.resolve(realPaths[path]!)
+        : realHostCacheFs.realPath(path);
+    },
+  };
+}
+
+/** The uid that owns the test's real directories. */
+async function ownUid(root: string): Promise<number> {
+  const uid = (await Deno.lstat(root)).uid;
+  assert(uid !== null, "a POSIX host reports a uid");
+  return uid;
+}
+
+/** `root/sub/target`: a stale cache one directory below the root. */
+async function nestedCache(
+  root: string,
+): Promise<{ sub: string; cache: string }> {
+  const sub = join(root, "sub");
+  await Deno.mkdir(sub);
+  await Deno.chmod(sub, 0o755);
+  const cache = await makeCache(sub, "target", { ageMs: STALE_MS });
+  await Deno.chmod(cache, 0o755);
+  return { sub, cache };
+}
+
+Deno.test({
+  name:
+    "removal: a candidate whose ancestor another account owns is skipped with a reason, and the same tree is removed when it is ours",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      const { sub, cache } = await nestedCache(root);
+      const ownerUid = await ownUid(root);
+
+      const control = await reclaimHostCaches(
+        oneGibOptions([root]),
+        reclaimDeps({ ownerUid, fs: fsWith() }),
+      );
+      assertEquals(removedPaths(control), [cache], "ours: removed");
+
+      const again = await nestedCache(await Deno.makeTempDir({ dir: root }));
+      const foreign = await reclaimHostCaches(
+        oneGibOptions([root]),
+        reclaimDeps({
+          ownerUid,
+          fs: fsWith({ [again.sub]: { uid: ownerUid + 1 } }),
+        }),
+      );
+      assertEquals(removedPaths(foreign), []);
+      assertEquals(await exists(again.cache), true);
+      const skip = foreign.skipped.find((s) => s.path === again.cache);
+      assertStringIncludes(skip?.reason ?? "", "not removed");
+      assertStringIncludes(skip?.reason ?? "", `owned by uid ${ownerUid + 1}`);
+      assertEquals(sub === again.sub, false);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "removal: a foreign-owned candidate itself, and a candidate with no uid to check, are skipped",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      const { cache } = await nestedCache(root);
+      const ownerUid = await ownUid(root);
+      for (const uid of [ownerUid + 1, null]) {
+        const result = await reclaimHostCaches(
+          oneGibOptions([root]),
+          reclaimDeps({ ownerUid, fs: fsWith({ [cache]: { uid } }) }),
+        );
+        assertEquals(removedPaths(result), [], `uid ${uid}`);
+        assertEquals(await exists(cache), true);
+        assertStringIncludes(
+          result.skipped.find((s) => s.path === cache)?.reason ?? "",
+          "owned by uid",
+        );
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "removal: a candidate or ancestor writable by group or others, or with no mode, is skipped; 0755 is removed",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      const { sub, cache } = await nestedCache(root);
+      const ownerUid = await ownUid(root);
+      const refusals: Array<[string, Partial<FsStat>]> = [
+        [sub, { mode: 0o40775 }],
+        [sub, { mode: 0o40757 }],
+        [cache, { mode: 0o40770 }],
+        [cache, { mode: 0o40707 }],
+        [cache, { mode: null }],
+      ];
+      for (const [path, override] of refusals) {
+        const result = await reclaimHostCaches(
+          oneGibOptions([root]),
+          reclaimDeps({ ownerUid, fs: fsWith({ [path]: override }) }),
+        );
+        assertEquals(removedPaths(result), [], JSON.stringify(override));
+        assertEquals(await exists(cache), true);
+        assertStringIncludes(
+          result.skipped.find((s) => s.path === cache)?.reason ?? "",
+          "writable by its group or others",
+        );
+      }
+      const control = await reclaimHostCaches(
+        oneGibOptions([root]),
+        reclaimDeps({ ownerUid, fs: fsWith({ [cache]: { mode: 0o40755 } }) }),
+      );
+      assertEquals(removedPaths(control), [cache]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "removal: the root itself is the boundary and is not judged, even when it is world-writable and foreign-owned like /tmp",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      const cache = await makeCache(root, "target", { ageMs: STALE_MS });
+      await Deno.chmod(cache, 0o755);
+      const ownerUid = await ownUid(root);
+      const result = await reclaimHostCaches(
+        oneGibOptions([root]),
+        reclaimDeps({
+          ownerUid,
+          fs: fsWith({ [root]: { uid: 0, mode: 0o41777 } }),
+        }),
+      );
+      assertEquals(removedPaths(result), [cache]);
+    });
+  },
+});
+
+Deno.test({
+  name: "removal: with no running uid known on a POSIX host nothing is removed",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      const { cache } = await nestedCache(root);
+      const result = await reclaimHostCaches(
+        oneGibOptions([root]),
+        reclaimDeps({ ownerUid: null, fs: fsWith() }),
+      );
+      assertEquals(removedPaths(result), []);
+      assertEquals(await exists(cache), true);
+      assertStringIncludes(
+        result.skipped.find((s) => s.path === cache)?.reason ?? "",
+        "running user could not be determined",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "removal: a candidate whose real path has moved, or vanished, since the walk is skipped",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      const { cache } = await nestedCache(root);
+      const ownerUid = await ownUid(root);
+      for (const moved of ["/elsewhere/target", null]) {
+        const result = await reclaimHostCaches(
+          oneGibOptions([root]),
+          reclaimDeps({ ownerUid, fs: fsWith({}, { [cache]: moved }) }),
+        );
+        assertEquals(removedPaths(result), [], String(moved));
+        assertEquals(await exists(cache), true);
+        const reason = result.skipped.find((s) => s.path === cache)?.reason ??
+          "";
+        assertStringIncludes(reason, "now resolves to");
+        assertStringIncludes(reason, moved ?? "nothing");
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "removal: an ancestor swapped for a symlink during the size measurement does not redirect the delete outside the root",
+  ...POSIX_ONLY,
+  fn: async () => {
+    await withRoot(async (root) => {
+      // `root/sub/target` is the candidate; `outside/target` is a same-named
+      // directory the swap would point the delete at.
+      const { sub, cache } = await nestedCache(root);
+      const outsideDir = await Deno.makeTempDir({
+        prefix: "host_cache_reclaim_outside_",
+      });
+      try {
+        const outside = join(outsideDir, "target");
+        await Deno.mkdir(outside);
+        await Deno.writeTextFile(join(outside, "precious"), "keep");
+        const ownerUid = await ownUid(root);
+
+        const result = await reclaimHostCaches(
+          oneGibOptions([root]),
+          reclaimDeps({
+            ownerUid,
+            // The size measurement is the window the attacker has: swap the
+            // ancestor for a symlink to a directory holding a same-named one.
+            dirSizeBytes: async () => {
+              await Deno.rename(sub, join(root, "sub.moved"));
+              await Deno.symlink(outsideDir, sub);
+              return GIB;
+            },
+          }),
+        );
+        assertEquals(removedPaths(result), []);
+        assertEquals(await exists(join(outside, "precious")), true);
+        assertStringIncludes(
+          result.skipped.find((s) => s.path === cache)?.reason ?? "",
+          "is a symbolic link",
+        );
+      } finally {
+        await Deno.remove(outsideDir, { recursive: true });
+      }
+    });
+  },
 });
 
 Deno.test("namesPath matches only at a path boundary", () => {
@@ -723,23 +988,30 @@ Deno.test("namesPath matches only at a path boundary", () => {
 
 Deno.test("largestHostDirectories sorts by size, keeps unmeasured entries last, and trims to n", async () => {
   await withRoot(async (root) => {
-    const big = join(root, "big");
-    const small = join(root, "small");
-    const unknown = join(root, "unknown");
-    for (const dir of [big, small, unknown]) await Deno.mkdir(dir);
+    // Sizes run against name order, and there are more directories than n, so
+    // a sort by name alone, or a trim that keeps the first names, fails.
     const sizes: Record<string, number | null> = {
-      [big]: 5 * GIB,
-      [small]: GIB,
-      [unknown]: null,
+      [join(root, "aaa")]: GIB,
+      [join(root, "bbb")]: null,
+      [join(root, "ddd")]: 3 * GIB,
+      [join(root, "mmm")]: 9 * GIB,
+      [join(root, "zzz")]: 5 * GIB,
     };
+    for (const dir of Object.keys(sizes)) await Deno.mkdir(dir);
     const dirSizeBytes = async (path: string) => sizes[path] ?? null;
 
     const all = await largestHostDirectories([root], { dirSizeBytes });
-    assertEquals(all.map((d) => d.path), [big, small, unknown]);
-    assertEquals(all[2]?.bytes, null, "unmeasured is reported, not dropped");
+    assertEquals(
+      all.map((d) => d.path),
+      ["mmm", "zzz", "ddd", "aaa", "bbb"].map((name) => join(root, name)),
+    );
+    assertEquals(all[4]?.bytes, null, "unmeasured is reported, not dropped");
 
     const top = await largestHostDirectories([root], { dirSizeBytes }, 2);
-    assertEquals(top.map((d) => d.path), [big, small]);
+    assertEquals(top.map((d) => d.path), [
+      join(root, "mmm"),
+      join(root, "zzz"),
+    ]);
   });
 });
 
@@ -942,18 +1214,23 @@ Deno.test("command: each removal and the summary are logged, one tagged line eac
   });
 });
 
-Deno.test("command: still short after reclaim adds the largest host directories line", async () => {
+Deno.test("command: still short after reclaim names the largest host directories, largest first", async () => {
   await withRoot(async (root) => {
     await makeCache(root, "stale-target", { ageMs: STALE_MS });
-    const bigSrc = join(root, "bigsrc");
-    await Deno.mkdir(bigSrc);
+    // Ten directories, more than the eight the line names, whose size grows
+    // with the name: the line must hold the eight largest, d9 first, and leave
+    // out d0 and d1, which a name-ordered list would put first.
+    for (let i = 0; i < 10; i++) await Deno.mkdir(join(root, `d${i}`));
     const config = await writeConfig(root, {
       host_cache_reclaim_roots: [root],
     });
     const result = await runReclaimHostCaches(
       { config, "free-kb": "0", "floor-kb": String(100 * KIB_PER_GIB) },
       commandDeps({
-        dirSizeBytes: async (path) => path.endsWith("bigsrc") ? 5 * GIB : GIB,
+        dirSizeBytes: async (path) => {
+          const index = /\/d(\d)$/.exec(path)?.[1];
+          return index === undefined ? GIB / 2 : (Number(index) + 1) * GIB;
+        },
       }),
     );
     assertEquals(result.success, true, "still short is a successful run");
@@ -965,7 +1242,13 @@ Deno.test("command: still short after reclaim adds the largest host directories 
       largest,
       `${HOST_CACHE_RECLAIM_TAG} largest host directories: `,
     );
-    assertStringIncludes(largest, "bigsrc (5.0 GB)");
+    const named = largest.split("largest host directories: ")[1]!.split("; ");
+    assertEquals(
+      named.map((entry) => entry.slice(root.length + 1, root.length + 3)),
+      ["d9", "d8", "d7", "d6", "d5", "d4", "d3", "d2"],
+    );
+    assertStringIncludes(named[0]!, "(10.0 GB)");
+    assertEquals(largest.includes(join(root, "d1")), false);
   });
 });
 
@@ -1040,6 +1323,93 @@ Deno.test("command: a missing --config is refused", async () => {
   );
   assertEquals(result.success, false);
   assertStringIncludes(result.message, "--config");
+});
+
+/** A checkout with an enabled `.config.json`, and a moved config beside it. */
+async function movedConfigFixture(
+  root: string,
+  moved: Record<string, unknown>,
+): Promise<{ baseDir: string; movedPath: string; cache: string }> {
+  const baseDir = join(root, "checkout");
+  await Deno.mkdir(baseDir);
+  await writeConfig(baseDir, { host_cache_reclaim_enabled: true });
+  const movedDir = join(root, "moved");
+  await Deno.mkdir(movedDir);
+  const movedPath = join(movedDir, "config.json");
+  await Deno.writeTextFile(movedPath, JSON.stringify(moved));
+  const cache = await makeCache(root, "stale-target", { ageMs: STALE_MS });
+  return { baseDir, movedPath, cache };
+}
+
+for (const variable of ["CONFIG_FILE", "CONFIG_PATH"]) {
+  Deno.test(`command: a config moved with ${variable} is the one read, so a disabled reclaim removes nothing (Issue #750)`, async () => {
+    await withRoot(async (root) => {
+      const { baseDir, movedPath, cache } = await movedConfigFixture(root, {
+        host_cache_reclaim_enabled: false,
+      });
+      const args = {
+        "base-dir": baseDir,
+        "free-kb": "0",
+        "floor-kb": String(KIB_PER_GIB),
+      };
+      const deps = (path: string): ReclaimHostCachesDeps => ({
+        ...commandDeps(),
+        env: (name) => name === variable ? path : undefined,
+        defaultRoots: [root],
+      });
+
+      const result = await runReclaimHostCaches(args, deps(movedPath));
+      assertEquals(result.success, true);
+      assertStringIncludes(result.message, "disabled by");
+      assertStringIncludes(result.message, movedPath);
+      assertEquals(await exists(cache), true, "nothing is removed");
+
+      // Positive control: with no variable the checkout's enabled file is
+      // read, and the same cache is removed, so the disabled file above is
+      // what stopped it.
+      const control = await runReclaimHostCaches(args, {
+        ...commandDeps(),
+        defaultRoots: [root],
+      });
+      assertEquals(control.success, true);
+      assertEquals(await exists(cache), false, "the checkout's config applies");
+    });
+  });
+}
+
+Deno.test("command: --base-dir resolves a relative CONFIG_FILE against the checkout, and two different files are refused (Issue #750)", async () => {
+  await withRoot(async (root) => {
+    const { baseDir, cache } = await movedConfigFixture(root, {
+      host_cache_reclaim_enabled: false,
+    });
+    const args = {
+      "base-dir": baseDir,
+      "free-kb": "0",
+      "floor-kb": String(KIB_PER_GIB),
+    };
+    const relative = await runReclaimHostCaches(args, {
+      ...commandDeps(),
+      env: (name) =>
+        name === "CONFIG_FILE" ? "../moved/config.json" : undefined,
+      defaultRoots: [root],
+    });
+    assertStringIncludes(relative.message, "disabled by");
+    assertEquals(await exists(cache), true);
+
+    const split = await runReclaimHostCaches(args, {
+      ...commandDeps(),
+      env: (name) =>
+        name === "CONFIG_FILE"
+          ? join(root, "moved", "config.json")
+          : name === "CONFIG_PATH"
+          ? join(baseDir, ".config.json")
+          : undefined,
+      defaultRoots: [root],
+    });
+    assertEquals(split.success, false);
+    assertStringIncludes(split.message, "CONFIG_FILE and CONFIG_PATH");
+    assertEquals(await exists(cache), true, "a split config removes nothing");
+  });
 });
 
 Deno.test("command: execute delegates to runReclaimHostCaches", async () => {

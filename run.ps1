@@ -1398,7 +1398,7 @@ try {
             "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
             "--allow-env", "--allow-read", "--allow-write", "--allow-run",
             "$BaseDir/worker/deno/mod.ts", "reclaim-host-caches",
-            "--config", "$BaseDir/.config.json",
+            "--base-dir", $BaseDir,
             "--free-kb", "$cacheFreeKb",
             "--floor-kb", "$cacheFloorKb",
             "--protect", $BaseDir

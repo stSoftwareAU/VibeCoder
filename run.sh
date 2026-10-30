@@ -1310,7 +1310,7 @@ reclaim_host_caches() {
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-write --allow-run \
     "${BASE_DIR}/worker/deno/mod.ts" reclaim-host-caches \
-    --config "${BASE_DIR}/.config.json" \
+    --base-dir "${BASE_DIR}" \
     --free-kb "${avail_kb}" \
     --floor-kb "${floor_kb}" \
     --protect "${BASE_DIR}" </dev/null)" || status=$?

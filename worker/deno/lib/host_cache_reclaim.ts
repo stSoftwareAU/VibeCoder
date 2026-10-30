@@ -38,6 +38,7 @@ import {
   type LauncherPathStyle,
   separatorFor,
 } from "./host_path_style.ts";
+import { resolveOwnUid } from "./private_cache_dir.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
 /** The file a cache directory carries, per the CACHEDIR.TAG specification. */
@@ -96,6 +97,10 @@ export interface FsStat {
   isFile: boolean;
   /** Last modification, ms since the epoch; null when the platform has none. */
   mtimeMs: number | null;
+  /** Owning user id; null where the platform has none (Windows). */
+  uid: number | null;
+  /** Permission bits (`st_mode`); null where the platform has none. */
+  mode: number | null;
 }
 
 /** What a `CACHEDIR.TAG` path holds. */
@@ -129,6 +134,13 @@ export interface HostCacheReclaimDeps {
   /** Removes a directory tree without following its symlinks. */
   remove(path: string): Promise<void>;
   fs: HostCacheFs;
+  /**
+   * The uid of the account running the reclaim. A candidate is removed only
+   * when it and every directory between its root and it belong to this uid
+   * (#4500 review). Null when it cannot be determined: on Windows the
+   * ownership check does not apply, elsewhere every removal is declined.
+   */
+  ownerUid: number | null;
   /** The host's path spelling, for joins and boundary checks. */
   style: LauncherPathStyle;
 }
@@ -247,6 +259,8 @@ export const realHostCacheFs: HostCacheFs = {
         isDirectory: info.isDirectory,
         isFile: info.isFile,
         mtimeMs: info.mtime?.getTime() ?? null,
+        uid: info.uid,
+        mode: info.mode,
       };
     } catch (error) {
       if (isNotFound(error)) return null;
@@ -452,6 +466,7 @@ export function defaultHostCacheReclaimDeps(): HostCacheReclaimDeps {
     dirSizeBytes: defaultDirSizeBytes,
     remove: (path) => Deno.remove(path, { recursive: true }),
     fs: realHostCacheFs,
+    ownerUid: resolveOwnUid(),
     style,
   };
 }
@@ -555,7 +570,7 @@ async function collectCandidates(
   maxDepth: number,
   deps: HostCacheReclaimDeps,
   skipped: HostCacheSkip[],
-  found: Set<string>,
+  found: Map<string, string>,
 ): Promise<void> {
   const style = deps.style;
 
@@ -583,7 +598,12 @@ async function collectCandidates(
       }
       if (tag.state === "file") {
         if (firstLine(tag.text) === CACHEDIR_TAG_SIGNATURE) {
-          found.add(child);
+          // A candidate reached from two roots keeps the shallower one, so
+          // the ownership check at removal covers more of its path.
+          const known = found.get(child);
+          if (known === undefined || root.length < known.length) {
+            found.set(child, root);
+          }
         } else {
           skipped.push({
             path: child,
@@ -698,12 +718,14 @@ async function resolveProtect(
 /** A candidate that passed every guard. */
 interface EligibleCache {
   path: string;
+  /** The real root the walk found it under. */
+  root: string;
   touchedMs: number;
   idleMs: number;
 }
 
 type Judgement =
-  | ({ kind: "eligible" } & Omit<EligibleCache, "path">)
+  | ({ kind: "eligible" } & Omit<EligibleCache, "path" | "root">)
   | { kind: "skip"; reason: string };
 
 /**
@@ -845,7 +867,7 @@ export async function reclaimHostCaches(
   skipped.push(...roots.skipped);
   const protect = await resolveProtect(options.protect, deps.fs);
 
-  const found = new Set<string>();
+  const found = new Map<string, string>();
   for (const root of roots.paths) {
     await collectCandidates(
       root,
@@ -857,7 +879,7 @@ export async function reclaimHostCaches(
   }
 
   const eligible: EligibleCache[] = [];
-  for (const path of found) {
+  for (const [path, root] of found) {
     const judgement = await judgeCandidate(
       path,
       options,
@@ -871,6 +893,7 @@ export async function reclaimHostCaches(
     } else {
       eligible.push({
         path,
+        root,
         touchedMs: judgement.touchedMs,
         idleMs: judgement.idleMs,
       });
@@ -886,6 +909,13 @@ export async function reclaimHostCaches(
   for (const cache of eligible) {
     if (freeBytes >= targetBytes) break;
     const bytes = await safeDirSize(deps, cache.path);
+    // The path is resolved afresh by the kernel at removal, long after the
+    // walk and a possible minute of `du`, so it is vouched for again now.
+    const refusal = await removalRefusal(cache, deps);
+    if (refusal !== null) {
+      skipped.push({ path: cache.path, reason: refusal });
+      continue;
+    }
     try {
       await deps.remove(cache.path);
     } catch (error) {
@@ -906,6 +936,78 @@ export async function reclaimHostCaches(
     targetBytes,
     shortBytes: Math.max(0, options.floorBytes - freeBytes),
   };
+}
+
+/** The parent of `path`, or `path` itself at the top. */
+function parentPath(path: string, style: LauncherPathStyle): string {
+  const sep = separatorFor(style);
+  const at = path.lastIndexOf(sep);
+  return at <= 0 ? path : path.slice(0, at);
+}
+
+/** Why one directory on a candidate's path may not be trusted; null if it may. */
+function untrustedDirectory(
+  dir: string,
+  stat: FsStat | null,
+  ownerUid: number,
+): string | null {
+  if (stat === null) return `${dir} vanished before it was removed`;
+  if (stat.isSymlink) return `${dir} is a symbolic link`;
+  if (stat.uid !== ownerUid) {
+    return `${dir} is owned by uid ${stat.uid ?? "unknown"}, not the running ` +
+      `user (uid ${ownerUid})`;
+  }
+  if (stat.mode === null || (stat.mode & 0o022) !== 0) {
+    return `${dir} is writable by its group or others, or has no mode to check`;
+  }
+  return null;
+}
+
+/**
+ * Why a candidate may not be removed now; null when it may (#4500 review).
+ *
+ * The roots include world-writable scratch directories, so another account
+ * could swap a directory it owns for a symlink between the walk and the
+ * recursive delete, which would then run outside the root. Two checks close
+ * that. First, the candidate and every directory between its root and it must
+ * belong to the running user and not be writable by group or others, so no
+ * other account can replace a component of the path (the root itself is the
+ * configured boundary and is not judged; the check does not apply on Windows,
+ * which has no uid). Second, the candidate's real path must still be itself.
+ */
+async function removalRefusal(
+  cache: EligibleCache,
+  deps: HostCacheReclaimDeps,
+): Promise<string | null> {
+  try {
+    if (deps.style !== "windows") {
+      if (deps.ownerUid === null) {
+        return "not removed: the running user could not be determined, so " +
+          "the ownership of its path cannot be checked";
+      }
+      for (
+        let dir = cache.path;
+        dir !== cache.root && dirContainsOrEquals(cache.root, dir, deps.style);
+        dir = parentPath(dir, deps.style)
+      ) {
+        const untrusted = untrustedDirectory(
+          dir,
+          await deps.fs.lstat(dir),
+          deps.ownerUid,
+        );
+        if (untrusted !== null) return `not removed: ${untrusted}`;
+      }
+    }
+    const real = await deps.fs.realPath(cache.path);
+    if (real !== cache.path) {
+      return `not removed: it now resolves to ${
+        real ?? "nothing"
+      }, not to itself`;
+    }
+    return null;
+  } catch (error) {
+    return `not removed: its path could not be verified (${errorText(error)})`;
+  }
 }
 
 async function safeDirSize(

@@ -22,6 +22,18 @@ it.
   Deno walk (`walkDirSizeBytes`, no symlinks followed) where `du` cannot run, so
   the Windows `run.ps1` reclaim still stops at floor plus headroom and the
   largest-directories line is size-ordered.
+- Host config and removal safety (PR #4500 review): the launchers pass
+  `--base-dir` and the command resolves the config with `resolveHostConfigPath`
+  (`CONFIG_FILE`, else `CONFIG_PATH`, else `<checkout>/.config.json`), as
+  `container-launch-plan` does, so a moved config's `host_cache_reclaim_*`
+  settings are honoured. A cache is removed only when it and every directory
+  between its root and it are owned by the running user (`resolveOwnUid`, which
+  stats `$HOME` because `Deno.uid()` needs a permission the launchers do not
+  grant) and are not group- or other-writable, and its `realPath` is still
+  itself immediately before the delete; otherwise it is skipped with a reason.
+  The root is the configured boundary and is not judged; Windows, which has no
+  uid, gets only the real-path check. `FsStat` gained `uid` and `mode`, and
+  `HostCacheReclaimDeps` gained `ownerUid`.
 - `worker/deno/lib/config_unknown_keys.ts`: the four `host_cache_reclaim_*` keys
   are known config keys, so setting them no longer prints an "is not recognised
   and will be ignored" warning on every launch.
@@ -50,7 +62,8 @@ it.
   stubbed reclaim left. The per-file wrappers in the run.sh and run.ps1 launcher
   tests are gone, so no suite that uses the shared harness can run the real
   command against the host's `/tmp`.
-- `docs/CONFIGURATION.md`, `docs/CONTAINER.md`: document the new settings.
+- `docs/CONFIGURATION.md`, `docs/CONTAINER.md`: document the new settings, the
+  config file the reclaim reads and the removal checks.
 
 ## Reproduction
 
@@ -80,7 +93,28 @@ the mutation and watching a test go red:
 
 ## Test Plan
 
-- `worker/deno/tests/host_cache_reclaim_test.ts` (57 tests at head, all pass):
+- `worker/deno/tests/host_cache_reclaim_test.ts` (67 tests at head, all pass):
+  - config: with `CONFIG_FILE` or `CONFIG_PATH` naming a moved file that sets
+    `host_cache_reclaim_enabled: false`, nothing is removed, and the same setup
+    without the variable (the checkout's enabled file) removes the cache; a
+    relative `CONFIG_FILE` resolves against `--base-dir`; two different files
+    are refused. The launcher tests (`run_sh_launcher_test.ts`,
+    `run_ps1_launcher_test.ts`) now assert `--base-dir` is the checkout and no
+    `--config` is passed, because the file is resolved in the command, not the
+    launcher; run.sh with `--config "${BASE_DIR}/.config.json"` restored turns
+    the run.sh test red;
+  - removal safety, each red when its check is removed on its own: a foreign
+    uid on an ancestor, on the candidate, or none to read; group- and
+    other-writable bits on an ancestor and on the candidate, and no mode; an
+    unknown running user on POSIX; a moved or vanished real path; a symlink
+    swapped in for an ancestor during the size measurement (the real race, with
+    a same-named directory outside the root left untouched); the world-writable
+    foreign root is not judged (red when the root is included);
+  - size order: `largestHostDirectories` and the du-unavailable walk use sizes
+    that run against name order with more directories than `n`, and the command
+    test has ten directories whose sizes grow with the name and names the
+    eight largest, largest first. Dropping the size term from the comparator
+    turns three tests red.
   - a root reached through a symlink, with a process line naming the cache by
     the alias spelling, keeps the cache (red with the realpath-only guard); a
     positive control removes an unnamed cache through the same alias;
@@ -139,3 +173,18 @@ cannot credit its removal and the largest-directories line shows it as
   224, 405–407 and 433 are killed by new tests in
   `worker/deno/tests/host_cache_reclaim_test.ts`, each re-run red against the
   mutation and green on the head.
+
+## Review fixes (PR #4500, second round)
+
+- Config path: `run.sh` and `run.ps1` pass `--base-dir`; the command resolves
+  the host config like the launch plan. Other launcher-side readers of the
+  config checked: `container-launch-plan`, `log-dir`, `container-restart-backoff`
+  and `worker-checkout-update` already use `resolveHostConfigPath`; the reclaim
+  was the only launcher call pinning `.config.json`.
+- Delete safety: ownership and mode of the candidate and its ancestors, and a
+  real-path check, immediately before each removal (see What changed).
+- Size order: fixtures run against name order. The comparator is unchanged.
+- Not checked: the ownership check on a host whose umask leaves directories
+  group-writable (for example 002) skips every cache with a visible reason
+  rather than removing it; the real tool was not run against a foreign-owned
+  `/tmp` tree, whose ownership is injected in the tests.

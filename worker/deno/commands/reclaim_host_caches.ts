@@ -8,8 +8,15 @@
  *
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run \
- *     mod.ts reclaim-host-caches --config <path> \
+ *     mod.ts reclaim-host-caches --base-dir <checkout> \
  *     --free-kb <n> --floor-kb <n> [--protect <dir>]...
+ *
+ * The settings come from the host's one `.config.json`, resolved from
+ * `--base-dir` and CONFIG_FILE / CONFIG_PATH by `resolveHostConfigPath` exactly
+ * as `container-launch-plan` does (Issue #750), so a host whose configuration
+ * has moved has its `host_cache_reclaim_*` settings honoured. `--config <path>`
+ * names the file directly instead and takes precedence; the launchers do not
+ * pass it.
  *
  * Exit status: 0 whenever the command ran, including when the host is still
  * short afterwards. Non-zero only for bad arguments, an unreadable
@@ -25,6 +32,7 @@
  */
 
 import type { Command, CommandResult } from "../types.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import {
   defaultCacheRoots,
   headroomBytesFor,
@@ -136,7 +144,8 @@ function tagged(lines: string[]): string {
 /**
  * Do the work. Separated so the tests can call it without the registry.
  *
- * @param args - `config`, `free-kb`, `floor-kb`, and repeatable `protect`
+ * @param args - `base-dir` (or `config`), `free-kb`, `floor-kb`, and
+ *   repeatable `protect`
  * @param deps - Injection for tests; production passes nothing
  * @returns The command's result, with the log text as its message
  */
@@ -144,12 +153,22 @@ export async function runReclaimHostCaches(
   args: Record<string, unknown>,
   deps: ReclaimHostCachesDeps = {},
 ): Promise<CommandResult<ReclaimHostCachesData>> {
-  const configPath = optionalString(args["config"]);
+  const env = deps.env ?? ((name: string) => Deno.env.get(name));
+  const baseDir = optionalString(args["base-dir"]);
+  let configPath = optionalString(args["config"]);
   if (!configPath) {
-    return {
-      success: false,
-      message: "reclaim-host-caches requires --config <file>",
-    };
+    if (!baseDir) {
+      return {
+        success: false,
+        message: "reclaim-host-caches requires --base-dir <checkout> " +
+          "(or --config <file>)",
+      };
+    }
+    try {
+      configPath = resolveHostConfigPath({ baseDir, env });
+    } catch (error) {
+      return { success: false, message: (error as Error).message };
+    }
   }
 
   const freeKb = parseKilobytes(args["free-kb"]);
@@ -204,7 +223,6 @@ export async function runReclaimHostCaches(
     };
   }
 
-  const env = deps.env ?? ((name: string) => Deno.env.get(name));
   const style = hostPathStyle();
   const home = deps.homeDir ?? env("HOME") ?? env("USERPROFILE");
   const roots = [

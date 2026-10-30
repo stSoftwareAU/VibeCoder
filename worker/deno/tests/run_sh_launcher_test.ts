@@ -2135,9 +2135,13 @@ Deno.test("run.sh - a host below its floor reclaims its build caches before any 
     assert(args, "a host below its floor must run reclaim-host-caches");
     assertEquals(argAfter(args, "--free-kb"), String(availKb));
     assertEquals(argAfter(args, "--floor-kb"), String(floorKb));
-    assert(
-      argAfter(args, "--config")?.endsWith("/.config.json"),
-      `--config must name the checkout's .config.json, got ${args}`,
+    // The command resolves the host config itself from the checkout, so a
+    // host that moved it with CONFIG_FILE / CONFIG_PATH is honoured (#750).
+    assertEquals(argAfter(args, "--base-dir"), REPO_ROOT);
+    assertEquals(
+      args.includes("--config"),
+      false,
+      `the launcher must not pin the checkout's .config.json, got ${args}`,
     );
     assert(args.includes("--protect"), `--protect missing from ${args}`);
 
