@@ -39,12 +39,14 @@
  *     context can never be written. When nothing matches, no ruleset is
  *     created.
  *   - **Converges additively** (Issue #3656). Updating the worker's own
- *     ruleset sends the union of its current and desired contexts, so a check
- *     someone else added to it survives.
+ *     ruleset writes the union of its desired contexts and the contexts
+ *     already live in it, each live check keeping its `integration_id`
+ *     (Issue #4487), so a check someone else added to it survives.
  *   - **Never weakens the ruleset it updates** (Issue #1290). The update is a
  *     full-document PUT, so the live ruleset is read first and every rule the
  *     worker does not model — `pull_request`, `non_fast_forward`, `deletion`,
- *     `required_signatures`, bypass actors — is carried through unchanged. A
+ *     `required_signatures`, bypass actors — is carried through unchanged. The
+ *     `required_status_checks` rule is the same union (Issue #4487). A
  *     ruleset whose current rules cannot be read fails the sync loudly rather
  *     than being overwritten with a body built from status checks alone.
  *   - **Merge queue where GitHub allows one** (Issue #4424). Where the

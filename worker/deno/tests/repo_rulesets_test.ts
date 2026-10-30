@@ -548,6 +548,167 @@ Deno.test("repo_rulesets - mergeQueueParametersFromDetail rejects a malformed me
   }
 });
 
+// ---------------------------------------------------------------------------
+// Live required checks an owner added (Issue #4487)
+// ---------------------------------------------------------------------------
+
+/** A live ruleset whose required checks include checks the worker does not name. */
+const LIVE_OWNER_CHECKS: RulesetDetail = {
+  id: 44,
+  name: "Vibe Coder default branch",
+  rules: [
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: true,
+        required_status_checks: [
+          { context: "gate", integration_id: 15368 },
+          { context: "secret-scan", integration_id: 111 },
+          { context: "static-analysis" },
+        ],
+      },
+    },
+  ],
+};
+
+Deno.test("repo_rulesets - the update body keeps the live checks the worker does not name (Issue #4487)", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    LIVE_OWNER_CHECKS,
+  );
+
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "gate", integration_id: 15368 },
+    { context: "secret-scan", integration_id: 111 },
+    { context: "static-analysis" },
+  ]);
+  // A check with no pinned app must not gain an integration_id key at all.
+  const staticAnalysis = checks.parameters.required_status_checks.find((
+    check,
+  ) => check.context === "static-analysis");
+  assert(staticAnalysis);
+  assertFalse("integration_id" in staticAnalysis);
+});
+
+Deno.test("repo_rulesets - a new worker context is written without an integration_id beside the live checks (Issue #4487)", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate", "markdownlint"],
+    LIVE_OWNER_CHECKS,
+  );
+
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  // Worker contexts first, in order; live-only checks follow in live order.
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "gate", integration_id: 15368 },
+    { context: "markdownlint" },
+    { context: "secret-scan", integration_id: 111 },
+    { context: "static-analysis" },
+  ]);
+});
+
+Deno.test("repo_rulesets - the update body keeps strict on when there is no merge queue (Issue #4487)", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    LIVE_OWNER_CHECKS,
+  );
+
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
+});
+
+Deno.test("repo_rulesets - a queue turns strict off and still keeps every live check (Issue #4487)", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    LIVE_OWNER_CHECKS,
+    QUEUE,
+  );
+
+  assertEquals(body.rules.map((rule) => rule.type), [
+    "required_status_checks",
+    "merge_queue",
+  ]);
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, false);
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "gate", integration_id: 15368 },
+    { context: "secret-scan", integration_id: 111 },
+    { context: "static-analysis" },
+  ]);
+});
+
+Deno.test("repo_rulesets - the update body writes no bypass actors when the live ruleset has none (Issue #4487)", () => {
+  const empty: RulesetDetail = { ...LIVE_OWNER_CHECKS, bypass_actors: [] };
+  const body = buildDefaultBranchRulesetUpdateBody("Vibe", ["gate"], empty);
+  assertFalse("bypass_actors" in body);
+
+  // Positive control: the same input with one live actor does carry it.
+  const actor = {
+    actor_type: "OrganizationAdmin" as const,
+    actor_id: 1,
+    bypass_mode: "always" as const,
+  };
+  const withActor: RulesetDetail = {
+    ...LIVE_OWNER_CHECKS,
+    bypass_actors: [actor],
+  };
+  const carried = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    withActor,
+  );
+  assertEquals(carried.bypass_actors, [actor]);
+});
+
+Deno.test("repo_rulesets - the update body drops malformed live checks rather than writing them (Issue #4487)", () => {
+  const malformed: RulesetDetail = {
+    id: 45,
+    name: "Vibe",
+    rules: [
+      {
+        type: "required_status_checks",
+        parameters: {
+          strict_required_status_checks_policy: true,
+          required_status_checks: [
+            { context: 7, integration_id: 99 },
+            { context: "" },
+            null,
+            "bare-string",
+            { context: "float-id", integration_id: 2.5 },
+            { context: "string-id", integration_id: "15368" },
+            { context: "kept-check", integration_id: 222 },
+          ],
+        },
+      },
+    ],
+  };
+
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["worker-check"],
+    malformed,
+  );
+
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  // Non-string or empty contexts are gone; a non-integer id is stripped, not
+  // written; a well-formed live check still comes through.
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "worker-check" },
+    { context: "float-id" },
+    { context: "string-id" },
+    { context: "kept-check", integration_id: 222 },
+  ]);
+});
+
 Deno.test("repo_rulesets - createRulesetReturningId returns the id GitHub assigned", async () => {
   const calls: string[][] = [];
   const stdins: Array<string | undefined> = [];

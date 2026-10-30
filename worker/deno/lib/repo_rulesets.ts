@@ -462,13 +462,85 @@ export function mergeQueueParametersFromDetail(
 }
 
 /**
+ * Required checks the live ruleset already enforces, across every
+ * `required_status_checks` rule it carries (Issue #4487).
+ *
+ * Entries that are not check-shaped are dropped: a check needs a non-empty
+ * string `context`, and its `integration_id` is kept only when it is an
+ * integer. The first entry for a context wins.
+ */
+function liveRequiredChecks(
+  existing: RulesetDetail,
+): RequiredStatusCheckBody[] {
+  const rules = Array.isArray(existing.rules) ? existing.rules : [];
+  const checks = new Map<string, RequiredStatusCheckBody>();
+  for (const rule of rules) {
+    if (rule === null || typeof rule !== "object") continue;
+    if (rule.type !== "required_status_checks") continue;
+    const parameters: unknown = rule.parameters;
+    if (parameters === null || typeof parameters !== "object") continue;
+    const entries: unknown =
+      (parameters as Record<string, unknown>).required_status_checks;
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries as unknown[]) {
+      if (entry === null || typeof entry !== "object") continue;
+      const { context, integration_id: integrationId } = entry as Record<
+        string,
+        unknown
+      >;
+      if (typeof context !== "string" || context.length === 0) continue;
+      if (checks.has(context)) continue;
+      checks.set(
+        context,
+        typeof integrationId === "number" && Number.isInteger(integrationId)
+          ? { context, integration_id: integrationId }
+          : { context },
+      );
+    }
+  }
+  return [...checks.values()];
+}
+
+/**
+ * The checks the status-checks rule writes: the worker's `contexts` in order,
+ * each carrying the `integration_id` of the live check with the same context,
+ * followed by the live-only checks in live order (Issue #4487).
+ */
+function unionRequiredChecks(
+  contexts: string[],
+  live: RequiredStatusCheckBody[],
+): RequiredStatusCheckBody[] {
+  const liveByContext = new Map<string, RequiredStatusCheckBody>();
+  for (const check of live) liveByContext.set(check.context, check);
+  const written = new Map<string, RequiredStatusCheckBody>();
+  for (const context of contexts) {
+    if (written.has(context)) continue;
+    const integrationId = liveByContext.get(context)?.integration_id;
+    written.set(
+      context,
+      integrationId === undefined
+        ? { context }
+        : { context, integration_id: integrationId },
+    );
+  }
+  for (const check of live) {
+    if (!written.has(check.context)) written.set(check.context, check);
+  }
+  return [...written.values()];
+}
+
+/**
  * Build the **update** body for the worker's default-branch ruleset.
  *
  * The update is a full-document PUT, so a body rebuilt from status checks
  * alone silently discards every other rule an admin added — required reviews,
  * force-push protection, deletion protection, bypass actors (Issue #1290).
- * This replaces only the `required_status_checks` rule and carries every other
- * rule and the bypass actors of the live ruleset through unchanged.
+ * This rewrites only the `required_status_checks` rule, as the union of
+ * `contexts` and the checks the live ruleset already requires, each live check
+ * keeping its `integration_id`. An owner-added check is therefore never dropped
+ * by a reconcile; removing a check takes an explicit configuration change.
+ * Every other rule and the bypass actors of the live ruleset are carried
+ * through unchanged.
  *
  * The live `merge_queue` rule, if any, is never carried through: it is
  * replaced by a rule built from `mergeQueue` when one is given, and dropped
@@ -481,12 +553,24 @@ export function buildDefaultBranchRulesetUpdateBody(
   mergeQueue?: MergeQueueParameters,
 ): RulesetBody {
   const base = buildDefaultBranchRulesetBody(name, contexts, mergeQueue);
+  const live = liveRequiredChecks(existing);
+  const rules: RulesetBody["rules"] = base.rules.map((rule) =>
+    isRequiredStatusChecksRule(rule)
+      ? {
+        ...rule,
+        parameters: {
+          ...rule.parameters,
+          required_status_checks: unionRequiredChecks(contexts, live),
+        },
+      }
+      : rule
+  );
   const bypassActors = Array.isArray(existing.bypass_actors)
     ? existing.bypass_actors
     : [];
   return {
     ...base,
-    rules: [...preservedRulesFromDetail(existing), ...base.rules],
+    rules: [...preservedRulesFromDetail(existing), ...rules],
     ...(bypassActors.length > 0 ? { bypass_actors: bypassActors } : {}),
   };
 }
