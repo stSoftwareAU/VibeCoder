@@ -1121,12 +1121,12 @@ carries none of them. Each probe bills the handful of input tokens in a
 one-character prompt and generates nothing.
 
 Anthropic reports two windows, a five-hour and a seven-day one, and names one
-of them representative. The worker uses **both**: the five-hour window is a
-*gate*, and among passing credentials with weekly telemetry, the largest
-remaining seven-day share wins. A token holding 90% of its week is chosen
-before one holding 20%, even when the latter resets sooner. A weekly window at
-zero with a future reset is exhausted; this exhaustion check is separate from
-the removed 10% low-share band.
+of them representative. The worker uses **both**, and not as one combined
+score: the five-hour window is a *gate*, and the seven-day window sets the
+*rate*. The point is that budget which resets before it is spent is budget
+thrown away — a token holding 20% of its week that resets in six hours is
+worth far more right now than one holding 90% that resets in six and a half
+days, so the first is used first. Use it or lose it.
 
 The candidates are ordered:
 
@@ -1146,16 +1146,33 @@ The candidates are ordered:
    five-hour window, because *worth restarting for* and *worth switching to*
    are one question. A response that reported
    **no** five-hour window has no gate to fail, so it passes.
-3. **Weekly telemetry takes precedence** over a reported non-weekly fallback
-   window among passing credentials (Issue #4503). Credentials with weekly
-   telemetry rank by largest remaining share; equal shares use the soonest
-   weekly reset, then discovery order. A weekly window whose reset has elapsed
-   counts as full. A reported non-weekly window remains a fallback and ranks
-   only against other credentials without weekly telemetry.
-4. **No Claude 10% low-share band.** Remaining shares are compared directly;
-   the former per-hour score and 10% floor do not apply to Claude. A week at
-   zero with a future reset is still exhausted and ranks behind usable passing
-   credentials.
+3. **The highest remaining budget per hour wins**, measured on the seven-day
+   window: its remaining share divided by the hours until it resets. Among
+   tokens that passed the five-hour gate, within the same floor band of rule 4
+   (at or above the 10% floor, or under it), a token with a seven-day window
+   ranks ahead of one without (Issue #4503, restoring #1731), because a rate on
+   a five-hour window is not comparable with a seven-day rate. The floor band
+   is decided first, so a gate-passing weekless token above the floor still
+   beats a weekly token under it. Tokens that failed the gate
+   are not reordered by this: they are still ordered by soonest five-hour
+   reset (rule 5), whatever their seven-day telemetry. A response that reported no seven-day
+   window is never dropped and is not a gate: among gate-passing tokens it is
+   ordered only among the tokens that also lack one, on the window it did
+   report; as a gate failure it is ordered by five-hour reset like any other. Comparing
+   shares per hour rather than absolute totals is what makes subscriptions
+   whose windows reset on different days at different times comparable at all.
+   A window whose reset instant has already passed counts as **full**: the
+   figure describes the window that was current when it was measured, and once
+   that instant is behind us the window has rolled over. Such a window is
+   scored over its nominal length — five hours, or seven days — rather than
+   over a reset that is already behind it.
+4. **A floor under the rate.** A token with less than **10%** of its seven-day
+   window left ranks behind every passing token above that floor, whatever its
+   rate: a nearly spent week divided by an imminent reset scores highly and
+   would stall a run almost immediately. Those tokens are ordered among
+   themselves by seven-day telemetry first (a token with a seven-day window
+   ahead of one without) and by rate only after that, and still rank ahead of
+   every gate failure.
 5. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
    so when nothing can be spent now the token that refills first is the one
    chosen.
