@@ -85,11 +85,12 @@ the mutation and watching a test go red:
 
 - line 81 (`execute` returns `undefined`) —
   `command: execute delegates to runReclaimHostCaches`
-- the `value >= 0` check in `reclaim_host_caches.ts` (dropped) — `command: garbage numeric flags are refused`
-  with `free-kb: -1` and `floor-kb: -1`
-- the `typeof value === "string"` check in `reclaim_host_caches.ts` (dropped) — the same test with a missing
-  `free-kb`, `free-kb: true` and `floor-kb: null`, which would otherwise throw
-  on `.trim()` instead of being refused
+- the `value >= 0` check in `reclaim_host_caches.ts` (dropped) —
+  `command: garbage numeric flags are refused` with `free-kb: -1` and
+  `floor-kb: -1`
+- the `typeof value === "string"` check in `reclaim_host_caches.ts` (dropped) —
+  the same test with a missing `free-kb`, `free-kb: true` and `floor-kb: null`,
+  which would otherwise throw on `.trim()` instead of being refused
 
 ## Test Plan
 
@@ -103,18 +104,18 @@ the mutation and watching a test go red:
     `--config` is passed, because the file is resolved in the command, not the
     launcher; run.sh with `--config "${BASE_DIR}/.config.json"` restored turns
     the run.sh test red;
-  - removal safety, each red when its check is removed on its own: a foreign
-    uid on an ancestor, on the candidate, or none to read; group- and
-    other-writable bits on an ancestor and on the candidate, and no mode; an
-    unknown running user on POSIX; a moved or vanished real path; a symlink
-    swapped in for an ancestor during the size measurement (the real race, with
-    a same-named directory outside the root left untouched); the world-writable
-    foreign root is not judged (red when the root is included);
+  - removal safety, each red when its check is removed on its own: a foreign uid
+    on an ancestor, on the candidate, or none to read; group- and other-writable
+    bits on an ancestor and on the candidate, and no mode; an unknown running
+    user on POSIX; a moved or vanished real path; a symlink swapped in for an
+    ancestor during the size measurement (the real race, with a same-named
+    directory outside the root left untouched); the world-writable foreign root
+    is not judged (red when the root is included);
   - size order: `largestHostDirectories` and the du-unavailable walk use sizes
     that run against name order with more directories than `n`, and the command
-    test has ten directories whose sizes grow with the name and names the
-    eight largest, largest first. Dropping the size term from the comparator
-    turns three tests red.
+    test has ten directories whose sizes grow with the name and names the eight
+    largest, largest first. Dropping the size term from the comparator turns
+    three tests red.
   - a root reached through a symlink, with a process line naming the cache by
     the alias spelling, keeps the cache (red with the realpath-only guard); a
     positive control removes an unnamed cache through the same alias;
@@ -169,8 +170,8 @@ cannot credit its removal and the largest-directories line shows it as
 - `worker/deno/lib/host_cache_reclaim.ts`, `walkDirSizeBytes` — dropped operand
   `!info.isSymlink`: exempt (untestable): equivalent mutant. `Deno.lstat` never
   follows a link, so an entry that is a symlink reports `isDirectory: false` and
-  the first operand already excludes it. The other nine mutants listed for the tag-prefix
-  read, the size walk and the `du` figure are killed by new tests in
+  the first operand already excludes it. The other nine mutants listed for the
+  tag-prefix read, the size walk and the `du` figure are killed by new tests in
   `worker/deno/tests/host_cache_reclaim_test.ts`, each re-run red against the
   mutation and green on the head.
 
@@ -178,9 +179,10 @@ cannot credit its removal and the largest-directories line shows it as
 
 - Config path: `run.sh` and `run.ps1` pass `--base-dir`; the command resolves
   the host config like the launch plan. Other launcher-side readers of the
-  config checked: `container-launch-plan`, `log-dir`, `container-restart-backoff`
-  and `worker-checkout-update` already use `resolveHostConfigPath`; the reclaim
-  was the only launcher call pinning `.config.json`.
+  config checked: `container-launch-plan`, `log-dir`,
+  `container-restart-backoff` and `worker-checkout-update` already use
+  `resolveHostConfigPath`; the reclaim was the only launcher call pinning
+  `.config.json`.
 - Delete safety: ownership and mode of the candidate and its ancestors, and a
   real-path check, immediately before each removal (see What changed).
 - Size order: fixtures run against name order. The comparator is unchanged.
@@ -195,7 +197,8 @@ cannot credit its removal and the largest-directories line shows it as
   `fs: the real lstat reports the permission bits and the owner of a directory`
   (re-run with `--no-check`, since the mutant is also a type error).
 - `host_cache_reclaim.ts` operand `root.length < known.length` (replaced with
-  false) — killed by `removal: a candidate reached from two roots is judged
+  false) — killed by
+  `removal: a candidate reached from two roots is judged
   from the shallower root, whichever root is listed first`.
 - Both re-run red against the mutation and green on the head
   (`host_cache_reclaim_test.ts`, 68 tests at head).
