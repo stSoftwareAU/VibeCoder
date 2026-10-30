@@ -311,10 +311,10 @@ function rankingView(
     resolveWindow(window, now)
   );
   const fiveHour = windows.find((w) => w.window === "five_hour") ?? null;
-  // The ranking is on the seven-day window; a response that did not report
-  // one is ranked on the window it did report rather than dropped.
+  // Rank on the seven-day window, falling back to the first reported window.
+  // reportedWindows supplies a headline window when the array is empty.
   const rankWindow = windows.find((w) => w.window === "seven_day") ??
-    windows[0] ?? null;
+    windows[0]!;
   return {
     label: budget.label,
     index,
@@ -324,14 +324,14 @@ function rankingView(
     hasSevenDayTelemetry: windows.some((window) =>
       window.window === "seven_day"
     ),
-    sevenDaySpent: rankWindow?.window === "seven_day" &&
+    sevenDaySpent: rankWindow.window === "seven_day" &&
       rankWindow.remainingFraction === 0 && !rankWindow.elapsed,
     // A response carrying no five-hour window has no gate to fail.
     passesFiveHourGate: fiveHour === null ||
       1 - fiveHour.remainingFraction < CLAUDE_FIVE_HOUR_GATE_MAX_USED,
-    remainingFraction: rankWindow?.remainingFraction ?? null,
-    resetAt: rankWindow?.resetAt ?? null,
-    windowElapsed: rankWindow?.elapsed ?? false,
+    remainingFraction: rankWindow.remainingFraction,
+    resetAt: rankWindow.resetAt,
+    windowElapsed: rankWindow.elapsed,
   };
 }
 

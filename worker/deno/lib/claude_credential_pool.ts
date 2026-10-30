@@ -372,11 +372,12 @@ export function createClaudeCredentialPool(
       // Nothing to choose between: no probe, no log, no change from today.
       if (pool.length < 2) return null;
       const ranking = await rankPool(pool, now);
-      const winner = ranking.winner;
+      // Ranking preserves every member of this non-empty pool.
+      const winner = ranking.winner!;
       // The five-hour gate decides whether a window can run now. A spent
       // seven-day window is a separate exhaustion check.
       if (
-        winner === null || !winner.passesFiveHourGate || winner.sevenDaySpent
+        !winner.passesFiveHourGate || winner.sevenDaySpent
       ) return null;
       return pool[winner.index] ?? null;
     },

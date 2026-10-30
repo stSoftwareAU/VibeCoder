@@ -142,12 +142,10 @@ export async function poolHasAnotherTokenWithBudget(
 
   for (const { label, budget } of probes) {
     if (!budget.known) continue;
-    const windows = budget.windows.length > 0 ? budget.windows : [{
-      window: budget.window,
-      remainingFraction: budget.remainingFraction,
-      resetAt: budget.resetAt,
-    }];
-    const sevenDay = windows.find((window) => window.window === "seven_day");
+    // A successful probe always reports at least one parsed window.
+    const sevenDay = budget.windows.find((window) =>
+      window.window === "seven_day"
+    );
     if (
       sevenDay !== undefined && sevenDay.remainingFraction <= 0 &&
       sevenDay.resetAt > Date.now()

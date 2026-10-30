@@ -293,6 +293,43 @@ Deno.test("poolHasAnotherTokenWithBudget - a spent week with fresh five-hour cap
   );
 });
 
+Deno.test("poolHasAnotherTokenWithBudget - a positive weekly share before reset is worth restarting for", async () => {
+  const future = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+  const probe = fetchWindows({
+    "token-provider-2": { fiveHour: 0.1, sevenDay: 0.9 },
+  }, { fiveHour: future, sevenDay: future });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: probe },
+    ),
+    true,
+  );
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - an absent weekly reading does not exhaust a usable five-hour window", async () => {
+  const future = Math.floor(Date.now() / 1000) + 60 * 60;
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      {
+        fetchFn: () =>
+          Promise.resolve(
+            new Response("{}", {
+              headers: {
+                "anthropic-ratelimit-unified-5h-utilization": "0.1",
+                "anthropic-ratelimit-unified-5h-reset": String(future),
+              },
+            }),
+          ),
+      },
+    ),
+    true,
+  );
+});
+
 Deno.test("poolHasAnotherTokenWithBudget - exactly at the floor is not worth restarting for (Issue #1668)", async () => {
   // The gate's own boundary: at exactly 80% used the token fails it, so the
   // restart check must refuse the same token rather than going back for it.

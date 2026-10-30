@@ -491,6 +491,65 @@ Deno.test("ranking names weekly exhaustion separately from the removed low-share
   assertEquals(ranking.reason, "seven-day-spent-soonest-reset");
 });
 
+Deno.test("ranking orders spent weeks by reset, then discovery order", () => {
+  const ranking = rankClaudeTokenBudgets([
+    known("later", 0, NOW + 72 * HOUR, "seven_day"),
+    known("soon-first", 0, NOW + 24 * HOUR, "seven_day"),
+    known("soon-second", 0, NOW + 24 * HOUR, "seven_day"),
+  ], NOW);
+  assertEquals(
+    ranking.ranked.map((candidate) => candidate.label),
+    ["soon-first", "soon-second", "later"],
+  );
+  assertEquals(ranking.reason, "seven-day-spent-soonest-reset");
+});
+
+Deno.test("ranking distinguishes equal shares across gate bands in the selection reason", () => {
+  const reset = NOW + 24 * HOUR;
+  const ranking = rankClaudeTokenBudgets([
+    dual("failed", [fiveHour(0.1, NOW + HOUR), sevenDay(0.5, reset)]),
+    dual("passing", [fiveHour(0.9, NOW + HOUR), sevenDay(0.5, reset)]),
+  ], NOW);
+  assertEquals(ranking.winner?.label, "passing");
+  assertEquals(ranking.reason, "most-seven-day-remaining");
+  assertStringIncludes(
+    formatClaudeTokenSelectionLog(ranking).at(-1) ?? "",
+    "selected passing (#2) of 2: most-seven-day-remaining",
+  );
+});
+
+Deno.test("ranking distinguishes equal shares across telemetry types in the selection reason", () => {
+  const reset = NOW + 24 * HOUR;
+  const ranking = rankClaudeTokenBudgets([
+    known("weekless", 0.5, reset),
+    known("weekly", 0.5, reset, "seven_day"),
+  ], NOW);
+  assertEquals(ranking.winner?.label, "weekly");
+  assertEquals(ranking.reason, "most-seven-day-remaining");
+  assertStringIncludes(
+    formatClaudeTokenSelectionLog(ranking).at(-1) ?? "",
+    "selected weekly (#2) of 2: most-seven-day-remaining",
+  );
+});
+
+Deno.test("ranking returns an unknown reading without inventing a rank window or weekly exhaustion", () => {
+  const budget = unknown("unmeasured", "timeout");
+  const ranking = rankClaudeTokenBudgets([budget], NOW);
+  assertEquals(ranking.winner, {
+    label: "unmeasured",
+    index: 0,
+    budget,
+    fiveHour: null,
+    rankWindow: null,
+    hasSevenDayTelemetry: false,
+    sevenDaySpent: false,
+    passesFiveHourGate: false,
+    remainingFraction: null,
+    resetAt: null,
+    windowElapsed: false,
+  });
+});
+
 Deno.test("ranking orders two nearly spent weeks by share then soonest reset, still ahead of a gate failure (Issue #4504)", () => {
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
