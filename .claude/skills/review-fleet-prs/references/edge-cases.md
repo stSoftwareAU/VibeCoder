@@ -47,17 +47,21 @@ PRs continue. A persistence failure after an API request still fails loud.
 
 ## Version-only re-bumps
 
-The own-diff comparison skips a sent-back PR as `awaiting-fix` when its
-patches still match after hunk-position normalisation. It also accepts a
-differing modified-file patch when both versions of that patch are one
-complete hunk replacing one version line with a higher version. The line may
-be a bare version, a JSON `"version": "..."` key (with an optional trailing
-comma), or a TOML `version = "..."` key. The hunk may include unchanged context,
-but its declared line counts must match and it must contain exactly one removed
-line immediately followed by one added line. The two lines must be identical
-apart from the version token, including spacing and punctuation. This covers a
-workflow bump committed separately or in a base-merge resolution. Every other
-file must still match under the existing comparison rules.
+The own-diff comparison skips a sent-back PR as `awaiting-fix` when, in each
+file, the added and removed lines still match: the same number of hunks, in
+the same order. Hunk headers and unchanged context lines are ignored, so a
+base merge that only moves the context around a CHANGELOG entry still awaits
+the fix. The version exception then applies when the changed lines differ
+only by a strict version increment: both versions of that modified-file patch
+are one complete hunk replacing one version line with a higher version. The
+line may be a bare version, a JSON `"version": "..."` key (with an optional
+trailing comma), or a TOML `version = "..."` key. The hunk may include
+unchanged context, but its declared line counts must match and it must
+contain exactly one removed line immediately followed by one added line. The
+two lines must be identical apart from the version token, including spacing
+and punctuation. This covers a workflow bump committed separately or in a
+base-merge resolution. Every other file must still match on its added and
+removed lines.
 
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or
