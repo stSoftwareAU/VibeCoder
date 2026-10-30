@@ -9,9 +9,10 @@ accepted gaps and `console.error` for failures.
 
 Remove the unrelated manifest expansion and restore the independent assertion
 that every existing in-gate Windows suite still exercises PowerShell. Restore
-Semgrep's detector-error propagation, including through its existing quality-gate
-caller; detector timeouts cannot become nonblocking skips. Regression tests now
-require detector timeouts and unexpected detector errors to reject.
+Semgrep's detector-error propagation, including through its existing
+quality-gate caller; detector timeouts cannot become nonblocking skips.
+Regression tests now require detector timeouts and unexpected detector errors to
+reject.
 
 Version bump: no version file changed for this fix; the merged commit records
 the final version.
@@ -30,8 +31,8 @@ the final version.
   unchanged.
 - The worker test leaves both production severity adapters installed and
   captures their formatted output at the console sink.
-- Semgrep production code and the script-suite manifests match the base;
-  this fix does not change security-gate timeout policy or suite placement.
+- Semgrep production code and the script-suite manifests match the base; this
+  fix does not change security-gate timeout policy or suite placement.
 
 ### Undiscoverable Facts
 
@@ -58,17 +59,17 @@ quality-gate caller again receives the original rejection rather than SKIPPED.
 
 - **symptom** — `[EGRESS-NOT-ENFORCED]` was sent to the error sink on a healthy
   Apple launch.
-- **status** — `verified` — the regression test was observed failing against
-  the unfixed warning-sink wiring and passing after the fix.
+- **status** — `verified` — the regression test was observed failing against the
+  unfixed warning-sink wiring and passing after the fix.
 - **regression test** —
   `worker/deno/tests/run_worker_test.ts::runWorker records actual Apple controls before claiming and refuses a broken proxy`.
 - The previous 35 worker tests passed with the production warning adapter
   changed from `logger.warn` to `logger.error`. The strengthened test fails
   against that exact mutation, observing ERROR where WARNING is required.
 - Changing the production error adapter to `logger.warn`, or changing the
-  self-check failure route to `logWarning`, also fails the test's emitted
-  ERROR assertion. Changing the accepted-gap route to `logError` fails its
-  WARNING assertion. All mutations were restored after checking.
+  self-check failure route to `logWarning`, also fails the test's emitted ERROR
+  assertion. Changing the accepted-gap route to `logError` fails its WARNING
+  assertion. All mutations were restored after checking.
 
 ## Test Plan
 
@@ -77,8 +78,8 @@ quality-gate caller again receives the original rejection rather than SKIPPED.
   PowerShell/integration manifest guards.
 - `tests/parallel_unsafe_test_manifest_test.ts`: 31 passed after restoring the
   unrelated manifest optimisation to its base implementation.
-- `deno task check:manifests`: 846 passed, 0 failed, 1 ignored. The ignored
-  test is not counted as a pass.
+- `deno task check:manifests`: 846 passed, 0 failed, 1 ignored. The ignored test
+  is not counted as a pass.
 - The reported baseline failure could not be reproduced for
   `agent_transcript_config_1141_test.ts`, `codex_subscription_auth_test.ts`,
   `run_entrypoint_test.ts`, `run_mode_test.ts`, and `run_worker_test.ts`. These
@@ -86,15 +87,14 @@ quality-gate caller again receives the original rejection rather than SKIPPED.
   runner's exact `deno test --no-check -A` arguments. They also passed through
   `defaultMutationRunnerSeams().runProcess`, using its isolated, allowlisted
   environment. No mutation-check opt-out or untestable exemption was added.
-- The actual diff-scoped `runMutationCheck` completed on the corrected head:
-  3 mutants killed, 3 total, no survivors, no baseline error. Its production
+- The actual diff-scoped `runMutationCheck` completed on the corrected head: 3
+  mutants killed, 3 total, no survivors, no baseline error. Its production
   isolated process implementation and environment were used.
-- The worker test's prior warning/error sink assertions are replaced by
-  stronger assertions on the actual formatted severity for the same markers;
-  its exit, work-order, cleanup and persisted-record checks remain.
-- `deno fmt --check`, `deno lint`, and
-  `deno check --frozen --lock=deno.lock` passed for all five TypeScript files
-  remaining in the branch diff.
+- The worker test's prior warning/error sink assertions are replaced by stronger
+  assertions on the actual formatted severity for the same markers; its exit,
+  work-order, cleanup and persisted-record checks remain.
+- `deno fmt --check`, `deno lint`, and `deno check --frozen --lock=deno.lock`
+  passed for all five TypeScript files remaining in the branch diff.
 - `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4492-body.md --labels bug,work-on ../../docs/archive/pr-summaries/pr-summary-4492.md`:
   0 blocked, 0 not checked. Acceptance closure and independent two-axis review
   were reported not applicable.
