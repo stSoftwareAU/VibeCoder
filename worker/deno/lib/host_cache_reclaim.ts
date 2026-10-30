@@ -64,6 +64,12 @@ export const DEFAULT_WALK_DEPTH = 4;
 /** Per-call budget for `du`; a call over it is reported as unmeasured. */
 export const DU_TIMEOUT_MS = 60_000;
 
+/** How much of a CACHEDIR.TAG is read: far more than the signature line needs. */
+export const TAG_READ_BYTES = 512;
+
+/** Upper bound on the entries one portable size walk visits. */
+export const SIZE_WALK_MAX_ENTRIES = 500_000;
+
 const PROCESS_TIMEOUT_MS = 30_000;
 const LARGEST_DIRECTORY_COUNT = 8;
 const GIB = 1_073_741_824;
@@ -197,6 +203,28 @@ function isNotFound(error: unknown): boolean {
   return error instanceof Deno.errors.NotFound;
 }
 
+/**
+ * The first {@link TAG_READ_BYTES} bytes of a tag file (#4500 review). The
+ * walk reads a tag in world-writable scratch directories, so a huge or sparse
+ * file named CACHEDIR.TAG must not be loaded whole. A first line longer than
+ * the prefix is cut short and so cannot equal the signature.
+ */
+async function readTagPrefix(path: string): Promise<string> {
+  const file = await Deno.open(path, { read: true });
+  try {
+    const buffer = new Uint8Array(TAG_READ_BYTES);
+    let filled = 0;
+    while (filled < TAG_READ_BYTES) {
+      const n = await file.read(buffer.subarray(filled));
+      if (n === null) break;
+      filled += n;
+    }
+    return new TextDecoder().decode(buffer.subarray(0, filled));
+  } finally {
+    file.close();
+  }
+}
+
 /** The real filesystem, read without following symlinks. */
 export const realHostCacheFs: HostCacheFs = {
   async readDir(path) {
@@ -252,7 +280,7 @@ export const realHostCacheFs: HostCacheFs = {
       };
     }
     try {
-      return { state: "file", text: await Deno.readTextFile(path) };
+      return { state: "file", text: await readTagPrefix(path) };
     } catch (error) {
       return {
         state: "unreadable",
@@ -332,20 +360,83 @@ function requireOutput(
   return result.value.stdout;
 }
 
+/** What the portable size walk reads and how long it may run. */
+export interface SizeWalkOptions {
+  now?: () => number;
+  timeoutMs?: number;
+  maxEntries?: number;
+}
+
 /**
- * The size of a directory via `du -sk`, or null when it cannot be measured
- * (Issue #4498). A timeout is unmeasured, not zero.
+ * The size of a directory by walking it with Deno, for hosts without `du`
+ * (Windows) (#4500 review). Sums allocated blocks where the platform reports
+ * them, else apparent sizes; symlinks are counted as links and never followed.
+ * Null when the walk exceeds its entry or time budget or the root cannot be
+ * read: the size is unmeasured, never a partial sum.
+ */
+export async function walkDirSizeBytes(
+  path: string,
+  options: SizeWalkOptions = {},
+): Promise<number | null> {
+  const now = options.now ?? Date.now;
+  const deadline = now() + (options.timeoutMs ?? DU_TIMEOUT_MS);
+  const maxEntries = options.maxEntries ?? SIZE_WALK_MAX_ENTRIES;
+  const style = hostPathStyle();
+  let visited = 0;
+  let total = 0;
+
+  async function visit(dir: string, isRoot: boolean): Promise<boolean> {
+    let names: Deno.DirEntry[];
+    try {
+      names = [];
+      for await (const entry of Deno.readDir(dir)) names.push(entry);
+    } catch {
+      return !isRoot; // an unreadable subdirectory is skipped, the root is not
+    }
+    for (const entry of names) {
+      if (++visited > maxEntries || now() > deadline) return false;
+      const child = joinPath(dir, entry.name, style);
+      let info: Deno.FileInfo;
+      try {
+        info = await Deno.lstat(child);
+      } catch {
+        continue; // vanished while walking
+      }
+      total += info.blocks !== null ? info.blocks * 512 : info.size;
+      if (info.isDirectory && !info.isSymlink && !await visit(child, false)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return await visit(path, true) ? total : null;
+}
+
+/**
+ * The size of a directory, or null when it cannot be measured (Issue #4498).
+ * Uses `du -sk`; where `du` cannot run or fails without a figure (Windows has
+ * none), falls back to {@link walkDirSizeBytes}. A `du` timeout is unmeasured,
+ * not zero, and is not retried with a slower walk.
  */
 export async function defaultDirSizeBytes(
   path: string,
+  run: typeof runWithTimeout = runWithTimeout,
 ): Promise<number | null> {
   try {
-    const du = await runWithTimeout("du", ["-sk", path], {
+    const du = await run("du", ["-sk", path], {
       timeoutMs: DU_TIMEOUT_MS,
     });
-    if (!du.ok || du.value.timedOut) return null;
-    const kb = Number(du.value.stdout.trim().split(/\s+/)[0]);
-    return Number.isFinite(kb) && kb >= 0 ? kb * 1024 : null;
+    if (du.ok) {
+      if (du.value.timedOut) return null;
+      const kb = Number(du.value.stdout.trim().split(/\s+/)[0]);
+      if (Number.isFinite(kb) && kb >= 0) return kb * 1024;
+    }
+  } catch {
+    // du could not be spawned: measure with the walk below.
+  }
+  try {
+    return await walkDirSizeBytes(path);
   } catch {
     return null;
   }

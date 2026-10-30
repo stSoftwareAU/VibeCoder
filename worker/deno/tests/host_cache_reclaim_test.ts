@@ -20,13 +20,17 @@ import {
   CACHEDIR_TAG_SIGNATURE,
   DEFAULT_HOST_CACHE_RECLAIM_CONFIG,
   defaultCacheRoots,
+  defaultDirSizeBytes,
   type HostCacheReclaimDeps,
   type HostCacheReclaimOptions,
   largestHostDirectories,
   namesPath,
   parseHostCacheReclaimConfig,
   readHostCacheReclaimConfig,
+  realHostCacheFs,
   reclaimHostCaches,
+  TAG_READ_BYTES,
+  walkDirSizeBytes,
 } from "../lib/host_cache_reclaim.ts";
 import {
   HOST_CACHE_RECLAIM_TAG,
@@ -563,6 +567,150 @@ Deno.test("a root given through an alias still removes a stale cache no process 
 // ---------------------------------------------------------------------------
 // Pure helpers.
 // ---------------------------------------------------------------------------
+
+Deno.test("a sparse multi-gigabyte CACHEDIR.TAG is read as a bounded prefix (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const dir = join(root, "oversized-target");
+    await Deno.mkdir(dir);
+    const tag = join(dir, CACHEDIR_TAG_FILENAME);
+    await Deno.writeTextFile(tag, `${CACHEDIR_TAG_SIGNATURE}\n`);
+    // 3 GiB apparent size, no blocks allocated: reading it whole would load 3 GiB.
+    await Deno.truncate(tag, 3 * GIB);
+
+    const reading = await realHostCacheFs.readTagFile(tag);
+    assertEquals(reading.state, "file");
+    if (reading.state !== "file") return;
+    assert(
+      reading.text.length <= TAG_READ_BYTES,
+      `read ${reading.text.length} characters`,
+    );
+    // Positive control: a signature at the start is still seen in the prefix.
+    assertEquals(reading.text.split("\n", 1)[0], CACHEDIR_TAG_SIGNATURE);
+  });
+});
+
+Deno.test("an oversized tag whose first line has no end is skipped for its signature and the run completes (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const cache = await makeCache(root, "stale-target", {
+      ageMs: STALE_MS,
+      signature: null,
+    });
+    const tag = join(cache, CACHEDIR_TAG_FILENAME);
+    // A first line far longer than the prefix, then sparse up to 2 GiB.
+    await Deno.writeTextFile(tag, "x".repeat(TAG_READ_BYTES * 4));
+    await Deno.truncate(tag, 2 * GIB);
+    await ageTree(cache, STALE_MS);
+    const result = await reclaimHostCaches(
+      oneGibOptions([root]),
+      reclaimDeps(),
+    );
+    assertEquals(await exists(cache), true);
+    assertEquals(result.removed.length, 0);
+    assertStringIncludes(
+      result.skipped.find((s) => s.path === cache)?.reason ?? "",
+      "signature",
+    );
+  });
+});
+
+Deno.test("walkDirSizeBytes sums a tree without following a symlink out of it (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const tree = join(root, "tree");
+    const outside = join(root, "outside");
+    await Deno.mkdir(join(tree, "sub"), { recursive: true });
+    await Deno.mkdir(outside);
+    await Deno.writeFile(join(tree, "a.bin"), new Uint8Array(100_000));
+    await Deno.writeFile(join(tree, "sub", "b.bin"), new Uint8Array(100_000));
+    await Deno.writeFile(join(outside, "big.bin"), new Uint8Array(5_000_000));
+    await Deno.symlink(outside, join(tree, "link"));
+
+    const bytes = await walkDirSizeBytes(tree);
+    assert(bytes !== null && bytes >= 200_000, `measured ${bytes}`);
+    assert(bytes < 1_000_000, `followed the symlink: ${bytes}`);
+  });
+});
+
+Deno.test("walkDirSizeBytes reports an unmeasured size when the entry budget or the clock runs out, and for a missing root", async () => {
+  await withRoot(async (root) => {
+    const tree = join(root, "tree");
+    await Deno.mkdir(tree);
+    for (let i = 0; i < 5; i++) {
+      await Deno.writeTextFile(join(tree, `f${i}`), "x");
+    }
+    assertEquals(await walkDirSizeBytes(tree, { maxEntries: 3 }), null);
+    assert(await walkDirSizeBytes(tree, { maxEntries: 5 }) !== null);
+    let tick = 0;
+    assertEquals(
+      await walkDirSizeBytes(tree, { now: () => tick++ * 100, timeoutMs: 150 }),
+      null,
+    );
+    assertEquals(await walkDirSizeBytes(join(root, "missing")), null);
+  });
+});
+
+Deno.test("defaultDirSizeBytes measures by walking when du cannot run, as on Windows (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    await Deno.writeFile(join(root, "a.bin"), new Uint8Array(100_000));
+    const noDu = async () => ({
+      ok: false as const,
+      error: new Error("du: command not found"),
+    });
+    const walked = await defaultDirSizeBytes(root, noDu);
+    assert(walked !== null && walked >= 100_000, `measured ${walked}`);
+
+    // A du timeout stays unmeasured: it is not retried with a slower walk.
+    const timedOut = async () => ({
+      ok: true as const,
+      value: { timedOut: true, stdout: "", stderr: "", success: false },
+    });
+    assertEquals(
+      // deno-lint-ignore no-explicit-any
+      await defaultDirSizeBytes(root, timedOut as any),
+      null,
+    );
+  });
+});
+
+Deno.test("with du unavailable, the reclaim still stops at the target and the largest list is size-ordered (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    // Four stale caches of different sizes; only the walk can size them.
+    const sizes = [300_000, 200_000, 100_000, 50_000];
+    for (let i = 0; i < sizes.length; i++) {
+      const cache = await makeCache(root, `target-${i}`, { ageMs: STALE_MS });
+      await Deno.writeFile(join(cache, "blob.bin"), new Uint8Array(sizes[i]!));
+      await ageTree(cache, STALE_MS * (sizes.length - i));
+    }
+    const noDu = async () => ({
+      ok: false as const,
+      error: new Error("du: command not found"),
+    });
+    const dirSizeBytes = (path: string) => defaultDirSizeBytes(path, noDu);
+
+    const result = await reclaimHostCaches({
+      freeBytes: 0,
+      floorBytes: 250_000,
+      headroomBytes: 0,
+      minAgeMs: DAY,
+      roots: [root],
+      protect: [],
+    }, { processSnapshot: NO_PROCESSES, dirSizeBytes });
+    // Oldest first is target-0 (300 kB), which alone clears the floor.
+    assertEquals(removedPaths(result), [join(root, "target-0")]);
+    assert(
+      (result.removed[0]?.bytes ?? 0) >= 300_000,
+      "the removal is sized, not null",
+    );
+    assertEquals(await exists(join(root, "target-1")), true);
+
+    const largest = await largestHostDirectories([root], { dirSizeBytes });
+    assertEquals(largest.map((d) => d.path), [
+      join(root, "target-1"),
+      join(root, "target-2"),
+      join(root, "target-3"),
+    ]);
+    assert(largest.every((d) => d.bytes !== null));
+  });
+});
 
 Deno.test("namesPath matches only at a path boundary", () => {
   assertEquals(namesPath("cargo --target /tmp/a/debug", "/tmp/a"), true);
