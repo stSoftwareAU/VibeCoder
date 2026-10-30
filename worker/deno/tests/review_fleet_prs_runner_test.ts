@@ -226,6 +226,55 @@ Deno.test("run.sh --once reviews the gate's ready PRs in one headless round in t
   );
 });
 
+/** The shell commands named by the round's `Bash(<cmd>:*)` rules. */
+function bashRuleCommands(args: string): string[] {
+  const lines = args.split("\n");
+  const json = lines[lines.indexOf("--claude-args") + 1];
+  assert(json, "the round was given --claude-args");
+  return (JSON.parse(json) as string[])
+    .map((rule) => rule.match(/^Bash\((.+):\*\)$/)?.[1])
+    .filter((cmd): cmd is string => cmd !== undefined)
+    .sort();
+}
+
+/** The shell commands the round's prompt says it may run. */
+function promptCommands(prompt: string): string[] {
+  const flat = prompt.replace(/\s+/g, " ");
+  const found = flat.match(
+    /Shell commands you may run: (.+?), and the read-only git subcommands \((.+?)\)/,
+  );
+  const [, commands, gitSubcommands] = found ?? [];
+  assert(
+    commands && gitSubcommands,
+    "the prompt names the commands the round may run",
+  );
+  return [
+    ...commands.split(", "),
+    ...gitSubcommands.split(", ").map((sub) => `git ${sub}`),
+  ].sort();
+}
+
+Deno.test("run.sh tells the round exactly the shell commands its --allowedTools allow, and to pass them to its reviewers (#4501 review)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = await claudeArgs(home);
+  assert(args, "the round was not started");
+  const prompt = await roundPrompt(home);
+  const allowed = bashRuleCommands(args);
+  assert(allowed.includes("git log"), allowed.join(", "));
+  // Every Bash rule is named in the prompt, and every named command has a rule.
+  assertEquals(promptCommands(prompt), allowed);
+  // The reviewers the round launches get the same paragraph, and are told
+  // WebFetch is refused.
+  const flat = prompt.replace(/\s+/g, " ");
+  assertStringIncludes(flat, "WebFetch is refused");
+  assertStringIncludes(
+    flat,
+    "Every fleet-pr-reviewer agent you launch runs under these same rules",
+  );
+});
+
 Deno.test("run.sh --once starts no Claude session when nothing is ready", async () => {
   const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
   const { code, output } = await run(home, "--once");

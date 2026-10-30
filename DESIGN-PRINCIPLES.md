@@ -25,11 +25,14 @@ to complete that issue; nothing more from a person is needed or wanted.
   "analysis-only" on an implementation issue, a request for a decision) or
   delivering only the easy parts is a **failure of the Vibe Coder**. It is
   counted and fixed as a defect, never treated as a resolution.
-- **No partial PRs, no follow-up tickets.** A PR is raised only when every
-  criterion is met. A run that has not finished keeps working; if it runs out
-  of time, it may push a **draft** PR marked `Part of #N` and the worker
-  carries on with the same issue automatically until it is complete. It never
-  files a new issue for the remainder: a new issue needs a human to read and
+- **Finish in the PR, no follow-up tickets.** A run whose summary leaves a
+  criterion unmet is told so once, in the session, and goes back to finish
+  it. A criterion still unmet after that does not stop the PR: it is raised
+  and armed with that criterion named on it, and a `missing` entry makes the
+  body `Part of #N`, so the issue stays open for the next run. A run that runs
+  out of time may push a **draft** PR marked `Part of #N` and the worker
+  carries on with the same issue automatically. It never files a new issue for
+  the remainder: a new issue needs a human to read and
   approve it, and the original issue was already approved. "You ask for a
   hamburger, you don't get two buns and a follow-up ticket for the patty."
 - **"Too large" is a planning defect, not an exit.** An approved issue,
@@ -650,8 +653,9 @@ follow-up issue is ever filed for the remainder — the issue was approved to be
 done, and a new issue would need a human to read and approve it — and nothing
 is labelled `needs-human`. A run that **times out** keeps a draft `Part of #N`
 PR (`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so
-the next run resumes the branch and finishes; once every criterion is met the
-draft is marked ready with `Closes #N` and squash auto-merge is armed. Whether
+the next run resumes the branch. When that run completes, the draft is marked
+ready and squash auto-merge is armed, even if a criterion is still unmet; its
+body says `Closes #N` unless an entry is `missing`, which keeps `Part of #N`. Whether
 the run was degraded changes none of this. See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run).
 

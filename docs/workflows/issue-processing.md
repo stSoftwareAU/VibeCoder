@@ -1084,8 +1084,10 @@ reads that signal at both ends
   when a criterion is still unmet, and posts what remains for the reviewer.
 - **Degraded runs follow the same rule.** A fallback model changes nothing
   here.
-- **Complete means ready.** Once every criterion is met, completion rewrites a
-  draft's body (`Closes #N`), runs `gh pr ready` and arms squash auto-merge.
+- **Completion marks a draft ready.** Completion rewrites a draft's body, runs
+  `gh pr ready` and arms squash auto-merge, even when a criterion is still
+  unmet. The body says `Closes #N` unless an entry is `missing`, which keeps
+  `Part of #N`.
 
 - **A timed-out run keeps a draft.** A run that times out (or is released on
   schedule) with its work preserved on the branch opens a DRAFT PR saying
@@ -1094,10 +1096,10 @@ reads that signal at both ends
   [`draft_continuation_pr.ts`](../../worker/deno/lib/draft_continuation_pr.ts).
   The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so the
   next run re-claims it, resumes the branch and finishes.
-- **Complete means ready, and merging as soon as possible.** Once every
-  criterion is met, completion rewrites a draft's body (`Closes #N`), runs
-  `gh pr ready` and arms squash auto-merge in the same step, rather than
-  waiting for the sweep.
+- **Ready, and merging as soon as possible.** When the resumed run completes,
+  completion rewrites the draft's body (`Closes #N`, or `Part of #N` while an
+  entry is `missing`), runs `gh pr ready` and arms squash auto-merge in the
+  same step, rather than waiting for the sweep.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
 only the pure scope assessment both this gate and `claim_freshness.ts` read.
