@@ -1440,7 +1440,13 @@ flowchart TD
   `Signature: 8a477f597d28d172789f06886806bc55`, which build tools write into
   their output directories;
 - it is older than `host_cache_reclaim_min_age_hours` (24 by default);
-- no running process is using it, checked with `ps` and `lsof`.
+- no running process names a path inside it. The check reads each process's
+  command line (`ps`) and, where `lsof` is installed, the files each process
+  has as its working directory (`cwd`) and program text (`txt`), plus its
+  memory-mapped files (`mem`) on Linux. So a server started as
+  `./target/release/server` still holds its cache, through the executable path
+  `lsof` reports. Other open files (ordinary file descriptors) are not read.
+  On Windows only the command lines are read.
 
 Candidates go oldest first, and the reclaim stops once the host has the
 claiming floor plus `host_cache_reclaim_headroom_gb` (10 by default) free.

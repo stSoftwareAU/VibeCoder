@@ -13,7 +13,13 @@ it.
   `worker/deno/lib/host_cache_reclaim.ts`): removes stale cargo build caches
   from the host's scratch and source roots when free space is under the floor,
   and logs the largest host directories when that is not enough. A cache a
-  running process names is never removed. The process table is not resolved, so
+  running process names is never removed. The process table is each process's
+  command line (`ps -axww -o command=`) plus the file names that
+  `lsof -w -a -d cwd,txt -Fn` reports (`cwd,txt,mem` on Linux): its working
+  directory, its program text and, on Linux, its memory-mapped files, so a
+  server started as `./target/release/server` holds its cache through the
+  executable path lsof reports. Ordinary open file descriptors are not read;
+  Windows reads only the command lines. The process table is not resolved, so
   each cache is looked for under every spelling of its root: the root as given
   (`/tmp`, `$TMPDIR`) as well as its real path (`/private/tmp`,
   `/private/var/folders/...` on macOS). A `CACHEDIR.TAG` is read as at most its
@@ -94,7 +100,21 @@ the mutation and watching a test go red:
 
 ## Test Plan
 
-- `worker/deno/tests/host_cache_reclaim_test.ts` (68 tests at head, all pass):
+- `worker/deno/tests/host_cache_reclaim_test.ts` (73 tests at head, all pass; 72
+  `Deno.test` calls, one registered for two variables):
+  - held open through lsof: a stale cache whose only mention is an lsof `txt`
+    line (a server started as `./target/release/server` from the repo, so ps
+    shows a relative argv and the cwd is the repo) is kept on both macOS
+    (`cwd,txt`) and Linux (`cwd,txt,mem`), and a file only memory-mapped from a
+    cache keeps it on Linux. The lsof stand-in reports only the descriptor types
+    `-d` names, like the real tool, so with the previous `-d cwd` both go red
+    (`the cache is kept`); a positive control with nothing inside the cache in
+    lsof removes it;
+  - host independence: every fixture directory is 0755 and every reclaim gets an
+    explicit `ownerUid` read with lstat from a temporary directory the test
+    makes. The suite gives 73 passed under `umask 002`, `022` and `077`, with
+    `$HOME` unset and with `$HOME` owned by another uid; before this change
+    `umask 002` gave 13 failures, and an unset or foreign-owned `$HOME` 12;
   - config: with `CONFIG_FILE` or `CONFIG_PATH` naming a moved file that sets
     `host_cache_reclaim_enabled: false`, nothing is removed, and the same setup
     without the variable (the checkout's enabled file) removes the cache; a
@@ -186,10 +206,11 @@ cannot credit its removal and the largest-directories line shows it as
 - Delete safety: ownership and mode of the candidate and its ancestors, and a
   real-path check, immediately before each removal (see What changed).
 - Size order: fixtures run against name order. The comparator is unchanged.
-- Not checked: the ownership check on a host whose umask leaves directories
-  group-writable (for example 002) skips every cache with a visible reason
-  rather than removing it; the real tool was not run against a foreign-owned
-  `/tmp` tree, whose ownership is injected in the tests.
+- Not checked: in production, the ownership check on a host whose umask leaves
+  directories group-writable (for example 002) skips every cache with a visible
+  reason rather than removing it; the real tool was not run against a
+  foreign-owned `/tmp` tree, whose ownership is injected in the tests. The test
+  fixtures no longer depend on the umask (see the fourth round).
 
 ## Mutation check (PR #4500 review, third round)
 
@@ -201,4 +222,14 @@ cannot credit its removal and the largest-directories line shows it as
   `removal: a candidate reached from two roots is judged
   from the shallower root, whichever root is listed first`.
 - Both re-run red against the mutation and green on the head
-  (`host_cache_reclaim_test.ts`, 68 tests at head).
+  (`host_cache_reclaim_test.ts`, 73 tests at head).
+
+## Review fixes (PR #4500, fourth round)
+
+- Held-open guard: `defaultProcessSnapshot` asks lsof for `cwd,txt` (and `mem`
+  on Linux, `lsofDescriptors`), keeps only the `-Fn` `n` lines, and takes its
+  runner and OS as parameters so a test can supply the process table.
+  `docs/CONTAINER.md` now says exactly what is read.
+- Test host state: `makeCache` sets the directories it creates to 0755, and
+  `reclaimDeps` (and so `commandDeps`) pass `ownerUid` from the test's own
+  temporary directory instead of `resolveOwnUid()`, which stats `$HOME`.

@@ -21,11 +21,13 @@ import {
   DEFAULT_HOST_CACHE_RECLAIM_CONFIG,
   defaultCacheRoots,
   defaultDirSizeBytes,
+  defaultProcessSnapshot,
   type FsStat,
   type HostCacheFs,
   type HostCacheReclaimDeps,
   type HostCacheReclaimOptions,
   largestHostDirectories,
+  lsofDescriptors,
   namesPath,
   parseHostCacheReclaimConfig,
   readHostCacheReclaimConfig,
@@ -101,6 +103,24 @@ interface CacheOptions {
   signature?: string | null;
 }
 
+/**
+ * Create `path` and any missing parents, and set each directory this call
+ * creates to 0755 (Issue #4498 review). The removal check skips a cache that
+ * is group- or other-writable, so a fixture made under the process umask
+ * (0775 under umask 002) would be skipped on some hosts and removed on others.
+ * Pinning the mode makes the fixture the same on every host.
+ */
+async function mkdirOwned(path: string): Promise<void> {
+  const created: string[] = [];
+  for (let at = path; at !== "" && !(await exists(at));) {
+    created.unshift(at);
+    at = at.slice(0, at.lastIndexOf("/"));
+  }
+  await Deno.mkdir(path, { recursive: true });
+  if (Deno.build.os === "windows") return;
+  for (const dir of created) await Deno.chmod(dir, 0o755);
+}
+
 /** A directory shaped like a cargo target: `debug/` plus a CACHEDIR.TAG. */
 async function makeCache(
   parent: string,
@@ -108,7 +128,9 @@ async function makeCache(
   options: CacheOptions = {},
 ): Promise<string> {
   const dir = join(parent, name);
-  await Deno.mkdir(join(dir, "debug"), { recursive: true });
+  await mkdirOwned(join(dir, "debug"));
+  // The cache itself may already exist (a test can make it first); pin it too.
+  if (Deno.build.os !== "windows") await Deno.chmod(dir, 0o755);
   await Deno.writeTextFile(join(dir, "debug", "libdep.rlib"), "artefact");
   const signature = options.signature === undefined
     ? CACHEDIR_TAG_SIGNATURE
@@ -139,12 +161,30 @@ function oneGibOptions(
   };
 }
 
+/**
+ * The uid that owns the directories this test creates, read with lstat from a
+ * temporary directory the test makes itself (Issue #4498 review). The
+ * production default, `resolveOwnUid()`, stats the real `$HOME`, so a test
+ * relying on it would give a different answer when `$HOME` is unset or owned
+ * by another account. Every `withRoot` root is made the same way by the same
+ * process, so it has this owner too.
+ */
+const TEST_OWNER_UID: number | null = await (async () => {
+  const probe = await Deno.makeTempDir({ prefix: "host_cache_reclaim_uid_" });
+  try {
+    return (await Deno.lstat(probe)).uid;
+  } finally {
+    await Deno.remove(probe);
+  }
+})();
+
 function reclaimDeps(
   overrides: Partial<HostCacheReclaimDeps> = {},
 ): Partial<HostCacheReclaimDeps> {
   return {
     processSnapshot: NO_PROCESSES,
     dirSizeBytes: async () => GIB,
+    ownerUid: TEST_OWNER_UID,
     ...overrides,
   };
 }
@@ -231,6 +271,125 @@ Deno.test("a cache a process has as its working directory is held open", async (
     assertEquals(await exists(stale), true);
     assertEquals(result.removed.length, 0);
   });
+});
+
+/**
+ * A stand-in for `ps` and `lsof` (#4500 review). The process is a server
+ * started two days ago as `./target/release/server` from `cwd`: ps shows the
+ * relative argv, and lsof reports the cwd, the program text (`txt`) and a
+ * memory-mapped file (`mem`). Like the real lsof, it reports only the
+ * descriptor types named by `-d`, so the guard sees the executable path only
+ * when it asks for `txt`. Records every call so a test can see the arguments.
+ */
+function fakeProcessTable(cwd: string, executable: string, mapped: string) {
+  const calls: { executable: string; args: string[] }[] = [];
+  const records: [string, string][] = [
+    ["cwd", cwd],
+    ["txt", executable],
+    ["mem", mapped],
+  ];
+  const run = async (exe: string, args: string[]) => {
+    calls.push({ executable: exe, args });
+    let stdout = "";
+    if (exe === "ps") stdout = "./target/release/server --port 8080\n";
+    if (exe === "lsof") {
+      const wanted = (args[args.indexOf("-d") + 1] ?? "").split(",");
+      stdout = "p4242\n" + records
+        .filter(([fd]) => wanted.includes(fd))
+        .map(([fd, name]) => `f${fd}\nn${name}\n`)
+        .join("");
+    }
+    return {
+      ok: true as const,
+      value: { timedOut: false, stdout, stderr: "", success: true, code: 0 },
+    };
+  };
+  // The stand-in answers only the fields the snapshot reads.
+  type Runner = NonNullable<Parameters<typeof defaultProcessSnapshot>[1]>;
+  return { run: run as unknown as Runner, calls };
+}
+
+Deno.test("a running executable inside a stale cache holds it open through lsof's txt line, though its argv is relative (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const repo = join(root, "repo");
+    const cache = await makeCache(repo, "target", { ageMs: STALE_MS });
+    await mkdirOwned(join(cache, "release"));
+    await ageTree(cache, STALE_MS);
+    const { run, calls } = fakeProcessTable(
+      repo,
+      join(cache, "release", "server"),
+      "/usr/lib/libc.so.6",
+    );
+
+    for (const os of ["darwin", "linux"] as const) {
+      const result = await reclaimHostCaches(
+        oneGibOptions([root]),
+        reclaimDeps({
+          processSnapshot: () => defaultProcessSnapshot("posix", run, os),
+        }),
+      );
+      assertEquals(result.removed.length, 0, `${os}: the cache is kept`);
+      assertEquals(await exists(cache), true, `${os}: the cache is kept`);
+      assertStringIncludes(
+        result.skipped.find((s) => s.path === cache)?.reason ?? "",
+        "held open",
+      );
+    }
+    const lsofCalls = calls.filter((c) => c.executable === "lsof");
+    assertEquals(lsofCalls.map((c) => c.args), [
+      ["-w", "-a", "-d", "cwd,txt", "-Fn"],
+      ["-w", "-a", "-d", "cwd,txt,mem", "-Fn"],
+    ]);
+  });
+});
+
+Deno.test("a file only memory-mapped from a stale cache holds it open on Linux, and the p and f lines are not names (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const cache = await makeCache(root, "target", { ageMs: STALE_MS });
+    const { run } = fakeProcessTable(
+      "/somewhere/else",
+      "/usr/bin/python3",
+      join(cache, "release", "libplugin.so"),
+    );
+    const lines = await defaultProcessSnapshot("posix", run, "linux");
+    assertEquals(lines.filter((l) => l !== ""), [
+      "./target/release/server --port 8080",
+      "/somewhere/else",
+      "/usr/bin/python3",
+      join(cache, "release", "libplugin.so"),
+    ]);
+    const result = await reclaimHostCaches(
+      oneGibOptions([root]),
+      reclaimDeps({ processSnapshot: async () => lines }),
+    );
+    assertEquals(await exists(cache), true);
+    assertEquals(result.removed.length, 0);
+  });
+});
+
+Deno.test("positive control: the same stale cache is removed when lsof names nothing inside it (#4500 review)", async () => {
+  await withRoot(async (root) => {
+    const repo = join(root, "repo");
+    const cache = await makeCache(repo, "target", { ageMs: STALE_MS });
+    const { run } = fakeProcessTable(
+      repo,
+      "/usr/local/bin/server",
+      "/usr/lib/libc.so.6",
+    );
+    const result = await reclaimHostCaches(
+      oneGibOptions([root]),
+      reclaimDeps({
+        processSnapshot: () => defaultProcessSnapshot("posix", run, "linux"),
+      }),
+    );
+    assertEquals(removedPaths(result), [cache]);
+    assertEquals(await exists(cache), false);
+  });
+});
+
+Deno.test("lsofDescriptors reads cwd and txt everywhere, and mem on Linux", () => {
+  assertEquals(lsofDescriptors("darwin"), "cwd,txt");
+  assertEquals(lsofDescriptors("linux"), "cwd,txt,mem");
 });
 
 // ---------------------------------------------------------------------------
@@ -702,7 +861,11 @@ Deno.test("with du unavailable, the reclaim still stops at the target and the la
       minAgeMs: DAY,
       roots: [root],
       protect: [],
-    }, { processSnapshot: NO_PROCESSES, dirSizeBytes });
+    }, {
+      processSnapshot: NO_PROCESSES,
+      dirSizeBytes,
+      ownerUid: TEST_OWNER_UID,
+    });
     assertEquals(removedPaths(result), [join(root, "zzz")]);
     assert(
       (result.removed[0]?.bytes ?? 0) >= 300_000,
@@ -994,7 +1157,8 @@ Deno.test({
       });
       try {
         const outside = join(outsideDir, "target");
-        await Deno.mkdir(outside);
+        // 0755, so only the symlink check can be what stops the delete.
+        await mkdirOwned(outside);
         await Deno.writeTextFile(join(outside, "precious"), "keep");
         const ownerUid = await ownUid(root);
 

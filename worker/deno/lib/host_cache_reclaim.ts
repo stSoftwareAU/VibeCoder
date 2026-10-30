@@ -316,16 +316,24 @@ export const realHostCacheFs: HostCacheFs = {
 /**
  * The production process snapshot (Issue #4498).
  *
- * POSIX: `ps -axww -o command=`, plus the working directory of every process
- * from `lsof` where it is available. A failing `ps` throws. A missing or
- * failing `lsof` is tolerated, because `ps` alone still names every command
+ * POSIX: `ps -axww -o command=`, plus, from `lsof` where it is available, the
+ * names of the files each process holds as its working directory (`cwd`) and
+ * its program text (`txt`), and on Linux its memory-mapped files (`mem`:
+ * shared libraries and other mapped files). So a binary started by a relative
+ * path, such as `./target/release/server`, still holds its cache open through
+ * the absolute executable path lsof reports. A failing `ps` throws. A missing
+ * or failing `lsof` is tolerated, because `ps` alone still names every command
  * line. Windows: the command lines from `Get-CimInstance`; a failure throws.
+ *
+ * `run` and `os` are injectable so a test can supply the process table.
  */
 export async function defaultProcessSnapshot(
   style: LauncherPathStyle,
+  run: typeof runWithTimeout = runWithTimeout,
+  os: typeof Deno.build.os = Deno.build.os,
 ): Promise<string[]> {
   if (style === "windows") {
-    const ps = await runWithTimeout("powershell", [
+    const ps = await run("powershell", [
       "-NoProfile",
       "-Command",
       "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }",
@@ -333,19 +341,20 @@ export async function defaultProcessSnapshot(
     return requireOutput(ps, "powershell Get-CimInstance").split(/\r?\n/);
   }
 
-  const ps = await runWithTimeout("ps", ["-axww", "-o", "command="], {
+  const ps = await run("ps", ["-axww", "-o", "command="], {
     timeoutMs: PROCESS_TIMEOUT_MS,
   });
   const lines = requireOutput(ps, "ps -axww -o command=").split("\n");
   try {
-    const lsof = await runWithTimeout(
+    const lsof = await run(
       "lsof",
-      ["-w", "-a", "-d", "cwd", "-Fn"],
+      ["-w", "-a", "-d", lsofDescriptors(os), "-Fn"],
       { timeoutMs: PROCESS_TIMEOUT_MS },
     );
     if (lsof.ok && !lsof.value.timedOut) {
       for (const line of lsof.value.stdout.split("\n")) {
-        // `-Fn` names each field; only the `n` lines carry the cwd path.
+        // `-Fn` names each field; only the `n` lines carry a file name. The
+        // `p` (process id) and `f` (descriptor) lines are dropped.
         if (line.startsWith("n")) lines.push(line.slice(1));
       }
     }
@@ -353,6 +362,15 @@ export async function defaultProcessSnapshot(
     // lsof is absent or broke: tolerated, because ps already succeeded.
   }
   return lines;
+}
+
+/**
+ * The lsof descriptor list the held-open guard reads (Issue #4498): the
+ * working directory and program text everywhere, plus memory-mapped files on
+ * Linux, whose lsof reports them as `mem`.
+ */
+export function lsofDescriptors(os: typeof Deno.build.os): string {
+  return os === "linux" ? "cwd,txt,mem" : "cwd,txt";
 }
 
 function requireOutput(
