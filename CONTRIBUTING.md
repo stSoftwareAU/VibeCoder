@@ -106,12 +106,6 @@ settles, so you can watch progress. Never background it and poll with a
 seconds, and the usual reason a correct change goes red in CI (Issue #1483);
 the full gate is the last step before the PR.
 
-On a constrained host, `DENO_JOBS=1 ./quality.sh < /dev/null` limits the
-parallel test pass to one worker. Both test passes and the timing budget still
-run. Suites that launch repository scripts through the shared launcher harness
-are classified as script suites; the cache-reclaim harness checks remain in
-the required gate, with their real process cost recorded in the manifest.
-
 **The gate needs PowerShell 7** (Issue #1598). Its unit suite runs the three
 `run.ps1` launcher suites, so a host without `pwsh` fails the gate with a
 message naming the remedy rather than skipping them quietly — a skipped test
@@ -160,8 +154,7 @@ flowchart LR
   stage reports `SKIPPED` and names both remedies; `--strict` turns that
   into a failure. Inside the fleet container image, where semgrep is baked
   in, a missing binary is `FAILED` (an image fault, Issue #3726); an
-  unreachable rule registry, a timed-out version/image probe or an
-  over-deadline scan stays `SKIPPED`, with the cause reported.
+  unreachable rule registry or an over-deadline scan stays `SKIPPED`.
 - **A docs-only change costs nothing.** No scannable changed file means
   no scan.
 - **`detect-non-literal-regexp` has one standard remedy.** Build the

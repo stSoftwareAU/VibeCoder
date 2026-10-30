@@ -1223,66 +1223,68 @@ Deno.test("runWorker - a non-enforcing dialect warns and still claims (Issue #40
 
 Deno.test("runWorker records actual Apple controls before claiming and refuses a broken proxy", async () => {
   const home = await Deno.makeTempDir({ prefix: "apple-startup-" });
+  const originalError = console.error;
   try {
     for (const broken of [true, false]) {
       const rec = newRecorder();
-      const warnings: string[] = [];
-      const errors: string[] = [];
+      const output: string[] = [];
+      console.error = (...args: unknown[]) => output.push(args.join(" "));
       const options = {
         ...baseOptions(),
         env: (name: string) =>
           ({ HOME: home, PATH: "/bin", WORK_DIR: "/work" })[name],
       };
-      const result = await runWorker(
-        options,
-        stubDeps(rec, {
-          logWarning: (message) => warnings.push(message),
-          logError: (message) => errors.push(message),
-          checkEgress: () =>
-            checkEgressPolicy({
-              env: (name) =>
-                ({
-                  VIBE_EGRESS_ENFORCED: "false",
-                  VIBE_RUNTIME_KIND: "apple-container",
-                  VIBE_APPLE_EGRESS_MODE: "internal",
-                  VIBE_RUNTIME_VERSION: "1.2.2",
-                  VIBE_EGRESS_MACOS_VERSION: "27.0.1",
-                })[name],
-              probes: {
-                directCloudflare: "refused",
-                directGithub: "not_checked",
-                proxyDenied: "denied",
-                proxyAllowed: broken ? "failed" : "succeeded",
-              },
-              appleObserved: { ipv4: "refused", host: "connected" },
-              appleControl: { ipv4: "connected", host: "connected" },
-            }),
-        }),
-      );
+      const deps = stubDeps(rec, {
+        checkEgress: () =>
+          checkEgressPolicy({
+            env: (name) =>
+              ({
+                VIBE_EGRESS_ENFORCED: "false",
+                VIBE_RUNTIME_KIND: "apple-container",
+                VIBE_APPLE_EGRESS_MODE: "internal",
+                VIBE_RUNTIME_VERSION: "1.2.2",
+                VIBE_EGRESS_MACOS_VERSION: "27.0.1",
+              })[name],
+            probes: {
+              directCloudflare: "refused",
+              directGithub: "not_checked",
+              proxyDenied: "denied",
+              proxyAllowed: broken ? "failed" : "succeeded",
+            },
+            appleObserved: { ipv4: "refused", host: "connected" },
+            appleControl: { ipv4: "connected", host: "connected" },
+          }),
+      });
+      // Keep the real adapters so the emitted severity, including the
+      // logger.warn wiring in createDefaultRunWorkerDeps, is exercised.
+      delete deps.logWarning;
+      delete deps.logError;
+      const result = await runWorker(options, deps);
       assertEquals(result.exitCode, broken ? EGRESS_SELFCHECK_EXIT_STATUS : 0);
       assertEquals(rec.calls.includes("loop"), !broken);
       assertEquals(rec.calls.includes("github-user"), !broken);
       assertEquals(rec.cleanupCalled, true);
-      assert(
-        warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
-        warnings.join("\n"),
+      const gapLines = output.filter((line) =>
+        line.includes(EGRESS_NOT_ENFORCED_MARKER)
       );
-      assertEquals(
-        errors.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
-        false,
-        errors.join("\n"),
+      assertEquals(gapLines.length, 1, output.join("\n"));
+      assertStringIncludes(gapLines[0]!, "WARNING: [run-worker]");
+      const failureLines = output.filter((line) =>
+        line.includes(EGRESS_SELFCHECK_FAILURE_MARKER)
       );
-      assertEquals(
-        errors.some((line) => line.includes(EGRESS_SELFCHECK_FAILURE_MARKER)),
-        broken,
-        errors.join("\n"),
-      );
+      assertEquals(failureLines.length, broken ? 1 : 0, output.join("\n"));
+      if (broken) {
+        assertStringIncludes(failureLines[0]!, "ERROR: [run-worker]");
+      } else {
+        assertEquals(output.some((line) => line.includes("ERROR:")), false);
+      }
       const log = await Deno.readTextFile(`${home}/logs/run_core.log`);
       assert(log.includes('"hostLan":"reachable"'));
       assert(log.includes('"directInternetV6":"unknown"'));
       assert(log.includes('"macOS":"27.0.1"'));
     }
   } finally {
+    console.error = originalError;
     await Deno.remove(home, { recursive: true });
   }
 });

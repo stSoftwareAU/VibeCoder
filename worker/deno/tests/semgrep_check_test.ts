@@ -435,26 +435,21 @@ Deno.test("runSemgrepCheck - a blank container stamp is a host run — no semgre
   assertEquals(result.status, "SKIPPED");
 });
 
-Deno.test("runSemgrepCheck - a probe timeout is SKIPPED on hosts and in the fleet, and fails strict mode", async () => {
+Deno.test("runSemgrepCheck - a detector timeout rejects on hosts and in the fleet", async () => {
   for (const stamp of [undefined, "claude"]) {
-    const result = await runCheck("/repo", {
-      git: gitWithChangedFile("worker/deno/lib/a.ts"),
-      detectInvocation: async () => {
-        await probe(Deno.execPath(), ["--version"], 0);
-        throw new Error("a timed-out probe must not reach the scan");
-      },
-      env: () => stamp,
-    });
-
-    assertEquals(result.status, "SKIPPED");
-    assertStringIncludes(result.skipReason ?? "", "invocation detection");
-    assertStringIncludes(result.skipReason ?? "", "timed out after 0ms");
-    assertEquals(result.filesScanned, 0);
-    assertEquals(result.findings, []);
-    const checks: Parameters<typeof recordCheck>[0] = [];
-    recordCheck(checks, "semgrep", result.status, result.output);
-    assertEquals(formatSummary(checks, false).passed, true);
-    assertEquals(formatSummary(checks, true).passed, false);
+    await assertRejects(
+      () =>
+        runCheck("/repo", {
+          git: gitWithChangedFile("worker/deno/lib/a.ts"),
+          detectInvocation: async () => {
+            await probe(Deno.execPath(), ["--version"], 0);
+            throw new Error("a timed-out probe must not reach the scan");
+          },
+          env: () => stamp,
+        }),
+      Error,
+      "timed out after 0ms",
+    );
   }
 });
 

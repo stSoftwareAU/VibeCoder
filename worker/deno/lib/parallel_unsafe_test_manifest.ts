@@ -550,10 +550,7 @@ export function stripComments(source: string): string {
 }
 
 export function mutatesProcessState(source: string): boolean {
-  const mutation = /Deno\.env\.(set|delete)|Deno\.chdir/;
-  // Stripping comments cannot create this contiguous pattern. Most files
-  // have no candidate, so avoid copying their entire source twice.
-  return mutation.test(source) && mutation.test(stripComments(source));
+  return /Deno\.env\.(set|delete)|Deno\.chdir/.test(stripComments(source));
 }
 
 /**
