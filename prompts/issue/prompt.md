@@ -1365,7 +1365,10 @@ The file MUST contain:
    entries, quoting the issue): the closure block described in [Acceptance-Criteria Closure](#acceptance-criteria-closure--answer-the-criteria-before-the-pr)
    — the Spec reviewer's provenance marker, then one `met` / `partial` /
    `missing` entry per criterion with its `reviewer:` verdict, plus any
-   `unrequested` change, which carries `reviewer: unrequested` and a `reason:`
+   `unrequested` change, which carries `reviewer: unrequested` and a `reason:`.
+   For an issue with no criteria heading the block holds only `missing`
+   entries, each with a `reason:`, and no provenance marker and no `reviewer:`
+   field, because no reviewer runs for such an issue
 6. **Standards Review** (only when the issue states criteria): the Standards
    reviewer's block described in [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
    — its provenance marker, then each `violation` with evidence and outcome, and
@@ -1581,7 +1584,11 @@ This is the shape your own `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}
 should take — these sections, in this order (the `## Reproduction` block only for
 a `bug`-labelled issue, the `## Standards Review` block only when the issue
 states criteria, and the `## Acceptance Criteria` block when it does or when you
-leave part of a criteria-less issue undone):
+leave part of a criteria-less issue undone). For a criteria-less issue the
+skeleton's `## Acceptance Criteria` block below is cut down to its `missing`
+entries, each with a `reason:`: leave out the `<!-- vibe-spec-review … -->`
+provenance marker and every `reviewer:` field, because no Spec reviewer runs for
+such an issue and writing the marker would claim a review that never happened:
 
 ```markdown
 ## Summary

@@ -9,9 +9,9 @@
  * summary's `## Acceptance Criteria` block: `findMissingCriteria` reads it, and
  * `assemblePrBody` rewrites the closing keyword to `Part of #N`.
  *
- * Part A runs that path on real inputs. Part B pins the prompt wording that
- * tells the run to write such an entry, and that the criteria-less case has no
- * reviewer marker.
+ * Part A runs that path on real inputs. Part B pins, section by section, the
+ * prompt wording that tells the run to write such an entry, and that the
+ * criteria-less case has no reviewer marker wherever the prompt restates it.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -23,7 +23,7 @@ import {
 import { findMissingCriteria } from "../lib/missing_criterion_close_guard.ts";
 import { validateIndependentReview } from "../lib/independent_review_gate.ts";
 import { assemblePrBody } from "../lib/pr_body_sync.ts";
-import { flat, flatWholeFile, section } from "./support/markdown_docs.ts";
+import { flat, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -143,28 +143,45 @@ Deno.test("issue prompt - the closure section names the criteria-less case witho
     "the closure section must not say a criteria-less issue needs no block",
   );
   assertStringIncludes(closure, "states no criteria heading");
-  assertStringIncludes(closure, "missing");
-  assertStringIncludes(closure, `Part of #{{ISSUE_NUMBER}}`);
+  assertStringIncludes(
+    closure,
+    "record each undone part as a `missing` entry in the issue's own words",
+  );
+  assertStringIncludes(closure, "nothing it asks is left undone");
 });
 
 Deno.test("issue prompt - the criteria-less bullet tells the run to record each undone part (Issue #4477)", async () => {
   const text = await loadIssue();
-  const body = flatWholeFile(text);
+  const bullet = flat(section(text, "Acceptance-Criteria Closure"));
 
   assertStringIncludes(
-    body,
+    bullet,
     "An issue with no acceptance-criteria heading needs no block, unless you leave part of it undone",
   );
   assertStringIncludes(
-    body,
+    bullet,
     "no reviewer provenance marker and no `reviewer:` field",
+  );
+});
+
+Deno.test("issue prompt - the summary-file list and skeleton restate the criteria-less block without a reviewer marker (Issue #4477)", async () => {
+  const text = await loadIssue();
+  const summaryFile = flat(section(text, "PR Summary File"));
+
+  assertStringIncludes(
+    summaryFile,
+    "For an issue with no criteria heading the block holds only `missing` entries, each with a `reason:`, and no provenance marker and no `reviewer:` field",
+  );
+  assertStringIncludes(
+    summaryFile,
+    "writing the marker would claim a review that never happened",
   );
 });
 
 Deno.test("pr_feedback prompt - the criteria-less case is named in the close-guard rule (Issue #4477)", async () => {
   const text = await loadPrFeedback();
   assertStringIncludes(
-    flatWholeFile(text),
+    flat(section(text, "Making Changes")),
     "When the issue states no criteria heading",
   );
 });

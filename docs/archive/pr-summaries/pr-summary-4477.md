@@ -46,7 +46,9 @@ Prompt and docs only; no UI files touched.
   no longer says "or the issue states no criteria"; the `Part of` branch covers
   a criteria-less issue), the "no acceptance criteria" bullets in the
   independent-review and closure sections, "The file MUST contain" item 5 and
-  the skeleton lead-in.
+  the skeleton lead-in (both now say the criteria-less block holds only
+  `missing` entries with a `reason:`, no provenance marker and no `reviewer:`
+  field).
 - `prompts/pr_feedback/prompt.md`: "Stopping the PR from closing its issue".
 - `DESIGN-PRINCIPLES.md` ("Unmet acceptance criteria are named…") and
   `docs/workflows/issue-processing.md` (closure gate and "At PR creation").
@@ -62,26 +64,40 @@ this issue has no criteria heading and nothing in it is left undone, so
 
 ## Test Plan
 
-- New `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts`, six
-  tests, all named `(Issue #4477)`:
-  - Behavioural, on real code: an issue under `## Wanted` yields no criteria; a
-    summary with one `missing` entry and no `reviewer:` field passes
+- New `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts`
+  (7 tests at head), all named `(Issue #4477)`:
+  - Behavioural, on real code (3 tests): an issue under `## Wanted` yields no
+    criteria; a summary with one `missing` entry and no `reviewer:` field passes
     `validateAcceptanceClosure` (not applicable) and `validateIndependentReview`
     and assembles to `Part of #123` plus `## Not closing #123` with no closing
     keyword; the same issue with no block still assembles to `Closes #123`.
     These pin the premise the prompt change relies on, so they are green on base
     by design.
-  - Prompt pins: the closure section drops the old phrase and gains
-    `states no criteria heading`; the issue prompt carries the new bullet and
-    the "no reviewer provenance marker" instruction; the pr_feedback prompt
-    carries `When the issue states no criteria heading`.
-- Red check: with `prompts/issue/prompt.md` and `prompts/pr_feedback/prompt.md`
-  restored to base, the three prompt tests fail and the three behavioural tests
-  pass. The pins `missing` and `Part of #{{ISSUE_NUMBER}}` were already on base;
-  the new-phrase pins in the same tests are what go red.
+  - Prompt pins (4 tests), each read through `flat(section(...))`, never a whole
+    page: "Issue Closure in PR Summary" drops the old phrase and gains
+    `states no criteria heading`, "record each undone part as a `missing` entry
+    in the issue's own words" and "nothing it asks is left undone";
+    "Acceptance-Criteria Closure" gains the criteria-less bullet and "no
+    reviewer provenance marker and no `reviewer:` field"; "PR Summary File"
+    (item 5 of the file's contents and the skeleton lead-in) gains "the block
+    holds only `missing` entries, each with a `reason:`, and no provenance marker
+    and no `reviewer:` field" and "writing the marker would claim a review that
+    never happened"; the pr_feedback "Making Changes" section carries
+    `When the issue states no criteria heading`.
+- Pins on base: `deno task drift-pins-on-base main <doc> <section> <phrase>...`
+  reports every pinned phrase above as absent on base for its section. The
+  earlier bare `missing` and `Part of #{{ISSUE_NUMBER}}` pins, which the base
+  section already held, were dropped.
+- Red check, per pin, by editing the phrase in its own section only and running
+  the file: closure `record each undone`, closure `nothing it asks is`, the
+  bullet's "no reviewer provenance marker and no `reviewer:` field", item 5 `For
+  an issue with no criteria heading the block holds only`, skeleton `would claim
+  a review that never happened`, and the pr_feedback `When the issue states no
+  criteria heading` each turned the file from 7 passed to 6 passed, 1 failed;
+  restored, 7 passed, 0 failed.
 - `deno test --allow-all` over `tests/issue_prompt_*.ts`,
   `tests/coding_guidelines_*.ts`, `tests/prompt_builder_test.ts` and the new
-  file: 159 passed, 0 failed.
+  file: 160 passed, 0 failed.
 - No existing assertion was removed or edited.
 - Docs: `deno fmt --check` already fails on `DESIGN-PRINCIPLES.md` and
   `docs/workflows/issue-processing.md` on base; not reformatted.
