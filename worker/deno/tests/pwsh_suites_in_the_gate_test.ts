@@ -116,15 +116,18 @@ Deno.test("pwsh suites - every run.ps1 suite is in the gate (Issue #1598)", asyn
   );
 });
 
-Deno.test("pwsh suites - the manifest names exactly those suites (Issue #1598)", async () => {
+Deno.test("pwsh suites - the manifest names exactly those PowerShell suites (Issue #1598)", async () => {
   // The manifest is what carries the reason and the measured cost, so it
   // has to agree with the tree in both directions: an entry for a suite
   // that drives nothing is an exception nobody needed, and a run.ps1 suite
   // with no entry is one the gate pays for with no reason recorded.
-  assertEquals(
-    [...IN_GATE_SCRIPT_SUITES.keys()].sort(),
-    await runPs1Suites(),
-  );
+  const powerShellEntries: string[] = [];
+  for (const file of IN_GATE_SCRIPT_SUITES.keys()) {
+    if (await drivesPowerShell(file.slice("tests/".length))) {
+      powerShellEntries.push(file);
+    }
+  }
+  assertEquals(powerShellEntries.sort(), await runPs1Suites());
 });
 
 Deno.test("pwsh suites - a host without PowerShell fails the gate (Issue #1598)", () => {

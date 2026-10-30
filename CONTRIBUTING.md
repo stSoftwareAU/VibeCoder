@@ -106,6 +106,12 @@ settles, so you can watch progress. Never background it and poll with a
 seconds, and the usual reason a correct change goes red in CI (Issue #1483);
 the full gate is the last step before the PR.
 
+On a constrained host, `DENO_JOBS=1 ./quality.sh < /dev/null` limits the
+parallel test pass to one worker. Both test passes and the timing budget still
+run. Suites that launch repository scripts through the shared launcher harness
+are classified as script suites; the cache-reclaim harness checks remain in
+the required gate, with their real process cost recorded in the manifest.
+
 **The gate needs PowerShell 7** (Issue #1598). Its unit suite runs the three
 `run.ps1` launcher suites, so a host without `pwsh` fails the gate with a
 message naming the remedy rather than skipping them quietly — a skipped test

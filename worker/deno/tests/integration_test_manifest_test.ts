@@ -29,6 +29,16 @@ import {
 
 const TESTS_DIR = new URL(".", import.meta.url).pathname;
 
+Deno.test("integration classifier recognises a launcher passed through the shared harness", () => {
+  assert(isIntegrationTestSource(
+    "await runLauncher(\n  harness,\n  BASH_LAUNCHER,\n);",
+  ));
+  assertEquals(
+    isIntegrationTestSource("// BASH_LAUNCHER is a launcher"),
+    false,
+  );
+});
+
 /** Test files that drive one of the repository's own scripts, right now. */
 async function detected(): Promise<string[]> {
   const found: string[] = [];

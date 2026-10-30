@@ -163,6 +163,12 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
  */
 export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
   [
+    "tests/launcher_harness_reclaim_stub_test.ts",
+    "runs the real run.sh through the shared launcher harness to prove " +
+    "cache reclaim stays stubbed and cannot delete host caches; keep " +
+    "these launch-boundary assertions in the gate — 7s for two launches",
+  ],
+  [
     "tests/run_ps1_launcher_test.ts",
     "drives run.ps1, the Windows containment boundary, against a stub " +
     "PATH; the image ships pwsh 7.6.8 (Issue #1596) so the gate can run " +
@@ -289,6 +295,8 @@ const INTEGRATION_SOURCE_PATTERNS: readonly RegExp[] = [
   /REPO_ROOT[^\n]*\.(sh|ps1)/,
   // `new URL("../../../setup.sh", import.meta.url)`.
   /new URL\(\s*"[^"\n]*\.(sh|ps1)"/,
+  // The shared harness exports the run.sh path instead of rebuilding it.
+  /runLauncher\s*\([^;]*\bBASH_LAUNCHER\b/,
 ];
 
 /** The `--ignore` value for the gate's `deno test` invocation. */
