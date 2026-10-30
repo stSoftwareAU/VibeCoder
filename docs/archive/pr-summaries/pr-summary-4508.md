@@ -70,7 +70,7 @@ changed TypeScript files: clean.
 
 ## Test Plan
 
-- `worker/deno/tests/run_outcome_classifier_test.ts` gains six tests, all named
+- `worker/deno/tests/run_outcome_classifier_test.ts` gains five tests, all named
   `(Issue #4508)`: the real message and a provider/reason table classify
   `provider-unavailable`; the ladder keeps the transient decision; the
   CLI-not-runnable refusal and agent-quoted text stay `worker-crash`; only
