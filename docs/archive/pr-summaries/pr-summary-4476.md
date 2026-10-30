@@ -83,3 +83,9 @@ Red checks (each break applied alone, then restored):
 Result: `deno task test:unit tests/review_fleet_prs_gate_2675_test.ts` — 33
 passed, 0 failed; `deno fmt --check`, `deno lint`, `deno check` clean on the
 two code files. The five tests that read the skill docs (23 tests) pass.
+
+`./quality.sh` was not run on this head: it takes about 15 minutes, which is
+longer than the 10-minute cap on a foreground command here, and it may not be
+started in the background. CI and the worker's pre-PR run cover it.
+
+<!-- vibe-quality-gate-skipped reason="gate (~15m) exceeds the 10-minute foreground command cap; targeted tests, fmt, lint and type check passed" -->
