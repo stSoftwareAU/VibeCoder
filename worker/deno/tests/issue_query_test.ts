@@ -1397,13 +1397,132 @@ Deno.test("issue_query - isBlockedByRecentlyClosedPR - matches (#N), Issue #N an
   const prs: ClosedPR[] = [
     { number: 1, title: "Fix bug (#42)", closedAt: "", merged: true },
     { number: 2, title: "Resolve Issue #43", closedAt: "", merged: false },
-    { number: 3, title: "Cleanup #44", closedAt: "", merged: true },
+    { number: 3, title: "Cleanup #44", closedAt: "", merged: false },
   ];
   assertEquals(isBlockedByRecentlyClosedPR(prs, 42)?.number, 1);
   assertEquals(isBlockedByRecentlyClosedPR(prs, 43)?.number, 2);
   assertEquals(isBlockedByRecentlyClosedPR(prs, 44)?.number, 3);
   // #44 must not spuriously match issue #4 (word-boundary guard).
   assertEquals(isBlockedByRecentlyClosedPR(prs, 4), null);
+});
+
+// -----------------------------------------------------------------------
+// Merged PRs need positive identification (Issue #4478)
+// -----------------------------------------------------------------------
+
+/** A merged PR whose title only mentions issue #2463 as a bare `#N`. */
+const CHUNK_FILED_2463 =
+  "Chunk 13d-2: record the env readers outside src/config in the chunk-13 ledger, file #2463, add the 13d ledger test";
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - a merged PR's bare #N mention does not block the issue it mentions (Issue #4478)", () => {
+  const prs: ClosedPR[] = [
+    {
+      number: 2480,
+      title: CHUNK_FILED_2463,
+      closedAt: "",
+      merged: true,
+      closingRefs: [2271],
+    },
+  ];
+  assertEquals(isBlockedByRecentlyClosedPR(prs, 2463), null);
+  // Control: the same merged PR still blocks the issue its body closes.
+  assertEquals(isBlockedByRecentlyClosedPR(prs, 2271)?.number, 2480);
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - a merged PR blocks on a positive reference to the issue (Issue #4478)", () => {
+  const prs: ClosedPR[] = [
+    {
+      number: 2481,
+      title: CHUNK_FILED_2463,
+      closedAt: "",
+      merged: true,
+      closingRefs: [2463],
+    },
+    {
+      number: 2482,
+      title:
+        "Chunk 13d-2: record the env readers outside src/config in the chunk-13 ledger (Issue #2463)",
+      closedAt: "",
+      merged: true,
+    },
+    {
+      number: 2483,
+      title:
+        "Chunk 13d-2: record the env readers outside src/config in the chunk-13 ledger [#2463]",
+      closedAt: "",
+      merged: true,
+    },
+    {
+      number: 2484,
+      title:
+        "Chunk 13d-2: record the env readers outside src/config in the chunk-13 ledger (#2463)",
+      closedAt: "",
+      merged: true,
+    },
+  ];
+  for (const pr of prs) {
+    assertEquals(
+      isBlockedByRecentlyClosedPR([pr], 2463)?.number,
+      pr.number,
+      pr.title,
+    );
+  }
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - merged bare 'Cleanup #44' does not block (Issue #4478)", () => {
+  const merged: ClosedPR = {
+    number: 3,
+    title: "Cleanup #44",
+    closedAt: "",
+    merged: true,
+  };
+  assertEquals(isBlockedByRecentlyClosedPR([merged], 44), null);
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - closed-unmerged bare 'Cleanup #44' still blocks, cooldown unchanged (Issue #4478)", () => {
+  const unmerged: ClosedPR = {
+    number: 3,
+    title: "Cleanup #44",
+    closedAt: "",
+    merged: false,
+  };
+  assertEquals(isBlockedByRecentlyClosedPR([unmerged], 44)?.number, 3);
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - a PR with merged omitted and a bare title still blocks (Issue #4478)", () => {
+  const omitted: ClosedPR = {
+    number: 3,
+    title: "Cleanup #44",
+    closedAt: "",
+  };
+  assertEquals(isBlockedByRecentlyClosedPR([omitted], 44)?.number, 3);
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - a merged PR whose closingRefs name the issue blocks it without a title mention (Issue #4478)", () => {
+  const prs: ClosedPR[] = [
+    {
+      number: 5,
+      title: "Refactor the ledger writer",
+      closedAt: "",
+      merged: true,
+      closingRefs: [2463],
+    },
+  ];
+  assertEquals(isBlockedByRecentlyClosedPR(prs, 2463)?.number, 5);
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - an earlier merged bare mention does not mask a later merged PR that names the issue (Issue #4478)", () => {
+  const prs: ClosedPR[] = [
+    { number: 10, title: CHUNK_FILED_2463, closedAt: "", merged: true },
+    {
+      number: 11,
+      title:
+        "Chunk 13d-2: record the env readers outside src/config in the chunk-13 ledger (Issue #2463)",
+      closedAt: "",
+      merged: true,
+    },
+  ];
+  assertEquals(isBlockedByRecentlyClosedPR(prs, 2463)?.number, 11);
 });
 
 // =============================================================================

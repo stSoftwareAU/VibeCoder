@@ -365,7 +365,12 @@ bash `worker/run_core.sh` conductor. It sequences:
    new rule: candidates come from the scan's own merged-PR matcher, and the
    Issue #482 ordering guard, the Issue #4396 merge-landing check and the
    trusted-re-label escape hatch all still apply. An issue carrying
-   `needs-human` is never closed by it.
+   `needs-human` is never closed by it. The match needs positive
+   identification (Issue #4478): a merged PR's body closing keywords must name
+   the issue, or its title must carry the delimited reference `(Issue #N)`,
+   `(#N)` or `[#N]`. A merged PR whose title only mentions a bare `#N` (for
+   example one that filed the issue) is recorded as `skipped` (reason: bare
+   title mention, not a fix) and the issue stays open.
 
    Both merged-PR closers and the merged-branch cleanup take their window
    from `gh pr list` listings ordered by update recency

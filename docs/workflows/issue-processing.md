@@ -330,7 +330,7 @@ cause.
 |---|---|
 | Bounded | At most `self_schedule_diagnostics_max_in_flight` (default `1`) in flight, counting assigned diagnostics — the assignee is the fleet's claim lock. The surplus is refused and logged, never dropped silently. |
 | Visible | The decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (posted once, deduped by marker). If either fails the diagnostic is **not** scheduled that scan — an untraceable privilege-bearing decision is worse than one more cycle of waiting. |
-| Escalating | A diagnostic blocked **permanently** (a merged fleet PR names it, which never self-clears) gets `needs-human` plus one explanatory comment instead of sitting open as an alarm nobody is obliged to read. |
+| Escalating | A diagnostic blocked **permanently** (a merged fleet PR names it by a closing keyword or a delimited title reference, which never self-clears) gets `needs-human` plus one explanatory comment instead of sitting open as an alarm nobody is obliged to read. |
 | Reversible | `self_schedule_diagnostics_enabled: false` restores the previous behaviour exactly — the diagnostic waits for a human `work-on`. |
 
 A human `work-on` still works, and still wins: tier 2 is evaluated before
@@ -429,7 +429,7 @@ Alongside the per-candidate filters above there is one **per-repo** gate. A repo
 | Eligible, or deferred by an open PR / occupied stream / closed-**unmerged** PR cooldown | `self` | **Yes** | Every one of these clears by itself, so waiting is correct. |
 | Assigned, carrying a blocking label, or a milestone-tracking tracker | `human` | No — dropped by `filterAndSort` before it is counted | The worker never actions it. |
 | Blocked solely by an open dependency | `human` | No | The dependency is often a `low-priority` issue in the same repo; suppressing would deadlock the chain. |
-| Named by a **merged** fleet PR (`merged-pr-permanent`) | `permanent` | No | The block is permanent — only a trusted re-label dated after the merge lifts it, or the housekeeping sweep closes the issue outright. |
+| Named by a **merged** fleet PR's closing keyword or delimited title reference (`merged-pr-permanent`) | `permanent` | No | The block is permanent — only a trusted re-label dated after the merge lifts it, or the housekeeping sweep closes the issue outright. |
 | Refused for an untrusted label add, or a content change needing re-approval | `human` | No | A person must act before the issue can ever be claimed, so it must not park the backlog meanwhile. |
 
 The `low-priority` → `idle-task` gate follows the same idea (Issue #2751). [`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts) reports `hasSuppressingLowPriority` from the raw open list — taken before `cleanStaleLabels` and the per-issue skips — counting only issues **not waiting on a human**. A `low-priority` issue is waiting on a human, and so leaves the repo's `idle-task` issues selectable, when it carries any of:
@@ -530,7 +530,8 @@ enforces it, and the single recovery path.
    and is skipped when no fleet authors are supplied.
 5. **Permanent merged-lock** — closes Mode B.
    [`fetchRecentlyClosedPRsForFleet`](../../worker/deno/lib/issue_query.ts)
-   unions every fleet account's closed PRs. A **merged** fleet PR blocks
+   unions every fleet account's closed PRs. A **merged** fleet PR that names
+   the issue by a closing keyword or delimited title reference blocks
    re-pickup **permanently**, regardless of the cooldown window; a
    **closed-unmerged** PR only blocks within the cooldown window, preserving the
    retry path. The claim's `fetchIssueState` check additionally **fails closed**
