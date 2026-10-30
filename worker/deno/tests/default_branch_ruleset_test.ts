@@ -479,6 +479,92 @@ Deno.test("ruleset - convergence is additive: a foreign context in our ruleset s
   assertEquals(contexts, ["org/compliance-gate", "gitleaks"]);
 });
 
+/**
+ * State where the worker's ruleset (id 42) already requires `checks` live, and
+ * the branch reports `gitleaks` and `markdownlint`. `markdownlint` is the one
+ * context an update must add (Issue #4487).
+ */
+function ownedRulesetState(checks: unknown): RepoState {
+  const rule = {
+    type: "required_status_checks",
+    ruleset_id: 42,
+    parameters: {
+      strict_required_status_checks_policy: true,
+      required_status_checks: checks,
+    },
+  };
+  return {
+    rulesets: [{ id: 42, name: VIBE_RULESET_NAME }],
+    branchRules: [rule],
+    rulesetRules: { 42: [rule] },
+    checkRuns: { main: ["gitleaks", "markdownlint"] },
+  };
+}
+
+Deno.test("ruleset - the update keeps owner-added checks with their integration ids (Issue #4487)", async () => {
+  const { gh, calls } = makeGh(
+    ownedRulesetState([
+      { context: "gitleaks", integration_id: 15368 },
+      { context: "secret-scan", integration_id: 111 },
+      { context: "static-analysis" },
+    ]),
+  );
+
+  const result = await ensureDefaultBranchRuleset(
+    "org/owned",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  assert(result.ok);
+  assert(result.changed);
+  assertEquals(result.added, ["markdownlint"]);
+  const writes = rulesetWrites(calls);
+  assertEquals(writes.length, 1);
+  assertEquals(writes[0]?.method, "PUT");
+  const checks = JSON.parse(writes[0]!.body!).rules[0].parameters
+    .required_status_checks;
+  assertEquals(checks, [
+    { context: "gitleaks", integration_id: 15368 },
+    { context: "secret-scan", integration_id: 111 },
+    { context: "static-analysis" },
+    { context: "markdownlint" },
+  ]);
+});
+
+Deno.test("ruleset - a malformed live check refuses the update and writes nothing (Issue #4487)", async () => {
+  const { gh, calls } = makeGh(
+    ownedRulesetState([{ context: "gitleaks", integration_id: "x" }]),
+  );
+
+  const result = await ensureDefaultBranchRuleset(
+    "org/malformed",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  assert(!result.ok);
+  assert(result.error.message.includes("Refusing to update ruleset 42"));
+  assert(
+    result.error.message.includes(
+      'has a non-integer integration_id for context "gitleaks"',
+    ),
+  );
+  assertEquals(rulesetWrites(calls).length, 0);
+
+  // Positive control: the same ruleset with a legal integration id writes once.
+  const legal = makeGh(
+    ownedRulesetState([{ context: "gitleaks", integration_id: 15368 }]),
+  );
+  const ok = await ensureDefaultBranchRuleset(
+    "org/malformed",
+    { branch: "main", visibility: "private" },
+    legal.gh,
+  );
+  assert(ok.ok);
+  assertEquals(rulesetWrites(legal.calls).length, 1);
+});
+
 // ---------------------------------------------------------------------------
 // Input validation and error paths
 // ---------------------------------------------------------------------------

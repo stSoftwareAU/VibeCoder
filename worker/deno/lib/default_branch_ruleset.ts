@@ -45,8 +45,7 @@
  *   - **Never weakens the ruleset it updates** (Issue #1290). The update is a
  *     full-document PUT, so the live ruleset is read first and every rule the
  *     worker does not model — `pull_request`, `non_fast_forward`, `deletion`,
- *     `required_signatures`, bypass actors — is carried through unchanged. The
- *     `required_status_checks` rule is the same union (Issue #4487). A
+ *     `required_signatures`, bypass actors — is carried through unchanged. A
  *     ruleset whose current rules cannot be read fails the sync loudly rather
  *     than being overwritten with a body built from status checks alone.
  *   - **Merge queue where GitHub allows one** (Issue #4424). Where the
@@ -507,6 +506,26 @@ export async function planDefaultBranchRuleset(
     };
   }
 
+  // A malformed live required check throws from the builder; refuse the update
+  // loudly rather than writing a body that silently forgets it (Issue #4487).
+  let body: RulesetBody;
+  try {
+    body = buildDefaultBranchRulesetUpdateBody(
+      VIBE_RULESET_NAME,
+      contexts,
+      live.value,
+      queue,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to update ruleset ${ours.id} in ${repo}: ${message}`,
+      ),
+    };
+  }
+
   return {
     ok: true,
     plan: {
@@ -515,12 +534,7 @@ export async function planDefaultBranchRuleset(
       preserved: currentContexts,
       preservedRules: preservedRulesFromDetail(live.value).map((r) => r.type),
       legacyClassicProtection,
-      body: buildDefaultBranchRulesetUpdateBody(
-        VIBE_RULESET_NAME,
-        contexts,
-        live.value,
-        queue,
-      ),
+      body,
       rulesetId: ours.id,
       mergeQueue,
     },

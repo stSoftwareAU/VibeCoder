@@ -223,14 +223,17 @@ rule, and carries every other rule and the `bypass_actors` list through
 unchanged. That rule is the **union** of the worker's contexts and the contexts
 already live in the ruleset, each live check keeping its `integration_id`
 (Issue #4487), so an owner-added check such as a secret scan or static-analysis
-gate survives a reconcile. Removing a check is a deliberate configuration
-change, never a reconcile side effect. The types it kept are reported as
+gate survives a reconcile. The update never removes a check; pruning one is a
+deliberate human action (above). The types it kept are reported as
 `preservedRules` and named in the setup output, so a run over a hardened
 ruleset shows what survived.
 
 A ruleset whose current rules **cannot be read** — a 403, a 404, an unparseable
 body — fails the sync loudly and writes nothing. "Could not see it" is never
-read as "there was nothing there".
+read as "there was nothing there". A live required check that is malformed (a
+non-string or empty `context`, a non-integer `integration_id`, a non-array
+`required_status_checks`) refuses the update loudly too, rather than being
+silently dropped from the rewritten rule.
 
 ```mermaid
 flowchart TD

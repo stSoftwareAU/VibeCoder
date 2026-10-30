@@ -2,7 +2,7 @@
  * Tests for lib/repo_rulesets.ts — repository ruleset primitives (Issue #4163).
  */
 
-import { assert, assertEquals, assertFalse } from "@std/assert";
+import { assert, assertEquals, assertFalse, assertThrows } from "@std/assert";
 import {
   buildDefaultBranchRulesetBody,
   buildDefaultBranchRulesetUpdateBody,
@@ -23,6 +23,7 @@ import {
   mergeQueueParametersFromDetail,
   type OpaqueRulesetRule,
   requiredContextsFromRules,
+  type RequiredStatusCheckBody,
   type RulesetDetail,
   updateRuleset,
 } from "../lib/repo_rulesets.ts";
@@ -668,45 +669,164 @@ Deno.test("repo_rulesets - the update body writes no bypass actors when the live
   assertEquals(carried.bypass_actors, [actor]);
 });
 
-Deno.test("repo_rulesets - the update body drops malformed live checks rather than writing them (Issue #4487)", () => {
-  const malformed: RulesetDetail = {
-    id: 45,
+/** A live ruleset whose one status-checks rule lists the given entries. */
+function detailWithChecks(entries: unknown): RulesetDetail {
+  return {
+    id: 46,
     name: "Vibe",
     rules: [
       {
         type: "required_status_checks",
         parameters: {
           strict_required_status_checks_policy: true,
-          required_status_checks: [
-            { context: 7, integration_id: 99 },
-            { context: "" },
-            null,
-            "bare-string",
-            { context: "float-id", integration_id: 2.5 },
-            { context: "string-id", integration_id: "15368" },
-            { context: "kept-check", integration_id: 222 },
-          ],
+          required_status_checks: entries,
         },
       },
     ],
   };
+}
 
-  const body = buildDefaultBranchRulesetUpdateBody(
-    "Vibe",
-    ["worker-check"],
-    malformed,
-  );
-
+/** The checks the status-checks rule writes for `contexts` over `live`. */
+function unionChecksOf(
+  contexts: string[],
+  live: RulesetDetail,
+): RequiredStatusCheckBody[] {
+  const body = buildDefaultBranchRulesetUpdateBody("Vibe", contexts, live);
   const checks = body.rules.find(isRequiredStatusChecksRule);
   assert(checks);
-  // Non-string or empty contexts are gone; a non-integer id is stripped, not
-  // written; a well-formed live check still comes through.
-  assertEquals(checks.parameters.required_status_checks, [
+  return checks.parameters.required_status_checks;
+}
+
+Deno.test("repo_rulesets - a live check with a non-string context throws rather than being dropped (Issue #4487)", () => {
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detailWithChecks([{ context: 7 }])),
+    Error,
+    "live required check 0 of rule 0 has no usable context",
+  );
+  // Positive control: the same entry with a usable context builds.
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "legal" }])),
+    [{ context: "worker-check" }, { context: "legal" }],
+  );
+});
+
+Deno.test("repo_rulesets - a live check with an empty context throws rather than being dropped (Issue #4487)", () => {
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detailWithChecks([{ context: "" }])),
+    Error,
+    "live required check 0 of rule 0 has no usable context",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "legal" }])),
+    [{ context: "worker-check" }, { context: "legal" }],
+  );
+});
+
+Deno.test("repo_rulesets - a non-integer float integration_id throws, naming the context (Issue #4487)", () => {
+  assertThrows(
+    () =>
+      unionChecksOf(
+        ["worker-check"],
+        detailWithChecks([{ context: "float-id", integration_id: 2.5 }]),
+      ),
+    Error,
+    'has a non-integer integration_id for context "float-id"',
+  );
+  // Positive control: the same check with an integer id builds.
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([{ context: "float-id", integration_id: 2 }]),
+    ),
+    [{ context: "worker-check" }, { context: "float-id", integration_id: 2 }],
+  );
+});
+
+Deno.test("repo_rulesets - a non-integer string integration_id throws, naming the context (Issue #4487)", () => {
+  assertThrows(
+    () =>
+      unionChecksOf(
+        ["worker-check"],
+        detailWithChecks([{ context: "string-id", integration_id: "15368" }]),
+      ),
+    Error,
+    'has a non-integer integration_id for context "string-id"',
+  );
+  // Positive control: the same check with a numeric id builds.
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([{ context: "string-id", integration_id: 15368 }]),
+    ),
+    [
+      { context: "worker-check" },
+      { context: "string-id", integration_id: 15368 },
+    ],
+  );
+});
+
+Deno.test("repo_rulesets - a required_status_checks value that is not an array throws (Issue #4487)", () => {
+  assertThrows(
+    () =>
+      unionChecksOf(
+        ["worker-check"],
+        detailWithChecks({ context: "gate" }),
+      ),
+    Error,
+    "required_status_checks of live rule 0 is not an array",
+  );
+  // Positive control: the same check inside an array builds.
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "gate" }])),
+    [{ context: "worker-check" }, { context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - a live check entry that is not an object throws (Issue #4487)", () => {
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detailWithChecks([null])),
+    Error,
+    "live required check 0 of rule 0 is not an object",
+  );
+  // Positive control: the same slot holding an object builds.
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "gate" }])),
+    [{ context: "worker-check" }, { context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - a null or non-object live rule, or a status-checks rule with no parameters, contributes no checks (Issue #4487)", () => {
+  const detail: RulesetDetail = {
+    id: 47,
+    name: "Vibe",
+    rules: [null, 7, { type: "required_status_checks" }] as never,
+  };
+  assertEquals(unionChecksOf(["worker-check"], detail), [
     { context: "worker-check" },
-    { context: "float-id" },
-    { context: "string-id" },
-    { context: "kept-check", integration_id: 222 },
   ]);
+});
+
+Deno.test("repo_rulesets - a context listed twice in the live ruleset keeps the first entry (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([
+        { context: "gate", integration_id: 1 },
+        { context: "gate", integration_id: 2 },
+      ]),
+    ),
+    [
+      { context: "worker-check" },
+      { context: "gate", integration_id: 1 },
+    ],
+  );
+});
+
+Deno.test("repo_rulesets - a worker context repeated in the contexts is written once (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(["gate", "gate"], detailWithChecks([])),
+    [{ context: "gate" }],
+  );
 });
 
 Deno.test("repo_rulesets - createRulesetReturningId returns the id GitHub assigned", async () => {

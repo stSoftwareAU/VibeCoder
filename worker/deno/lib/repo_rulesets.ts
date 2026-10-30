@@ -465,34 +465,67 @@ export function mergeQueueParametersFromDetail(
  * Required checks the live ruleset already enforces, across every
  * `required_status_checks` rule it carries (Issue #4487).
  *
- * Entries that are not check-shaped are dropped: a check needs a non-empty
- * string `context`, and its `integration_id` is kept only when it is an
- * integer. The first entry for a context wins.
+ * A rule that is not an object, has no `parameters`, or has no
+ * `required_status_checks` key contributes no checks: there is nothing to lose.
+ * Anything else malformed throws rather than being dropped or stripped, so a
+ * reconcile never writes back a body that silently forgets a live check. That
+ * covers a non-object entry, a `context` that is not a non-empty string, an
+ * `integration_id` that is present (not `undefined` or `null`) but not an
+ * integer, and a `required_status_checks` value that is not an array. Every
+ * entry is validated before de-duplication; the first entry for a context wins.
+ *
+ * @throws Error naming the malformed live check.
  */
 function liveRequiredChecks(
   existing: RulesetDetail,
 ): RequiredStatusCheckBody[] {
-  const rules = Array.isArray(existing.rules) ? existing.rules : [];
+  const rules: unknown[] = Array.isArray(existing.rules) ? existing.rules : [];
   const checks = new Map<string, RequiredStatusCheckBody>();
-  for (const rule of rules) {
+  for (const [ruleIndex, rule] of rules.entries()) {
     if (rule === null || typeof rule !== "object") continue;
-    if (rule.type !== "required_status_checks") continue;
-    const parameters: unknown = rule.parameters;
+    if ((rule as { type?: unknown }).type !== "required_status_checks") {
+      continue;
+    }
+    const parameters: unknown = (rule as { parameters?: unknown }).parameters;
     if (parameters === null || typeof parameters !== "object") continue;
     const entries: unknown =
       (parameters as Record<string, unknown>).required_status_checks;
-    if (!Array.isArray(entries)) continue;
-    for (const entry of entries as unknown[]) {
-      if (entry === null || typeof entry !== "object") continue;
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries)) {
+      throw new Error(
+        `Refusing to rewrite required checks: required_status_checks of live ` +
+          `rule ${ruleIndex} is not an array`,
+      );
+    }
+    for (const [checkIndex, entry] of (entries as unknown[]).entries()) {
+      const where = `live required check ${checkIndex} of rule ${ruleIndex}`;
+      if (entry === null || typeof entry !== "object") {
+        throw new Error(
+          `Refusing to rewrite required checks: ${where} is not an object`,
+        );
+      }
       const { context, integration_id: integrationId } = entry as Record<
         string,
         unknown
       >;
-      if (typeof context !== "string" || context.length === 0) continue;
+      if (typeof context !== "string" || context.length === 0) {
+        throw new Error(
+          `Refusing to rewrite required checks: ${where} has no usable context`,
+        );
+      }
+      if (
+        integrationId !== undefined && integrationId !== null &&
+        !(typeof integrationId === "number" && Number.isInteger(integrationId))
+      ) {
+        throw new Error(
+          `Refusing to rewrite required checks: ${where} has a non-integer ` +
+            `integration_id for context "${context}"`,
+        );
+      }
       if (checks.has(context)) continue;
       checks.set(
         context,
-        typeof integrationId === "number" && Number.isInteger(integrationId)
+        typeof integrationId === "number"
           ? { context, integration_id: integrationId }
           : { context },
       );
@@ -537,14 +570,17 @@ function unionRequiredChecks(
  * force-push protection, deletion protection, bypass actors (Issue #1290).
  * This rewrites only the `required_status_checks` rule, as the union of
  * `contexts` and the checks the live ruleset already requires, each live check
- * keeping its `integration_id`. An owner-added check is therefore never dropped
- * by a reconcile; removing a check takes an explicit configuration change.
- * Every other rule and the bypass actors of the live ruleset are carried
- * through unchanged.
+ * keeping its `integration_id`. The update PUT therefore never drops a check the
+ * live ruleset requires; it never removes a check, so pruning one is a
+ * deliberate human action. Every other rule and the bypass actors of the live
+ * ruleset are carried through unchanged.
  *
  * The live `merge_queue` rule, if any, is never carried through: it is
  * replaced by a rule built from `mergeQueue` when one is given, and dropped
  * otherwise. So a re-run never duplicates the rule.
+ *
+ * @throws Error when the live ruleset carries a malformed required check (see
+ *   {@link liveRequiredChecks}), so nothing is built and nothing is written.
  */
 export function buildDefaultBranchRulesetUpdateBody(
   name: string,
