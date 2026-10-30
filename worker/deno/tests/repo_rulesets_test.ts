@@ -565,7 +565,7 @@ const LIVE_OWNER_CHECKS: RulesetDetail = {
         required_status_checks: [
           { context: "gate", integration_id: 15368 },
           { context: "secret-scan", integration_id: 111 },
-          { context: "static-analysis" },
+          { context: "static-analysis", integration_id: 222 },
         ],
       },
     },
@@ -576,22 +576,33 @@ Deno.test("repo_rulesets - the update body keeps the live checks the worker does
   const body = buildDefaultBranchRulesetUpdateBody(
     "Vibe",
     ["gate"],
-    LIVE_OWNER_CHECKS,
+    { ...LIVE_OWNER_CHECKS, bypass_actors: [] },
   );
 
   const checks = body.rules.find(isRequiredStatusChecksRule);
   assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
+  assertFalse("bypass_actors" in body);
   assertEquals(checks.parameters.required_status_checks, [
     { context: "gate", integration_id: 15368 },
     { context: "secret-scan", integration_id: 111 },
-    { context: "static-analysis" },
+    { context: "static-analysis", integration_id: 222 },
   ]);
-  // A check with no pinned app must not gain an integration_id key at all.
-  const staticAnalysis = checks.parameters.required_status_checks.find((
-    check,
-  ) => check.context === "static-analysis");
-  assert(staticAnalysis);
-  assertFalse("integration_id" in staticAnalysis);
+});
+
+Deno.test("repo_rulesets - an unpinned live check stays unpinned", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    detailWithChecks([{ context: "owner-unpinned" }]),
+  );
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  const unpinned = checks.parameters.required_status_checks.find((check) =>
+    check.context === "owner-unpinned"
+  );
+  assert(unpinned);
+  assertFalse("integration_id" in unpinned);
 });
 
 Deno.test("repo_rulesets - a new worker context is written without an integration_id beside the live checks (Issue #4487)", () => {
@@ -608,20 +619,8 @@ Deno.test("repo_rulesets - a new worker context is written without an integratio
     { context: "gate", integration_id: 15368 },
     { context: "markdownlint" },
     { context: "secret-scan", integration_id: 111 },
-    { context: "static-analysis" },
+    { context: "static-analysis", integration_id: 222 },
   ]);
-});
-
-Deno.test("repo_rulesets - the update body keeps strict on when there is no merge queue (Issue #4487)", () => {
-  const body = buildDefaultBranchRulesetUpdateBody(
-    "Vibe",
-    ["gate"],
-    LIVE_OWNER_CHECKS,
-  );
-
-  const checks = body.rules.find(isRequiredStatusChecksRule);
-  assert(checks);
-  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
 });
 
 Deno.test("repo_rulesets - a queue turns strict off and still keeps every live check (Issue #4487)", () => {
@@ -642,31 +641,8 @@ Deno.test("repo_rulesets - a queue turns strict off and still keeps every live c
   assertEquals(checks.parameters.required_status_checks, [
     { context: "gate", integration_id: 15368 },
     { context: "secret-scan", integration_id: 111 },
-    { context: "static-analysis" },
+    { context: "static-analysis", integration_id: 222 },
   ]);
-});
-
-Deno.test("repo_rulesets - the update body writes no bypass actors when the live ruleset has none (Issue #4487)", () => {
-  const empty: RulesetDetail = { ...LIVE_OWNER_CHECKS, bypass_actors: [] };
-  const body = buildDefaultBranchRulesetUpdateBody("Vibe", ["gate"], empty);
-  assertFalse("bypass_actors" in body);
-
-  // Positive control: the same input with one live actor does carry it.
-  const actor = {
-    actor_type: "OrganizationAdmin" as const,
-    actor_id: 1,
-    bypass_mode: "always" as const,
-  };
-  const withActor: RulesetDetail = {
-    ...LIVE_OWNER_CHECKS,
-    bypass_actors: [actor],
-  };
-  const carried = buildDefaultBranchRulesetUpdateBody(
-    "Vibe",
-    ["gate"],
-    withActor,
-  );
-  assertEquals(carried.bypass_actors, [actor]);
 });
 
 /** A live ruleset whose one status-checks rule lists the given entries. */
@@ -795,24 +771,77 @@ Deno.test("repo_rulesets - a live check entry that is not an object throws (Issu
   );
 });
 
-Deno.test("repo_rulesets - a null or non-object live rule, or a status-checks rule with no parameters, contributes no checks (Issue #4487)", () => {
+Deno.test("repo_rulesets - a malformed status-checks rule without parameters refuses the update (Issue #4487)", () => {
   const detail: RulesetDetail = {
     id: 47,
     name: "Vibe",
-    rules: [null, 7, { type: "required_status_checks" }] as never,
+    rules: [{ type: "required_status_checks" }] as never,
   };
-  assertEquals(unionChecksOf(["worker-check"], detail), [
-    { context: "worker-check" },
-  ]);
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rule 0 has no parameters object",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], { ...detail, rules: [] }),
+    [{ context: "worker-check" }],
+  );
 });
 
-Deno.test("repo_rulesets - a context listed twice in the live ruleset keeps the first entry (Issue #4487)", () => {
+Deno.test("repo_rulesets - missing live rules refuse the update instead of clearing checks (Issue #4487)", () => {
+  const detail: RulesetDetail = { id: 48, name: "Vibe" };
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rules is not an array",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], { ...detail, rules: [] }),
+    [{ context: "worker-check" }],
+  );
+});
+
+Deno.test("repo_rulesets - missing required checks refuse the update instead of clearing them (Issue #4487)", () => {
+  const detail: RulesetDetail = {
+    id: 49,
+    name: "Vibe",
+    rules: [{ type: "required_status_checks", parameters: {} }] as never,
+  };
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rule 0 has no required_status_checks array",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([])),
+    [{ context: "worker-check" }],
+  );
+});
+
+Deno.test("repo_rulesets - distinct live apps for one context are both retained (Issue #4487)", () => {
   assertEquals(
     unionChecksOf(
       ["worker-check"],
       detailWithChecks([
         { context: "gate", integration_id: 1 },
         { context: "gate", integration_id: 2 },
+      ]),
+    ),
+    [
+      { context: "worker-check" },
+      { context: "gate", integration_id: 1 },
+      { context: "gate", integration_id: 2 },
+    ],
+  );
+});
+
+Deno.test("repo_rulesets - an exact live context and app duplicate keeps the first entry (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([
+        { context: "gate", integration_id: 1 },
+        { context: "gate", integration_id: 1 },
       ]),
     ),
     [

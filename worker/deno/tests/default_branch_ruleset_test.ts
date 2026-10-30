@@ -506,7 +506,7 @@ Deno.test("ruleset - the update keeps owner-added checks with their integration 
     ownedRulesetState([
       { context: "gitleaks", integration_id: 15368 },
       { context: "secret-scan", integration_id: 111 },
-      { context: "static-analysis" },
+      { context: "static-analysis", integration_id: 222 },
     ]),
   );
 
@@ -527,7 +527,7 @@ Deno.test("ruleset - the update keeps owner-added checks with their integration 
   assertEquals(checks, [
     { context: "gitleaks", integration_id: 15368 },
     { context: "secret-scan", integration_id: 111 },
-    { context: "static-analysis" },
+    { context: "static-analysis", integration_id: 222 },
     { context: "markdownlint" },
   ]);
 });
