@@ -7,9 +7,10 @@
  * #47, #218); this makes it visible as a DRAFT that says `Part of #N` — never
  * a closing keyword, never auto-merge (the sweep skips drafts, Issue #1800).
  * The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so
- * the next run re-claims the issue, resumes the branch (Issue #220) and
- * finishes; once every criterion is met, completion marks the draft ready
- * with `Closes #N` and it takes the normal review and auto-merge path.
+ * the next run re-claims the issue and resumes the branch (Issue #220). When
+ * that run completes, completion marks the draft ready and it takes the
+ * normal review and auto-merge path, even with a criterion still unmet
+ * (Issue #4234); the body says `Closes #N` unless an entry is `missing`.
  *
  * Best-effort: the branch is the deliverable that matters, so a `gh` failure
  * is reported, never thrown.
@@ -93,8 +94,9 @@ export async function ensureDraftContinuationPr(args: {
  * CI and code reviews aren't done." Marks it a draft, disarms auto-merge when
  * armed, and rewrites the body to `Part of #N` with no closing keyword. The
  * branch is left alone and the issue stays under `work-on`, so the next run
- * continues it; completion marks it ready and arms auto-merge once every
- * criterion is met.
+ * continues it; when that run completes, completion marks it ready and arms
+ * auto-merge even with a criterion still unmet, and the body says `Closes #N`
+ * unless an entry is `missing` (Issue #4234).
  *
  * Each step is best-effort and reported through `log`, never thrown: the
  * draft state is what keeps the sweep away, so a failed body edit must not
@@ -168,8 +170,10 @@ export function buildUnmetDraftBody(issueNumber: number, body: string): string {
     DRAFT_CONTINUATION_MARKER,
     "",
     `> **Draft — not every acceptance criterion is met yet.** Part of #${issueNumber}. ` +
-    "The next run continues this branch; the PR is marked ready, with " +
-    "auto-merge armed, once every criterion is met (Issue #4146).",
+    "The next run continues this branch; when it completes, the PR is " +
+    "marked ready and auto-merge armed, even with a criterion still unmet, " +
+    "and it says `Closes #N` unless an entry is `missing` " +
+    "(Issues #4146, #4234).",
     "",
     withholdIssueClose(body, issueNumber),
   ].join("\n");
@@ -264,7 +268,9 @@ export function buildDraftContinuationBody(issueNumber: number): string {
     "",
     "**Work in progress.** The run timed out before every acceptance " +
     "criterion was met, so this PR is a draft and does not close the issue. " +
-    "The issue stays under `work-on`: the next run resumes this branch and " +
-    "finishes the job, then marks this PR ready with `Closes` (Issue #4146).",
+    "The issue stays under `work-on`: the next run resumes this branch; " +
+    "when it completes, this PR is marked ready and auto-merge armed, even " +
+    "with a criterion still unmet, and it says `Closes #N` unless an entry " +
+    "is `missing` (Issues #4146, #4234).",
   ].join("\n");
 }

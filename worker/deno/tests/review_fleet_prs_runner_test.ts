@@ -226,6 +226,86 @@ Deno.test("run.sh --once reviews the gate's ready PRs in one headless round in t
   );
 });
 
+/** The shell commands named by the round's `Bash(<cmd>:*)` rules. */
+function bashRuleCommands(args: string): string[] {
+  const lines = args.split("\n");
+  const json = lines[lines.indexOf("--claude-args") + 1];
+  assert(json, "the round was given --claude-args");
+  return (JSON.parse(json) as string[])
+    .map((rule) => rule.match(/^Bash\((.+):\*\)$/)?.[1])
+    .filter((cmd): cmd is string => cmd !== undefined)
+    .sort();
+}
+
+/** The shell commands the round's prompt says it may run. */
+function promptCommands(prompt: string): string[] {
+  const flat = prompt.replace(/\s+/g, " ");
+  const found = flat.match(
+    /Shell commands you may run: (.+?), and the read-only git subcommands \((.+?)\)/,
+  );
+  const [, commands, gitSubcommands] = found ?? [];
+  assert(
+    commands && gitSubcommands,
+    "the prompt names the commands the round may run",
+  );
+  return [
+    ...commands.split(", "),
+    ...gitSubcommands.split(", ").map((sub) => `git ${sub}`),
+  ].sort();
+}
+
+Deno.test("run.sh tells the round exactly the shell commands its --allowedTools allow, and to pass them to its reviewers (#4501 review)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = await claudeArgs(home);
+  assert(args, "the round was not started");
+  const prompt = await roundPrompt(home);
+  const allowed = bashRuleCommands(args);
+  assert(allowed.includes("git log"), allowed.join(", "));
+  // Every Bash rule is named in the prompt, and every named command has a rule.
+  assertEquals(promptCommands(prompt), allowed);
+  // The reviewers the round launches get the same paragraph, and are told
+  // WebFetch is refused.
+  const flat = prompt.replace(/\s+/g, " ");
+  assertStringIncludes(flat, "WebFetch is refused");
+  assertStringIncludes(
+    flat,
+    "Every fleet-pr-reviewer agent you launch runs under these same rules",
+  );
+});
+
+Deno.test("run.sh lets the round write scratch files under /tmp and its own round directory, and nowhere else", async () => {
+  // Claude Code refuses a Bash command whose paths lie outside the session's
+  // directories, and a file write (mkdir, `> file`) outside acceptEdits, even
+  // when the command itself is allowed: after #4501 a round still had ~3
+  // commands refused, mostly `ls <round dir>`, `mkdir -p /tmp/…` and
+  // `gh … > /tmp/…`.
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = await claudeArgs(home);
+  assert(args, "the round was not started");
+  const lines = args.split("\n");
+  const claude = JSON.parse(
+    lines[lines.indexOf("--claude-args") + 1]!,
+  ) as string[];
+  const dirs = claude.flatMap((arg, i) =>
+    arg === "--add-dir" ? [claude[i + 1]!] : []
+  );
+  assertEquals(dirs.length, 2, claude.join(" "));
+  assertEquals(dirs[0], "/tmp");
+  assert(
+    dirs[1]!.startsWith("/home/vibe/logs/review-fleet-prs/rounds/"),
+    dirs[1],
+  );
+  // Only the round's own directory: never the whole state directory.
+  assert(dirs[1] !== "/home/vibe/logs/review-fleet-prs/rounds/", dirs[1]);
+  assertEquals(claude[claude.indexOf("--permission-mode") + 1], "acceptEdits");
+  const flat = (await roundPrompt(home)).replace(/\s+/g, " ");
+  assertStringIncludes(flat, "Write scratch files only under /tmp");
+});
+
 Deno.test("run.sh --once starts no Claude session when nothing is ready", async () => {
   const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
   const { code, output } = await run(home, "--once");
