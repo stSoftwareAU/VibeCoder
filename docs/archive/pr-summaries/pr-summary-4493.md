@@ -106,3 +106,11 @@ Backend only; no UI files touched.
 - `deno task test:unit` over `egress_allowed_probe_retry_test.ts`,
   `egress_selfcheck_test.ts`, `run_worker_test.ts`: 64 passed, 0 failed.
   `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
+- `./quality.sh` on the final head: deno lint, type check and fmt passed; deno
+  tests reported 31119 passed and 1 failed:
+  `worker/deno/tests/pr_maintenance_command_test.ts` "update-open-pr-branches
+  takes no action on a behind-only PR behind a merge queue (Issue #4424)". That
+  test does not touch the egress code and fails the same way (23 passed, 1
+  failed) on base commit `7635984b` in a clean checkout, so it is not caused by
+  this change and is left as is. The gate's overall result is therefore FAILED
+  for that one pre-existing test.
