@@ -1032,6 +1032,146 @@ Deno.test("sweepMergedPrIssues - a body reference on a closed-unmerged PR closes
   assertEquals(calls.closes, []);
 });
 
+// ---------------------------------------------------------------------------
+// Issue #4478: a merged PR whose title only mentions `#N` in passing is not
+// the fix for #N, so it never closes it; positive identification still does
+// ---------------------------------------------------------------------------
+
+/** A merged PR whose title names #2463 only in passing (Issue #4478). */
+const BARE_MENTION_TITLE =
+  "Chunk 13d-2: record the env readers outside src/config in the chunk-13 ledger, file #2463, add the 13d ledger test";
+
+/** The #2463 world: the bare-mention PR, merged and landed, with a given body. */
+function bareMentionWorld(
+  prOverrides: Partial<GhWorldPr> = {},
+): GhWorld {
+  return landedWorld({
+    issues: [{
+      number: 2463,
+      title: "Record the env readers in the chunk-13 ledger",
+      labels: ["bug"],
+      createdAt: "2026-08-26T00:00:00Z",
+    }],
+    prs: [{
+      number: 2472,
+      title: BARE_MENTION_TITLE,
+      mergedAt: "2026-08-28T04:55:00Z",
+      closedAt: "2026-08-28T04:55:00Z",
+      mergeCommit: "f00dcafe",
+      body: "Closes #2271",
+      ...prOverrides,
+    }],
+  });
+}
+
+Deno.test("sweepMergedPrIssues - a merged PR whose title only mentions #N in passing does not close it (Issue #4478)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(bareMentionWorld(), calls),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(calls.closes, []);
+  assertEquals(result.closed, 0);
+  assertEquals(result.candidates, 0);
+  assertEquals(result.records.length, 1, JSON.stringify(result.records));
+  assertEquals(result.records[0]?.outcome, "skipped");
+  assertEquals(result.records[0]?.issueNumber, 2463);
+  assertEquals(result.records[0]?.prNumber, 2472);
+  assertStringIncludes(result.records[0]?.reason ?? "", "bare mention");
+});
+
+Deno.test("sweepMergedPrIssues - the same title with a closing keyword for #N in its body closes it (Issue #4478)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(bareMentionWorld({ body: "Closes #2463" }), calls),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(result.closed, 1);
+  assertEquals(calls.closes.map((c) => c.issue), ["2463"]);
+});
+
+Deno.test("sweepMergedPrIssues - the same body with the delimited (Issue #N) title reference closes it (Issue #4478)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(
+      bareMentionWorld({ title: `${BARE_MENTION_TITLE} (Issue #2463)` }),
+      calls,
+    ),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(result.closed, 1);
+  assertEquals(calls.closes.map((c) => c.issue), ["2463"]);
+});
+
+Deno.test("sweepMergedPrIssues - a bare-mention PR already recorded as processed adds no record and closes nothing (Issue #4478)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-bare-mark-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    await seedProcessed(watermarkPath, { "org/repo": [2472] });
+
+    const calls: GhCalls = { closes: [] };
+    const result = await sweepMergedPrIssues(baseOptions({ watermarkPath }), {
+      ghCommandFn: makeGh(bareMentionWorld(), calls),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+    });
+
+    assertEquals(result.records, []);
+    assertEquals(result.closed, 0);
+    assertEquals(calls.closes, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - a closed-unmerged PR that bare-mentions #N, listed first, does not hide the merged fix (Issue #4478)", async () => {
+  const calls: GhCalls = { closes: [] };
+  // The fleet fetch keeps the order `gh pr list` returns, so the abandoned
+  // PR is first. Its bare `#2463` must not mask the merged PR that names it.
+  const world = landedWorld({
+    issues: [{
+      number: 2463,
+      title: "Record the env readers in the chunk-13 ledger",
+      labels: ["bug"],
+      createdAt: "2026-08-26T00:00:00Z",
+    }],
+    prs: [
+      {
+        number: 2466,
+        title: "Chunk 13d draft: file #2463 for the ledger",
+        mergedAt: null,
+        closedAt: new Date().toISOString(),
+      },
+      {
+        number: 2472,
+        title: "Record the env readers in the ledger (Issue #2463)",
+        mergedAt: "2026-08-28T04:55:00Z",
+        closedAt: "2026-08-28T04:55:00Z",
+        mergeCommit: "f00dcafe",
+      },
+    ],
+  });
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(world, calls),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(result.closed, 1);
+  assertEquals(calls.closes.map((c) => c.issue), ["2463"]);
+  assert(
+    !result.records.some((r) => r.reason.includes("bare mention")),
+    `no bare-mention record expected, got ${JSON.stringify(result.records)}`,
+  );
+});
+
 Deno.test("buildSweepCloseComment - names the milestone branch when the merge was not into the default branch (Issue #1528)", () => {
   const onMilestone = buildSweepCloseComment(1509, {
     landed: true,

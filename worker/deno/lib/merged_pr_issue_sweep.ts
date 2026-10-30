@@ -10,12 +10,15 @@
  *
  * This module points that same closer at exactly the set that cannot heal
  * itself. It invents no new rule: the candidate set is the claim scan's own
- * (`isBlockedByRecentlyClosedPR` over the fleet's closed/merged PRs, taking
- * only the `merged` verdicts), and every gate the scan and the closer already
- * apply still applies here —
+ * merged verdict (`mergedPrNamesIssue`, the test `isBlockedByRecentlyClosedPR`
+ * applies to a merged PR, over the fleet's closed/merged PRs; closed-unmerged
+ * PRs never qualify), and every gate the scan and the closer already apply
+ * still applies here —
  *
- *  - the Issue #319 title matcher, so a PR that merely mentions `#N` in a
- *    repo-qualified or PR-qualified way is not read as its fix;
+ *  - positive identification of a merged PR — a closing keyword in its body,
+ *    or the delimited title reference `(Issue #N)`, `(#N)` or `[#N]` — so a
+ *    bare `#N` in its title is only a mention and never closes the issue
+ *    (Issue #4478). A bare title mention is recorded as skipped, not closed;
  *  - the Issue #482 ordering guard, so a merge can never close an issue filed
  *    after it;
  *  - the Issue #4396 merge-landing check, so a merge that went nowhere leaves
@@ -51,11 +54,12 @@ import {
   type ClosedPR,
   fetchAllIssues,
   fetchRecentlyClosedPRsForFleet,
-  isBlockedByRecentlyClosedPR,
+  mergedPrNamesIssue,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import type { IssueCache } from "./issue_cache.ts";
+import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import type { MergeLanding } from "./merge_landing.ts";
 import {
@@ -177,7 +181,11 @@ export interface MergedPrIssueSweepRecord {
 export interface MergedPrIssueSweepResult {
   /** Open issues examined across every repo. */
   scanned: number;
-  /** Issues named by a merged fleet PR (the `merged-pr-permanent` set). */
+  /**
+   * Issues positively named by a merged fleet PR (the `merged-pr-permanent`
+   * set). A bare `#N` in a merged PR's title is a mention, not a candidate
+   * (Issue #4478).
+   */
   candidates: number;
   /** Issues closed by this sweep. */
   closed: number;
@@ -405,16 +413,37 @@ export async function sweepMergedPrIssues(
 
       // The claim scan's own verdict: only a **merged** match is the
       // permanent block this sweep exists to clear. A closed-unmerged match
-      // is a cooldown that expires by itself. Issue #1528: a merged PR whose
-      // BODY closes this issue (`Fixes #N`) counts too — GitHub honours that
-      // reference only on the default branch, so a sub-issue PR merged into
-      // a milestone branch never closed its issue and held the rollup shut.
-      const byBody = closedPRs.find((pr) =>
-        pr.merged === true && (pr.closingRefs ?? []).includes(issue.number)
+      // is a cooldown that expires by itself, so it is never a candidate here.
+      // Issue #1528: a merged PR whose BODY closes this issue (`Fixes #N`)
+      // counts as well, since GitHub honours that reference only on the
+      // default branch, and a sub-issue PR merged into a milestone branch
+      // never closed its issue. Issue #4478: a merged PR counts only on
+      // positive identification, so a bare `#N` in its title does not.
+      const blocking = closedPRs.find((pr) =>
+        pr.merged === true && mergedPrNamesIssue(pr, issue.number)
       );
-      const blocking = byBody ??
-        isBlockedByRecentlyClosedPR(closedPRs, issue.number);
-      if (!blocking || !blocking.merged) continue;
+      if (!blocking) {
+        // Issue #4478: a merged PR whose title only mentions `#N` in passing
+        // is not its fix. Record that, so the decision is visible, and leave
+        // the issue open. The PR settles here: it is not held back.
+        const mentioned = closedPRs.find((pr) =>
+          pr.merged === true && prTitleReferencesIssue(pr.title, issue.number)
+        );
+        if (
+          mentioned && (!state || !isProcessed(state, repo, mentioned.number))
+        ) {
+          result.records.push({
+            repo,
+            issueNumber: issue.number,
+            prNumber: mentioned.number,
+            outcome: "skipped",
+            reason: `PR #${mentioned.number}'s title only mentions ` +
+              `#${issue.number} — a bare mention is not a fix, so the issue ` +
+              `stays open (Issue #4478)`,
+          });
+        }
+        continue;
+      }
       if (state && isProcessed(state, repo, blocking.number)) {
         result.alreadyProcessed++;
         continue;
