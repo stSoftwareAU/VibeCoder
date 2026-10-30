@@ -26,9 +26,16 @@
  *   has used 80% or more cannot spend whatever its week still holds, so every
  *   passing token ranks ahead of every failing one.
  * - **Passing tokens are ordered by remaining share** of the seven-day window
- *   (100% less its utilisation), largest first. A nearly spent week needs no
- *   floor of its own: it holds the least and so ranks last among the passing
- *   tokens.
+ *   (100% less its utilisation), largest first. A nearly spent week has no
+ *   floor band of its own and still ranks ahead of every gate-passing token
+ *   that reported no seven-day window (the telemetry rule below decides that
+ *   before share does); only a week with nothing left is demoted (next rule).
+ * - **A seven-day window with nothing left is a gate failure too.** A token
+ *   at 0% of its week whose reset is still ahead cannot spend anything
+ *   however full its five hours are, so it ranks behind every token that can
+ *   run, whatever telemetry the others reported. That is an exhaustion check
+ *   (as `hasBudgetLeft` in `claude_credential_pool.ts` reads it), not a floor
+ *   on a nearly spent week.
  * - **Among passing tokens, one with a seven-day window ranks ahead of one
  *   without** (Issue #4503, restoring #1731): a share of a five-hour window is
  *   not comparable with a share of a seven-day one. A response that reported
@@ -193,6 +200,11 @@ export type ClaudeTokenSelectionReason =
    * five-hour window refills first.
    */
   | "five-hour-gate-failed-soonest-reset"
+  /**
+   * No candidate could run: the winner passed the five-hour gate but has no
+   * seven-day quota left, and is the one whose week reopens first.
+   */
+  | "seven-day-spent-soonest-reset"
   /** No candidate had a known budget; #917's discovery order decided. */
   | "budget-unknown-discovery-order";
 
@@ -231,6 +243,12 @@ export interface RankedClaudeToken {
   readonly hasSevenDayTelemetry: boolean;
   /** True when the five-hour window still holds the gate's minimum share. */
   readonly passesFiveHourGate: boolean;
+  /**
+   * True when the seven-day window is at 0% with its reset still ahead, so the
+   * token cannot spend anything until that reset. A window that has already
+   * reset is full, not spent.
+   */
+  readonly sevenDaySpent: boolean;
   /**
    * Remaining share of {@link rankWindow}, in `[0, 1]`, or null when the
    * budget is unknown. 1 for a token whose window had already reset.
@@ -313,6 +331,7 @@ function rankingView(
       rankWindow: null,
       hasSevenDayTelemetry: false,
       passesFiveHourGate: false,
+      sevenDaySpent: false,
       remainingFraction: null,
       resetAt: null,
       windowElapsed: false,
@@ -337,6 +356,8 @@ function rankingView(
     // A response carrying no five-hour window has no gate to fail.
     passesFiveHourGate: fiveHour === null ||
       1 - fiveHour.remainingFraction < CLAUDE_FIVE_HOUR_GATE_MAX_USED,
+    // An elapsed window already counts as full, so it is never spent.
+    sevenDaySpent: sevenDay !== null && sevenDay.remainingFraction <= 0,
     remainingFraction: rankWindow?.remainingFraction ?? null,
     resetAt: rankWindow?.resetAt ?? null,
     windowElapsed: rankWindow?.elapsed ?? false,
@@ -348,12 +369,29 @@ function rankingView(
  * so every candidate in a lower band beats every candidate above it.
  *
  * 0. passed the five-hour gate;
- * 1. failed the five-hour gate — it cannot spend what it holds right now;
+ * 1. failed the five-hour gate, or has no seven-day quota left — it cannot
+ *    spend anything right now;
  * 2. budget unknown, which never drops a candidate, only ranks it last.
  */
 function band(candidate: RankedClaudeToken): 0 | 1 | 2 {
   if (candidate.remainingFraction === null) return 2;
-  return candidate.passesFiveHourGate ? 0 : 1;
+  return candidate.passesFiveHourGate && !candidate.sevenDaySpent ? 0 : 1;
+}
+
+/**
+ * When a band-1 candidate can spend again: the later of the resets that block
+ * it (the five-hour one when the gate failed, the seven-day one when the week
+ * is spent).
+ */
+function refillAt(candidate: RankedClaudeToken): number {
+  let at = Number.MIN_SAFE_INTEGER;
+  if (!candidate.passesFiveHourGate) {
+    at = Math.max(at, candidate.fiveHour?.resetAt ?? Number.MAX_SAFE_INTEGER);
+  }
+  if (candidate.sevenDaySpent) {
+    at = Math.max(at, candidate.resetAt ?? Number.MAX_SAFE_INTEGER);
+  }
+  return at;
 }
 
 /**
@@ -372,8 +410,8 @@ function compareCandidates(
   if (bandA === 2) return a.index - b.index;
   if (bandA === 1) {
     // Nothing here can be spent now, so the first to refill is used first.
-    const leftReset = a.fiveHour?.resetAt ?? Number.MAX_SAFE_INTEGER;
-    const rightReset = b.fiveHour?.resetAt ?? Number.MAX_SAFE_INTEGER;
+    const leftReset = refillAt(a);
+    const rightReset = refillAt(b);
     if (leftReset !== rightReset) return leftReset - rightReset;
     return a.index - b.index;
   }
@@ -401,7 +439,11 @@ function winningReason(
   if (winner === undefined) return null;
   const winnerBand = band(winner);
   if (winnerBand === 2) return "budget-unknown-discovery-order";
-  if (winnerBand === 1) return "five-hour-gate-failed-soonest-reset";
+  if (winnerBand === 1) {
+    return winner.passesFiveHourGate
+      ? "seven-day-spent-soonest-reset"
+      : "five-hour-gate-failed-soonest-reset";
+  }
   const runnerUp = ranked[1];
   if (
     runnerUp === undefined || band(runnerUp) !== 0 ||
@@ -489,8 +531,9 @@ function describeCandidate(candidate: RankedClaudeToken): string {
     ? "remaining=unknown"
     : `remaining=${formatShare(candidate.remainingFraction)}`;
   const gate = candidate.passesFiveHourGate ? "gate=pass" : "gate=fail";
+  const spent = candidate.sevenDaySpent ? " week=spent" : "";
   return `${describeWindow("five_hour", candidate.fiveHour)} ` +
-    `${describeWindow("seven_day", sevenDay)} ${remaining} ${gate}`;
+    `${describeWindow("seven_day", sevenDay)} ${remaining} ${gate}${spent}`;
 }
 
 /**

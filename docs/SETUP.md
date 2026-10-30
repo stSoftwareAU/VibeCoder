@@ -1158,11 +1158,17 @@ The candidates are ordered:
    like any other. A window whose reset instant has already passed counts as
    **full** (100% left): the figure describes the window that was current
    when it was measured, and once that instant is behind us the window has
-   rolled over. A nearly spent week needs no floor of its own — it holds the
-   least, so it ranks last among the passing tokens and still ahead of every
-   gate failure.
-4. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
-   so when nothing can be spent now the token that refills first is the one
+   rolled over. A nearly spent week has no floor band of its own: it holds
+   the least share, but it still ranks ahead of every gate-passing token that
+   reported no seven-day window, because the telemetry rule above is applied
+   before share. The exception is a week with **nothing** left: a token whose
+   seven-day window is at 0% with its reset still ahead cannot spend anything,
+   so it is treated like a gate failure and ranks behind every token that can
+   run, however full its five hours are (an exhaustion check, not a floor).
+4. **Tokens that failed the gate, or whose week is spent, are ordered by when
+   they can spend again** — the soonest five-hour reset for a gate failure, the
+   seven-day reset for a spent week (the later of the two when both apply) — so
+   when nothing can be spent now the token that refills first is the one
    chosen.
 5. **A remaining tie goes to the soonest seven-day reset, then to discovery
    order** —
@@ -1277,6 +1283,7 @@ carrying the credential. The last line names why the winner won:
 | `equal-seven-day-remaining-soonest-reset` | Level on remaining share; won on the sooner reset. |
 | `tied-discovery-order` | Level on both remaining share and reset; won on discovery order. |
 | `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
+| `seven-day-spent-soonest-reset` | No candidate could run: the winner passed the five-hour gate but every candidate's seven-day window is at 0%, and the winner's week reopens first. The candidate lines carry `week=spent`. |
 | `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
 
 Absence of these lines is itself informative: a host with one token, or with

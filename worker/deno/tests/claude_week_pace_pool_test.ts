@@ -147,11 +147,12 @@ Deno.test("pool pace - one credential spent, the other not reopening for 100 h: 
 
 Deno.test("pool pace - the walk spends the largest share first, as token selection does (Issue #4504)", () => {
   // provider has 30% left and reopens in 22 h; provider-2 has 75% left and
-  // reopens in 142 h. The burn rate is ~1.44%/h. Token selection spends the
-  // largest share first, so the shares level down together and provider's
-  // remaining ~15% lapses at 22 h; the pool then runs dry ~121 h out, before
-  // provider-2 reopens: engaged. The old soonest-expiring walk spent
-  // provider's 30% first, lost nothing at its reopening, and reported off.
+  // reopens in 142 h. The burn rate is ~1.44%/h, so only ~31.7% is drawn
+  // before provider reopens: less than the 45-point gap between the two
+  // shares, so provider-2 is drawn alone and provider's whole 30% lapses at
+  // 22 h; the pool then runs dry ~121 h out, before provider-2 reopens:
+  // engaged. The old soonest-expiring walk spent provider's 30% first, lost
+  // nothing at its reopening, and reported off.
   const verdict = claudePoolWeekPaceVerdict([
     credential("provider", 0.7, 22),
     credential("provider-2", 0.25, 142),
@@ -166,6 +167,25 @@ Deno.test("pool pace - the walk spends the largest share first, as token selecti
       verdict.reading.runsOutAt < NOW + 125 * HOUR_MS,
     `runs out ~121 h out, got ${(verdict.reading.runsOutAt - NOW) / HOUR_MS} h`,
   );
+});
+
+Deno.test("pool pace - the top shares level down together, not one drained after the other (Issue #4504)", () => {
+  // provider has 80% left and reopens in 143 h; provider-2 has 40% left and
+  // reopens in 56 h. The burn rate is ~1.34%/h, so ~75% is drawn before
+  // provider-2 reopens: more than the 40-point gap, so the two shares level
+  // down together (to ~22.6% on provider, with provider-2's ~22.6% lapsing)
+  // and the pool reaches provider's reopening at 143 h: off. Draining the
+  // largest share fully first would leave provider ~5.2% at 56 h, run dry
+  // before 143 h, and engage.
+  const verdict = claudePoolWeekPaceVerdict([
+    credential("provider", 0.2, 143),
+    credential("provider-2", 0.6, 56),
+  ], NOW);
+  assertEquals(verdict.state, "off");
+  assert(verdict.state === "off");
+  assertEquals(verdict.reason, "on-pace");
+  assertEquals(verdict.reading.runsOutAt, null);
+  assertEquals(verdict.reading.nextReopenAt, NOW + 56 * HOUR_MS);
 });
 
 Deno.test("pool pace - a single credential behaves exactly as the single-token verdict", () => {

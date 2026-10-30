@@ -370,8 +370,13 @@ export function createClaudeCredentialPool(
       const ranking = await rankPool(pool, now);
       const winner = ranking.winner;
       // The gate is the switch's own question — "is this worth running
-      // against?" — so a winner that fails it is no selection at all.
-      if (winner === null || !winner.passesFiveHourGate) return null;
+      // against?" — so a winner that fails it, or whose week is spent, is no
+      // selection at all.
+      if (
+        winner === null || !winner.passesFiveHourGate || winner.sevenDaySpent
+      ) {
+        return null;
+      }
       return pool[winner.index] ?? null;
     },
 

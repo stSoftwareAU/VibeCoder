@@ -21,8 +21,11 @@
  *   every token that has not — it cannot spend what its week still holds;
  * - the winner really is the passing token with the largest remaining share
  *   of its seven-day window, not the one whose window resets soonest;
- * - a nearly spent week has no floor band of its own: it simply holds the
- *   least and ranks last among the passing tokens;
+ * - a nearly spent week has no floor band of its own: it holds the least
+ *   share, but still ranks ahead of every gate-passing token that reported no
+ *   seven-day window, because telemetry is compared before share (Issue
+ *   #4503); only a week at 0% with its reset ahead is demoted, behind every
+ *   token that can run;
  * - a token whose window has already reset counts as full, not as the stale
  *   near-exhausted figure the probe reported for a window that has gone;
  * - a token that could not be probed ranks last but never disappears, and a
@@ -607,6 +610,61 @@ const WEEKLY_TELEMETRY_CASES: readonly {
   },
   {
     name:
+      "a weekly token with 0% of its week left ranks behind a weekless token, however full its five hours (Issue #4504 review)",
+    budgets: [
+      dual("weekly-spent", [
+        fiveHour(0.9, NOW + 2 * HOUR),
+        sevenDay(0, NOW + 72 * HOUR),
+      ]),
+      known("weekless", 0.9, NOW + 2 * HOUR, "five_hour"),
+    ],
+    order: ["weekless", "weekly-spent"],
+    reason: "most-seven-day-remaining",
+  },
+  {
+    name:
+      "a spent week whose reset has passed counts as full and is not demoted (Issue #4504 review)",
+    budgets: [
+      known("weekless", 0.9, NOW + 2 * HOUR, "five_hour"),
+      dual("weekly-rolled", [
+        fiveHour(0.9, NOW + 2 * HOUR),
+        sevenDay(0, NOW - HOUR),
+      ]),
+    ],
+    order: ["weekly-rolled", "weekless"],
+    reason: "most-seven-day-remaining",
+  },
+  {
+    name:
+      "when nothing can run, a spent week and a gate failure are ordered by when each can spend again (Issue #4504 review)",
+    budgets: [
+      dual("weekly-spent", [
+        fiveHour(0.9, NOW + 2 * HOUR),
+        sevenDay(0, NOW + 72 * HOUR),
+      ]),
+      known("gate-failed", 0.1, NOW + 4 * HOUR, "five_hour"),
+    ],
+    order: ["gate-failed", "weekly-spent"],
+    reason: "five-hour-gate-failed-soonest-reset",
+  },
+  {
+    name:
+      "when only spent weeks remain, the one reopening first wins and the reason names the week (Issue #4504 review)",
+    budgets: [
+      dual("later", [
+        fiveHour(0.9, NOW + 2 * HOUR),
+        sevenDay(0, NOW + 72 * HOUR),
+      ]),
+      dual("sooner", [
+        fiveHour(0.9, NOW + 2 * HOUR),
+        sevenDay(0, NOW + 24 * HOUR),
+      ]),
+    ],
+    order: ["sooner", "later"],
+    reason: "seven-day-spent-soonest-reset",
+  },
+  {
+    name:
       "gate failures stay ordered by soonest five-hour reset, whatever their seven-day telemetry (Issue #4503)",
     budgets: [
       dual("weekly", [
@@ -1035,6 +1093,6 @@ Deno.test("a spent token's candidate line carries its windows, not remaining=unk
     spentLine,
     "[SECURITY] claude token candidate provider (#1): five_hour=0.0% " +
       "resets=2026-09-04T02:00:00.000Z seven_day=0.0% " +
-      "resets=2026-09-08T01:00:00.000Z remaining=0.0% gate=fail",
+      "resets=2026-09-08T01:00:00.000Z remaining=0.0% gate=fail week=spent",
   );
 });

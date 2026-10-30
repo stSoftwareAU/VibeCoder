@@ -313,6 +313,36 @@ Deno.test("claude credential pool - the most seven-day quota left wins among eli
   );
 });
 
+Deno.test("claude credential pool - a token with 0% of its week left is never eligible, even with a full five hours (Issue #4504 review)", async () => {
+  const spent = healthy({ sevenDayRemaining: 0 });
+  const lines: string[] = [];
+  const make = (byToken: Record<string, FakeBudget>) =>
+    createClaudeCredentialPool({
+      provider: CLAUDE,
+      discover: () =>
+        Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+      fetchFn: fetchWith(byToken).fn,
+      now: () => NOW,
+      log: (line) => lines.push(line),
+    });
+
+  // Beside a token that can run, the spent week loses.
+  const beside = await make({
+    "token-provider": spent,
+    "token-provider-2": healthy({ sevenDayRemaining: 0.05 }),
+  }).selectEligible(NOW);
+  assertEquals(beside?.label, "provider-2");
+
+  // With nothing else, it is no selection at all, and the log names why.
+  const alone = await make({
+    "token-provider": spent,
+    "token-provider-2": spent,
+  }).selectEligible(NOW);
+  assertEquals(alone, null);
+  assertStringIncludes(lines.join("\n"), "week=spent");
+  assertStringIncludes(lines.join("\n"), "seven-day-spent-soonest-reset");
+});
+
 Deno.test("claude credential pool - every token at or below the gate selects nothing, and still logs", async () => {
   // Exactly at the gate, and below it: neither can spend what its week holds.
   const probe = fetchWith({
