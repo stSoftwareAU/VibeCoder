@@ -83,15 +83,25 @@ Backend only; no UI files touched.
 
 - `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts` (run under
   `--allow-net=127.0.0.1` by
-  `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the six
+  `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the nine
   new names): late listener (injected sleep binds the stub on the third check,
   no attempt lines); nothing ever listens (failed, no attempts, log line); 502
   every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3; `runEgressProbes` with
   a live proxy gives the enforced set; `runEgressProbes` with a proxy that never
-  listens.
+  listens; `runEgressProbes` with a proxy that binds late (injected sleep binds
+  the stub on the third check; `proxyAllowed` is `succeeded`, the verdict is
+  `enforced`, and `diagnostics` is absent), which covers the wait production
+  actually runs.
 - `worker/deno/tests/egress_selfcheck_test.ts`: marker with `observed`
   (`proxyAllowed=failed (refused ×3)`), unchanged marker without it (control),
-  Apple marker, diagnostics carried, `describeProbeFailures` cases.
+  Apple marker, diagnostics carried, `describeProbeFailures` cases (including a
+  failed denied probe with no denied detail). `Deno.connect` is replaced in four
+  tests to pin the dialled host and port, the `observed` token (first line,
+  control characters stripped, 80-character cap, `closed without an answer`),
+  and that only a `TimeoutError` is a timeout (a thrown `null`, `undefined`,
+  string or other-named error is not). The port check in `proxyEndpoint` is now
+  `port < 1` only: `new URL` rejects ports above 65535 and keeps digits only, so
+  the old `isInteger` and `> 65535` operands were dead.
 - `worker/deno/tests/run_worker_test.ts`: diagnostics reach `deps.log` before a
   failing exit; none are logged without them.
 - Red checks (one break at a time, then restored): marker drops `proxyAllowed` →
@@ -101,12 +111,15 @@ Backend only; no UI files touched.
   skips the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2; the
   `probeProxyAllowed` wrapper waiting for the listener → 2 (the original
   scenarios).
-- Not red-checked: the `egress-selfcheck` command's stderr printing, and the
-  80-character cap and control-character stripping in `observedToken`.
+- Mutation follow-up: each listed mutant on `egress_selfcheck.ts` lines 165,
+  361, 366, 367, 384, 407 and 410 was applied by hand and turned a test red;
+  `runEgressProbes` waiting with `timeoutMs: 0` now turns the late-listener
+  scenario red. Line 383 was dead code and was simplified.
+- Not red-checked: the `egress-selfcheck` command's stderr printing.
 - No assertion was removed from an existing test; only the `@std/assert` import
   line in `egress_selfcheck_test.ts` gained a name.
 - `deno task test:unit` over `egress_allowed_probe_retry_test.ts`,
-  `egress_selfcheck_test.ts`, `run_worker_test.ts`: 64 passed, 0 failed.
+  `egress_selfcheck_test.ts`, `run_worker_test.ts`: 69 passed, 0 failed.
   `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
 - `./quality.sh` on the final head: deno lint, type check and fmt passed; deno
   tests reported 31119 passed and 1 failed:

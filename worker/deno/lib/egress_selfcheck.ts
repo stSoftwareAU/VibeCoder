@@ -380,7 +380,8 @@ function proxyEndpoint(
   const port = url.port === ""
     ? (url.protocol === "https:" ? 443 : 80)
     : Number(url.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  // `new URL` already rejects a port above 65535 and keeps only digits.
+  if (port < 1) return undefined;
   return { hostname: url.hostname, port };
 }
 

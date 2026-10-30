@@ -309,3 +309,40 @@ Deno.test("runEgressProbes with a proxy that never listens fails the allowed pro
     "is not accepting connections after 1000ms",
   );
 });
+
+Deno.test("runEgressProbes with a proxy that starts listening late still passes (Issue #4493)", async () => {
+  const port = freePort();
+  let sleeps = 0;
+  let stub: ReturnType<typeof startProxyStub> | undefined;
+  try {
+    const result = await runEgressProbes(
+      (name) => name === "HTTPS_PROXY" ? `http://127.0.0.1:${port}` : undefined,
+      1000,
+      {
+        directTcp: refused,
+        now: () => 0,
+        sleep: () => {
+          sleeps++;
+          // The proxy binds on the third check, as it would after a cold start.
+          if (sleeps === 3) {
+            stub = startProxyStub({
+              port,
+              answer: (request) =>
+                request.startsWith("CONNECT example.com:")
+                  ? "HTTP/1.1 403 Forbidden\r\nContent-Length: 40\r\n\r\n[EGRESS_DENIED] host=example.com reason=not-allowlisted\n"
+                  : CONNECTED,
+            });
+          }
+          return Promise.resolve();
+        },
+      },
+    );
+    assert(sleeps >= 3, `expected at least 3 listener checks, got ${sleeps}`);
+    assertEquals(result.proxyAllowed, "succeeded");
+    assertEquals(result.proxyDenied, "denied");
+    assertEquals(classifyEgressProbes(result), "enforced");
+    assertEquals(result.diagnostics, undefined);
+  } finally {
+    await stub?.close();
+  }
+});

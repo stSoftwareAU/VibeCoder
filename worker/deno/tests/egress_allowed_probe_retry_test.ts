@@ -20,6 +20,7 @@ for (
     "an allowlisted CONNECT refused three times says so (Issue #4493)",
     "runEgressProbes with a live proxy fills the four-probe enforced set (Issue #4493)",
     "runEgressProbes with a proxy that never listens fails the allowed probe without attempts (Issue #4493)",
+    "runEgressProbes with a proxy that starts listening late still passes (Issue #4493)",
   ]
 ) {
   Deno.test(name, async () => {
