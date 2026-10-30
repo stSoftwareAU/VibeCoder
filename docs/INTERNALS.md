@@ -5359,6 +5359,20 @@ launched at all (a rate limit, a failed spawn) is deliberately not marked: that
 is a real launch fault and its own error text must still be classified. The
 posted issue comment is unchanged. The host-fault and milestone-refusal label-release sweeps also skip the separate failure record that `markIssueAsFailedOnce` posts for the marked reason, because its head `**Category:** \`security-fix-gate\`` line names a registered gate category (`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip `failed-once` or `failed`.
 
+#### An unavailable external-orchestration provider is `provider-unavailable`, not `worker-crash` (Issue #4508)
+
+`preflightRole` throws
+`external orchestration: <provider> unavailable (<reason>)` when the provider's
+subscription is exhausted or its login rejected; recorded as `internal_error`
+it was classed `worker-crash` / `code_fixable` and auto-filed (#4508).
+`classifyRunFailure` now reads the phrase from the worker's own words (not
+quoted agent output) on an `internal_error` and answers class
+`provider-unavailable`, `not_code_fixable`, so it is never auto-filed. The
+category stays `internal_error`, so `classifyCodingFailure` still returns the
+flat transient decision and the issue takes no `failed-once` mark. The other
+preflight refusals (CLI not runnable, fixed-price subscription, metered
+credentials) are not covered and stay `worker-crash`.
+
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
 The completion phase's pre-push gate (`gateBeforePush()` in
