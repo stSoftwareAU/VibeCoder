@@ -275,6 +275,37 @@ Deno.test("run.sh tells the round exactly the shell commands its --allowedTools 
   );
 });
 
+Deno.test("run.sh lets the round write scratch files under /tmp and its own round directory, and nowhere else", async () => {
+  // Claude Code refuses a Bash command whose paths lie outside the session's
+  // directories, and a file write (mkdir, `> file`) outside acceptEdits, even
+  // when the command itself is allowed: after #4501 a round still had ~3
+  // commands refused, mostly `ls <round dir>`, `mkdir -p /tmp/…` and
+  // `gh … > /tmp/…`.
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = await claudeArgs(home);
+  assert(args, "the round was not started");
+  const lines = args.split("\n");
+  const claude = JSON.parse(
+    lines[lines.indexOf("--claude-args") + 1]!,
+  ) as string[];
+  const dirs = claude.flatMap((arg, i) =>
+    arg === "--add-dir" ? [claude[i + 1]!] : []
+  );
+  assertEquals(dirs.length, 2, claude.join(" "));
+  assertEquals(dirs[0], "/tmp");
+  assert(
+    dirs[1]!.startsWith("/home/vibe/logs/review-fleet-prs/rounds/"),
+    dirs[1],
+  );
+  // Only the round's own directory: never the whole state directory.
+  assert(dirs[1] !== "/home/vibe/logs/review-fleet-prs/rounds/", dirs[1]);
+  assertEquals(claude[claude.indexOf("--permission-mode") + 1], "acceptEdits");
+  const flat = (await roundPrompt(home)).replace(/\s+/g, " ");
+  assertStringIncludes(flat, "Write scratch files only under /tmp");
+});
+
 Deno.test("run.sh --once starts no Claude session when nothing is ready", async () => {
   const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
   const { code, output } = await run(home, "--once");

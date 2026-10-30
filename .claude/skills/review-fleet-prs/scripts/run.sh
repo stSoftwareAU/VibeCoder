@@ -90,7 +90,8 @@ Shell commands you may run: $(round_join "${ROUND_SHELL_COMMANDS[@]}"), and
 the read-only git subcommands ($(round_join "${ROUND_GIT_READ_SUBCOMMANDS[@]}")),
 run from the working directory without \`git -C\`. Any other command is
 refused, and a pipeline runs only when every command in it is on that list.
-WebFetch is refused too. Prefer \`gh api --jq\` and the Read tool. Every
+WebFetch is refused too. Prefer \`gh api --jq\` and the Read tool. Write
+scratch files only under /tmp or the round's own directory. Every
 fleet-pr-reviewer agent you launch runs under these same rules: add this
 paragraph, verbatim, after the REVIEW_CONTEXT blockquote in its brief.
 PARAGRAPH
@@ -333,10 +334,16 @@ run_round() {
   # stream in the round's directory and logs only its readable lines.
   # The read-only shell tools come from ROUND_SHELL_COMMANDS and
   # ROUND_GIT_READ_SUBCOMMANDS, the same lists the prompt names.
-  claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" \
+  # Claude Code refuses an allowed command whose paths lie outside the
+  # session's directories, and any file write (mkdir, `> file`) outside
+  # acceptEdits. So the round also gets /tmp, the container's throwaway
+  # scratch, and its own round directory, and accepts writes in them; the rest
+  # of the state directory stays out of reach, and /workspace is read-only.
+  claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" --arg dir "$C_DIR" \
     --argjson bash "$(round_bash_rules)" '["--model",
     "claude-opus-5-5", "--effort", "xhigh", "--output-format", "stream-json",
-    "--verbose", "--allowedTools", "Agent",
+    "--verbose", "--add-dir", "/tmp", "--add-dir", $dir,
+    "--permission-mode", "acceptEdits", "--allowedTools", "Agent",
     "Read", "Grep", "Glob", $edit] + $bash')
   perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
     "$ROUND_TIMEOUT" "$RUNTIME" "${ROUND_ARGS[@]}" review-round \
