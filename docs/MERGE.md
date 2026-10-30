@@ -233,9 +233,10 @@ body — fails the sync loudly and writes nothing. "Could not see it" is never
 read as "there was nothing there". A missing live `rules` array, or a
 malformed `required_status_checks` rule (missing `parameters` or its checks
 array, non-array checks, non-object entry, non-string or empty `context`, or a
-non-integer `integration_id`) refuses the update loudly too, rather than being
-silently dropped. Checks with one context but different `integration_id`s
-remain separate because each pins the check to a different source app.
+present, non-null non-integer `integration_id`) refuses the update loudly too,
+rather than being silently dropped. Checks with one context but different
+`integration_id`s remain separate because each pins the check to a different
+source app.
 
 ```mermaid
 flowchart TD

@@ -32,8 +32,8 @@ final version.
   builder already did this; tests now pin it.
 - A missing live `rules` array, or a malformed required-check rule (missing
   parameters or its checks array, non-array checks, non-object entry,
-  non-string or empty `context`, present non-integer `integration_id`) throws,
-  and `planDefaultBranchRuleset` returns
+  non-string or empty `context`, present non-null non-integer
+  `integration_id`) throws, and `planDefaultBranchRuleset` returns
   `Refusing to update ruleset <id> in <repo>: …` with no write. Dropping it
   silently would weaken the rule, which is what the issue forbids. A valid
   rules array with no `required_status_checks` rule contributes no live checks.
@@ -144,4 +144,7 @@ Related existing rules checked: `docs/MERGE.md` additive-convergence text
 - No existing test was edited and no assertion removed.
 - `deno task test:unit tests/repo_rulesets_test.ts tests/default_branch_ruleset_test.ts tests/default_branch_ruleset_merge_queue_test.ts tests/default_branch_ruleset_audit_test.ts`: 110 passed, 0 failed.
 - `deno fmt --check`, `deno lint`, and `deno check --frozen --lock=deno.lock` on the four touched TypeScript files: passed.
-- `./quality.sh` and `deno task pr-summary-check`: pending final run.
+- `deno task test:unit tests/pr_maintenance_command_test.ts`: 24 passed, 0 failed; the previously failing case passed in isolation.
+- First `timeout 900 ./quality.sh < /dev/null`: FAILED. The Deno parallel pass reported 31,120 passed, 1 failed, 5 ignored in 5m45s; failure: `pr-maintenance command - update-open-pr-branches takes no action on a behind-only PR behind a merge queue (Issue #4424)` — `expected a merge-queue rules read, got: ["api repos/org/repo --jq .default_branch"]`. Config integration and Checkov were skipped by the gate.
+- Second `timeout 900 ./quality.sh < /dev/null`: timed out with exit 124 before the full Deno test phase completed.
+- `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4487-body.md --labels work-on ../../docs/archive/pr-summaries/pr-summary-4487.md`: passed, 0 blocked, 0 not checked.
