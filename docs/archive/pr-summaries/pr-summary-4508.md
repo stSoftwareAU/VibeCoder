@@ -26,8 +26,8 @@ final version.
 - The phrase is read from the worker's own words only
   (`splitAgentNarration(...).worker`) and only for `internal_error`, so agent
   output quoting it, or another category, cannot trigger it.
-- Only the `unavailable (` refusal is covered. The other preflight refusals
-  (CLI not runnable, fixed-price subscription, metered credentials) stay
+- Only the `unavailable (` refusal is covered. The other preflight refusals (CLI
+  not runnable, fixed-price subscription, metered credentials) stay
   `worker-crash`.
 - `coding_failure_ladder.ts` is untouched: a declared `internal_error` is
   already transient there via `isInfrastructureFailure`.
@@ -47,19 +47,26 @@ final version.
 
 Backend-only change; no UI files touched.
 
-Observed before the change (probe of `classifyRunFailure("internal_error",
+Observed before the change (probe of
+`classifyRunFailure("internal_error",
 "Claude execution failed: external orchestration: codex unavailable
-(observed-authentication-failure)", true)`): `worker-crash` / `code_fixable`.
+(observed-authentication-failure)", true)`):
+`worker-crash` / `code_fixable`.
 
 `deno test --allow-all tests/run_outcome_classifier_test.ts
-tests/coding_failure_ladder_test.ts`: 91 passed, 0 failed. `deno lint`,
-`deno check` and `deno fmt --check` on the changed TypeScript files: clean.
+tests/coding_failure_ladder_test.ts`:
+91 passed, 0 failed. `deno lint`, `deno check` and `deno fmt --check` on the
+changed TypeScript files: clean.
 
 ## Reproduction
 
-- **symptom** — a run released on `codex unavailable (observed-authentication-failure)` was auto-filed as a `worker-crash` worker defect
-- **status** — `verified` — the regression test fails with the classifier rule removed (base behaviour) and passes with it
-- **regression test** — `worker/deno/tests/run_outcome_classifier_test.ts::provider-unavailable - an unavailable external-orchestration provider is not a worker crash (Issue #4508)`
+- **symptom** — a run released on
+  `codex unavailable (observed-authentication-failure)` was auto-filed as a
+  `worker-crash` worker defect
+- **status** — `verified` — the regression test fails with the classifier rule
+  removed (base behaviour) and passes with it
+- **regression test** —
+  `worker/deno/tests/run_outcome_classifier_test.ts::provider-unavailable - an unavailable external-orchestration provider is not a worker crash (Issue #4508)`
 
 ## Test Plan
 
@@ -70,8 +77,8 @@ tests/coding_failure_ladder_test.ts`: 91 passed, 0 failed. `deno lint`,
   `internal_error` qualifies (`summary_incomplete` stays `agent-outcome`;
   `killed`, `timeout`, `unknown`, `no_changes`, `zero_output` are not the
   class); a 100k-character hostile message completes as `worker-crash`.
-- Red checks: removing the rule turned the main test and the ladder test red
-  (43 passed, 2 failed); matching the regex on the whole message instead of the
+- Red checks: removing the rule turned the main test and the ladder test red (43
+  passed, 2 failed); matching the regex on the whole message instead of the
   worker part turned the quoted-narration test red; removing the
   `category === "internal_error"` operand turned the category-scope test red
   (`AssertionError: killed`).
