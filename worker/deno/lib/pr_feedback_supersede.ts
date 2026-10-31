@@ -19,10 +19,11 @@
  * comment on that head for as long as the head stood — the comment would starve
  * rather than be re-evaluated.
  *
- * CHANGES_REQUESTED reviews use the same rule without the window
- * (Issue #2702): a review is superseded only by a fleet commit after it that
- * is neither a merge of the base branch nor a bot's formatting or version
- * bump — never merely because the head moved.
+ * A CHANGES_REQUESTED review is never superseded by a fleet commit (Issue
+ * #4510): a CI-fix pass pushes single-parent fleet commits yet never answers a
+ * review, so only dismissal (the processed marker, Issue #3383), the reviewer's
+ * own later review (Issue #2697) and a live claim lease retire or hold it. The
+ * head moving, or any fleet commit landing, proves nothing.
  *
  * A reviewer's own later review supersedes their earlier change request too
  * (Issue #2697): {@link selectOutstandingReviews} reads every page of reviews
@@ -36,8 +37,8 @@
 export const FLEET_PUSH_COOL_OFF_MS = 15 * 60 * 1000;
 
 /**
- * Who made a commit, when, and whether it is a merge — everything the
- * supersession rules read (Issue #211; Issue #2702 added `parentCount`).
+ * Who made a commit and when — everything the supersession rule reads
+ * (Issue #211).
  */
 export interface CommitProvenance {
   /** GitHub login that authored the commit, when GitHub resolved one. */
@@ -46,11 +47,6 @@ export interface CommitProvenance {
   committerLogin: string | null;
   /** ISO 8601 timestamp of the commit. */
   committedAt: string | null;
-  /**
-   * How many parents the commit has, when known. More than one is a merge —
-   * in practice the base branch merged in by the update-branch call.
-   */
-  parentCount?: number;
 }
 
 /** The PR head commit, as far as the comment scan can see it. */
@@ -97,56 +93,19 @@ export function isSupersededByFleetPush(check: SupersedeCheck): boolean {
   return now - pushTime < coolOffMs;
 }
 
-/** Inputs to {@link isReviewSupersededByFleetFix}. */
-export interface ReviewSupersedeCheck {
-  /** ISO 8601 `submitted_at` of the CHANGES_REQUESTED review. */
-  reviewSubmittedAt?: string | null;
-  /** The PR's commits, or null when they could not be read. */
-  commits: readonly CommitProvenance[] | null;
-  /** Fleet logins whose pushes count as the fleet answering the review. */
-  fleetAuthors: readonly string[];
-}
-
-/**
- * Whether a fleet fix commit has superseded a CHANGES_REQUESTED review
- * (Issue #2702).
- *
- * The head moving is not enough. On GRQ#5032 a base merge and a
- * github-actions version bump moved the head after the owner's review, and a
- * `commit_id !== head` rule then hid a review nobody had answered. Only a
- * commit {@link isFleetAnswerAfter} accepts — a fleet account's, after the
- * review, neither a merge nor a bot's — supersedes it. There is no cool-off:
- * once the fleet has answered, a reviewer who wants more re-reviews, and that
- * new review is judged afresh. A review the worker handled is dismissed, and
- * that is what stops it being processed twice.
- *
- * @param check - The review's timestamp, the PR's commits and the fleet set
- * @returns True only when such a commit exists; false whenever the answer is
- *   not knowable, so genuine feedback is never dropped on a guess.
- */
-export function isReviewSupersededByFleetFix(
-  check: ReviewSupersedeCheck,
-): boolean {
-  if (!check.commits) return false;
-  return check.commits.some((commit) =>
-    isFleetAnswerAfter(commit, check.reviewSubmittedAt, check.fleetAuthors)
-  );
-}
-
 /**
  * Whether this commit is the fleet answering feedback written at `since`
- * (Issues #211, #2702).
+ * (Issue #211).
  *
- * The one rule both supersession checks share. True only when the commit:
+ * The rule {@link isSupersededByFleetPush} applies to the head commit. True
+ * only when the commit:
  *   - landed strictly after `since`;
- *   - was authored or committed by a fleet login;
- *   - is not a merge — a base branch merged in answers no feedback; and
+ *   - was authored or committed by a fleet login; and
  *   - was not made by a bot (`github-actions[bot]` formatting or version
  *     bumps).
  *
  * Anything unknown — no timestamp, an unparseable date, an empty fleet set —
- * is false. A commit whose parent count is unknown (the single head-commit
- * read) is judged on the other three.
+ * is false. A CHANGES_REQUESTED review never reaches this rule (Issue #4510).
  */
 function isFleetAnswerAfter(
   commit: CommitProvenance,
@@ -158,8 +117,6 @@ function isFleetAnswerAfter(
 
   const commitTime = parseTimestamp(commit.committedAt);
   if (commitTime === null || commitTime <= sinceTime) return false;
-
-  if ((commit.parentCount ?? 1) > 1) return false;
 
   const candidates = [commit.authorLogin, commit.committerLogin]
     .filter((login): login is string => typeof login === "string")
@@ -271,8 +228,9 @@ function countsAsReview(review: PrReview): boolean {
  * rebase or merge-from-base answers no review — so a CHANGES_REQUESTED review
  * stays outstanding until it is dismissed (the worker's processed marker for
  * `pr_review`) or its reviewer submits a newer review. One entry per reviewer,
- * so a re-review never queues a duplicate. {@link isReviewSupersededByFleetFix}
- * then judges what is left.
+ * so a re-review never queues a duplicate. What is left is judged by the
+ * processed marker (dismissal) and the claim lease in findPrCommentsToFix; a
+ * fleet commit never retires it (Issue #4510).
  *
  * Reviewers are grouped case-insensitively (GitHub logins are). The latest is
  * the one with the greatest `submitted_at`; on a tie or a missing timestamp
@@ -375,61 +333,6 @@ export async function fetchPrHeadCommit(
   } catch {
     // Unreadable head commit — the caller treats this as "not superseded",
     // so genuine feedback is still claimed.
-    return null;
-  }
-}
-
-/**
- * Read who made each commit on a PR, and when (Issue #2702).
- *
- * Called only for an authorised CHANGES_REQUESTED review whose `commit_id` is
- * no longer the head, and at most once per PR per scan. At 100 a page, a PR's
- * whole history (GitHub lists up to 250 commits) takes one to three calls.
- *
- * @param repo - Repository in "owner/repo" format
- * @param prNumber - PR number
- * @param ghCommandFn - Function to run gh commands
- * @returns The commits, or null when they cannot be read — the caller then
- *   keeps the review actionable
- */
-export async function fetchPrCommitProvenance(
-  repo: string,
-  prNumber: number,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<CommitProvenance[] | null> {
-  try {
-    // With --paginate, `--jq '.[] | {…}'` prints one compact object per line.
-    const output = await ghCommandFn([
-      "api",
-      "--paginate",
-      `repos/${repo}/pulls/${prNumber}/commits?per_page=100`,
-      "--jq",
-      ".[] | {authorLogin: .author.login, committerLogin: .committer.login, committedAt: .commit.committer.date, parentCount: (.parents | length)}",
-    ]);
-    const commits: CommitProvenance[] = [];
-    for (const line of output.split("\n")) {
-      if (line.trim() === "") continue;
-      const parsed: unknown = JSON.parse(line);
-      if (parsed === null || typeof parsed !== "object") return null;
-      const record = parsed as Record<string, unknown>;
-      commits.push({
-        authorLogin: typeof record["authorLogin"] === "string"
-          ? record["authorLogin"]
-          : null,
-        committerLogin: typeof record["committerLogin"] === "string"
-          ? record["committerLogin"]
-          : null,
-        committedAt: typeof record["committedAt"] === "string"
-          ? record["committedAt"]
-          : null,
-        parentCount: typeof record["parentCount"] === "number"
-          ? record["parentCount"]
-          : undefined,
-      });
-    }
-    return commits;
-  } catch {
-    // Unreadable history — the caller keeps the review actionable.
     return null;
   }
 }

@@ -39,6 +39,8 @@ import { recordMergedPr } from "./fleet_telemetry.ts";
 import { defaultLogger } from "./logger.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { isPrimaryRateLimitMessage } from "./primary_quota_latch.ts";
+import { isSecondaryOnlyRateLimitMessage } from "./secondary_rate_limit.ts";
 
 /** Result of a cleanup operation. */
 export interface CleanupResult {
@@ -83,7 +85,7 @@ export interface CleanupOptions {
    */
   watermarkPath?: string;
   /** Where sweep faults are reported (Issue #2832). Defaults to the worker logger. */
-  logger?: Pick<Logger, "warn">;
+  logger?: Pick<Logger, "warn"> & Partial<Pick<Logger, "info">>;
   /**
    * Work-volume root the self-heal events of this sweep are written under
    * (Issue #966): `${workDir}/logs/self-heal.jsonl`.
@@ -210,7 +212,7 @@ export async function cleanupMergedPrBranches(
     }
   }
 
-  for (const repo of repos) {
+  reposLoop: for (const repo of repos) {
     // List merged PRs authored by this user, extracting head branch names.
     // Issue #1787: route through `fetchMergedPRsByUser` so this scan
     // shares the iteration-scoped `prs_merged_${user}` cache.
@@ -254,16 +256,37 @@ export async function cleanupMergedPrBranches(
       }
     } catch (error) {
       // No window to prune against — leave this repo's state untouched.
+      const message = errorMessage(error);
+      if (isCleanupRateLimit(message)) {
+        logCleanupRateLimit(
+          logger,
+          `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+            `${repo} and later repos unchanged: ${message}`,
+        );
+        break reposLoop;
+      }
       logger.warn(
         `[branch-cleanup] ${repo}: merged-PR fetch failed; state unchanged: ` +
-          errorMessage(error),
+          message,
       );
-      continue;
+      continue reposLoop;
     }
 
     // PRs whose branch is now deleted or already gone.
     const handled: number[] = [];
     const mergedDeletedNames: string[] = [];
+    // One per-repo success summary (Issue #4306), also flushed before a
+    // rate-limit stop so deletions already made stay on the journal.
+    const flushMergedSummary = async () => {
+      if (mergedDeletedNames.length === 0) return;
+      await emitSelfHealEventAuto({
+        module: "branch_cleanup",
+        action: "merged_branch_delete",
+        reason: `${repo}: deleted ${mergedDeletedNames.length} merged-PR ` +
+          `branch(es): ${summariseBranches(mergedDeletedNames)}`,
+        result: "ok",
+      }, cleanupOptions.workDir);
+    };
 
     for (const [branchName, prNumbers] of candidates) {
       // Cheap check first (Issue #4255): almost every branch in the
@@ -277,9 +300,19 @@ export async function cleanupMergedPrBranches(
           skippedMissingCount++;
           handled.push(...prNumbers);
         } else {
+          const message = errorMessage(error);
+          if (isCleanupRateLimit(message)) {
+            logCleanupRateLimit(
+              logger,
+              `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+                `${repo} and later repos unchanged: ${message}`,
+            );
+            await flushMergedSummary();
+            break reposLoop;
+          }
           logger.warn(
             `[branch-cleanup] ${repo}: could not probe branch ${branchName}; ` +
-              `retrying next sweep: ${errorMessage(error)}`,
+              `retrying next sweep: ${message}`,
           );
         }
         continue;
@@ -297,6 +330,15 @@ export async function cleanupMergedPrBranches(
       );
       if (!assessment.safe) {
         skippedCount++;
+        if (isCleanupRateLimit(assessment.reason)) {
+          logCleanupRateLimit(
+            logger,
+            `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+              `${repo} and later repos unchanged: ${assessment.reason}`,
+          );
+          await flushMergedSummary();
+          break reposLoop;
+        }
         await emitSelfHealEventAuto({
           module: "branch_cleanup",
           action: "merged_branch_delete",
@@ -326,6 +368,15 @@ export async function cleanupMergedPrBranches(
           handled.push(...prNumbers);
           continue;
         }
+        if (isCleanupRateLimit(errorMessage(error))) {
+          logCleanupRateLimit(
+            logger,
+            `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+              `${repo} and later repos unchanged: ${errorMessage(error)}`,
+          );
+          await flushMergedSummary();
+          break reposLoop;
+        }
         logger.warn(
           `[branch-cleanup] ${repo}: failed to delete branch ${branchName}; ` +
             `retrying next sweep: ${errorMessage(error)}`,
@@ -353,15 +404,7 @@ export async function cleanupMergedPrBranches(
       }
     }
 
-    if (mergedDeletedNames.length > 0) {
-      await emitSelfHealEventAuto({
-        module: "branch_cleanup",
-        action: "merged_branch_delete",
-        reason: `${repo}: deleted ${mergedDeletedNames.length} merged-PR ` +
-          `branch(es): ${summariseBranches(mergedDeletedNames)}`,
-        result: "ok",
-      }, cleanupOptions.workDir);
-    }
+    await flushMergedSummary();
 
     if (state) {
       const before = state.repos[repo]?.processed ?? [];
@@ -403,6 +446,18 @@ function isRefGone(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isCleanupRateLimit(message: string): boolean {
+  return isPrimaryRateLimitMessage(message) ||
+    isSecondaryOnlyRateLimitMessage(message, isPrimaryRateLimitMessage);
+}
+
+function logCleanupRateLimit(
+  logger: CleanupOptions["logger"],
+  message: string,
+): void {
+  (logger?.info ?? defaultLogger.info.bind(defaultLogger))(message);
 }
 
 /** Order-insensitive equality of two processed-number lists. */
@@ -612,7 +667,7 @@ export async function cleanupStaleRemoteBranches(
     return { ok: true, value: { deletedCount: 0, skippedCount: 0 } };
   }
 
-  for (const repo of repos) {
+  staleRepos: for (const repo of repos) {
     // List remote branches matching issue-* pattern
     let remoteBranches: string[];
     try {
@@ -626,7 +681,16 @@ export async function cleanupStaleRemoteBranches(
       remoteBranches = output.trim().split("\n").filter((b) =>
         b && !b.startsWith("Warning:")
       );
-    } catch {
+    } catch (error) {
+      const message = errorMessage(error);
+      if (isCleanupRateLimit(message)) {
+        logCleanupRateLimit(
+          cleanupOptions.logger,
+          `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+            `${repo} and later repos unchanged: ${message}`,
+        );
+        break staleRepos;
+      }
       continue;
     }
 
@@ -652,12 +716,33 @@ export async function cleanupStaleRemoteBranches(
         mergedByBranch = new Map(
           merged.map((pr) => [pr.headRefName, pr.number]),
         );
-      } catch {
+      } catch (error) {
+        const message = errorMessage(error);
+        if (isCleanupRateLimit(message)) {
+          logCleanupRateLimit(
+            cleanupOptions.logger,
+            `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+              `${repo} and later repos unchanged: ${message}`,
+          );
+          break staleRepos;
+        }
         mergedByBranch = null;
       }
     }
 
     const staleDeletedNames: string[] = [];
+    // One per-repo success summary (Issue #4306), also flushed before a
+    // rate-limit stop so deletions already made stay on the journal.
+    const flushStaleSummary = async () => {
+      if (staleDeletedNames.length === 0) return;
+      await emitSelfHealEventAuto({
+        module: "branch_cleanup",
+        action: "stale_remote_delete",
+        reason: `${repo}: deleted ${staleDeletedNames.length} stale remote ` +
+          `branch(es): ${summariseBranches(staleDeletedNames)}`,
+        result: "ok",
+      }, cleanupOptions.workDir);
+    };
     for (const branchName of remoteBranches) {
       if (!branchName) continue;
 
@@ -671,6 +756,15 @@ export async function cleanupStaleRemoteBranches(
       );
       if (!assessment.safe) {
         skippedCount++;
+        if (isCleanupRateLimit(assessment.reason)) {
+          logCleanupRateLimit(
+            cleanupOptions.logger,
+            `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+              `${repo} and later repos unchanged: ${assessment.reason}`,
+          );
+          await flushStaleSummary();
+          break staleRepos;
+        }
         await emitSelfHealEventAuto({
           module: "branch_cleanup",
           action: "stale_remote_delete",
@@ -689,13 +783,31 @@ export async function cleanupStaleRemoteBranches(
       } else if (cleanupOptions.cache) {
         // Issue #1796: per-branch lookup routes through `fetchPRsByBranch`
         // so even the human-merged edge case shares the iteration cache.
-        const merged = await fetchPRsByBranch(
-          repo,
-          branchName,
-          "merged",
-          cleanupOptions.cache,
-          ghFn,
-        );
+        let merged: Awaited<ReturnType<typeof fetchPRsByBranch>>;
+        try {
+          merged = await fetchPRsByBranch(
+            repo,
+            branchName,
+            "merged",
+            cleanupOptions.cache,
+            ghFn,
+            { throwOnError: true },
+          );
+        } catch (error) {
+          const message = errorMessage(error);
+          if (isCleanupRateLimit(message)) {
+            logCleanupRateLimit(
+              cleanupOptions.logger,
+              `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+                `${repo} and later repos unchanged: ${message}`,
+            );
+            await flushStaleSummary();
+            break staleRepos;
+          }
+          // Any other lookup failure leaves the branch for the next sweep,
+          // as the uncached path does.
+          continue;
+        }
         mergedPr = merged.length > 0 && merged[0]
           ? String(merged[0].number)
           : null;
@@ -716,7 +828,17 @@ export async function cleanupStaleRemoteBranches(
             ".[0].number",
           ]);
           mergedPr = output.trim() || null;
-        } catch {
+        } catch (error) {
+          const message = errorMessage(error);
+          if (isCleanupRateLimit(message)) {
+            logCleanupRateLimit(
+              cleanupOptions.logger,
+              `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+                `${repo} and later repos unchanged: ${message}`,
+            );
+            await flushStaleSummary();
+            break staleRepos;
+          }
           continue;
         }
       }
@@ -732,7 +854,17 @@ export async function cleanupStaleRemoteBranches(
           ]);
           deletedCount++;
           apiDeleted = true;
-        } catch {
+        } catch (error) {
+          const message = errorMessage(error);
+          if (isCleanupRateLimit(message)) {
+            logCleanupRateLimit(
+              cleanupOptions.logger,
+              `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
+                `${repo} and later repos unchanged: ${message}`,
+            );
+            await flushStaleSummary();
+            break staleRepos;
+          }
           // Log failure but continue
         }
         // Successes aggregate into one per-repo summary (Issue #4306);
@@ -750,15 +882,7 @@ export async function cleanupStaleRemoteBranches(
       }
     }
 
-    if (staleDeletedNames.length > 0) {
-      await emitSelfHealEventAuto({
-        module: "branch_cleanup",
-        action: "stale_remote_delete",
-        reason: `${repo}: deleted ${staleDeletedNames.length} stale remote ` +
-          `branch(es): ${summariseBranches(staleDeletedNames)}`,
-        result: "ok",
-      }, cleanupOptions.workDir);
-    }
+    await flushStaleSummary();
   }
 
   return { ok: true, value: { deletedCount, skippedCount } };

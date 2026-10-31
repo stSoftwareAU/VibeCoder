@@ -11,6 +11,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { renderClosureBlocksFromVerdict } from "../lib/closure_verdict_recovery.ts";
+import { findMissingCriteria } from "../lib/missing_criterion_close_guard.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -70,6 +71,33 @@ function verdictReply(covered: number): string {
     CLOSURE_VERDICT_CLOSE,
   ].join("\n");
 }
+
+/** A verdict whose second criterion is `missing`, with its reason. */
+function verdictWithMissingReply(): string {
+  return [
+    CLOSURE_VERDICT_OPEN,
+    JSON.stringify({
+      criteria: [
+        {
+          criterion: CRITERIA[0],
+          status: "met",
+          evidence: "worker/deno/tests/closure_verdict_test.ts",
+        },
+        {
+          criterion: CRITERIA[1],
+          status: "missing",
+          reason: "not attempted",
+        },
+      ],
+      standards: [{ status: "clean", finding: "Australian English, TDD" }],
+    }),
+    CLOSURE_VERDICT_CLOSE,
+  ].join("\n");
+}
+
+/** A closing keyword for #ISSUE, as GitHub reads it (Issue #4472). */
+const CLOSING_KEYWORD_2242_RE =
+  /\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#2242\b/i;
 
 interface Case {
   issueBody: string;
@@ -227,4 +255,81 @@ Deno.test("closure render - a short verdict is rendered as it stands and stays i
   assertEquals(calls, 2, "asked once more, then rendered");
   assertStringIncludes(summary ?? "", "## Acceptance Criteria");
   assertStringIncludes(outcome.detail, "does not satisfy both gates");
+});
+
+Deno.test("closure render - a missing criterion turns the summary's Closes #N into Part of #N (Issue #4472)", async () => {
+  const { outcome, summary } = await render({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: PROSE_SUMMARY,
+    reply: verdictWithMissingReply(),
+  });
+
+  assertEquals(outcome.kind, "rendered");
+  assertStringIncludes(summary ?? "", `Part of #${ISSUE}`);
+  assertEquals(CLOSING_KEYWORD_2242_RE.test(summary ?? ""), false);
+  assertEquals(
+    findMissingCriteria(summary ?? "").length,
+    1,
+    "the missing entry is still in the summary",
+  );
+});
+
+Deno.test("closure render - with no summary file a missing criterion writes Part of #N (Issue #4472)", async () => {
+  const { outcome, summary } = await render({
+    issueBody: ISSUE_WITH_CRITERIA,
+    reply: verdictWithMissingReply(),
+  });
+
+  assertEquals(outcome.kind, "rendered");
+  assertStringIncludes(summary ?? "", `Part of #${ISSUE}.`);
+  assertEquals(CLOSING_KEYWORD_2242_RE.test(summary ?? ""), false);
+});
+
+Deno.test("closure render - an all-met verdict restores Closes #N over a Part of #N summary (Issue #4472)", async () => {
+  const { outcome, summary } = await render({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: `## Summary\n\nDid the work. Part of #${ISSUE}.\n`,
+    reply: verdictReply(CRITERIA.length),
+  });
+
+  assertEquals(outcome.kind, "rendered");
+  assertStringIncludes(summary ?? "", `Closes #${ISSUE}`);
+  assertEquals(
+    (summary ?? "").includes(`Part of #${ISSUE}`),
+    false,
+    "the withheld close is restored",
+  );
+});
+
+Deno.test("closure render - a keyword for a different issue is left untouched (Issue #4472)", async () => {
+  const cases: Array<{ summary: string; reply: string; keep: string }> = [
+    {
+      summary: "## Summary\n\nDid the work. Closes #9999.\n",
+      reply: verdictWithMissingReply(),
+      keep: "Closes #9999.",
+    },
+    {
+      summary: "## Summary\n\nDid the work. Closes #9999.\n",
+      reply: verdictReply(CRITERIA.length),
+      keep: "Closes #9999.",
+    },
+    {
+      summary: "## Summary\n\nDid the work. Part of #9999.\n",
+      reply: verdictWithMissingReply(),
+      keep: "Part of #9999.",
+    },
+    {
+      summary: "## Summary\n\nDid the work. Part of #9999.\n",
+      reply: verdictReply(CRITERIA.length),
+      keep: "Part of #9999.",
+    },
+  ];
+  for (const testCase of cases) {
+    const { summary } = await render({
+      issueBody: ISSUE_WITH_CRITERIA,
+      summary: testCase.summary,
+      reply: testCase.reply,
+    });
+    assertStringIncludes(summary ?? "", testCase.keep);
+  }
 });

@@ -2,6 +2,7 @@
 import { loadConfig } from "../lib/config.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
+import { runGitArgv } from "../lib/git_timeout.ts";
 import {
   buildFetchTrackingRefArgs,
   buildPushCreateBranchArgs,
@@ -38,6 +39,17 @@ async function run(
   args: string[],
   cwd?: string,
 ): Promise<string> {
+  // git goes through the timeout/audit chokepoint (Issue #1553).
+  if (command === "git") {
+    const git = await runGitArgv([command, ...args], { cwd });
+    if (!git.success) {
+      throw new Error(
+        `git failed: ${(git.stderr || git.stdout).trim()}`,
+      );
+    }
+    return git.stdout;
+  }
+  // gh goes through its chokepoint too (Issue #3703).
   if (command === "gh") return (await runGhCommand(args)).trim();
   const outcome = await runWithTimeout(command, args, {
     cwd,

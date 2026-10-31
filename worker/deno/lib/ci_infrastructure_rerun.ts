@@ -13,7 +13,8 @@
  * a failure that never started) or code (a genuine failure), and re-runs
  * the infrastructure ones' workflow runs directly. A head that keeps coming
  * back cancelled is re-run again on every scan rather than left for a person
- * (Issue #4304); the marker below keeps it to one comment per head.
+ * (Issue #4304), unless GitHub permanently refuses the run. Such refusals are
+ * recorded by repo and run id and skipped on later scans (Issue #4497).
  *
  * The once-per-head record is kept fleet-wide, not per host (Issue
  * #2919): it used to live in a marker file in each host's own state
@@ -29,10 +30,13 @@
 import type { CheckRunEntry } from "./pr_maintenance.ts";
 import {
   buildCiInfraRerunMarker,
+  buildCiRerunRefusalMarker,
   type FleetCiFixMarkers,
+  isCiRerunRefused,
   isInfraRerunRecordedAt,
 } from "./ci_fix_attempt_markers.ts";
 import { replyToComment } from "./pr_comments.ts";
+import { requestFreshCiAfterRerunRefusal } from "./ci_rerun_fresh_ci.ts";
 import {
   isDownstreamOfRedJob,
   type JobNeedsMap,
@@ -242,9 +246,9 @@ const FORTY_HEX = /^[0-9a-f]{40}$/i;
  * `codeRunIds`) is left alone — the CI-fix agent's fix-push re-triggers
  * it, and re-running it here would race that push. Each head gets one
  * `vibe-ci-infra-rerun` marker comment on the pull request itself (Issue
- * #2919), posted only after at least one rerun succeeds; a head that is
- * still red is re-run again on later scans without a second comment
- * (Issue #4304).
+ * #2919), posted only after at least one rerun succeeds. GitHub's explicit
+ * `This workflow run cannot be retried` refusal is recorded separately by
+ * repo and run id, so later scans skip that run regardless of head.
  *
  * @returns The workflow run ids that were re-run.
  */
@@ -255,6 +259,8 @@ export async function rerunInfrastructureChecks(opts: {
   infrastructure: InfrastructureCheck[];
   codeRunIds: ReadonlySet<number>;
   fleetMarkers: FleetCiFixMarkers;
+  /** PR head branch; enables the fresh-CI fallback after a refusal (#4497). */
+  branchName?: string;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
 }): Promise<number[]> {
@@ -262,6 +268,7 @@ export async function rerunInfrastructureChecks(opts: {
     repo,
     prNumber,
     headSha,
+    branchName,
     infrastructure,
     codeRunIds,
     fleetMarkers,
@@ -343,7 +350,17 @@ export async function rerunInfrastructureChecks(opts: {
   }
 
   const rerun: number[] = [];
+  let refused = false;
   for (const runId of candidates) {
+    if (isCiRerunRefused(fleetMarkers, repo, runId)) {
+      refused = true;
+      logger.info(
+        `Skipping permanently refused workflow run ${runId} on ${repo} ` +
+          `(Issue #4497)`,
+        { repo, prNumber, runId },
+      );
+      continue;
+    }
     try {
       await ghCommandFn(["run", "rerun", String(runId), "--repo", repo]);
       rerun.push(runId);
@@ -355,6 +372,29 @@ export async function rerunInfrastructureChecks(opts: {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("This workflow run cannot be retried")) {
+        refused = true;
+        logger.warn(
+          `GitHub permanently refused workflow run ${runId} on ${repo}#${prNumber}: ` +
+            `${message} (Issue #4497)`,
+          { repo, prNumber, runId },
+        );
+        const marker = buildCiRerunRefusalMarker({ repo, runId });
+        const posted = await replyToComment(
+          repo,
+          prNumber,
+          marker,
+          ghCommandFn,
+        );
+        if (!posted.ok) {
+          logger.error(
+            `Could not persist permanent rerun refusal for ${repo} run ${runId}: ` +
+              `${posted.error.message} (Issue #4497)`,
+            { repo, prNumber, runId },
+          );
+        }
+        continue;
+      }
       logger.warn(
         `Could not re-run workflow run ${runId} on ${repo}#${prNumber}: ` +
           `${message} (Issue #2914)`,
@@ -383,6 +423,20 @@ export async function rerunInfrastructureChecks(opts: {
     }
   }
 
+  // Issue #4497: a refused run can never produce a new CI signal, so when no
+  // other run was re-run, ask for fresh CI with one guarded empty commit.
+  if (refused && rerun.length === 0 && branchName !== undefined) {
+    await requestFreshCiAfterRerunRefusal({
+      repo,
+      prNumber,
+      branchName,
+      headSha,
+      fleetMarkers,
+      ghCommandFn,
+      logger,
+    });
+  }
+
   return rerun;
 }
 
@@ -400,19 +454,38 @@ export async function rerunInfrastructureChecks(opts: {
  * id and re-run the whole workflow, not `--failed` jobs. Its id need not
  * change, so the scanner and processor use the fleet-wide repair cap.
  *
- * Never throws. A check whose run cannot be resolved (not GitHub Actions,
- * or the lookup failed) or a re-run `gh` refuses is logged and reported as
- * `null`; the next scan retries.
+ * A transient lookup or re-run failure is logged and retried next scan. The
+ * explicit permanent refusal is recorded in the PR comment thread and not
+ * retried; inability to read refusal markers stands the rerun down.
  *
- * @returns The run id that was re-run, or `null` when nothing was re-run.
+ * @returns The resolved run ID and whether it ran, was permanently refused,
+ *   was already refused, failed transiently, or could not be resolved.
  */
 export async function rerunFailedJobsOfCheck(opts: {
   repo: string;
+  prNumber: number;
   checkId: string;
+  fleetMarkers: FleetCiFixMarkers;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
-}): Promise<number | null> {
-  const { repo, checkId, ghCommandFn, logger } = opts;
+}): Promise<{
+  runId: number | null;
+  outcome:
+    | "rerun"
+    | "permanent-refusal"
+    | "already-refused"
+    | "transient-failure"
+    | "unresolved";
+}> {
+  const { repo, prNumber, checkId, fleetMarkers, ghCommandFn, logger } = opts;
+  if (!fleetMarkers.fleetResolved) {
+    logger.error(
+      `Cannot re-run workflow for ${repo}#${prNumber} — permanent refusal ` +
+        `state is unreadable or the fleet identity is unresolved (Issue #4497)`,
+      { repo, prNumber, checkId },
+    );
+    return { runId: null, outcome: "transient-failure" };
+  }
   const suiteId = parseCheckSuiteId(checkId);
   let runId: number | null = null;
   if (suiteId !== null) {
@@ -442,7 +515,15 @@ export async function rerunFailedJobsOfCheck(opts: {
         `(Issue #4304)`,
       { repo, checkId },
     );
-    return null;
+    return { runId: null, outcome: "unresolved" };
+  }
+  if (isCiRerunRefused(fleetMarkers, repo, runId)) {
+    logger.info(
+      `Skipping permanently refused workflow run ${runId} on ${repo} ` +
+        `(Issue #4497)`,
+      { repo, prNumber, checkId, runId },
+    );
+    return { runId, outcome: "already-refused" };
   }
   try {
     await ghCommandFn([
@@ -454,19 +535,39 @@ export async function rerunFailedJobsOfCheck(opts: {
       repo,
     ]);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("This workflow run cannot be retried")) {
+      logger.warn(
+        `GitHub permanently refused workflow run ${runId} on ${repo}#${prNumber}: ` +
+          `${message} (Issue #4497)`,
+        { repo, prNumber, checkId, runId },
+      );
+      const posted = await replyToComment(
+        repo,
+        prNumber,
+        buildCiRerunRefusalMarker({ repo, runId }),
+        ghCommandFn,
+      );
+      if (!posted.ok) {
+        logger.error(
+          `Could not persist permanent rerun refusal for ${repo} run ${runId}: ` +
+            `${posted.error.message} (Issue #4497)`,
+          { repo, prNumber, checkId, runId },
+        );
+      }
+      return { runId, outcome: "permanent-refusal" };
+    }
     logger.warn(
       `Could not re-run workflow ${runId} on ${repo}: ` +
-        `${
-          error instanceof Error ? error.message : String(error)
-        } — the next scan retries (Issue #4304)`,
+        `${message} — the next scan retries (Issue #4304)`,
       { repo, checkId, runId },
     );
-    return null;
+    return { runId, outcome: "transient-failure" };
   }
   logger.info(
     `Re-ran workflow ${runId} on ${repo} after a CI-fix ` +
       `run that changed nothing (Issue #4304)`,
     { repo, checkId, runId },
   );
-  return runId;
+  return { runId, outcome: "rerun" };
 }

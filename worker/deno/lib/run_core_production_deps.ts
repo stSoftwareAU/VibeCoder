@@ -1732,6 +1732,7 @@ export async function createProductionRunCoreDeps(
     sleepInterval: config.sleepInterval ?? runCoreConfig.sleepInterval,
     maxConcurrentIssues: config.maxConcurrentIssues ??
       runCoreConfig.maxConcurrentIssues,
+    prScanningEnabled: config.prScanningEnabled ?? true,
     maxConsecutiveFailures: runCoreConfig.maxConsecutiveFailures,
     rateLimitBackoff: runCoreConfig.rateLimitBackoff,
     // (Issue #2055) The health gate consults the operator's ordered

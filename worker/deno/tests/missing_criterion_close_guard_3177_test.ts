@@ -24,7 +24,9 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  alignIssueCloseWithClosure,
   findMissingCriteria,
+  restoreIssueClose,
   withholdIssueClose,
 } from "../lib/missing_criterion_close_guard.ts";
 import { assemblePrBody } from "../lib/pr_body_sync.ts";
@@ -252,9 +254,80 @@ Deno.test("withholdIssueClose rewrites only this issue's closing keywords (Issue
   assertStringIncludes(out, `**Part of #${ISSUE}**`);
 });
 
+Deno.test("restoreIssueClose rewrites only this issue's Part of keywords (Issue #4472)", () => {
+  const body =
+    `Part of #${ISSUE}. Part of #99. **part of #${ISSUE}**\nPART   OF #${ISSUE}`;
+  assertEquals(
+    restoreIssueClose(body, ISSUE),
+    `Closes #${ISSUE}. Part of #99. **Closes #${ISSUE}**\nCloses #${ISSUE}`,
+  );
+});
+
+Deno.test("restoreIssueClose stays linear on hostile input (Issue #4472)", () => {
+  const hostile = " ".repeat(50_000) + "part of ".repeat(50_000) +
+    "part" + " ".repeat(50_000) + "!";
+  assertEquals(restoreIssueClose(hostile, ISSUE), hostile);
+});
+
+Deno.test("alignIssueCloseWithClosure withholds the close when a criterion is missing (Issue #4472)", () => {
+  const out = alignIssueCloseWithClosure(MISSING_SUMMARY, ISSUE);
+  assertEquals(hasClosingKeyword(out, ISSUE), false);
+  assertStringIncludes(out, `Part of #${ISSUE}`);
+  assertEquals(out, withholdIssueClose(MISSING_SUMMARY, ISSUE));
+});
+
+Deno.test("alignIssueCloseWithClosure restores the close when nothing is missing (Issue #4472)", () => {
+  const partOfSummary = MET_SUMMARY.replace(
+    `Closes #${ISSUE}.`,
+    `Part of #${ISSUE}.`,
+  );
+  assertEquals(alignIssueCloseWithClosure(partOfSummary, ISSUE), MET_SUMMARY);
+});
+
+Deno.test("alignIssueCloseWithClosure leaves a summary with no keyword unchanged (Issue #4472)", () => {
+  const plain = "## Summary\n\nDid the work.\n";
+  assertEquals(alignIssueCloseWithClosure(plain, ISSUE), plain);
+});
+
 // ---------------------------------------------------------------------------
 // Half 1: PR-body assembly
 // ---------------------------------------------------------------------------
+
+Deno.test("summary alignment and PR-body assembly agree on the close decision (Issue #4472)", () => {
+  for (const status of ["missing", "met", "partial"]) {
+    for (const keyword of [`Closes #${ISSUE}`, `Part of #${ISSUE}`, ""]) {
+      const input = `## Summary\n\n${keyword}\n\n## Acceptance Criteria\n\n` +
+        `- **${status}** — criterion — evidence: work`;
+      const summary = alignIssueCloseWithClosure(input, ISSUE);
+      const body = assemblePrBody({
+        summaryContent: summary,
+        issueNumber: ISSUE,
+        extraSections: "",
+        footer: "",
+        summaryDigest: "deadbeef",
+        subAgentTier: undefined,
+        // Isolate the closure decision from the separate reference-adding step.
+        ensureReferences: (content) => content,
+      });
+      const label = `${status}, ${keyword || "no keyword"}`;
+      assertEquals(
+        hasClosingKeyword(body, ISSUE),
+        hasClosingKeyword(summary, ISSUE),
+        label,
+      );
+      assertEquals(
+        body.includes(`Part of #${ISSUE}`),
+        summary.includes(`Part of #${ISSUE}`),
+        label,
+      );
+      assertEquals(
+        hasClosingKeyword(summary, ISSUE),
+        status !== "missing" && keyword !== "",
+        label,
+      );
+    }
+  }
+});
 
 Deno.test("assemblePrBody - a summary with a `missing` criterion does not produce a Closes #N PR (Issue #3177)", () => {
   const body = assemblePrBody({

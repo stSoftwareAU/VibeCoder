@@ -20,6 +20,7 @@ import { fetchClosedPRsByUser } from "./issue_query.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 
 export interface LifecyclePrSnapshot {
   body: string;
@@ -156,7 +157,17 @@ export async function recordLifecyclePrSnapshot(input: {
   });
 }
 
-/** Keep telemetry faults visible at ERROR without blocking PR maintenance. */
+/**
+ * True for a deliberate quota or cool-down latch skip. The bare runner throws
+ * the skip directly; runGhOrThrow adds its exit context. Only the anchored
+ * wrapper is stripped, never a quoted skip inside a genuine fault.
+ */
+function isLatchSkipMessage(message: string): boolean {
+  return message.replace(/^gh command failed \(exit \d+\): /, "")
+    .startsWith(PRIMARY_QUOTA_SKIP_PREFIX);
+}
+
+/** Log deliberate quota skips at INFO and observation faults at ERROR. */
 export async function recordLifecyclePrFromGithub(
   input: {
     workDir: string;
@@ -167,7 +178,7 @@ export async function recordLifecyclePrFromGithub(
     observedAt?: string;
   },
   runGh: (args: string[]) => Promise<string>,
-  logger: Pick<Logger, "error"> = defaultLogger,
+  logger: Pick<Logger, "error"> & Partial<Pick<Logger, "info">> = defaultLogger,
 ): Promise<void> {
   try {
     const snapshot: LifecyclePrSnapshot = input.snapshot ?? JSON.parse(
@@ -193,10 +204,17 @@ export async function recordLifecyclePrFromGithub(
       qualityObservedAt: new Date().toISOString(),
     });
   } catch (error) {
+    const message = redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    );
+    if (isLatchSkipMessage(message)) {
+      (logger.info ?? defaultLogger.info.bind(defaultLogger))(
+        `Lifecycle PR observation skipped for ${input.repo}#${input.prNumber}: ${message}`,
+      );
+      return;
+    }
     logger.error(
-      `Lifecycle PR observation failed for ${input.repo}#${input.prNumber}: ${
-        redactSecrets(error instanceof Error ? error.message : String(error))
-      }`,
+      `Lifecycle PR observation failed for ${input.repo}#${input.prNumber}: ${message}`,
     );
   }
 }
@@ -223,7 +241,10 @@ export async function observedLifecycleTerminalPrs(
   return observed;
 }
 
-/** Reuse the closed-PR listing at the existing recovery pass. */
+/**
+ * Reuse the closed-PR listing at the existing recovery pass. Quota-latch
+ * skips log at INFO; any other fault logs at ERROR.
+ */
 export async function recordClosedLifecyclePrs(
   input: {
     workDir: string;
@@ -232,7 +253,7 @@ export async function recordClosedLifecyclePrs(
     cache?: IssueCache;
   },
   runGh: (args: string[]) => Promise<string>,
-  logger: Pick<Logger, "error"> = defaultLogger,
+  logger: Pick<Logger, "error"> & Partial<Pick<Logger, "info">> = defaultLogger,
 ): Promise<void> {
   try {
     const observed = await observedLifecycleTerminalPrs(input.workDir);
@@ -258,10 +279,15 @@ export async function recordClosedLifecyclePrs(
       }
     }
   } catch (error) {
-    logger.error(
-      `Lifecycle closed-PR observation failed: ${
-        redactSecrets(error instanceof Error ? error.message : String(error))
-      }`,
+    const message = redactSecrets(
+      error instanceof Error ? error.message : String(error),
     );
+    if (isLatchSkipMessage(message)) {
+      (logger.info ?? defaultLogger.info.bind(defaultLogger))(
+        `Lifecycle closed-PR observation skipped: ${message}`,
+      );
+      return;
+    }
+    logger.error(`Lifecycle closed-PR observation failed: ${message}`);
   }
 }

@@ -70,11 +70,8 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import {
-  type CommitProvenance,
-  fetchPrCommitProvenance,
   fetchPrHeadCommit,
   type HeadCommitInfo,
-  isReviewSupersededByFleetFix,
   isSupersededByFleetPush,
   parsePrReviewPages,
   PR_REVIEWS_JQ,
@@ -101,6 +98,7 @@ import {
   rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "./ci_infrastructure_rerun.ts";
+import { requestFreshCiAfterRerunRefusal } from "./ci_rerun_fresh_ci.ts";
 import {
   buildJobNeedsMap,
   isDownstreamOfRedJob,
@@ -1128,26 +1126,11 @@ export async function findPrCommentsToFix(
       }
 
       // Check PR reviews (CHANGES_REQUESTED). A reviewer's latest review
-      // decides; a moved head does not retire it (Issue #2697). The PR's
-      // commit history is read at most once, and only for a review that is
-      // not on the head.
-      let prCommits: CommitProvenance[] | null | undefined;
-      const reviewSupersededByFleetFix = async (
-        reviewSubmittedAt: string | null | undefined,
-      ): Promise<boolean> => {
-        if (prCommits === undefined) {
-          prCommits = await fetchPrCommitProvenance(
-            repo,
-            prNumber,
-            ghCommandFn,
-          );
-        }
-        return isReviewSupersededByFleetFix({
-          reviewSubmittedAt,
-          commits: prCommits,
-          fleetAuthors: scanAuthors,
-        });
-      };
+      // decides; a moved head does not retire it (Issue #2697). A
+      // CHANGES_REQUESTED review is never superseded by a fleet commit (Issue
+      // #4510): a CI-fix pass pushes single-parent fleet commits yet never
+      // answers a review, so only dismissal (Issue #3383) and a live claim
+      // lease retire or hold it.
       const reviews = await fetchPrReviews(
         repo,
         prNumber,
@@ -1205,29 +1188,6 @@ export async function findPrCommentsToFix(
             prNumber,
             review.id,
             "it has no body to act on",
-          );
-          continue;
-        }
-
-        // Issue #2702: the head moving is not the review being answered. A
-        // base merge and a bot's version bump moved GRQ#5032's head after the
-        // owner's review, and a `commit_id !== head` rule hid it for good.
-        // Only a fleet fix commit after the review supersedes it. A review on
-        // the current head cannot have been answered, so it costs no read.
-        if (
-          headRefOid && review.commit_id !== headRefOid &&
-          await reviewSupersededByFleetFix(review.submitted_at)
-        ) {
-          logger.info(
-            "Skipping CHANGES_REQUESTED review superseded by a fleet fix commit",
-            {
-              repo,
-              prNumber,
-              reviewId: review.id,
-              commitId: review.commit_id,
-              submittedAt: review.submitted_at,
-              headSha: headRefOid,
-            },
           );
           continue;
         }
@@ -1894,6 +1854,7 @@ export async function findFailedCiChecks(
           infrastructure: classified.infrastructure,
           codeRunIds: classified.codeRunIds,
           fleetMarkers: parked.markers,
+          branchName,
           ghCommandFn,
           logger,
         });
@@ -1963,22 +1924,53 @@ export async function findFailedCiChecks(
         // would strand them. The processor's fleet-wide attempt cap still
         // bounds repair and abandons/restarts the PR when it is spent.
         if (retryCount >= maxRetries && check.checkSuiteId === undefined) {
-          // Issue #4304: a spent check run is re-run rather than left red
-          // for a person. The fresh run has a fresh retry budget and is
-          // picked up next scan; the fleet-wide auto-fix cap bounds it.
-          logger.warn("CI check exceeded max retries — re-running it", {
+          // Issue #4304: attempt to re-run a spent check instead of leaving it
+          // for a person. Issue #4497 remembers GitHub's permanent refusal.
+          const rerunResult = await rerunFailedJobsOfCheck({
             repo,
             prNumber,
-            checkName: check.name,
-            retries: retryCount,
-            maxRetries,
-          });
-          await rerunFailedJobsOfCheck({
-            repo,
             checkId,
+            fleetMarkers: parked?.markers ?? {
+              attempts: new Map(),
+              deferrals: new Map(),
+              humanGates: new Map(),
+              infraReruns: new Map(),
+              rerunRefusals: new Map(),
+              rerunFallbacks: new Map(),
+              fleetResolved: false,
+              ignoredOutsideFleet: 0,
+            },
             ghCommandFn,
             logger,
           });
+          // A run already recorded as refused is skipped at info level (the
+          // rerun helper logs it), so a permanent refusal is not re-warned on
+          // every scan (Issue #4497).
+          if (rerunResult.outcome !== "already-refused") {
+            logger.warn("CI check exceeded max retries — attempted a re-run", {
+              repo,
+              prNumber,
+              checkName: check.name,
+              retries: retryCount,
+              maxRetries,
+              outcome: rerunResult.outcome,
+            });
+          }
+          if (
+            parked !== undefined &&
+            (rerunResult.outcome === "permanent-refusal" ||
+              rerunResult.outcome === "already-refused")
+          ) {
+            await requestFreshCiAfterRerunRefusal({
+              repo,
+              prNumber,
+              branchName,
+              headSha: pr.headRefOid,
+              fleetMarkers: parked.markers,
+              ghCommandFn,
+              logger,
+            });
+          }
           continue;
         }
 

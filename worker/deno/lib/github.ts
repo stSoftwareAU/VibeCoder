@@ -26,10 +26,12 @@ import { runGhOrThrow, setPrimaryQuotaExhaustionHook } from "./gh_spawn.ts";
 import { probeGraphqlQuota } from "./graphql_quota_probe.ts";
 import {
   isPrimaryQuotaLatched,
+  isPrimaryRateLimitMessage,
   isQuotaExemptGhCall,
   latchPrimaryQuota,
   primaryQuotaSkipMessage,
 } from "./primary_quota_latch.ts";
+import { isSecondaryOnlyRateLimitMessage } from "./secondary_rate_limit.ts";
 import {
   formatRateLimitReset,
   writeRateLimitSignal,
@@ -278,10 +280,10 @@ export async function runGhCommandRaw(
   // `spawnGh` refuses an off-allowlist (or undeterminable) write BEFORE the
   // command reaches GitHub, then journals the mutation (Issue #2380).
   //
-  // Issue #42 / #1540: the first live call to report the primary-quota
-  // message latches the whole process until the reset, so the calls behind
-  // it never spawn, and writes the shared rate-limit signal that drives the
-  // Issue #1780 mid-cycle pause. That used to happen in this function's
+  // Issue #42 / #1540: the first live call to report a GraphQL rate-limit
+  // refusal latches the process and writes the shared signal that drives the
+  // Issue #1780 mid-cycle pause. A primary refusal probes its reset; a bare
+  // GraphQL Forbidden gets the secondary cool-down. That used to happen in this function's
   // catch alone; it now happens in `spawnGh` for every caller, through the
   // hook registered below — this wrapper only threads its signal directory
   // through.
@@ -292,11 +294,10 @@ export async function runGhCommandRaw(
 }
 
 // Issue #1540: the chokepoint sees every refusal; this module knows what to
-// do about one. Registered at load, so any process that uses `gh` through
-// `github.ts` — the worker — latches on the first refusal whichever module
-// saw it.
-setPrimaryQuotaExhaustionHook(({ workDir }) =>
-  notePrimaryQuotaExhaustion(workDir)
+// do about GraphQL rate-limit refusals. Registered at load, so any process
+// using `gh` through `github.ts` latches whichever module saw it first.
+setPrimaryQuotaExhaustionHook(({ workDir, stderr }) =>
+  notePrimaryQuotaExhaustion(stderr, workDir)
 );
 
 /** True while a single primary-quota exhaustion is being recorded. */
@@ -318,12 +319,13 @@ export const SECONDARY_LIMIT_MIN_REMAINING = 100;
 export const SECONDARY_LIMIT_BACKOFF_SECONDS = 60;
 
 /**
- * Record the first primary-GraphQL-quota exhaustion of the window (Issue #42).
+ * Record a GraphQL rate-limit refusal (Issue #42).
  *
- * Reads the reset from the free GraphQL quota probe (bypassing the
- * chokepoint so it neither records telemetry nor recurses), latches the
- * process until then, and writes the shared rate-limit signal so sibling
- * workers and the Issue #1780 pause observe the same window. Idempotent and
+ * Reads the reset from the free GraphQL quota probe for a primary-quota
+ * refusal (bypassing the chokepoint so it neither records telemetry nor
+ * recurses), or latches briefly for a secondary refusal. Both write the
+ * shared rate-limit signal so sibling workers and the Issue #1780 pause
+ * observe the condition. Idempotent and
  * cheap: once the latch is set, every later call short-circuits before
  * reaching this path, and a concurrent first detection is coalesced.
  *
@@ -331,6 +333,7 @@ export const SECONDARY_LIMIT_BACKOFF_SECONDS = 60;
  *   `WORK_DIR` the run driver exports (Issue #966).
  */
 async function notePrimaryQuotaExhaustion(
+  refusalMessage: string,
   workDirOverride?: string,
 ): Promise<void> {
   if (quotaExhaustionNoteInFlight || isPrimaryQuotaLatched()) return;
@@ -338,7 +341,32 @@ async function notePrimaryQuotaExhaustion(
   try {
     const now = Math.floor(Date.now() / 1000);
     const workDir = workDirOverride ?? Deno.env.get("WORK_DIR");
+    // A bare Forbidden from GraphQL has no quota headers to distinguish a
+    // burst refusal from the hourly budget. Park for the short cool-down and
+    // publish the same shared pause signal used by the primary path.
+    if (
+      isSecondaryOnlyRateLimitMessage(
+        refusalMessage,
+        isPrimaryRateLimitMessage,
+      )
+    ) {
+      await noteSecondaryLimitCooldown(now, workDir);
+      return;
+    }
     const probe = await probeGraphqlQuota();
+
+    // The quota probe itself can receive the same bare GraphQL Forbidden.
+    // That is evidence of the secondary limit, not a reason to assume the
+    // primary quota is exhausted for an hour.
+    if (
+      !probe.ok && isSecondaryOnlyRateLimitMessage(
+        probe.error.message,
+        isPrimaryRateLimitMessage,
+      )
+    ) {
+      await noteSecondaryLimitCooldown(now, workDir);
+      return;
+    }
 
     // GitHub says "API rate limit already exceeded" for two different
     // things: the hourly primary quota being spent, and a secondary limit
@@ -415,6 +443,22 @@ async function notePrimaryQuotaExhaustion(
   } finally {
     quotaExhaustionNoteInFlight = false;
   }
+}
+
+/** Latch the short secondary cool-down and write the shared pause signal. */
+async function noteSecondaryLimitCooldown(
+  now: number,
+  workDir: string | undefined,
+): Promise<void> {
+  const waitSeconds = SECONDARY_LIMIT_BACKOFF_SECONDS;
+  latchPrimaryQuota(now + waitSeconds, now, "secondary");
+  if (workDir) {
+    await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
+  }
+  defaultLogger.warn(
+    `GitHub refused a GraphQL call under the secondary rate limit. Pausing ` +
+      `GraphQL-backed gh calls for ${waitSeconds}s.`,
+  );
 }
 
 /**

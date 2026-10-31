@@ -46,6 +46,13 @@ const CLOSING_KEYWORD_RE =
   /(^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
 
 /**
+ * The bare `Part of #N` that {@link restoreIssueClose} turns back into
+ * `Closes #N`. Same shape as {@link CLOSING_KEYWORD_RE}: the issue number is
+ * compared after the match, never interpolated into the pattern.
+ */
+const PART_OF_RE = /(^|[^\w/])part\s+of\s+#(\d+)\b/gi;
+
+/**
  * The closure entries a PR summary (or PR body) marks `missing`, as written.
  *
  * Reads the same `## Acceptance Criteria` block the closure gate parses, so
@@ -61,6 +68,11 @@ export function findMissingCriteria(prBody: string): string[] {
     .map((entry) => entry.text);
 }
 
+/** Whether the closure block requires withholding the issue close. */
+export function withholdsIssueClose(summary: string): boolean {
+  return findMissingCriteria(summary).length > 0;
+}
+
 /**
  * Rewrite every closing keyword that names `issueNumber` as `Part of #N`,
  * leaving keywords for other issues untouched.
@@ -74,6 +86,39 @@ export function withholdIssueClose(body: string, issueNumber: number): string {
     (match: string, lead: string, num: string) =>
       Number(num) === issueNumber ? `${lead}Part of #${num}` : match,
   );
+}
+
+/**
+ * Rewrite every bare `Part of #N` that names `issueNumber` back to
+ * `Closes #N`, leaving `Part of` for other issues untouched.
+ *
+ * @param body - The PR summary or PR body.
+ * @param issueNumber - The issue the PR closes when nothing is missing.
+ */
+export function restoreIssueClose(body: string, issueNumber: number): string {
+  return body.replace(
+    PART_OF_RE,
+    (match: string, lead: string, num: string) =>
+      Number(num) === issueNumber ? `${lead}Closes #${num}` : match,
+  );
+}
+
+/**
+ * Align the issue's closing keyword with the summary's own closure block: a
+ * `missing` entry withholds the close (`Part of #N`), and no `missing` entry
+ * restores it (`Closes #N`). Same rule assemblePrBody applies to the PR body
+ * (Issue #3177), so the committed summary and PR body agree (Issue #4472).
+ *
+ * @param summary - The PR summary, with its closure block already rendered.
+ * @param issueNumber - The issue the PR is part of.
+ */
+export function alignIssueCloseWithClosure(
+  summary: string,
+  issueNumber: number,
+): string {
+  return withholdsIssueClose(summary)
+    ? withholdIssueClose(summary, issueNumber)
+    : restoreIssueClose(summary, issueNumber);
 }
 
 /** One criterion as a bullet, trimmed to a readable length. */

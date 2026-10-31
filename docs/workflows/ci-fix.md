@@ -1,12 +1,22 @@
 # 🔧 Workflow: CI (Continuous Integration) fix
 
-This page is part of the **user manual** for the Vibe Coder. It describes how the appliance **automatically diagnoses and fixes CI failures** on PRs (Pull Requests) authored by the configured GitHub user. For internal details, see **Further reading** at the end.
+This page is part of the **user manual** for the Vibe Coder. It describes how
+the appliance **automatically diagnoses and fixes CI failures** on PRs (Pull
+Requests) authored by the configured GitHub user. For internal details, see
+**Further reading** at the end.
 
 ---
 
 ## ⚡ TL;DR
 
-**When a CI check fails on a PR authored by the configured GitHub user, the worker automatically attempts to fix it.** It extracts failure annotations (file, line, message), classifies the failure (test, build, lint, infrastructure, transient —), sends them to Claude with the latest `ci_fix` prompt (from [`prompts/ci_fix/`](../../prompts/ci_fix/)), and pushes a fix commit. The worker retries up to 3 times per check before giving up and posting a classifier-aware comment. CI fix runs at **priority 1.55** — after PR feedback (1) and spelling/quality fixes (1.5), but before branch updates (1.6).
+**When a CI check fails on a PR authored by the configured GitHub user, the
+worker automatically attempts to fix it.** It extracts failure annotations
+(file, line, message), classifies the failure (test, build, lint,
+infrastructure, transient —), sends them to Claude with the latest `ci_fix`
+prompt (from [`prompts/ci_fix/`](../../prompts/ci_fix/)), and pushes a fix
+commit. The worker retries up to 3 times per check before giving up and posting
+a classifier-aware comment. CI fix runs at **priority 1.55** — after PR feedback
+(1) and spelling/quality fixes (1.5), but before branch updates (1.6).
 
 ```mermaid
 flowchart TD
@@ -39,56 +49,119 @@ flowchart TD
 
 ## 🎯 Purpose and scope
 
-- **Purpose:** Automatically diagnose and fix CI check failures on PRs authored by the configured GitHub user, without operator intervention.
-- **Scope:** General CI failures — build errors, test failures, lint violations. Spelling failures are handled separately at priority 1.5 (see [pr-feedback.md](pr-feedback.md)).
-- **Not in scope:** Infrastructure failures (e.g. runner unavailability), flaky tests that pass on re-run, or failures on PRs authored by other users. A `cancelled` check, or a `failure` whose job never started, is re-run once rather than handed to the CI-fix agent (see [Decision points and exceptions](#-decision-points-and-exceptions)).
+- **Purpose:** Automatically diagnose and fix CI check failures on PRs authored
+  by the configured GitHub user, without operator intervention.
+- **Scope:** General CI failures — build errors, test failures, lint violations.
+  Spelling failures are handled separately at priority 1.5 (see
+  [pr-feedback.md](pr-feedback.md)).
+- **Not in scope:** Infrastructure failures (e.g. runner unavailability), flaky
+  tests that pass on re-run, or failures on PRs authored by other users. A
+  `cancelled` check, or a `failure` whose job never started, is re-run once
+  rather than handed to the CI-fix agent (see
+  [Decision points and exceptions](#-decision-points-and-exceptions)).
 
 ## 🎭 Actors and triggers
 
-- **Trigger:** A CI check run with `conclusion == "failure"` is detected on an open PR authored by the configured GitHub user; `conclusion == "cancelled"` is also read, but diverted to the infrastructure re-run path rather than the fix lane (Issue #2914).
-- **Actors:** The worker (via `findFailedCiChecks` in `worker/deno/lib/pr_ci_checks.ts`); Claude (via the `ci_fix` prompt); GitHub API (check runs, annotations).
-- **Priority:** 1.55 — runs after PR feedback (1) and spelling/quality fixes (1.5), before branch updates (1.6).
+- **Trigger:** A CI check run with `conclusion == "failure"` is detected on an
+  open PR authored by the configured GitHub user; `conclusion == "cancelled"` is
+  also read, but diverted to the infrastructure re-run path rather than the fix
+  lane (Issue #2914).
+- **Actors:** The worker (via `findFailedCiChecks` in
+  `worker/deno/lib/pr_ci_checks.ts`); Claude (via the `ci_fix` prompt); GitHub
+  API (check runs, annotations).
+- **Priority:** 1.55 — runs after PR feedback (1) and spelling/quality fixes
+  (1.5), before branch updates (1.6).
 
 ## 📏 Preconditions / invariants
 
 - The PR is authored by the configured GitHub user.
-- The failed check is not a genuine spelling failure — one whose failing *step* is codespell, cspell or typos (those are handled at priority 1.5). A non-spelling step inside a spelling-named job, such as a bats failure in a bundled `Scripts & spelling` job, stays on this route (Issue #1579).
-- Exactly one host works a given PR's CI failure at a time — the cross-host PR lock is acquired before the heartbeat, before Claude and before any push.
-- The retry count for this specific check run has not exceeded `CI_CHECK_MAX_RETRIES` (default: 3).
-- The worker has the PR branch checked out and synced with the base branch before invoking Claude.
+- The failed check is not a genuine spelling failure — one whose failing _step_
+  is codespell, cspell or typos (those are handled at priority 1.5). A
+  non-spelling step inside a spelling-named job, such as a bats failure in a
+  bundled `Scripts & spelling` job, stays on this route (Issue #1579).
+- Exactly one host works a given PR's CI failure at a time — the cross-host PR
+  lock is acquired before the heartbeat, before Claude and before any push.
+- The retry count for this specific check run has not exceeded
+  `CI_CHECK_MAX_RETRIES` (default: 3).
+- The worker has the PR branch checked out and synced with the base branch
+  before invoking Claude.
 
 ## ✅ Happy path
 
-1. **Detect** — `find_failed_ci_checks()` scans all open PRs authored by the configured GitHub user. For each PR, it queries the GitHub API for check runs with `conclusion == "failure"` or `conclusion == "cancelled"`, filtering out only those whose failing step is a spelling tool; a `cancelled` run, or a `failure` whose job never started, is diverted to the infrastructure re-run rather than reaching Claude (Issue #2914).
-2. **Extract annotations** — Failure annotations (file path, line number, error message) are extracted from the check run and encoded as base64 JSON for safe transport through shell.
-3. **Checkout** — The worker checks out the PR branch, fetches the latest changes, and syncs with the base branch (rebase) to prevent merge conflicts.
-4. **Run pre-setup** — If the repository has a configured `pre_setup_command`, it is executed before Claude starts.
+1. **Detect** — `find_failed_ci_checks()` scans all open PRs authored by the
+   configured GitHub user. For each PR, it queries the GitHub API for check runs
+   with `conclusion == "failure"` or `conclusion == "cancelled"`, filtering out
+   only those whose failing step is a spelling tool; a `cancelled` run, or a
+   `failure` whose job never started, is diverted to the infrastructure re-run
+   rather than reaching Claude (Issue #2914).
+2. **Extract annotations** — Failure annotations (file path, line number, error
+   message) are extracted from the check run and encoded as base64 JSON for safe
+   transport through shell.
+3. **Checkout** — The worker checks out the PR branch, fetches the latest
+   changes, and syncs with the base branch (rebase) to prevent merge conflicts.
+4. **Run pre-setup** — If the repository has a configured `pre_setup_command`,
+   it is executed before Claude starts.
 5. **Build prompt** — `build_ci_fix_prompt()` constructs the Claude prompt with:
    - The failed check name and annotation details
    - The `ci_fix` prompt template (from `prompts/ci_fix/`)
    - Coding guidelines and quality instructions
    - Any repository-specific custom instructions
-6. **Run Claude** — Claude analyses the failure, reads the relevant source files, and applies a minimal fix. The prompt instructs Claude to:
+6. **Run Claude** — Claude analyses the failure, reads the relevant source
+   files, and applies a minimal fix. The prompt instructs Claude to:
    - Read the failing test or build configuration
    - Fix the root cause in the source code
    - Never disable or skip tests
    - Create a `.pr_response_message` file summarising the fix
-7. **Quality gate** — If Claude made changes, the worker runs quality checks (`./quality.sh` or the repository's custom quality command). If quality fails, Claude is retried once.
-8. **Commit and push** — Changes are committed with the message `Fix CI failure ($check_name) for PR #$pr_number` and pushed.
-9. **Re-sync the description** — After that push is verified on the PR's own head, the worker rebuilds the PR description from `docs/archive/pr-summaries/pr-summary-<N>.md` when the summary at the head differs from the SHA-256 digest recorded in the body's hidden marker — whichever push changed it, this run's or an earlier one. A body raised before the digest marker existed keeps the older rule: rebuilt only when this run's own push changed the summary file. Fix branches for a gated milestone head are skipped, and only a PR the worker authored is edited. A failed sync is logged once at warning and does not fail the run (Issues #3089, #3315).
-10. **Reply** — The worker posts a comment on the PR with the fix summary from `.pr_response_message`, or a generic message if none was provided.
+7. **Quality gate** — If Claude made changes, the worker runs quality checks
+   (`./quality.sh` or the repository's custom quality command). If quality
+   fails, Claude is retried once.
+8. **Commit and push** — Changes are committed with the message
+   `Fix CI failure ($check_name) for PR #$pr_number` and pushed.
+9. **Re-sync the description** — After that push is verified on the PR's own
+   head, the worker rebuilds the PR description from
+   `docs/archive/pr-summaries/pr-summary-<N>.md` when the summary at the head
+   differs from the SHA-256 digest recorded in the body's hidden marker —
+   whichever push changed it, this run's or an earlier one. A body raised before
+   the digest marker existed keeps the older rule: rebuilt only when this run's
+   own push changed the summary file. Fix branches for a gated milestone head
+   are skipped, and only a PR the worker authored is edited. A failed sync is
+   logged once at warning and does not fail the run (Issues #3089, #3315).
+10. **Reply** — The worker posts a comment on the PR with the fix summary from
+    `.pr_response_message`, or a generic message if none was provided.
 
 ## 🔁 The reproduction loop before the fix
 
-Until Issue #661 the whole of the prompt's diagnosis guidance was "read the failing test, CI config, and relevant source to find the root cause" — straight to hypothesis, with nothing between a plausible theory and a pushed commit, and no way to tell "the check is green now" from "the check is green because the cause is gone". The `ci_fix` prompt now gates the fix behind a **red-capable command**: one command, run once in the run, that drives the failing path and reproduces the check's own symptom. No red command, no hypothesis.
+Until Issue #661 the whole of the prompt's diagnosis guidance was "read the
+failing test, CI config, and relevant source to find the root cause" — straight
+to hypothesis, with nothing between a plausible theory and a pushed commit, and
+no way to tell "the check is green now" from "the check is green because the
+cause is gone". The `ci_fix` prompt now gates the fix behind a **red-capable
+command**: one command, run once in the run, that drives the failing path and
+reproduces the check's own symptom. No red command, no hypothesis.
 
-The gate is **cheap where the failure is mechanical**. A lint violation, a formatting drift, a type error or a `semgrep` finding is already reproduced by the tool that reported it, so running that tool *is* the loop — one line, no ceremony. The rest of the discipline is for failures the log does not explain: an assertion failure, a crash, a flake, an order-dependent test.
+The gate is **cheap where the failure is mechanical**. A lint violation, a
+formatting drift, a type error or a `semgrep` finding is already reproduced by
+the tool that reported it, so running that tool _is_ the loop — one line, no
+ceremony. The rest of the discipline is for failures the log does not explain:
+an assertion failure, a crash, a flake, an order-dependent test.
 
-- **Bounded, with an honest give-up path.** Roughly three shapes of command; if none goes red the run says which it tried, what each did instead, and why the symptom would not reproduce. A loop that could not be built is a legitimate reportable outcome — a fix guessed without one is not.
-- **Minimise before fixing.** Cut one element at a time, re-running each time, until removing anything left turns it green. What survives is the regression test the fix ships with.
-- **Three to five ranked, falsifiable hypotheses before instrumenting**, each stating the prediction that would kill it. One hypothesis anchors the run on the first plausible idea.
-- **Tagged instrumentation.** Temporary debug logs carry a unique `[DEBUG-…]` prefix so a single `grep -rn "\[DEBUG-" .` clears them before the commit. The pre-existing scratch-file rule only covers files *beside* the source; instrumentation hides *inside* it.
-- **The reply carries the evidence.** Both `.pr_response_message` skeletons — changed-code and no-change — have a `**Reproduction:**` line, so a reviewer sees the command and its symptom, or the commands tried and why none went red.
+- **Bounded, with an honest give-up path.** Roughly three shapes of command; if
+  none goes red the run says which it tried, what each did instead, and why the
+  symptom would not reproduce. A loop that could not be built is a legitimate
+  reportable outcome — a fix guessed without one is not.
+- **Minimise before fixing.** Cut one element at a time, re-running each time,
+  until removing anything left turns it green. What survives is the regression
+  test the fix ships with.
+- **Three to five ranked, falsifiable hypotheses before instrumenting**, each
+  stating the prediction that would kill it. One hypothesis anchors the run on
+  the first plausible idea.
+- **Tagged instrumentation.** Temporary debug logs carry a unique `[DEBUG-…]`
+  prefix so a single `grep -rn "\[DEBUG-" .` clears them before the commit. The
+  pre-existing scratch-file rule only covers files _beside_ the source;
+  instrumentation hides _inside_ it.
+- **The reply carries the evidence.** Both `.pr_response_message` skeletons —
+  changed-code and no-change — have a `**Reproduction:**` line, so a reviewer
+  sees the command and its symptom, or the commands tried and why none went red.
 
 ```mermaid
 flowchart TD
@@ -110,20 +183,57 @@ flowchart TD
     style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
-The reporting end of the same discipline is the `## Reproduction` block a `bug`-labelled issue run must write — see [Issue processing § Reproduction status](issue-processing.md#-reproduction-status-on-a-bug-fix). Credit for the phase-gated shape belongs to [mattpocock/skills](https://github.com/mattpocock/skills) (see [REFERENCES.md](../REFERENCES.md)); the bound and the give-up path are ours, because these runs are unattended and budgeted.
+The reporting end of the same discipline is the `## Reproduction` block a
+`bug`-labelled issue run must write — see
+[Issue processing § Reproduction status](issue-processing.md#-reproduction-status-on-a-bug-fix).
+Credit for the phase-gated shape belongs to
+[mattpocock/skills](https://github.com/mattpocock/skills) (see
+[REFERENCES.md](../REFERENCES.md)); the bound and the give-up path are ours,
+because these runs are unattended and budgeted.
 
 ## 🔒 Cross-host locking
 
-Every fleet host scans the same PRs, so the CI-fix path takes a **cross-host lock before it does anything else** — before the heartbeat, before Claude, before any push. Without it two hosts fixed one PR's CI failure concurrently (2026-08-03), burning tokens twice and racing each other's pushes.
+Every fleet host scans the same PRs, so the CI-fix path takes a **cross-host
+lock before it does anything else** — before the heartbeat, before Claude,
+before any push. Without it two hosts fixed one PR's CI failure concurrently
+(2026-08-03), burning tokens twice and racing each other's pushes.
 
-The lock stops two hosts working one PR **at the same time**; the fleet-wide attempt markers below stop them repeating each other's work **over time**.
+The lock stops two hosts working one PR **at the same time**; the fleet-wide
+attempt markers below stop them repeating each other's work **over time**.
 
-- **Granularity: the whole PR, not a single check.** Two hosts picking *different* failing checks on one branch would still push to that branch at the same time, so the lock claims the PR. It is the same `BRANCH_UPDATE_LOCK` comment used by the [branch-update workflow](pr-feedback.md), so a CI fix and a branch rebase can never run against one branch at once.
-- **Earliest claim wins.** Each host posts a lock comment, pauses for GitHub's eventual consistency, re-reads the comments, and the earliest `created_at` wins. The loser deletes its own comment, logs `pr_ci_lock=lost winner=<id>`, and returns immediately so the next scan can retry.
-- **Held for the whole run.** The lock TTL is 5 minutes but a CI fix may run for `ci_fix_timeout` (30 minutes), so the holder **renews** its lock every ~100 seconds rather than the TTL being raised. Renewal keeps the crash-recovery window at one TTL: a host that dies mid-fix frees the PR within five minutes instead of hours.
-- **Released on every exit path.** Success, failure and throw all release the lock in a `finally`. A lock left behind by a crashed host is deleted by `cleanStaleBranchUpdateLocks` once it passes the TTL, so a PR is never permanently deadlocked.
-- **Visible on the PR.** The lock comment carries a readable line ("Locked PR #N for a CI fix …") under the hidden marker, so it never renders as a blank comment.
-- **The whole thread is read, and nothing is left on it.** The comment read is paginated (`--paginate`, `per_page=100`): the unpaginated call returned only the **30 oldest** comments, so once a PR thread outgrew one page the sweep found no lock to expire and a host could not see the comment it had just posted. Every cycle then added one more lock comment and acquired nothing — 765 of them piled up on `NEAT-AI-Lamarck#239`, no host could update that branch, and a human was asked to sort it out. Three rules close that off (Issue #2265): the read is paginated; the posted comment is deleted on **every** not-acquired path, not only when the race is lost; and an **expired** marker is ignored when the winner is chosen, so a delete that never succeeded cannot wedge the PR. The sweep clears at most 100 stale markers per pass and says out loud what it could not read or delete.
+- **Granularity: the whole PR, not a single check.** Two hosts picking
+  _different_ failing checks on one branch would still push to that branch at
+  the same time, so the lock claims the PR. It is the same `BRANCH_UPDATE_LOCK`
+  comment used by the [branch-update workflow](pr-feedback.md), so a CI fix and
+  a branch rebase can never run against one branch at once.
+- **Earliest claim wins.** Each host posts a lock comment, pauses for GitHub's
+  eventual consistency, re-reads the comments, and the earliest `created_at`
+  wins. The loser deletes its own comment, logs `pr_ci_lock=lost winner=<id>`,
+  and returns immediately so the next scan can retry.
+- **Held for the whole run.** The lock TTL is 5 minutes but a CI fix may run for
+  `ci_fix_timeout` (30 minutes), so the holder **renews** its lock every ~100
+  seconds rather than the TTL being raised. Renewal keeps the crash-recovery
+  window at one TTL: a host that dies mid-fix frees the PR within five minutes
+  instead of hours.
+- **Released on every exit path.** Success, failure and throw all release the
+  lock in a `finally`. A lock left behind by a crashed host is deleted by
+  `cleanStaleBranchUpdateLocks` once it passes the TTL, so a PR is never
+  permanently deadlocked.
+- **Visible on the PR.** The lock comment carries a readable line ("Locked PR #N
+  for a CI fix …") under the hidden marker, so it never renders as a blank
+  comment.
+- **The whole thread is read, and nothing is left on it.** The comment read is
+  paginated (`--paginate`, `per_page=100`): the unpaginated call returned only
+  the **30 oldest** comments, so once a PR thread outgrew one page the sweep
+  found no lock to expire and a host could not see the comment it had just
+  posted. Every cycle then added one more lock comment and acquired nothing —
+  765 of them piled up on `NEAT-AI-Lamarck#239`, no host could update that
+  branch, and a human was asked to sort it out. Three rules close that off
+  (Issue #2265): the read is paginated; the posted comment is deleted on
+  **every** not-acquired path, not only when the race is lost; and an
+  **expired** marker is ignored when the winner is chosen, so a delete that
+  never succeeded cannot wedge the PR. The sweep clears at most 100 stale
+  markers per pass and says out loud what it could not read or delete.
 
 ```mermaid
 sequenceDiagram
@@ -144,30 +254,106 @@ sequenceDiagram
 
 ## 🔄 Retry behaviour
 
-The worker tracks retries per check run ID using state files in the CI check state directory:
+The worker tracks retries per check run ID using state files in the CI check
+state directory:
 
 - **State files:** `${CI_CHECK_STATE_DIR}/${safe_repo}_${check_id}.retries`
-- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan and the fix** (Issue #552). The old relative default resolved against the worker's working directory — the read-only checkout in container mode — so the scan read retry counters from a store nothing wrote to and the cap was never enforced. That is why semgrep failures waited for somebody to ask for a fix by hand.
+- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to
+  `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan
+  and the fix** (Issue #552). The old relative default resolved against the
+  worker's working directory — the read-only checkout in container mode — so the
+  scan read retry counters from a store nothing wrote to and the cap was never
+  enforced. That is why semgrep failures waited for somebody to ask for a fix by
+  hand.
 - **Maximum retries:** 3 (configurable via `CI_CHECK_MAX_RETRIES`)
-- **On max retries exceeded:** For a merge-queue removal nothing is re-run, because no Actions run stands behind it ([Merge-queue removals](#merge-queue-removals-issue-4424)). Otherwise the worker re-runs the failed jobs of that check run (`gh run rerun <run-id> --failed`) and posts nothing (Issue #4304). The fresh run has a fresh retry budget and comes back to the lane on the next scan; the fleet-wide attempt cap below, which closes the PR and redoes its issue, bounds the whole loop.
+- **On max retries exceeded:** For a merge-queue removal nothing is re-run,
+  because no Actions run stands behind it
+  ([Merge-queue removals](#merge-queue-removals-issue-4424)). Otherwise the
+  worker re-runs the failed jobs of that check run
+  (`gh run rerun <run-id> --failed`) and posts nothing (Issue #4304). The fresh
+  run has a fresh retry budget and comes back to the lane on the next scan; the
+  fleet-wide attempt cap below, which closes the PR and redoes its issue, bounds
+  the whole loop.
 
 ### Fleet-wide attempt cap and comment dedup (Issue #1879)
 
-The check-run retry counter above is **host-local and per check run**. The `max_auto_fix_attempts` cap is neither: it is counted from the pull request's own fleet-authored markers, so every host shares one budget of three attempts per failure signature and posts one comment per signature.
+The check-run retry counter above is **host-local and per check run**. The
+`max_auto_fix_attempts` cap is neither: it is counted from the pull request's
+own fleet-authored markers, so every host shares one budget of three attempts
+per failure signature and posts one comment per signature.
 
-- **The record is the marker in the comment.** Each comment the lane posts carries `<!-- vibe-ci-fix-attempt signature="…" check="…" head="…" attempt="N" outcome="pushed|no-change" -->`. The processor fetches the PR's comments once (`getIssueComments`, which pull requests share with issues) and tallies the markers **fleet accounts wrote** — `github_user` plus `fleet_pr_authors` / `service_accounts`. A marker from anyone else is ignored and reported: only a comment's author is authenticated.
-- **Nothing host-local is consulted.** No code path reads or writes `*.autofix.json`; the lane's host-local state is the check-run retry counter alone.
-- **No change ⇒ the worker re-runs the check (Issue #4304).** A run that pushes nothing posts its diagnosis and then re-runs the failed jobs of the check's own Actions run (`gh run rerun <run-id> --failed`) — no reviewer is asked to. A repeat failure arrives as a fresh check run and is retried, even on the same head, starting from the diagnosis already on the PR; the cap below bounds the loop. The one exception is a secret already in the base branch's history, which keeps its `needs-human` hand-off: a re-run cannot clear it and the credential must be rotated.
-- **Cap reached ⇒ abandon and redo (Issue #4304).** Once `max_auto_fix_attempts` attempts are spent on one signature, the PR is closed and its originating issue re-queued through the stall-repair rung (`abandonAndRestart` in [`conflict_abandon_restart.ts`](../../worker/deno/lib/conflict_abandon_restart.ts), `tried: "ci-fix-cap"`). Nothing is labelled `needs-human`; a declined or failed abandon is logged and retried on the next scan.
-- **A refused CI log is not a stop (Issue #4304).** A configured CI provider answering 401/403/404 is logged with its remediation, and the fix proceeds on the built-in GitHub Actions log and the check's annotations rather than parking the PR for someone to fix the credentials.
-- **New head, same failure ⇒ edit in place.** The failure is diagnosed afresh, but a repeat "no change required" appends its marker to the existing comment (`GitHubClient.updateComment`, `PATCH repos/{repo}/issues/comments/{id}`) rather than posting a second copy. If the edit cannot be applied it is logged as an error and a fresh comment is posted — the record is never silently dropped.
-- **Not every run is charged.** An `infrastructure`-category failure writes no marker, so it is never charged. The tally counts attempt markers only — a deferral marker (`vibe-ci-fix-deferred`, written by the base-branch deferral in #1880) is not an attempt, and nor is a human-gate marker (`vibe-ci-human-gate`, #2727).
-- **An unknown tally is never a fresh budget.** A comment list that cannot be read stands the cycle down with an error rather than spending an attempt nothing could count; the next scan retries. An unresolved fleet identity (no `github_user` / `fleet_pr_authors` / `service_accounts`) is a configuration fault that would never resolve itself, so the repair proceeds and the error names the keys that restore the cap.
-- **The record outlives a green build.** Nothing sweeps the markers, so a signature's budget runs for the life of the pull request: the same failure returning after a green build resumes its tally, while a different failure fingerprints differently and gets its own three attempts.
+- **The record is the marker in the comment.** Each comment the lane posts
+  carries
+  `<!-- vibe-ci-fix-attempt signature="…" check="…" head="…" attempt="N" outcome="pushed|no-change" -->`.
+  The processor fetches the PR's comments once (`getIssueComments`, which pull
+  requests share with issues) and tallies the markers **fleet accounts wrote** —
+  `github_user` plus `fleet_pr_authors` / `service_accounts`. A marker from
+  anyone else is ignored and reported: only a comment's author is authenticated.
+- **Nothing host-local is consulted.** No code path reads or writes
+  `*.autofix.json`; the lane's host-local state is the check-run retry counter
+  alone.
+- **No change ⇒ the worker re-runs the check (Issue #4304).** A run that pushes
+  nothing posts its diagnosis and then re-runs the failed jobs of the check's
+  own Actions run (`gh run rerun <run-id> --failed`). If GitHub responds with
+  `This workflow run cannot be retried`, the worker records the refusal in a
+  fleet-authored PR comment keyed by repository and run ID; later scans skip
+  that run. The worker pushes one empty commit to request fresh CI for the
+  current head, and records that fallback by repository and head so another scan
+  does not push it again. A transient rerun failure remains retryable. The cap
+  below bounds the loop. The one exception is a secret already in the base
+  branch's history, which keeps its `needs-human` hand-off: a re-run cannot
+  clear it and the credential must be rotated.
+- **Cap reached ⇒ abandon and redo (Issue #4304).** Once `max_auto_fix_attempts`
+  attempts are spent on one signature, the PR is closed and its originating
+  issue re-queued through the stall-repair rung (`abandonAndRestart` in
+  [`conflict_abandon_restart.ts`](../../worker/deno/lib/conflict_abandon_restart.ts),
+  `tried: "ci-fix-cap"`). Nothing is labelled `needs-human`; a declined or
+  failed abandon is logged and retried on the next scan.
+- **A refused CI log is not a stop (Issue #4304).** A configured CI provider
+  answering 401/403/404 is logged with its remediation, and the fix proceeds on
+  the built-in GitHub Actions log and the check's annotations rather than
+  parking the PR for someone to fix the credentials.
+- **New head, same failure ⇒ edit in place.** The failure is diagnosed afresh,
+  but a repeat "no change required" appends its marker to the existing comment
+  (`GitHubClient.updateComment`, `PATCH repos/{repo}/issues/comments/{id}`)
+  rather than posting a second copy. If the edit cannot be applied it is logged
+  as an error and a fresh comment is posted — the record is never silently
+  dropped.
+- **Not every run is charged.** An `infrastructure`-category failure writes no
+  marker, so it is never charged. The tally counts attempt markers only — a
+  deferral marker (`vibe-ci-fix-deferred`, written by the base-branch deferral
+  in #1880) is not an attempt, and nor is a human-gate marker
+  (`vibe-ci-human-gate`, #2727).
+- **An unknown tally is never a fresh budget.** A comment list that cannot be
+  read stands the cycle down with an error rather than spending an attempt
+  nothing could count; the next scan retries. An unresolved fleet identity (no
+  `github_user` / `fleet_pr_authors` / `service_accounts`) is a configuration
+  fault that would never resolve itself, so the repair proceeds and the error
+  names the keys that restore the cap.
+- **The record outlives a green build.** Nothing sweeps the markers, so a
+  signature's budget runs for the life of the pull request: the same failure
+  returning after a green build resumes its tally, while a different failure
+  fingerprints differently and gets its own three attempts.
 
 ### Deferred checks are not rescanned (Issue #1881)
 
-A check the base-branch deferral (#1880) parked on an issue stays parked **on every host** until that issue closes. `findFailedCiChecks` reads the pull request's comments once per PR that has a non-aggregator failure, collects the fleet-authored `vibe-ci-fix-deferred` markers, and asks GitHub whether each marker's `depends-on` issue is still open — a bare `#N` was already resolved to `owner/repo#N` when the marker was written, so a blocker in another repository is read with `--repo`. While it is open, the check the marker names is skipped (`skipReason` `ci-fix-deferred`, once per PR per cycle) and no agent runs; other failing checks on the same PR are scanned as usual. A **new push with the same failure posts nothing**, because the scan never returns the check. Once the issue closes the check comes back on the next cycle, and #1880's loop guard refuses a second deferral on the same closed issue, so the loop fails loud through the attempt cap instead of parking the PR again. Refreshing the deferred PR against its base once the blocker lands is the branch-update scan's job (#1849). The fail direction is towards scanning: a comment fetch that errors, an issue state that cannot be read, a marker authored outside the fleet, or a malformed reference each leave the check undeferred and are logged as errors.
+A check the base-branch deferral (#1880) parked on an issue stays parked **on
+every host** until that issue closes. `findFailedCiChecks` reads the pull
+request's comments once per PR that has a non-aggregator failure, collects the
+fleet-authored `vibe-ci-fix-deferred` markers, and asks GitHub whether each
+marker's `depends-on` issue is still open — a bare `#N` was already resolved to
+`owner/repo#N` when the marker was written, so a blocker in another repository
+is read with `--repo`. While it is open, the check the marker names is skipped
+(`skipReason` `ci-fix-deferred`, once per PR per cycle) and no agent runs; other
+failing checks on the same PR are scanned as usual. A **new push with the same
+failure posts nothing**, because the scan never returns the check. Once the
+issue closes the check comes back on the next cycle, and #1880's loop guard
+refuses a second deferral on the same closed issue, so the loop fails loud
+through the attempt cap instead of parking the PR again. Refreshing the deferred
+PR against its base once the blocker lands is the branch-update scan's job
+(#1849). The fail direction is towards scanning: a comment fetch that errors, an
+issue state that cannot be read, a marker authored outside the fleet, or a
+malformed reference each leave the check undeferred and are logged as errors.
 
 ```mermaid
 flowchart LR
@@ -180,33 +366,190 @@ flowchart LR
 
 ### Merge-queue removals (Issue #4424)
 
-A PR that a GitHub merge queue removes at its current head (a failed group check, or a conflict) reaches this lane as a failed check named `merge queue`. The removal reason is its annotation, so the fix agent sees why the queue refused the PR.
+A PR that a GitHub merge queue removes at its current head (a failed group
+check, or a conflict) reaches this lane as a failed check named `merge queue`.
+The removal reason is its annotation, so the fix agent sees why the queue
+refused the PR.
 
-- **Read in the scan, once per PR.** `findFailedCiChecks` reads the PR's most recent `RemovedFromMergeQueueEvent` with one GraphQL query for each open PR whose base is behind a merge queue, on every scan (`readQueueRemoval` in [`merge_queue_removal.ts`](../../worker/deno/lib/merge_queue_removal.ts), called from `readScanQueueRemoval` in [`pr_maintenance.ts`](../../worker/deno/lib/pr_maintenance.ts)). Whether a base is queued is asked once per scan and memoised for ten minutes ([`merge_queue_runtime.ts`](../../worker/deno/lib/merge_queue_runtime.ts)). A PR on an unqueued base gets no removal query; the base's queue state is one rules read per base per scan.
-- **Only the current head counts.** A removal that names the commit the queue built applies only to that commit. Without one, it applies only when it was recorded at or after the head's committed date, so a later push ends it (`queueRemovalAppliesToHead` in [`merge_queue_removal.ts`](../../worker/deno/lib/merge_queue_removal.ts)).
-- **Its own check id.** The id is `merge-queue-<first 12 characters of the head sha>` ([`merge_queue_check_id.ts`](../../worker/deno/lib/merge_queue_check_id.ts)), so a fresh head gets a fresh id and its own retry budget.
-- **No GitHub job is asked about it.** No code path asks the Actions job, log, check-run annotation or rerun endpoints about a merge-queue id. The rerun and log-excerpt paths in [`pr_ci_processor.ts`](../../worker/deno/lib/pr_ci_processor.ts) check `isMergeQueueCheckId` first. The annotation is the removal reason, carried on the check itself.
-- **A spent budget is not re-run.** Once the check's retries reach `maxRetries`, the scan logs that it is not re-running it and hands the lane no failed check for it (`pr_maintenance.ts`, the merge-queue branch of `findFailedCiChecks`). The fleet-wide attempt cap above bounds the loop when the head keeps changing.
-- **Not re-armed until a new head.** While the removal applies to the current head, auto-merge arming returns `Deferred` with `merge-queue-removed` ([`pr_auto_merge.ts`](../../worker/deno/lib/pr_auto_merge.ts)). A new head ends the removal's application, and arming resumes. On a queued base the direct-merge fallback never lands the PR anyway (`blocked: merge_queue`).
+- **Read in the scan, once per PR.** `findFailedCiChecks` reads the PR's most
+  recent `RemovedFromMergeQueueEvent` with one GraphQL query for each open PR
+  whose base is behind a merge queue, on every scan (`readQueueRemoval` in
+  [`merge_queue_removal.ts`](../../worker/deno/lib/merge_queue_removal.ts),
+  called from `readScanQueueRemoval` in
+  [`pr_maintenance.ts`](../../worker/deno/lib/pr_maintenance.ts)). Whether a
+  base is queued is asked once per scan and memoised for ten minutes
+  ([`merge_queue_runtime.ts`](../../worker/deno/lib/merge_queue_runtime.ts)). A
+  PR on an unqueued base gets no removal query; the base's queue state is one
+  rules read per base per scan.
+- **Only the current head counts.** A removal that names the commit the queue
+  built applies only to that commit. Without one, it applies only when it was
+  recorded at or after the head's committed date, so a later push ends it
+  (`queueRemovalAppliesToHead` in
+  [`merge_queue_removal.ts`](../../worker/deno/lib/merge_queue_removal.ts)).
+- **Its own check id.** The id is
+  `merge-queue-<first 12 characters of the head sha>`
+  ([`merge_queue_check_id.ts`](../../worker/deno/lib/merge_queue_check_id.ts)),
+  so a fresh head gets a fresh id and its own retry budget.
+- **No GitHub job is asked about it.** No code path asks the Actions job, log,
+  check-run annotation or rerun endpoints about a merge-queue id. The rerun and
+  log-excerpt paths in
+  [`pr_ci_processor.ts`](../../worker/deno/lib/pr_ci_processor.ts) check
+  `isMergeQueueCheckId` first. The annotation is the removal reason, carried on
+  the check itself.
+- **A spent budget is not re-run.** Once the check's retries reach `maxRetries`,
+  the scan logs that it is not re-running it and hands the lane no failed check
+  for it (`pr_maintenance.ts`, the merge-queue branch of `findFailedCiChecks`).
+  The fleet-wide attempt cap above bounds the loop when the head keeps changing.
+- **Not re-armed until a new head.** While the removal applies to the current
+  head, auto-merge arming returns `Deferred` with `merge-queue-removed`
+  ([`pr_auto_merge.ts`](../../worker/deno/lib/pr_auto_merge.ts)). A new head
+  ends the removal's application, and arming resumes. On a queued base the
+  direct-merge fallback never lands the PR anyway (`blocked: merge_queue`).
 
 ## ⏱️ Timeout handling
 
-The CI-fix phase is capped by its own `ci_fix_timeout` (`1800`s / 30 minutes) — **not** by the issue-work `claude_timeout` — and the no-output watchdog typically kills a stuck process well before that ceiling. Both the run loop and the single-shot `pr-ci` command resolve that key (Issue #213 fixed the run loop, which passed `claude_timeout`); an unset `ci_fix_timeout` still inherits an explicitly-configured `claude_timeout` for back-compat. The authoritative defaults and the interaction between the two live in [CONFIGURATION.md](../CONFIGURATION.md#%EF%B8%8F-how-timeouts-interact); this page deliberately does not restate them.
+The CI-fix phase is capped by its own `ci_fix_timeout` (`1800`s / 30 minutes) —
+**not** by the issue-work `claude_timeout` — and the no-output watchdog
+typically kills a stuck process well before that ceiling. Both the run loop and
+the single-shot `pr-ci` command resolve that key (Issue #213 fixed the run loop,
+which passed `claude_timeout`); an unset `ci_fix_timeout` still inherits an
+explicitly-configured `claude_timeout` for back-compat. The authoritative
+defaults and the interaction between the two live in
+[CONFIGURATION.md](../CONFIGURATION.md#%EF%B8%8F-how-timeouts-interact); this
+page deliberately does not restate them.
 
-On timeout (exit code 124 or 137), the worker posts a PR comment with the last 100 lines of Claude output for diagnostic purposes.
+On timeout (exit code 124 or 137), the worker posts a PR comment with the last
+100 lines of Claude output for diagnostic purposes.
 
 ## 🔀 Decision points and exceptions
 
 - **No CI failures found:** Skip; no side effects.
-- **Spelling failure detected:** Excluded — handled at priority 1.5 by the spelling fix workflow. The test is the failing *step*, not the job name (Issue #1579).
-- **Aggregator checks:** A job that exists only to gate on other jobs — the NEAT-AI-Backpropagation `ci-required` job (`name: CI Required Checks`, `needs: [validation, quality, …]`, `if: always()`) is the canonical shape — is red whenever a job it needs is red, so it has no failure of its own. The `needs:` topology is read from the checked-out workflow YAML ([`workflow_job_needs.ts`](../../worker/deno/lib/workflow_job_needs.ts)), and a failing check whose needed job is **also red on the same head** is skipped rather than diagnosed (Issue #1878). Job matching uses the job's `name:`, else its id, because that is what the check run is called; a check matching no job — a matrix leg such as `Build (ubuntu-latest)`, or a check from outside Actions — is never treated as an aggregator. The scan filters against the host's existing clone and never clones to do it, so a repo with no clone is not filtered; the processor repeats the decision against the branch it actually checked out, and on a skip it records the check-run retry, posts nothing and runs no agent.
-- **Base-branch failure (deferral):** A dependency audit is the exception the CI-fix prompt instructs the agent to make: it is fixed in the PR even when the base is red, never deferred, and the dependency replaced or vendored, never handed to a human, only when no edge can be upgraded, removed or replaced ([Dependency audit failures](../../prompts/ci_fix/prompt.md#dependency-audit-failures)). Until stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this exception: `_resolveBaseBranchDeferral` does not look at which check failed, so an audit check whose reply still ends in `Depends on owner/repo#N` on a red base is deferred like any other check below, and a PR already parked on an audit's `vibe-ci-fix-deferred` marker stays parked until its tracking issue closes. When the agent finds any other check already failing on the PR's **base branch**, it ends its `.pr_response_message` with a line of its own — `Depends on owner/repo#N` — naming the issue that tracks it (searching that repository first with `gh issue list --search "<root cause> in:title,body" --state open`, and filing one issue per root cause only when none exists). The worker does not take that on trust: [`ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts) reads the base branch's own `check-runs` and the **latest completed run of the same check** must have concluded `failure`. When it has, the agent's diagnosis is posted **once** with a `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied and **no attempt is charged** — nothing on this branch could have fixed it (Issue #1880). A base branch that is green, a check the base never ran, a missing base ref, or a lookup that errored all fall through to the ordinary no-changes reply with one attempt charged. A failure already carrying a fleet-authored deferral marker posts nothing at all; if that marker's blocker has since **closed** and the agent names it again, the deferral is refused and the ordinary path runs, so the loop fails loud through the attempt cap rather than parking the PR for ever.
-- **Human gate (`human-gate`):** A repository's check declares that only a person can clear it by printing a line whose content starts `vibe-human-gate:` — for example `vibe-human-gate: apply infra/bootstrap.yaml with AWS SSO, then add the bootstrap-applied label`. The classifier ([`ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts), Issue #2726) checks for it ahead of every other category and lifts the text after the colon as the step, flattened, marker-neutralised and bounded. The CI-fix lane then posts **one comment per PR per gate check** naming the check and the step (rendered in a code span sized so the step cannot break out, open Markdown structure or `@`-mention anyone), carrying a `<!-- vibe-ci-human-gate check="…" head="…" -->` marker (Issue #2727). It spends **no attempt**, writes no `vibe-ci-fix-attempt` marker, runs **no agent** and adds **no `needs-human`**, so the merge-conflict scan keeps maintaining the PR. The marker is keyed by **check name**, not failure signature or head, so a later pass on any host — after a new push, or with a changed log — finds a fleet-authored gate marker and posts nothing. Its `head` names the commit the gate was last confirmed on (PR #2762): a pass that re-confirms the gate on a new head edits that one comment in place to name the new head, and the scanner parks the check only while the marker names the PR's current head — so after a push the check is re-classified from its log once, and a genuine failure reaches the fix path instead of staying parked. A re-stamp that fails is logged as an error with `processed: false`. A gate marker written outside the fleet is ignored. A marker read that fails stands the pass down without posting; a gate comment that cannot be posted (or an unresolved fleet identity, which makes the one-comment rule unenforceable) is logged as an error and the pass reports `processed: false`, so the next scan retries rather than recording a silent success. The gate path does not remove a `needs-human` label an earlier escalation already applied.
-- **Cancelled or never-started checks (Issue #2914):** A `cancelled` check, or a `failure` whose Actions job has **zero steps** (never started — e.g. "not started because an Actions budget is preventing further use"), is infrastructure, not code, and is never handed to the CI-fix agent. Instead [`ci_infrastructure_rerun.ts`](../../worker/deno/lib/ci_infrastructure_rerun.ts) re-runs the workflow run with `gh run rerun <run-id>` — re-runs **at most once per PR head commit across the whole fleet** (Issue #2919). After a successful rerun the worker posts one PR comment carrying a `<!-- vibe-ci-infra-rerun head="<40-hex sha>" -->` marker; every host's scan reads the PR's fleet-authored markers (the same author-attributed marker approach `ci_fix_attempt_markers.ts` uses for the CI-fix attempt cap, Issue #1879) and will not re-run a head any fleet host has already re-run — a new push allows another rerun. A marker from an account outside the fleet is ignored. If the PR comments cannot be read (or the fleet identity is unresolved), nothing is re-run and the scan logs an error, retrying on the next scan; if posting the marker comment fails, the rerun stands but an error is logged because another scan may re-run that head again. The scan logs `skipReason` `ci-cancelled`. A run that also holds a genuinely failing job is left alone — that failure goes to the CI-fix lane, whose fix push starts fresh runs — **unless** the only other red check on that run is an `if: always()` aggregator whose own redness traces only to the cancelled/never-started job; that aggregator is then also classified as infrastructure (`reason: "aggregator"`) and re-run together with it, rather than being silently dropped by the Issue #1878 aggregator filter with nothing to show for it. A rerun GitHub refuses is logged at warn and retried on the next scan, since the marker comment is posted only after a successful rerun; if the head was already re-run by any fleet host and the checks are still cancelled or never started, the scan re-runs it again on every scan without posting a second marker comment, rather than leaving it for a person (Issue #4304). A cancelled check that is not an Actions job (no run id) cannot be re-run, is logged at warn, and is still not handed to the agent. The `review-fleet-prs` gate still reports such a PR as `ci-failed` until stSoftwareAU/VibeCoder#2916 lands, which will change it to report `ci-cancelled` instead (that gate lives under `.claude/`, outside the worker's write scope).
-- **Max retries exceeded:** Post a comment on the PR and skip the check on future runs. The operator should investigate manually.
-- **Rate limit exhaustion:** After `MAX_RATE_LIMIT_RETRIES` (default: 2) with exponential backoff, the worker exits with code 2 and posts a comment.
-- **Claude makes no changes:** The worker posts a classifier-aware comment explaining the most likely failure category (test, build, lint, infrastructure, transient) and recommended next step rather than a generic "transient or infrastructure" message.
-- **Quality check fails after fix:** Claude is retried once. If it fails again, the fix is not pushed.
+- **Spelling failure detected:** Excluded — handled at priority 1.5 by the
+  spelling fix workflow. The test is the failing _step_, not the job name (Issue
+  #1579).
+- **Aggregator checks:** A job that exists only to gate on other jobs — the
+  NEAT-AI-Backpropagation `ci-required` job (`name: CI Required Checks`,
+  `needs: [validation, quality, …]`, `if: always()`) is the canonical shape — is
+  red whenever a job it needs is red, so it has no failure of its own. The
+  `needs:` topology is read from the checked-out workflow YAML
+  ([`workflow_job_needs.ts`](../../worker/deno/lib/workflow_job_needs.ts)), and
+  a failing check whose needed job is **also red on the same head** is skipped
+  rather than diagnosed (Issue #1878). Job matching uses the job's `name:`, else
+  its id, because that is what the check run is called; a check matching no job
+  — a matrix leg such as `Build (ubuntu-latest)`, or a check from outside
+  Actions — is never treated as an aggregator. The scan filters against the
+  host's existing clone and never clones to do it, so a repo with no clone is
+  not filtered; the processor repeats the decision against the branch it
+  actually checked out, and on a skip it records the check-run retry, posts
+  nothing and runs no agent.
+- **Base-branch failure (deferral):** A dependency audit is the exception the
+  CI-fix prompt instructs the agent to make: it is fixed in the PR even when the
+  base is red, never deferred, and the dependency replaced or vendored, never
+  handed to a human, only when no edge can be upgraded, removed or replaced
+  ([Dependency audit failures](../../prompts/ci_fix/prompt.md#dependency-audit-failures)).
+  Until stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this
+  exception: `_resolveBaseBranchDeferral` does not look at which check failed,
+  so an audit check whose reply still ends in `Depends on owner/repo#N` on a red
+  base is deferred like any other check below, and a PR already parked on an
+  audit's `vibe-ci-fix-deferred` marker stays parked until its tracking issue
+  closes. When the agent finds any other check already failing on the PR's
+  **base branch**, it ends its `.pr_response_message` with a line of its own —
+  `Depends on owner/repo#N` — naming the issue that tracks it (searching that
+  repository first with
+  `gh issue list --search "<root cause> in:title,body" --state open`, and filing
+  one issue per root cause only when none exists). The worker does not take that
+  on trust:
+  [`ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts)
+  reads the base branch's own `check-runs` and the **latest completed run of the
+  same check** must have concluded `failure`. When it has, the agent's diagnosis
+  is posted **once** with a `vibe-ci-fix-deferred` marker, **no `needs-human`**
+  is applied and **no attempt is charged** — nothing on this branch could have
+  fixed it (Issue #1880). A base branch that is green, a check the base never
+  ran, a missing base ref, or a lookup that errored all fall through to the
+  ordinary no-changes reply with one attempt charged. A failure already carrying
+  a fleet-authored deferral marker posts nothing at all; if that marker's
+  blocker has since **closed** and the agent names it again, the deferral is
+  refused and the ordinary path runs, so the loop fails loud through the attempt
+  cap rather than parking the PR for ever.
+- **Human gate (`human-gate`):** A repository's check declares that only a
+  person can clear it by printing a line whose content starts `vibe-human-gate:`
+  — for example
+  `vibe-human-gate: apply infra/bootstrap.yaml with AWS SSO, then add the bootstrap-applied label`.
+  The classifier
+  ([`ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts),
+  Issue #2726) checks for it ahead of every other category and lifts the text
+  after the colon as the step, flattened, marker-neutralised and bounded. The
+  CI-fix lane then posts **one comment per PR per gate check** naming the check
+  and the step (rendered in a code span sized so the step cannot break out, open
+  Markdown structure or `@`-mention anyone), carrying a
+  `<!-- vibe-ci-human-gate check="…" head="…" -->` marker (Issue #2727). It
+  spends **no attempt**, writes no `vibe-ci-fix-attempt` marker, runs **no
+  agent** and adds **no `needs-human`**, so the merge-conflict scan keeps
+  maintaining the PR. The marker is keyed by **check name**, not failure
+  signature or head, so a later pass on any host — after a new push, or with a
+  changed log — finds a fleet-authored gate marker and posts nothing. Its `head`
+  names the commit the gate was last confirmed on (PR #2762): a pass that
+  re-confirms the gate on a new head edits that one comment in place to name the
+  new head, and the scanner parks the check only while the marker names the PR's
+  current head — so after a push the check is re-classified from its log once,
+  and a genuine failure reaches the fix path instead of staying parked. A
+  re-stamp that fails is logged as an error with `processed: false`. A gate
+  marker written outside the fleet is ignored. A marker read that fails stands
+  the pass down without posting; a gate comment that cannot be posted (or an
+  unresolved fleet identity, which makes the one-comment rule unenforceable) is
+  logged as an error and the pass reports `processed: false`, so the next scan
+  retries rather than recording a silent success. The gate path does not remove
+  a `needs-human` label an earlier escalation already applied.
+- **Cancelled or never-started checks (Issue #2914):** A `cancelled` check, or a
+  `failure` whose Actions job has **zero steps** (never started — e.g. "not
+  started because an Actions budget is preventing further use"), is
+  infrastructure, not code, and is never handed to the CI-fix agent. Instead
+  [`ci_infrastructure_rerun.ts`](../../worker/deno/lib/ci_infrastructure_rerun.ts)
+  re-runs the workflow run with `gh run rerun <run-id>` — re-runs **at most once
+  per PR head commit across the whole fleet** (Issue #2919). After a successful
+  rerun the worker posts one PR comment carrying a
+  `<!-- vibe-ci-infra-rerun head="<40-hex sha>" -->` marker; every host's scan
+  reads the PR's fleet-authored markers (the same author-attributed marker
+  approach `ci_fix_attempt_markers.ts` uses for the CI-fix attempt cap, Issue
+  #1879) and will not re-run a head any fleet host has already re-run — a new
+  push allows another rerun. A marker from an account outside the fleet is
+  ignored. If the PR comments cannot be read (or the fleet identity is
+  unresolved), nothing is re-run and the scan logs an error, retrying on the
+  next scan; if posting the marker comment fails, the rerun stands but an error
+  is logged because another scan may re-run that head again. The scan logs
+  `skipReason` `ci-cancelled`. A run that also holds a genuinely failing job is
+  left alone — that failure goes to the CI-fix lane, whose fix push starts fresh
+  runs — **unless** the only other red check on that run is an `if: always()`
+  aggregator whose own redness traces only to the cancelled/never-started job;
+  that aggregator is then also classified as infrastructure
+  (`reason: "aggregator"`) and re-run together with it, rather than being
+  silently dropped by the Issue #1878 aggregator filter with nothing to show for
+  it. A refusal with `This workflow run cannot be retried` is recorded in a
+  fleet-authored marker keyed by repository and run ID, independent of the PR
+  head, and later scans skip that run; transient failures remain retryable.
+  Because a refused run can never yield a new CI signal, the scan then asks for
+  fresh CI with one empty commit made through the Git Data API (a commit on the
+  head's own tree, then a non-force ref update, so a branch that moved is never
+  overwritten), recorded before the push by a `vibe-ci-rerun-fallback` marker
+  keyed by repository and head so no other scan or host repeats it; a head under
+  a ruleset that refuses direct pushes is left alone (Issue #4497). The same
+  fallback follows a refusal met when re-running a check that has exhausted its
+  retries. A cancelled check that is not an Actions job (no run id) cannot be
+  re-run, is logged at warn, and is still not handed to the agent. The
+  `review-fleet-prs` gate still reports such a PR as `ci-failed` until
+  stSoftwareAU/VibeCoder#2916 lands, which will change it to report
+  `ci-cancelled` instead (that gate lives under `.claude/`, outside the worker's
+  write scope).
+- **Max retries exceeded:** Post a comment on the PR and skip the check on
+  future runs. The operator should investigate manually.
+- **Rate limit exhaustion:** After `MAX_RATE_LIMIT_RETRIES` (default: 2) with
+  exponential backoff, the worker exits with code 2 and posts a comment.
+- **Claude makes no changes:** The worker posts a classifier-aware comment
+  explaining the most likely failure category (test, build, lint,
+  infrastructure, transient) and recommended next step rather than a generic
+  "transient or infrastructure" message.
+- **Quality check fails after fix:** Claude is retried once. If it fails again,
+  the fix is not pushed.
 
 The base-branch deferral, end to end (Issue #1880):
 
@@ -220,7 +563,16 @@ flowchart TD
     P -->|otherwise| N["post nothing"]
 ```
 
-The CI-fix prompt instructs the agent to keep a dependency audit out of this chart entirely: it is fixed in the PR even when the base is red, never deferred, and the dependency replaced or vendored, never handed to a human, only when no edge can be upgraded, removed or replaced. See [Dependency audit failures](../../prompts/ci_fix/prompt.md#dependency-audit-failures). Until stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this exception: an audit check whose reply ends in `Depends on` on a red base still runs through this chart like any other check, and a PR already parked on an audit's `vibe-ci-fix-deferred` marker stays parked until its tracking issue closes.
+The CI-fix prompt instructs the agent to keep a dependency audit out of this
+chart entirely: it is fixed in the PR even when the base is red, never deferred,
+and the dependency replaced or vendored, never handed to a human, only when no
+edge can be upgraded, removed or replaced. See
+[Dependency audit failures](../../prompts/ci_fix/prompt.md#dependency-audit-failures).
+Until stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this
+exception: an audit check whose reply ends in `Depends on` on a red base still
+runs through this chart like any other check, and a PR already parked on an
+audit's `vibe-ci-fix-deferred` marker stays parked until its tracking issue
+closes.
 
 The human gate, end to end (Issue #2727):
 
@@ -256,34 +608,65 @@ flowchart TD
 
 ## 🛠️ Common CI failure patterns
 
-| Pattern | How the worker handles it |
-|---------|--------------------------|
-| Test assertion failure | Claude reads the failing test and source, fixes the root cause |
-| Build/compilation error | Claude reads error annotations and fixes the source |
-| Lint violation | Claude applies the required code style fix |
-| Type error | Claude reads the type error and corrects the type mismatch |
-| Missing dependency | Claude adds the required import or dependency |
+| Pattern                 | How the worker handles it                                      |
+| ----------------------- | -------------------------------------------------------------- |
+| Test assertion failure  | Claude reads the failing test and source, fixes the root cause |
+| Build/compilation error | Claude reads error annotations and fixes the source            |
+| Lint violation          | Claude applies the required code style fix                     |
+| Type error              | Claude reads the type error and corrects the type mismatch     |
+| Missing dependency      | Claude adds the required import or dependency                  |
 
 ## 🆘 When auto-fix fails
 
-Nothing is handed to a person (Issue #4304). Each attempt that cannot fix the failure:
+Nothing is handed to a person (Issue #4304). Each attempt that cannot fix the
+failure:
 
-1. **Posts its diagnosis** — the agent's own `.pr_response_message` verbatim, followed by a `**Classifier reason:**` / `**Signals:**` line recording how the failure was categorised (Issue #1876). When the agent wrote no message, a stock category-specific explanation is posted instead. Its **Next attempt** line is where the next run starts.
-2. **Re-runs the failed jobs** — so a flaky test or a runner blip clears without a code change, and a real failure comes back as a fresh check run for the next attempt.
-3. **Ends in a restart** — once `max_auto_fix_attempts` attempts are spent on the same failure signature, the PR is closed and its issue redone from the base branch.
+1. **Posts its diagnosis** — the agent's own `.pr_response_message` verbatim,
+   followed by a `**Classifier reason:**` / `**Signals:**` line recording how
+   the failure was categorised (Issue #1876). When the agent wrote no message, a
+   stock category-specific explanation is posted instead. Its **Next attempt**
+   line is where the next run starts.
+2. **Re-runs the failed jobs** — so a flaky test or a runner blip clears without
+   a code change, and a real failure comes back as a fresh check run for the
+   next attempt.
+3. **Ends in a restart** — once `max_auto_fix_attempts` attempts are spent on
+   the same failure signature, the PR is closed and its issue redone from the
+   base branch.
 
-The only exception is a `history-rewrite-required` failure that survives with nothing left to rewrite: the secret is in the base branch's history, so the PR gets the `needs-human` escalation naming the credential to rotate.
+The only exception is a `history-rewrite-required` failure that survives with
+nothing left to rewrite: the secret is in the base branch's history, so the PR
+gets the `needs-human` escalation naming the credential to rotate.
 
 ## 📚 Further reading
 
-- **CI fix prompt:** the latest template in [`prompts/ci_fix/`](../../prompts/ci_fix/) — used to instruct Claude (failure classification introduced in).
-- **CI failure classifier:** [`worker/deno/lib/ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts) — categorises failures as test, build, lint, infrastructure, or transient.
-- **CI failure detection:** [`worker/deno/lib/pr_ci_checks.ts`](../../worker/deno/lib/pr_ci_checks.ts) — CI check detection and retry tracking.
-- **Base-branch verification:** [`worker/deno/lib/ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts) — `isCheckRedOnBranch()`, the read behind the base-branch deferral.
-- **Cross-host PR lock:** [`worker/deno/lib/pr_branch_lock.ts`](../../worker/deno/lib/pr_branch_lock.ts) — acquire, renew and release the `BRANCH_UPDATE_LOCK`.
-- **CI fix handler:** [`worker/deno/lib/ci_failure_issue.ts`](../../worker/deno/lib/ci_failure_issue.ts) and the CI-fix processor wired in [`run_core.ts`](../../worker/deno/lib/run_core.ts).
-- **Prompt building:** [`worker/deno/lib/prompt_builder.ts`](../../worker/deno/lib/prompt_builder.ts) — CI fix prompt construction.
-- **Timeout and retry:** [`worker/deno/lib/claude_runner.ts`](../../worker/deno/lib/claude_runner.ts) — `runClaudeWithRetry()`, `timeoutWithCleanup()`.
-- **Workflow orchestration:** Unified workflow handler in Deno TypeScript — `execute_workflow_priority()`.
-- **Related workflows:** [PR feedback and upkeep](pr-feedback.md), [Issue processing](issue-processing.md).
-- **Configuration:** [CONFIGURATION.md](../CONFIGURATION.md), [TROUBLESHOOTING.md](../TROUBLESHOOTING.md).
+- **CI fix prompt:** the latest template in
+  [`prompts/ci_fix/`](../../prompts/ci_fix/) — used to instruct Claude (failure
+  classification introduced in).
+- **CI failure classifier:**
+  [`worker/deno/lib/ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts)
+  — categorises failures as test, build, lint, infrastructure, or transient.
+- **CI failure detection:**
+  [`worker/deno/lib/pr_ci_checks.ts`](../../worker/deno/lib/pr_ci_checks.ts) —
+  CI check detection and retry tracking.
+- **Base-branch verification:**
+  [`worker/deno/lib/ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts)
+  — `isCheckRedOnBranch()`, the read behind the base-branch deferral.
+- **Cross-host PR lock:**
+  [`worker/deno/lib/pr_branch_lock.ts`](../../worker/deno/lib/pr_branch_lock.ts)
+  — acquire, renew and release the `BRANCH_UPDATE_LOCK`.
+- **CI fix handler:**
+  [`worker/deno/lib/ci_failure_issue.ts`](../../worker/deno/lib/ci_failure_issue.ts)
+  and the CI-fix processor wired in
+  [`run_core.ts`](../../worker/deno/lib/run_core.ts).
+- **Prompt building:**
+  [`worker/deno/lib/prompt_builder.ts`](../../worker/deno/lib/prompt_builder.ts)
+  — CI fix prompt construction.
+- **Timeout and retry:**
+  [`worker/deno/lib/claude_runner.ts`](../../worker/deno/lib/claude_runner.ts) —
+  `runClaudeWithRetry()`, `timeoutWithCleanup()`.
+- **Workflow orchestration:** Unified workflow handler in Deno TypeScript —
+  `execute_workflow_priority()`.
+- **Related workflows:** [PR feedback and upkeep](pr-feedback.md),
+  [Issue processing](issue-processing.md).
+- **Configuration:** [CONFIGURATION.md](../CONFIGURATION.md),
+  [TROUBLESHOOTING.md](../TROUBLESHOOTING.md).
