@@ -156,12 +156,41 @@ function startProxyStub(options: {
   };
 }
 
-Deno.test("an allowlisted CONNECT waits for a late listener and spends no attempts (Issue #4493)", async () => {
+/** How late the proxy binds in the late-listener tests (Issue #4493). */
+const PROXY_BINDS_LATE_MS = 2000;
+
+/**
+ * A fake clock for the listener wait: each injected sleep advances it by its
+ * `ms`, and `bind` runs once, as soon as the clock reaches `bindAtMs`. The
+ * listener budget is therefore measured in fake time, so a budget shorter than
+ * `bindAtMs` gives up before the proxy binds.
+ */
+function lateBindingClock(bindAtMs: number, bind: () => void) {
+  let clock = 0;
+  let bound = false;
+  return {
+    now: () => clock,
+    sleep: (ms: number): Promise<void> => {
+      clock += ms;
+      if (!bound && clock >= bindAtMs) {
+        bound = true;
+        bind();
+      }
+      return Promise.resolve();
+    },
+    elapsed: () => clock,
+  };
+}
+
+Deno.test("an allowlisted CONNECT waits for a listener 2 s late and spends no attempts (Issue #4493)", async () => {
   const port = freePort();
-  let sleeps = 0;
   let stub: ReturnType<typeof startProxyStub> | undefined;
   const log: string[] = [];
+  const time = lateBindingClock(PROXY_BINDS_LATE_MS, () => {
+    stub = startProxyStub({ port, answer: () => CONNECTED });
+  });
   try {
+    // `listenTimeoutMs` is left at its default: the production budget.
     const outcome = await probeProxyAllowedDetailed(
       `http://127.0.0.1:${port}`,
       "api.github.com",
@@ -169,20 +198,16 @@ Deno.test("an allowlisted CONNECT waits for a late listener and spends no attemp
         timeoutMs: 1000,
         delayMs: 0,
         log: (line) => log.push(line),
-        now: () => 0,
-        sleep: () => {
-          sleeps++;
-          // The proxy binds on the third check, as it would after a cold start.
-          if (sleeps === 3) {
-            stub = startProxyStub({ port, answer: () => CONNECTED });
-          }
-          return Promise.resolve();
-        },
+        now: time.now,
+        sleep: time.sleep,
       },
     );
     assertEquals(outcome.result, "succeeded");
     assertEquals(outcome.observed, "connected");
-    assert(sleeps >= 3, `expected at least 3 listener checks, got ${sleeps}`);
+    assert(
+      time.elapsed() >= PROXY_BINDS_LATE_MS,
+      `the proxy was not waited for: ${time.elapsed()}ms elapsed`,
+    );
     assertEquals(log.filter((line) => line.includes("attempt")).length, 0);
     assertEquals(stub?.connects(), 1);
   } finally {
@@ -284,12 +309,14 @@ Deno.test("runEgressProbes with a live proxy fills the four-probe enforced set (
 Deno.test("runEgressProbes with a proxy that never listens fails the allowed probe without attempts (Issue #4493)", async () => {
   const port = freePort();
   let clock = 0;
+  // The listener budget (1500) differs from the probe budget (1000), so the
+  // message only reads 1500 when the listener wait uses `listenTimeoutMs`.
   const result = await runEgressProbes(
     (name) => (name === "HTTPS_PROXY" ? `http://127.0.0.1:${port}` : undefined),
     1000,
     {
       directTcp: refused,
-      listenTimeoutMs: 1000,
+      listenTimeoutMs: 1500,
       now: () => clock,
       sleep: (ms) => {
         clock += ms;
@@ -300,44 +327,40 @@ Deno.test("runEgressProbes with a proxy that never listens fails the allowed pro
   assertEquals(result.proxyDenied, "not_checked");
   assertEquals(result.proxyAllowed, "failed");
   assert(
-    result.observed?.proxyAllowed?.startsWith("no listener after 1000ms"),
+    result.observed?.proxyAllowed?.startsWith("no listener after 1500ms"),
     String(result.observed?.proxyAllowed),
   );
   assertEquals(result.diagnostics?.length, 1);
   assertStringIncludes(
     result.diagnostics?.[0] ?? "",
-    "is not accepting connections after 1000ms",
+    "is not accepting connections after 1500ms",
   );
 });
 
-Deno.test("runEgressProbes with a proxy that starts listening late still passes (Issue #4493)", async () => {
+Deno.test("runEgressProbes with a proxy that starts listening 2 s late still passes (Issue #4493)", async () => {
   const port = freePort();
-  let sleeps = 0;
   let stub: ReturnType<typeof startProxyStub> | undefined;
+  const time = lateBindingClock(PROXY_BINDS_LATE_MS, () => {
+    stub = startProxyStub({
+      port,
+      answer: (request) =>
+        request.startsWith("CONNECT example.com:")
+          ? "HTTP/1.1 403 Forbidden\r\nContent-Length: 40\r\n\r\n[EGRESS_DENIED] host=example.com reason=not-allowlisted\n"
+          : CONNECTED,
+    });
+  });
   try {
+    // `listenTimeoutMs` is left at its default: the production budget. The
+    // probe budget (1000) is shorter than the 2 s the proxy takes to bind.
     const result = await runEgressProbes(
       (name) => name === "HTTPS_PROXY" ? `http://127.0.0.1:${port}` : undefined,
       1000,
-      {
-        directTcp: refused,
-        now: () => 0,
-        sleep: () => {
-          sleeps++;
-          // The proxy binds on the third check, as it would after a cold start.
-          if (sleeps === 3) {
-            stub = startProxyStub({
-              port,
-              answer: (request) =>
-                request.startsWith("CONNECT example.com:")
-                  ? "HTTP/1.1 403 Forbidden\r\nContent-Length: 40\r\n\r\n[EGRESS_DENIED] host=example.com reason=not-allowlisted\n"
-                  : CONNECTED,
-            });
-          }
-          return Promise.resolve();
-        },
-      },
+      { directTcp: refused, now: time.now, sleep: time.sleep },
     );
-    assert(sleeps >= 3, `expected at least 3 listener checks, got ${sleeps}`);
+    assert(
+      time.elapsed() >= PROXY_BINDS_LATE_MS,
+      `the proxy was not waited for: ${time.elapsed()}ms elapsed`,
+    );
     assertEquals(result.proxyAllowed, "succeeded");
     assertEquals(result.proxyDenied, "denied");
     assertEquals(classifyEgressProbes(result), "enforced");

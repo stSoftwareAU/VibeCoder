@@ -14,13 +14,13 @@ for (
   const name of [
     "an allowlisted CONNECT that times out once and then connects is enforced, not failed",
     "an allowlisted CONNECT the proxy never answers still fails after every attempt",
-    "an allowlisted CONNECT waits for a late listener and spends no attempts (Issue #4493)",
+    "an allowlisted CONNECT waits for a listener 2 s late and spends no attempts (Issue #4493)",
     "an allowlisted CONNECT with no listener ever is failed and spends no attempts (Issue #4493)",
     "an allowlisted CONNECT answered 502 every time fails and counts what it saw (Issue #4493)",
     "an allowlisted CONNECT refused three times says so (Issue #4493)",
     "runEgressProbes with a live proxy fills the four-probe enforced set (Issue #4493)",
     "runEgressProbes with a proxy that never listens fails the allowed probe without attempts (Issue #4493)",
-    "runEgressProbes with a proxy that starts listening late still passes (Issue #4493)",
+    "runEgressProbes with a proxy that starts listening 2 s late still passes (Issue #4493)",
   ]
 ) {
   Deno.test(name, async () => {

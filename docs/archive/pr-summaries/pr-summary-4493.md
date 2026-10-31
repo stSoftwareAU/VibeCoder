@@ -77,21 +77,24 @@ Backend only; no UI files touched.
   fails at load (no `probeProxyAllowedDetailed` export), so the new tests are
   red on base.
 - **regression test** —
-  `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts::an allowlisted CONNECT waits for a late listener and spends no attempts (Issue #4493)`
+  `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts::an allowlisted CONNECT waits for a listener 2 s late and spends no attempts (Issue #4493)`
 
 ## Test Plan
 
 - `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts` (run under
   `--allow-net=127.0.0.1` by
   `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the nine
-  new names): late listener (injected sleep binds the stub on the third check,
-  no attempt lines); nothing ever listens (failed, no attempts, log line); 502
-  every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3; `runEgressProbes` with
-  a live proxy gives the enforced set; `runEgressProbes` with a proxy that never
-  listens; `runEgressProbes` with a proxy that binds late (injected sleep binds
-  the stub on the third check; `proxyAllowed` is `succeeded`, the verdict is
-  `enforced`, and `diagnostics` is absent), which covers the wait production
-  actually runs.
+  new names): listener 2 s late (a fake clock that each injected sleep advances
+  binds the stub once it reaches 2000 ms, with `listenTimeoutMs` left at its
+  default; no attempt lines); nothing ever listens (failed, no attempts, log
+  line); 502 every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3;
+  `runEgressProbes` with a live proxy gives the enforced set; `runEgressProbes`
+  with a proxy that never listens (`listenTimeoutMs` 1500 against `timeoutMs`
+  1000, so the 1500 ms message only reads right when the listener budget is the
+  one used); `runEgressProbes` with a proxy that binds 2 s late (same fake
+  clock, default listener budget, `timeoutMs` 1000; `proxyAllowed` is
+  `succeeded`, the verdict is `enforced`, and `diagnostics` is absent), which
+  covers the wait production actually runs.
 - `worker/deno/tests/egress_selfcheck_test.ts`: marker with `observed`
   (`proxyAllowed=failed (refused ×3)`), unchanged marker without it (control),
   Apple marker, diagnostics carried, `describeProbeFailures` cases (including a
@@ -111,6 +114,12 @@ Backend only; no UI files touched.
   skips the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2; the
   `probeProxyAllowed` wrapper waiting for the listener → 2 (the original
   scenarios).
+- PR #4531 review red checks (production broken one way at a time, then
+  restored): `runEgressProbes` reading `timeoutMs` as the listener budget → 2
+  red (the 2 s late-listener test and the never-listens test);
+  `EGRESS_PROXY_LISTEN_TIMEOUT_MS` set to 1_000 → 2 red;
+  `probeProxyAllowedDetailed` reading `timeoutMs` as the listener budget → 2
+  red.
 - Mutation follow-up: each listed mutant on `egress_selfcheck.ts` lines 165,
   361, 366, 367, 384, 407 and 410 was applied by hand and turned a test red;
   `runEgressProbes` waiting with `timeoutMs: 0` now turns the late-listener
