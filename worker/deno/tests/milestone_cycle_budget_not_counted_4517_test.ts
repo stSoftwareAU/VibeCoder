@@ -32,6 +32,7 @@ import {
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   MILESTONE_REFUSAL_CEILING,
   milestoneSyncStreakPath,
+  saveSyncStreaks,
   type SyncStreakEntry,
   syncStreakKey,
 } from "../lib/milestone_sync_streak.ts";
@@ -307,6 +308,80 @@ Deno.test("syncMilestoneBranches - a gate refusal still climbs at the ceiling af
       0,
       "a charged climb ends the streak",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a decline after nine deferrals is the first charged attempt (Issue #4517)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    const syncCalls: string[] = [];
+    const rollbacks: string[] = [];
+    for (let cycle = 1; cycle <= 9; cycle++) {
+      await syncMilestoneBranches(sweepDeps({
+        streakPath,
+        defaultSha: tip(cycle),
+        syncError: agentDeferredError,
+        syncCalls,
+        rollbacks,
+      }));
+    }
+    const deps = sweepDeps({
+      streakPath,
+      defaultSha: tip(10),
+      syncError: () =>
+        new Error("Refusing to resolve the merge: conflicted file"),
+      syncCalls,
+      rollbacks,
+    });
+    deps.deadlineEpochMs = NOW + 24 * 60 * 60 * 1000;
+    let rebuilds = 0;
+    let closes = 0;
+    deps.rebuildMilestoneFn = () => {
+      rebuilds++;
+      return Promise.resolve(true);
+    };
+    deps.closeMilestoneFn = () => {
+      closes++;
+      return Promise.resolve(true);
+    };
+    await syncMilestoneBranches(deps);
+    const entry = await readEntry(streakPath);
+    assert(entry);
+    assertEquals(syncCalls.length, 10);
+    assertEquals(entry.conflictAttempts, 1);
+    assertEquals(rollbacks, []);
+    assertEquals(rebuilds, 0);
+    assertEquals(closes, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - an older ledger retains its charged attempts after a decline", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    await saveSyncStreaks(streakPath, {
+      [KEY]: { count: 12, escalated: false, conflictAttempts: 1 },
+    });
+    const syncCalls: string[] = [];
+    const rollbacks: string[] = [];
+    const deps = sweepDeps({
+      streakPath,
+      defaultSha: tip(1),
+      syncError: () =>
+        new Error("Refusing to resolve the merge: conflicted file"),
+      syncCalls,
+      rollbacks,
+    });
+    deps.deadlineEpochMs = NOW + 24 * 60 * 60 * 1000;
+    await syncMilestoneBranches(deps);
+    const entry = await readEntry(streakPath);
+    assert(entry);
+    assertEquals(entry.conflictAttempts, 2);
+    assertEquals(entry.resolverFailures, 2);
+    assertEquals(rollbacks, []);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

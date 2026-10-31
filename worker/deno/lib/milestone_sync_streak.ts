@@ -168,6 +168,8 @@ export interface SyncStreakEntry {
    * default branch would never exhaust anything.
    */
   conflictAttempts?: number;
+  /** Charged resolver recovery failures; absent on older ledgers. */
+  resolverFailures?: number;
   /**
    * ISO timestamp of an attempt that opened and has not concluded. An open
    * attempt reads as disrupted rather than failed and is never charged,
@@ -474,6 +476,7 @@ function readFailedAttempts(
  */
 function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const attempts = optionalCount(entry.conflictAttempts);
+  const resolverFailures = optionalCount(entry.resolverFailures);
   const rollbacks = optionalCount(entry.rollbacks);
   const openedAt = optionalText(entry.attemptOpenedAt);
   const announcedAt = optionalText(entry.announcedAttemptAt);
@@ -494,6 +497,7 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
     ...(rollbackFailures !== undefined ? { rollbackFailures } : {}),
     ...(rebuilds !== undefined ? { rebuilds } : {}),
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
+    ...(resolverFailures !== undefined ? { resolverFailures } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
     ...(announcedAt ? { announcedAttemptAt: announcedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
@@ -702,6 +706,7 @@ export function resetConflictLedgerOnSuccess(
     gateRefusal: _wedged,
     // A landed sync ends any refusal streak too (Issue #4328).
     refusedCycles: _refused,
+    resolverFailures: _resolverFailures,
     ...rest
   } = entry;
   return { ...rest, conflictAttempts: 0 };

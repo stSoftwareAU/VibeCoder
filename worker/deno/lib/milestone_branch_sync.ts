@@ -972,6 +972,18 @@ export function nextResolverRecoveryRung(
   return "close";
 }
 
+/** Count charged ladder failures, not the unrelated sync failure streak.
+ * Older ledgers without attempt history retain their charged conflict count.
+ */
+function chargedResolverFailures(entry: SyncStreakEntry): number {
+  return entry.resolverFailures ??
+    (entry.failedAttempts === undefined
+      ? entry.conflictAttempts ?? 0
+      : entry.failedAttempts.filter((attempt) =>
+        climbsRecoveryLadder(attempt.reason)
+      ).length);
+}
+
 /**
  * The recovery rung due before this cycle's merge, or null to resolve.
  *
@@ -987,7 +999,7 @@ export function resolverRungDue(
   if (reason === RECOVERY_REBUILD) return "close";
   if (reason === RECOVERY_ROLLBACK) return "rebuild";
   if (!climbsRecoveryLadder(reason)) return null;
-  const rung = nextResolverRecoveryRung(entry.count);
+  const rung = nextResolverRecoveryRung(chargedResolverFailures(entry));
   // A roll-back already spent on the branch hands off to the rebuild-first
   // path instead (Issue #4328, PR #4344).
   if (rung === "rollback" && isRollbackSpent(entry)) return null;
@@ -3201,6 +3213,7 @@ export async function syncMilestoneBranches(
             // the `merge-fallback` flag reports both runs from these records
             // (Issue #2311).
             if (streakPath && entry) {
+              const priorRefusals = chargedResolverFailures(entry);
               entry = concludeConflictAttempt(
                 entry,
                 verdict.outcome,
@@ -3219,10 +3232,15 @@ export async function syncMilestoneBranches(
                   exhaust: verdict.exhaust === true,
                 },
               );
+              if (
+                verdict.outcome === "failed" &&
+                climbsRecoveryLadder(verdict.reason)
+              ) {
+                entry = { ...entry, resolverFailures: priorRefusals + 1 };
+              }
               streaks[streakKey] = entry;
               streaksDirty = true;
               if (verdict.outcome === "failed") {
-                const priorRefusals = entry.count - 1;
                 const recoveryNow = climbsRecoveryLadder(verdict.reason)
                   ? nextResolverRecoveryRung(priorRefusals)
                   : "resolve";
