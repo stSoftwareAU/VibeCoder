@@ -83,7 +83,7 @@ Backend only; no UI files touched.
 
 - `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts` (run under
   `--allow-net=127.0.0.1` by
-  `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the nine
+  `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the eight
   new names): listener 2 s late (a fake clock that each injected sleep advances
   binds the stub once it reaches 2000 ms, with `listenTimeoutMs` left at its
   default; no attempt lines); nothing ever listens (failed, no attempts, log
