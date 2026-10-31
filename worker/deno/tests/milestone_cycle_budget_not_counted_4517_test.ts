@@ -141,6 +141,8 @@ interface SweepOptions {
   rebuilds?: string[];
   /** Every milestone close requested, when the test watches for one. */
   closes?: string[];
+  /** Captures operator messages when the test checks their meaning. */
+  logs?: string[];
   /** Overrides the cycle's deadline: a long one offers the agent rung. */
   deadlineMs?: number;
 }
@@ -164,7 +166,7 @@ function sweepDeps(options: SweepOptions): MilestoneBranchSyncDeps {
     now: () => NOW,
     deadlineEpochMs: NOW + (options.deadlineMs ?? SHORT_CYCLE_MS),
     streakPath: options.streakPath,
-    log: () => undefined,
+    log: (message) => options.logs?.push(message),
     rollbackFn: (request) => {
       seen.push(
         `${request.repo}|${request.milestoneBranch}|${request.attempts}`,
@@ -193,6 +195,40 @@ async function readEntry(
 ): Promise<SyncStreakEntry | undefined> {
   return (await loadSyncStreaks(streakPath))[KEY];
 }
+
+Deno.test("syncMilestoneBranches - short-cycle logs distinguish deferrals from counted gate refusals", async () => {
+  for (
+    const [syncError, deferred] of [
+      [agentDeferredError, true],
+      [gateRefusedError, false],
+    ] as const
+  ) {
+    const { dir, streakPath } = await workDir();
+    try {
+      const logs: string[] = [];
+      await syncMilestoneBranches(sweepDeps({
+        streakPath,
+        defaultSha: tip(1),
+        syncError,
+        syncCalls: [],
+        rollbacks: [],
+        logs,
+      }));
+      const message = logs.join("\n");
+      assertEquals(
+        message.includes("not counted toward the roll-back"),
+        deferred,
+      );
+      if (!deferred) {
+        assert(message.includes("merge gate"));
+        assert(message.includes("counted toward the roll-back"));
+        assertEquals((await readEntry(streakPath))?.refusedCycles, 1);
+      }
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
 
 Deno.test("syncMilestoneBranches - a cycle-budget deferral never climbs to the roll-back, however many cycles it repeats (Issue #4517)", async () => {
   const { dir, streakPath } = await workDir();

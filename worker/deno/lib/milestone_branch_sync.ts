@@ -3172,7 +3172,7 @@ export async function syncMilestoneBranches(
             // something — a branch that conflicted with no rung left to climb.
             // A branch that merged cleanly was refused nothing worth reporting,
             // which is why this is here and not beside the grant.
-            if (!agentAllowed && conflictError) {
+            if (judged.reason === AGENT_DEFERRED_CYCLE_BUDGET) {
               log(
                 `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
                   `agent deferred: cycle budget — too little of the cycle was ` +
@@ -3180,6 +3180,12 @@ export async function syncMilestoneBranches(
                   `(Issue #2309). The deferral is not counted toward the ` +
                   `roll-back; the branch waits for a cycle with the runway ` +
                   `(Issue #4517)`,
+              );
+            } else if (!agentAllowed && conflictError?.gateFailure) {
+              log(
+                `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
+                  `the merge gate refused the resolution; this refusal is ` +
+                  `counted toward the roll-back (Issue #4328)`,
               );
             }
 
