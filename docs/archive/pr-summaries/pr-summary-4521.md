@@ -80,20 +80,23 @@ Added to `worker/deno/tests/milestone_branch_sync_test.ts` (helper
   `... a budget spent in this cycle files
   the conflicted files and the gap read before the roll-back`
   (hand-off at the same-cycle site, where the error is in hand).
+- `... the same-cycle ladder roll-back files the conflict and the gap before roll-back`:
+  asserts the conflict path, behind-by count, behind-since date and ladder log.
 - `... a behind-by that cannot be measured is logged with its reason and filed as not recorded`.
 
 The helper `rollbackFiling` mocks a real roll-back: `behindCountFn` answers 7
 before the roll-back and 0 after it, and the compare answers a date before and
 `null` after, so a context read after the roll-back fails every test above. The
-same-cycle ladder rung (`applyResolverRecovery` with a `conflictError`) is the
-one call site without its own test; it shares `buildFallbackContext` and the
-before-the-roll-back call with the cycle-start rung.
+same-cycle ladder test also exercises `applyResolverRecovery` with the error in
+hand.
 
 Red checks: base-order production file (context built after `rollbackFn`) → 4
 tests fail; `!(conflictedFiles.length > 0)` (line 1994 mutation) → the
 same-cycle test fails; `err instanceof Error` negated (line 2034 mutation) → the
 unmeasurable behind-by test fails; base-branch production file → the first two
-fail; only `?? milestone.milestoneBranch` removed → the second fails.
+fail; only `?? milestone.milestoneBranch` removed → the second fails; passing
+`undefined` instead of `conflictError` at the same-cycle ladder call → the
+same-cycle ladder test fails on `conflictedFiles`.
 
 Verifier findings (all five): the ordering defect at the two
 `buildFallbackContext` calls and the four callers it reaches (cycle-start rung,
@@ -103,9 +106,12 @@ results.
 
 No existing test was edited.
 
-Results on the final head:
+Results before the same-cycle ladder test was added:
 `deno task test:unit tests/milestone_branch_sync_test.ts tests/milestone_fallback_flag_test.ts`:
 93 passed, 0 failed.
+
+After that test was added, `deno task test:unit tests/milestone_branch_sync_test.ts`:
+82 passed, 0 failed.
 
 `./quality.sh`: every stage passed except `deno tests` (31306 passed, 3 failed),
 all three failing on the base branch too and not touching this change:
