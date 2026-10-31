@@ -11,6 +11,12 @@ import {
 } from "../lib/pr_branch_preparation.ts";
 import type { GitDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
+import {
+  commitFile,
+  git,
+  gitOk,
+  setupGitRepoFixture,
+} from "./support/git_repo_fixture.ts";
 
 function makeSilentLogger(): Logger {
   const noop = () => {};
@@ -52,7 +58,8 @@ Deno.test("preparePrBranch - operates on the requested branch and fetches before
   // so preparation cannot silently act on the wrong ref.
   for (const call of calls) {
     assertEquals(
-      call.includes("feature-branch"),
+      call.includes("feature-branch") ||
+        call.includes("refs/heads/feature-branch"),
       true,
       `git invocation ${JSON.stringify(call)} should target feature-branch`,
     );
@@ -64,11 +71,15 @@ Deno.test("preparePrBranch - operates on the requested branch and fetches before
   // swapping `checkout` for `git switch` leaves this assertion intact.
   const verbs = calls.map((call) => call[0]);
   assert(verbs.includes("fetch"), "expected a fetch invocation");
-  assert(verbs.includes("pull"), "expected a pull invocation");
-  assert(
-    verbs.indexOf("fetch") < verbs.indexOf("pull"),
-    "fetch must precede pull",
+  // Issue #4530: with a fetched tip the branch is checked out *at* it, so the
+  // fetch must precede a `checkout -B <branch> FETCH_HEAD`, not a pull.
+  const reset = calls.findIndex((call) =>
+    call[0] === "checkout" && call.includes("-B")
   );
+  assert(reset >= 0, "expected a checkout -B invocation");
+  assertEquals(calls[reset]?.at(-1), "FETCH_HEAD");
+  assert(verbs.indexOf("fetch") < reset, "fetch must precede the checkout");
+  assert(!verbs.includes("pull"), "no pull once the branch is at the tip");
 });
 
 Deno.test("preparePrBranch - a transient fetch failure is tolerated (checkout and pull still run) (Issue #4376)", async () => {
@@ -94,6 +105,163 @@ Deno.test("preparePrBranch - a transient fetch failure is tolerated (checkout an
   });
   assertEquals(outcome.ok, true);
   assertEquals(calls.length, 3, "checkout and pull still attempted");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4530: every PR pass starts from origin's head of the PR branch
+// ---------------------------------------------------------------------------
+
+function realGit(): GitDeps["runGitCommand"] {
+  return (async (args: string[], opts?: { cwd?: string }) => {
+    const r = await git(args, opts?.cwd ?? ".");
+    return { ok: true as const, value: r };
+  }) as unknown as GitDeps["runGitCommand"];
+}
+
+function capturingLogger(warnings: { msg: string; ctx: unknown }[]): Logger {
+  const logger = makeSilentLogger();
+  logger.warn = ((msg: string, ctx?: unknown) => {
+    warnings.push({ msg, ctx });
+  }) as Logger["warn"];
+  return logger;
+}
+
+Deno.test("preparePrBranch - a local branch that diverged from origin is reset onto origin's tip and the dropped commits are warned about by SHA (Issue #4530)", async () => {
+  const fx = await setupGitRepoFixture("issue-4530-");
+  try {
+    // Origin's PR branch, and the clone's local copy of it at the same commit.
+    await gitOk(["checkout", "-b", "pr-branch"], fx.clone);
+    await commitFile(fx.clone, "a.txt", "a\n", "first");
+    await gitOk(["push", "-u", "origin", "pr-branch"], fx.clone);
+    // The unpushed local merge-like commit the issue describes.
+    const stale = await commitFile(fx.clone, "local.txt", "x\n", "unpushed");
+    // Someone else advances origin's branch, so local and origin diverge.
+    const other = `${fx.root}/other`;
+    await gitOk(["clone", fx.remote, other], fx.root);
+    await gitOk(["config", "user.email", "o@example.com"], other);
+    await gitOk(["config", "user.name", "Other"], other);
+    await gitOk(["checkout", "pr-branch"], other);
+    const tip = await commitFile(other, "remote.txt", "r\n", "reviewed head");
+    await gitOk(["push", "origin", "pr-branch"], other);
+    // The pass is run from a different branch, as a shared clone often is.
+    await gitOk(["checkout", "main"], fx.clone);
+
+    const warnings: { msg: string; ctx: unknown }[] = [];
+    const outcome = await preparePrBranch("pr-branch", {
+      logger: capturingLogger(warnings),
+      git: { runGitCommand: realGit() },
+      cwd: fx.clone,
+    });
+
+    assertEquals(outcome.ok, true);
+    assertEquals(
+      (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+      tip,
+      "HEAD must be the fetched tip, not the stale local commit",
+    );
+    assertEquals(
+      (await gitOk(["rev-parse", "refs/heads/pr-branch"], fx.clone)).trim(),
+      tip,
+    );
+    const dropped = warnings.find((w) => w.msg.includes("Discarding local"));
+    assert(dropped !== undefined, "expected a warning naming the dropped work");
+    assertEquals(
+      (dropped.ctx as { shas: string[] }).shas,
+      [stale],
+      "the warning must name exactly the unpushed commit",
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("preparePrBranch - a local branch that is merely behind origin is fast-forwarded without a discard warning (Issue #4530)", async () => {
+  const fx = await setupGitRepoFixture("issue-4530-behind-");
+  try {
+    await gitOk(["checkout", "-b", "pr-branch"], fx.clone);
+    await commitFile(fx.clone, "a.txt", "a\n", "first");
+    await gitOk(["push", "-u", "origin", "pr-branch"], fx.clone);
+    const tip = await commitFile(fx.clone, "b.txt", "b\n", "second");
+    await gitOk(["push", "origin", "pr-branch"], fx.clone);
+    await gitOk(["reset", "--hard", "HEAD~1"], fx.clone);
+
+    const warnings: { msg: string; ctx: unknown }[] = [];
+    const outcome = await preparePrBranch("pr-branch", {
+      logger: capturingLogger(warnings),
+      git: { runGitCommand: realGit() },
+      cwd: fx.clone,
+    });
+
+    assertEquals(outcome.ok, true);
+    assertEquals((await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(), tip);
+    assertEquals(
+      warnings.filter((w) => w.msg.includes("Discarding local")).length,
+      0,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("preparePrBranch - a branch with no local copy is created at origin's tip (Issue #4530)", async () => {
+  const fx = await setupGitRepoFixture("issue-4530-new-");
+  try {
+    await gitOk(["checkout", "-b", "pr-branch"], fx.clone);
+    const tip = await commitFile(fx.clone, "a.txt", "a\n", "first");
+    await gitOk(["push", "-u", "origin", "pr-branch"], fx.clone);
+    await gitOk(["checkout", "main"], fx.clone);
+    await gitOk(["branch", "-D", "pr-branch"], fx.clone);
+    assertEquals(
+      (await git(["rev-parse", "--verify", "refs/heads/pr-branch"], fx.clone))
+        .code !== 0,
+      true,
+      "fixture: no local pr-branch",
+    );
+
+    const warnings: { msg: string; ctx: unknown }[] = [];
+    const outcome = await preparePrBranch("pr-branch", {
+      logger: capturingLogger(warnings),
+      git: { runGitCommand: realGit() },
+      cwd: fx.clone,
+    });
+
+    assertEquals(outcome.ok, true);
+    assertEquals((await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(), tip);
+    assertEquals(
+      warnings.filter((w) => w.msg.includes("Discarding")).length,
+      0,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("preparePrBranch - a failed fetch falls back to the local branch and a best-effort pull, and checks nothing out at FETCH_HEAD (Issue #4530)", async () => {
+  const calls: string[][] = [];
+  const runGitCommand = ((args: string[]) => {
+    calls.push(args);
+    return Promise.resolve({
+      ok: true as const,
+      value: args[0] === "fetch"
+        ? { code: 1, stdout: "", stderr: "remote rejected" }
+        : { code: 0, stdout: "", stderr: "" },
+    });
+  }) as unknown as GitDeps["runGitCommand"];
+
+  await preparePrBranch("feature-branch", {
+    logger: makeSilentLogger(),
+    git: { runGitCommand },
+    cwd: "/tmp/repo",
+  });
+
+  assertEquals(
+    calls.map((c) => c[0]),
+    ["fetch", "checkout", "pull"],
+  );
+  assert(
+    !calls.some((c) => c.includes("FETCH_HEAD")),
+    "a stale FETCH_HEAD from an earlier fetch must never be used",
+  );
 });
 
 Deno.test("preparePrBranch - a branch that no longer exists on origin is reported (branch_missing) and nothing else runs (Issue #4376)", async () => {
@@ -153,7 +321,11 @@ Deno.test("preparePrBranch - a checkout failure is reported (checkout_failed): t
   });
   assertEquals(outcome.ok, false);
   if (!outcome.ok) assertEquals(outcome.reason, "checkout_failed");
-  assertEquals(calls.length, 2, "no pull after a failed checkout");
+  assertEquals(
+    calls.map((c) => c[0]),
+    ["fetch", "rev-list", "checkout"],
+    "no pull after a failed checkout",
+  );
 });
 
 Deno.test("preparePrBranch - passes cwd to every git command", async () => {
@@ -252,7 +424,12 @@ Deno.test("preparePrBranch - a branch held by one of this host's lane worktrees 
     c[0] === "checkout" && c[1] !== "--detach"
   );
   assertEquals(checkouts.length, 2, "one refused checkout, one retry");
-  assert(calls.some((c) => c[0] === "pull"), "the retry went on to pull");
+  assertEquals(
+    checkouts[1]?.at(-1),
+    "FETCH_HEAD",
+    "the retry is still the reset onto the fetched tip",
+  );
+  assert(!calls.some((c) => c[0] === "pull"), "no pull once at the tip");
 });
 
 Deno.test("preparePrBranch - a branch held by a worktree that is not a lane worktree is reported as branch_held and left alone (Issue #1677)", async () => {
