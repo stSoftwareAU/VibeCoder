@@ -20,9 +20,11 @@ Version bump: `VERSION` is not changed by this PR.
 
 ### Essential Design Decisions
 
-- Nothing is approved: the review stays outstanding until review-fleet-prs
-  reviews the pushed head and checks every earlier finding independently.
-  An unavailable verifier is logged, never read as clean.
+- Nothing is approved. Once the push lands, the review is dismissed as
+  addressed, as it is after a cleared verdict. The merge remains held until
+  review-fleet-prs approves the pushed head and independently checks every
+  earlier finding. An unavailable verifier is recorded as a not-checked warning
+  in the log.
 - The change is in `verifyFeedbackFix` only; `processPrFeedback` is unchanged
   because an `ok` result already takes its push path.
 
