@@ -1014,7 +1014,10 @@ host-disk guard deliberately stopped work after the floor was crossed. It keeps
 the `disk-full` host-fault class and does not consume an issue attempt, but it is
 not code-fixable and does not create a worker-fault diagnostic issue. An actual
 ENOSPC or read-only filesystem error remains code-fixable and can be recorded
-against the worker.
+against the worker. A worker-authored reason with only `host disk below its
+floor` receives the same protective classification when a caller quotes the
+floor check without its park note; the phrase inside formatted agent output
+does not.
 
 A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
 clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not
