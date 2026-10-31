@@ -101,7 +101,9 @@ export function describeConflictAnalyses(
  * a date.
  *
  * @param repo - Repository in `owner/repo` form
- * @param lastSyncedDefaultSha - The tip the branch was last level with
+ * @param lastSyncedDefaultSha - The tip the branch was last level with, or
+ *   the branch itself when it never synced (Issue #4521): the compare then
+ *   lists the commits the branch lacks, and the first is the same moment
  * @param defaultBranch - The branch it has fallen behind
  * @param ghCommandFn - Runs `gh`
  * @param log - Where a failed compare is said out loud
