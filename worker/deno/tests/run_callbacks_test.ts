@@ -691,3 +691,19 @@ Deno.test("run_callbacks - the cycle hook drops a proxy URL with userinfo (Issue
   assertEquals(env.PATH, "/usr/bin");
   assertEquals(env.NO_PROXY, "localhost,127.0.0.1");
 });
+
+Deno.test("run_callbacks - the userinfo check applies to proxy names only (Issue #4496)", () => {
+  const worker: Record<string, string> = {
+    PATH: "/opt/user@host/bin:/usr/bin",
+    HTTPS_PROXY: CREDENTIAL_PROXY_URL,
+  };
+  const env = buildCallbackEnv(
+    context(),
+    "success",
+    "/tmp/c.json",
+    (name) => worker[name],
+  );
+  // A non-proxy inherited name keeps a value with `@`; only proxy names drop it.
+  assertEquals(env.PATH, "/opt/user@host/bin:/usr/bin");
+  assert(!("HTTPS_PROXY" in env));
+});

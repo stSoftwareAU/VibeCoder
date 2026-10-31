@@ -73,6 +73,10 @@ Backend only; no UI files touched.
   `HTTP_PROXY`, `NO_PROXY` and their lower-case forms to the inherited set".
   Replaced by: the same list plus the six names; the test still fails on any
   other leaked name.
+- Mutation check (`run_callbacks.ts:119`, `PROXY_ENV_VARS.includes(name)`
+  replaced with `true`): killed by
+  `run_callbacks - the userinfo check applies to proxy names only (Issue #4496)`,
+  which passes a `PATH` containing `@` and expects it to cross unchanged.
 - Red checks: the `@` condition forced false → the userinfo tests fail (run,
   cycle and host-failure); the proxy names removed from `INHERITED_ENV_VARS` → 6
   tests fail.
