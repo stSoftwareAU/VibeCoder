@@ -23,6 +23,7 @@
 
 import { assert, assertStringIncludes } from "@std/assert";
 import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
+import { PR_RESPONSE_MESSAGE_FILE } from "../lib/worker_state_paths.ts";
 import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const TYPES_AND_SECTIONS: readonly [type: string, heading: string][] = [
@@ -45,7 +46,7 @@ for (const [type, heading] of TYPES_AND_SECTIONS) {
         `${WORKER_PR_MARKER_PREFIX}N -->`,
         "was written outside the worker",
         "gh pr edit <n> --body-file <file>",
-        ".pr_response_message",
+        `and name that in \`${PR_RESPONSE_MESSAGE_FILE}\``,
       ]
     ) {
       assertStringIncludes(

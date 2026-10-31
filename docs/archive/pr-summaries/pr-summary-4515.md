@@ -51,17 +51,16 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
 
 ## Test Plan
 
-- Added `worker/deno/tests/marker_less_body_rebuild_4515_docs_test.ts`: one test
-  per prompt asserts the section names the worker marker (built from
-  `WORKER_PR_MARKER_PREFIX`, not typed in), says a marker-less body "was written
-  outside the worker", gives `gh pr edit <n> --body-file <file>` and
-  `.pr_response_message`, and no longer carries the unconditional "do not edit
-  the PR description yourself".
-- Red check: with the three prompts restored to the base branch, the new file
-  fails (0 passed, 3 failed); with the change it passes (3 passed).
-- `deno task test:unit` on the new file,
-  `tests/pr_body_matches_final_diff_3015_test.ts` and
-  `tests/pr_body_sync_test.ts`: 52 passed, 0 failed.
+- `worker/deno/tests/marker_less_body_rebuild_4515_docs_test.ts` (3 tests):
+  each prompt section names the worker marker from `WORKER_PR_MARKER_PREFIX`,
+  describes the outside-worker body and edit command, and requires the reporting
+  clause built from `PR_RESPONSE_MESSAGE_FILE`. It rejects the old ban.
+- The test file passes on the head (3 passed, 0 failed); with the three prompt
+  sections restored from `main`, it fails (0 passed, 3 failed).
+- `deno task drift-pins-on-base` confirmed every required phrase is absent from
+  each corresponding section on `main`.
+- Changing `PR_RESPONSE_MESSAGE_FILE` at its source made all three tests fail
+  on the missing reporting clause; the source was restored afterwards.
 - No assertion removed or edited in an existing test.
 - Related rules checked: the "Keep the PR summary true to the head" paragraph in
   each of the three prompts, and `docs/workflows/` text on the digest marker and
