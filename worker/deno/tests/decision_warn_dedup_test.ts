@@ -5,7 +5,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   configureDecisionWarnStore,
   DECISION_MAX_AGE_MS,
@@ -56,6 +56,20 @@ async function withWorkDir(body: (workDir: string) => void | Promise<void>) {
     resetDecisionWarnings();
     await Deno.remove(workDir, { recursive: true });
   }
+}
+
+/** A warn sink that records messages. */
+function recorder(into: string[]): { warn: (message: string) => void } {
+  return { warn: (message) => void into.push(message) };
+}
+
+/** Names of leftover `*.tmp` files in `dir`. */
+async function tempFiles(dir: string): Promise<string[]> {
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.name.endsWith(".tmp")) found.push(entry.name);
+  }
+  return found;
 }
 
 /** Simulate a process restart: drop memory, then reload from the store. */
@@ -117,10 +131,66 @@ Deno.test("configureDecisionWarnStore - a corrupt store reads as empty and is re
   await withWorkDir(async (workDir) => {
     await Deno.writeTextFile(decisionWarnStorePath(workDir), "{not json");
     resetDecisionWarnings();
-    configureDecisionWarnStore(workDir);
+    const warnings: string[] = [];
+    configureDecisionWarnStore(workDir, Date.now, recorder(warnings));
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "is not a valid store");
     assertEquals(shouldWarnDecision("k", "sig"), true);
     restart(workDir);
     assertEquals(shouldWarnDecision("k", "sig"), false);
+  });
+});
+
+Deno.test("configureDecisionWarnStore - a store without a decisions object warns and reads as empty", async () => {
+  await withWorkDir(async (workDir) => {
+    await Deno.writeTextFile(decisionWarnStorePath(workDir), '{"version":1}');
+    resetDecisionWarnings();
+    const warnings: string[] = [];
+    configureDecisionWarnStore(workDir, Date.now, recorder(warnings));
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "missing `decisions` object");
+    assertEquals(shouldWarnDecision("k", "sig"), true);
+  });
+});
+
+Deno.test("configureDecisionWarnStore - an unreadable store warns once, never throws, and stays memory-only", async () => {
+  await withWorkDir(async (workDir) => {
+    // A directory at the store path: the read fails with EISDIR, not NotFound,
+    // and the rename of a temp file onto it fails too.
+    await Deno.mkdir(decisionWarnStorePath(workDir));
+    resetDecisionWarnings();
+    const warnings: string[] = [];
+    configureDecisionWarnStore(workDir, Date.now, recorder(warnings));
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "unreadable");
+
+    assertEquals(shouldWarnDecision("k", "sig"), true);
+    assertEquals(shouldWarnDecision("k", "sig"), false);
+    // The failed write is warned (once per attempted write), not thrown.
+    assertEquals(warnings.length, 2);
+    assertStringIncludes(warnings[1] ?? "", "could not be written");
+    assertEquals(await tempFiles(workDir), []);
+  });
+});
+
+Deno.test("shouldWarnDecision - a failed write warns, leaves no temp file, and keeps the signature in memory", async () => {
+  await withWorkDir(async (workDir) => {
+    resetDecisionWarnings();
+    const warnings: string[] = [];
+    configureDecisionWarnStore(workDir, Date.now, recorder(warnings));
+    assertEquals(warnings.length, 0);
+
+    // Remove the volume directory so creating the temp file fails.
+    await Deno.remove(workDir, { recursive: true });
+    assertEquals(shouldWarnDecision("k", "sig"), true);
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "could not be written");
+    assertEquals(shouldWarnDecision("k", "sig"), false);
+    assertEquals(warnings.length, 1);
+
+    // Restore the directory (the helper removes it) and check nothing leaked.
+    await Deno.mkdir(workDir);
+    assertEquals(await tempFiles(workDir), []);
   });
 });
 

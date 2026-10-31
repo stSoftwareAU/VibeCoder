@@ -22,6 +22,7 @@
  */
 
 import { defaultLogger } from "./logger.ts";
+import type { Logger } from "../types.ts";
 
 /** File name of the persisted signatures, inside the work directory. */
 export const DECISION_WARN_STORE_FILE = "decision_warn_signatures.json";
@@ -44,6 +45,8 @@ const entries = new Map<string, DecisionEntry>();
 /** The persisted store, or undefined while signatures live in memory only. */
 let storePath: string | undefined;
 let nowFn: () => number = Date.now;
+/** Where store faults are warned; the caller's logger once configured. */
+let warnSink: Pick<Logger, "warn"> = defaultLogger;
 
 /** Resolve the signature file for a work directory. */
 export function decisionWarnStorePath(workDir: string): string {
@@ -76,7 +79,7 @@ function loadStore(path: string): void {
     text = Deno.readTextFileSync(path);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
-    defaultLogger.warn(
+    warnSink.warn(
       `Decision-warning store ${path} unreadable (${
         errorMessage(error)
       }); starting from empty (Issue #4495)`,
@@ -99,7 +102,7 @@ function loadStore(path: string): void {
     }
   } catch (error) {
     entries.clear();
-    defaultLogger.warn(
+    warnSink.warn(
       `Decision-warning store ${path} is not a valid store (${
         errorMessage(error)
       }); starting from empty (Issue #4495)`,
@@ -125,7 +128,7 @@ function saveStore(path: string): void {
     } catch {
       // The temp file was never created; nothing to clean up.
     }
-    defaultLogger.warn(
+    warnSink.warn(
       `Decision-warning store ${path} could not be written (${
         errorMessage(error)
       }); repeats will warn again after a restart (Issue #4495)`,
@@ -143,12 +146,15 @@ function saveStore(path: string): void {
  *
  * @param workDir - The work volume root, or undefined for memory only.
  * @param now - Clock seam; defaults to `Date.now`.
+ * @param logger - Sink for store faults; defaults to the default logger.
  */
 export function configureDecisionWarnStore(
   workDir: string | undefined,
   now: () => number = Date.now,
+  logger: Pick<Logger, "warn"> = defaultLogger,
 ): void {
   nowFn = now;
+  warnSink = logger;
   const dir = workDir?.trim();
   storePath = dir ? decisionWarnStorePath(dir) : undefined;
   if (!storePath) return;
@@ -194,4 +200,5 @@ export function resetDecisionWarnings(): void {
   entries.clear();
   storePath = undefined;
   nowFn = Date.now;
+  warnSink = defaultLogger;
 }

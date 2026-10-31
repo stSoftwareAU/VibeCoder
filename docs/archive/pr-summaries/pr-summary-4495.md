@@ -29,17 +29,18 @@ inputs change, and log an unchanged repeat at DEBUG. Closes #4495.
 - `ensureIssueClosedIfPrMerged` and `closeIssuesForMergedPrs` share the
   did-not-land key, so one pair warns once whichever path sees it first.
 - State survives a restart: `configureDecisionWarnStore(workDir)` (called from
-  `runStartupHousekeeping` in `lib/run_housekeeping.ts`, before the sweep)
-  loads `<workDir>/decision_warn_signatures.json`; a signature change rewrites
-  it tempfile-then-rename. The directory is passed in, never read from
-  `WORK_DIR`, so a suite that does not configure it cannot touch the live file
-  (Issue #1177); with no store configured the map is memory-only. An A→B→A
-  change warns on each change.
+  `runStartupHousekeeping` in `lib/run_housekeeping.ts`, before the sweep) loads
+  `<workDir>/decision_warn_signatures.json`; a signature change rewrites it
+  tempfile-then-rename. The directory is passed in, never read from `WORK_DIR`,
+  so a suite that does not configure it cannot touch the live file (Issue
+  #1177); with no store configured the map is memory-only. An A→B→A change warns
+  on each change.
 - Bounded: an entry not seen for 7 days is dropped (on load and on every write);
   an unchanged sighting re-stamps its entry once a day, so a pair still being
   re-checked is kept and a closed issue's pair ages out.
 - A missing file reads as empty; a corrupt or unreadable one, or a failed write,
-  is logged at WARNING and degrades to memory-only — it never throws.
+  is logged at WARNING and degrades to memory-only — it never throws. Each fault
+  is covered by a test (see the Test Plan).
 
 ### Undiscoverable Facts
 
@@ -85,10 +86,18 @@ call the real function.
 
 Added:
 
-- `worker/deno/tests/decision_warn_dedup_test.ts`: 9 tests (first sighting,
+- `worker/deno/tests/decision_warn_dedup_test.ts`: 12 tests (first sighting,
   changed signature, independent keys, reset; restart with an unchanged then a
   changed signature; no store means a restart warns again; 7-day age-out and
-  daily refresh; corrupt store; prototype-key and malformed entries).
+  daily refresh; corrupt store, which also asserts its one WARNING; a store with
+  no `decisions` object, one WARNING; an unreadable store (a directory at the
+  store path), one "unreadable" WARNING then one "could not be written" WARNING,
+  no throw, memory-only dedup and no `*.tmp` left; a failed write (volume
+  directory removed), one WARNING, no throw, memory-only dedup). The fault tests
+  inject a recording sink through the optional `logger` argument of
+  `configureDecisionWarnStore` (defaults to `defaultLogger`).
+- `worker/deno/tests/run_housekeeping_test.ts`: production wiring, two startup
+  sweeps with fresh in-memory state produce one warning.
 - `worker/deno/tests/issue_lifecycle_test.ts`: unchanged did-not-land verdict
   warns once across two cycles; the same verdict warns once across a simulated
   worker restart (memory reset, store reloaded) and a changed reason after the
@@ -115,25 +124,34 @@ context tests; each was re-applied by hand and the matching test went red.
 Persistence red checks (PR #4535 review), each reverted after: skipping
 `loadStore` → 5 tests red; skipping the write on a changed signature → 3 red;
 disabling `pruneStale` → the age-out test red; disabling the daily re-stamp →
-the age-out test red. Production wiring is covered by
+the age-out test red. Error-branch red checks (PR #4535 review), each reverted
+after: rethrowing a non-NotFound read error → the unreadable-store test red;
+rethrowing in `saveStore`'s catch → the unreadable-store and failed-write tests
+red; turning the "unreadable" `warn` into a no-op → the unreadable-store test
+red; turning the "could not be written" `warn` into a no-op → both write-fault
+tests red; dropping the `removeSync(temp)` cleanup → the unreadable-store test
+red (temp file left). Production wiring is covered by
 `run_housekeeping_test.ts`: two startup sweeps with fresh in-memory state
 produce one warning. Before the call moved into housekeeping, the new test
 failed because the store file was absent.
 
 Red checks: `shouldWarnDecision` forced to return true (re-run on the head) →
-`decision_warn_dedup_test.ts` 8 of 9 tests red, `issue_lifecycle_test.ts` 4 red,
-`missing_criterion_close_guard_3177_test.ts` 2 red, `pr_maintenance_test.ts` 3
-red (two identical warn lines instead of one). Base-branch production files with
-the new tests → 6 site tests red (above). Results on the final head (after the
-PR #4535 review fix), `deno task test:unit` per file, 0 failed in each:
-`issue_lifecycle_test.ts` (37 tests at head),
-`missing_criterion_close_guard_3177_test.ts` (19), `pr_maintenance_test.ts`
-(87), `issue_lifecycle_cache_test.ts` (7),
+`decision_warn_dedup_test.ts` 10 of 12 tests red, `issue_lifecycle_test.ts` 4
+red, `missing_criterion_close_guard_3177_test.ts` 2 red,
+`pr_maintenance_test.ts` 3 red (two identical warn lines instead of one).
+Base-branch production files with the new tests → 6 site tests red (above).
+
+Results on the head, `deno task test:unit` per file, 0 failed in each:
+`decision_warn_dedup_test.ts` (12 tests at head), `issue_lifecycle_test.ts`
+(37), `missing_criterion_close_guard_3177_test.ts` (19),
+`pr_maintenance_test.ts` (87), `run_housekeeping_test.ts` (25),
+`run_worker_test.ts` (35), `issue_lifecycle_cache_test.ts` (7),
 `pr_maintenance_issue_state_cache_test.ts` (7), `merged_pr_issue_sweep_test.ts`
 (37), `merged_pr_precheck_phase_test.ts` (9),
-`completion_phase_merged_pr_closure_test.ts` (7), `decision_warn_dedup_test.ts`
-(9), `run_worker_test.ts` (35); 254 in total. `deno fmt --check`, `deno lint`,
-`deno check` clean on the 4 changed `.ts` files this round.
+`completion_phase_merged_pr_closure_test.ts` (7); 282 in total.
+`deno fmt
+--check`, `deno lint` and `deno check` are clean on the nine changed
+`.ts` files plus `lib/run_worker.ts`.
 
 Twinned copies: the did-not-land message is logged at two sites
 (`issue_lifecycle.ts`, `pr_maintenance.ts`); both changed and share a key.
