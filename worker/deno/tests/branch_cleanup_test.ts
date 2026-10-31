@@ -246,6 +246,183 @@ for (const cached of [false, true]) {
   }
 }
 
+/** Journal entries written under `workDir`, parsed. */
+async function readSelfHealJournal(
+  workDir: string,
+): Promise<Array<{ action: string; result: string; reason: string }>> {
+  const text = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
+  return text.trim().split("\n").map((line) => JSON.parse(line));
+}
+
+const secondaryLimit = "You have exceeded a secondary rate limit";
+const graphqlForbidden = 'Post "https://api.github.com/graphql": Forbidden';
+
+for (const stage of ["ref probe", "safety query", "branch deletion"]) {
+  Deno.test(`branch cleanup - merged sweep keeps the ok summary for a branch deleted before a later ${stage} refusal`, async () => {
+    const dir = await Deno.makeTempDir({ prefix: "merged_cleanup_flush_" });
+    const calls: string[][] = [];
+    const afterRefusal: string[][] = [];
+    let refused = false;
+    try {
+      const result = await cleanupMergedPrBranches(
+        ["org/first", "org/next"],
+        "vibe-bot",
+        {
+          workDir: dir,
+          logger: { warn: () => {}, info: () => {} },
+          ghCommandFn: (args) => {
+            calls.push([...args]);
+            if (refused) afterRefusal.push([...args]);
+            const joined = args.join(" ");
+            const later = joined.includes("issue-2-later");
+            const refuse = (message: string) => {
+              refused = true;
+              return Promise.reject(new Error(message));
+            };
+            if (joined.includes("--state merged")) {
+              return Promise.resolve(JSON.stringify([
+                { number: 1, title: "One", headRefName: "issue-1-fix" },
+                { number: 2, title: "Two", headRefName: "issue-2-later" },
+              ]));
+            }
+            if (joined.includes("git/ref/heads/")) {
+              return later && stage === "ref probe"
+                ? refuse(graphqlForbidden)
+                : Promise.resolve("{}");
+            }
+            if (joined.includes("--state open")) {
+              return later && stage === "safety query"
+                ? refuse(graphqlForbidden)
+                : Promise.resolve("");
+            }
+            if (joined.includes("-X DELETE")) {
+              return later && stage === "branch deletion"
+                ? refuse(secondaryLimit)
+                : Promise.resolve("");
+            }
+            throw new Error(`Unexpected test request: ${joined}`);
+          },
+        },
+      );
+
+      assertEquals(refused, true, "the fixture must reach the refusal");
+      assertEquals(
+        afterRefusal.length,
+        0,
+        "no request may follow the refusal",
+      );
+      assertEquals(
+        calls.some((args) => args.some((arg) => arg.includes("org/next"))),
+        false,
+      );
+      assertEquals(result.ok, true);
+      if (result.ok) assertEquals(result.value.deletedCount, 1);
+      const ok = (await readSelfHealJournal(dir)).filter((e) =>
+        e.result === "ok"
+      );
+      assertEquals(ok.length, 1);
+      assertEquals(ok[0]?.action, "merged_branch_delete");
+      assertStringIncludes(ok[0]!.reason, "org/first: deleted 1 merged-PR");
+      assertStringIncludes(ok[0]!.reason, "issue-1-fix");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
+
+for (
+  const [stage, cached] of [
+    ["safety query", false],
+    ["merged lookup", false],
+    ["merged lookup", true],
+    ["branch deletion", false],
+  ] as const
+) {
+  Deno.test(
+    `branch cleanup - stale ${
+      cached ? "cached" : "uncached"
+    } sweep keeps the ok summary for a branch deleted before a later ${stage} refusal`,
+    async () => {
+      const dir = await Deno.makeTempDir({ prefix: "stale_cleanup_flush_" });
+      const calls: string[][] = [];
+      const afterRefusal: string[][] = [];
+      let refused = false;
+      try {
+        const result = await cleanupStaleRemoteBranches(
+          ["org/first", "org/next"],
+          "vibe-bot",
+          {
+            workDir: dir,
+            cache: cached ? new IssueCache(`${dir}/cache`) : undefined,
+            logger: { warn: () => {}, info: () => {} },
+            ghCommandFn: (args) => {
+              calls.push([...args]);
+              if (refused) afterRefusal.push([...args]);
+              const joined = args.join(" ");
+              const later = joined.includes("issue-2-later");
+              const refuse = (message: string) => {
+                refused = true;
+                return Promise.reject(new Error(message));
+              };
+              if (args[0] === "api" && args[1]?.endsWith("/branches")) {
+                return Promise.resolve("issue-1-fix\nissue-2-later\n");
+              }
+              if (args.includes("open")) {
+                return later && stage === "safety query"
+                  ? refuse(graphqlForbidden)
+                  : Promise.resolve("");
+              }
+              if (args.includes("--author")) return Promise.resolve("[]");
+              if (args.includes("merged")) {
+                if (later && stage === "merged lookup") {
+                  return refuse(graphqlForbidden);
+                }
+                return Promise.resolve(
+                  cached
+                    ? JSON.stringify([{
+                      number: 42,
+                      title: "Fix",
+                      headRefName: "issue-1-fix",
+                    }])
+                    : "42",
+                );
+              }
+              if (args.includes("DELETE")) {
+                return later && stage === "branch deletion"
+                  ? refuse(secondaryLimit)
+                  : Promise.resolve("");
+              }
+              throw new Error(`Unexpected test request: ${joined}`);
+            },
+          },
+        );
+
+        assertEquals(refused, true, "the fixture must reach the refusal");
+        assertEquals(
+          afterRefusal.length,
+          0,
+          "no request may follow the refusal",
+        );
+        assertEquals(
+          calls.some((args) => args.some((arg) => arg.includes("org/next"))),
+          false,
+        );
+        assertEquals(result.ok, true);
+        if (result.ok) assertEquals(result.value.deletedCount, 1);
+        const ok = (await readSelfHealJournal(dir)).filter((e) =>
+          e.result === "ok"
+        );
+        assertEquals(ok.length, 1);
+        assertEquals(ok[0]?.action, "stale_remote_delete");
+        assertStringIncludes(ok[0]!.reason, "org/first: deleted 1 stale");
+        assertStringIncludes(ok[0]!.reason, "issue-1-fix");
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    },
+  );
+}
+
 Deno.test("branch cleanup - cleanupMergedPrBranches deletes merged branches", async () => {
   // Issue #1787: cleanupMergedPrBranches now reads through
   // `fetchMergedPRsByUser`, which expects JSON output from

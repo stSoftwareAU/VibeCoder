@@ -82,7 +82,7 @@ sequenceDiagram
 
 - `deno task test:unit` targeting
   `tests/{secondary_rate_limit,gh_spawn,pr_creation_retry,merged_pr_issue_sweep,lifecycle_pr_observation,github_primary_quota_latch,branch_cleanup,issue_query_branch_cache,branch_cleanup_cache,branch_cleanup_merged_telemetry,github_rate_limit_preflight,graphql_quota_probe,pr_issue_linking_cache,pr_issue_linking,primary_quota_latch}_test.ts`
-  — passed, 331 tests across 15 files. The brace list abbreviates the explicit
+  — passed, 338 tests across 15 files. The brace list abbreviates the explicit
   paths passed to the task.
 - `deno task check:manifests` — passed, 846 tests and 1 ignored.
 - `deno fmt --check` on all 16 changed TypeScript files — passed.
@@ -145,6 +145,20 @@ sequenceDiagram
   prefetch; earlier requests succeed before the injected refusal. The initial
   REST branch-list test now uses a REST secondary-limit response instead of
   claiming to reach a GraphQL query.
+- PR #4536 review round (journal): the mid-repo rate-limit stops in
+  `cleanupMergedPrBranches` (ref probe, safety assessment, deletion) and
+  `cleanupStaleRemoteBranches` (safety check, cached and uncached lookup,
+  deletion) now flush the per-repo `ok` summary (`flushMergedSummary` /
+  `flushStaleSummary` in `worker/deno/lib/branch_cleanup.ts`) before breaking,
+  so branches already deleted stay on `logs/self-heal.jsonl`; the watermark
+  handling is unchanged. Seven new cases in
+  `worker/deno/tests/branch_cleanup_test.ts` (merged: ref probe, safety query,
+  deletion; stale: safety query, uncached and cached lookup, deletion) delete
+  `issue-1-fix`, refuse on `issue-2-later`, and assert the `ok` summary naming
+  the first branch plus no request after the refusal. With `branch_cleanup.ts`
+  restored from the previous commit all seven cases failed (journal file
+  missing). The line numbers in the mutation bullet above are as of the previous
+  round and have since shifted.
 - `worker/deno/tests/merged_pr_issue_sweep_test.ts`: three later-stage cases
   inject secondary refusals at the actual timeline, comment and close requests.
   Each fails when its own stop is restored to primary-only handling; no later

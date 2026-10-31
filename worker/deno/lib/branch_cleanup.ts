@@ -275,6 +275,18 @@ export async function cleanupMergedPrBranches(
     // PRs whose branch is now deleted or already gone.
     const handled: number[] = [];
     const mergedDeletedNames: string[] = [];
+    // One per-repo success summary (Issue #4306), also flushed before a
+    // rate-limit stop so deletions already made stay on the journal.
+    const flushMergedSummary = async () => {
+      if (mergedDeletedNames.length === 0) return;
+      await emitSelfHealEventAuto({
+        module: "branch_cleanup",
+        action: "merged_branch_delete",
+        reason: `${repo}: deleted ${mergedDeletedNames.length} merged-PR ` +
+          `branch(es): ${summariseBranches(mergedDeletedNames)}`,
+        result: "ok",
+      }, cleanupOptions.workDir);
+    };
 
     for (const [branchName, prNumbers] of candidates) {
       // Cheap check first (Issue #4255): almost every branch in the
@@ -295,6 +307,7 @@ export async function cleanupMergedPrBranches(
               `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
                 `${repo} and later repos unchanged: ${message}`,
             );
+            await flushMergedSummary();
             break reposLoop;
           }
           logger.warn(
@@ -323,6 +336,7 @@ export async function cleanupMergedPrBranches(
             `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
               `${repo} and later repos unchanged: ${assessment.reason}`,
           );
+          await flushMergedSummary();
           break reposLoop;
         }
         await emitSelfHealEventAuto({
@@ -360,6 +374,7 @@ export async function cleanupMergedPrBranches(
             `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
               `${repo} and later repos unchanged: ${errorMessage(error)}`,
           );
+          await flushMergedSummary();
           break reposLoop;
         }
         logger.warn(
@@ -389,15 +404,7 @@ export async function cleanupMergedPrBranches(
       }
     }
 
-    if (mergedDeletedNames.length > 0) {
-      await emitSelfHealEventAuto({
-        module: "branch_cleanup",
-        action: "merged_branch_delete",
-        reason: `${repo}: deleted ${mergedDeletedNames.length} merged-PR ` +
-          `branch(es): ${summariseBranches(mergedDeletedNames)}`,
-        result: "ok",
-      }, cleanupOptions.workDir);
-    }
+    await flushMergedSummary();
 
     if (state) {
       const before = state.repos[repo]?.processed ?? [];
@@ -724,6 +731,18 @@ export async function cleanupStaleRemoteBranches(
     }
 
     const staleDeletedNames: string[] = [];
+    // One per-repo success summary (Issue #4306), also flushed before a
+    // rate-limit stop so deletions already made stay on the journal.
+    const flushStaleSummary = async () => {
+      if (staleDeletedNames.length === 0) return;
+      await emitSelfHealEventAuto({
+        module: "branch_cleanup",
+        action: "stale_remote_delete",
+        reason: `${repo}: deleted ${staleDeletedNames.length} stale remote ` +
+          `branch(es): ${summariseBranches(staleDeletedNames)}`,
+        result: "ok",
+      }, cleanupOptions.workDir);
+    };
     for (const branchName of remoteBranches) {
       if (!branchName) continue;
 
@@ -743,6 +762,7 @@ export async function cleanupStaleRemoteBranches(
             `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
               `${repo} and later repos unchanged: ${assessment.reason}`,
           );
+          await flushStaleSummary();
           break staleRepos;
         }
         await emitSelfHealEventAuto({
@@ -781,6 +801,7 @@ export async function cleanupStaleRemoteBranches(
               `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
                 `${repo} and later repos unchanged: ${message}`,
             );
+            await flushStaleSummary();
             break staleRepos;
           }
           // Any other lookup failure leaves the branch for the next sweep,
@@ -815,6 +836,7 @@ export async function cleanupStaleRemoteBranches(
               `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
                 `${repo} and later repos unchanged: ${message}`,
             );
+            await flushStaleSummary();
             break staleRepos;
           }
           continue;
@@ -840,6 +862,7 @@ export async function cleanupStaleRemoteBranches(
               `[branch-cleanup] rate-limit cool-down; stopping sweep with ` +
                 `${repo} and later repos unchanged: ${message}`,
             );
+            await flushStaleSummary();
             break staleRepos;
           }
           // Log failure but continue
@@ -859,15 +882,7 @@ export async function cleanupStaleRemoteBranches(
       }
     }
 
-    if (staleDeletedNames.length > 0) {
-      await emitSelfHealEventAuto({
-        module: "branch_cleanup",
-        action: "stale_remote_delete",
-        reason: `${repo}: deleted ${staleDeletedNames.length} stale remote ` +
-          `branch(es): ${summariseBranches(staleDeletedNames)}`,
-        result: "ok",
-      }, cleanupOptions.workDir);
-    }
+    await flushStaleSummary();
   }
 
   return { ok: true, value: { deletedCount, skippedCount } };
