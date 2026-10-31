@@ -7,8 +7,8 @@ errors wrapped by the production runner. A standalone quota probe also latches
 the cool-down; healthy REST fallback quota cannot resume the sweep. The
 fleet PR babysitter's generic `run()` helper in
 `worker/deno/commands/fleet_pr_babysitter.ts` now sends `git` through
-`runGitArgv` and `gh` through `runGhOrThrow`, so the git/gh spawn chokepoint
-scans pass after the merge from main. Closes #4494.
+`runGitArgv` (main already sends `gh` through `runGhCommand`), so the git/gh
+spawn chokepoint scans pass after the merge from main. Closes #4494.
 
 Version bump: none in this change; the merged commit records the final version.
 
@@ -203,8 +203,8 @@ sequenceDiagram
   covers the final `await flushStaleSummary()`; deleting that call failed it. No
   exemptions.
 - PR #4536 CI round (chokepoints): `worker/deno/commands/fleet_pr_babysitter.ts`,
-  merged in from main, spawned `git` and `gh` directly in its generic `run()`.
-  It now routes `git` through `runGitArgv` (`lib/git_timeout.ts`) and `gh`
-  through `runGhOrThrow` (`lib/gh_spawn.ts`); other commands keep
-  `Deno.Command`. The git/gh spawn chokepoint scan tests passed after the
+  merged in from main, spawned `git` directly in its generic `run()`.
+  It now routes `git` through `runGitArgv` (`lib/git_timeout.ts`); `gh` goes
+  through main's `runGhCommand` (`lib/github.ts`) and other commands keep
+  main's `runWithTimeout`. The git/gh spawn chokepoint scan tests passed after the
   change; this PR's quota-latch behaviour is untouched by it.

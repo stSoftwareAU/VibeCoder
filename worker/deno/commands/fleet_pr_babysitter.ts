@@ -1,7 +1,16 @@
 /** A small, single-PR-at-a-time fleet PR babysitter. */
 import { loadConfig } from "../lib/config.ts";
-import { runGhOrThrow } from "../lib/gh_spawn.ts";
+import { installConsoleRedaction } from "../lib/console_redaction.ts";
+import { runGhCommand } from "../lib/github.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
+import {
+  buildFetchTrackingRefArgs,
+  buildPushCreateBranchArgs,
+} from "../lib/git_ref_args.ts";
+import {
+  runWithTimeout,
+  spawnCommandWithTimeout,
+} from "../lib/subprocess_timeout.ts";
 import {
   acquireBranchUpdateLock,
   releaseBranchUpdateLock,
@@ -25,7 +34,6 @@ interface Pr {
 }
 const fields =
   "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,statusCheckRollup";
-const decoder = new TextDecoder();
 async function run(
   command: string,
   args: string[],
@@ -42,22 +50,21 @@ async function run(
     return git.stdout;
   }
   // gh goes through its chokepoint too (Issue #3703).
-  if (command === "gh") return (await runGhOrThrow(args, { cwd })).trim();
-  const result = await new Deno.Command(command, {
-    args,
+  if (command === "gh") return (await runGhCommand(args)).trim();
+  const outcome = await runWithTimeout(command, args, {
     cwd,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
+    timeoutMs: 30 * 60_000,
+  });
+  if (!outcome.ok) throw outcome.error;
+  const result = outcome.value;
   if (!result.success) {
     throw new Error(
       `${command} failed (${result.code}): ${
-        (decoder.decode(result.stderr) || decoder.decode(result.stdout)).trim()
+        (result.stderr || result.stdout).trim()
       }`,
     );
   }
-  return decoder.decode(result.stdout).trim();
+  return result.stdout.trim();
 }
 export function reason(pr: Pr): string | null {
   if (
@@ -128,7 +135,8 @@ async function fix(
     }
     dir = await Deno.makeTempDir({ prefix: "fleet-pr-babysitter-" });
     await run("gh", ["repo", "clone", repo, dir, "--", "--no-checkout"]);
-    await run("git", ["fetch", "origin", pr.headRefName, pr.baseRefName], dir);
+    await run("git", buildFetchTrackingRefArgs("origin", pr.headRefName), dir);
+    await run("git", buildFetchTrackingRefArgs("origin", pr.baseRefName), dir);
     await run("git", ["checkout", "-b", "babysitter", pr.headRefOid], dir);
     const prompt = `Fix ${
       reason(pr)
@@ -156,12 +164,13 @@ async function fix(
     if (renewalFailed) {
       throw new Error("PR lock renewal failed; refusing to start agent");
     }
-    child = new Deno.Command("codex", {
+    child = spawnCommandWithTimeout("codex", {
+      timeoutMs: 30 * 60_000,
       args: ["exec", "--full-auto", "--cd", dir, prompt],
       stdin: "null",
       stdout: "inherit",
       stderr: "inherit",
-    }).spawn();
+    });
     const result = await child.status;
     child = undefined;
     if (!result.success || renewalFailed) {
@@ -205,7 +214,7 @@ async function fix(
     }
     await run(
       "git",
-      ["push", "origin", `HEAD:refs/heads/${pr.headRefName}`],
+      buildPushCreateBranchArgs("origin", "HEAD", pr.headRefName),
       dir,
     );
     console.log(`${repo}#${pr.number}: pushed fix as ${login}`);
@@ -276,6 +285,7 @@ async function pass(
   }
 }
 if (import.meta.main) {
+  installConsoleRedaction();
   const execute = !Deno.args.includes("--dry-run");
   const watch = Deno.args.includes("--watch");
   const repoFilter = Deno.args.find((arg) => arg.startsWith("--repo="))?.slice(
