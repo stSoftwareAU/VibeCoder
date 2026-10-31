@@ -52,6 +52,7 @@ export const egressSelfcheckCommand: EgressSelfcheckCommand = {
       ...(seams.timeoutMs !== undefined ? { timeoutMs: seams.timeoutMs } : {}),
     });
     if (decision.warning) console.warn(decision.warning);
+    for (const line of decision.diagnostics ?? []) console.error(line);
     if (decision.marker) console.error(decision.marker);
     console.log(decision.record);
     if (decision.exitCode === 0) {
