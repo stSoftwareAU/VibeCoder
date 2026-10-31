@@ -23,6 +23,7 @@ import { IssueCache } from "../lib/issue_cache.ts";
 import {
   fetchClosedPRsByUser,
   fetchMergedPRsByUser,
+  OPEN_PR_BY_USER_LIMIT,
 } from "../lib/issue_query.ts";
 
 const REPO = "o/r";
@@ -140,8 +141,11 @@ for (
 
   Deno.test(`${name} listing - a full open listing is truncated and proves nothing (Issue #2409)`, async () => {
     await withCache(async (cache) => {
-      const ten = Array.from({ length: 10 }, (_, i) => i + 1);
-      const { gh, calls } = fakeGh({ open: ten });
+      const full = Array.from(
+        { length: OPEN_PR_BY_USER_LIMIT },
+        (_, i) => i + 1,
+      );
+      const { gh, calls } = fakeGh({ open: full });
       await fetchSettled(cache, gh, 1_000);
       await fetchSettled(cache, gh, 1_000 + 30 * MINUTE);
       assertEquals(calls.settled, 2);
