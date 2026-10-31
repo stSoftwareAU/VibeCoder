@@ -1,0 +1,12 @@
+{
+  "issue": 4526,
+  "chunk": "top-up-4526",
+  "title": "top-up: shared protective host-disk stop matcher",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4526",
+  "definition": "New helper introduced by Issue #4526; owns the narrow worker-authored park-note and host-disk-floor wording shared by host-fault and run-failure classification.",
+  "status": "claimed",
+  "sweptAt": "3806a0a059b46ead873d1c540c3044bac89184f8",
+  "paths": [
+    "worker/deno/lib/host_disk_protective_stop.ts"
+  ]
+}

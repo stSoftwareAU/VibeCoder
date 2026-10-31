@@ -105,8 +105,9 @@ const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
 
 /**
  * Disk exhaustion — the worker can prune, warn or size the volume. The
- * intentional host-disk park note and floor-only sentence share the class for
- * diagnosis, but their protective release is not code-fixable (handled above).
+ * park note remains disk evidence for other categories, where it stays
+ * code-fixable. The floor-only wording is handled by the `internal_error`
+ * protective-stop branch above, so quoted agent narration cannot trigger it.
  *
  * Deliberately still scanned over the *whole* message, agent output
  * included, unlike the crash patterns (Issue #249). The asymmetry is not an
