@@ -24,6 +24,7 @@ import { postMilestoneProgressComment } from "./milestone_progress.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
 import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
+import { shouldWarnDecision } from "./decision_warn_dedup.ts";
 import {
   foreignMergedPrComment,
   mergedPrCompletesThisRun,
@@ -340,10 +341,25 @@ export async function ensureIssueClosedIfPrMerged(
       ghCommandFn,
     );
     if (!landing.landed) {
-      logger.warn(
-        `Not closing issue #${issueNumber}: PR #${prNumber} merged but did not land — ${landing.detail} (Issue #4396)`,
-        { repo, issueNumber, prNumber, reason: landing.reason },
-      );
+      // Issue #4495: warn once per verdict; an unchanged repeat is DEBUG.
+      const notLandedMessage =
+        `Not closing issue #${issueNumber}: PR #${prNumber} merged but did not land — ${landing.detail} (Issue #4396)`;
+      const notLandedContext = {
+        repo,
+        issueNumber,
+        prNumber,
+        reason: landing.reason,
+      };
+      if (
+        shouldWarnDecision(
+          `not-landed:${repo}#${issueNumber}:pr${prNumber}`,
+          landing.reason,
+        )
+      ) {
+        logger.warn(notLandedMessage, notLandedContext);
+      } else {
+        logger.debug(notLandedMessage, notLandedContext);
+      }
       return {
         ok: true,
         value: {
@@ -390,11 +406,21 @@ export async function ensureIssueClosedIfPrMerged(
     // labels so another run can finish the original assignment.
     const missing = findMissingCriteria(prState.body ?? "");
     if (missing.length > 0) {
-      logger.warn(
+      // Issue #4495: warn once per missing set; an unchanged repeat is DEBUG.
+      const missingMessage =
         "Not closing the issue: the merged PR marks acceptance criteria " +
-          "missing (Issue #3177)",
-        { repo, issueNumber, prNumber, missing },
-      );
+        "missing (Issue #3177)";
+      const missingContext = { repo, issueNumber, prNumber, missing };
+      if (
+        shouldWarnDecision(
+          `missing-criteria:${repo}#${issueNumber}:pr${prNumber}`,
+          [...missing].sort().join("\n"),
+        )
+      ) {
+        logger.warn(missingMessage, missingContext);
+      } else {
+        logger.debug(missingMessage, missingContext);
+      }
       return {
         ok: true,
         value: {
