@@ -634,6 +634,41 @@ Deno.test("orchestration gate - a genuine runner hard timeout is retried, then r
   });
 });
 
+Deno.test("orchestration gate - an exit 124 that the runner did not mark timedOut is retried even with finishDeadline set (Issue #4584)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner((options) =>
+      options.orchestrationRole === "executor"
+        ? runResult({ exitCode: 124, timedOut: false, finishDeadline: true })
+        : answerByPhase(options)
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, false);
+    // One plan call, then the executor's two attempts.
+    assertEquals(
+      fake.calls.filter((o) => o.orchestrationRole === "executor").length,
+      2,
+    );
+  });
+});
+
+Deno.test("orchestration gate - a timed-out result the run refuses on is an error, not the runner's result (Issue #4584)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner((options) =>
+      options.orchestrationRole === "executor"
+        ? runResult({ exitCode: 2, timedOut: true, output: "partial" })
+        : answerByPhase(options)
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, false);
+  });
+});
+
 Deno.test("orchestration gate - a non-zero runner exit is an error that exhausts its retries (Issue #3642)", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeRunner(() => runResult({ exitCode: 1 }));

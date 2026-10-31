@@ -646,6 +646,30 @@ Deno.test("positive control: a timeout call without retryable: false is retried 
   });
 });
 
+Deno.test("AgentCallResult allows retryable: false only on a failure (Issue #4584)", () => {
+  const failure: AgentCallResult = {
+    ok: false,
+    kind: "timeout",
+    message: "x",
+    retryable: false,
+  };
+  assertEquals(failure.ok, false);
+  const retryTrue: AgentCallResult = {
+    ok: false,
+    kind: "timeout",
+    message: "x",
+    // @ts-expect-error retryable can only be false: true would mean "retry", the default
+    retryable: true,
+  };
+  const successRetryable: AgentCallResult = {
+    ok: true,
+    output: "x",
+    // @ts-expect-error a success carries no retryable flag
+    retryable: false,
+  };
+  assertEquals([retryTrue.ok, successRetryable.ok], [false, true]);
+});
+
 Deno.test("a non-positive callTimeoutMs is refused as invalid_selection", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeInvoker();

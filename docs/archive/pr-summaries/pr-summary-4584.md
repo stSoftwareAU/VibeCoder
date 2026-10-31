@@ -78,6 +78,17 @@ and `worker/deno/tests/orchestration_3642_orchestrator_test.ts`.
   control).
 - No assertion removed from any existing test; the existing exit-124 test is
   unchanged and passes.
+- Mutation check: two gate tests pin the surviving mutants. An exit 124 the
+  runner did not mark `timedOut`, with `finishDeadline` set, is retried (kills
+  dropping `result.timedOut === true` at `issue_run_gate.ts:166`). A `timedOut`
+  result with exit 2 (quota) ends the run as an error, not the runner's result
+  (kills dropping `outcome.state === "timed_out"` at `issue_run_gate.ts:339`).
+  Both mutations were applied by hand and each turns its test red.
+- `worker/deno/lib/orchestration/types.ts:140` and
+  `worker/deno/lib/orchestration/types.ts:144` exempt (untestable): type-only
+  declarations erased at runtime, so no runtime test can see the swap. A
+  `@ts-expect-error` test in the orchestrator test pins them at type-check time
+  (`retryable: true` and `retryable` on a success are rejected).
 - Red checks, each restored afterwards: removing the `lastTimedOut` return turns
   the gate tests red; removing the `retryable !== false` check turns the
   orchestrator test and gate finish-deadline tests red; dropping
