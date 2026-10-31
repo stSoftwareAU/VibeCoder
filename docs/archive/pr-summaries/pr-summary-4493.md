@@ -124,14 +124,26 @@ Backend only; no UI files touched.
   361, 366, 367, 384, 407 and 410 was applied by hand and turned a test red;
   `runEgressProbes` waiting with `timeoutMs: 0` now turns the late-listener
   scenario red. Line 383 was dead code and was simplified.
+- Review-fix mutation follow-up: `lateBindingClock` in the scenarios file is a
+  test helper. A new test,
+  `lateBindingClock binds exactly once, when the clock
+  reaches the bind time`,
+  kills dropping `!bound` (line 175) and `bound = true` → `false` (line 176):
+  each turned the retry test red. The 2 s late-listener test now asserts
+  `time.nowReads() > 0`, which kills deleting `now: time.now` (line 201): red
+  when applied. Each mutant was applied by hand and restored.
 - Not red-checked: the `egress-selfcheck` command's stderr printing.
 - No assertion was removed from an existing test; only the `@std/assert` import
   line in `egress_selfcheck_test.ts` gained a name.
-- `deno task test:unit` over `egress_allowed_probe_retry_test.ts`,
-  `egress_selfcheck_test.ts`, `run_worker_test.ts`: 69 passed, 0 failed.
+- `deno task test:unit` at the head:
+  `worker/deno/tests/egress_allowed_probe_retry_test.ts` (10 tests at head),
+  `worker/deno/tests/egress_selfcheck_test.ts` (23 tests at head),
+  `worker/deno/tests/run_worker_test.ts` (37 tests at head); all pass.
   `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
-- `./quality.sh` on the final head: deno lint, type check and fmt passed; deno
-  tests reported 31119 passed and 1 failed:
+- `./quality.sh` on an earlier head (before the review-fix pushes that rewrote
+  the late-listener scenarios and added the `lateBindingClock` test; it was not
+  re-run on the final head, which changed tests and docs only): deno lint, type
+  check and fmt passed; deno tests reported 31119 passed and 1 failed:
   `worker/deno/tests/pr_maintenance_command_test.ts` "update-open-pr-branches
   takes no action on a behind-only PR behind a merge queue (Issue #4424)". That
   test does not touch the egress code and fails the same way (23 passed, 1

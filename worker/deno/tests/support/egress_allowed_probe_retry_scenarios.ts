@@ -168,8 +168,13 @@ const PROXY_BINDS_LATE_MS = 2000;
 function lateBindingClock(bindAtMs: number, bind: () => void) {
   let clock = 0;
   let bound = false;
+  let reads = 0;
   return {
-    now: () => clock,
+    now: () => {
+      reads++;
+      return clock;
+    },
+    nowReads: () => reads,
     sleep: (ms: number): Promise<void> => {
       clock += ms;
       if (!bound && clock >= bindAtMs) {
@@ -181,6 +186,20 @@ function lateBindingClock(bindAtMs: number, bind: () => void) {
     elapsed: () => clock,
   };
 }
+
+Deno.test("lateBindingClock binds exactly once, when the clock reaches the bind time (Issue #4493)", async () => {
+  let binds = 0;
+  const time = lateBindingClock(2000, () => binds++);
+  await time.sleep(1000);
+  assertEquals(binds, 0);
+  await time.sleep(1000);
+  assertEquals(binds, 1);
+  await time.sleep(1000);
+  assertEquals(binds, 1);
+  assertEquals(time.elapsed(), 3000);
+  assertEquals(time.now(), 3000);
+  assertEquals(time.nowReads(), 1);
+});
 
 Deno.test("an allowlisted CONNECT waits for a listener 2 s late and spends no attempts (Issue #4493)", async () => {
   const port = freePort();
@@ -204,6 +223,7 @@ Deno.test("an allowlisted CONNECT waits for a listener 2 s late and spends no at
     );
     assertEquals(outcome.result, "succeeded");
     assertEquals(outcome.observed, "connected");
+    assert(time.nowReads() > 0, "the injected clock was never read");
     assert(
       time.elapsed() >= PROXY_BINDS_LATE_MS,
       `the proxy was not waited for: ${time.elapsed()}ms elapsed`,
