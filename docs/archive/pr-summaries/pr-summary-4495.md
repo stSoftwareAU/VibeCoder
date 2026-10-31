@@ -121,11 +121,17 @@ Mutation follow-up: the surviving mutants (the four context properties at
 `logger.debug` call at `pr_maintenance.ts:2659`) are killed by the two new
 context tests; each was re-applied by hand and the matching test went red.
 
-Persistence red checks (PR #4535 review), each reverted after: skipping
-`loadStore` → 5 tests red; skipping the write on a changed signature → 3 red;
-disabling `pruneStale` → the age-out test red; disabling the daily re-stamp →
-the age-out test red. Error-branch red checks (PR #4535 review), each reverted
-after: rethrowing a non-NotFound read error → the unreadable-store test red;
+Persistence red checks (PR #4535 review, re-run on the head, each reverted
+after, counts per test file): skipping `loadStore` →
+`decision_warn_dedup_test.ts` 6 red, `issue_lifecycle_test.ts` 1,
+`run_housekeeping_test.ts` 1; skipping the write on a changed signature →
+`decision_warn_dedup_test.ts` 4 red, `issue_lifecycle_test.ts` 1,
+`run_housekeeping_test.ts` 1; disabling `pruneStale` →
+`decision_warn_dedup_test.ts` age-out test red (1); disabling the daily
+re-stamp → `decision_warn_dedup_test.ts` age-out test red (1). The other
+changed test files stayed green in each case. The error-branch checks below
+are all in `decision_warn_dedup_test.ts`. Error-branch red checks (PR #4535
+review), each reverted after: rethrowing a non-NotFound read error → the unreadable-store test red;
 rethrowing in `saveStore`'s catch → the unreadable-store and failed-write tests
 red; turning the "unreadable" `warn` into a no-op → the unreadable-store test
 red; turning the "could not be written" `warn` into a no-op → both write-fault
