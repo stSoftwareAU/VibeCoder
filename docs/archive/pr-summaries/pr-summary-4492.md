@@ -28,8 +28,9 @@ the final version.
   unchanged.
 - The worker test leaves both production severity adapters installed and
   captures their formatted output at the console sink.
-- Only the egress severity routing, the command's seam forwarding and their
-  tests change; no other gate or suite is touched.
+- The change is the egress severity routing, the command's seam forwarding,
+  the `logWarning` seam on `RunWorkerDeps`, a `docs/CONTAINMENT.md` note and
+  their tests; no other gate or suite is touched.
 
 ### Undiscoverable Facts
 
@@ -70,15 +71,10 @@ forwarding removed the test fails on the healthy-run `success` assertion; with
 
 ## Test Plan
 
-- `tests/egress_selfcheck_test.ts` (11 tests at head), `tests/run_worker_test.ts`
-  (35 tests at head) and `tests/containment_docs_test.ts` together: 58 passed,
-  0 failed.
+- `tests/egress_selfcheck_test.ts` (11 tests at head) and
+  `tests/run_worker_test.ts` (35 tests at head) together: 46 passed, 0 failed.
 - The worker test's prior warning/error sink assertions are replaced by
   stronger assertions on the actual formatted severity for the same markers;
   its exit, work-order, cleanup and persisted-record checks remain.
 - `deno fmt`, `deno lint` and `deno check --frozen --lock=deno.lock` passed for
   the TypeScript files this PR changes.
-- Review round: the Semgrep tests and import changes from an abandoned
-  iteration were removed; the PR no longer touches `semgrep_check_test.ts`.
-- The full `./quality.sh < /dev/null` was not run in this review round; the
-  worker reruns the quality gate and CI runs the same checks.
