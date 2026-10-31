@@ -1,6 +1,6 @@
 ## Summary
 
-The fleet PR babysitter's Codex session now gets its own installation token: minted fresh for each repair, scoped to the target repository only, and limited to read permissions (contents, pull requests, issues, checks, actions). It no longer inherits the runner's App write token from `GH_TOKEN`, so it cannot edit a PR description with `gh`. A description fix can then land only through the archived summary, and the existing digest reconcile (#3760) rebuilds the description from it. Closes #4572.
+The fleet PR babysitter's Codex session now gets its own installation token, created fresh for each repair, scoped to the target repository only, and limited to read permissions (contents, pull requests, issues, checks, actions). It no longer inherits the runner's App write token from `GH_TOKEN`, so it cannot edit a PR description with `gh`. A description fix can then land only through the archived summary, and the existing digest reconcile (#3760) rebuilds the description from it. Closes #4572.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the final version.
 
