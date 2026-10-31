@@ -30,6 +30,7 @@
  */
 
 import { assertNever } from "./assert_never.ts";
+import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 import {
   type FailureCategory,
   isOutOfCreditMessage,
@@ -104,8 +105,9 @@ const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
 
 /**
  * Disk exhaustion — the worker can prune, warn or size the volume. The
- * intentional host-disk park note shares the class for diagnosis, but its
- * protective release is not code-fixable (handled above).
+ * park note remains disk evidence for other categories, where it stays
+ * code-fixable. The floor-only wording is handled by the `internal_error`
+ * protective-stop branch above, so quoted agent narration cannot trigger it.
  *
  * Deliberately still scanned over the *whole* message, agent output
  * included, unlike the crash patterns (Issue #249). The asymmetry is not an
@@ -562,11 +564,13 @@ export function classifyRunFailure(
   // The worker deliberately releases an in-flight build when its own disk
   // monitor crosses the floor (Issue #4360). Keep the stable disk-full class
   // for diagnosis, but do not file it as a worker defect: the release is the
-  // disk guard working as designed. Read the marker only from worker prose;
-  // the same phrase in an agent's quoted output is not a parking decision.
+  // disk guard working as designed. Read protective-stop wording only from
+  // worker prose; the same sentence in quoted agent output is not a parking
+  // decision. The shared matcher also recognises the floor-only wording
+  // emitted when a caller quotes the host check without its park note.
   if (
     category === "internal_error" &&
-    /Parked as infrastructure \(Issue #4360\)/.test(
+    isHostDiskProtectiveStopText(
       splitAgentNarration(failureMessage ?? "").worker,
     )
   ) {
