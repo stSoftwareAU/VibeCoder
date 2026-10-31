@@ -14,17 +14,17 @@ final version.
 ### Intent and Rationale
 
 - TCP has no message boundaries, so the probe must read to the end of the
-  response head and the body that head announces before it classifies. The
-  fix is on the reader (the issue's primary suggestion); `refuse` is left
-  alone, since other clients also read it and a single write would only narrow
-  the window.
+  response head and the body that head announces before it classifies. The fix
+  is on the reader (the issue's primary suggestion); `refuse` is left alone,
+  since other clients also read it and a single write would only narrow the
+  window.
 
 ### Essential Design Decisions
 
-- `readAnswer` stops at the first of: head end plus the `Content-Length` body
-  (a missing or malformed value counts as no body, so a `200` is complete at
-  its head), EOF, the 2048-byte cap, or the probe timer. Data gathered before
-  the timer fires is still classified.
+- `readAnswer` stops at the first of: head end plus the `Content-Length` body (a
+  missing or malformed value counts as no body, so a `200` is complete at its
+  head), EOF, the 2048-byte cap, or the probe timer. Data gathered before the
+  timer fires is still classified.
 - An answer with no `\r\n\r\n` (non-HTTP garbage on an open socket) now waits
   for the probe timer rather than returning after one read; it is still
   `through`.
@@ -39,8 +39,8 @@ final version.
 
 ## Evidence
 
-Backend only, no UI. Code: `worker/deno/lib/egress_selfcheck.ts`
-(`readAnswer`, `answerComplete`, `contentLength`, `indexOfHeadEnd`, and the
+Backend only, no UI. Code: `worker/deno/lib/egress_selfcheck.ts` (`readAnswer`,
+`answerComplete`, `contentLength`, `indexOfHeadEnd`, and the
 `probeProxyConnectDetailed` call). Docs: `docs/CONTAINMENT.md` (start-up
 self-check paragraph). Callers of `probeProxyConnectDetailed`:
 `probeProxyConnect` (used by `appleAllowedPaths` in `apple_egress_controls.ts`),
@@ -64,9 +64,9 @@ New tests in `worker/deno/tests/egress_selfcheck_test.ts`:
 - `the real proxy's refusal of a host off the allowlist is denied over loopback`
 - `the real proxy's 200 to an allowlisted host is succeeded over loopback`
 
-Red check: with the original `lib/egress_selfcheck.ts` restored and the new tests
-kept, 3 of the 32 tests in the file failed (the two split-read tests and the
-byte-cap test); with the fix, all pass. The two real-proxy tests and the
+Red check: with the original `lib/egress_selfcheck.ts` restored and the new
+tests kept, 3 of the 32 tests in the file failed (the two split-read tests and
+the byte-cap test); with the fix, all pass. The two real-proxy tests and the
 `200` test pass on the original code too: over loopback the head and body
 usually arrive together, so they pin the contract against the production proxy
 but do not reproduce the split. The split is reproduced by the chunked fake.
@@ -74,11 +74,12 @@ but do not reproduce the split. The split is reproduced by the chunked fake.
 No assertion was removed or changed in an existing test.
 
 Results: `deno task test:unit` over `tests/egress_selfcheck_test.ts`,
-`tests/egress_proxy_command_test.ts` and `tests/launcher_egress_selfcheck_test.ts`:
-55 passed, 0 failed. `./quality.sh < /dev/null`: every stage passed except
-`deno tests` (31406 passed, 2 failed); the two failures are the Rust-formatter
-tests in `worker/deno/tests/completion_phase_repo_formatters_test.ts` (no rustup
+`tests/egress_proxy_command_test.ts` and
+`tests/launcher_egress_selfcheck_test.ts`: 55 passed, 0 failed.
+`./quality.sh < /dev/null`: every stage passed except `deno tests` (31406
+passed, 2 failed); the two failures are the Rust-formatter tests in
+`worker/deno/tests/completion_phase_repo_formatters_test.ts` (no rustup
 toolchain on this host; that file alone fails 2 of 8 here and does not touch
 this change; not run on the base branch). `config integration` and `checkov`
-were skipped for local prerequisites, and the serial pass did not run because the
-parallel pass failed.
+were skipped for local prerequisites, and the serial pass did not run because
+the parallel pass failed.
