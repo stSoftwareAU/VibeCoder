@@ -79,6 +79,22 @@ async function readRequestedReviews(
   return requestedReviews(pages.flat());
 }
 
+/** Allow GitHub's PR view to catch up after a successful push. */
+export async function waitForPushedHead(
+  readHead: () => Promise<string>,
+  expected: string,
+  attempts = 10,
+  delayMs = 1_000,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (await readHead() === expected) return true;
+    if (attempt + 1 < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return false;
+}
+
 export interface RepairTask {
   key: string;
   version: string;
@@ -461,8 +477,12 @@ async function fix(
     console.log(`${repo}#${pr.number}: pushed fix as ${login}`);
     if (reviews.length > 0) {
       const pushedHead = await run("git", ["rev-parse", "HEAD"], dir);
-      const afterPush = await readPr(repo, pr.number);
-      if (afterPush.headRefOid !== pushedHead) {
+      if (
+        !await waitForPushedHead(
+          async () => (await readPr(repo, pr.number)).headRefOid,
+          pushedHead,
+        )
+      ) {
         throw new Error("PR changed after push; leaving reviews untouched");
       }
       const currentIds = new Set(

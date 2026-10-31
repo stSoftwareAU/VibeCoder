@@ -6,6 +6,7 @@ import {
   requestedReviews,
   runRepairs,
   validateAndCommit,
+  waitForPushedHead,
 } from "../commands/fleet_pr_babysitter.ts";
 
 const pr = {
@@ -204,4 +205,21 @@ Deno.test("long repairs do not prevent new PR discovery", async () => {
   }, 5);
   assertEquals(completed, ["two", "one"]);
   assertEquals(scans, 1);
+});
+
+Deno.test("review dismissal waits for GitHub to report the pushed head", async () => {
+  let reads = 0;
+  assertEquals(
+    await waitForPushedHead(
+      () => Promise.resolve(++reads < 3 ? "old" : "new"),
+      "new",
+      4,
+      1,
+    ),
+    true,
+  );
+  assertEquals(
+    await waitForPushedHead(() => Promise.resolve("other"), "new", 2, 1),
+    false,
+  );
 });
