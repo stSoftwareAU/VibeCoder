@@ -59,7 +59,9 @@ flowchart TD
 
 Docs: grepped `README.md` and `docs/` (excluding `docs/archive/`) for
 `Not closing`, `did not land`, `Issue #4396`, `Issue #3177`. No sentence says
-these warn each cycle, so no doc edit. Related sentence read and still true:
+these warn each cycle; the one doc edit is `docs/INTERNALS.md:402-405`, which
+now describes the held-open-pair WARNING/DEBUG behaviour and the
+`decision_warn_signatures.json` file. Related sentence read and still true:
 `docs/workflows/issue-processing.md:1073-1076` ("log the missing criteria").
 
 Callers of the changed functions: both warn sites in
@@ -118,15 +120,18 @@ the age-out test red. Production wiring (`configureDecisionWarnStore` in
 full startup housekeeping; the `run_worker*` tests (grep `runHousekeeping` in
 `worker/deno/tests`) stub it, so none reaches the real closure.
 
-Red checks: `shouldWarnDecision` forced to return true → the 4 helper tests and
-the 6 site tests go red (two identical warn lines instead of one). Base-branch
+Red checks: `shouldWarnDecision` forced to return true (re-run on the head) →
+`decision_warn_dedup_test.ts` 8 of 9 tests red, `issue_lifecycle_test.ts` 4 red,
+`missing_criterion_close_guard_3177_test.ts` 2 red, `pr_maintenance_test.ts` 3
+red (two identical warn lines instead of one). Base-branch
 production files with the new tests → 6 site tests red (above). Results on the
-final head (after the PR #4535 review fix): `deno task test:unit` over 10
-files (`issue_lifecycle_test.ts`, `missing_criterion_close_guard_3177_test.ts`,
-`pr_maintenance_test.ts`, `issue_lifecycle_cache_test.ts`,
-`pr_maintenance_issue_state_cache_test.ts`, `merged_pr_issue_sweep_test.ts`,
-`merged_pr_precheck_phase_test.ts`, `completion_phase_merged_pr_closure_test.ts`,
-`decision_warn_dedup_test.ts`, `run_worker_test.ts`): 254 passed, 0 failed.
+final head (after the PR #4535 review fix), `deno task test:unit` per file, 0
+failed in each: `issue_lifecycle_test.ts` (37 tests at head),
+`missing_criterion_close_guard_3177_test.ts` (19), `pr_maintenance_test.ts` (87),
+`issue_lifecycle_cache_test.ts` (7), `pr_maintenance_issue_state_cache_test.ts`
+(7), `merged_pr_issue_sweep_test.ts` (37), `merged_pr_precheck_phase_test.ts` (9),
+`completion_phase_merged_pr_closure_test.ts` (7), `decision_warn_dedup_test.ts`
+(9), `run_worker_test.ts` (35); 254 in total.
 `deno fmt --check`, `deno lint`, `deno check` clean on the 4 changed `.ts` files
 this round.
 
