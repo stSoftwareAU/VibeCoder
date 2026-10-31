@@ -220,7 +220,8 @@ Deno.test("mergeOnlyBindings - a withheld grant hands the sync no agent, and the
   );
   assertEquals(conclusion.outcome, "not-charged");
   assertEquals(conclusion.reason, "agent deferred: cycle budget");
-  assertEquals(conclusion.refusal, true);
+  // Issue #4517: a cycle-budget deferral is not a refusal, so it is never counted.
+  assertEquals(conclusion.refusal, undefined);
 });
 
 Deno.test("mergeOnlyBindings - a tree with a Cargo.toml is detected as cargo (Issue #4326)", async () => {
