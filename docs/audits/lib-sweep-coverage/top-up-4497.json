@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/pull/4558",
   "definition": "The empty-commit fallback introduced by PR #4558 for runs GitHub refuses as not re-runnable; review its Git Data API calls, fast-forward-only ref update, once-per-head marker and ruleset handling.",
   "status": "claimed",
-  "sweptAt": "08efeb0c62e5f8be7f6c3cf20489ed490a116018",
+  "sweptAt": "a19f390bd104ccb8fb8cd39937a6b64f3718f9e4",
   "paths": [
     "worker/deno/lib/ci_rerun_fresh_ci.ts"
   ]
