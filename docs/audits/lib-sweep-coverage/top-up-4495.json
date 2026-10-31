@@ -1,0 +1,12 @@
+{
+  "issue": 4495,
+  "chunk": "top-up-4495",
+  "title": "top-up: once-per-decision warning dedup",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4495",
+  "definition": "New helper introduced by Issue #4495; owns suppression of repeated identical 'Not closing' warnings, keyed by decision with a signature of its inputs; signatures persist in decision_warn_signatures.json on the work volume, so suppression survives a worker restart.",
+  "status": "claimed",
+  "sweptAt": "b9565f67a2767afa5a56412ea589ac3d15451244",
+  "paths": [
+    "worker/deno/lib/decision_warn_dedup.ts"
+  ]
+}
