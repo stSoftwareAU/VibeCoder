@@ -19,36 +19,56 @@ import type { FetchFn } from "../lib/github_app_auth.ts";
 import { startBabysitterAgent } from "../commands/fleet_pr_babysitter.ts";
 
 Deno.test("agent launch mints a scoped token and passes it to Codex", async () => {
+  if (Deno.env.get("BABYSITTER_TOKEN_TEST_CHILD") !== "1") {
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "test",
+        "--allow-all",
+        "--filter",
+        "agent launch mints a scoped token",
+        new URL(import.meta.url).pathname,
+      ],
+      clearEnv: true,
+      env: {
+        ...Deno.env.toObject(),
+        GH_TOKEN: "runner-write-token",
+        BABYSITTER_TOKEN_TEST_CHILD: "1",
+      },
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(
+      result.success,
+      true,
+      new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+    );
+    return;
+  }
   await withTestKey(async (privateKeyPath) => {
-    const previous = Deno.env.get("GH_TOKEN");
-    Deno.env.set("GH_TOKEN", "runner-write-token");
     const requests: Array<{ url: string; body: unknown }> = [];
     let env: Record<string, string> | undefined;
-    try {
-      await startBabysitterAgent(
-        { appId: "123", installationId: "456", privateKeyPath },
-        "owner/repo",
-        { dir: "/clone", scratch: "/scratch", prompt: "repair" },
-        () => Promise.resolve(true),
-        fakeTokenExchange(
-          { permissions: BABYSITTER_AGENT_PERMISSIONS },
-          requests,
-        ),
-        (_executable, options) => {
-          env = options.env as Record<string, string>;
-          return {} as Deno.ChildProcess;
-        },
-      );
-      assertEquals(requests[0]!.body, {
-        repositories: ["repo"],
-        permissions: BABYSITTER_AGENT_PERMISSIONS,
-      });
-      assertEquals(env?.GH_TOKEN, "ghs_agent_token");
-      assertEquals(env?.GH_TOKEN === Deno.env.get("GH_TOKEN"), false);
-    } finally {
-      if (previous === undefined) Deno.env.delete("GH_TOKEN");
-      else Deno.env.set("GH_TOKEN", previous);
-    }
+    await startBabysitterAgent(
+      { appId: "123", installationId: "456", privateKeyPath },
+      "owner/repo",
+      { dir: "/clone", scratch: "/scratch", prompt: "repair" },
+      () => Promise.resolve(true),
+      fakeTokenExchange(
+        { permissions: BABYSITTER_AGENT_PERMISSIONS },
+        requests,
+      ),
+      (_executable, options) => {
+        env = options.env as Record<string, string>;
+        return {} as Deno.ChildProcess;
+      },
+    );
+    assertEquals(requests[0]!.body, {
+      repositories: ["repo"],
+      permissions: BABYSITTER_AGENT_PERMISSIONS,
+    });
+    assertEquals(env?.GH_TOKEN, "ghs_agent_token");
+    assertEquals(Deno.env.get("GH_TOKEN"), "runner-write-token");
+    assertEquals(env?.GH_TOKEN === Deno.env.get("GH_TOKEN"), false);
   });
 });
 

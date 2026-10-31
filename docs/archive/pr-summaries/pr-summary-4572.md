@@ -65,11 +65,11 @@ Backend/CLI change, no UI. Tests that cover it:
   requests one bare repository and the exact read-only scope, returns its token,
   rejects a write grant (naming it) and a response without permissions;
   `babysitterAgentEnv` carries the token and rejects an empty one. The RSA key
-  is generated at test time, so no key is committed.
-- `worker/deno/tests/fleet_pr_babysitter_test.ts`: "codex agent gets its own
-  read-only token instead of the runner's GH_TOKEN" calls `spawnBabysitterAgent`
-  with a fake spawn and asserts `env.GH_TOKEN` is the agent token and differs
-  from the runner token, plus the unchanged codex arguments and 90-minute limit.
+  is generated at test time, so no key is committed. The launch test exercises
+  the mint-to-spawn path in a subprocess with a distinct runner token and checks
+  the requested scope and the token passed to Codex.
+- `worker/deno/tests/fleet_pr_babysitter_test.ts` checks the spawn environment,
+  codex arguments and 90-minute limit with a fake spawn.
 
 Existing callers: `getInstallationToken` is also called by `ensureValidToken`
 and `fleet_pr_babysitter_setup.ts`; neither passes `permissions`, and the
@@ -84,29 +84,23 @@ existing `github_app_auth_test.ts` is unchanged and passes.
   `mintBabysitterAgentToken` (`rejects a token GitHub grants a write permission`
   red); spawning with the old `{ TMPDIR, XDG_CACHE_HOME }` env (the spawn test
   red at its `GH_TOKEN` assertion).
-- Changed call sites: `fix()` mints the token and calls `spawnBabysitterAgent`;
-  `pass()` and `main` thread `app` through as a required parameter. The spawn
-  helper is tested directly; `fix()` itself spawns a real `codex` and has no
-  harness, so its two lines of wiring (mint, then spawn with the token) are not
-  exercised by a test.
-- Mutation check: the spawn test now asserts the full codex argument list (`-c`,
+- Changed call sites: `fix()` calls `startBabysitterAgent`, which mints the
+  token and calls `spawnBabysitterAgent`; `pass()` and `main` thread `app`
+  through as a required parameter. The launch test exercises that helper with
+  a fake token exchange and spawn, in an isolated process.
+- Mutation check: the spawn test asserts the full codex argument list (`-c`,
   `--output-last-message` and the rest, in order) and the `stdin`, `stdout` and
-  `stderr` options, so deleting any of those lines turns it red. Two lines
-  cannot be reached by a test: `worker/deno/commands/fleet_pr_babysitter.ts:550`
-  exempt (untestable): the `fix()` call to `spawnBabysitterAgent` needs a real
-  clone, a PR lock and a `codex` binary, and `dir` is a required field of the
-  options type, so dropping it already fails `deno check`;
-  `worker/deno/commands/fleet_pr_babysitter.ts:770` exempt (untestable): the
-  `pass(...)` call inside `main` needs live GitHub App credentials and a running
-  watch loop, and `main` has no harness.
+  `stderr` options. The `fix()` call needs a real clone and PR lock; `dir` is a
+  required field, so dropping it fails `deno check`. The `pass(...)` call inside
+  `main` needs live GitHub App credentials and a running watch loop.
 - Docs read and updated: `docs/workflows/fleet-pr-babysitter.md` (Codex
   paragraph), `docs/workflows/fleet-pr-babysitter-github-app.md` (permissions
   list and token-refresh sentence). `fleet-pr-babysitter/README.md` and
   `README.md` were read and name no token behaviour made false.
 - No assertion was removed from any existing test; `github_app_auth_test.ts` is
   untouched.
-- `./quality.sh < /dev/null` on the final head: every stage passes (semgrep,
-  lint, type check, fmt, markdownlint, mermaid) except `deno tests`, whose only
+- On the earlier implementation, `./quality.sh < /dev/null`: every stage passed
+  (semgrep, lint, type check, fmt, markdownlint, mermaid) except `deno tests`, whose only
   2 failures are
   `completion - an unformatted Rust change is formatted and committed, then passes the gate`
   and
@@ -115,3 +109,9 @@ existing `github_app_auth_test.ts` is unchanged and passes.
   toolchain this host lacks and fail the same way without this change. The
   serial pass did not run because the parallel pass failed; `config integration`
   and `checkov` were skipped for local prerequisites.
+- CI repair: the launch and parallel-safety tests passed (13 tests) after
+  isolating the runner token in a subprocess; this summary reflects the head.
+  `deno task check:manifests` passed. The local quality gate passed formatting,
+  lint, type checking and completeness checks, but its parallel test pass
+  panicked in Deno 2.9.0 while restoring test permissions; the serial pass did
+  not run. Semgrep, Checkov and config integration lacked local prerequisites.
