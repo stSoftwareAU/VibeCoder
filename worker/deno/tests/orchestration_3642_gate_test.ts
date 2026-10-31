@@ -612,11 +612,19 @@ Deno.test("orchestration gate - a runner scheduled hard-cap release returns the 
 
 Deno.test("orchestration gate - a genuine runner hard timeout is retried, then returns the runner's timed-out result (Issue #4584)", async () => {
   await withWorkDir(async (dir) => {
-    const fake = fakeRunner((options) =>
-      options.orchestrationRole === "executor"
-        ? runResult({ exitCode: 124, timedOut: true, output: "slow" })
-        : answerByPhase(options)
-    );
+    // Each attempt answers differently, so the test sees which one is returned.
+    let executorAttempt = 0;
+    const fake = fakeRunner((options) => {
+      if (options.orchestrationRole !== "executor") {
+        return answerByPhase(options);
+      }
+      executorAttempt += 1;
+      return runResult({
+        exitCode: 124,
+        timedOut: true,
+        output: `slow-${executorAttempt}`,
+      });
+    });
     const outcome = await runOrchestratedIssueRun(
       inputFor(dir, { maxRetries: 1 }),
       depsFor(dir, fake.runClaudeWithRetry),
@@ -624,13 +632,39 @@ Deno.test("orchestration gate - a genuine runner hard timeout is retried, then r
     assertEquals(outcome.ok, true);
     if (!outcome.ok) return;
     assertEquals(outcome.value.timedOut, true);
-    assertEquals(outcome.value.output, "slow");
+    assertEquals(outcome.value.output, "slow-2");
     // One plan call, then the executor's two attempts.
     assertEquals(
       fake.calls.filter((o) => o.orchestrationRole === "executor").length,
       2,
     );
     assertEquals(fake.calls.length, 3);
+  });
+});
+
+Deno.test("orchestration gate - an earlier attempt's timed-out result is not returned when a later attempt ends the run without one (Issue #4584)", async () => {
+  await withWorkDir(async (dir) => {
+    let executorAttempt = 0;
+    const fake = fakeRunner((options) => {
+      if (options.orchestrationRole !== "executor") {
+        return answerByPhase(options);
+      }
+      executorAttempt += 1;
+      // Attempt 1 is a genuine runner timeout (retried); attempt 2 exits 124
+      // without the runner marking it timed out, so the run ends timed_out.
+      return executorAttempt === 1
+        ? runResult({ exitCode: 124, timedOut: true, output: "first" })
+        : runResult({ exitCode: 124, timedOut: false });
+    });
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    // Both attempts ran, so the stale first result is the only candidate.
+    assertEquals(executorAttempt, 2);
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(outcome.error.message, "timed out after 2 attempt(s)");
   });
 });
 

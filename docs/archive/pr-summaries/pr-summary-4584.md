@@ -72,7 +72,14 @@ and `worker/deno/tests/orchestration_3642_orchestrator_test.ts`.
 - Added to the gate test: finish-deadline release returns `ok` with `timedOut`
   and `finishDeadline` and the executor is called once; hard-cap release
   likewise; a genuine hard timeout is retried and then returns the last
-  timed-out result.
+  timed-out result (the two attempts answer `slow-1` and `slow-2`, and the test
+  asserts `slow-2`, so returning the first attempt's result fails it); an
+  earlier attempt's timed-out result is not returned when a later attempt ends
+  the run without one (attempt 1 is
+  `exitCode: 124, timedOut: true, output:
+  "first"`, attempt 2 is
+  `exitCode: 124, timedOut: false`, `maxRetries: 1`, and the outcome is an
+  error).
 - Added to the orchestrator test: a call marked `retryable: false` is called
   once and ends `timed_out`; the same call without it is called twice (positive
   control).
@@ -84,6 +91,10 @@ and `worker/deno/tests/orchestration_3642_orchestrator_test.ts`.
   result with exit 2 (quota) ends the run as an error, not the runner's result
   (kills dropping `outcome.state === "timed_out"` at `issue_run_gate.ts:339`).
   Both mutations were applied by hand and each turns its test red.
+- Review fix (PR #4592 review): deleting `lastTimedOut = undefined` at
+  `issue_run_gate.ts:260` turns the new stale-result test red (30 passed, 1
+  failed in `worker/deno/tests/orchestration_3642_gate_test.ts`); restored, all
+  31 tests in that file pass.
 - `worker/deno/lib/orchestration/types.ts:140` and
   `worker/deno/lib/orchestration/types.ts:144` exempt (untestable): type-only
   declarations erased at runtime, so no runtime test can see the swap. A
