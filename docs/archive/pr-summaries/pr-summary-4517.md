@@ -66,19 +66,21 @@ existing code and docs.
 
 - **symptom** — `merge-fallback` "agent deferred":
   `refused 4 cycles in a row (agent deferred: cycle budget) — climbing to the next rung`
-- **status** — `verified` — the first three new tests went red with
+- **status** — `verified` — the three original tests went red with
   `refusal: true` restored in `judgeSyncFailure` and pass with the fix; the
-  fourth (PR #4581 review) is red on its own change, see the Test Plan
+  other two (added in PR #4581 review: the `count` test and the short-cycle log
+  test) are red on their own changes, see the Test Plan
 - **regression test** —
   `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`
 
 ## Test Plan
 
-- New `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`, four
-  tests for the original change: sweep with ceiling+3 deferrals (no roll-back,
+- New `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`, five
+  tests (5 at head). Three are for the original change: sweep with ceiling+3 deferrals (no roll-back,
   `refusedCycles` 0, `conflictAttempts` 0, sync really ran each cycle); presync
   twin likewise; mixed deferrals and gate refusals (deferrals do not advance the
-  streak; the gate refusal still climbs on the fourth).
+  streak; the gate refusal still climbs on the fourth). The other two came from PR #4581
+  review and are described below.
 - PR #4581 review: short-cycle operator logs distinguish an uncounted agent
   deferral from a counted merge-gate refusal. A fifth test captures both logs
   and checks that the gate refusal advances `refusedCycles`.
@@ -113,11 +115,13 @@ existing code and docs.
   the pre-merge ledger block has already stored the entry through
   `openConflictAttempt`, so the failure path now reads `streaks[streakKey]`
   directly and only calls `recordSyncFailure` when the reason is not
-  `AGENT_DEFERRED_CYCLE_BUDGET`. Red checks on the head: `if (true)` in place of
-  that reason test fails the 4517 file (4 passed, 1 failed); the old
-  `if (!agentAllowed && conflictError)` log guard restored fails the short-cycle
-  log test (4 passed, 1 failed); the gate-refusal log branch disabled
-  (`else if (false && …)`) fails the same test (4 passed, 1 failed).
+  `AGENT_DEFERRED_CYCLE_BUDGET`. Red checks on the head, each run against
+  `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts` (5 tests
+  at head): `if (true)` in place of that reason test fails the file (4 passed,
+  1 failed); the old `if (!agentAllowed && conflictError)` log guard restored
+  fails the short-cycle log test (4 passed, 1 failed); the gate-refusal log
+  branch disabled (`else if (false && …)`) fails the same test (4 passed, 1
+  failed).
 - Passed at the head: `deno task test:unit` over
   `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts` (5 passed,
   0 failed), `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (38
@@ -126,7 +130,7 @@ existing code and docs.
   files: clean. Full `./quality.sh` passed through markdownlint, semgrep and the
   release-tag ruleset checks, then timed out at 580 s in the unit-test stage.
 - Push after the `validate-scripts / validate` failure (Summary freshness,
-  #3768): the remote head held a worker "Fix PR #4581 quality issues" commit
+  #3768): the remote head held a worker quality-fix commit for PR #4581
   (`3a4f9000`) that solved the ladder-count problem a second way (a separate
   `resolverFailures` field) while this branch had already solved it by not
   recording a deferral in `count`. The two were merged keeping this branch's
