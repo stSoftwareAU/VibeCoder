@@ -42,9 +42,11 @@ flowchart LR
   back into source, so the old guarantee that suffix-named files are not mutated
   holds.
 - Globs are matched by a segment matcher with a memoised table, not by building
-  a regular expression, so a hostile `include` cannot backtrack. `!` negation is
-  refused with an error rather than guessed at. A malformed `deno.json` fails
-  the check as an `error` naming the file and field, not as an empty config.
+  a regular expression, so a hostile `include` cannot backtrack. A directory
+  include does not classify unsuffixed files as tests; a directory exclude covers
+  its descendants. If either list contains `!` negation, both lists fall back
+  to the suffix rule with a warning, while imports remain available. A malformed
+  `deno.json` fails the check as an `error` naming the file and field.
 - Only direct imports count, as before. `importMap` files and `scopes` are not
   read; the docs and the module header say so.
 
@@ -74,6 +76,11 @@ the other gate, which keeps the suffix rule, and is unchanged.
 
 ## Test Plan
 
+- After commit `ef023ad5`, ran `deno test --allow-read --allow-write --allow-env
+  --allow-run --allow-sys tests/deno_test_config_test.ts
+  tests/mutation_runner_test.ts` from `worker/deno`: 110 passed. These tests
+  cover directory includes retaining source mutation and listing suffix tests,
+  and negated patterns falling back without blocking mutation.
 - New `worker/deno/tests/deno_test_config_test.ts` (29 tests): parsing (JSONC,
   empty, invalid JSON with the parser's own message, null top
   level/`test`/`imports`, wrong types, `!` entries, non-local import targets),
@@ -104,8 +111,9 @@ the other gate, which keeps the suffix rule, and is unchanged.
   suffix rule in the real `listTestFiles` (1 red); dropping the exclude operand
   in `isDenoTestPath` (2 red); dropping its suffix operand (4 red); dropping the
   longest-key comparison (1 red); turning off directory semantics (1 red); no
-  longer refusing `!` (1 red). Two breaks first stayed green, so a test was
-  added for each: dropping the `key.endsWith("/")` operand
+  longer refusing `!` (1 red, before the later fallback change). Two breaks
+  first stayed green, so a test was added for each: dropping the
+  `key.endsWith("/")` operand
   (`resolveImportSpecifier - a key without a trailing slash is not a prefix`)
   and swallowing a parse error in `loadProjectConfig`
   (`runMutationCheck deno - an invalid deno.json fails the check loud, not as an
