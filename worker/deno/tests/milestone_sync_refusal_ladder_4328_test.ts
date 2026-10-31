@@ -1,10 +1,11 @@
 /**
  * The refusal ladder (Issue #4328).
  *
- * A milestone branch refused a conflict resolution — the agent was not
- * offered the cycle, or the merge gate refused the resolution — concluded
- * `not-charged`, so it never spent the conflict budget and was retried for
- * ever. The ladder is now resolve → roll back → rebuild:
+ * A milestone branch whose merge gate refused the conflict resolution
+ * concluded `not-charged`, so it never spent the conflict budget and was
+ * retried for ever. A cycle-budget deferral (`agent deferred: cycle budget`,
+ * Issue #4517) is not a refusal and is never counted here. The ladder is now
+ * resolve → roll back → rebuild:
  *
  * - a refusal repeated {@link MILESTONE_REFUSAL_CEILING} cycles in a row
  *   climbs to the roll-back on the next cycle, in both the sweep and the
@@ -18,6 +19,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  AGENT_DEFERRED_CYCLE_BUDGET,
   escalateRepeatedRefusal,
   judgeSyncFailure,
   type MilestoneBranchSyncDeps,
@@ -107,10 +109,6 @@ function gateRefusedError(): MilestoneConflictEscalation {
     "TS2304: Cannot find name 'scan'",
     MILESTONE_SHA,
   );
-}
-
-function refusalError(kind: "agent" | "gate"): MilestoneConflictEscalation {
-  return kind === "gate" ? gateRefusedError() : agentDeferredError();
 }
 
 /** What the stubbed gh answers; anything unlisted is an empty list. */
@@ -236,11 +234,11 @@ const spentLedger = (
 // 1. judgeSyncFailure: which conclusions are refusals
 // ---------------------------------------------------------------------------
 
-Deno.test("judgeSyncFailure - an agent-deferred conflict is a refusal, not charged (Issue #4328)", () => {
+Deno.test("judgeSyncFailure - an agent-deferred conflict is not a refusal and not charged (Issue #4517)", () => {
   const verdict = judgeSyncFailure(agentDeferredError(), false);
   assertEquals(verdict.outcome, "not-charged");
-  assertEquals(verdict.reason, "agent deferred: cycle budget");
-  assertEquals(verdict.refusal, true);
+  assertEquals(verdict.reason, AGENT_DEFERRED_CYCLE_BUDGET);
+  assertEquals(verdict.refusal, undefined);
   assertEquals(verdict.exhaust, undefined);
 });
 
@@ -307,7 +305,7 @@ Deno.test("judgeSyncFailure - the merge-gate failure is charged and is not a ref
 // ---------------------------------------------------------------------------
 
 Deno.test("escalateRepeatedRefusal - a refusal below the ceiling is unchanged (Issue #4328)", () => {
-  const verdict = judgeSyncFailure(agentDeferredError(), false);
+  const verdict = judgeSyncFailure(gateRefusedError(), true);
   assertEquals(
     escalateRepeatedRefusal(verdict, MILESTONE_REFUSAL_CEILING - 1),
     verdict,
@@ -315,14 +313,14 @@ Deno.test("escalateRepeatedRefusal - a refusal below the ceiling is unchanged (I
 });
 
 Deno.test("escalateRepeatedRefusal - a refusal at the ceiling climbs to the roll-back (Issue #4328)", () => {
-  const verdict = judgeSyncFailure(agentDeferredError(), false);
+  const verdict = judgeSyncFailure(gateRefusedError(), true);
   const climbed = escalateRepeatedRefusal(verdict, MILESTONE_REFUSAL_CEILING);
   assertEquals(climbed.outcome, "failed");
   assertEquals(climbed.exhaust, true);
   assertEquals(climbed.rung, verdict.rung);
   assertStringIncludes(
     climbed.reason,
-    `refused ${MILESTONE_REFUSAL_CEILING} cycles in a row (agent deferred`,
+    `refused ${MILESTONE_REFUSAL_CEILING} cycles in a row (the merge gate refused the resolution`,
   );
   assertStringIncludes(climbed.reason, "climbing to the next rung");
 });
@@ -346,57 +344,52 @@ Deno.test("escalateRepeatedRefusal - a verdict that is not a refusal never escal
 // 3. The sweep: a refused branch reaches the roll-back on cycle N+1
 // ---------------------------------------------------------------------------
 
-for (const kind of ["agent", "gate"] as const) {
-  const label = kind === "agent"
-    ? "an agent-deferred refusal"
-    : "a gate-refused resolution";
-  Deno.test(`syncMilestoneBranches - ${label} climbs to the roll-back on cycle N+1 (Issue #4328)`, async () => {
-    const { dir, streakPath } = await workDir();
-    try {
-      const syncCalls: string[] = [];
-      const rollbacks: string[] = [];
-      for (let cycle = 1; cycle <= MILESTONE_REFUSAL_CEILING; cycle++) {
-        await syncMilestoneBranches(sweepDeps({
-          streakPath,
-          defaultSha: tip(cycle),
-          syncError: () => refusalError(kind),
-          syncCalls,
-          rollbacks,
-        }));
-        assertEquals(
-          rollbacks,
-          [],
-          `cycle ${cycle} is a refusal and must not roll back`,
-        );
-        assertEquals((await readEntry(streakPath))?.refusedCycles, cycle);
-      }
-      // Positive control: the refused cycles really ran the sync.
-      assertEquals(syncCalls.length, MILESTONE_REFUSAL_CEILING);
-
+Deno.test("syncMilestoneBranches - a gate-refused resolution climbs to the roll-back on cycle N+1 (Issue #4328)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    const syncCalls: string[] = [];
+    const rollbacks: string[] = [];
+    for (let cycle = 1; cycle <= MILESTONE_REFUSAL_CEILING; cycle++) {
       await syncMilestoneBranches(sweepDeps({
         streakPath,
-        defaultSha: tip(MILESTONE_REFUSAL_CEILING + 1),
-        syncError: () => refusalError(kind),
+        defaultSha: tip(cycle),
+        syncError: () => gateRefusedError(),
         syncCalls,
         rollbacks,
       }));
-      assertEquals(syncCalls.length, MILESTONE_REFUSAL_CEILING + 1);
-      assertEquals(rollbacks, [
-        `${REPO}|${BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
-      ]);
-      const entry = await readEntry(streakPath);
-      assert(entry);
       assertEquals(
-        entry.refusedCycles ?? 0,
-        0,
-        "a charged climb ends the streak",
+        rollbacks,
+        [],
+        `cycle ${cycle} is a refusal and must not roll back`,
       );
-      assertEquals(entry.conflictAttempts, MILESTONE_CONFLICT_ATTEMPT_BUDGET);
-    } finally {
-      await Deno.remove(dir, { recursive: true });
+      assertEquals((await readEntry(streakPath))?.refusedCycles, cycle);
     }
-  });
-}
+    // Positive control: the refused cycles really ran the sync.
+    assertEquals(syncCalls.length, MILESTONE_REFUSAL_CEILING);
+
+    await syncMilestoneBranches(sweepDeps({
+      streakPath,
+      defaultSha: tip(MILESTONE_REFUSAL_CEILING + 1),
+      syncError: () => gateRefusedError(),
+      syncCalls,
+      rollbacks,
+    }));
+    assertEquals(syncCalls.length, MILESTONE_REFUSAL_CEILING + 1);
+    assertEquals(rollbacks, [
+      `${REPO}|${BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+    ]);
+    const entry = await readEntry(streakPath);
+    assert(entry);
+    assertEquals(
+      entry.refusedCycles ?? 0,
+      0,
+      "a charged climb ends the streak",
+    );
+    assertEquals(entry.conflictAttempts, MILESTONE_CONFLICT_ATTEMPT_BUDGET);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // 4. The pre-cut sync twin (milestone_presync.ts)
@@ -412,7 +405,7 @@ Deno.test("presyncMilestoneBranch - refusal N+1 leaves the ledger exhausted (Iss
       milestoneTipSha: () =>
         Promise.resolve({ ok: true as const, value: MILESTONE_SHA }),
       syncBranch: () =>
-        Promise.resolve({ ok: false as const, error: agentDeferredError() }),
+        Promise.resolve({ ok: false as const, error: gateRefusedError() }),
       log: () => undefined,
     });
     const args = {
@@ -457,7 +450,7 @@ Deno.test("syncMilestoneBranches - a budget spent elsewhere is handed to the rol
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls,
       rollbacks,
     }));
@@ -483,7 +476,7 @@ Deno.test("syncMilestoneBranches - a spent budget whose roll-back could not merg
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls,
       rollbacks,
     }));
@@ -521,7 +514,7 @@ Deno.test("syncMilestoneBranches - a spent roll-back is followed by a rebuild, w
       await syncMilestoneBranches(sweepDeps({
         streakPath,
         defaultSha: tip(1),
-        syncError: () => refusalError("agent"),
+        syncError: () => gateRefusedError(),
         syncCalls: [],
         rollbacks,
         rebuilds,
@@ -551,7 +544,7 @@ Deno.test("syncMilestoneBranches - with no roll-back spent the roll-back runs fi
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls: [],
       rollbacks,
       rebuilds,
@@ -576,7 +569,7 @@ Deno.test("syncMilestoneBranches - a failed rebuild falls through to the roll-ba
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls: [],
       rollbacks,
       rebuilds,
@@ -605,7 +598,7 @@ Deno.test("syncMilestoneBranches - a roll-back that cannot merge is counted in r
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls: [],
       rollbacks: [],
       rollbackOutcome: {
@@ -671,7 +664,7 @@ Deno.test("prepareRollbackWorktree - a leftover index is reset with reset --hard
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls: [],
       rollbackGitFn: git.gitFn,
       calls: ghCalls,
@@ -709,7 +702,7 @@ Deno.test("prepareRollbackWorktree - a checkout still refused after the reset re
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls: [],
       rollbackGitFn: git.gitFn,
       calls: ghCalls,
@@ -804,7 +797,7 @@ Deno.test("syncMilestoneBranches - an old-shape ledger counts its first refusal 
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls: [],
       rollbacks,
     }));
@@ -828,7 +821,7 @@ Deno.test("concludeConflictAttempt - a refusal adds one, a charged failure zeroe
   const refused = concludeConflictAttempt(
     base,
     "not-charged",
-    "agent deferred: cycle budget",
+    "the merge gate refused the resolution",
     undefined,
     NOW,
     { refusal: true },
@@ -927,7 +920,7 @@ Deno.test("syncMilestoneBranches - a refusal climbs to the roll-back on a branch
       await syncMilestoneBranches(withOpenHeadPr(sweepDeps({
         streakPath,
         defaultSha: tip(cycle),
-        syncError: () => refusalError("agent"),
+        syncError: () => gateRefusedError(),
         syncCalls,
         rollbacks,
       })));
@@ -1020,7 +1013,7 @@ async function runDefaultRebuild(options: {
     const deps = sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: options.syncError ?? (() => refusalError("agent")),
+      syncError: options.syncError ?? (() => gateRefusedError()),
       syncCalls: [],
       rollbacks,
       ...(options.gitFn ? { rollbackGitFn: options.gitFn } : {}),
@@ -1296,7 +1289,7 @@ Deno.test("prepareRollbackWorktree - a checkout that succeeded is not reset even
     await syncMilestoneBranches(sweepDeps({
       streakPath,
       defaultSha: tip(1),
-      syncError: () => refusalError("agent"),
+      syncError: () => gateRefusedError(),
       syncCalls: [],
       rollbackGitFn: gitFn,
     }));
