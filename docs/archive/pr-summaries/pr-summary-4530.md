@@ -58,6 +58,16 @@ plus clone from `worker/deno/tests/support/git_repo_fixture.ts`.
   branch reset onto origin's tip with SHA warning; behind-only branch
   fast-forwarded without a warning; branch with no local copy created at the
   tip; failed fetch falls back to checkout + pull and never uses `FETCH_HEAD`.
+- Mutation survivors pinned (each applied by hand, a test goes red):
+  - `pr_branch_preparation.ts:124` (dropped `fetchResult.ok`): "a fetch that
+    could not run at all falls back to checkout and pull…".
+  - `:218` (deleted `"--"`): "the rev-list ends its revisions with `--`…"
+    (a working-tree file named `FETCH_HEAD` makes the rev-list ambiguous
+    without it, hiding the dropped-commit warning).
+  - `:223` (dropped `!result.ok`): "a rev-list that could not run is
+    tolerated…".
+  - `:223` (dropped `result.value.code !== 0`): "a failing rev-list never
+    produces a discard warning…".
 - Red checks: forcing the old path (`fetched = false`) turns the diverged test
   red; removing the warning call turns it red too.
 - Edited existing tests (call shapes changed, intent kept):
@@ -78,7 +88,7 @@ plus clone from `worker/deno/tests/support/git_repo_fixture.ts`.
     `checkout -B <PR branch>`.
 - Ran on the final head: `deno task test:unit` over the 65 `pr_spelling*`,
   `pr_merge_conflict*`, `pr_feedback_*`, `pr_ci_*` and `custom_label_pr*` test
-  files: 809 passed, 0 failed; `pr_branch_preparation_test.ts`: 23 passed.
+  files: 809 passed, 0 failed; `pr_branch_preparation_test.ts`: 27 passed.
   `deno lint` and `deno check` clean on touched files.
 - Twin/doc check: no other copy of the rule found; `docs/workflows/README.md`
   gained a paragraph on the behaviour, and a stale comment in

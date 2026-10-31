@@ -720,3 +720,118 @@ Deno.test(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #4530: the fetch / rev-list edges the reset path depends on
+// ---------------------------------------------------------------------------
+
+function scriptedRunner(
+  respond: (args: string[]) => unknown,
+): { runGitCommand: GitDeps["runGitCommand"]; calls: string[][] } {
+  const calls: string[][] = [];
+  const runGitCommand = ((args: string[]) => {
+    calls.push(args);
+    return Promise.resolve(respond(args));
+  }) as unknown as GitDeps["runGitCommand"];
+  return { runGitCommand, calls };
+}
+
+const GIT_OK = {
+  ok: true as const,
+  value: { code: 0, stdout: "", stderr: "" },
+};
+
+Deno.test("preparePrBranch - a fetch that could not run at all falls back to checkout and pull, without FETCH_HEAD or a rev-list (Issue #4530)", async () => {
+  const { runGitCommand, calls } = scriptedRunner((args) =>
+    args[0] === "fetch"
+      ? { ok: false as const, error: new Error("spawn failed") }
+      : GIT_OK
+  );
+
+  const outcome = await preparePrBranch("feature-branch", {
+    logger: makeSilentLogger(),
+    git: { runGitCommand },
+    cwd: "/tmp/repo",
+  });
+
+  assertEquals(outcome.ok, true);
+  assertEquals(calls.map((c) => c[0]), ["fetch", "checkout", "pull"]);
+});
+
+Deno.test("preparePrBranch - a rev-list that could not run is tolerated and the reset still happens (Issue #4530)", async () => {
+  const { runGitCommand, calls } = scriptedRunner((args) =>
+    args[0] === "rev-list"
+      ? { ok: false as const, error: new Error("spawn failed") }
+      : GIT_OK
+  );
+  const warnings: { msg: string; ctx: unknown }[] = [];
+
+  const outcome = await preparePrBranch("feature-branch", {
+    logger: capturingLogger(warnings),
+    git: { runGitCommand },
+    cwd: "/tmp/repo",
+  });
+
+  assertEquals(outcome.ok, true);
+  assertEquals(calls.map((c) => c[0]), ["fetch", "rev-list", "checkout"]);
+  assertEquals(warnings.length, 0);
+});
+
+Deno.test("preparePrBranch - a failing rev-list never produces a discard warning, whatever it printed (Issue #4530)", async () => {
+  const { runGitCommand } = scriptedRunner((args) =>
+    args[0] === "rev-list"
+      ? {
+        ok: true as const,
+        value: { code: 128, stdout: "deadbeef\n", stderr: "fatal: bad ref" },
+      }
+      : GIT_OK
+  );
+  const warnings: { msg: string; ctx: unknown }[] = [];
+
+  const outcome = await preparePrBranch("feature-branch", {
+    logger: capturingLogger(warnings),
+    git: { runGitCommand },
+    cwd: "/tmp/repo",
+  });
+
+  assertEquals(outcome.ok, true);
+  assertEquals(
+    warnings.filter((w) => w.msg.includes("Discarding")).length,
+    0,
+  );
+});
+
+Deno.test("preparePrBranch - the rev-list ends its revisions with `--`, so a working-tree file named like a ref cannot hide the dropped commits (Issue #4530)", async () => {
+  const fx = await setupGitRepoFixture("issue-4530-ambiguous-");
+  try {
+    await gitOk(["checkout", "-b", "pr-branch"], fx.clone);
+    await commitFile(fx.clone, "a.txt", "a\n", "first");
+    await gitOk(["push", "-u", "origin", "pr-branch"], fx.clone);
+    const stale = await commitFile(fx.clone, "local.txt", "x\n", "unpushed");
+    await gitOk(["reset", "--hard", "HEAD"], fx.clone);
+    // A file with the same name as the revision is ambiguous without `--`.
+    await Deno.writeTextFile(`${fx.clone}/FETCH_HEAD`, "not a ref\n");
+    // Origin's branch moves so the local commit is no longer an ancestor.
+    const other = `${fx.root}/other`;
+    await gitOk(["clone", fx.remote, other], fx.root);
+    await gitOk(["config", "user.email", "o@example.com"], other);
+    await gitOk(["config", "user.name", "Other"], other);
+    await gitOk(["checkout", "pr-branch"], other);
+    await commitFile(other, "remote.txt", "r\n", "reviewed head");
+    await gitOk(["push", "origin", "pr-branch"], other);
+    await gitOk(["checkout", "main"], fx.clone);
+
+    const warnings: { msg: string; ctx: unknown }[] = [];
+    await preparePrBranch("pr-branch", {
+      logger: capturingLogger(warnings),
+      git: { runGitCommand: realGit() },
+      cwd: fx.clone,
+    });
+
+    const dropped = warnings.find((w) => w.msg.includes("Discarding local"));
+    assert(dropped !== undefined, "expected a warning naming the dropped work");
+    assertEquals((dropped.ctx as { shas: string[] }).shas, [stale]);
+  } finally {
+    await fx.cleanup();
+  }
+});
