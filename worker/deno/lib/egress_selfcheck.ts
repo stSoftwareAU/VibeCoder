@@ -385,9 +385,105 @@ function proxyEndpoint(
   return { hostname: url.hostname, port };
 }
 
+/** Most bytes of the proxy's answer that are read or classified (Issue #4559). */
+const ANSWER_MAX_BYTES = 2048;
+
+/** `\r\n\r\n`, the blank line that ends an HTTP head. */
+const HEAD_END_BYTES = [0x0d, 0x0a, 0x0d, 0x0a];
+
+/** Offset of the first head end in `bytes`, or -1 when it has not arrived. */
+function indexOfHeadEnd(bytes: Uint8Array): number {
+  for (let i = 0; i + HEAD_END_BYTES.length <= bytes.length; i++) {
+    if (HEAD_END_BYTES.every((byte, j) => bytes[i + j] === byte)) return i;
+  }
+  return -1;
+}
+
+/**
+ * The `Content-Length` value of a head (name matched case-insensitively), or
+ * undefined when there is none or the value is not a plain run of digits. The
+ * answer is untrusted, so this is a linear scan with no regex.
+ *
+ * @param head - The head text, without its blank line
+ * @returns The announced body length in bytes, if a usable header is present
+ */
+function contentLength(head: string): number | undefined {
+  for (const line of head.split("\r\n").slice(1)) {
+    const colon = line.indexOf(":");
+    if (colon < 0) continue;
+    if (line.slice(0, colon).trim().toLowerCase() !== "content-length") {
+      continue;
+    }
+    const value = line.slice(colon + 1).trim();
+    const plain = value.length > 0 &&
+      [...value].every((ch) => ch >= "0" && ch <= "9");
+    return plain ? Number(value) : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * True once the head has arrived and the body it announces is complete. A
+ * missing or malformed `Content-Length` counts as no body, so a `200` answer
+ * is complete at its head. The awaited total never exceeds
+ * {@link ANSWER_MAX_BYTES}. An answer with no head end is never complete.
+ *
+ * @param bytes - Everything received so far
+ * @returns Whether reading can stop
+ */
+function answerComplete(bytes: Uint8Array): boolean {
+  const headEnd = indexOfHeadEnd(bytes);
+  if (headEnd < 0) return false;
+  const head = new TextDecoder().decode(bytes.subarray(0, headEnd));
+  const announced = contentLength(head) ?? 0;
+  const wanted = Math.min(
+    headEnd + HEAD_END_BYTES.length + announced,
+    ANSWER_MAX_BYTES,
+  );
+  return bytes.length >= wanted;
+}
+
+/**
+ * Read the proxy's answer until it is complete ({@link answerComplete}), the
+ * peer closes (EOF or an empty read), the byte cap is reached, or the probe
+ * timer has fired. The timer closes the conn, so a read it interrupts throws;
+ * that ends the answer and whatever arrived is still classified. Any other
+ * read error propagates.
+ *
+ * @param conn - The connection the CONNECT was written to
+ * @param timedOut - Reports whether the probe timer has fired
+ * @returns The bytes received, at most {@link ANSWER_MAX_BYTES}
+ */
+async function readAnswer(
+  conn: Deno.Conn,
+  timedOut: () => boolean,
+): Promise<Uint8Array> {
+  const answer = new Uint8Array(ANSWER_MAX_BYTES);
+  const chunk = new Uint8Array(ANSWER_MAX_BYTES);
+  let filled = 0;
+  while (filled < ANSWER_MAX_BYTES && !timedOut()) {
+    let n: number | null;
+    try {
+      n = await conn.read(chunk);
+    } catch (error) {
+      if (timedOut()) break;
+      throw error;
+    }
+    // EOF, or no bytes at all: nothing more can arrive, so stop rather than spin.
+    if (n === null || n === 0) break;
+    const take = Math.min(n, ANSWER_MAX_BYTES - filled);
+    answer.set(chunk.subarray(0, take), filled);
+    filled += take;
+    if (answerComplete(answer.subarray(0, filled))) break;
+  }
+  return answer.subarray(0, filled);
+}
+
 /**
  * Send one CONNECT and classify the answer, keeping a short note of what was
- * seen for the log and the failure marker.
+ * seen for the log and the failure marker. The answer is read until its head
+ * and announced body have arrived (see {@link readAnswer}), because the proxy
+ * may write the head and the body separately (Issue #4559).
  *
  * @param proxyUrl - The proxy URL from the environment
  * @param host - The host to CONNECT to
@@ -419,9 +515,8 @@ export async function probeProxyConnectDetailed(
     const request =
       `CONNECT ${host}:${PROBE_PORT} HTTP/1.1\r\nHost: ${host}:${PROBE_PORT}\r\n\r\n`;
     await conn.write(new TextEncoder().encode(request));
-    const buf = new Uint8Array(2048);
-    const n = await conn.read(buf);
-    const text = new TextDecoder().decode(buf.subarray(0, Math.max(0, n ?? 0)));
+    const answer = await readAnswer(conn, () => timedOut);
+    const text = new TextDecoder().decode(answer);
     if (text.includes("403") && text.includes(EGRESS_DENIED_MARKER)) {
       return { result: "denied", observed: "denied" };
     }

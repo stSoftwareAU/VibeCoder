@@ -608,3 +608,221 @@ Deno.test("waitForProxyListener - a timed-out dial is retried until the proxy ac
   assertEquals(calls, 2);
   assertEquals(clock, 250);
 });
+
+/**
+ * A connection that answers successive reads with `chunks`, one chunk per
+ * read, so a test chooses where the answer is split. After the last chunk a
+ * read is EOF when `endsWithEof`; otherwise it hangs until the conn is closed,
+ * which the probe timer does. Counts the reads it has answered.
+ */
+function chunkedConn(
+  chunks: readonly string[],
+  endsWithEof: boolean,
+): { conn: Deno.Conn; reads: () => number } {
+  const encoder = new TextEncoder();
+  let reads = 0;
+  let hang: ((error: Error) => void) | undefined;
+  const conn = {
+    write: (data: Uint8Array) => Promise.resolve(data.length),
+    read: (buf: Uint8Array) => {
+      reads++;
+      const next = chunks[reads - 1];
+      if (next !== undefined) {
+        const bytes = encoder.encode(next);
+        buf.set(bytes);
+        return Promise.resolve(bytes.length);
+      }
+      if (endsWithEof) return Promise.resolve(null);
+      return new Promise<number | null>((_, reject) => {
+        hang = reject;
+      });
+    },
+    close: () => {
+      hang?.(new Error("closed"));
+      hang = undefined;
+    },
+  } as unknown as Deno.Conn;
+  return { conn, reads: () => reads };
+}
+
+/** Probe a fake proxy that answers through `conn`. */
+function probeFake(conn: Deno.Conn, timeoutMs = 100) {
+  return withConnect(
+    () => Promise.resolve(conn),
+    () =>
+      probeProxyConnectDetailed(
+        "http://proxy.test:3128",
+        "example.com",
+        timeoutMs,
+      ),
+  );
+}
+
+const DENIED_BODY = "[EGRESS_DENIED] host=example.com reason=not-allowlisted\n";
+
+Deno.test("probeProxyConnectDetailed - a 403 whose head and body arrive in separate reads is denied (Issue #4559)", async () => {
+  const length = new TextEncoder().encode(DENIED_BODY).length;
+  const head = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n" +
+    `Connection: close\r\nContent-Length: ${length}\r\n\r\n`;
+  const split = chunkedConn([head, DENIED_BODY], false);
+  assertEquals(await probeFake(split.conn), {
+    result: "denied",
+    observed: "denied",
+  });
+  assertEquals(split.reads(), 2);
+});
+
+Deno.test("probeProxyConnectDetailed - a head split inside its blank line or inside the marker is still denied (Issue #4559)", async () => {
+  const length = new TextEncoder().encode(DENIED_BODY).length;
+  const head = `HTTP/1.1 403 Forbidden\r\nContent-Length: ${length}\r\n\r\n`;
+  const split = chunkedConn(
+    [head.slice(0, -1), "\n" + DENIED_BODY.slice(0, 5), DENIED_BODY.slice(5)],
+    false,
+  );
+  assertEquals(await probeFake(split.conn), {
+    result: "denied",
+    observed: "denied",
+  });
+  assertEquals(split.reads(), 3);
+});
+
+Deno.test("probeProxyConnectDetailed - a 403 with no body is not denied, after EOF or when the body never arrives (Issue #4559)", async () => {
+  const length = new TextEncoder().encode(DENIED_BODY).length;
+  const head = `HTTP/1.1 403 Forbidden\r\nContent-Length: ${length}\r\n\r\n`;
+  const atEof = chunkedConn([head], true);
+  assertEquals(await probeFake(atEof.conn), {
+    result: "through",
+    observed: "HTTP/1.1 403 Forbidden",
+  });
+  // The marker word lives only in a body that never arrives; the timer ends the read.
+  const neverArrives = chunkedConn([head], false);
+  const outcome = await probeFake(neverArrives.conn, 200);
+  assertEquals(outcome, {
+    result: "through",
+    observed: "HTTP/1.1 403 Forbidden",
+  });
+});
+
+Deno.test("probeProxyConnectDetailed - a 200 is succeeded at its head, without a second read (Issue #4559)", async () => {
+  // A second read would hang; the 200 must not ask for one.
+  const fake = chunkedConn(
+    ["HTTP/1.1 200 Connection Established\r\n\r\n"],
+    false,
+  );
+  assertEquals(await probeFake(fake.conn, 200), {
+    result: "succeeded",
+    observed: "connected",
+  });
+  assertEquals(fake.reads(), 1);
+});
+
+Deno.test("probeProxyConnectDetailed - an answer longer than the byte cap is cut at the cap (Issue #4559)", async () => {
+  const head = "HTTP/1.1 403 Forbidden\r\nContent-Length: 5000\r\n\r\n";
+  const filler = "x".repeat(1000);
+  // The marker sits past the 2048-byte cap, so it is never read.
+  const fake = chunkedConn(
+    [head, filler, filler, filler, DENIED_BODY],
+    false,
+  );
+  assertEquals(await probeFake(fake.conn, 200), {
+    result: "through",
+    observed: "HTTP/1.1 403 Forbidden",
+  });
+  assertEquals(fake.reads(), 3);
+});
+
+/** Budget for one real-proxy child process (Issue #4559). */
+const REAL_PROXY_CHILD_TIMEOUT_MS = 20_000;
+
+/**
+ * Run `body` against the real proxy in a child process granted loopback
+ * network only, and return what `body` returns. `deno task test:unit` grants
+ * no network access, so the proxy cannot bind in this process; the socket
+ * tests in tests/egress_proxy_test.ts take the same route. Inside `body`,
+ * `startEgressProxy` and `probeProxyConnectDetailed` are in scope.
+ *
+ * @param body - Function body (JavaScript) that ends with a `return`
+ * @returns The JSON value the child printed
+ */
+async function runAgainstRealProxy(body: string): Promise<unknown> {
+  const proxyModule = new URL("../lib/egress_proxy.ts", import.meta.url).href;
+  const probeModule = new URL("../lib/egress_selfcheck.ts", import.meta.url)
+    .href;
+  const program = `(async () => {
+const { startEgressProxy } = await import(${JSON.stringify(proxyModule)});
+const { probeProxyConnectDetailed } = await import(${
+    JSON.stringify(probeModule)
+  });
+const outcome = await (async () => {${body}})();
+await Deno.stdout.write(new TextEncoder().encode(JSON.stringify(outcome) + "\\n"));
+})().then(() => Deno.exit(0), (error) => { console.error(error); Deno.exit(1); });`;
+  const child = new Deno.Command(Deno.execPath(), {
+    args: [
+      "eval",
+      "--no-config",
+      "--no-lock",
+      "--allow-net=127.0.0.1",
+      program,
+    ],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const timer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The child has already exited.
+    }
+  }, REAL_PROXY_CHILD_TIMEOUT_MS);
+  try {
+    const { code, stdout, stderr } = await child.output();
+    if (code !== 0) {
+      throw new Error(
+        `real proxy child exited ${code}\n${new TextDecoder().decode(stderr)}`,
+      );
+    }
+    const lines = new TextDecoder().decode(stdout).split("\n").filter((line) =>
+      line.trim() !== ""
+    );
+    return JSON.parse(lines[lines.length - 1] ?? "");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+Deno.test("probeProxyConnectDetailed - the real proxy's refusal of a host off the allowlist is denied over loopback (Issue #4559)", async () => {
+  const outcome = await runAgainstRealProxy(`
+    const proxy = await startEgressProxy({ port: 0, allowlist: ['api.github.com'], logDenied: () => {} });
+    try {
+      return await probeProxyConnectDetailed('http://127.0.0.1:' + proxy.addr.port, 'example.com', 5000);
+    } finally {
+      await proxy.close();
+    }
+  `);
+  assertEquals(outcome, { result: "denied", observed: "denied" });
+});
+
+Deno.test("probeProxyConnectDetailed - the real proxy's 200 to an allowlisted host is succeeded over loopback (Issue #4559)", async () => {
+  // The proxy refuses loopback answers as private, so the host resolves to a
+  // public address and the connect seam dials a local listener instead.
+  const outcome = await runAgainstRealProxy(`
+    const upstream = Deno.listen({ hostname: '127.0.0.1', port: 0 });
+    const accepted = upstream.accept().then((conn) => conn.close()).catch(() => {});
+    const proxy = await startEgressProxy({
+      port: 0,
+      allowlist: ['api.github.com'],
+      logDenied: () => {},
+      resolve: () => Promise.resolve(['93.184.216.34']),
+      connect: () => Deno.connect({ hostname: '127.0.0.1', port: upstream.addr.port }),
+    });
+    try {
+      return await probeProxyConnectDetailed('http://127.0.0.1:' + proxy.addr.port, 'api.github.com', 5000);
+    } finally {
+      await proxy.close();
+      upstream.close();
+      await accepted;
+    }
+  `);
+  assertEquals(outcome, { result: "succeeded", observed: "connected" });
+});
