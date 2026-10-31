@@ -1328,7 +1328,9 @@ async function summaryPrFingerprint(
     "SHA-256",
     new TextEncoder().encode(payload),
   );
-  return Array.from(new Uint8Array(digest).slice(0, 16))
+  // Full 64-hex digest: a truncated 32-hex value is masked by the
+  // `hex32-credential` redaction rule when spawnGh publishes the body.
+  return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
