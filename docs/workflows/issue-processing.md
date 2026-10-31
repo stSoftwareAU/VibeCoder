@@ -1011,16 +1011,22 @@ an assessment: a negative test for a "missing or unreadable value" must not
 prevent the issue closing or trigger a human hand-off.
 
 **The gate.** [`acceptance_criteria_gate.ts`](../../worker/deno/lib/acceptance_criteria_gate.ts)
-parses both artefacts and blocks PR creation in
-[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
-when a criteria-bearing issue produces a summary with no closure block, with
-fewer assessments than criteria, with a `met`/`partial` entry that names no
-evidence, or with a gap that carries no reason — an unexplained gap is a failure
-to surface, not a pass. The gate comments on the issue naming every rule broken
-and the required shape, so the next attempt is productive. Issues with **no**
-acceptance criteria (neither list) are outside the gate: it does not apply, so
-no closure block is required. A `missing` entry the run writes for a part it
-leaves undone still holds the issue open (see *At PR creation* below).
+parses both artefacts. When a criteria-bearing issue produces a summary with no
+closure block, with fewer assessments than criteria, with a `met`/`partial`
+entry that names no evidence, or with a gap that carries no reason, completion
+sends the verdict through `reportSummaryRuleBlock` in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
+Since Issue #4234 that is advice, not a stop. The first report in a run is given
+to the agent once, in the same session (the in-run recovery,
+[`summary_rule_gate_retry.ts`](../../worker/deno/lib/summary_rule_gate_retry.ts)),
+naming each rule broken and the required shape. Whatever remains on the re-run
+is posted as one comment on the pull request (the reviewer note). Neither report
+fails the run or stops the pull request: it is still raised and armed. An
+unexplained gap is still a failure to surface, not a pass, and the note names it
+so the reviewer can see it. Issues with **no** acceptance criteria (neither
+list) are outside the gate: it does not apply, so no closure block is required.
+A `missing` entry the run writes for a part it leaves undone still holds the
+issue open (see *At PR creation* below).
 
 **One shape, both gates.** The remediation comment prints
 [`REVIEW_BLOCK_TEMPLATE`](../../worker/deno/lib/review_block_template.ts) — the
@@ -1039,12 +1045,13 @@ flowchart TD
     I --> S["PR summary carries<br/>## Acceptance Criteria block"]
     S --> G{"Closure gate<br/>every criterion assessed,<br/>evidence + reasons present?"}
     G -->|yes| PR["PR created"]
-    G -->|no| B["Blocked: comment names<br/>each rule broken; run fails"]
+    G -->|no| B["In-session note names<br/>each rule broken; once"]
+    B -->|"re-run: leftovers become a PR comment"| PR
     N["Issue with no criteria"] --> PR
     style P fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style B fill:#c45858,stroke:#6b2020,color:#fff
+    style B fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
 ```
 
 ### A `missing` criterion does not close the issue
