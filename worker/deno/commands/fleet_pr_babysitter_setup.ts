@@ -11,6 +11,7 @@ import {
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
+import { escapeXml } from "../lib/xml_escape.ts";
 
 const REQUIRED_PERMISSIONS: Readonly<Record<string, string>> = {
   actions: "read",
@@ -22,10 +23,6 @@ const REQUIRED_PERMISSIONS: Readonly<Record<string, string>> = {
   workflows: "write",
 };
 const LABEL = "au.com.stsoftware.fleet-pr-babysitter";
-const escapeXml = (s: string): string =>
-  s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;").replaceAll("'", "&apos;");
-
 /** Build a launchd job; caller decides if and when to install it. */
 export function launchAgentPlist(
   input: { checkout: string; deno: string; home: string; ghConfigDir?: string },
