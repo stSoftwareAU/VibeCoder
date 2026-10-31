@@ -49,8 +49,8 @@ messages) changed.
   it passes.
 - `deno task test:unit tests/acceptance_criteria_gate_test.ts tests/review_block_template_test.ts tests/unmet_criteria_gate_test.ts`
   (run from `worker/deno`): 48 passed, 0 failed at head. Per file:
-  `worker/deno/tests/acceptance_criteria_gate_test.ts` (40 tests, the only one of
-  the three this PR edits), `worker/deno/tests/review_block_template_test.ts`
+  `worker/deno/tests/acceptance_criteria_gate_test.ts` (40 tests, the only one
+  of the three this PR edits), `worker/deno/tests/review_block_template_test.ts`
   (5 tests) and `worker/deno/tests/unmet_criteria_gate_test.ts` (3 tests); the
   latter two are unchanged regression runs. `deno fmt --check`, `deno lint` and
   `deno check` on the three files this PR edits
