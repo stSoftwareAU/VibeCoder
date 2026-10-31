@@ -112,3 +112,37 @@ Deno.test("cleanup removes abandoned clones but preserves live and unrelated dir
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("babysitter stages resolved merge files and refuses conflict markers", async () => {
+  const dir = await Deno.makeTempDir();
+  const git = async (...args: string[]) =>
+    await new Deno.Command("git", {
+      args,
+      cwd: dir,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+  try {
+    assert((await git("init")).success);
+    assert((await git("config", "user.name", "Test")).success);
+    assert((await git("config", "user.email", "test@example.invalid")).success);
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/sh\nexit 0\n");
+    await Deno.writeTextFile(`${dir}/file.txt`, "original\n");
+    assert((await git("add", ".")).success);
+    assert((await git("commit", "-m", "initial")).success);
+    assert((await git("checkout", "-b", "other")).success);
+    await Deno.writeTextFile(`${dir}/file.txt`, "other\n");
+    assert((await git("commit", "-am", "other")).success);
+    assert((await git("checkout", "-")).success);
+    await Deno.writeTextFile(`${dir}/file.txt`, "feature\n");
+    assert((await git("commit", "-am", "feature")).success);
+    assert(!(await git("merge", "--no-commit", "other")).success);
+    await assertRejects(() => validateAndCommit(dir, 123), Error, "git failed");
+    await Deno.writeTextFile(`${dir}/file.txt`, "feature and other\n");
+    await validateAndCommit(dir, 123);
+    assert((await git("diff", "--quiet", "HEAD")).success);
+    assert((await git("rev-parse", "HEAD^2")).success);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
