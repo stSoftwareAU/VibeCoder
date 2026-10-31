@@ -393,3 +393,111 @@ Deno.test("runPrFeedbackDriftCheck - a Test Plan with no unchecked figure stays 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 7. A Rust-only fix push names a red Rust test file, and no countable test
+// file changed, so the file-less red result is out of scope: the check stays
+// clean with one read-only call and no recovery turn (Issue #4537).
+// ---------------------------------------------------------------------------
+
+const RUST_TEST_RS = `#[test]
+fn rule_rejects_missing_subject() {
+    assert!(true);
+}
+`;
+
+const RUST_RED_LINE =
+  "- Red on base: 5 passed, 2 failed (`tests/rule_regression.rs`, 7 tests at head).";
+const SUMMARY_RUST_RED = summaryWith(RUST_RED_LINE);
+
+/** The Rust-only fix push: the code and a Rust test file, no countable test file. */
+async function applyRustFixPush(dir: string) {
+  await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+  await writeFile(dir, "tests/rule_regression.rs", RUST_TEST_RS);
+}
+
+Deno.test("runPrFeedbackDriftCheck - a red result naming only a Rust test file in a PR with no countable test file stays clean with one read-only call (Issue #4537)", async () => {
+  const { dir, beforeSha } = await setupBaseline(SUMMARY_CHECKABLE);
+  try {
+    await applyRustFixPush(dir);
+    await writeFile(dir, SUMMARY_PATH, SUMMARY_RUST_RED);
+
+    const warnings: { message: string; fields?: unknown }[] = [];
+    const calls: AgentCall[] = [];
+    const runAgent = makeRunAgent(
+      [{ ok: true, output: verdictBlock([]) }],
+      calls,
+    );
+
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: capturingLogger(warnings),
+      },
+    );
+
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]!.readOnly, true);
+    assertEquals(outcome.status, "clean");
+    assertEquals(
+      warnings.filter((w) =>
+        w.message.startsWith("Test Plan recount could not check")
+      ).length,
+      0,
+    );
+    await assertRejects(() => Deno.lstat(prResponseMessagePath(dir)));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runPrFeedbackDriftCheck - the same Rust-named red result with a changed countable test file is still unchecked and runs the recovery turn (Issue #4537)", async () => {
+  const { dir, beforeSha } = await setupBaseline(SUMMARY_CHECKABLE);
+  try {
+    await applyRustFixPush(dir);
+    // A changed countable test file, not named in the plan, gives the recount
+    // a file to count, so the file-less red result is unchecked again.
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
+    await writeFile(dir, SUMMARY_PATH, SUMMARY_RUST_RED);
+
+    const calls: AgentCall[] = [];
+    const runAgent = makeRunAgent(
+      [
+        { ok: true, output: verdictBlock([]) },
+        { ok: true, output: "did nothing" },
+      ],
+      calls,
+    );
+
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: noopLogger(),
+      },
+    );
+
+    assertEquals(calls.length, 2);
+    assertEquals(calls[0]!.readOnly, true);
+    assertEquals(calls[1]!.readOnly, false);
+    assertEquals(outcome.status, "reported");
+    if (outcome.status === "reported") {
+      assertEquals(outcome.recoveryRan, true);
+      assertEquals(outcome.residual.testPlanUnchecked?.length, 1);
+      assert(
+        outcome.residual.testPlanUnchecked?.[0]?.includes(
+          "Red on base: 5 passed, 2 failed",
+        ),
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
