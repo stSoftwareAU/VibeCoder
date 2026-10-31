@@ -3424,8 +3424,9 @@ heal at one floor and claim at another.
 
 ### Host build-cache reclaim (Issue #4498)
 
-A host below its claiming floor first reclaims regenerable build caches (stale
-`target/` directories and their kind), before any work volume is considered for
+A host short of its claiming floor plus the 25 GB cargo build headroom
+(Issue #4540) first reclaims regenerable build caches (stale `target/`
+directories and their kind), before any work volume is considered for
 recreation. The reclaim is on by default and is configured only in
 `.config.json`; there is no environment variable for it. See
 [Host build caches are reclaimed before a work volume is touched](CONTAINER.md#host-build-caches-are-reclaimed-before-a-work-volume-is-touched-issue-4498)
@@ -3435,7 +3436,7 @@ for what is removed and where.
 | --- | --- | --- |
 | `host_cache_reclaim_enabled` | `true` | `false` switches the reclaim off entirely. |
 | `host_cache_reclaim_min_age_hours` | `24` | A candidate cache must be at least this many hours old. |
-| `host_cache_reclaim_headroom_gb` | `10` | Free space, beyond the claiming floor, the reclaim aims for before it stops. |
+| `host_cache_reclaim_headroom_gb` | `10` | Free space, beyond the claiming floor, the reclaim aims for before it stops. The 25 GB cargo build headroom applies when it is larger (Issue #4540). |
 | `host_cache_reclaim_roots` | none | Extra absolute directories to search, in addition to the built-in locations. |
 
 ```json
@@ -3647,9 +3648,15 @@ flowchart LR
 ### What a hook receives
 
 The environment is **cleared** before it is populated: only `PATH`, `HOME`,
-`LANG`, `TZ` and `TMPDIR` are inherited from the worker, so no credential
-crosses into a callback. Transcript **contents** are never exported — only the
-path, and reading it is the callback author's decision.
+`LANG`, `TZ`, `TMPDIR` and the proxy variables are inherited from the process
+that spawns the hook (the worker for run and cycle hooks, the host launcher for
+the `host_failure` hook), so no credential crosses into a callback. The proxy
+variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms)
+are passed through as the spawning process holds them: for a run or cycle hook
+they name the egress proxy, while the `host_failure` hook gets the host
+launcher's own, usually none. A value containing `@` is dropped, since its
+userinfo could hold a credential. Transcript **contents** are never exported — only the path, and
+reading it is the callback author's decision.
 
 `VIBECODER_CALLBACK_CONTEXT` names a versioned JSON document written for that
 invocation and removed after it exits:

@@ -203,6 +203,12 @@ export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
  */
 export const SCRIPT_READING_UNIT_TESTS: ReadonlyMap<string, string> = new Map([
   [
+    "tests/host_cache_reclaim_test.ts",
+    "reads run.sh and run.ps1 with Deno.readTextFile to assert both " +
+    "launchers start the host cache reclaim at the floor plus the cargo " +
+    "build headroom (Issue #4540); it never spawns either one",
+  ],
+  [
     "tests/launcher_egress_selfcheck_test.ts",
     "reads run.sh and run.ps1 with Deno.readTextFile to assert both " +
     "launchers restate the egress self-check exit status and marker (Issue " +

@@ -19,10 +19,14 @@
  *   nor equals a protected path (the launcher's base directory, the cwd).
  * - The walk never follows symlinks, never descends into a tagged directory,
  *   never treats a root as a candidate, and stops at a fixed depth.
- * - The reclaim acts only when free space is below the floor. It removes the
- *   oldest eligible caches first and stops once the estimated free space
- *   (free space at the start plus the bytes removed) reaches floor + headroom.
- *   No `df` is needed after the start.
+ * - The reclaim acts when free space is below floor + headroom, where the
+ *   headroom is the larger of the configured one and the cargo build headroom
+ *   (Issue #4540): above the floor but short of the cargo headroom, the worker
+ *   claims nothing it can build in a cargo repository, so that band needs the
+ *   reclaim as much as the floor does. It removes the oldest eligible caches
+ *   first and stops once the estimated free space (free space at the start
+ *   plus the bytes removed) reaches that target. No `df` is needed after the
+ *   start.
  * - If the process table cannot be read, nothing is removed. A cache that
  *   cannot be proven idle is not deleted. On POSIX the table includes lsof's
  *   open-file names, so an lsof that cannot run or times out removes nothing
@@ -151,10 +155,16 @@ export interface HostCacheReclaimDeps {
 export interface HostCacheReclaimOptions {
   /** Free bytes on the host now. */
   freeBytes: number;
-  /** The claiming floor, in bytes. Below it the reclaim acts. */
+  /** The claiming floor, in bytes. */
   floorBytes: number;
   /** How far past the floor the reclaim keeps going once it has started. */
   headroomBytes: number;
+  /**
+   * The free space a cargo build needs above the floor (Issue #4540). The
+   * reclaim acts below floor + the larger of this and `headroomBytes`, and
+   * stops there. Omitted: 0, so the floor plus `headroomBytes` alone.
+   */
+  cargoHeadroomBytes?: number;
   /** A cache touched more recently than this is fresh and kept. */
   minAgeMs: number;
   /** Directories to walk for caches. */
@@ -186,7 +196,10 @@ export interface HostCacheReclaimResult {
   skipped: HostCacheSkip[];
   /** Estimated free bytes after the run: free at the start plus removed bytes. */
   freeBytesAfter: number;
-  /** floor + headroom: where the reclaim stops once it has started. */
+  /**
+   * floor + the larger headroom: below it the reclaim acts, and it stops once
+   * the estimate reaches it.
+   */
   targetBytes: number;
   /** Bytes still missing to clear the floor; zero once the floor is cleared. */
   shortBytes: number;
@@ -876,12 +889,13 @@ function usableProcessTable(lines: unknown): string[] {
 }
 
 /**
- * Reclaim stale build caches until the host is clear of its floor
+ * Reclaim stale build caches until the host is clear of its floor and headroom
  * (Issue #4498).
  *
- * Acts only when `freeBytes` is below `floorBytes`. Then it removes the oldest
- * eligible caches first and stops once `freeBytes` plus the bytes removed
- * reaches `floorBytes + headroomBytes`. If the process table cannot be read,
+ * Acts only when `freeBytes` is below the target, `floorBytes` plus the larger
+ * of `headroomBytes` and `cargoHeadroomBytes` (Issue #4540). Then it removes
+ * the oldest eligible caches first and stops once `freeBytes` plus the bytes
+ * removed reaches the target. If the process table cannot be read,
  * it removes nothing and reports `processTableError`.
  *
  * @param options - The space figures, the age rule, the roots and protections
@@ -896,10 +910,11 @@ export async function reclaimHostCaches(
     ...defaultHostCacheReclaimDeps(),
     ...overrides,
   };
-  const targetBytes = options.floorBytes + options.headroomBytes;
+  const targetBytes = options.floorBytes +
+    Math.max(options.headroomBytes, options.cargoHeadroomBytes ?? 0);
   const skipped: HostCacheSkip[] = [];
 
-  if (options.freeBytes >= options.floorBytes) {
+  if (options.freeBytes >= targetBytes) {
     return {
       removed: [],
       skipped,
