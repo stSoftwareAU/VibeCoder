@@ -66,8 +66,9 @@ existing code and docs.
 
 - **symptom** — `merge-fallback` "agent deferred":
   `refused 4 cycles in a row (agent deferred: cycle budget) — climbing to the next rung`
-- **status** — `verified` — the new tests went red with `refusal: true` restored
-  in `judgeSyncFailure` (3 failed, 0 passed) and pass with the fix
+- **status** — `verified` — the first three new tests went red with
+  `refusal: true` restored in `judgeSyncFailure` and pass with the fix; the
+  fourth (PR #4581 review) is red on its own change, see the Test Plan
 - **regression test** —
   `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`
 
@@ -93,7 +94,7 @@ existing code and docs.
   that used the agent-deferred error as the counted, climbing refusal now use
   the gate-refused resolution (`gateRefusedError()`), with every assertion kept
   (only the expected reason text `(agent deferred` became
-  `(the merge gate refused the resolution`); the ~239 test now asserts
+  `(the merge gate refused the resolution`); the agent-deferred conclusion test now asserts
   `refusal === undefined` for the deferral. The two-kind loop became the gate
   kind only. Removed from
   `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts`: the agent-kind
@@ -104,6 +105,13 @@ existing code and docs.
 - Edited `worker/deno/tests/milestone_merge_only_4326_test.ts:223`:
   `conclusion.refusal` for an agent-deferred conclusion is now `undefined` (was
   `true`); red check: with `refusal: true` restored it fails.
+- `worker/deno/lib/milestone_branch_sync.ts:3161` exempt (untestable): the
+  `{ count: 0, escalated: false }` fallback is unreachable. Line 3161 sits
+  inside `if (streakPath)`, and the same block has already stored an entry for
+  the key at line 2619 (`?? { count: 0, escalated: false }`) and line 2760
+  (`openConflictAttempt`) before the sync runs, so `streaks[streakKey]` is
+  never undefined there; flipping `false` to `true` was run and no test can go
+  red. Not removed here because this round changes tests and docs only.
 - Passed at the head: `deno task test:unit` over the new 4517 file, the 4328
   ladder, 4326 merge-only, `milestone_branch_sync` and `milestone_presync` tests
   (161 passed, 0 failed). `deno fmt`,
