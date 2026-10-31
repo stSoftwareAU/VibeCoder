@@ -81,28 +81,14 @@ async function run(
   return result.stdout.trim();
 }
 
-/** Commit the isolated fix locally, then validate before the caller may push. */
+/** Stage and check the isolated fix; the repository's CI runs after the push. */
 export async function validateAndCommit(
   dir: string,
   number: number,
 ): Promise<void> {
-  try {
-    await Deno.stat(`${dir}/quality.sh`);
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      throw new Error(
-        "quality.sh missing; refusing to push without a quality gate",
-      );
-    }
-    throw error;
-  }
   await run("git", ["add", "-A", "--", "."], dir);
   await run("git", ["diff", "--cached", "--check"], dir);
   await run("git", ["commit", "-m", `Fix PR #${number} quality issues`], dir);
-  await run("bash", ["./quality.sh"], dir);
-  if (await run("git", ["status", "--porcelain"], dir)) {
-    throw new Error("quality gate left uncommitted changes; refusing to push");
-  }
 }
 export function reason(pr: Pr): string | null {
   if (

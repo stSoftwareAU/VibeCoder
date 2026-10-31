@@ -19,41 +19,6 @@ const pr = {
   mergeable: "MERGEABLE",
   statusCheckRollup: [{ conclusion: "SUCCESS" }],
 };
-Deno.test("isolated fix commits before quality and a failed quality gate stops validation", async () => {
-  const dir = await Deno.makeTempDir();
-  const git = async (...args: string[]) => {
-    const result = await new Deno.Command("git", {
-      args,
-      cwd: dir,
-      stdout: "null",
-      stderr: "null",
-    }).output();
-    assert(result.success);
-  };
-  try {
-    await git("init");
-    await git("config", "user.name", "Test");
-    await git("config", "user.email", "test@example.invalid");
-    await Deno.writeTextFile(
-      `${dir}/quality.sh`,
-      '#!/bin/sh\ntest -z "$(git status --porcelain)"\n',
-    );
-    await Deno.writeTextFile(`${dir}/fix.txt`, "before\n");
-    await git("add", ".");
-    await git("commit", "-m", "initial");
-    await Deno.writeTextFile(`${dir}/fix.txt`, "fixed\n");
-    await validateAndCommit(dir, 123);
-    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/sh\nexit 1\n");
-    await assertRejects(
-      () => validateAndCommit(dir, 123),
-      Error,
-      "bash failed",
-    );
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
 Deno.test("author filter permits an explicit PR without widening fleet scans", () => {
   assert(eligibleAuthor("VibeCoderST", ["vibecoderst"], false));
   assert(!eligibleAuthor("human", ["VibeCoderST"], false));
@@ -126,7 +91,6 @@ Deno.test("babysitter stages resolved merge files and refuses conflict markers",
     assert((await git("init")).success);
     assert((await git("config", "user.name", "Test")).success);
     assert((await git("config", "user.email", "test@example.invalid")).success);
-    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/sh\nexit 0\n");
     await Deno.writeTextFile(`${dir}/file.txt`, "original\n");
     assert((await git("add", ".")).success);
     assert((await git("commit", "-m", "initial")).success);

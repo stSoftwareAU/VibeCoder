@@ -4,8 +4,9 @@ The babysitter scans the repositories in `.config.json` for open fleet PRs
 with merge conflicts or failed CI. By default it fixes candidates. It takes the same PR branch lock as the fleet's
 CI and conflict workers, rechecks the head, and runs one Codex session in a
 temporary clone. After Codex reports a completed fix, the babysitter commits
-it locally, runs the repository's `quality.sh`, and rechecks the PR. It pushes
-only if the gate passes and the PR still matches the original head.
+it locally, checks for whitespace errors and conflict markers, and rechecks the
+PR. It pushes only if the PR still matches the original head. GitHub CI then
+runs the repository's quality and regression checks on the updated branch.
 
 From the VibeCoder checkout:
 
@@ -75,7 +76,7 @@ permission or credential can stop a run and must be corrected by the operator.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
 An explicitly selected `--repo` and `--pr` can also target another author's
-PR, while retaining the same lock and quality checks. A failed
+PR, while retaining the same lock and validation. A failed
 or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and
 is not retried on that host for the same PR head. Removing the matching state
@@ -85,9 +86,8 @@ attempt record does not prevent a different host from retrying later.
 This MVP uses the configured GitHub App and Codex; it does not yet select
 providers by remaining quota, handle
 Dependabot, use per-repository quality commands, update a merely behind branch,
-review PRs, or arm auto-merge. It requires `quality.sh` and refuses to push
-when it is missing or fails. It does not change repository review or merge
-rules. Test the read-only pass before running execution mode.
+review PRs, or arm auto-merge. It does not change repository CI, review, or
+merge rules. Test the read-only pass before running execution mode.
 
 To prepare a separate GitHub identity and API quota, follow the
 [babysitter GitHub App setup](fleet-pr-babysitter-github-app.md).
