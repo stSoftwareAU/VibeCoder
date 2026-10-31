@@ -54,10 +54,12 @@ The change uses Deno-native tooling and leaves `deno.lock` unchanged; no Node to
 - `worker/deno/tests/ci_infrastructure_rerun_2914_test.ts` — `deno task test:unit tests/ci_infrastructure_rerun_2914_test.ts`: passed, 28 tests. The refusal test loads fresh marker state for a second pass; transient errors remain retryable and failed refusal-marker writes are logged.
 - `worker/deno/tests/pr_ci_processor_no_changes_test.ts` — `deno task test:unit tests/pr_ci_processor_no_changes_test.ts`: passed, 18 tests. Covers the fallback, duplicate suppression, refused-marker and fallback-marker write failures, rejected pushes, and unverified remote pushes; persisted refusals produce no repeat warning.
 - `worker/deno/tests/pr_ci_processor_test.ts` — `deno task test:unit tests/pr_ci_processor_test.ts`: passed, 45 tests. Covers the exhausted-check processor caller with and without a refusal marker.
-- `worker/deno/tests/fleet_pr_babysitter_test.ts` — passed, 1 test; `worker/deno/tests/merge_fallback_issue_test.ts` — passed, 29 tests; `worker/deno/tests/pr_maintenance_command_test.ts` — passed, 24 tests. These were named among the previous gate failures; their reported failing tests passed when run individually.
 - Mutation check: disabling the refused-run guard made the fresh-scan test issue a second rerun and fail; disabling fallback dedup made the persisted-marker test push a duplicate empty commit and fail. Both source guards were restored.
 - `deno fmt --check`, `deno lint`, and `deno check` on the changed TypeScript files — passed.
-- `deno task check:manifests` — failed: `tests/lib_sweep_coverage_test.ts` reports `worker/deno/commands/fleet_pr_babysitter.ts` is not claimed by `docs/audits/lib-sweep-coverage.json`. Both files are unchanged from `origin/main`.
+- After merging current `origin/main`, the four touched test files passed together (128 tests) and `deno fmt --check` passed on the changed files.
+- `./quality.sh`: every stage passed (chokepoints, completeness checks, markdownlint, semgrep, deno lint, type check, fmt) except `deno tests`, whose parallel pass had 3 failures out of 31170 passed; the serial pass did not run. The same three fail when run on a clean detached `origin/main` checkout, so they are not caused by this change: `completion_phase_repo_formatters_test.ts` ("an unformatted Rust change is formatted and committed…", "cargo fmt stages only the branch's .rs files…") and `pr_maintenance_command_test.ts` ("update-open-pr-branches takes no action on a behind-only PR behind a merge queue (Issue #4424)").
+
+<!-- vibe-quality-gate-skipped reason="full gate run; deno tests parallel pass failed on 3 tests that also fail on origin/main (completion_phase_repo_formatters_test.ts x2, pr_maintenance_command_test.ts x1)" -->
 
 ### Deno regression avoided
 
