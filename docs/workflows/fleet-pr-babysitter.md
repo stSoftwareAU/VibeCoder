@@ -28,6 +28,11 @@ and RTK. Before execution, put that login in `service_accounts` or
 written by known fleet accounts. The MVP checks the local configuration; it
 cannot verify other hosts. Use a dedicated account with only the access it
 needs. The agent is asked to use RTK; configure Codex's RTK hook as well.
+Codex runs with `--full-auto` and is told not to ask questions. When a fix
+needs a human decision, it should report the blocker and stop without a
+commit. Capture the runner's standard output and error when running unattended
+so the report can be read later. The sandbox still applies; an unavailable
+permission or credential can stop a run and must be corrected by the operator.
 
 Only fleet-authored, non-draft, same-repository PRs are considered. A failed
 or unproductive agent attempt is recorded under
