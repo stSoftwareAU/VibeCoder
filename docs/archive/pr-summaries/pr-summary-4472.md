@@ -51,12 +51,18 @@ paragraph). Sibling surfaces grepped for the rule (`withholdIssueClose`,
 `findMissingCriteria`): `pr_body_sync.ts`, `draft_continuation_pr.ts`,
 `completion_phase.ts`, `pr_issue_linking.ts`, `issue_lifecycle.ts` — all read
 the block or the PR body, none render the summary, so none needs the new call.
-Twinned rule: `assemblePrBody` (PR body) and the new
-`alignIssueCloseWithClosure` (summary) both decide by `findMissingCriteria` +
-`withholdIssueClose`; `restoreIssueClose` is the summary-only inverse.
+Twinned rule: `assemblePrBody` (PR body) and `alignIssueCloseWithClosure`
+(summary) both use the shared `withholdsIssueClose` predicate;
+`restoreIssueClose` is the summary-only inverse. An agreement test also covers
+missing, met and partial criteria with closing, partial and absent keywords.
 
 ## Test Plan
 
+- After the shared-predicate review fix,
+  `deno task test:unit
+  tests/missing_criterion_close_guard_3177_test.ts`
+  passed: 23 tests, 0 failed. Its agreement test compares summary and PR-body
+  keywords across all nine criterion-status and starting-keyword combinations.
 - `worker/deno/tests/closure_verdict_recovery_test.ts`: four new cases —
   `Closes #N` summary plus a `missing` verdict becomes `Part of #N` with no
   closing keyword and the `missing` entry kept; no summary file plus a `missing`
