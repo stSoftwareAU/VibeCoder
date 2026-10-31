@@ -19,6 +19,7 @@ const pr = {
   isCrossRepository: false,
   isDraft: false,
   mergeable: "MERGEABLE",
+  mergeStateStatus: "CLEAN",
   reviewDecision: null,
   statusCheckRollup: [{ conclusion: "SUCCESS" }],
 };
@@ -30,6 +31,10 @@ Deno.test("author filter permits an explicit PR without widening fleet scans", (
 
 Deno.test("babysitter selects only conflicts and failed CI", () => {
   assertEquals(reason(pr), null);
+  assertEquals(
+    reason({ ...pr, mergeStateStatus: "BEHIND" }),
+    "branch behind base",
+  );
   assertEquals(
     reason({ ...pr, reviewDecision: "CHANGES_REQUESTED" }),
     "requested review changes",

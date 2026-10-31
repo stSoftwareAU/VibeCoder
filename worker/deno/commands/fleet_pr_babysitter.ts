@@ -33,13 +33,14 @@ interface Pr {
   isCrossRepository: boolean;
   isDraft: boolean;
   mergeable: string;
+  mergeStateStatus: string;
   reviewDecision: string | null;
   statusCheckRollup:
     | { state?: string; status?: string; conclusion?: string }[]
     | null;
 }
 const fields =
-  "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,reviewDecision,statusCheckRollup";
+  "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
 
 interface Review {
   id: number;
@@ -170,6 +171,7 @@ export function reason(pr: Pr): string | null {
     !Array.isArray(pr.statusCheckRollup)
   ) return null;
   if (pr.mergeable === "CONFLICTING") return "merge conflict";
+  if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
   if (
     pr.statusCheckRollup.some((c) =>
       c.conclusion === "FAILURE" || c.state === "FAILURE" || c.state === "ERROR"
@@ -244,6 +246,29 @@ async function fix(
     if (pr.headRefOid !== initial.headRefOid || !reason(pr)) {
       console.log(`${repo}#${pr.number}: changed while waiting; skipped`);
       return;
+    }
+    if (reason(pr) === "branch behind base") {
+      await run("gh", [
+        "api",
+        "-X",
+        "PUT",
+        `repos/${repo}/pulls/${pr.number}/update-branch`,
+        "-f",
+        `expected_head_sha=${pr.headRefOid}`,
+      ]);
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        const updated = await readPr(repo, pr.number);
+        if (updated.headRefOid !== pr.headRefOid) {
+          console.log(
+            `${repo}#${pr.number}: updated branch; CI will run on the new head`,
+          );
+          return;
+        }
+      }
+      throw new Error(
+        "GitHub accepted the branch update but did not confirm it within 40 seconds",
+      );
     }
     const reviews = reason(pr) === "requested review changes"
       ? await readRequestedReviews(repo, pr.number)
@@ -478,7 +503,7 @@ async function pass(
       const why = reason(pr);
       if (!why && prFilter !== undefined) {
         console.log(
-          `${repo}#${pr.number}: no actionable conflict, failed CI or requested review changes, or PR is not eligible`,
+          `${repo}#${pr.number}: no actionable conflict, outdated branch, failed CI or requested review changes, or PR is not eligible`,
         );
       }
       if (
