@@ -14,6 +14,12 @@
  * bare names resolved against the installation's account, and
  * {@link installationRepoNames} is the one place that conversion happens.
  *
+ * Issue #4572: a token may also be **limited to a set of permissions**. The
+ * `permissions` field caps what the token can do (e.g. read-only), so a
+ * credential given to an agent that only reads cannot write, even inside its
+ * repository. Its request body is built from whichever of the two fields are
+ * present.
+ *
  * Uses Deno's built-in Web Crypto API (RS256) — no external dependencies.
  * Australian English spelling throughout (behaviour, authorisation, etc.)
  */
@@ -209,16 +215,22 @@ export async function generateAppJWT(
  * @param fetchFn - Optional fetch function (injectable for testing)
  * @param repositories - `owner/repo` slugs the token may reach (Issue #1391).
  *   Omitted or `null` mints the installation's full, unscoped reach.
+ * @param permissions - Permissions to cap the token at, as GitHub names them
+ *   (e.g. `{ contents: "read" }`) (Issue #4572). Omitted keeps GitHub's default
+ *   of the App's full permissions. An empty object is refused, because GitHub
+ *   would then mint the full-permission token.
  * @returns Token string, expiry timestamp, and the permissions GitHub granted
  *   the token (Issue #2892: callers that need specific scopes check these
  *   rather than discovering a gap only when a later API call is refused)
- * @throws Error when the scope is present but empty, or holds a malformed slug
+ * @throws Error when the repository or permission scope is present but empty,
+ *   or holds a malformed slug
  */
 export async function getInstallationToken(
   jwt: string,
   installationId: string,
   fetchFn: FetchFn = globalThis.fetch,
   repositories: RepositoryScope = undefined,
+  permissions?: Readonly<Record<string, string>>,
 ): Promise<
   { token: string; expiresAt: Date; permissions?: Record<string, string> }
 > {
@@ -239,7 +251,7 @@ export async function getInstallationToken(
   // may write nowhere. GitHub has no spelling for that, and minting the
   // unscoped token instead would hand back the widest credential in answer to
   // the narrowest request — so refuse rather than silently widen.
-  let body: string | undefined;
+  const requestFields: Record<string, unknown> = {};
   if (repositories !== null && repositories !== undefined) {
     const names = installationRepoNames(repositories);
     if (names.length === 0) {
@@ -247,7 +259,21 @@ export async function getInstallationToken(
         "Refusing to mint an installation token for an empty repository scope",
       );
     }
-    body = JSON.stringify({ repositories: names });
+    requestFields.repositories = names;
+  }
+  // Issue #4572: an empty permission object would make GitHub mint the
+  // full-permission token, so it is refused for the same reason as above.
+  if (permissions !== undefined) {
+    if (Object.keys(permissions).length === 0) {
+      throw new Error(
+        "Refusing to mint an installation token for an empty permission scope",
+      );
+    }
+    requestFields.permissions = permissions;
+  }
+  let body: string | undefined;
+  if (Object.keys(requestFields).length > 0) {
+    body = JSON.stringify(requestFields);
     headers["Content-Type"] = "application/json";
   }
 

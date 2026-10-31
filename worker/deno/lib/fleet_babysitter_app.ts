@@ -1,5 +1,10 @@
 /** Mandatory GitHub App authentication for the fleet babysitter. */
-import { ensureValidToken, generateAppJWT } from "./github_app_auth.ts";
+import {
+  ensureValidToken,
+  type FetchFn,
+  generateAppJWT,
+  getInstallationToken,
+} from "./github_app_auth.ts";
 import { fetchWithTimeout } from "./subprocess_timeout.ts";
 
 export interface BabysitterAppConfig {
@@ -172,7 +177,13 @@ export async function babysitterAppIdentity(
   return `${app.slug}[bot]`;
 }
 
-/** Start fail-closed, refreshing the installation token before it expires. */
+/**
+ * Start fail-closed, refreshing the installation token before it expires.
+ *
+ * The token this sets is the runner's write token, used for the runner's own
+ * writes. It is NOT given to the Codex agent, which gets its own read-only token
+ * from {@link mintBabysitterAgentToken} (Issue #4572).
+ */
 export async function startBabysitterAppAuth(
   config: BabysitterAppConfig,
   mint?: () => Promise<string>,
@@ -214,4 +225,84 @@ export async function startBabysitterAppAuth(
     );
   }, refreshMs);
   return () => clearInterval(timer);
+}
+
+/**
+ * Permissions the Codex agent's own token carries (Issue #4572).
+ *
+ * The agent only reads. Every write (labels, comments, pushes, merges) is made
+ * by the runner with its own token, so the agent's credential cannot write.
+ */
+export const BABYSITTER_AGENT_PERMISSIONS: Readonly<Record<string, string>> =
+  Object.freeze({
+    contents: "read",
+    pull_requests: "read",
+    issues: "read",
+    checks: "read",
+    actions: "read",
+  });
+
+/**
+ * Mint the Codex agent's own read-only token, reaching one repository (Issue #4572).
+ *
+ * The agent only reads; every write is the runner's. The token is always a
+ * fresh mint, never cached, so it lasts a full hour. It is not refreshed, so a
+ * late read in a longer repair fails rather than writes.
+ *
+ * Fails closed: GitHub must report the permissions it granted, and each one
+ * must be exactly "read".
+ *
+ * @param config - Babysitter App credentials that sign the token request.
+ * @param repo - `owner/repo` slug the token may reach.
+ * @param fetchFn - Optional fetch function (injectable for testing).
+ * @returns The read-only installation token.
+ * @throws Error when GitHub reports no permissions, or grants any write.
+ */
+export async function mintBabysitterAgentToken(
+  config: BabysitterAppConfig,
+  repo: string,
+  fetchFn: FetchFn = globalThis.fetch,
+): Promise<string> {
+  const jwt = await generateAppJWT(
+    config.appId,
+    await Deno.readTextFile(config.privateKeyPath),
+  );
+  const minted = await getInstallationToken(
+    jwt,
+    config.installationId,
+    fetchFn,
+    [repo],
+    BABYSITTER_AGENT_PERMISSIONS,
+  );
+  if (minted.permissions === undefined) {
+    throw new Error(
+      "GitHub did not report the permissions granted to the babysitter agent token; cannot confirm it is read-only",
+    );
+  }
+  for (const [name, level] of Object.entries(minted.permissions)) {
+    if (level !== "read") {
+      throw new Error(
+        `GitHub granted the babysitter agent token ${name}: ${level}; it must be read-only`,
+      );
+    }
+  }
+  return minted.token;
+}
+
+/**
+ * The environment the Codex agent runs with (Issue #4572).
+ *
+ * Carries the agent's own token. TMPDIR and XDG_CACHE_HOME point at the agent's
+ * scratch directory, so its temporary and cache files stay out of the runner's.
+ *
+ * @throws Error when the token is empty.
+ */
+export function babysitterAgentEnv(
+  scratch: string,
+  token: string,
+): Record<string, string> {
+  if (token.trim() === "") {
+    throw new Error("Refusing to start the babysitter agent without a token");
+  }
+  return { TMPDIR: scratch, XDG_CACHE_HOME: scratch, GH_TOKEN: token };
 }
