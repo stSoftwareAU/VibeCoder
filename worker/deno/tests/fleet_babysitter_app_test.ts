@@ -72,6 +72,55 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
   });
 });
 
+Deno.test("agent launch does not record an attempt when token minting fails", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    let guarded = false;
+    let spawned = false;
+    await assertRejects(() =>
+      startBabysitterAgent(
+        { appId: "123", installationId: "456", privateKeyPath },
+        "owner/repo",
+        { dir: "/clone", scratch: "/scratch", prompt: "repair" },
+        () => {
+          guarded = true;
+          return Promise.resolve(true);
+        },
+        () => Promise.resolve(new Response("exchange failed", { status: 500 })),
+        () => {
+          spawned = true;
+          return {} as Deno.ChildProcess;
+        },
+      )
+    );
+    assertEquals(guarded, false);
+    assertEquals(spawned, false);
+  });
+});
+
+Deno.test("agent launch does not spawn an already attempted head", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const requests: Array<{ url: string; body: unknown }> = [];
+    let spawned = false;
+    const result = await startBabysitterAgent(
+      { appId: "123", installationId: "456", privateKeyPath },
+      "owner/repo",
+      { dir: "/clone", scratch: "/scratch", prompt: "repair" },
+      () => Promise.resolve(false),
+      fakeTokenExchange(
+        { permissions: BABYSITTER_AGENT_PERMISSIONS },
+        requests,
+      ),
+      () => {
+        spawned = true;
+        return {} as Deno.ChildProcess;
+      },
+    );
+    assertEquals(requests.length, 1);
+    assertEquals(result, undefined);
+    assertEquals(spawned, false);
+  });
+});
+
 Deno.test("setup adds bot lock trust without losing existing fleet identities", async () => {
   const dir = await Deno.makeTempDir();
   const path = `${dir}/config.json`;
