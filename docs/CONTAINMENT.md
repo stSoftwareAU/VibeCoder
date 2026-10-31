@@ -406,6 +406,11 @@ Ownership journals are private host state in `~/.vibe-apple-egress`, outside
 all canonical worker bind mounts. Runtime I/O and shutdown have hard-kill
 deadlines, including inherited pipes held open after a CLI exits.
 
+The accepted host/LAN and DNS gaps are reported with
+`[EGRESS-NOT-ENFORCED]` at WARNING while the worker continues. A failed
+measured control uses `[EGRESS-SELFCHECK-FAILED]` at ERROR and exits 90 before
+claims.
+
 Measured on 26 October 2026, Apple CLI 1.2.2 and macOS 27.0.1: the allowlist
 proxy worked; direct public IPv4 was blocked with a successful negative
 control; the controlled host endpoint was reachable. IPv6 was initially
