@@ -5,11 +5,12 @@ description from the PR summary file and that it must not edit the description
 itself. That is false for a PR raised outside the worker: its body has no
 `<!-- vibe-worker-issue-N -->` marker, and `buildSyncedPrBodyCandidate` returns
 `ineligible: "no worker marker"` for it unless the head is the run's own
-`issue-<N>-…` branch. The agent followed the prompt, the stale description stayed,
-and the next review sent the PR back (VibeCoder#4502). The three prompts now say
-the rebuild covers a worker-built description only, and that a description
-written outside the worker is updated with `gh pr edit <n> --body-file <file>`
-and named in `.pr_response_message`. Closes #4515.
+`issue-<N>-…` branch. The agent followed the prompt, the stale description
+stayed, and the next review sent the PR back (VibeCoder#4502). The three prompts
+now say the rebuild covers a worker-built description only, and that a
+description written outside the worker is updated with
+`gh pr edit <n> --body-file <file>` and named in `.pr_response_message`. Closes
+#4515.
 
 ## Spec
 
@@ -43,9 +44,10 @@ the `no worker marker` and `worker marker present` branches), and
 which already pins the marker-less skip on a hand-raised branch.
 
 Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
-`prompts/ci_fix/prompt.md` (Fixing the Failure), `prompts/merge_conflict/prompt.md`
-(What To Do), and one sentence each in `docs/workflows/pr-feedback.md`,
-`docs/workflows/ci-fix.md` and `docs/workflows/merge-conflicts.md`.
+`prompts/ci_fix/prompt.md` (Fixing the Failure),
+`prompts/merge_conflict/prompt.md` (What To Do), and one sentence each in
+`docs/workflows/pr-feedback.md`, `docs/workflows/ci-fix.md` and
+`docs/workflows/merge-conflicts.md`.
 
 ## Test Plan
 
@@ -57,8 +59,9 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
   the PR description yourself".
 - Red check: with the three prompts restored to the base branch, the new file
   fails (0 passed, 3 failed); with the change it passes (3 passed).
-- `deno task test:unit` on the new file, `tests/pr_body_matches_final_diff_3015_test.ts`
-  and `tests/pr_body_sync_test.ts`: 52 passed, 0 failed.
+- `deno task test:unit` on the new file,
+  `tests/pr_body_matches_final_diff_3015_test.ts` and
+  `tests/pr_body_sync_test.ts`: 52 passed, 0 failed.
 - No assertion removed or edited in an existing test.
 - Related rules checked: the "Keep the PR summary true to the head" paragraph in
   each of the three prompts, and `docs/workflows/` text on the digest marker and
