@@ -171,7 +171,6 @@ export function reason(pr: Pr): string | null {
     !Array.isArray(pr.statusCheckRollup)
   ) return null;
   if (pr.mergeable === "CONFLICTING") return "merge conflict";
-  if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
   if (
     pr.statusCheckRollup.some((c) =>
       c.conclusion === "FAILURE" || c.state === "FAILURE" || c.state === "ERROR"
@@ -180,6 +179,7 @@ export function reason(pr: Pr): string | null {
   if (pr.reviewDecision === "CHANGES_REQUESTED") {
     return "requested review changes";
   }
+  if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
   return null;
 }
 
