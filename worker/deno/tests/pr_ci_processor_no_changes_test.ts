@@ -80,6 +80,7 @@ const RUN_ID = 5550;
 function makeMockGithub(
   captured: CapturedGh,
   rerunError?: string,
+  fallbackMarkerPostError?: string,
 ): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
@@ -120,7 +121,14 @@ function makeMockGithub(
       if (args[0] === "pr" && args[1] === "comment") {
         const idx = args.indexOf("--body");
         if (idx >= 0 && args[idx + 1] !== undefined) {
-          captured.comments.push(args[idx + 1] as string);
+          const body = args[idx + 1] as string;
+          if (
+            fallbackMarkerPostError !== undefined &&
+            body.includes("vibe-ci-rerun-fallback")
+          ) {
+            return Promise.reject(new Error(fallbackMarkerPostError));
+          }
+          captured.comments.push(body);
         }
       }
       // Issue #2211: capture comments posted via REST API
@@ -200,6 +208,18 @@ async function runNoChangesScenario(
   rerunError?: string,
   fallbackPushError?: string,
   seededMarkers: string[] = [],
+  fallbackMarkerPostError?: string,
+  verifyPushResult: {
+    landed: boolean;
+    localSha: string;
+    remoteSha: string | undefined;
+    reason: string;
+  } = {
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  },
 ): Promise<CapturedGh> {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -234,7 +254,7 @@ async function runNoChangesScenario(
     const deps = createMockDeps({
       claude: mockClaude,
       github: {
-        ...makeMockGithub(captured, rerunError),
+        ...makeMockGithub(captured, rerunError, fallbackMarkerPostError),
         createClient: () => ({
           ...mockGitHubClient(),
           getIssueComments: () =>
@@ -290,12 +310,7 @@ async function runNoChangesScenario(
       workDir: tmpDir,
       workRoot: tmpDir,
       fleetLogins: ["testbot"],
-      verifyPushFn: async () => ({
-        landed: true,
-        localSha: "f".repeat(40),
-        remoteSha: "f".repeat(40),
-        reason: "verified in test",
-      }),
+      verifyPushFn: async () => verifyPushResult,
     };
 
     if (retryCount > 0) {
@@ -481,8 +496,64 @@ Deno.test("processCiFailure no-changes - failed fresh-CI fallback is reported as
   );
   assertEquals(
     captured.errors.some((message) =>
-      message.includes("Fresh-CI fallback push failed") &&
+      message.includes("Fresh-CI fallback failed") &&
       message.includes("remote rejected push")
+    ),
+    true,
+  );
+});
+
+Deno.test("processCiFailure no-changes - fallback marker write failure prevents the empty commit", async () => {
+  const captured = await runNoChangesScenario(
+    makeInput({ checkName: "tests" }),
+    "",
+    undefined,
+    undefined,
+    undefined,
+    0,
+    "gh command failed (exit 1): This workflow run cannot be retried",
+    undefined,
+    [],
+    "comment write refused",
+  );
+
+  assertEquals(
+    captured.gitCalls.some((args) => args[0] === "commit"),
+    false,
+  );
+  assertEquals(
+    captured.errors.some((message) =>
+      message.includes("Could not persist the fresh-CI fallback marker") &&
+      message.includes("comment write refused")
+    ),
+    true,
+  );
+});
+
+Deno.test("processCiFailure no-changes - an unverified fallback push is reported as failure", async () => {
+  const captured = await runNoChangesScenario(
+    makeInput({ checkName: "tests" }),
+    "",
+    undefined,
+    undefined,
+    undefined,
+    0,
+    "gh command failed (exit 1): This workflow run cannot be retried",
+    undefined,
+    [],
+    undefined,
+    {
+      landed: false,
+      localSha: "f".repeat(40),
+      remoteSha: "e".repeat(40),
+      reason: "remote head did not match local head",
+    },
+  );
+
+  assertEquals(
+    captured.errors.some((message) =>
+      message.includes("Fresh-CI fallback push could not be verified") &&
+      message.includes("remote head did not match local head")
     ),
     true,
   );
@@ -507,6 +578,13 @@ Deno.test("processCiFailure no-changes - a persisted refusal and fallback marker
   assertEquals(captured.reruns.length, 0);
   assertEquals(
     captured.gitCalls.filter((args) => args[0] === "push").length,
+    0,
+  );
+  assertEquals(
+    captured.warnings.filter((message) =>
+      message.includes("permanently refused")
+    )
+      .length,
     0,
   );
 });

@@ -1042,6 +1042,50 @@ Deno.test("rerunInfrastructureChecks - permanent refusal is remembered across sc
   );
 });
 
+Deno.test("rerunInfrastructureChecks - refusal marker persistence failure is explicit and retryable", async () => {
+  const logger = makeRecordingLogger();
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "run" && args[1] === "rerun") {
+      return Promise.reject(
+        new Error("This workflow run cannot be retried"),
+      );
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      return Promise.reject(new Error("comment write unavailable"));
+    }
+    return Promise.resolve("");
+  };
+  const options = {
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    headSha: HEAD_SHA,
+    infrastructure: [{
+      id: 1,
+      name: "Job A",
+      reason: "cancelled" as const,
+      runId: 902,
+    }],
+    codeRunIds: new Set<number>(),
+    fleetMarkers: emptyFleetMarkers(),
+    ghCommandFn: gh,
+    logger,
+  };
+
+  await rerunInfrastructureChecks(options);
+  await rerunInfrastructureChecks(options);
+
+  assertEquals(calls.filter((args) => args[0] === "run").length, 2);
+  assertEquals(
+    logger.errors.filter((message) =>
+      message.includes("Could not persist permanent rerun refusal") &&
+      message.includes("comment write unavailable")
+    ).length,
+    2,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Startup-failed Actions suites (Issue #4347)
 // ---------------------------------------------------------------------------
@@ -1347,12 +1391,15 @@ Deno.test("rerunFailedJobsOfCheck - permanent GitHub refusal is attempted once a
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
     if (args[0] === "api" && args[1] === `repos/${REPO}/actions/jobs/111`) {
-      return Promise.resolve(JSON.stringify({ run_id: 90210, steps: [] }));
+      return Promise.resolve(
+        JSON.stringify({ run_id: 40637798711, steps: [] }),
+      );
     }
     if (args[0] === "run" && args[1] === "rerun") {
       return Promise.reject(
         new Error(
-          "gh command failed (exit 1): run 90210 cannot be rerun; This workflow run cannot be retried",
+          "gh command failed (exit 1): run 40637798711 cannot be rerun; " +
+            "This workflow run cannot be retried (Issue #2914)",
         ),
       );
     }

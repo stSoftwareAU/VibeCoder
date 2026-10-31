@@ -1171,7 +1171,7 @@ async function pushFreshCiAfterRerunRefusal(opts: {
   });
   if (!nudge.ok) {
     logger.error(
-      `Fresh-CI fallback push failed for ${repo}#${prNumber}: ${nudge.error.message}`,
+      `Fresh-CI fallback failed for ${repo}#${prNumber}: ${nudge.error.message}`,
       { repo, prNumber, branchName, headSha, error: nudge.error.message },
     );
     return;
