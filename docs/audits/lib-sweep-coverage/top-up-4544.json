@@ -1,0 +1,12 @@
+{
+  "issue": 4544,
+  "chunk": "top-up-4544",
+  "title": "top-up: fleet PR babysitter command",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/pull/4544",
+  "definition": "The fleet PR babysitter command introduced by PR #4543; review its PR-lock coordination, subprocesses, credentials, repository content and branch pushes.",
+  "status": "claimed",
+  "sweptAt": "3f7927d4cd80f4563aa92ab01d0d99b6c0238ddf",
+  "paths": [
+    "worker/deno/commands/fleet_pr_babysitter.ts"
+  ]
+}
