@@ -97,6 +97,7 @@ import {
   rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "./ci_infrastructure_rerun.ts";
+import { requestFreshCiAfterRerunRefusal } from "./ci_rerun_fresh_ci.ts";
 import {
   buildJobNeedsMap,
   isDownstreamOfRedJob,
@@ -1852,6 +1853,7 @@ export async function findFailedCiChecks(
           infrastructure: classified.infrastructure,
           codeRunIds: classified.codeRunIds,
           fleetMarkers: parked.markers,
+          branchName,
           ghCommandFn,
           logger,
         });
@@ -1921,22 +1923,53 @@ export async function findFailedCiChecks(
         // would strand them. The processor's fleet-wide attempt cap still
         // bounds repair and abandons/restarts the PR when it is spent.
         if (retryCount >= maxRetries && check.checkSuiteId === undefined) {
-          // Issue #4304: a spent check run is re-run rather than left red
-          // for a person. The fresh run has a fresh retry budget and is
-          // picked up next scan; the fleet-wide auto-fix cap bounds it.
-          logger.warn("CI check exceeded max retries — re-running it", {
+          // Issue #4304: attempt to re-run a spent check instead of leaving it
+          // for a person. Issue #4497 remembers GitHub's permanent refusal.
+          const rerunResult = await rerunFailedJobsOfCheck({
             repo,
             prNumber,
-            checkName: check.name,
-            retries: retryCount,
-            maxRetries,
-          });
-          await rerunFailedJobsOfCheck({
-            repo,
             checkId,
+            fleetMarkers: parked?.markers ?? {
+              attempts: new Map(),
+              deferrals: new Map(),
+              humanGates: new Map(),
+              infraReruns: new Map(),
+              rerunRefusals: new Map(),
+              rerunFallbacks: new Map(),
+              fleetResolved: false,
+              ignoredOutsideFleet: 0,
+            },
             ghCommandFn,
             logger,
           });
+          // A run already recorded as refused is skipped at info level (the
+          // rerun helper logs it), so a permanent refusal is not re-warned on
+          // every scan (Issue #4497).
+          if (rerunResult.outcome !== "already-refused") {
+            logger.warn("CI check exceeded max retries — attempted a re-run", {
+              repo,
+              prNumber,
+              checkName: check.name,
+              retries: retryCount,
+              maxRetries,
+              outcome: rerunResult.outcome,
+            });
+          }
+          if (
+            parked !== undefined &&
+            (rerunResult.outcome === "permanent-refusal" ||
+              rerunResult.outcome === "already-refused")
+          ) {
+            await requestFreshCiAfterRerunRefusal({
+              repo,
+              prNumber,
+              branchName,
+              headSha: pr.headRefOid,
+              fleetMarkers: parked.markers,
+              ghCommandFn,
+              logger,
+            });
+          }
           continue;
         }
 
