@@ -230,6 +230,53 @@ Deno.test("syncMilestoneBranches - short-cycle logs distinguish deferrals from c
   }
 });
 
+Deno.test("syncMilestoneBranches - the gate-refusal log needs both a conflict gate failure and a cycle that withheld the agent (PR #4581 review)", async () => {
+  const cases: Array<
+    { name: string; syncError: () => Error; deadlineMs: number }
+  > = [
+    {
+      // Short cycle, but the failure is a fetch fault, not a gate refusal.
+      name: "short cycle, non-conflict failure",
+      syncError: () => new Error("fatal: unable to access 'https://x/y.git'"),
+      deadlineMs: SHORT_CYCLE_MS,
+    },
+    {
+      // Short cycle, a conflict nobody gated: the deferral, not a refusal.
+      name: "short cycle, conflict without a gate failure",
+      syncError: agentDeferredError,
+      deadlineMs: SHORT_CYCLE_MS,
+    },
+    {
+      // Long cycle: the agent rung ran, so the "agent withheld" log is not said.
+      name: "long cycle, gate refusal",
+      syncError: gateRefusedError,
+      deadlineMs: LONG_CYCLE_MS,
+    },
+  ];
+  for (const c of cases) {
+    const { dir, streakPath } = await workDir();
+    try {
+      const logs: string[] = [];
+      await syncMilestoneBranches(sweepDeps({
+        streakPath,
+        defaultSha: tip(1),
+        syncError: c.syncError,
+        syncCalls: [],
+        rollbacks: [],
+        logs,
+        deadlineMs: c.deadlineMs,
+      }));
+      assertEquals(
+        logs.join("\n").includes("merge gate refused the resolution"),
+        false,
+        c.name,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
 Deno.test("syncMilestoneBranches - a cycle-budget deferral never climbs to the roll-back, however many cycles it repeats (Issue #4517)", async () => {
   const { dir, streakPath } = await workDir();
   try {
