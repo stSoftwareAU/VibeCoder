@@ -91,8 +91,9 @@ escalation.
    changes the PR's own diff gets a fresh review. When the fleet pushes a fix
    to a PR that was sent back, the re-review checks the earlier findings were
    fixed, and approves once they are. When a PR was sent back and the only
-   commits since leave its own diff unchanged, the gate skips it as
-   `awaiting-fix` until the fleet pushes its fix. A strict one-line numeric
+   commits since leave its own diff unchanged apart from the file drop
+   described below, the gate skips it as `awaiting-fix` until the fleet
+   pushes its fix. A strict one-line numeric
    version increment, bare or on a JSON/TOML `version` key, may differ between
    the old and current own diffs, including a separate workflow bump after a
    base merge. In a file no earlier finding names, context lines a base merge
@@ -103,6 +104,15 @@ escalation.
    possible fix. An earlier finding on a version file, or missing findings
    for the exact sent-back head, requires a fresh review (see
    [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
+   A file that leaves the own diff, present in the sent-back head's own diff
+   but absent from the new head's because a base merge absorbed an equivalent
+   edit, does not force a fresh review when the findings for the exact
+   sent-back head are known, number at least one, and none names that file (a
+   qualified path counts). Otherwise such a file gets a fresh review, as does a
+   file present only at the new head, and a sent-back own-diff listing reaching
+   the 300-file cap. A new-head listing at the cap needs no rule of its own: it
+   necessarily has a file the sent-back listing lacks, which gets a fresh
+   review. Files present at both heads are compared as before.
    The version hunk may sit beside other hunks that are unchanged between the
    two own diffs. The skill runs on more than one host
    (a laptop as the `gh` user, an always-on host as the reviewer App), so a

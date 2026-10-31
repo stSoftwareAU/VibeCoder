@@ -1738,6 +1738,179 @@ Deno.test("ownDiffUnchanged: 50000-line patches are still judged correctly (Issu
   );
 });
 
+// Issue #4542: the sent-back commit changed a.ts and docs.md; a base merge then
+// absorbed docs.md, so the head's own diff lists only the files in headFiles.
+const dropPatch = "@@ -1 +1 @@\n-old\n+unfixed";
+const droppedGh = (
+  headFiles: Parameters<typeof compareFiles>[0] = [
+    { filename: "a.ts", patch: dropPatch },
+  ],
+) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "merge",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([
+      { filename: "a.ts", patch: dropPatch },
+      { filename: "docs.md", patch: "@@ -1 +1 @@\n-x\n+y" },
+    ]),
+    "repos/o/r/compare/main...head": compareFiles(headFiles),
+  }).gh;
+
+Deno.test("ownDiffUnchanged: a file a base merge absorbed may drop out when no finding names it (Issue #4542)", async () => {
+  const gh = droppedGh();
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file: "a.ts" }]),
+    true,
+  );
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+      }),
+      "nleck",
+      (since) =>
+        ownDiffUnchanged(gh, "o/r", "main", since, "head", [{ file: "a.ts" }]),
+    ),
+    "awaiting-fix",
+  );
+});
+
+Deno.test("ownDiffUnchanged: a dropped file that a finding names is a fresh review, qualified paths included (Issue #4542)", async () => {
+  const gh = droppedGh();
+  for (const file of ["docs.md", "pkg/docs.md"]) {
+    assertEquals(
+      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file }]),
+      false,
+      file,
+    );
+  }
+  // Control: only a.ts is named, so the dropped docs.md is allowed to go.
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file: "a.ts" }]),
+    true,
+  );
+  // The suffix must start at a path boundary, so xdocs.md names nothing here.
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{
+      file: "xdocs.md",
+    }]),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a dropped file with unknown or empty findings is a fresh review (Issue #4542)", async () => {
+  const gh = droppedGh();
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", undefined),
+    false,
+  );
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+    false,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a file only the head lists is a fresh review (Issue #4542)", async () => {
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "merge",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: dropPatch,
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: dropPatch,
+    }, {
+      filename: "new.ts",
+      status: "added",
+      patch: "@@ -0,0 +1 @@\n+new",
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{ file: "a.ts" }]),
+    false,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a dropped file beside a real change to a remaining file is a fresh review (Issue #4542)", async () => {
+  const gh = droppedGh([{
+    filename: "a.ts",
+    patch: "@@ -1 +1,2 @@\n-old\n+unfixed\n+added",
+  }]);
+  assertEquals(
+    await ownDiffUnchanged(gh, "o/r", "main", "X", "head", [{
+      file: "other.ts",
+    }]),
+    false,
+  );
+});
+
+// A 300-file head listing may be truncated. Its files beyond the sent-back
+// listing are head-only, which is what refuses it, not a length cap.
+Deno.test("ownDiffUnchanged: a 300-file head listing is refused as head-only files (Issue #4542)", async () => {
+  const headFiles = [
+    { filename: "a.ts", patch: dropPatch },
+    ...Array.from({ length: 299 }, (_, i) => ({
+      filename: `f${String(i).padStart(3, "0")}.ts`,
+      patch: "@@ -1 +1 @@\n-x\n+y",
+    })),
+  ];
+  assertEquals(
+    await ownDiffUnchanged(droppedGh(headFiles), "o/r", "main", "X", "head", [{
+      file: "other.ts",
+    }]),
+    false,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a repeated filename in either listing is a fresh review, since it cannot be paired by name (Issue #4542)", async () => {
+  const finding = [{ file: "other.ts" }];
+  const cases: [
+    string,
+    Parameters<typeof compareFiles>[0],
+    Parameters<typeof compareFiles>[0],
+  ][] = [
+    [
+      "sent-back listing repeats a.ts",
+      [
+        { filename: "a.ts", patch: dropPatch },
+        { filename: "a.ts", patch: dropPatch },
+      ],
+      [{ filename: "a.ts", patch: dropPatch }],
+    ],
+    [
+      "head listing repeats a.ts",
+      [{ filename: "a.ts", patch: dropPatch }],
+      [
+        { filename: "a.ts", patch: dropPatch },
+        { filename: "a.ts", patch: dropPatch },
+      ],
+    ],
+  ];
+  for (const [name, since, head] of cases) {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [{
+        sha: "merge",
+        parents: 2,
+      }]),
+      "repos/o/r/compare/main...X": compareFiles(since),
+      "repos/o/r/compare/main...head": compareFiles(head),
+    });
+    assertEquals(
+      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", finding),
+      false,
+      name,
+    );
+  }
+});
+
 Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call cannot wedge the watch loop", async () => {
   const started = Date.now();
   await assertRejects(
