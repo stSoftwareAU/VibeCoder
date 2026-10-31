@@ -68,6 +68,11 @@ export function findMissingCriteria(prBody: string): string[] {
     .map((entry) => entry.text);
 }
 
+/** Whether the closure block requires withholding the issue close. */
+export function withholdsIssueClose(summary: string): boolean {
+  return findMissingCriteria(summary).length > 0;
+}
+
 /**
  * Rewrite every closing keyword that names `issueNumber` as `Part of #N`,
  * leaving keywords for other issues untouched.
@@ -111,7 +116,7 @@ export function alignIssueCloseWithClosure(
   summary: string,
   issueNumber: number,
 ): string {
-  return findMissingCriteria(summary).length > 0
+  return withholdsIssueClose(summary)
     ? withholdIssueClose(summary, issueNumber)
     : restoreIssueClose(summary, issueNumber);
 }
