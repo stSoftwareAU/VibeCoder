@@ -63,6 +63,7 @@ export const RUN_FAILURE_CLASSES = [
   "interrupted",
   "scheduled-release",
   "out-of-credit",
+  "provider-unavailable",
   "stale-lineage",
   "oom",
   "killed-unknown",
@@ -200,6 +201,32 @@ const OUT_OF_CREDIT: RunFailureClassification = {
   failureClass: "out-of-credit",
   rationale: "The message reports an out-of-credit / billing condition.",
 };
+
+/**
+ * An external-orchestration provider unavailable on this host (Issue #4508).
+ *
+ * `preflightRole` in `orchestration/preflight.ts` refuses the run when the
+ * provider's subscription is exhausted or its login rejected. That is account
+ * state on the host, not a worker defect, so it is never auto-filed.
+ */
+const PROVIDER_UNAVAILABLE: RunFailureClassification = {
+  fixability: "not_code_fixable",
+  failureClass: "provider-unavailable",
+  rationale:
+    "The external-orchestration provider's subscription login or quota was unavailable on this host (authentication rejected or quota exhausted) — account state, not a worker defect.",
+};
+
+/**
+ * The external-orchestration provider is unavailable (Issue #4508).
+ *
+ * Read from the worker's own words only: the agent's quoted output must not
+ * trigger it. Gated on `internal_error`, the category the preflight refusal
+ * is recorded under. It deliberately does NOT cover the other preflight
+ * refusals (`CLI is not runnable`, `requires a fixed-price subscription`,
+ * `child has metered credentials`), which stay `worker-crash`.
+ */
+const PROVIDER_UNAVAILABLE_RE =
+  /\bexternal orchestration: [\w-]+ unavailable \(/;
 
 /** The agent did not deliver — a property of the attempt, not a worker defect. */
 const AGENT_OUTCOME: RunFailureClassification = {
@@ -394,6 +421,9 @@ function transcriptShowsToolRuntimeFailure(
  *    highest-cost false positive is auto-filing on a fleet-wide usage cap,
  *    so these win over everything, including a stack trace in the same
  *    message.
+ * 1b. An unavailable external-orchestration provider (`internal_error`,
+ *    worker's own words: `external orchestration: <provider> unavailable (`)
+ *    — account state on the host, not a worker crash (Issue #4508).
  * 2. A squash-lineage push refusal (Issue #534) — the base moved on; never
  *    a worker defect, and checked before the disk and crash rules so a
  *    branch name or a hint line in the refusal cannot be mistaken for
@@ -508,6 +538,13 @@ export function classifyRunFailure(
     };
   }
   if (isOutOfCreditMessage(message)) return OUT_OF_CREDIT;
+  // An unavailable external-orchestration provider is account state (Issue #4508).
+  if (
+    category === "internal_error" &&
+    PROVIDER_UNAVAILABLE_RE.test(
+      splitAgentNarration(failureMessage ?? "").worker,
+    )
+  ) return PROVIDER_UNAVAILABLE;
 
   // 2. A squash-lineage refusal is the base having moved on (Issue #534),
   //    stated in the worker's own words — and its text quotes a branch name

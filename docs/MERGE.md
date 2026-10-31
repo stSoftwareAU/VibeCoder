@@ -218,20 +218,31 @@ alone — reported as a success, because the count of preserved *contexts* says
 nothing about the rules that went.
 
 So before it rewrites the document the configurator **reads the live ruleset**
-(`GET /repos/{repo}/rulesets/{id}`), replaces only the `required_status_checks`
+(`GET /repos/{repo}/rulesets/{id}`), rewrites only the `required_status_checks`
 rule, and carries every other rule and the `bypass_actors` list through
-unchanged. The types it kept are reported as `preservedRules` and named in the
-setup output, so a run over a hardened ruleset shows what survived.
+unchanged. That rule is the **union** of the worker's contexts and the contexts
+already live in the ruleset, each live check keeping its `integration_id`
+(Issue #4487), so an owner-added check such as a secret scan or static-analysis
+gate survives a reconcile. The update never removes a check; pruning one is a
+deliberate human action (above). The types it kept are reported as
+`preservedRules` and named in the setup output, so a run over a hardened
+ruleset shows what survived.
 
 A ruleset whose current rules **cannot be read** — a 403, a 404, an unparseable
 body — fails the sync loudly and writes nothing. "Could not see it" is never
-read as "there was nothing there".
+read as "there was nothing there". A missing live `rules` array, or a
+malformed `required_status_checks` rule (missing `parameters` or its checks
+array, non-array checks, non-object entry, non-string or empty `context`, or a
+present, non-null non-integer `integration_id`) refuses the update loudly too,
+rather than being silently dropped. Checks with one context but different
+`integration_id`s remain separate because each pins the check to a different
+source app.
 
 ```mermaid
 flowchart TD
     A[Update planned:<br/>new context reported] --> B[GET the live ruleset]
     B -->|read fails| C[Refuse the update<br/>— sync fails loud]
-    B -->|read succeeds| D[Replace required_status_checks<br/>keep every other rule + bypass_actors]
+    B -->|read succeeds| D[Rewrite required_status_checks as union<br/>keep every other rule + bypass_actors]
     D --> E[PUT the merged document]
 ```
 

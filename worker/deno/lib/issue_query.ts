@@ -3340,7 +3340,29 @@ export async function fetchRecentlyClosedPRsForFleet(
 }
 
 /**
+ * Whether a **merged** PR positively names `issueNumber` (Issue #4478).
+ *
+ * Positive identification is the PR body's closing keywords (`closingRefs`)
+ * or the canonical delimited title form `(Issue #N)`, `(#N)`, `[#N]`. A bare
+ * `#N` in a title is only a mention, e.g. a PR that *filed* the issue, and
+ * must not decide a merged verdict, which is permanent (Issue #3151).
+ */
+export function mergedPrNamesIssue(
+  pr: ClosedPR,
+  issueNumber: number,
+): boolean {
+  return (pr.closingRefs ?? []).includes(issueNumber) ||
+    prTitleMatchesIssue(pr.title, issueNumber);
+}
+
+/**
  * Check if an issue is blocked by a recently-closed PR (Issue #1427).
+ *
+ * A **merged** PR blocks only on positive identification (Issue #4478), via
+ * {@link mergedPrNamesIssue}, because its verdict is permanent (Issue #3151).
+ * A **closed-unmerged** PR keeps the over-matching
+ * {@link prTitleReferencesIssue}, since its cooldown lapses and the retry
+ * path is the safer side to over-match on.
  *
  * Issue #319: this used to test the title for a bare `#N` with a `RegExp`
  * built from the issue number, which knows nothing about *which* issue a PR
@@ -3348,7 +3370,9 @@ export async function fetchRecentlyClosedPRsForFleet(
  * claiming NEAT-AI-Lamarck#187 … (Issue #209)" — was a PR for issue #209, yet
  * it blocked #178, #184, #187, #188 and #209 alike. Because a **merged** PR
  * stays in this set permanently (Issue #3151), those issues were stranded for
- * good, under a skip reason that reads as a passing "cooldown".
+ * good, under a skip reason that reads as a passing "cooldown". Issue #4478
+ * closed that gap for the merged verdict: a bare `#N` in a merged PR's title
+ * no longer blocks, so only {@link mergedPrNamesIssue} decides it.
  *
  * @param closedPRs - Array of recently-closed PRs
  * @param issueNumber - The issue number to check
@@ -3360,7 +3384,9 @@ export function isBlockedByRecentlyClosedPR(
 ): ClosedPR | null {
   if (closedPRs.length === 0) return null;
   return closedPRs.find((pr) =>
-    prTitleReferencesIssue(pr.title, issueNumber)
+    pr.merged === true
+      ? mergedPrNamesIssue(pr, issueNumber)
+      : prTitleReferencesIssue(pr.title, issueNumber)
   ) ??
     null;
 }

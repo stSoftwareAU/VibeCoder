@@ -942,7 +942,9 @@ clear. Work in flight, whoever holds it, is not a contradiction to report.
 
 The **merged-PR** gate closes the same hole for the one deferral that never
 clears by itself. Since Issue #3151 a merged fleet PR naming issue `#N` makes
-the scan skip `#N` permanently (`merged-pr-permanent`); only a trusted author
+the scan skip `#N` permanently (`merged-pr-permanent`). It names `#N` by a closing
+keyword in its body or by the delimited title reference `(Issue #N)`, `(#N)` or
+`[#N]`, not by a bare `#N` in its title (Issue #4478). Only a trusted author
 re-applying the pickup label with a date after the merge lifts it. The census
 did not model that, so a single such issue held `inversion_signal=true` for
 ever. On 2026-08-26 `stSoftwareAU/GRQ` logged
