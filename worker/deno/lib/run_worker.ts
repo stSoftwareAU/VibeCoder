@@ -239,6 +239,8 @@ export interface RunWorkerDeps {
   applyOptionalFeatureEnv?(configPath: string): Promise<unknown>;
   /** Log an informational line. */
   log(message: string): void;
+  /** Log a warning line for a degraded condition that can continue. */
+  logWarning(message: string): void;
   /** Log an error line. */
   logError(message: string): void;
   /**
@@ -564,6 +566,7 @@ export function createDefaultRunWorkerDeps(
     applyOptionalFeatureEnv: (configPath) =>
       applyOptionalFeatureEnv(configPath, setEnv),
     log: (message) => logger.info(message),
+    logWarning: (message) => logger.warn(message),
     logError: (message) => logger.error(message),
   };
 }
@@ -804,7 +807,7 @@ ${credentialFailure}`);
     for (const line of egress.diagnostics ?? []) {
       deps.log(`[run-worker] ${line}`);
     }
-    if (egress.warning) deps.logError(`[run-worker] ${egress.warning}`);
+    if (egress.warning) deps.logWarning(`[run-worker] ${egress.warning}`);
     if (egress.exitCode !== 0) {
       const reason = egress.marker ??
         `egress self-check failed: ${egress.verdict}`;

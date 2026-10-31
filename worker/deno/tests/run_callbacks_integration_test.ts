@@ -469,7 +469,20 @@ Deno.test({
         .filter((name): name is string => name !== undefined)
         .filter((name) =>
           !name.startsWith("VIBECODER_") &&
-          !["PATH", "HOME", "LANG", "TZ", "TMPDIR"].includes(name) &&
+          // Issue #4496: egress proxy; inheritedEnv drops any value with `@`.
+          ![
+            "PATH",
+            "HOME",
+            "LANG",
+            "TZ",
+            "TMPDIR",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NO_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "no_proxy",
+          ].includes(name) &&
           // `/bin/sh` sets these itself; they carry nothing of the worker's.
           !["PWD", "OLDPWD", "SHLVL", "IFS", "PS1", "_"].includes(name)
         );
