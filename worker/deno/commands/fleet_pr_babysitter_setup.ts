@@ -28,7 +28,6 @@ export function launchAgentPlist(
 ): string {
   const e = escapeXml;
   const runner = `${input.checkout}/fleet-pr-babysitter/run.sh`;
-  const logDir = `${input.home}/.vibe-coder/fleet-pr-babysitter`;
   const path =
     `${input.home}/.deno/bin:${input.home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
   const ghConfig = input.ghConfigDir
@@ -36,7 +35,7 @@ export function launchAgentPlist(
     : "";
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>/bin/bash</string><string>${
     e(runner)
-  }</string><string>--watch</string></array>\n<key>WorkingDirectory</key><string>${
+  }</string></array>\n<key>WorkingDirectory</key><string>${
     e(input.checkout)
   }</string>\n<key>EnvironmentVariables</key><dict><key>HOME</key><string>${
     e(input.home)
@@ -44,11 +43,7 @@ export function launchAgentPlist(
     e(path)
   }</string><key>DENO_EXECUTABLE</key><string>${
     e(input.deno)
-  }</string>${ghConfig}</dict>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>60</integer>\n<key>StandardOutPath</key><string>${
-    e(logDir)
-  }/service.log</string>\n<key>StandardErrorPath</key><string>${
-    e(logDir)
-  }/service.log</string>\n</dict></plist>\n`;
+  }</string>${ghConfig}</dict>\n<key>RunAtLoad</key><true/><key>StartInterval</key><integer>300</integer>\n<key>StandardOutPath</key><string>/dev/null</string>\n<key>StandardErrorPath</key><string>/dev/null</string>\n</dict></plist>\n`;
 }
 
 /** List missing or insufficient App installation permissions. */
@@ -370,7 +365,7 @@ async function main(): Promise<number> {
       `Launch agent file created at ${plist}, but bootstrap failed: ${error}`,
     );
   }
-  console.log(`Installed and started ${plist}. Log: ${logDir}/service.log`);
+  console.log(`Installed and started ${plist}. Logs: ${logDir}/logs`);
   console.log(`Stop: launchctl bootout gui/${uid}/${LABEL}`);
   return 0;
 }

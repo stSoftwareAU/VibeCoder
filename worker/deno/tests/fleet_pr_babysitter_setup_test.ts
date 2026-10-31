@@ -36,7 +36,7 @@ Deno.test("folder scripts forward options to the right Deno command", async () =
     for (
       const [script, target, option] of [
         ["setup.sh", "fleet_pr_babysitter_setup.ts", "--check"],
-        ["run.sh", "fleet_pr_babysitter.ts", "--dry-run"],
+        ["run.sh", "fleet_pr_babysitter_supervisor.ts", "--dry-run"],
       ] as const
     ) {
       const result = await runWithTimeout("bash", [
@@ -53,7 +53,7 @@ Deno.test("folder scripts forward options to the right Deno command", async () =
   }
 });
 
-Deno.test("launch agent runs the watcher and escapes filesystem paths", () => {
+Deno.test("launch agent schedules bounded passes and escapes filesystem paths", () => {
   const plist = launchAgentPlist({
     checkout: "/tmp/A & B",
     deno: "/usr/bin/deno",
@@ -65,7 +65,8 @@ Deno.test("launch agent runs the watcher and escapes filesystem paths", () => {
       "/tmp/A &amp; B/fleet-pr-babysitter/run.sh",
     ),
   );
-  assert(plist.includes("<string>--watch</string>"));
+  assert(plist.includes("<key>StartInterval</key><integer>300</integer>"));
+  assert(!plist.includes("service.log"));
   assert(
     plist.includes("<key>DENO_EXECUTABLE</key><string>/usr/bin/deno</string>"),
   );

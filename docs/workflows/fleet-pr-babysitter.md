@@ -39,8 +39,22 @@ that the signed-in `gh` account is a configured fleet identity, creates a new
 launchd job and starts it; it refuses to overwrite an existing job. The agent
 uses the signed-in `gh` account, not the App, until App authentication is
 implemented. Every fleet host must trust that account's branch locks. To stop
-the agent, use the `launchctl bootout` command printed by setup; its output is
-kept in `~/.vibe-coder/fleet-pr-babysitter/service.log`.
+the agent, use the `launchctl bootout` command printed by setup. Launchd starts
+one pass every five minutes and starts another after a process failure.
+
+Manual and launchd runs keep their output under
+`~/.vibe-coder/fleet-pr-babysitter/logs`. Each completed pass is compressed;
+the newest 30 compressed logs are retained, with each pass limited to 10 MiB
+before compression. These logs may contain model output and are private to the
+host user; do not publish them. If a process is interrupted or compression
+fails, its uncompressed log remains available for diagnosis and the next pass
+retries compression after confirming that its owner has exited.
+
+An optional executable `~/.vibe-coder/fleet-pr-babysitter/health-hook` receives
+the pass exit code as its sole argument. It is bounded to ten minutes; hook
+failure is logged and the next pass retries. Organisation-specific extensions
+can use this to publish a separate babysitter heartbeat and failure record.
+Dry runs and runs limited to a repository or PR do not report service health.
 
 The host needs `gh` authenticated as a fleet account, `git`, `deno`, `codex`
 and RTK. Before execution, put that login in `service_accounts` or
@@ -50,8 +64,7 @@ cannot verify other hosts. Use a dedicated account with only the access it
 needs. The agent is asked to use RTK; configure Codex's RTK hook as well.
 Codex runs with `--full-auto` and is told not to ask questions. When a fix
 needs a human decision, it should report the blocker and stop without a
-commit. Capture the runner's standard output and error when running unattended
-so the report can be read later. The sandbox still applies; an unavailable
+commit. The sandbox still applies; an unavailable
 permission or credential can stop a run and must be corrected by the operator.
 
 Only fleet-authored, non-draft, same-repository PRs are considered. A failed
