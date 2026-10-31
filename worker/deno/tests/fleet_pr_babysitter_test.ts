@@ -329,10 +329,19 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     GH_TOKEN: agentToken,
   });
   assertEquals(call.options.timeoutMs, 90 * 60_000);
-  const args = call.options.args as string[];
-  assert(args.includes("exec"));
-  assertEquals(args[args.indexOf("--sandbox") + 1], "workspace-write");
-  assert(args.includes('approval_policy="never"'));
-  assertEquals(args[args.indexOf("--cd") + 1], dir);
-  assert(args.includes(prompt));
+  assertEquals(call.options.args, [
+    "exec",
+    "-c",
+    'approval_policy="never"',
+    "--sandbox",
+    "workspace-write",
+    "--cd",
+    dir,
+    "--output-last-message",
+    `${dir}/.babysitter-response`,
+    prompt,
+  ]);
+  assertEquals(call.options.stdin, "null");
+  assertEquals(call.options.stdout, "inherit");
+  assertEquals(call.options.stderr, "inherit");
 });
