@@ -581,9 +581,10 @@ export interface ConflictConclusion {
   /** The rung that could not decide, when the failure was a conflict. */
   rung?: ConflictLadderRung;
   /**
-   * Set on a not-charged conflict refusal — the agent was not offered this
-   * cycle, or the merge gate refused the resolution (Issue #4328). Counted
-   * against {@link MILESTONE_REFUSAL_CEILING}.
+   * Set on a not-charged conflict refusal — the merge gate refused the
+   * resolution, or the merge was refused by a cargo withhold (Issue #4328,
+   * Issue #4326). Counted against {@link MILESTONE_REFUSAL_CEILING}. A
+   * cycle-budget deferral (Issue #4517) is not a refusal and is not counted.
    */
   refusal?: true;
   /**
@@ -599,7 +600,9 @@ export interface ConflictConclusion {
  * A refused conflict never spends the budget, so a branch refused every cycle
  * would be retried for ever. Once it has been refused `ceiling` cycles in a
  * row, this verdict becomes a charged failure marked for the roll-back. Any
- * other verdict, or a refusal below the ceiling, passes through unchanged.
+ * other verdict, or a refusal below the ceiling, passes through unchanged. A
+ * cycle-budget deferral carries no `refusal` (Issue #4517), so it never
+ * reaches the ceiling and is returned unchanged.
  *
  * @param verdict - The verdict {@link judgeSyncFailure} reached
  * @param refusedBefore - Consecutive refusals already on the ledger
@@ -914,6 +917,13 @@ export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
 export const CARGO_BUDGET_AGENT_WITHHELD = "cargo budget withheld the agent";
 
 /**
+ * Ledger reason when a conflict is deferred because too little of the cycle
+ * was left to offer the agent (Issue #4517). It waits for a cycle with the
+ * runway. It is not a refusal, so it is never counted toward the roll-back.
+ */
+export const AGENT_DEFERRED_CYCLE_BUDGET = "agent deferred: cycle budget";
+
+/**
  * A charged refusal the recovery ladder owns (Issue #4328).
  *
  * A resolver decline and a merged-tree check failure climb the same rungs.
@@ -1037,11 +1047,12 @@ export function judgeSyncFailure(
     }
     const rung = failedConflictRung(reasons);
     if (!agentAllowed) {
+      // Issue #4517: a deferral is not a refusal, so it is never counted
+      // toward the ceiling and never climbs to the roll-back.
       return {
         outcome: "not-charged",
-        reason: "agent deferred: cycle budget",
+        reason: AGENT_DEFERRED_CYCLE_BUDGET,
         rung,
-        refusal: true,
       };
     }
     if (isGenuineUndecidedConflict(error)) {
@@ -2794,7 +2805,8 @@ export async function syncMilestoneBranches(
         // actually left, so a second conflicting branch is refused only when
         // the budget genuinely cannot cover another run, and a refusal still
         // concludes `agent deferred: cycle budget` rather than a charged
-        // failure.
+        // failure, and that deferral is never counted toward the roll-back
+        // (Issue #4517).
         const grant = grantAgentRun({
           nowMs: now(),
           ...(deps.deadlineEpochMs !== undefined
@@ -3157,7 +3169,9 @@ export async function syncMilestoneBranches(
                 `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
                   `agent deferred: cycle budget — too little of the cycle was ` +
                   `left to cover a run, so this sync stopped after the rules ` +
-                  `(Issue #2309)`,
+                  `(Issue #2309). The deferral is not counted toward the ` +
+                  `roll-back; the branch waits for a cycle with the runway ` +
+                  `(Issue #4517)`,
               );
             }
 

@@ -4380,7 +4380,9 @@ resolution is a refusal too: it is counted in `refusedCycles`, and once the
 sync has been refused `MILESTONE_REFUSAL_CEILING` (3) cycles in a row, the next
 refusal is charged as a failure and climbs to the hand-off. The wedge holds the
 milestone's claims back; the ceiling is what ends the ladder on a cycle that
-does run the sync.
+does run the sync. A cycle-budget deferral (`agent deferred: cycle budget`) is
+not a refusal (Issue #4517): it is not counted in `refusedCycles` and never
+climbs, and the branch waits for a cycle with the runway.
 
 ```mermaid
 stateDiagram-v2
@@ -4705,7 +4707,8 @@ repeating — `conflictKey`, `reason`, both tips, the consecutive `count` and
 whether the worker diagnostic has been `reported`, Issue #2388),
 `lastSyncedDefaultSha` and
 `rollbacks`, plus three fields Issue #4328 adds: `refusedCycles` (consecutive
-not-charged refusals, zeroed by a charged conclusion or a landed sync),
+not-charged refusals, zeroed by a charged conclusion or a landed sync; a
+cycle-budget deferral is not a refusal and leaves it unchanged, Issue #4517),
 `rollbackFailures` (lifetime roll-backs that could not merge) and `rebuilds`
 (lifetime milestone rebuilds on the branch). Every field is optional and every malformed field is dropped, so a
 file written before the ledger existed loads as a branch with an unspent budget
@@ -4792,9 +4795,9 @@ is the branch's to answer for:
 | Conflicted and every rung left it undecided                     | `failed` — one attempt charged, due again next cycle |
 | The agent ran out **its own** timeout                           | `failed` — the rung was climbed and the conflict beat it (Issue #2305) |
 | The **worker** ended the run at the cycle deadline              | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305) |
-| Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309); counted in `refusedCycles`, and the fourth consecutive refusal is `failed` and climbs to the hand-off (Issue #4328) |
+| Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309); not counted in `refusedCycles` and never climbs: the branch waits for a cycle with the runway (Issue #4517) |
 | Merge gate refused the merged tree (`isMergeGateFailure`)        | `failed` — one attempt charged, as for a textual conflict (Issue #4304) |
-| Merge gate refused the resolution (`gateFailure`)                | `not-charged` — counted in `refusedCycles` like the row above (Issue #4328); the gate keeps its own escalation, reported once |
+| Merge gate refused the resolution (`gateFailure`)                | `not-charged` — counted in `refusedCycles`, and the fourth consecutive one is `failed` and climbs to the hand-off (Issues #4328, #4517); the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
 | Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
 | Merged                                                          | `resetConflictLedgerOnSuccess`             |
@@ -4837,17 +4840,18 @@ rule with **both** halves:
   would refuse the rung on every cycle whose remaining budget is shorter than
   an hour — almost all of them — and silently disable the ladder's last rung
   while making every conflict `not-charged`, so the budget would never be spent
-  by a conflict nobody had judged. The refusal ceiling (Issue #4328) now bounds
-  that, but the gate was still the wrong place to decide it.
+  by a conflict nobody had judged. A deferral is not counted toward the refusal
+  ceiling (Issues #4328, #4517), so the branch waits for a cycle with the runway
+  instead; the gate was still the wrong place to decide it.
 
 The rung used to be latched: the first branch to hold it spent the cycle's one
 grant, and every other conflicting branch that cycle was refused a rung the
 budget could still have covered (Issue #1778). Issue #2309 removed the latch.
 `grantAgentRun` is asked **per branch**, reading the deadline that is actually
 left, so a second conflicting branch is refused only when the floor above says
-the cycle can no longer cover a run — and a refused branch still concludes
-`agent deferred: cycle budget`, and is charged only once it has been refused
-`MILESTONE_REFUSAL_CEILING` (3) cycles in a row (Issue #4328). Priority 1.72 is
+the cycle can no longer cover a run — and a deferred branch still concludes
+`agent deferred: cycle budget`, which is neither counted nor charged: it waits
+for a cycle with the runway (Issue #4517). Priority 1.72 is
 declared `agentBacked` (like the drain's own handler) so the handler that spawns
 that agent gets the cycle-deadline watchdog rather than the flat 600-second one.
 
@@ -4945,11 +4949,13 @@ consequences are worth naming:
   (Issue #4304: it is a conflict git could not see, answered by the same
   roll-back and `merge-fallback` flag); a ruleset-refused push or any other
   `not-charged` verdict is not — charging the branch for a fault that
-  is not its own is what Issues #1772 and #1778 removed. The one exception is a refusal that has
-  repeated `MILESTONE_REFUSAL_CEILING` cycles in a row, which is charged on the
-  next refusal (Issue #4328). Those deferrals are
+  is not its own is what Issues #1772 and #1778 removed. The one exception is a gate
+  refusal of the resolution that has repeated `MILESTONE_REFUSAL_CEILING` cycles in a row,
+  which is charged on the next refusal (Issues #4328, #4517). Those deferrals are
   bounded by the per-issue expected-skip cooldown instead: one bounce per
-  issue, then the issue is in cooldown.
+  issue, then the issue is in cooldown. A cycle-budget deferral
+  (`agent deferred: cycle budget`) is neither charged nor counted toward that
+  ceiling (Issue #4517).
 
 When the branch cannot be brought level the run **defers**: it exits before any
 implementation agent is spent, with reason
