@@ -3,6 +3,7 @@ import {
   eligibleAuthor,
   reason,
   recoverTemporaryClones,
+  runRepairs,
   validateAndCommit,
 } from "../commands/fleet_pr_babysitter.ts";
 
@@ -109,4 +110,21 @@ Deno.test("babysitter stages resolved merge files and refuses conflict markers",
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("repairs run in parallel within the limit and failures do not block others", async () => {
+  let active = 0;
+  let peak = 0;
+  const completed: number[] = [];
+  const tasks = [0, 1, 2].map((id) => async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    active--;
+    completed.push(id);
+    if (id === 0) throw new Error("repair failed");
+  });
+  await assertRejects(() => runRepairs(tasks, 2), AggregateError);
+  assertEquals(peak, 2);
+  assertEquals(completed.sort(), [0, 1, 2]);
 });

@@ -1,4 +1,4 @@
-/** A small, single-PR-at-a-time fleet PR babysitter. */
+/** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
@@ -38,6 +38,32 @@ interface Pr {
 }
 const fields =
   "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,statusCheckRollup";
+
+/** Run independent repairs with a fixed limit; one failure must not stop others. */
+export async function runRepairs(
+  tasks: (() => Promise<void>)[],
+  limit = 2,
+): Promise<void> {
+  const failures: unknown[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) {
+      const task = tasks[next++]!;
+      try {
+        await task();
+      } catch (error) {
+        failures.push(error);
+        console.error("Babysitter repair failed:", error);
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, tasks.length) }, worker),
+  );
+  if (failures.length) {
+    throw new AggregateError(failures, "One or more PR repairs failed");
+  }
+}
 
 /** Remove only babysitter clones whose owner process has exited. */
 export async function recoverTemporaryClones(root: string): Promise<void> {
@@ -222,7 +248,7 @@ async function fix(
       throw new Error("PR lock renewal failed; refusing to start agent");
     }
     child = spawnCommandWithTimeout("codex", {
-      timeoutMs: 30 * 60_000,
+      timeoutMs: 90 * 60_000,
       args: [
         "exec",
         "-c",
@@ -330,6 +356,7 @@ async function pass(
       `Add App identity ${login} to service_accounts or fleet_pr_authors on every fleet host before running fixes, so workers trust its locks`,
     );
   }
+  const repairs: (() => Promise<void>)[] = [];
   for (const repo of config.repos) {
     if (repoFilter && repo !== repoFilter) continue;
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
@@ -364,9 +391,10 @@ async function pass(
         !eligibleAuthor(pr.author.login, authors, prFilter !== undefined)
       ) continue;
       console.log(`${repo}#${pr.number}: ${why}`);
-      if (execute) await fix(repo, pr, authors, login);
+      if (execute) repairs.push(() => fix(repo, pr, authors, login));
     }
   }
+  await runRepairs(repairs);
 }
 if (import.meta.main) {
   installConsoleRedaction();
