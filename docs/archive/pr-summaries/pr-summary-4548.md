@@ -58,7 +58,8 @@ No new test: the change is one sentence in a skill's prompt wording, and no test
 pins that sentence (grep of `worker/deno/tests` found none). Existing tests that
 read the skill or the shared brief were run on the final head:
 `deno task test:unit` on `claude_skill_frontmatter_test.ts`,
-`pr_review_brief_shared_3395_test.ts`, `review_fleet_prs_skill_labels_2882_test.ts`,
+`pr_review_brief_shared_3395_test.ts`,
+`review_fleet_prs_skill_labels_2882_test.ts`,
 `review_fleet_prs_learn_3396_test.ts`, `review_fleet_prs_private_refs_test.ts`,
 `references_source_probe_test.ts` (56 passed, 0 failed), and
 `pre_pr_verifier_3395_test.ts` with `review_fleet_prs_checklists_3594_test.ts`.
