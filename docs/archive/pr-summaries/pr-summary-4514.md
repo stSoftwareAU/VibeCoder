@@ -114,6 +114,10 @@ protected child whose rollup cannot be opened is not left closed", and
 fail. No assertion was removed or changed; their mocked merged PRs carry no
 `headRefOid`, so the new check does not match.
 
+Review follow-up in `milestone_route_restore_test.ts`: the landed-child
+unprotected-base test checks the created rollup body says the branch has
+changes the default branch does not have, and does not claim open work.
+
 Red-checks (guard broken on purpose, then restored):
 
 - Helper forced to `false`: the unchanged-head route test, the
