@@ -400,7 +400,13 @@ bash `worker/run_core.sh` conductor. It sequences:
    its issue as completed. The issue stays open with its existing labels so the worker can finish
    it. Both closers record the missing criteria in their diagnostic output;
    they neither apply `needs-human` nor post repeated hand-off comments.
-   The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
+   `ensureIssueClosedIfPrMerged` (the sweep and recovery path) logs a
+   did-not-land or missing-criteria hold at WARNING once per verdict; an
+   unchanged repeat, including the one the next hourly worker start produces,
+   is logged at DEBUG (`decision_warn_signatures.json` in the work directory,
+   Issue #4495).
+   When a criterion is marked missing, the PR itself is raised as `Part of #N`
+   rather than `Closes #N`
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.
 
@@ -3235,8 +3241,9 @@ ran. Tracker, summary PR and milestone froze forever. Four guards in
    unchanged.
 2. **Nothing-to-merge closes directly.** `hasNothingToMerge()` is checked
    _before_ creating a tracker. When the milestone branch is missing, or exists
-   but is 0 commits ahead of the default branch or its comparison reports no
-   changed files, no tracker/PR is created — any
+   but is 0 commits ahead of the default branch, its comparison reports no
+   changed files, or its head is still the head of a rollup already merged into
+   the default branch (Issue #4514), no tracker/PR is created — any
    open trackers are closed and the milestone is closed directly with a one-line
    log. Fails safe: an ambiguous compare leaves the milestone open.
 3. **Duplicate-tracker self-heal.** Each pass,
