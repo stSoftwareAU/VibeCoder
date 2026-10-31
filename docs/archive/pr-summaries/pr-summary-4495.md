@@ -127,16 +127,16 @@ after, counts per test file): skipping `loadStore` →
 `run_housekeeping_test.ts` 1; skipping the write on a changed signature →
 `decision_warn_dedup_test.ts` 4 red, `issue_lifecycle_test.ts` 1,
 `run_housekeeping_test.ts` 1; disabling `pruneStale` →
-`decision_warn_dedup_test.ts` age-out test red (1); disabling the daily
-re-stamp → `decision_warn_dedup_test.ts` age-out test red (1). The other
-changed test files stayed green in each case. The error-branch checks below
-are all in `decision_warn_dedup_test.ts`. Error-branch red checks (PR #4535
-review), each reverted after: rethrowing a non-NotFound read error → the unreadable-store test red;
-rethrowing in `saveStore`'s catch → the unreadable-store and failed-write tests
-red; turning the "unreadable" `warn` into a no-op → the unreadable-store test
-red; turning the "could not be written" `warn` into a no-op → both write-fault
-tests red; dropping the `removeSync(temp)` cleanup → the unreadable-store test
-red (temp file left). Production wiring is covered by
+`decision_warn_dedup_test.ts` age-out test red (1); disabling the daily re-stamp
+→ `decision_warn_dedup_test.ts` age-out test red (1). The other changed test
+files stayed green in each case. The error-branch checks below are all in
+`decision_warn_dedup_test.ts`. Error-branch red checks (PR #4535 review), each
+reverted after: rethrowing a non-NotFound read error → the unreadable-store test
+red; rethrowing in `saveStore`'s catch → the unreadable-store and failed-write
+tests red; turning the "unreadable" `warn` into a no-op → the unreadable-store
+test red; turning the "could not be written" `warn` into a no-op → both
+write-fault tests red; dropping the `removeSync(temp)` cleanup → the
+unreadable-store test red (temp file left). Production wiring is covered by
 `run_housekeeping_test.ts`: two startup sweeps with fresh in-memory state
 produce one warning. Before the call moved into housekeeping, the new test
 failed because the store file was absent.
