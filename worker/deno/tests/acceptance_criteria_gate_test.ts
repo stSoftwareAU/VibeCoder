@@ -536,3 +536,19 @@ Deno.test("buildClosureGateComment - names each problem and the required shape",
   assertStringIncludes(comment, "evidence:");
   assertStringIncludes(comment, "unrequested");
 });
+
+Deno.test("buildClosureGateComment - does not claim the PR is withheld or that a gate blocks", () => {
+  const result = validateAcceptanceClosure({
+    issueBody: ISSUE_WITH_CRITERIA,
+    prSummaryContent: summary([]),
+  });
+  const comment = buildClosureGateComment(result);
+
+  assertStringIncludes(comment, "raised anyway");
+  assertEquals(
+    comment.match(
+      /\bblocks?\b (a|the|PR)|blocks a criteria|blocked PR|before the PR is raised|no PR (is )?raised|until every criterion|PR is raised only/i,
+    ),
+    null,
+  );
+});
