@@ -47,11 +47,18 @@ PRs continue. A persistence failure after an API request still fails loud.
 
 ## Version-only re-bumps
 
-The own-diff comparison skips a sent-back PR as `awaiting-fix` when, in each
-file, the added and removed lines still match: the same number of hunks, in
-the same order. Hunk headers and unchanged context lines are ignored, so a
-base merge that only moves the context around a CHANGELOG entry still awaits
-the fix. The version exception then applies when the changed lines differ
+The own-diff comparison skips a sent-back PR as `awaiting-fix` when each
+file still matches. In a file no earlier finding names, the added and removed
+lines must match: the same number of hunks, in the same order. Hunk headers
+and unchanged context lines are ignored there, so a base merge that only moves
+the context around a CHANGELOG entry still awaits the fix. In a file an
+earlier finding names, or in any file when the findings for the exact
+sent-back head are missing, the context lines must match as well (only hunk
+headers are ignored), because the fix may be moving the PR's own line relative
+to its context, for example a CHANGELOG entry from under a released heading to
+above it. A base merge that moves context in such a file gets a fresh review.
+
+The version exception applies when the patches differ
 only by a strict version increment: both versions of that modified-file patch
 are one complete hunk replacing one version line with a higher version. The
 line may be a bare version, a JSON `"version": "..."` key (with an optional

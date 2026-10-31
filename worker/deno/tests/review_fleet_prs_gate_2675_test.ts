@@ -1523,6 +1523,62 @@ Deno.test("ownDiffUnchanged: reordered added lines are a fresh review (Issue #44
   );
 });
 
+// PR #4525 review: a fix that only moves the PR's own added line relative to its
+// context (the entry sat under the released heading, the fix puts it above) has
+// the same hunk count and the same changed lines on both sides.
+const releasedHeading = ["## 1.2.0", "", "- older entry"];
+const entryBelowHeading = changelogHunk("@@ -10,4 +10,5 @@", releasedHeading, [
+  OWN_ENTRY,
+]);
+const entryAboveHeading = changelogHunk("@@ -10,4 +10,5 @@", [], [OWN_ENTRY], [
+  ...releasedHeading,
+]);
+
+const relocatedWith = (findings?: { file: string }[]) =>
+  ownDiffUnchanged(
+    ownDiffGh(entryBelowHeading, entryAboveHeading),
+    "o/r",
+    "main",
+    "X",
+    "head",
+    findings,
+  );
+
+Deno.test("ownDiffUnchanged: moving the PR's own line in a file an earlier finding names is a fresh review (PR #4525 review)", async () => {
+  assertEquals(await relocatedWith([{ file: "CHANGELOG.md" }]), false);
+  // The qualified path of the finding counts the same way.
+  assertEquals(await relocatedWith([{ file: "docs/CHANGELOG.md" }]), false);
+  // Findings that are unknown cannot rule the move out as the fix.
+  assertEquals(await relocatedWith(undefined), false);
+  // Control: no finding names the file, so only the changed lines are compared.
+  assertEquals(await relocatedWith([{ file: "a.ts" }]), true);
+});
+
+Deno.test("skipReason: a base merge moving context in a file no finding names stays awaiting-fix, a relocated line in a named file does not (PR #4525 review)", async () => {
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+  });
+  const skipWith = (since: string, head: string, file: string) =>
+    skipReason(
+      pr,
+      "nleck",
+      (sent) =>
+        ownDiffUnchanged(ownDiffGh(since, head), "o/r", "main", sent, "head", [
+          { file },
+        ]),
+    );
+  assertEquals(
+    await skipWith(sinceEntry, headEntry, "a.ts"),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await skipWith(entryBelowHeading, entryAboveHeading, "CHANGELOG.md"),
+    null,
+  );
+});
+
 Deno.test("ownDiffUnchanged: 50000-line patches are still judged correctly (Issue #4476)", async () => {
   const bigPatch = (context: string, last: string) => {
     const lines = Array.from(

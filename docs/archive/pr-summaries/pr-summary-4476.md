@@ -1,9 +1,13 @@
 ## Summary
 
 `ownDiffUnchanged` (review-fleet-prs gate) now compares each file's added and
-removed lines instead of its whole patch, so a clean base merge that only moves
-the context around a sent-back PR's CHANGELOG entry leaves the PR `awaiting-fix`
-instead of triggering another full xhigh review. Closes #4476.
+removed lines instead of its whole patch, in files no earlier finding names, so
+a clean base merge that only moves the context around a sent-back PR's CHANGELOG
+entry leaves the PR `awaiting-fix` instead of triggering another full xhigh
+review. In a file an earlier finding names, or any file when the findings are
+unknown, the header-normalised whole patch is still compared, because the fix
+may move the PR's own line relative to its context (PR #4525 review). Closes
+#4476.
 
 ## Spec
 
@@ -14,7 +18,10 @@ instead of triggering another full xhigh review. Closes #4476.
   above this PR's entry and made every base merge look like a change.
 - The reduction keeps the `-`/`+` lines of each hunk in order, so the check
   stays strict about what the PR itself edits and only stops caring about what
-  surrounds it.
+  surrounds it, but only where the surroundings cannot be the fix: a file an
+  earlier finding names (or any file when findings are unknown, as the version
+  exception already treats them) keeps the old `normalisePatch` comparison, so
+  moving the PR's own line above or below its context gets a fresh review.
 
 ### Essential Design Decisions
 
@@ -24,7 +31,8 @@ instead of triggering another full xhigh review. Closes #4476.
   review (fail closed).
 - Everything else in `ownDiffUnchanged` is unchanged: file list, names,
   statuses, previous names, the version-increment exception (reads the raw
-  patches), the earlier-finding guard and the fallbacks.
+  patches), the earlier-finding guard and the fallbacks. `normalisePatch` is
+  kept for the named-file case.
 - Cannot approve anything: `awaiting-fix` applies only while the latest review
   requests changes, and the next push that changes any added or removed line
   gets a full review.
@@ -41,8 +49,11 @@ Backend/skill-script change; no UI files touched. Tests drive the real
 
 ```mermaid
 flowchart LR
-    P["compare base...since / base...head"] --> R["changedLinesByHunk: keep -/+ lines per hunk"]
-    R --> S{"same hunks,<br/>same changed lines?"}
+    P["compare base...since / base...head"] --> N{"earlier finding names<br/>the file, or findings unknown?"}
+    N -- yes --> W["whole patch, hunk headers blanked"]
+    N -- no --> R["changedLinesByHunk: keep -/+ lines per hunk"]
+    W --> S{"same?"}
+    R --> S
     S -- yes --> A["awaiting-fix"]
     S -- no --> V{"strict version<br/>increment only?"}
     V -- yes --> A
@@ -58,8 +69,9 @@ Twinned rule: none found (`normalisePatch` had no other caller).
 
 ## Test Plan
 
-Added to `worker/deno/tests/review_fleet_prs_gate_2675_test.ts` (8 tests, all
-named "(Issue #4476)"; no existing test or assertion edited or removed):
+Added to `worker/deno/tests/review_fleet_prs_gate_2675_test.ts` (8 tests named
+"(Issue #4476)" and 2 named "(PR #4525 review)"; no existing test or assertion
+edited or removed):
 
 - Context a base merge moved, added lines identical → `awaiting-fix` via
   `skipReason`.
@@ -72,15 +84,23 @@ named "(Issue #4476)"; no existing test or assertion edited or removed):
 - Reordered added lines → fresh review (with control).
 - 50,000-line patch pair: identical changed lines → unchanged, one changed line
   → fresh review.
+- PR #4525 review: a CHANGELOG entry moved from below a released heading to above
+  it → fresh review when a finding names `CHANGELOG.md` (bare or qualified path)
+  or findings are unknown; unchanged when only an unrelated file is named.
+- PR #4525 review, through `skipReason`: the issue's moved-context case in an
+  unnamed file stays `awaiting-fix`; the relocated line in a named file is `null`
+  (fresh review).
 
 Red checks (each break applied alone, then restored):
 
 - Old `normalisePatch` equality restored → 8 failed (context-moved test red).
+- Findings gate removed (changed lines compared for every file) → the two
+  PR #4525 review tests red (2 failed, 33 passed).
 - Hunk-count check dropped → extra-hunk test red.
 - `-` lines dropped from the reduction → removed-line test red.
 - `\` marker handling dropped → marker test red.
 
-Result: `deno task test:unit tests/review_fleet_prs_gate_2675_test.ts` — 33
+Result: `deno task test:unit tests/review_fleet_prs_gate_2675_test.ts` — 35
 passed, 0 failed; `deno fmt --check`, `deno lint`, `deno check` clean on the two
 code files. The five tests that read the skill docs (23 tests) pass.
 
