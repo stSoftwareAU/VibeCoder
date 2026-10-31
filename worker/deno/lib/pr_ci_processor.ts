@@ -870,10 +870,10 @@ async function _processCiFailureLocked(
       maxRetries: maxCiRetries,
     });
 
-    // Issue #4304: no "manual intervention is required" comment. The failed
-    // jobs are re-run, so a fresh check run with a fresh retry budget comes
-    // back to the lane; the fleet-wide auto-fix cap, which abandons the PR
-    // and redoes its issue, bounds the whole loop.
+    // Issue #4304: no "manual intervention is required" comment. The worker
+    // attempts the rerun; GitHub's permanent refusal is remembered so a
+    // fresh check run or another attempt can still reach the lane. The
+    // fleet-wide auto-fix cap bounds the repair loop.
     const rerunMarkerState = await readPrCiFixMarkers({
       repo,
       prNumber,

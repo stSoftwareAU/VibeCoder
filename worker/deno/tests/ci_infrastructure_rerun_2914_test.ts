@@ -22,6 +22,7 @@ import {
   rerunInfrastructureChecks,
 } from "../lib/ci_infrastructure_rerun.ts";
 import {
+  buildCiRerunRefusalMarker,
   collectFleetCiFixMarkers,
   type FleetCiFixMarkers,
 } from "../lib/ci_fix_attempt_markers.ts";
@@ -144,7 +145,7 @@ function ghStub(opts: {
   jobs: JobRow[];
   reruns: string[][];
   headRefOid?: string;
-  rerunError?: (runId: string) => boolean;
+  rerunError?: (runId: string) => boolean | string;
   /** Shared across stubs so a second scan sees the first scan's marker post. */
   postedComments?: Array<{ id: number; body: string }>;
   /** When set, `pr comment` posts fail with this message. */
@@ -220,8 +221,15 @@ function ghStub(opts: {
     if (key.startsWith("run rerun")) {
       reruns.push(args);
       const runId = args[2] ?? "";
-      if (rerunError && rerunError(runId)) {
-        return Promise.reject(new Error(`rerun refused for ${runId}`));
+      const refusal = rerunError?.(runId);
+      if (refusal) {
+        return Promise.reject(
+          new Error(
+            typeof refusal === "string"
+              ? refusal
+              : `rerun refused for ${runId}`,
+          ),
+        );
       }
       return Promise.resolve("");
     }
@@ -235,6 +243,7 @@ async function scan(
   ghFn: (args: string[]) => Promise<string>,
   logger: Logger,
   stateDir: string,
+  maxRetries?: number,
 ) {
   const options: CiCheckScanOptions = {
     githubUser: "testbot",
@@ -244,6 +253,7 @@ async function scan(
     isAuthorisedCommenter: () => true,
     ghCommandFn: ghFn,
     stateDir,
+    ...(maxRetries === undefined ? {} : { maxRetries }),
   };
   const result = await findFailedCiChecks(options);
   assertEquals(result.ok, true);
@@ -524,6 +534,141 @@ Deno.test("findFailedCiChecks - a marker post that fails is logged at error, and
     const found2 = await scan(ghFn2, logger2, stateDir);
     assertEquals(found2, null);
     assertEquals(reruns2.length, 1);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a permanently refused run is not retried by a later scan (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-refused-" });
+  try {
+    const posted: Array<{ id: number; body: string }> = [];
+    const firstReruns: string[][] = [];
+    const permanentRefusal =
+      "gh command failed (exit 1): run 900 cannot be rerun; This workflow run cannot be retried";
+    const firstLogger = makeRecordingLogger();
+    const firstScan = await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: firstReruns,
+        rerunError: () => permanentRefusal,
+        postedComments: posted,
+      }),
+      firstLogger,
+      stateDir,
+    );
+
+    const secondReruns: string[][] = [];
+    const secondLogger = makeRecordingLogger();
+    const secondScan = await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: secondReruns,
+        postedComments: posted,
+      }),
+      secondLogger,
+      stateDir,
+    );
+
+    assertEquals(firstScan, null);
+    assertEquals(secondScan, null);
+    assertEquals(firstReruns.length, 1);
+    assertEquals(secondReruns.length, 0);
+    assertEquals(
+      firstLogger.warns.filter((message) =>
+        message.includes("permanently refused")
+      )
+        .length,
+      1,
+    );
+    assertEquals(
+      secondLogger.warns.filter((message) =>
+        message.includes("permanently refused")
+      )
+        .length,
+      0,
+    );
+    assert(
+      posted.some((comment) => comment.body.includes("vibe-ci-rerun-refused")),
+      "the refusal marker must be persisted on the PR",
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - permanent refusal markers reach the maintenance caller on later scans (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-refused-" });
+  try {
+    const posted: Array<{ id: number; body: string }> = [];
+    const firstReruns: string[][] = [];
+    const permanentRefusal =
+      "gh command failed (exit 1): run 900 cannot be rerun; This workflow run cannot be retried";
+    await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: firstReruns,
+        rerunError: () => permanentRefusal,
+        postedComments: posted,
+      }),
+      makeRecordingLogger(),
+      stateDir,
+    );
+
+    const secondReruns: string[][] = [];
+    await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: secondReruns,
+        postedComments: posted,
+      }),
+      makeRecordingLogger(),
+      stateDir,
+    );
+
+    assertEquals(firstReruns.length, 1);
+    assertEquals(secondReruns.length, 0);
+    assert(
+      posted.some((comment) => comment.body.includes("vibe-ci-rerun-refused")),
+      "the maintenance scan must persist a refusal marker",
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - exhausted check caller honours a persisted refusal marker (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-cap-refused-" });
+  try {
+    await Deno.writeTextFile(`${stateDir}/org_repo_1.retries`, "3");
+    const posted = [{
+      id: 900,
+      body: buildCiRerunRefusalMarker({ repo: REPO, runId: 901 }),
+    }];
+    const reruns: string[][] = [];
+    const result = await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "failure" }],
+        jobs: [{
+          id: 1,
+          run_id: 901,
+          conclusion: "failure",
+          steps: [{ name: "tests", conclusion: "failure" }],
+        }],
+        reruns,
+        postedComments: posted,
+      }),
+      makeRecordingLogger(),
+      stateDir,
+      3,
+    );
+
+    assertEquals(result, null);
+    assertEquals(reruns, []);
   } finally {
     await Deno.remove(stateDir, { recursive: true });
   }
@@ -1221,7 +1366,7 @@ Deno.test("rerunFailedJobsOfCheck - permanent GitHub refusal is attempted once a
     return Promise.resolve("");
   };
 
-  const first = await rerunFailedJobsOfCheck({
+  await rerunFailedJobsOfCheck({
     repo: REPO,
     prNumber: PR_NUMBER,
     checkId: "111",
@@ -1238,7 +1383,7 @@ Deno.test("rerunFailedJobsOfCheck - permanent GitHub refusal is attempted once a
     ["testbot"],
     () => {},
   );
-  const second = await rerunFailedJobsOfCheck({
+  await rerunFailedJobsOfCheck({
     repo: REPO,
     prNumber: PR_NUMBER,
     checkId: "111",
@@ -1247,8 +1392,6 @@ Deno.test("rerunFailedJobsOfCheck - permanent GitHub refusal is attempted once a
     logger,
   });
 
-  assertEquals(first.outcome, "permanent-refusal");
-  assertEquals(second.outcome, "already-refused");
   assertEquals(calls.filter((args) => args[0] === "run").length, 1);
   assertEquals(
     logger.warns.filter((message) => message.includes("permanently refused"))

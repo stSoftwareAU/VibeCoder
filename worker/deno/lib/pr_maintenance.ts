@@ -1962,10 +1962,9 @@ export async function findFailedCiChecks(
         // would strand them. The processor's fleet-wide attempt cap still
         // bounds repair and abandons/restarts the PR when it is spent.
         if (retryCount >= maxRetries && check.checkSuiteId === undefined) {
-          // Issue #4304: a spent check run is re-run rather than left red
-          // for a person. The fresh run has a fresh retry budget and is
-          // picked up next scan; the fleet-wide auto-fix cap bounds it.
-          logger.warn("CI check exceeded max retries — re-running it", {
+          // Issue #4304: attempt to re-run a spent check instead of leaving it
+          // for a person. Issue #4497 remembers GitHub's permanent refusal.
+          logger.warn("CI check exceeded max retries — attempting a re-run", {
             repo,
             prNumber,
             checkName: check.name,

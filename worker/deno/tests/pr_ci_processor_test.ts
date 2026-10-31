@@ -20,11 +20,15 @@ import {
   getCiCheckRetryCount,
   recordCiCheckRetry,
 } from "../lib/pr_ci_checks.ts";
+import { buildCiRerunRefusalMarker } from "../lib/ci_fix_attempt_markers.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import { milestoneFixBranchFor } from "../lib/milestone_fix_pr.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
-import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createMockDeps,
+  mockGitHubClient,
+} from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { Logger } from "../types.ts";
 import type {
@@ -299,6 +303,7 @@ Deno.test("processCiFailure - max retries re-runs the check and asks nobody to i
       stateDir,
       workRoot: tmpDir,
       maxCiRetries: 3,
+      fleetLogins: ["testbot"],
       ghCommandFn: gh,
     };
 
@@ -317,6 +322,58 @@ Deno.test("processCiFailure - max retries re-runs the check and asks nobody to i
     assertEquals(
       ghCalls.filter((a) => a[0] === "run" && a[1] === "rerun"),
       [["run", "rerun", "808", "--failed", "--repo", "org/repo"]],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - max retry caller honours the persisted refusal marker (Issue #4497)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    await Deno.mkdir(stateDir, { recursive: true });
+    await Deno.writeTextFile(`${stateDir}/org_repo_67890.retries`, "3");
+    const comments = [{
+      id: 1,
+      body: buildCiRerunRefusalMarker({ repo: "org/repo", runId: 808 }),
+      createdAt: "2026-10-31T00:00:00Z",
+      author: "testbot",
+      reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+    }];
+    const ghCalls: string[][] = [];
+    const gh = (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      ghCalls.push(args);
+      if (args[1] === "repos/org/repo/actions/jobs/67890") {
+        return Promise.resolve(JSON.stringify({ run_id: 808, steps: [] }));
+      }
+      return Promise.resolve("");
+    };
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: gh,
+        createClient: () => ({
+          ...mockGitHubClient(),
+          getIssueComments: () => Promise.resolve(comments),
+        }),
+      },
+    });
+    const result = await processCiFailure(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir,
+      workRoot: tmpDir,
+      maxCiRetries: 3,
+      fleetLogins: ["testbot"],
+      ghCommandFn: gh,
+    });
+
+    assertEquals(result.ok, true);
+    assertEquals(
+      ghCalls.filter((args) => args[0] === "run" && args[1] === "rerun"),
+      [],
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

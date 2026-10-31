@@ -13,8 +13,8 @@
  * a failure that never started) or code (a genuine failure), and re-runs
  * the infrastructure ones' workflow runs directly. A head that keeps coming
  * back cancelled is re-run again on every scan rather than left for a person
- * (Issue #4304). A workflow GitHub permanently refuses is recorded by repo
- * and run id and skipped on later scans (Issue #4497).
+ * (Issue #4304), unless GitHub permanently refuses the run. Such refusals are
+ * recorded by repo and run id and skipped on later scans (Issue #4497).
  *
  * The once-per-head record is kept fleet-wide, not per host (Issue
  * #2919): it used to live in a marker file in each host's own state
@@ -437,7 +437,8 @@ export async function rerunInfrastructureChecks(opts: {
  * explicit permanent refusal is recorded in the PR comment thread and not
  * retried; inability to read refusal markers stands the rerun down.
  *
- * @returns The run id that was re-run, or `null` when nothing was re-run.
+ * @returns The resolved run ID and whether it ran, was permanently refused,
+ *   was already refused, failed transiently, or could not be resolved.
  */
 export async function rerunFailedJobsOfCheck(opts: {
   repo: string;
