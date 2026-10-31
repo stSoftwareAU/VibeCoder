@@ -6,6 +6,7 @@ import {
   getInstallationToken,
 } from "../lib/github_app_auth.ts";
 import { runGhCommand } from "../lib/github.ts";
+import { writeBabysitterAppConfig } from "../lib/fleet_babysitter_app.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
 
 const REQUIRED_PERMISSIONS: Readonly<Record<string, string>> = {
@@ -103,7 +104,9 @@ async function main(): Promise<number> {
     /\/$/,
     "",
   );
-  const config = await loadConfig(`${checkout}/.config.json`);
+  const config = await loadConfig(
+    Deno.env.get("CONFIG_PATH") ?? `${checkout}/.config.json`,
+  );
   if (!config.repos.length) {
     throw new Error("No monitored repos in .config.json");
   }
@@ -120,10 +123,10 @@ async function main(): Promise<number> {
   const appId = input("app-id");
   const requestedInstallation = argument("installation-id");
   const defaultKey = `${home}/.vibe-coder/fleet-pr-babysitter.private-key.pem`;
-  const key = expandHome(
+  const key = await Deno.realPath(expandHome(
     checkOnly ? argument("key") ?? defaultKey : input("key", defaultKey),
     home,
-  );
+  ));
   if (
     !/^[1-9]\d*$/.test(appId) ||
     (requestedInstallation !== undefined &&
@@ -297,9 +300,16 @@ async function main(): Promise<number> {
       `ACTION: ${bot} is not trusted for branch locks on this host. Every fleet host must recognise it before App-based fixes.`,
     );
   }
-  console.log(
-    "IMPORTANT: the babysitter does not yet use this App. It currently uses the signed-in gh account and that account's quota.",
-  );
+  if (!checkOnly) {
+    await writeBabysitterAppConfig(home, {
+      appId,
+      installationId,
+      privateKeyPath: key,
+    });
+    console.log(
+      "Saved babysitter App configuration; run.sh will use this App's quota.",
+    );
+  }
   const install = installFlag ||
     (!checkOnly && Deno.build.os === "darwin" &&
       confirm(
@@ -327,14 +337,13 @@ async function main(): Promise<number> {
       "Unset temporary GitHub token/App environment variables before installing: launchd will not inherit them",
     );
   }
-  const login = (await runGhCommand(["api", "user", "--jq", ".login"])).trim();
-  if (!authors.some((a) => a.toLowerCase() === login.toLowerCase())) {
+  if (!authors.some((a) => a.toLowerCase() === bot.toLowerCase())) {
     throw new Error(
-      `The signed-in gh account ${login} is not a trusted fleet identity on this host; it must also be trusted on every other fleet host`,
+      `App identity ${bot} is not a trusted fleet identity on this host; it must also be trusted on every other fleet host`,
     );
   }
   console.log(
-    `The launch agent will run fixes as ${login}, not as ${bot}. Confirm you have manually tested a fix and configured this login as a trusted lock author on every host.`,
+    `The launch agent will run fixes as ${bot}. Confirm you have manually tested a fix and configured this App as a trusted lock author on every host.`,
   );
   if (
     prompt("Type INSTALL to create and start the launch agent:") !== "INSTALL"

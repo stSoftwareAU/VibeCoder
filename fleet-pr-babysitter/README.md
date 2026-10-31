@@ -8,6 +8,6 @@ Run `./fleet-pr-babysitter/run.sh --dry-run` to list candidates without a
 model, or `./fleet-pr-babysitter/run.sh` for one fixing pass. Pass `--watch`
 for the five-minute loop.
 
-The current runner uses the signed-in fleet `gh` account, not the separately
-created GitHub App. Read the [operator guide](../docs/workflows/fleet-pr-babysitter.md)
+The runner uses the configured GitHub App and its own API quota. Read the
+[operator guide](../docs/workflows/fleet-pr-babysitter.md)
 for setup, shared-lock requirements and limitations before running it.

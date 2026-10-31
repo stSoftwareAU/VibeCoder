@@ -5,10 +5,8 @@ has its own GitHub API rate limit, so babysitting does not spend the signed-in
 user's GraphQL allowance. The reviewer remains a separate identity for code
 review.
 
-> **Implementation status:** these steps prepare the App, but the babysitter
-> MVP does not yet mint App installation tokens or authenticate Git operations
-> with them. It currently runs as the signed-in `gh` user. Do not start the
-> babysitter expecting it to use the App until that integration is added.
+The babysitter uses this App for GitHub API calls and Git operations. It stops
+if authentication fails rather than falling back to a signed-in user.
 
 ## Create and install the App
 
@@ -53,7 +51,8 @@ new permission request for each installation before tokens receive them.
 Run the interactive setup described in [the babysitter MVP](fleet-pr-babysitter.md)
 to check the key, installation permissions, repository access and quota. It
 offers to install a macOS launch agent after you have manually tested a fix.
-The launch agent currently uses the signed-in `gh` account, not the App.
+Setup saves the App ID, installation ID and private-key path for the runner;
+it does not save an installation token.
 
 ## Coordinate with the fleet
 
@@ -72,15 +71,12 @@ requests human reviewers on new PRs, and an App cannot be requested as one.
 
 ## Before using it
 
-The runner integration still needs to mint a fresh installation token using
-the App ID and private key, select the correct installation per repository
-owner, use the token for GraphQL, REST and Git pushes, and stop rather than
-fall back to a different identity on an authentication failure. It must also
-verify the App's permissions and ensure every fleet host trusts the bot's lock
-comments. Installation tokens expire, so a long fix needs token renewal or a
-fresh token before a push. Keep tokens out of command-line arguments and logs.
+Setup supports monitored repositories under one owner and verifies the App's
+permissions. Configure the bot as a trusted lock author on every fleet host;
+setup can verify only its own host. Installation tokens are refreshed during
+long passes. Keep tokens out of command-line arguments and logs.
 
-Once implemented, first run a read-only scan and check GitHub's rate-limit
+First run a read-only scan and check GitHub's rate-limit
 response for the installation identity. Then test one PR while another fleet
 worker is active and verify that only one worker holds the lock and starts a
 fix. See [the babysitter MVP](fleet-pr-babysitter.md) for its current commands

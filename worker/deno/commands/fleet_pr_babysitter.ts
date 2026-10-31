@@ -3,6 +3,11 @@ import { loadConfig } from "../lib/config.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
 import {
+  babysitterAppIdentity,
+  readBabysitterAppConfig,
+  startBabysitterAppAuth,
+} from "../lib/fleet_babysitter_app.ts";
+import {
   buildFetchTrackingRefArgs,
   buildPushCreateBranchArgs,
 } from "../lib/git_ref_args.ts";
@@ -315,6 +320,7 @@ async function fix(
 }
 async function pass(
   execute: boolean,
+  login: string,
   repoFilter?: string,
   prFilter?: number,
 ): Promise<void> {
@@ -325,7 +331,6 @@ async function pass(
   if (repoFilter && !config.repos.includes(repoFilter)) {
     throw new Error(`Repository ${repoFilter} is not monitored by this host`);
   }
-  const login = await run("gh", ["api", "user", "--jq", ".login"]);
   const authors = [
     ...new Set([login, ...config.fleetPrAuthors, ...config.serviceAccounts]),
   ];
@@ -336,7 +341,7 @@ async function pass(
     )
   ) {
     throw new Error(
-      `Add ${login} to service_accounts or fleet_pr_authors on every fleet host before running fixes, so workers trust its locks`,
+      `Add App identity ${login} to service_accounts or fleet_pr_authors on every fleet host before running fixes, so workers trust its locks`,
     );
   }
   for (const repo of config.repos) {
@@ -398,13 +403,47 @@ if (import.meta.main) {
     );
   }
   const prFilter = prArg === undefined ? undefined : Number(prArg);
-  do {
-    try {
-      await pass(execute, repoFilter, prFilter);
-    } catch (error) {
-      console.error(error);
-      if (!watch) Deno.exitCode = 1;
-    }
-    if (watch) await new Promise((resolve) => setTimeout(resolve, 300_000));
-  } while (watch);
+  const home = Deno.env.get("HOME");
+  if (!home) throw new Error("HOME is not set");
+  const monitored =
+    (await loadConfig(Deno.env.get("CONFIG_PATH") ?? ".config.json")).repos;
+  if (!monitored.length || (repoFilter && !monitored.includes(repoFilter))) {
+    throw new Error(
+      "Target repository is not monitored, or no monitored repositories are configured",
+    );
+  }
+  if (
+    new Set(monitored.map((repo) => repo.split("/")[0]?.toLowerCase())).size !==
+      1
+  ) {
+    throw new Error(
+      "Babysitter App currently requires monitored repositories under one owner",
+    );
+  }
+  const app = await readBabysitterAppConfig(home);
+  const login = await babysitterAppIdentity(app);
+  Deno.env.set(
+    "VIBE_GITHUB_QUOTA_WORK_DIR",
+    `${home}/.vibe-coder/fleet-pr-babysitter`,
+  );
+  const stopAuth = await startBabysitterAppAuth(
+    app,
+    undefined,
+    undefined,
+    repoFilter ? [repoFilter] : monitored,
+  );
+  console.log(`Using GitHub App ${login} for babysitter requests.`);
+  try {
+    do {
+      try {
+        await pass(execute, login, repoFilter, prFilter);
+      } catch (error) {
+        console.error(error);
+        if (!watch) Deno.exitCode = 1;
+      }
+      if (watch) await new Promise((resolve) => setTimeout(resolve, 300_000));
+    } while (watch);
+  } finally {
+    stopAuth();
+  }
 }

@@ -40,7 +40,7 @@ const READY = JSON.stringify({
 async function fixture(
   gateOutput: string,
   gateExit = 0,
-  tokenOutput = "",
+  tokenOutput = '{"token":"ghs_test","login":"stsoftware-pr-reviewer[bot]"}',
   tokenExit = 0,
   escalateExit = 0,
   gateStderr = "",
@@ -367,13 +367,12 @@ Deno.test("run.sh reviews as the reviewer App when pr_reviewer_app is set", asyn
   assertStringIncludes((await claudeArgs(home))!, "GH_TOKEN=ghs_test");
 });
 
-Deno.test("run.sh reviews as the gh user when no reviewer App is configured", async () => {
-  const home = await fixture(READY);
+Deno.test("run.sh refuses to review when no reviewer App is configured", async () => {
+  const home = await fixture(READY, 0, "");
   const { code, output } = await run(home, "--once");
-  assertEquals(code, 0, output);
-  const gate = await recorded(home, "gate-args");
-  assertStringIncludes(gate!, "GH_TOKEN= ");
-  assertEquals(gate!.includes("--reviewer"), false);
+  assertEquals(code, 1, output);
+  assertStringIncludes(output, "reviewer App is not configured");
+  assertEquals(await recorded(home, "gate-args"), null);
 });
 
 Deno.test("run.sh never falls back to the gh user when the App token fails", async () => {
@@ -384,6 +383,18 @@ Deno.test("run.sh never falls back to the gh user when the App token fails", asy
   assertStringIncludes(output, "reviewer App token: Bad credentials");
   assertEquals(await recorded(home, "gate-args"), null);
   assertEquals(await claudeArgs(home), null);
+});
+
+Deno.test("run.sh refuses an empty App token instead of falling back", async () => {
+  const home = await fixture(READY, 0, '{"token":"","login":"reviewer[bot]"}');
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 1, output);
+  assertStringIncludes(output, "invalid token response");
+  assertEquals(await recorded(home, "gate-args"), null);
+  assertStringIncludes(
+    (await recorded(home, "escalate-env"))!,
+    "GH_TOKEN=reviewer-app-auth-unavailable",
+  );
 });
 
 Deno.test("run.sh --once also runs housekeep, pruning old round directories", async () => {
@@ -432,11 +443,7 @@ Deno.test("run.sh never traces the minted App token, even under bash -x", async 
   assertStringIncludes((await claudeArgs(home))!, "GH_TOKEN=ghs_test");
 });
 
-Deno.test("run.sh escalates a failing gate pass without leaking the App token to escalate.ts", async () => {
-  // A token is minted (and exported for gate.ts and Claude) before the gate
-  // fails, so this actually exercises escalate_result's `env -u GH_TOKEN`:
-  // with no token minted, GH_TOKEN was never set and the assertion below
-  // would pass even if `env -u GH_TOKEN` were dropped.
+Deno.test("run.sh escalates a failing gate pass as the reviewer App", async () => {
   const home = await fixture("", 1, APP_TOKEN);
   const { code } = await run(home, "--once");
   assertEquals(code, 1);
@@ -446,7 +453,7 @@ Deno.test("run.sh escalates a failing gate pass without leaking the App token to
   assertStringIncludes(args!, "gate: boom");
   assertStringIncludes(
     (await recorded(home, "escalate-env"))!,
-    "GH_TOKEN=unset",
+    "GH_TOKEN=ghs_test",
   );
 });
 
@@ -456,7 +463,7 @@ Deno.test("run.sh logs gate.ts's non-fatal stderr even when the gate pass succee
   const home = await fixture(
     JSON.stringify({ ready: [], skipped: {} }),
     0,
-    "",
+    APP_TOKEN,
     0,
     0,
     "owner/repo#7 auto-merge failed: review required",
@@ -481,7 +488,7 @@ Deno.test("run.sh logs, but does not fail on, an escalate.ts failure", async () 
   const home = await fixture(
     JSON.stringify({ ready: [], skipped: {} }),
     0,
-    "",
+    APP_TOKEN,
     0,
     1,
   );
@@ -640,11 +647,11 @@ Deno.test("run.sh passes the reviewer App token to the container by name only (I
   assertEquals((await roundPrompt(home)).includes("ghs_test"), false);
 });
 
-Deno.test("run.sh passes no GH_TOKEN to the container without a reviewer App (Issue #3293)", async () => {
-  const home = await fixture(READY);
+Deno.test("run.sh starts no container without a reviewer App", async () => {
+  const home = await fixture(READY, 0, "");
   const { code, output } = await run(home, "--once");
-  assertEquals(code, 0, output);
-  assertEquals((await claudeArgs(home))!.includes("--env\nGH_TOKEN\n"), false);
+  assertEquals(code, 1, output);
+  assertEquals(await claudeArgs(home), null);
 });
 
 Deno.test("run.sh fails a pass whose worker image is not built, naming the fix (Issue #3293)", async () => {

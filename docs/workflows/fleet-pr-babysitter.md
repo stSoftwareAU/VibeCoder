@@ -29,17 +29,17 @@ From the VibeCoder checkout:
 
 Setup prompts for the GitHub App ID and private-key path, discovers the App
 installation, and verifies its permissions, repository access and GraphQL
-quota without printing credentials. It checks the local fleet-lock identities
+quota without printing credentials, then saves the App settings for run.sh.
+It checks the local fleet-lock identities
 and required commands. For a non-interactive preflight, use `--check` and
 `--app-id=<id>`; the key defaults to
 `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass `--key=<path>`.
 
 On the always-on Mac, rerun setup after manual testing and answer yes to the
 launch-agent question. You must also type `INSTALL` to confirm. Setup checks
-that the signed-in `gh` account is a configured fleet identity, creates a new
-launchd job and starts it; it refuses to overwrite an existing job. The agent
-uses the signed-in `gh` account, not the App, until App authentication is
-implemented. Every fleet host must trust that account's branch locks. To stop
+that the App bot is a configured fleet identity, creates a new launchd job and
+starts it; it refuses to overwrite an existing job. Every fleet host must
+trust the App's branch locks. To stop
 the agent, use the `launchctl bootout` command printed by setup. Launchd starts
 one pass every five minutes and starts another after a process failure.
 
@@ -60,8 +60,8 @@ failure is logged and the next pass retries. Organisation-specific extensions
 can use this to publish a separate babysitter heartbeat and failure record.
 Dry runs and runs limited to a repository or PR do not report service health.
 
-The host needs `gh` authenticated as a fleet account, `git`, `deno`, `codex`
-and RTK. Before execution, put that login in `service_accounts` or
+The host needs `gh`, `git`, `deno`, `codex` and RTK. Before execution, put the
+App's `<slug>[bot]` login in `service_accounts` or
 `fleet_pr_authors` **on every fleet host**. Those workers only trust locks
 written by known fleet accounts. The MVP checks the local configuration; it
 cannot verify other hosts. Use a dedicated account with only the access it
@@ -81,13 +81,12 @@ is not retried on that host for the same PR head. Removing the matching state
 file permits a retry. The shared lock prevents simultaneous work; this local
 attempt record does not prevent a different host from retrying later.
 
-This MVP uses the signed-in `gh` identity and Codex; it does not yet mint a
-separate GitHub App token, select providers by remaining quota, handle
+This MVP uses the configured GitHub App and Codex; it does not yet select
+providers by remaining quota, handle
 Dependabot, use per-repository quality commands, update a merely behind branch,
 review PRs, or arm auto-merge. It requires `quality.sh` and refuses to push
 when it is missing or fails. It does not change repository review or merge
 rules. Test the read-only pass before running execution mode.
 
 To prepare a separate GitHub identity and API quota, follow the
-[babysitter GitHub App setup](fleet-pr-babysitter-github-app.md). App token
-integration is still required before the runner can use it.
+[babysitter GitHub App setup](fleet-pr-babysitter-github-app.md).

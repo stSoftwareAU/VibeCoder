@@ -337,7 +337,8 @@ async function notePrimaryQuotaExhaustion(
   quotaExhaustionNoteInFlight = true;
   try {
     const now = Math.floor(Date.now() / 1000);
-    const workDir = workDirOverride ?? Deno.env.get("WORK_DIR");
+    const workDir = workDirOverride ??
+      Deno.env.get("VIBE_GITHUB_QUOTA_WORK_DIR") ?? Deno.env.get("WORK_DIR");
     const probe = await probeGraphqlQuota();
 
     // GitHub says "API rate limit already exceeded" for two different
