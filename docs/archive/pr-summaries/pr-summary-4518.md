@@ -1,7 +1,7 @@
 ## Summary
 
-`fetchOpenPRsByUser` asked `gh pr list` for only 10 rows, newest first, so once a
-fleet account had more than 10 open PRs in a repository the open-PR duplicate
+`fetchOpenPRsByUser` asked `gh pr list` for only 10 rows, newest first, so once
+a fleet account had more than 10 open PRs in a repository the open-PR duplicate
 guard (the own-PR rule in `getBlockingPRForIssue`, #2663) never saw an older own
 PR, and the issue could be claimed again and given a second PR. The listing now
 passes `String(OPEN_PR_BY_USER_LIMIT)` to `--limit`, and `OPEN_PR_BY_USER_LIMIT`
@@ -26,8 +26,8 @@ the final version.
   bump is needed; an entry cached under the old limit expires with the cache.
 - The claim-time re-check (`liveFleetPrRecheck`) and the prefetch share
   `fetchOpenPRsByUser`/the same entry, so they pick the fix up without edits.
-  `decideCompletionPr` (point 4 of the issue) is unchanged; the issue's
-  proposed fix does not touch it.
+  `decideCompletionPr` (point 4 of the issue) is unchanged; the issue's proposed
+  fix does not touch it.
 
 ### Undiscoverable Facts
 
@@ -38,23 +38,26 @@ the final version.
 
 Backend only; no UI files touched. Code: `worker/deno/lib/issue_query.ts`
 (`fetchOpenPRsByUser`, `OPEN_PR_BY_USER_LIMIT`). No doc named the 10-row limit
-(grepped `docs/` and the READMEs for `--limit`, `10 newest`, `first 10`).
-Issue numbers cited as provenance, looked up in the existing code: #2663 (own-PR
+(grepped `docs/` and the READMEs for `--limit`, `10 newest`, `first 10`). Issue
+numbers cited as provenance, looked up in the existing code: #2663 (own-PR
 hold).
 
 ## Test Plan
 
 - New `worker/deno/tests/open_pr_listing_limit_4518_test.ts`: a `gh` stub that
   honours `--author` and `--limit` over 12 open PRs by one fleet author, the
-  issue's own PR the oldest. Tests: the own PR is found and holds its issue
-  (not the cap); an issue with no PR of its own is held only by the cap (control,
-  cap 50 holds nothing); the requested `--limit` exceeds 12.
-- Red check: with the limit set back to 10 all three tests fail (`every open PR
-  of the author is listed - 10 + 12`); restored, all three pass.
-- Passed: `deno task test:unit` over the new test, `fleet_pr_own_issue_hold_2663`,
-  `fleet_pr_prefetch_budget_2662`, `fleet_duplicate_prevention`,
-  `recent_activity_cache` and `stuck_issue_detector` tests (102 passed, 0
-  failed). `deno fmt`, `deno lint`, `deno check` on the touched files: clean.
+  issue's own PR the oldest. Tests: the own PR is found and holds its issue (not
+  the cap); an issue with no PR of its own is held only by the cap (control, cap
+  50 holds nothing); the requested `--limit` exceeds 12.
+- Red check: with the limit set back to 10 all three tests fail
+  (`every open PR
+  of the author is listed - 10 + 12`); restored, all three
+  pass.
+- Passed: `deno task test:unit` over the new test,
+  `fleet_pr_own_issue_hold_2663`, `fleet_pr_prefetch_budget_2662`,
+  `fleet_duplicate_prevention`, `recent_activity_cache` and
+  `stuck_issue_detector` tests (102 passed, 0 failed). `deno fmt`, `deno lint`,
+  `deno check` on the touched files: clean.
 - No existing test was edited.
 
 <!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes about 15 minutes and did not fit the remaining run budget alongside the other pending PRs; targeted tests ran, CI runs the full gate" -->
