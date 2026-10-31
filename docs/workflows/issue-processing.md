@@ -1477,6 +1477,15 @@ The shape is fixed and machine-checked, so the worker owns it:
    over;
 4. a reply carrying no readable verdict leaves the summary exactly as the agent
    wrote it, and the block stands.
+5. after the blocks are swapped in, the worker aligns the summary's closing
+   keyword for the issue with the rendered block, by the same rule
+   `assemblePrBody` applies to the PR body (Issue #3177): when any rendered
+   entry is `missing`, every `Closes`/`Fixes`/`Resolves #N` for the issue
+   becomes `Part of #N`; when none is, a bare `Part of #N` becomes
+   `Closes #N`. Keywords for other issues are untouched. So the committed
+   `pr-summary-N.md` and the PR body say the same thing
+   (`alignIssueCloseWithClosure` in `missing_criterion_close_guard.ts`, Issue
+   #4472).
 
 The `reviewer:` field is the model's own status, so a rendered entry never
 departs from the reviewer's verdict. Nothing is invented at any step: an
@@ -1493,9 +1502,12 @@ forward instead of discarding it.
 [`closure_verdict.ts`](../../worker/deno/lib/closure_verdict.ts) (pure: parse,
 coverage, render),
 [`closure_verdict_recovery.ts`](../../worker/deno/lib/closure_verdict_recovery.ts)
-(the constrained question and the single re-ask) and `commitRecoveredSummary` in
+(the constrained question and the single re-ask),
+`commitRecoveredSummary` in
 [`summary_rule_gate_retry.ts`](../../worker/deno/lib/summary_rule_gate_retry.ts)
-(Issue #2242).
+(Issue #2242) and
+[`missing_criterion_close_guard.ts`](../../worker/deno/lib/missing_criterion_close_guard.ts)
+(`alignIssueCloseWithClosure`, Issue #4472).
 
 ## ⏳ A PR the content-creation throttle refused — deferred, never failed
 
