@@ -3044,7 +3044,7 @@ async function completionBody(
     prSummaryContent: prBody,
   });
   if (closure.applicable && !closure.valid) {
-    logger.warn("Acceptance-criteria closure gate blocked PR creation", {
+    logger.warn("Acceptance-criteria closure gate reported findings", {
       criteria: closure.criteria.length,
       problems: closure.problems,
     });
@@ -3082,7 +3082,7 @@ async function completionBody(
     prSummaryContent: prBody,
   });
   if (review.applicable && !review.valid) {
-    logger.warn("Independent two-axis review gate blocked PR creation", {
+    logger.warn("Independent two-axis review gate reported findings", {
       specEntries: review.specEntries.length,
       standardsEntries: review.standardsEntries.length,
       problems: review.problems,
@@ -3297,7 +3297,7 @@ async function completionBody(
   // which is raised and armed anyway. No follow-up issue and no needs-human
   // label.
   if (unmetCriteriaVerdict.blocked) {
-    logger.warn("Unmet-criteria gate blocked PR creation (Issue #4146)", {
+    logger.warn("Unmet-criteria gate reported findings (Issue #4146)", {
       unmet: unmetCriteria.length,
     });
     const held = await reportSummaryRuleBlock(

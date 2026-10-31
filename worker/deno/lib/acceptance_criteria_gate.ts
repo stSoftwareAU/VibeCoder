@@ -375,7 +375,9 @@ export function validateAcceptanceClosure(opts: {
 }
 
 /**
- * Build the issue comment posted when the closure gate blocks PR creation.
+ * Build the issue comment reported when the closure block is missing or
+ * malformed (Issue #4234): it is reported once in the session, whatever
+ * remains is named in the PR's reviewer note, and the PR is raised anyway.
  *
  * Names every rule broken and restates the required shape, so the next attempt
  * can fix the summary without re-deriving the format.
@@ -383,7 +385,7 @@ export function validateAcceptanceClosure(opts: {
  * The shape printed is `REVIEW_BLOCK_TEMPLATE`, the same block the
  * independent-review gate prints, including its `## Standards Review` half:
  * that gate runs immediately after this one at the same chokepoint, so a
- * criteria block written from a template it rejects only trades one block for
+ * criteria block written from a template it rejects only trades one finding for
  * the next (Issue #751).
  */
 export function buildClosureGateComment(
@@ -392,15 +394,15 @@ export function buildClosureGateComment(
   const problems = result.problems.map((p) => `- ${p}`).join("\n");
   return [
     "⚠️ **Acceptance-criteria closure missing.** This issue states acceptance " +
-    "criteria, so the PR summary must close each one out before the PR is " +
-    "raised:",
+    "criteria, so the PR summary should close each one out; any left unclosed " +
+    "is named on the pull request, which is raised anyway:",
     "",
     problems,
     "",
     "Add a `## Acceptance Criteria` block to " +
     "`docs/archive/pr-summaries/pr-summary-<issue>.md` with one entry per " +
     "criterion, in this shape — the `## Standards Review` half is printed with " +
-    "it because the independent-review gate runs next and blocks a criteria " +
+    "it because the independent-review check runs next and reports a criteria " +
     "block raised without it:",
     "",
     ...reviewBlockTemplateLines(),
