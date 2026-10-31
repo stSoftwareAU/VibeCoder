@@ -2676,11 +2676,13 @@ async function completionBody(
 
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
-   * an earlier gate's block: summary scrub, result placeholder, mutation
-   * check, coverage carry-over, the pre-PR verifier, then unmet criteria
-   * (Issue #3393 the mutation check; Issue #3795 the coverage carry-over
-   * check; Issue #3395 the verifier). One source of truth for both the
-   * ordered fold below and the gates' own standalone blocks further down.
+   * an earlier gate's block: independent Spec/Standards review, reproduction
+   * status, summary scrub, result placeholder, mutation check, coverage
+   * carry-over, the pre-PR verifier, then unmet criteria (Issue #4583 the
+   * review and reproduction verdicts; Issue #3393 the mutation check; Issue
+   * #3795 the coverage carry-over check; Issue #3395 the verifier). One source
+   * of truth for both the ordered fold below and the gates' own standalone
+   * blocks further down.
    */
   interface LateSummaryVerdict {
     categories?: readonly FailureCategory[];
@@ -2932,7 +2934,37 @@ async function completionBody(
     reason: unmetCriteria.length > 0 ? unmetCriteriaReason(unmetCriteria) : "",
     comment: () => buildUnmetCriteriaGateComment(unmetCriteria),
   };
+  // Issue #4583: the independent two-axis review gate and the bug
+  // reproduction-status gate are computed here, with the other late verdicts,
+  // so that a summary whose closure or review gate reports first still carries
+  // their findings in the one note and the one PR comment. Their own gates
+  // below read these same results.
+  const review = validateIndependentReview({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+  });
+  const reproduction = validateReproductionStatus({
+    issueLabels,
+    prSummaryContent: prBody,
+  });
+  const reviewVerdict: LateSummaryVerdict = {
+    blocked: review.applicable && !review.valid,
+    reason:
+      `Independent Spec/Standards review not reported in the PR summary: ${
+        review.problems[0] ?? "review blocks missing"
+      }`,
+    comment: () => buildIndependentReviewComment(review),
+  };
+  const reproductionVerdict: LateSummaryVerdict = {
+    blocked: reproduction.applicable && !reproduction.valid,
+    reason: `Reproduction status not recorded in the PR summary: ${
+      reproduction.problems[0] ?? "`## Reproduction` block missing"
+    }`,
+    comment: () => buildReproductionGateComment(reproduction),
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
+    reviewVerdict,
+    reproductionVerdict,
     scrubVerdict,
     placeholderVerdict,
     mutationVerdict,
@@ -2979,10 +3011,10 @@ async function completionBody(
   const standingViolations = standing.violations;
 
   /**
-   * Fold every blocked late verdict (summary scrub, result placeholder,
-   * mutation check, coverage carry-over, pre-PR verifier, unmet criteria —
-   * in that order) other than those in `skip`
-   * into an earlier gate's block.
+   * Fold every blocked late verdict (independent Spec/Standards review,
+   * reproduction status, summary scrub, result placeholder, mutation check,
+   * coverage carry-over, pre-PR verifier, unmet criteria — in that order)
+   * other than those in `skip` into an earlier gate's block (Issue #4583).
    * `allowsTestChanges` is set on the result when the block, or any verdict
    * folded in, is one that only a test change satisfies (the mutation check
    * or the coverage carry-over check).
@@ -3077,21 +3109,16 @@ async function completionBody(
   // An issue with no criteria skips the Spec axis, but a `## Standards Review`
   // the summary carries is still held to the violation rules (Issue #3761).
   // ---------------------------------------------------------------------
-  const review = validateIndependentReview({
-    issueBody: ctx.issueBody,
-    prSummaryContent: prBody,
-  });
-  if (review.applicable && !review.valid) {
+  if (reviewVerdict.blocked) {
     logger.warn("Independent two-axis review gate reported findings", {
       specEntries: review.specEntries.length,
       standardsEntries: review.standardsEntries.length,
       problems: review.problems,
     });
     const folded = foldInLateSummaryVerdicts(
-      `Independent Spec/Standards review not reported in the PR summary: ${
-        review.problems[0] ?? "review blocks missing"
-      }`,
-      buildIndependentReviewComment(review),
+      reviewVerdict.reason,
+      reviewVerdict.comment(),
+      [reviewVerdict],
     );
     const held = await reportSummaryRuleBlock(
       folded,
@@ -3115,20 +3142,15 @@ async function completionBody(
   // after. A not-run reproduction is a legitimate, reportable outcome; the
   // silent over-claim is what is blocked. Non-`bug` issues are unaffected.
   // ---------------------------------------------------------------------
-  const reproduction = validateReproductionStatus({
-    issueLabels,
-    prSummaryContent: prBody,
-  });
-  if (reproduction.applicable && !reproduction.valid) {
+  if (reproductionVerdict.blocked) {
     logger.warn("Reproduction-status gate blocked PR creation", {
       status: reproduction.block.status,
       problems: reproduction.problems,
     });
     const folded = foldInLateSummaryVerdicts(
-      `Reproduction status not recorded in the PR summary: ${
-        reproduction.problems[0] ?? "`## Reproduction` block missing"
-      }`,
-      buildReproductionGateComment(reproduction),
+      reproductionVerdict.reason,
+      reproductionVerdict.comment(),
+      [reproductionVerdict],
     );
     const held = await reportSummaryRuleBlock(
       folded,
@@ -3143,11 +3165,12 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Late summary gates that remain: result placeholder (Issue #3124), the
   // mutation check (Issue #3393), the coverage carry-over check (Issue
-  // #3795) and the pre-PR verifier (Issue #3395). The summary-scrub and
-  // unmet-criteria verdicts fold with them. Each gate folds every
-  // later-named gate still blocked into its own comment, so a summary
-  // failing more than one of them is told about all of them in the one
-  // recovery turn it gets (Issue #4234).
+  // #3795) and the pre-PR verifier (Issue #3395). The independent-review and
+  // reproduction verdicts (Issue #4583), the summary-scrub and unmet-criteria
+  // verdicts fold with them, in the order `lateSummaryVerdicts` names them.
+  // Each gate folds every other blocked verdict into its own comment, so a
+  // summary failing more than one of them is told about all of them in the
+  // one recovery turn it gets (Issue #4234).
   // ---------------------------------------------------------------------
   // ---------------------------------------------------------------------
   // Result-placeholder gate (Issue #3124).
