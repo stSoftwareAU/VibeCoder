@@ -184,6 +184,39 @@ Deno.test("run failure issue - intentional host-disk park is not auto-filed", as
   }
 });
 
+Deno.test("run failure issue #4526 - a floor-only host-disk stop is suppressed without GitHub writes", async () => {
+  const dir = await tmp();
+  try {
+    const { ghFn, rec } = fakeGh();
+    const decision = await fileRunFailureIssue({
+      report: {
+        ...OOM_REPORT,
+        outcome: {
+          kind: "no_pr",
+          category: "internal_error",
+          phase: "execute",
+          elapsedSeconds: 64,
+          message:
+            "Claude execution failed: host disk below its floor — floor 46.0 GB; a repository build or test would grow host disk further, so it waits until the host recovers (Issue #3178)",
+        },
+      },
+      ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+    });
+    assertEquals(decision, {
+      action: "suppressed",
+      reason: "not_code_fixable",
+      failureClass: "disk-full",
+    });
+    assertEquals(rec.calls, []);
+    assertEquals(rec.creates, []);
+    assertEquals(rec.comments, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("run failure issue - code_fixable + no existing issue → exactly one issue create in stSoftwareAU/VibeCoder whose body carries the class marker (Issue #4329)", async () => {
   const dir = await tmp();
   try {
