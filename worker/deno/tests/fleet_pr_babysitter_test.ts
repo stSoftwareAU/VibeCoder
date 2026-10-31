@@ -102,11 +102,24 @@ Deno.test("babysitter stages resolved merge files and refuses conflict markers",
     await Deno.writeTextFile(`${dir}/file.txt`, "feature\n");
     assert((await git("commit", "-am", "feature")).success);
     assert(!(await git("merge", "--no-commit", "other")).success);
-    await assertRejects(() => validateAndCommit(dir, 123), Error, "git failed");
+    await assertRejects(
+      () =>
+        validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" }),
+      Error,
+      "git failed",
+    );
     await Deno.writeTextFile(`${dir}/file.txt`, "feature and other\n");
-    await validateAndCommit(dir, 123);
+    await validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" });
     assert((await git("diff", "--quiet", "HEAD")).success);
     assert((await git("rev-parse", "HEAD^2")).success);
+    const author = await new Deno.Command("git", {
+      args: ["show", "-s", "--format=%an <%ae>", "HEAD"],
+      cwd: dir,
+    }).output();
+    assertEquals(
+      new TextDecoder().decode(author.stdout).trim(),
+      "test-app[bot] <12345+test-app[bot]@users.noreply.github.com>",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

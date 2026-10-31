@@ -111,10 +111,19 @@ async function run(
 export async function validateAndCommit(
   dir: string,
   number: number,
+  bot: { login: string; id: string },
 ): Promise<void> {
   await run("git", ["add", "-A", "--", "."], dir);
   await run("git", ["diff", "--cached", "--check"], dir);
-  await run("git", ["commit", "-m", `Fix PR #${number} quality issues`], dir);
+  await run("git", [
+    "-c",
+    `user.name=${bot.login}`,
+    "-c",
+    `user.email=${bot.id}+${bot.login}@users.noreply.github.com`,
+    "commit",
+    "-m",
+    `Fix PR #${number} quality issues`,
+  ], dir);
 }
 export function reason(pr: Pr): string | null {
   if (
@@ -295,7 +304,16 @@ async function fix(
     }
     await run("git", ["diff", "--check"], dir);
     await run("git", ["diff", "--cached", "--check"], dir);
-    await validateAndCommit(dir, pr.number);
+    const botId = await run("gh", [
+      "api",
+      `users/${encodeURIComponent(login)}`,
+      "--jq",
+      ".id",
+    ]);
+    if (!/^[1-9]\d*$/.test(botId)) {
+      throw new Error("Invalid GitHub App bot user ID");
+    }
+    await validateAndCommit(dir, pr.number, { login, id: botId });
     if (renewalFailed) {
       throw new Error("PR lock renewal failed; refusing to push");
     }
