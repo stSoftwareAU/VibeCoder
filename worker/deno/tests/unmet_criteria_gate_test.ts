@@ -75,16 +75,22 @@ const STATED_ELSEWHERE: readonly { doc: string; title: string }[] = [
     doc: "docs/workflows/issue-processing.md",
     title: "A `missing` criterion does not close the issue",
   },
+  {
+    doc: "docs/workflows/issue-processing.md",
+    title: "Acceptance-criteria closure before the PR",
+  },
 ];
 
 /**
  * Claims that an unmet criterion stops the PR, in the wordings the docs have
- * used: "blocks the PR", "a PR is raised only when every criterion is met"
- * (DESIGN-PRINCIPLES.md before the #4490 review), and "the draft is marked
- * ready once every criterion is met" (the draft-continuation wording).
+ * used: "blocks PR creation" (the closure gate before #4234), "blocks the PR",
+ * "a PR is raised only when every criterion is met" (DESIGN-PRINCIPLES.md
+ * before the #4490 review), "the draft is marked ready once every criterion is
+ * met" (the draft-continuation wording), and "run fails" (the closure gate's
+ * pre-#4234 outcome, issue-processing.md, #4512).
  */
 const STOPS_THE_PR =
-  /blocks PR creation|(partial|missing)[^.]*\bblocks\b|raised only (when|once|if) every criterion|once every criterion is met/i;
+  /blocks PR creation|(partial|missing)[^.]*\bblocks\b|raised only (when|once|if) every criterion|once every criterion is met|run fails/i;
 
 Deno.test("prompt and docs - no section says an unmet criterion blocks the PR", async () => {
   for (const { doc, title } of STATED_ELSEWHERE) {
