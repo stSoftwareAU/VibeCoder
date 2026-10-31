@@ -1966,6 +1966,78 @@ export async function syncMilestoneBranches(
         ...(deps.dedupAuthors ?? {}),
       }));
 
+  /**
+   * What the `merge-fallback` record needs about the conflict (Issue #4521):
+   * the files still conflicted, how far behind the base the branch was and
+   * since when. One builder for the roll-back reached from the ladder and
+   * from the spent-budget hand-off, so neither can file `not recorded` for a
+   * field the other fills.
+   */
+  const buildFallbackContext = async (
+    repo: string,
+    milestone: ActiveMilestone,
+    entry: SyncStreakEntry,
+    behindBy: number | undefined,
+    conflictError: MilestoneConflictEscalation | undefined,
+  ): Promise<FallbackContext> => {
+    const conflictedFiles = conflictError
+      ? [
+        ...conflictError.analyses.map((a) => a.path),
+        ...conflictError.resolved.map((d) => d.path),
+      ]
+      : [];
+    // The pass measures only a repository with two or more milestone
+    // branches, so a lone branch arrives here unmeasured: read it now, on
+    // the rare fallback path, rather than file `not recorded` for it.
+    const behind = behindBy ?? await measureBehind(repo, milestone);
+    return {
+      ...(conflictedFiles.length > 0 ? { conflictedFiles } : {}),
+      ...(behind !== undefined ? { behindBy: behind } : {}),
+      // A branch that never synced has no tip it was last level with; the
+      // branch itself bounds the same compare (the first commit it lacks).
+      ...(await readBehindSince(
+        repo,
+        entry.lastSyncedDefaultSha ?? milestone.milestoneBranch,
+        milestone.defaultBranch,
+        ghCommandFn,
+        log,
+      )),
+    };
+  };
+
+  /** Commits the branch is behind the base, or undefined when unreadable. */
+  const measureBehind = async (
+    repo: string,
+    milestone: ActiveMilestone,
+  ): Promise<number | undefined> => {
+    if (!deps.behindCountFn) return undefined;
+    try {
+      const count = await deps.behindCountFn(
+        repo,
+        milestone.milestoneBranch,
+        milestone.defaultBranch,
+      );
+      if (count.ok) return count.value;
+      logAt(
+        log,
+        "warn",
+        `Could not measure how far '${milestone.milestoneBranch}' in ${repo} ` +
+          `is behind '${milestone.defaultBranch}': ${count.error.message} — ` +
+          `the merge-fallback record says not recorded (Issue #4521)`,
+      );
+    } catch (err) {
+      logAt(
+        log,
+        "warn",
+        `Could not measure how far '${milestone.milestoneBranch}' in ${repo} ` +
+          `is behind '${milestone.defaultBranch}': ${
+            err instanceof Error ? err.message : String(err)
+          } — the merge-fallback record says not recorded (Issue #4521)`,
+      );
+    }
+    return undefined;
+  };
+
   /** Finish either rebuild route without carrying its old refusal streak. */
   const recordLandedRebuild = (entry: SyncStreakEntry): SyncStreakEntry => ({
     ...resetConflictLedgerOnSuccess(entry),
@@ -1993,6 +2065,8 @@ export async function syncMilestoneBranches(
     streakKey: string,
     streaks: SyncStreaks,
     markDirty: () => void,
+    behindBy: number | undefined,
+    conflictError: MilestoneConflictEscalation | undefined,
   ): Promise<SyncStreakEntry> => {
     const request: MilestoneRollbackRequest = {
       repo,
@@ -2028,7 +2102,13 @@ export async function syncMilestoneBranches(
           entry,
           outcome,
           attempts: request.attempts,
-          fallback: {},
+          fallback: await buildFallbackContext(
+            repo,
+            milestone,
+            entry,
+            behindBy,
+            conflictError,
+          ),
           ...(entry.lastSyncedDefaultSha !== undefined
             ? { defaultSha: entry.lastSyncedDefaultSha }
             : {}),
@@ -2209,29 +2289,19 @@ export async function syncMilestoneBranches(
         : {}),
     });
     if (!isRollbackOutcome(outcome)) return entry;
-    const conflictedFiles = conflictError
-      ? [
-        ...conflictError.analyses.map((a) => a.path),
-        ...conflictError.resolved.map((d) => d.path),
-      ]
-      : [];
     return applyRollbackOutcome({
       repo,
       milestone,
       entry,
       outcome,
       attempts,
-      fallback: {
-        ...(conflictedFiles.length > 0 ? { conflictedFiles } : {}),
-        ...(behindBy !== undefined ? { behindBy } : {}),
-        ...(await readBehindSince(
-          repo,
-          entry.lastSyncedDefaultSha,
-          milestone.defaultBranch,
-          ghCommandFn,
-          log,
-        )),
-      },
+      fallback: await buildFallbackContext(
+        repo,
+        milestone,
+        entry,
+        behindBy,
+        conflictError,
+      ),
       ...(defaultSha !== undefined ? { defaultSha } : {}),
       fileMergeFallbackFn,
       ghCommandFn,
@@ -2697,6 +2767,8 @@ export async function syncMilestoneBranches(
               () => {
                 streaksDirty = true;
               },
+              behindBy,
+              undefined,
             );
             skipped++;
             continue;
@@ -3232,6 +3304,8 @@ export async function syncMilestoneBranches(
                     () => {
                       streaksDirty = true;
                     },
+                    behindBy,
+                    conflictError,
                   );
                 } else {
                   // Issue #2998: a milestone branch with an open PR against it
