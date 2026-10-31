@@ -1,5 +1,7 @@
 /** A small, single-PR-at-a-time fleet PR babysitter. */
 import { loadConfig } from "../lib/config.ts";
+import { runGhOrThrow } from "../lib/gh_spawn.ts";
+import { runGitArgv } from "../lib/git_timeout.ts";
 import {
   acquireBranchUpdateLock,
   releaseBranchUpdateLock,
@@ -29,6 +31,18 @@ async function run(
   args: string[],
   cwd?: string,
 ): Promise<string> {
+  // git goes through the timeout/audit chokepoint (Issue #1553).
+  if (command === "git") {
+    const git = await runGitArgv([command, ...args], { cwd });
+    if (!git.success) {
+      throw new Error(
+        `git failed: ${(git.stderr || git.stdout).trim()}`,
+      );
+    }
+    return git.stdout;
+  }
+  // gh goes through its chokepoint too (Issue #3703).
+  if (command === "gh") return (await runGhOrThrow(args, { cwd })).trim();
   const result = await new Deno.Command(command, {
     args,
     cwd,
