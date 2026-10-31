@@ -44,18 +44,20 @@ the `no worker marker` and `worker marker present` branches), and
 which already pins the marker-less skip on a hand-raised branch.
 
 Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
-`prompts/ci_fix/prompt.md` (Fixing the Failure),
+`prompts/ci_fix/prompt.md` (Fixing the Failure and Dependency audit failures),
 `prompts/merge_conflict/prompt.md` (What To Do), and one sentence each in
 `docs/workflows/pr-feedback.md`, `docs/workflows/ci-fix.md` and
 `docs/workflows/merge-conflicts.md`.
 
 ## Test Plan
 
-- `worker/deno/tests/marker_less_body_rebuild_4515_docs_test.ts` (3 tests):
+- `worker/deno/tests/marker_less_body_rebuild_4515_docs_test.ts` (4 tests):
   each prompt section names the worker marker from `WORKER_PR_MARKER_PREFIX`,
   describes the outside-worker body and edit command, and requires the reporting
-  clause built from `PR_RESPONSE_MESSAGE_FILE`. It rejects the old ban.
-- The test file passes on the head (3 passed, 0 failed); with the three prompt
+  clause built from `PR_RESPONSE_MESSAGE_FILE`. It rejects the old ban. The
+  dependency-audit section also requires the marker-scoped rebuild and live
+  body update for its tracking issue.
+- The original three tests pass on the head; with the three prompt
   sections restored from `main`, it fails (0 passed, 3 failed).
 - `deno task drift-pins-on-base` confirmed every required phrase is absent from
   each corresponding section on `main`.
@@ -66,6 +68,9 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
   each of the three prompts, and `docs/workflows/` text on the digest marker and
   "only a PR the worker authored is edited"; they agree with the new wording.
 
-`markdownlint-cli2` on the summary and the three prompts: 0 issues.
+The additional dependency-audit test failed before the guidance changed and
+passes with the corrected guidance.
+
+`markdownlint-cli2` on the summary and the three prompts: 0 issues (prior run).
 
 <!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes longer than the 600s foreground command cap (a run on an earlier branch timed out at 580s inside the deno test stage); only targeted checks ran, CI runs the full gate" -->

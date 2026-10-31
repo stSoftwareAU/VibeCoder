@@ -62,3 +62,22 @@ for (const [type, heading] of TYPES_AND_SECTIONS) {
     );
   });
 }
+
+Deno.test("Issue #4515 - dependency audit tracking reaches a marker-less body", async () => {
+  const body = flat(
+    section(
+      await readRepoDoc("prompts/ci_fix/prompt.md"),
+      "Dependency audit failures",
+    ),
+  );
+  for (
+    const required of [
+      `description carrying \`${WORKER_PR_MARKER_PREFIX}N -->\``,
+      "on a branch that is not this run's own `issue-<N>-…` branch",
+      "add `Fixes #N` to the live body with `gh pr edit <n> --body-file <file>`",
+      `and name that in \`${PR_RESPONSE_MESSAGE_FILE}\``,
+    ]
+  ) {
+    assertStringIncludes(body, required);
+  }
+});
