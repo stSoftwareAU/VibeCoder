@@ -37,6 +37,7 @@ import {
   removeProcessedMark,
   type ReviewDismissalOutcome,
 } from "./pr_comments.ts";
+import { isHostDiskFaultText } from "./host_fault.ts";
 import {
   abandonAndRestart,
   type AbandonRestartOutcome,
@@ -1315,6 +1316,50 @@ async function _processFeedbackWithHeartbeat(
   await rtk.record();
 
   if (!claudeResult.ok) {
+    // Issue #4511: a host-disk park (Issue #4360) is the host running out of
+    // disk, not the PR's fault, so it is released rather than charged. The
+    // processed mark is taken back so the comment is rediscovered once the
+    // disk has room. If the mark cannot be removed the comment would never
+    // be rediscovered, so the failure is charged after all (below).
+    if (isHostDiskFaultText(claudeResult.error.message)) {
+      const markError = await removeProcessedMark(
+        repo,
+        commentType,
+        commentId,
+        (args: string[]) => deps.github.runGhCommand(args),
+        (message: string) => logger.warn(message, { repo, prNumber }),
+      );
+      if (markError === null) {
+        if (commentType === "pr_review") {
+          carrier.reviewSettlement = "released";
+        }
+        logger.warn(
+          "PR feedback released, not charged: the host is short of disk, " +
+            "not the PR's fault (Issue #4511, park Issue #4360)",
+          {
+            repo,
+            prNumber,
+            commentId,
+            error: claudeResult.error.message,
+          },
+        );
+        return {
+          ok: true,
+          value: {
+            processed: false,
+            changesPushed: false,
+            summary:
+              `PR feedback for ${repo}#${prNumber} released: the host is short of disk (Issue #4360) — not charged as a failed attempt (Issue #4511)`,
+          },
+        };
+      }
+      logger.warn(
+        "Could not release the eyes reaction after a host-disk park — " +
+          "charging the attempt instead, since the comment will not be " +
+          "rediscovered (Issue #4511)",
+        { repo, prNumber, commentId, error: markError.message },
+      );
+    }
     // Handle failure — report via comment failure handler. Issue #3383:
     // routed through chargeReviewFailure so a `pr_review` claim's failed
     // attempt is counted towards its two-strike limit (harmless for every

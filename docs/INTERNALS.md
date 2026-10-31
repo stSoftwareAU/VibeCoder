@@ -2922,7 +2922,9 @@ the run retires the review (Issue #3383):
 No reaction is ever posted for a review — the old code reacted on
 `issues/comments/<reviewId>`, the wrong resource for a review id. Any other
 unretired outcome (an agent error, a timeout, a push that never lands on the
-remote, a prompt-build failure) is charged the same way as a failed attempt.
+remote, a prompt-build failure) is charged the same way as a failed attempt,
+except an agent error caused by a host-disk fault, which is released without a
+charge (Issue #4511, see `docs/CONTAINER.md`).
 A branch the host could not check out releases the review **uncharged**, with
 no reply and no attempt counted.
 
