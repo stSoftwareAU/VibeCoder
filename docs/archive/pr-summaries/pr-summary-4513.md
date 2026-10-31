@@ -47,9 +47,16 @@ messages) changed.
   asserts "raised anyway" and no withheld-PR or "blocks a criteria block" claim.
   Red check: with the old wording restored the test fails; with the new wording
   it passes.
-- `deno task test:unit tests/acceptance_criteria_gate_test.ts tests/review_block_template_test.ts tests/unmet_criteria_gate_test.ts`:
-  48 passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check` on the
-  three edited files: clean.
+- `deno task test:unit tests/acceptance_criteria_gate_test.ts tests/review_block_template_test.ts tests/unmet_criteria_gate_test.ts`
+  (run from `worker/deno`): 48 passed, 0 failed at head. Per file:
+  `worker/deno/tests/acceptance_criteria_gate_test.ts` (40 tests, the only one of
+  the three this PR edits), `worker/deno/tests/review_block_template_test.ts`
+  (5 tests) and `worker/deno/tests/unmet_criteria_gate_test.ts` (3 tests); the
+  latter two are unchanged regression runs. `deno fmt --check`, `deno lint` and
+  `deno check` on the three files this PR edits
+  (`worker/deno/lib/acceptance_criteria_gate.ts`,
+  `worker/deno/lib/phases/completion_phase.ts` and
+  `worker/deno/tests/acceptance_criteria_gate_test.ts`): clean.
 - No existing test asserts the old log strings or comment wording (grepped
   `worker/deno` and `docs/`, excluding `docs/archive/`); no assertion was
   removed or edited.
