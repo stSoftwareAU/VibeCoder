@@ -35,7 +35,12 @@ export interface FeedbackVerifierDeps {
   buildCandidate?: typeof buildSyncedPrBodyCandidate;
 }
 
-/** Unavailable or incomplete evidence holds the review open; it never means fixed. */
+/**
+ * Incomplete evidence (a blocked verdict) holds the review open. An unavailable
+ * verifier (could not run) is logged and does not block: it never means fixed,
+ * the fix is pushed and the fleet review of the pushed head decides. Mirrors the
+ * new-PR path in `phases/completion_phase.ts` (Issue #3395; Issue #4509).
+ */
 export async function verifyFeedbackFix(
   input: FeedbackVerifierInput,
   deps: FeedbackVerifierDeps,
@@ -108,7 +113,11 @@ export async function verifyFeedbackFix(
       logger: input.logger,
     }, { ...defaultPrePrVerifierDeps, ask: deps.ask });
     if (result.status === "not_checked") {
-      throw new Error(`Review-fix verifier unavailable: ${result.reason}`);
+      input.logger.warn(
+        "Review-fix verifier not checked — not read as clean, does not block (Issue #4509)",
+        { repo: input.repo, prNumber: input.prNumber, reason: result.reason },
+      );
+      return { ok: true, value: undefined };
     }
     input.logger.info("Review-fix verifier verdicts", {
       repo: input.repo,
