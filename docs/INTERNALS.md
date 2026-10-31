@@ -405,7 +405,8 @@ bash `worker/run_core.sh` conductor. It sequences:
    unchanged repeat, including the one the next hourly worker start produces,
    is logged at DEBUG (`decision_warn_signatures.json` in the work directory,
    Issue #4495).
-   The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
+   When a criterion is marked missing, the PR itself is raised as `Part of #N`
+   rather than `Closes #N`
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.
 

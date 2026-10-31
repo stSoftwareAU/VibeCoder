@@ -38,9 +38,11 @@ inputs change, and log an unchanged repeat at DEBUG. Closes #4495.
 - Bounded: an entry not seen for 7 days is dropped (on load and on every write);
   an unchanged sighting re-stamps its entry once a day, so a pair still being
   re-checked is kept and a closed issue's pair ages out.
-- A missing file reads as empty; a corrupt or unreadable one, or a failed write,
-  is logged at WARNING and degrades to memory-only — it never throws. Each fault
-  is covered by a test (see the Test Plan).
+- A missing file reads as empty. A corrupt or unreadable file is logged at
+  WARNING and read as empty; a subsequent write can replace it. A failed write
+  is logged at WARNING and leaves the signature in memory until a later write
+  succeeds. These faults do not throw. Each is covered by a test (see the Test
+  Plan).
 
 ### Undiscoverable Facts
 
