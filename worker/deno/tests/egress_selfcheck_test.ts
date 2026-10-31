@@ -731,6 +731,21 @@ Deno.test("probeProxyConnectDetailed - an answer longer than the byte cap is cut
   assertEquals(fake.reads(), 3);
 });
 
+Deno.test("probeProxyConnectDetailed - a Content-Length that is not plain digits announces no body, so a 200 stays complete at its head (Issue #4559)", async () => {
+  for (const value of ["abc", "1e3", "12 34", "0x10", "-5", "", "+7"]) {
+    // A second read would hang; a non-digit value must not ask for one.
+    const fake = chunkedConn(
+      [`HTTP/1.1 200 Connection Established\r\nContent-Length: ${value}\r\n\r\n`],
+      false,
+    );
+    assertEquals(await probeFake(fake.conn, 200), {
+      result: "succeeded",
+      observed: "connected",
+    }, `Content-Length: ${JSON.stringify(value)}`);
+    assertEquals(fake.reads(), 1, `Content-Length: ${JSON.stringify(value)}`);
+  }
+});
+
 /** Budget for one real-proxy child process (Issue #4559). */
 const REAL_PROXY_CHILD_TIMEOUT_MS = 20_000;
 

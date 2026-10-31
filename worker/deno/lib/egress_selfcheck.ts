@@ -415,8 +415,8 @@ function contentLength(head: string): number | undefined {
       continue;
     }
     const value = line.slice(colon + 1).trim();
-    const plain = value.length > 0 &&
-      [...value].every((ch) => ch >= "0" && ch <= "9");
+    // An empty value passes and reads as 0, the same as no header.
+    const plain = [...value].every((ch) => ch >= "0" && ch <= "9");
     return plain ? Number(value) : undefined;
   }
   return undefined;

@@ -61,6 +61,7 @@ New tests in `worker/deno/tests/egress_selfcheck_test.ts`:
 - `a 403 with no body is not denied, after EOF or when the body never arrives`
 - `a 200 is succeeded at its head, without a second read`
 - `an answer longer than the byte cap is cut at the cap`
+- `a Content-Length that is not plain digits announces no body, so a 200 stays complete at its head` (mutation check: kills the dropped all-digits test on `egress_selfcheck.ts:419`)
 - `the real proxy's refusal of a host off the allowlist is denied over loopback`
 - `the real proxy's 200 to an allowlisted host is succeeded over loopback`
 
@@ -83,3 +84,11 @@ toolchain on this host; that file alone fails 2 of 8 here and does not touch
 this change; not run on the base branch). `config integration` and `checkov`
 were skipped for local prerequisites, and the serial pass did not run because
 the parallel pass failed.
+
+Mutation check (`lib/egress_selfcheck.ts` `contentLength`): the dropped
+all-digits operand is now killed by the non-digit `Content-Length` test (`abc`,
+`1e3`, `0x10`, ...); with the operand replaced by `true` that test fails. The
+dropped `value.length > 0` operand was an equivalent mutant: an empty value gave
+`Number("") === 0`, the same as no header, so the operand was dead and has been
+removed from the code. The mutation run stopped at 11 of 20 mutants (300 s
+budget); the remaining nine were not tested.
