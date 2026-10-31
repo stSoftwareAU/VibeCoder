@@ -179,46 +179,40 @@ Deno.test("App token refresh recovers after a transient failure", async () => {
 // runner's write token; it gets its own single-repo, read-only installation token.
 // =============================================================================
 
-// Test RSA key (2048-bit, generated for testing only — not a real secret).
-// Same key as tests/github_app_auth_test.ts; copied because that module's
-// constants are not exported.
-const TEST_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDGqkt46j7Fr/zi
-UWl7LQB7z8vPqGA+2V9LKsqW0uGDbTJsm5GEWaaFKaLAhaTIY0GEIINMIGIhgO4N
-HMAiHRZ7+yw6sEP/bm1LY3Owg8yH7u7YhrpJ3WSocNqBQ32gQsxgt1V5XwHH2KfN
-DqZyCnew+9P0c8kjTTdaXLd4ZGKUw+g+6efPi2zyqO1igu9mSuJOn4mNoP9LEvRi
-pe/QHF07uOxW8lAbc5Qby+lPJs/sEqXZDVu6VQIoRKKacYjlRZ1Vi0vVW4HQKJVD
-5ZdIpMSi55tfL6MHvfH70cLxCZUxBO5rJjfQQ/XVi0RD+cyv3S52i8MjDkemA4LD
-dBtN+AXXAgMBAAECggEADQ7NN/AqZ0ZlmF9b6Ya2gDmf3p3lXy9c17OP7h3qSLMs
-T0svMCqcV8BToqFy7uDnQehixbKTM9SMaqKeVlLguXSm6yybkfYPvpbI2EWxc3XW
-9eoISinNH4bBz4em6DO7yNedowUFnvC0oGiU51LQAmGeN6d5a8j75gQvr8my8q6L
-Rwu8vbgzwMnesf/QN1dIrNfIBkAneaIolhc0EfGQpY7oxcVhsUSeMF3yTkAZncFw
-Bgw2bfAO1/BfCK4IWLBqlsJX0lPP5JUiRdPpVKPlNvfkZQA22yZADBEiAf2deV+o
-a/31N9XZUtrlkjtI1E9gYzO5pC5+C5mieDKEgK7xsQKBgQDteS7h2wbZh3funMfB
-smENdu/NC4MsKfVp6ZT/9oNpOxcdIUQZy21fMw3MK3749CnQiVWRte9fxiVAOa43
-B0TWYNLUfDyeNj+miajDwEReCUcBAARi/S367fHN4CiXkfEOQ77atsRy/ObXloZR
-4pmDq84w2TY5TjR2kxgM/GIQQwKBgQDWKgkOMFHOewvAYPqvMPWxUdjbmZ3IFojt
-8ZQf64T5MHa9IFkRtnZ9czraTf48IGbchWeaD2wHsxCu1l7kyE0s8GLgYVf//DeX
-MIoiltQPVFyIxmXnbvsIuL+rqajln9GQZWb1fXF23vPYUjYJmaSpqf/2wRN47k3d
-5CK5VX5U3QKBgGvzirxhNNvuGTb/Tk9fJ39XcetkMF0DNezPokw5Y8OSeQ9k7/BJ
-6Y49RyhpHW9OjzOdOqjia8695HEtx2R8iW5q1WyCjYveXVD3gyB5ZprY3M43k8bs
-ENrhD+rm240LaulxInGKZANhtA6M/sJ6oA6bK0BJfbzPMEo209gTYwDBAoGBAL76
-mTyn5iulGmOhl6rmlBJeFG4v3L3zKoRVa2vTkK7OgvRAhmz/M0bHnPHTnyVrF48K
-/8ooeoObMQNYcyK9Y+TxMJs680h5V/Fg/a2+prhM2H+3vGPXWdD7PyELmGu8Sxri
-8h90j9wbEYQUO8/vzSDnUjRvFLhAefunVzfCf3eZAoGAcEtTt0UfyrQLQVNRu4d9
-TkNx4bMoIg7iIRD2Hw7nllhL8WVS4G622MinPoe4O3haL2EF0cyv84wnTF7Xb1ns
-I6FIlFPYaHl3OQczlTCpqnGDWJXSoFYHAcvQbg8NOF4fX1vjqBUlQSpxs3ImdjOi
-EueUFZ2YucK5tRacK+eBAvU=
------END PRIVATE KEY-----`;
+/**
+ * Generate a fresh 2048-bit RSA key at test time, as a PKCS#8 PEM string.
+ *
+ * Generated per call rather than committed, so no key material lives in source.
+ * The PEM header and footer are concatenated so no literal PEM block appears.
+ */
+async function generateTestKeyPem(): Promise<string> {
+  const pair = await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  );
+  const der = new Uint8Array(
+    await crypto.subtle.exportKey("pkcs8", pair.privateKey),
+  );
+  const lines = btoa(String.fromCharCode(...der)).match(/.{1,64}/g)!;
+  const header = "-----BEGIN " + "PRIVATE KEY-----";
+  const footer = "-----END " + "PRIVATE KEY-----";
+  return [header, ...lines, footer].join("\n") + "\n";
+}
 
-/** Run `run` with the test key written to a temp file, removed afterwards. */
+/** Run `run` with a generated test key written to a temp file, removed afterwards. */
 async function withTestKey(
   run: (privateKeyPath: string) => Promise<void>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir();
   try {
     const privateKeyPath = `${dir}/app-key.pem`;
-    await Deno.writeTextFile(privateKeyPath, TEST_PRIVATE_KEY_PEM);
+    await Deno.writeTextFile(privateKeyPath, await generateTestKeyPem());
     await run(privateKeyPath);
   } finally {
     await Deno.remove(dir, { recursive: true });
