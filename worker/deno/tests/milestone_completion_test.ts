@@ -4070,6 +4070,144 @@ Deno.test("hasNothingToMerge - false (fail safe) when the compare call fails (Is
   );
 });
 
+// Issue #4514: a squash-merged rollup leaves the compare listing its files.
+const SQUASHED_HEAD = "0123456789abcdef0123456789abcdef01234567";
+
+function squashedRollupGhFn(options: {
+  branchHead: string;
+  mergedHeadOid?: string;
+  prListFails?: boolean;
+}): (args: string[]) => Promise<string> {
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/branches/")) {
+      return key.endsWith(".commit.sha")
+        ? options.branchHead
+        : "milestone/scan";
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        ahead_by: 20,
+        files: [{ filename: "worker.ts" }],
+      });
+    }
+    if (key.includes("pr list") && key.includes("--head")) {
+      if (options.prListFails) throw new Error("pr list boom");
+      return JSON.stringify([{
+        number: 4077,
+        state: "MERGED",
+        baseRefName: "main",
+        mergedAt: "2026-10-13T13:58:25Z",
+        headRefOid: options.mergedHeadOid,
+      }]);
+    }
+    return "[]";
+  };
+}
+
+Deno.test("hasNothingToMerge - true when the head is the head of a squash-merged rollup (Issue #4514)", async () => {
+  assertEquals(
+    await hasNothingToMerge(
+      "owner/repo",
+      "milestone/scan",
+      "main",
+      squashedRollupGhFn({
+        branchHead: SQUASHED_HEAD,
+        mergedHeadOid: SQUASHED_HEAD,
+      }),
+    ),
+    true,
+  );
+});
+
+Deno.test("hasNothingToMerge - false when the branch head has moved since the squash-merged rollup (Issue #4514)", async () => {
+  assertEquals(
+    await hasNothingToMerge(
+      "owner/repo",
+      "milestone/scan",
+      "main",
+      squashedRollupGhFn({
+        branchHead: "1111111111111111111111111111111111111111",
+        mergedHeadOid: SQUASHED_HEAD,
+      }),
+    ),
+    false,
+  );
+});
+
+Deno.test("hasNothingToMerge - false (fail safe) when the rollup list fails (Issue #4514)", async () => {
+  assertEquals(
+    await hasNothingToMerge(
+      "owner/repo",
+      "milestone/scan",
+      "main",
+      squashedRollupGhFn({
+        branchHead: SQUASHED_HEAD,
+        mergedHeadOid: SQUASHED_HEAD,
+        prListFails: true,
+      }),
+    ),
+    false,
+  );
+});
+
+Deno.test("checkAndHandleMilestoneCompletions - closes a milestone whose rollup squash-merged with the head unchanged (Issue #4514)", async () => {
+  const calls: string[] = [];
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    calls.push(key);
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+    if (key.includes("/branches/")) {
+      return key.endsWith(".commit.sha") ? SQUASHED_HEAD : "milestone/scan";
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        ahead_by: 12,
+        files: [{ filename: "worker.ts" }],
+      });
+    }
+    if (key.includes("pr list") && key.includes("--head")) {
+      return JSON.stringify([{
+        number: 4077,
+        state: "MERGED",
+        baseRefName: "main",
+        mergedAt: "2026-10-13T13:58:25Z",
+        headRefOid: SQUASHED_HEAD,
+      }]);
+    }
+    if (key.includes("PATCH")) return "{}";
+    if (/\/milestones(?:\?|$)/.test(key)) {
+      return JSON.stringify([{ title: "scan", number: 105, open_issues: 0 }]);
+    }
+    if (key.includes(".default_branch")) return "main";
+    if (isClosedIssueRead(key)) {
+      return JSON.stringify([{
+        number: 100,
+        title: "delivered work",
+        milestone: { title: "scan" },
+      }]);
+    }
+    return "[]";
+  };
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({ ghCommandFn: ghFn }),
+  );
+  assert(result.ok);
+  assertEquals(result.value.summaryPrsCreated, 0);
+  assert(
+    calls.some((key) =>
+      key.includes("PATCH") && key.includes("/milestones/105") &&
+      key.includes("state=closed")
+    ),
+  );
+  assertFalse(
+    calls.some((key) =>
+      key.includes("issue create") || key.includes("pr create")
+    ),
+  );
+});
+
 // --- Integration: deadlock / no-branch self-heal ---------------------------
 
 Deno.test("checkAndHandleMilestoneCompletions - self-heals a deadlocked issue-only milestone (Issue #3214)", async () => {

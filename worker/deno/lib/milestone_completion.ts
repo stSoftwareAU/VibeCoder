@@ -18,7 +18,10 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
-import { readBranchCompare } from "./milestone_route_restore.ts";
+import {
+  isMilestoneHeadAlreadyMerged,
+  readBranchCompare,
+} from "./milestone_route_restore.ts";
 import {
   evaluateWorkerIdentity,
   IdentityGuardError,
@@ -571,7 +574,9 @@ export async function hasExistingMilestoneSummaryPr(
         milestoneBranch,
         ghCommandFn,
       );
-      // A file diff means the merged rollup did not carry the branch tip.
+      // A file diff usually means the merged rollup did not carry the branch
+      // tip. A squash merge can leave a diff even when it did (Issue #4514);
+      // hasNothingToMerge is the check for that case.
       // No diff, or a compare that cannot be read, keeps the merged PR so
       // a second summary is not raised on a guess.
       if (
@@ -812,7 +817,10 @@ async function getCachedOpenNonTrackingIssues(
  *   1. the milestone branch does not exist on the remote (the common
  *      issue-only-milestone case), or
  *   2. the branch exists but is 0 commits ahead of the default branch, or
- *   3. its comparison reports no changed files, even with commits ahead.
+ *   3. its comparison reports no changed files, even with commits ahead, or
+ *   4. the branch head is still the head of a rollup already merged into the
+ *      default branch (Issue #4514). A squash merge leaves the compare listing
+ *      the files it landed, so the compare alone cannot tell.
  *
  * When there is genuinely nothing to merge, creating a tracking issue and a
  * summary PR is pointless — and, before this fix, the tracker left open by the
@@ -860,10 +868,24 @@ export async function hasNothingToMerge(
     const comparison = JSON.parse(out);
     const aheadBy = comparison?.ahead_by;
     if (!Number.isSafeInteger(aheadBy) || aheadBy < 0) return false;
-    return aheadBy === 0 ||
-      (Array.isArray(comparison.files) && comparison.files.length === 0);
+    if (aheadBy === 0) return true;
+    if (!Array.isArray(comparison.files)) return false;
+    if (comparison.files.length === 0) return true;
   } catch {
     // Compare failed — fail safe (do not close on incomplete information).
+    return false;
+  }
+  // The compare still lists files, so check whether this head is already the
+  // head of a rollup that merged (Issue #4514). Any failure stays false.
+  try {
+    const headMerged = await isMilestoneHeadAlreadyMerged({
+      repo,
+      milestoneBranch,
+      defaultBranch,
+      ghCommandFn,
+    });
+    return headMerged.ok && headMerged.value;
+  } catch {
     return false;
   }
 }
@@ -2515,7 +2537,8 @@ async function processRepoMilestones(
 
     // Issue #3214 (scope item 2): check the milestone branch BEFORE creating a
     // tracker. When there is nothing to merge (branch missing, 0 commits
-    // ahead of the default branch, or no changed files),
+    // ahead of the default branch, no changed files, or a head already merged
+    // in a rollup — Issue #4514),
     // creating a tracker + summary PR is pointless and, before this fix, left
     // the tracker open forever (the deadlock). Instead close any open trackers
     // and close the milestone directly.
@@ -2550,7 +2573,7 @@ async function processRepoMilestones(
       });
       await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
       log(
-        `Milestone '${milestone.title}' in ${repo} is complete with nothing to merge (branch missing, 0 commits ahead or no changed files) — closed directly, no tracker or summary PR (Issue #3214)`,
+        `Milestone '${milestone.title}' in ${repo} is complete with nothing to merge (branch missing, 0 commits ahead, no changed files, or head already merged in a rollup) — closed directly, no tracker or summary PR (Issue #3214, Issue #4514)`,
       );
       continue;
     }
