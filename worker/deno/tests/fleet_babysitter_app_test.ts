@@ -1,11 +1,52 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   appConfigPath,
+  configureBabysitterLockTrust,
   parseBabysitterAppConfig,
   readBabysitterAppConfig,
   startBabysitterAppAuth,
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
+
+Deno.test("setup adds bot lock trust without losing existing fleet identities", async () => {
+  const dir = await Deno.makeTempDir();
+  const path = `${dir}/config.json`;
+  try {
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        service_accounts: ["worker"],
+        fleet_pr_authors: ["author"],
+        untouched: true,
+      }),
+    );
+    assertEquals(
+      await configureBabysitterLockTrust(path, "fleet-pr-babysitter[bot]"),
+      true,
+    );
+    const value = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(value.service_accounts, [
+      "worker",
+      "fleet-pr-babysitter[bot]",
+    ]);
+    assertEquals(value.fleet_pr_authors, [
+      "author",
+      "fleet-pr-babysitter[bot]",
+    ]);
+    assertEquals(value.untouched, true);
+    assertEquals(
+      await configureBabysitterLockTrust(path, "FLEET-PR-BABYSITTER[BOT]"),
+      false,
+    );
+    await Deno.writeTextFile(path, "{}\n");
+    await configureBabysitterLockTrust(path, "bot[bot]");
+    assertEquals(JSON.parse(await Deno.readTextFile(path)), {
+      fleet_pr_authors: ["bot[bot]"],
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 
 Deno.test("App settings round-trip without storing a token", async () => {
   const home = await Deno.makeTempDir();

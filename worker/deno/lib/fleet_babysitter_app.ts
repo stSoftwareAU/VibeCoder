@@ -73,6 +73,69 @@ export async function writeBabysitterAppConfig(
   }
 }
 
+/** Add the verified bot locally without replacing existing fleet identities. */
+export function addBabysitterLockTrust(
+  config: Record<string, unknown>,
+  bot: string,
+): boolean {
+  let changed = false;
+  for (const key of ["fleet_pr_authors", "service_accounts"]) {
+    const original = config[key];
+    if (
+      original !== undefined && original !== null &&
+      (!Array.isArray(original) ||
+        original.some((entry) => typeof entry !== "string"))
+    ) {
+      throw new Error(`${key} must be an array of login strings`);
+    }
+    const list = (original ?? []) as string[];
+    // An empty service account list leaves the worker identity guard inactive.
+    if (key === "service_accounts" && list.length === 0) continue;
+    if (!list.some((entry) => entry.toLowerCase() === bot.toLowerCase())) {
+      config[key] = [...list, bot];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Atomically update only the local fleet-lock trust configuration. */
+export async function configureBabysitterLockTrust(
+  path: string,
+  bot: string,
+): Promise<boolean> {
+  const actual = await Deno.realPath(path);
+  const before = await Deno.readTextFile(actual);
+  const config = JSON.parse(before);
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("Fleet configuration must be an object");
+  }
+  if (!addBabysitterLockTrust(config, bot)) return false;
+  const mode = (await Deno.stat(actual)).mode;
+  const dir = actual.slice(0, actual.lastIndexOf("/")) || "/";
+  const temporary = await Deno.makeTempFile({
+    dir,
+    prefix: ".babysitter-config-",
+  });
+  try {
+    await Deno.writeTextFile(temporary, `${JSON.stringify(config, null, 2)}\n`);
+    if (mode !== null) await Deno.chmod(temporary, mode & 0o777);
+    if (await Deno.readTextFile(actual) !== before) {
+      throw new Error("Fleet configuration changed during setup; retry");
+    }
+    await Deno.rename(temporary, actual);
+  } finally {
+    await Deno.remove(temporary).catch((error) => {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        console.error(
+          `Could not remove temporary fleet configuration: ${error}`,
+        );
+      }
+    });
+  }
+  return true;
+}
+
 /** Verify the signing key's actual App identity before trusting its bot name. */
 export async function babysitterAppIdentity(
   config: BabysitterAppConfig,

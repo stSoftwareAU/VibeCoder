@@ -6,7 +6,10 @@ import {
   getInstallationToken,
 } from "../lib/github_app_auth.ts";
 import { runGhCommand } from "../lib/github.ts";
-import { writeBabysitterAppConfig } from "../lib/fleet_babysitter_app.ts";
+import {
+  configureBabysitterLockTrust,
+  writeBabysitterAppConfig,
+} from "../lib/fleet_babysitter_app.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
 
 const REQUIRED_PERMISSIONS: Readonly<Record<string, string>> = {
@@ -104,9 +107,8 @@ async function main(): Promise<number> {
     /\/$/,
     "",
   );
-  const config = await loadConfig(
-    Deno.env.get("CONFIG_PATH") ?? `${checkout}/.config.json`,
-  );
+  const configPath = Deno.env.get("CONFIG_PATH") ?? `${checkout}/.config.json`;
+  const config = await loadConfig(configPath);
   if (!config.repos.length) {
     throw new Error("No monitored repos in .config.json");
   }
@@ -294,12 +296,6 @@ async function main(): Promise<number> {
     `App ${app.slug}[bot]: authentication and permissions OK; GraphQL remaining ${data.data.rateLimit.remaining}/${data.data.rateLimit.limit}, resets ${data.data.rateLimit.resetAt}`,
   );
   const bot = `${app.slug}[bot]`;
-  const authors = [...config.fleetPrAuthors, ...config.serviceAccounts];
-  if (!authors.some((a) => a.toLowerCase() === bot.toLowerCase())) {
-    console.log(
-      `ACTION: ${bot} is not trusted for branch locks on this host. Every fleet host must recognise it before App-based fixes.`,
-    );
-  }
   if (!checkOnly) {
     await writeBabysitterAppConfig(home, {
       appId,
@@ -309,7 +305,24 @@ async function main(): Promise<number> {
     console.log(
       "Saved babysitter App configuration; run.sh will use this App's quota.",
     );
+    const updated = await configureBabysitterLockTrust(configPath, bot);
+    console.log(
+      updated
+        ? `Configured local branch-lock trust for ${bot}.`
+        : `Local branch-lock trust for ${bot} was already configured.`,
+    );
   }
+  const currentConfig = checkOnly ? config : await loadConfig(configPath);
+  const authors = [
+    ...currentConfig.fleetPrAuthors,
+    ...currentConfig.serviceAccounts,
+  ];
+  if (!authors.some((a) => a.toLowerCase() === bot.toLowerCase())) {
+    console.log(
+      `ACTION: ${bot} is not trusted for branch locks on this host; check environment overrides.`,
+    );
+  }
+  console.log(`Every fleet host must recognise ${bot} before App-based fixes.`);
   const install = installFlag ||
     (!checkOnly && Deno.build.os === "darwin" &&
       confirm(

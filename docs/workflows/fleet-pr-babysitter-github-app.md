@@ -51,8 +51,10 @@ new permission request for each installation before tokens receive them.
 Run the interactive setup described in [the babysitter MVP](fleet-pr-babysitter.md)
 to check the key, installation permissions, repository access and quota. It
 offers to install a macOS launch agent after you have manually tested a fix.
-Setup saves the App ID, installation ID and private-key path for the runner;
-it does not save an installation token.
+Setup saves the App ID, installation ID and private-key path for the runner
+and adds the bot to the local fleet-lock identities; it does not save an
+installation token. Repeat the trust setup on every fleet host before starting
+repairs.
 
 ## Coordinate with the fleet
 

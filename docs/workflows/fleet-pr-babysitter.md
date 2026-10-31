@@ -29,8 +29,8 @@ From the VibeCoder checkout:
 
 Setup prompts for the GitHub App ID and private-key path, discovers the App
 installation, and verifies its permissions, repository access and GraphQL
-quota without printing credentials, then saves the App settings for run.sh.
-It checks the local fleet-lock identities
+quota without printing credentials, then saves the App settings for run.sh
+and adds its bot to this host's fleet-lock identities. It checks
 and required commands. For a non-interactive preflight, use `--check` and
 `--app-id=<id>`; the key defaults to
 `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass `--key=<path>`.
@@ -62,7 +62,8 @@ Dry runs and runs limited to a repository or PR do not report service health.
 
 The host needs `gh`, `git`, `deno`, `codex` and RTK. Before execution, put the
 App's `<slug>[bot]` login in `service_accounts` or
-`fleet_pr_authors` **on every fleet host**. Those workers only trust locks
+`fleet_pr_authors` **on every fleet host**. Run setup on each host (or deploy
+your organisation's fleet configuration) before starting repairs. Those workers only trust locks
 written by known fleet accounts. The MVP checks the local configuration; it
 cannot verify other hosts. Use a dedicated account with only the access it
 needs. The agent is asked to use RTK; configure Codex's RTK hook as well.
