@@ -141,6 +141,12 @@ import {
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { rerunFailedJobsOfCheck } from "./ci_infrastructure_rerun.ts";
+import { nudgeCi } from "./pr_ci_nudge.ts";
+import { replyToComment as postPrComment } from "./pr_comments.ts";
+import {
+  buildCiRerunFallbackMarker,
+  isCiRerunFallbackRecordedAt,
+} from "./ci_fix_attempt_markers.ts";
 import { isMergeQueueCheckId } from "./merge_queue_check_id.ts";
 import { parseCheckSuiteId } from "./github_actions_log_fetcher.ts";
 import {
@@ -868,12 +874,33 @@ async function _processCiFailureLocked(
     // jobs are re-run, so a fresh check run with a fresh retry budget comes
     // back to the lane; the fleet-wide auto-fix cap, which abandons the PR
     // and redoes its issue, bounds the whole loop.
-    await rerunFailedJobsOfCheck({
+    const rerunMarkerState = await readPrCiFixMarkers({
       repo,
-      checkId: checkRunId,
-      ghCommandFn: ghFn,
+      prNumber,
+      getComments: (targetRepo, targetNumber) =>
+        deps.github.createClient(logger).getIssueComments(
+          targetRepo,
+          targetNumber,
+        ),
+      fleetLogins: processorDeps.fleetLogins ?? [],
       logger,
     });
+    if (!rerunMarkerState.capEnforced) {
+      logger.error(
+        `Cannot re-run exhausted CI check ${repo}#${prNumber} — permanent ` +
+          `rerun-refusal state cannot be evaluated (Issue #4497)`,
+        { repo, prNumber, checkRunId },
+      );
+    } else {
+      await rerunFailedJobsOfCheck({
+        repo,
+        prNumber,
+        checkId: checkRunId,
+        fleetMarkers: rerunMarkerState.markers,
+        ghCommandFn: ghFn,
+        logger,
+      });
+    }
 
     return {
       ok: true,
@@ -1045,6 +1072,126 @@ async function _processCiFailureLocked(
     await recordCiFixTierRun(input, processorDeps, carrier);
     await postCiFixRunStats(input, processorDeps, carrier, graftSlot);
   }
+}
+
+/** Push one authorised empty commit when GitHub permanently refuses a rerun. */
+async function pushFreshCiAfterRerunRefusal(opts: {
+  input: CiFixInput;
+  processorDeps: CiProcessorDeps;
+  markers: PrCiFixMarkerState["markers"];
+  headSha: string | undefined;
+  gated: boolean;
+}): Promise<void> {
+  const { input, processorDeps, markers, headSha, gated } = opts;
+  const { deps, logger } = processorDeps;
+  const { repo, prNumber, branchName } = input;
+  if (gated || processorDeps.workDir === undefined) {
+    logger.error(
+      `Fresh-CI fallback for ${repo}#${prNumber} is not authorised on ` +
+        `this checkout (gated head or missing worktree) (Issue #4497)`,
+      { repo, prNumber, branchName, gated },
+    );
+    return;
+  }
+  if (headSha === undefined || !/^[0-9a-f]{40}$/i.test(headSha)) {
+    logger.error(
+      `Fresh-CI fallback for ${repo}#${prNumber} has no verified starting ` +
+        `head (Issue #4497)`,
+      { repo, prNumber, branchName },
+    );
+    return;
+  }
+  if (!markers.fleetResolved) {
+    logger.error(
+      `Fresh-CI fallback for ${repo}#${prNumber} cannot be deduplicated ` +
+        `because the fleet marker state is unresolved (Issue #4497)`,
+      { repo, prNumber, branchName, headSha },
+    );
+    return;
+  }
+  if (isCiRerunFallbackRecordedAt(markers, repo, headSha)) {
+    logger.info(
+      `Fresh-CI fallback for ${repo}#${prNumber} was already attempted ` +
+        `on ${headSha}; skipping a duplicate push (Issue #4497)`,
+      { repo, prNumber, branchName, headSha },
+    );
+    return;
+  }
+
+  const currentHead = await deps.git.captureBranchHead(branchName, {
+    cwd: processorDeps.workDir,
+  });
+  if (!currentHead.ok || currentHead.value !== headSha) {
+    logger.error(
+      `Fresh-CI fallback for ${repo}#${prNumber} stood down because ` +
+        `branch ${branchName} moved since the CI-fix checkout`,
+      {
+        repo,
+        prNumber,
+        branchName,
+        expectedHead: headSha,
+        actualHead: currentHead.ok ? currentHead.value : undefined,
+        error: currentHead.ok ? undefined : currentHead.error.message,
+      },
+    );
+    return;
+  }
+
+  // Record before pushing: a rejected push is still one attempt for this head.
+  const marker = buildCiRerunFallbackMarker({ repo, head: headSha });
+  const markerPost = await postPrComment(
+    repo,
+    prNumber,
+    marker,
+    processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+  );
+  if (!markerPost.ok) {
+    logger.error(
+      `Could not persist the fresh-CI fallback marker for ${repo}#${prNumber}: ` +
+        `${markerPost.error.message} — no empty commit was pushed (Issue #4497)`,
+      { repo, prNumber, branchName, headSha },
+    );
+    return;
+  }
+
+  const nudge = await nudgeCi({
+    repo,
+    prNumber,
+    headBranch: branchName,
+    headSha,
+    status: "none",
+    ghCommandFn: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+    gitCommandFn: async (args) => {
+      const result = await deps.git.runGitCommand(args, {
+        cwd: processorDeps.workDir,
+      });
+      if (!result.ok) throw result.error;
+      return result.value.stdout;
+    },
+  });
+  if (!nudge.ok) {
+    logger.error(
+      `Fresh-CI fallback push failed for ${repo}#${prNumber}: ${nudge.error.message}`,
+      { repo, prNumber, branchName, headSha, error: nudge.error.message },
+    );
+    return;
+  }
+  const verify = await (processorDeps.verifyPushFn ?? verifyPushLanded)(
+    branchName,
+    { cwd: processorDeps.workDir },
+  );
+  if (!verify.landed) {
+    logger.error(
+      `Fresh-CI fallback push could not be verified for ${repo}#${prNumber}: ${verify.reason}`,
+      { repo, prNumber, branchName, headSha, error: verify.reason },
+    );
+    return;
+  }
+  logger.info(
+    `Pushed an empty commit to ${repo}@${branchName} after workflow run ` +
+      `refusal; ${nudge.value.description} (Issue #4497)`,
+    { repo, prNumber, branchName, headSha },
+  );
 }
 
 /**
@@ -1704,9 +1851,8 @@ async function _processCiWithHeartbeat(
   }
 
   // Issue #4304: there is no "already answered on this head" short-circuit.
-  // A no-change run re-runs the failing check, so the same failure on the
-  // same head is a re-run that failed again — retried below, and bounded by
-  // the cap above rather than left red for a reviewer.
+  // A no-change run re-runs the failing check; Issue #4497 records a
+  // permanent GitHub refusal and pushes one empty commit for fresh CI.
   const priorNoChange = findNoChangeComment(markerState.markers, signature);
 
   await recordCiMilestone(
@@ -2640,12 +2786,26 @@ async function _processCiWithHeartbeat(
     // history) is not something a re-run can clear.
     // Issue #4424: a merge-queue removal has no check run to re-run.
     if (!response.addNeedsHuman && !isMergeQueueCheckId(checkRunId)) {
-      await rerunFailedJobsOfCheck({
+      const rerunResult = await rerunFailedJobsOfCheck({
         repo,
+        prNumber,
         checkId: checkRunId,
+        fleetMarkers: markerState.markers,
         ghCommandFn: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
         logger,
       });
+      if (
+        rerunResult.outcome === "permanent-refusal" ||
+        rerunResult.outcome === "already-refused"
+      ) {
+        await pushFreshCiAfterRerunRefusal({
+          input,
+          processorDeps,
+          markers: markerState.markers,
+          headSha: beforeSha,
+          gated: fixBranch !== undefined,
+        });
+      }
     }
   }
 

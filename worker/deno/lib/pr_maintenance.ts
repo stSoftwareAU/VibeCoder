@@ -1974,7 +1974,18 @@ export async function findFailedCiChecks(
           });
           await rerunFailedJobsOfCheck({
             repo,
+            prNumber,
             checkId,
+            fleetMarkers: parked?.markers ?? {
+              attempts: new Map(),
+              deferrals: new Map(),
+              humanGates: new Map(),
+              infraReruns: new Map(),
+              rerunRefusals: new Map(),
+              rerunFallbacks: new Map(),
+              fleetResolved: false,
+              ignoredOutsideFleet: 0,
+            },
             ghCommandFn,
             logger,
           });

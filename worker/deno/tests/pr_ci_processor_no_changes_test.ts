@@ -23,7 +23,10 @@ import {
 } from "../lib/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import { classifyCiFailure } from "../lib/ci_failure_classifier.ts";
-import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createMockDeps,
+  mockGitHubClient,
+} from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import type {
   ClaudeDeps,
@@ -32,6 +35,10 @@ import type {
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 import { HISTORY_REWRITE_ESCALATION_MARKER_PREFIX } from "../lib/blocking_pr_stall_detector.ts";
+import {
+  buildCiRerunFallbackMarker,
+  buildCiRerunRefusalMarker,
+} from "../lib/ci_fix_attempt_markers.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -62,15 +69,34 @@ interface CapturedGh {
   labelsAdded: string[];
   /** Every `gh run rerun` argv (Issue #4304). */
   reruns: string[][];
+  gitCalls: string[][];
+  warnings: string[];
+  errors: string[];
 }
 
 /** The Actions run the mocked check-run id `111` belongs to. */
 const RUN_ID = 5550;
 
-function makeMockGithub(captured: CapturedGh): Partial<GitHubDeps> {
+function makeMockGithub(
+  captured: CapturedGh,
+  rerunError?: string,
+): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
       if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      if (
+        args[0] === "api" &&
+        args[1]?.startsWith("repos/org/repo/issues/99/comments")
+      ) {
+        return Promise.resolve(
+          JSON.stringify(captured.comments.map((body, index) => ({
+            id: index + 1,
+            body,
+            created_at: "2026-10-31T00:00:00Z",
+            user: { login: "testbot" },
+          }))),
+        );
+      }
       if (
         args[0] === "api" &&
         args[1] === "repos/org/repo/actions/runs?check_suite_id=77"
@@ -85,6 +111,9 @@ function makeMockGithub(captured: CapturedGh): Partial<GitHubDeps> {
       }
       if (args[0] === "run" && args[1] === "rerun") {
         captured.reruns.push(args);
+        if (rerunError !== undefined) {
+          return Promise.reject(new Error(rerunError));
+        }
         return Promise.resolve("");
       }
       // Capture PR comment bodies posted via `gh pr comment`
@@ -168,6 +197,9 @@ async function runNoChangesScenario(
   claudeValue?: Record<string, unknown>,
   logs?: string[],
   retryCount = 0,
+  rerunError?: string,
+  fallbackPushError?: string,
+  seededMarkers: string[] = [],
 ): Promise<CapturedGh> {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -177,7 +209,14 @@ async function runNoChangesScenario(
         responseMessage,
       );
     }
-    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
+    const captured: CapturedGh = {
+      comments: [...seededMarkers],
+      labelsAdded: [],
+      reruns: [],
+      gitCalls: [],
+      warnings: [],
+      errors: [],
+    };
 
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (() =>
@@ -194,8 +233,38 @@ async function runNoChangesScenario(
 
     const deps = createMockDeps({
       claude: mockClaude,
-      github: makeMockGithub(captured),
+      github: {
+        ...makeMockGithub(captured, rerunError),
+        createClient: () => ({
+          ...mockGitHubClient(),
+          getIssueComments: () =>
+            Promise.resolve(captured.comments.map((body, index) => ({
+              id: index + 1,
+              body,
+              author: "testbot",
+              createdAt: "2026-10-31T00:00:00Z",
+              reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+            }))),
+        }),
+      },
       git: {
+        captureBranchHead: (() =>
+          Promise.resolve({ ok: true, value: "f".repeat(40) })) as GitDeps[
+            "captureBranchHead"
+          ],
+        runGitCommand: ((args: string[]) => {
+          captured.gitCalls.push(args);
+          if (args[0] === "push" && fallbackPushError !== undefined) {
+            return Promise.resolve({
+              ok: false,
+              error: new Error(fallbackPushError),
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as GitDeps["runGitCommand"],
         // No-changes scenario: nothing to commit, nothing to push.
         commitAndPushPending: (() =>
           Promise.resolve({
@@ -210,6 +279,8 @@ async function runNoChangesScenario(
     });
 
     const logger = makeSilentLogger();
+    logger.warn = (message: string) => captured.warnings.push(message);
+    logger.error = (message: string) => captured.errors.push(message);
     if (logs) logger.info = (message: string) => logs.push(message);
     const processorDeps: CiProcessorDeps = {
       promptsDir: PROMPTS_DIR,
@@ -218,6 +289,13 @@ async function runNoChangesScenario(
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
       workRoot: tmpDir,
+      fleetLogins: ["testbot"],
+      verifyPushFn: async () => ({
+        landed: true,
+        localSha: "f".repeat(40),
+        remoteSha: "f".repeat(40),
+        reason: "verified in test",
+      }),
     };
 
     if (retryCount > 0) {
@@ -338,6 +416,99 @@ Deno.test("processCiFailure no-changes - infrastructure category re-runs the che
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
   assertReranFailedJobs(captured);
+});
+
+Deno.test("processCiFailure no-changes - permanent rerun refusal pushes fresh CI once (Issue #4497)", async () => {
+  const input = makeInput({ checkName: "tests" });
+  const captured = await runNoChangesScenario(
+    input,
+    "",
+    undefined,
+    undefined,
+    undefined,
+    0,
+    "gh command failed (exit 1): run 5550 cannot be rerun; This workflow run cannot be retried",
+  );
+
+  assertEquals(captured.reruns.length, 1);
+  assertEquals(
+    captured.warnings.filter((message) =>
+      message.includes("permanently refused")
+    )
+      .length,
+    1,
+  );
+  assertEquals(
+    captured.gitCalls.filter((args) =>
+      args[0] === "commit" && args.includes("--allow-empty")
+    ).length,
+    1,
+  );
+  assertEquals(
+    captured.gitCalls.filter((args) => args[0] === "push").length,
+    1,
+  );
+  assertEquals(
+    captured.comments.some((body) => body.includes("vibe-ci-rerun-refused")),
+    true,
+  );
+  assertEquals(
+    captured.comments.some((body) => body.includes("vibe-ci-rerun-fallback")),
+    true,
+  );
+});
+
+Deno.test("processCiFailure no-changes - failed fresh-CI fallback is reported as a push failure (Issue #4497)", async () => {
+  const input = makeInput({ checkName: "tests" });
+  const captured = await runNoChangesScenario(
+    input,
+    "",
+    undefined,
+    undefined,
+    undefined,
+    0,
+    "gh command failed (exit 1): This workflow run cannot be retried",
+    "remote rejected push",
+  );
+
+  assertEquals(
+    captured.gitCalls.filter((args) => args[0] === "push").length,
+    1,
+  );
+  assertEquals(
+    captured.comments.some((body) => body.includes("vibe-ci-rerun-fallback")),
+    true,
+  );
+  assertEquals(
+    captured.errors.some((message) =>
+      message.includes("Fresh-CI fallback push failed") &&
+      message.includes("remote rejected push")
+    ),
+    true,
+  );
+});
+
+Deno.test("processCiFailure no-changes - a persisted refusal and fallback marker prevent a duplicate push", async () => {
+  const head = "f".repeat(40);
+  const captured = await runNoChangesScenario(
+    makeInput({ checkName: "tests" }),
+    "",
+    undefined,
+    undefined,
+    undefined,
+    0,
+    undefined,
+    undefined,
+    [
+      buildCiRerunRefusalMarker({ repo: "org/repo", runId: RUN_ID }),
+      buildCiRerunFallbackMarker({ repo: "org/repo", head }),
+    ],
+  );
+  assertEquals(captured.reruns.length, 0);
+  assertEquals(
+    captured.gitCalls.filter((args) => args[0] === "push").length,
+    0,
+  );
 });
 
 Deno.test("processCiFailure no-changes - unknown category does not assert transience", async () => {
@@ -478,7 +649,14 @@ Deno.test("processCiFailure no-changes - a history-rewrite escalation keeps the 
 Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success reply (Issue #1863)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
+    const captured: CapturedGh = {
+      comments: [],
+      labelsAdded: [],
+      reruns: [],
+      gitCalls: [],
+      warnings: [],
+      errors: [],
+    };
 
     // Claude commits-and-pushes during its own run, so the final-mile
     // commitAndPushPending finds nothing to do.
@@ -561,7 +739,14 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
 Deno.test("processCiFailure - genuine no-changes when HEAD unchanged still posts no-changes reply (Issue #1863)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
+    const captured: CapturedGh = {
+      comments: [],
+      labelsAdded: [],
+      reruns: [],
+      gitCalls: [],
+      warnings: [],
+      errors: [],
+    };
 
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (() =>
@@ -650,7 +835,14 @@ Deno.test("processCiFailure no-changes - regression for PR #1678 semgrep ReDoS",
 Deno.test("processCiFailure - HEAD moved but the remote disagrees: no success claim (Issue #579)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
+    const captured: CapturedGh = {
+      comments: [],
+      labelsAdded: [],
+      reruns: [],
+      gitCalls: [],
+      warnings: [],
+      errors: [],
+    };
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (() =>
         Promise.resolve({
