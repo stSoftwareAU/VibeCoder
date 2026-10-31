@@ -21,7 +21,10 @@ import {
   workerGateCategoryOf,
 } from "./failure_diagnosis.ts";
 import { brokenRefsIn } from "./broken_ref_repair.ts";
+import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 import { isObjectStoreCorruption } from "./object_store_repair.ts";
+
+export { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 
 /** The narrow set of host/infrastructure fault kinds this module detects. */
 export const HOST_FAULT_KINDS = [
@@ -54,15 +57,6 @@ export function isHostFaultKind(value: string): value is HostFaultKind {
  */
 const DISK_FULL_PATTERN =
   /No space left on device|\bENOSPC\b|Read-only file system|\bos error 30\b/i;
-
-/** Worker wording for a deliberate host-disk stop, excluding disk errors. */
-const HOST_DISK_PROTECTIVE_STOP_PATTERN =
-  /Parked as infrastructure \(Issue #4360\)|host disk below its floor/i;
-
-/** Whether `message` contains a worker-authored protective host-disk stop. */
-export function isHostDiskProtectiveStopText(message: string): boolean {
-  return HOST_DISK_PROTECTIVE_STOP_PATTERN.test(message);
-}
 
 /** Whether `message` is the host running out of disk, including the read-only fallout. */
 export function isHostDiskFaultText(message: string): boolean {

@@ -30,7 +30,7 @@
  */
 
 import { assertNever } from "./assert_never.ts";
-import { isHostDiskProtectiveStopText } from "./host_fault.ts";
+import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 import {
   type FailureCategory,
   isOutOfCreditMessage,
