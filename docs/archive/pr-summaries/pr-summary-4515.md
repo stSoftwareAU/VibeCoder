@@ -63,4 +63,7 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
 - Related rules checked: the "Keep the PR summary true to the head" paragraph in
   each of the three prompts, and `docs/workflows/` text on the digest marker and
   "only a PR the worker authored is edited"; they agree with the new wording.
-- Full `./quality.sh` result is recorded below if it ran.
+
+`markdownlint-cli2` on the summary and the three prompts: 0 issues.
+
+<!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes longer than the 600s foreground command cap (a run on an earlier branch timed out at 580s inside the deno test stage); only targeted checks ran, CI runs the full gate" -->
