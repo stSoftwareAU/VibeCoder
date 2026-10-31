@@ -233,7 +233,8 @@ Deno.test("egress-selfcheck - emits warnings with warn and failures with error",
       appleControl: { ipv4: "connected", host: "connected" },
     };
     const config = buildDefaultWorkerConfig();
-    await egressSelfcheckCommand.execute({}, config, seams);
+    const healthy = await egressSelfcheckCommand.execute({}, config, seams);
+    assertEquals(healthy.success, true);
     assert(warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)));
     assertEquals(
       errors.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
@@ -242,11 +243,12 @@ Deno.test("egress-selfcheck - emits warnings with warn and failures with error",
 
     warnings.length = 0;
     errors.length = 0;
-    await egressSelfcheckCommand.execute(
+    const broken = await egressSelfcheckCommand.execute(
       {},
       config,
       { ...seams, probes: probes({ proxyAllowed: "failed" }) },
     );
+    assertEquals(broken.success, false);
     assertEquals(
       warnings.some((line) => line.includes(EGRESS_NOT_ENFORCED_MARKER)),
       true,

@@ -16,12 +16,7 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import {
-  assert,
-  assertEquals,
-  assertRejects,
-  assertStringIncludes,
-} from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildContainerArgs,
   collectChangedFiles,
@@ -31,7 +26,6 @@ import {
   isScannablePath,
   makeGitRunner,
   parseSemgrepJson,
-  probe,
   runSemgrepCheck,
   selectScannableFiles,
   SEMGREP_CONFIG,
@@ -433,37 +427,6 @@ Deno.test("runSemgrepCheck - a blank container stamp is a host run — no semgre
   });
 
   assertEquals(result.status, "SKIPPED");
-});
-
-Deno.test("runSemgrepCheck - a detector timeout rejects on hosts and in the fleet", async () => {
-  for (const stamp of [undefined, "claude"]) {
-    await assertRejects(
-      () =>
-        runCheck("/repo", {
-          git: gitWithChangedFile("worker/deno/lib/a.ts"),
-          detectInvocation: async () => {
-            await probe(Deno.execPath(), ["--version"], 0);
-            throw new Error("a timed-out probe must not reach the scan");
-          },
-          env: () => stamp,
-        }),
-      Error,
-      "timed out after 0ms",
-    );
-  }
-});
-
-Deno.test("runSemgrepCheck - an unexpected detector error is not skipped", async () => {
-  await assertRejects(
-    () =>
-      runCheck("/repo", {
-        git: gitWithChangedFile("worker/deno/lib/a.ts"),
-        detectInvocation: () =>
-          Promise.reject(new Error("unexpected detector fault")),
-      }),
-    Error,
-    "unexpected detector fault",
-  );
 });
 
 Deno.test("runSemgrepCheck - inside the container an unreachable registry stays SKIPPED", async () => {

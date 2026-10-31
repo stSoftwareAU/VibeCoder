@@ -47,6 +47,8 @@ export const egressSelfcheckCommand: EgressSelfcheckCommand = {
       ...(seams.probes ? { probes: seams.probes } : {}),
       ...(seams.probe ? { probe: seams.probe } : {}),
       ...(seams.date ? { date: seams.date } : {}),
+      ...(seams.appleObserved ? { appleObserved: seams.appleObserved } : {}),
+      ...(seams.appleControl ? { appleControl: seams.appleControl } : {}),
       ...(seams.timeoutMs !== undefined ? { timeoutMs: seams.timeoutMs } : {}),
     });
     if (decision.warning) console.warn(decision.warning);

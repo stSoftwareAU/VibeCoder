@@ -7,12 +7,9 @@ The worker regression test captures the production logger's output for healthy
 and broken Apple launches. The standalone command uses `console.warn` for
 accepted gaps and `console.error` for failures.
 
-Remove the unrelated manifest expansion and restore the independent assertion
-that every existing in-gate Windows suite still exercises PowerShell. Restore
-Semgrep's detector-error propagation, including through its existing
-quality-gate caller; detector timeouts cannot become nonblocking skips.
-Regression tests now require detector timeouts and unexpected detector errors to
-reject.
+The standalone command now also forwards the `appleObserved` and
+`appleControl` seams its type already declared to `checkEgressPolicy`, so a
+healthy Apple run in its test is genuinely healthy.
 
 Version bump: no version file changed for this fix; the merged commit records
 the final version.
@@ -31,8 +28,8 @@ the final version.
   unchanged.
 - The worker test leaves both production severity adapters installed and
   captures their formatted output at the console sink.
-- Semgrep production code and the script-suite manifests match the base; this
-  fix does not change security-gate timeout policy or suite placement.
+- Only the egress severity routing, the command's seam forwarding and their
+  tests change; no other gate or suite is touched.
 
 ### Undiscoverable Facts
 
@@ -48,12 +45,12 @@ asserts WARNING for `[EGRESS-NOT-ENFORCED]`, ERROR for
 `[EGRESS-SELFCHECK-FAILED]`, no ERROR on the healthy launch, exit 90 on failure,
 no issue work on failure, cleanup, and the persisted measured-control record.
 
-The PowerShell and Semgrep findings were reproduced before restoring their
-protections. Removing the Windows launcher import and launcher-array arm passed
-the weakened manifest tests; the restored assertion fails for that same change.
-The new detector-timeout rejection test failed against the nonblocking skip
-implementation and passed with the base implementation restored. The existing
-quality-gate caller again receives the original rejection rather than SKIPPED.
+`egress_selfcheck_test.ts::egress-selfcheck - emits warnings with warn and failures with error`
+runs the command, asserts the healthy run succeeds and the broken run fails,
+`[EGRESS-NOT-ENFORCED]` goes to `console.warn` (never `console.error`) and
+`[EGRESS-SELFCHECK-FAILED]` goes to `console.error`. With the new seam
+forwarding removed the test fails on the healthy-run `success` assertion; with
+`console.warn` changed back to `console.error` it fails as well.
 
 ## Reproduction
 
@@ -73,31 +70,15 @@ quality-gate caller again receives the original rejection rather than SKIPPED.
 
 ## Test Plan
 
-- Nine focused suites: 152 passed, 0 failed. These cover the five reported
-  mutation-baseline suites, worker and CLI egress severity, Semgrep, and the
-  PowerShell/integration manifest guards.
-- `tests/parallel_unsafe_test_manifest_test.ts`: 31 passed after restoring the
-  unrelated manifest optimisation to its base implementation.
-- `deno task check:manifests`: 846 passed, 0 failed, 1 ignored. The ignored test
-  is not counted as a pass.
-- The reported baseline failure could not be reproduced for
-  `agent_transcript_config_1141_test.ts`, `codex_subscription_auth_test.ts`,
-  `run_entrypoint_test.ts`, `run_mode_test.ts`, and `run_worker_test.ts`. These
-  suites passed (95 tests) with `deno task test` and again with the mutation
-  runner's exact `deno test --no-check -A` arguments. They also passed through
-  `defaultMutationRunnerSeams().runProcess`, using its isolated, allowlisted
-  environment. No mutation-check opt-out or untestable exemption was added.
-- The actual diff-scoped `runMutationCheck` completed on the corrected head: 3
-  mutants killed, 3 total, no survivors, no baseline error. Its production
-  isolated process implementation and environment were used.
-- The worker test's prior warning/error sink assertions are replaced by stronger
-  assertions on the actual formatted severity for the same markers; its exit,
-  work-order, cleanup and persisted-record checks remain.
-- `deno fmt --check`, `deno lint`, and `deno check --frozen --lock=deno.lock`
-  passed for all five TypeScript files remaining in the branch diff.
-- `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4492-body.md --labels bug,work-on ../../docs/archive/pr-summaries/pr-summary-4492.md`:
-  0 blocked, 0 not checked. Acceptance closure and independent two-axis review
-  were reported not applicable.
-- The earlier full `./quality.sh < /dev/null` attempt timed out after 900
-  seconds; no full-gate pass is claimed. The worker reruns the quality gate
-  after this correction.
+- `tests/egress_selfcheck_test.ts` (11 tests at head), `tests/run_worker_test.ts`
+  (35 tests at head) and `tests/containment_docs_test.ts` together: 58 passed,
+  0 failed.
+- The worker test's prior warning/error sink assertions are replaced by
+  stronger assertions on the actual formatted severity for the same markers;
+  its exit, work-order, cleanup and persisted-record checks remain.
+- `deno fmt`, `deno lint` and `deno check --frozen --lock=deno.lock` passed for
+  the TypeScript files this PR changes.
+- Review round: the Semgrep tests and import changes from an abandoned
+  iteration were removed; the PR no longer touches `semgrep_check_test.ts`.
+- The full `./quality.sh < /dev/null` was not run in this review round; the
+  worker reruns the quality gate and CI runs the same checks.
