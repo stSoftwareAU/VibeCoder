@@ -2202,7 +2202,10 @@ Deno.test("checkAndHandleMilestoneCompletions - refreshes the existing summary P
     // Issue #3476: the completion scan refreshes the existing PR's body.
     if (key.includes("pr edit")) {
       const bodyIdx = args.indexOf("--body");
-      if (bodyIdx >= 0) editedBodies.push(args[bodyIdx + 1]!);
+      if (bodyIdx >= 0) {
+        // Model the body GitHub receives after spawnGh redacts --body.
+        editedBodies.push(redactGhBodyText(args[bodyIdx + 1]!));
+      }
       return "";
     }
     if (key.includes("issue close")) {
@@ -2458,6 +2461,7 @@ function completedMilestoneWithRollupGhFn(
     isCrossRepository?: boolean;
     /** Fail the uncached final-PR classification (it reads `state`). */
     classifyFails?: boolean;
+    hasOpenChild?: boolean;
   },
   calls: string[],
   updatedAt = "2026-10-05T00:00:00Z",
@@ -2491,7 +2495,20 @@ function completedMilestoneWithRollupGhFn(
       return "main";
     }
     if (key.includes("issue list") && key.includes("--state open")) {
-      return "[]";
+      return JSON.stringify(
+        live.hasOpenChild
+          ? [{
+            number: 21,
+            title: "Open feature",
+            milestone: { title: "v3.0" },
+            assignees: [],
+            labels: [],
+            createdAt: "2026-10-05T00:00:00Z",
+            author: { login: "alice" },
+            url: "https://example.test/issues/21",
+          }]
+          : [],
+      );
     }
     if (isClosedIssueRead(key)) {
       return JSON.stringify([{
@@ -2567,12 +2584,14 @@ Deno.test("checkAndHandleMilestoneCompletions - a second scan with unchanged Git
     assertEquals(edits(calls), 1);
     assertEquals(timelines(calls), 1);
     assertStringIncludes(live.body, "vibe-rollup-fingerprint");
+    live.body += "\n\nOwner-added review context.";
     const firstScan = calls.length;
     const firstPaginated = paginated(calls);
 
     await checkAndHandleMilestoneCompletions(deps);
     const secondScan = calls.slice(firstScan);
     assertEquals(edits(secondScan), 0, "unchanged state must not be rewritten");
+    assertStringIncludes(live.body, "Owner-added review context.");
     assertEquals(timelines(secondScan), 0, "the verdict is served from cache");
     // The dependency and not-planned reads belong to a body build; they are
     // skipped when the live body already carries the current fingerprint.
@@ -2582,6 +2601,31 @@ Deno.test("checkAndHandleMilestoneCompletions - a second scan with unchanged Git
         secondScan.filter((c) => c.includes("--paginate")).join(" | ")
       }`,
     );
+  });
+});
+
+Deno.test("checkAndHandleMilestoneCompletions - refreshes a legacy redacted fingerprint once, then preserves owner text", async () => {
+  await withTempCache(async (cache) => {
+    const live = {
+      state: "OPEN",
+      body:
+        'existing rollup\n\n<!-- vibe-rollup-fingerprint value="***REDACTED***" -->',
+    };
+    const calls: string[] = [];
+    const deps = createMockDeps({
+      ghCommandFn: completedMilestoneWithRollupGhFn(live, calls),
+      cache,
+    });
+    const edits = () => calls.filter((c) => c.includes("pr edit")).length;
+
+    await checkAndHandleMilestoneCompletions(deps);
+    assertEquals(edits(), 1);
+    assert(live.body.includes('value="***REDACTED***"') === false);
+    live.body += "\n\nOwner-added review context.";
+
+    await checkAndHandleMilestoneCompletions(deps);
+    assertEquals(edits(), 1);
+    assertStringIncludes(live.body, "Owner-added review context.");
   });
 });
 
@@ -2698,6 +2742,32 @@ Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone's second
   assertEquals(editedBodies.length, 1);
   await checkAndHandleMilestoneCompletions(deps);
   assertEquals(editedBodies.length, 1);
+});
+
+Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone's summary round-trip survives body redaction", async () => {
+  const live = { state: "OPEN", body: "stale body", hasOpenChild: true };
+  const calls: string[] = [];
+  const deps = createMockDeps({
+    ghCommandFn: completedMilestoneWithRollupGhFn(live, calls),
+  });
+  const edits = () => calls.filter((c) => c.includes("pr edit")).length;
+
+  await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(edits(), 1);
+  assert(
+    calls.some((c) => c.includes("--state open")),
+    "an open child keeps the milestone incomplete",
+  );
+  assertStringIncludes(live.body, "vibe-rollup-fingerprint");
+  assertEquals(live.body.includes('value="***REDACTED***"'), false);
+
+  const firstScan = calls.length;
+  await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(edits(), 1, "the redacted body keeps its current fingerprint");
+  assert(
+    calls.slice(firstScan).some((c) => c.includes("pr view 601")),
+    "the incomplete-milestone scan reads the existing summary PR live",
+  );
 });
 
 /**
