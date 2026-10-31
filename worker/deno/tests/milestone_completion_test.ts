@@ -2620,11 +2620,11 @@ Deno.test("checkAndHandleMilestoneCompletions - refreshes a legacy redacted fing
 
     await checkAndHandleMilestoneCompletions(deps);
     assertEquals(edits(), 1);
-    assert(live.body.includes('value="***REDACTED***"') === false);
     live.body += "\n\nOwner-added review context.";
 
     await checkAndHandleMilestoneCompletions(deps);
     assertEquals(edits(), 1);
+    assert(live.body.includes('value="***REDACTED***"') === false);
     assertStringIncludes(live.body, "Owner-added review context.");
   });
 });
@@ -2759,15 +2759,15 @@ Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone's summar
     "an open child keeps the milestone incomplete",
   );
   assertStringIncludes(live.body, "vibe-rollup-fingerprint");
-  assertEquals(live.body.includes('value="***REDACTED***"'), false);
 
   const firstScan = calls.length;
   await checkAndHandleMilestoneCompletions(deps);
-  assertEquals(edits(), 1, "the redacted body keeps its current fingerprint");
   assert(
     calls.slice(firstScan).some((c) => c.includes("pr view 601")),
     "the incomplete-milestone scan reads the existing summary PR live",
   );
+  assertEquals(edits(), 1, "the redacted body keeps its current fingerprint");
+  assertEquals(live.body.includes('value="***REDACTED***"'), false);
 });
 
 /**
