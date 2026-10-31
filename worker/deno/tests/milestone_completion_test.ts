@@ -2590,8 +2590,8 @@ Deno.test("checkAndHandleMilestoneCompletions - a second scan with unchanged Git
 
     await checkAndHandleMilestoneCompletions(deps);
     const secondScan = calls.slice(firstScan);
-    assertEquals(edits(secondScan), 0, "unchanged state must not be rewritten");
     assertStringIncludes(live.body, "Owner-added review context.");
+    assertEquals(edits(secondScan), 0, "unchanged state must not be rewritten");
     assertEquals(timelines(secondScan), 0, "the verdict is served from cache");
     // The dependency and not-planned reads belong to a body build; they are
     // skipped when the live body already carries the current fingerprint.
