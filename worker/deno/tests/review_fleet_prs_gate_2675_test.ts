@@ -640,6 +640,140 @@ Deno.test("manifest version exception still reviews other edits and malformed pa
   }
 });
 
+// Issue #4516: a deno.json can re-bump its version in one hunk while a
+// dependency pin in another hunk stays put. Each hunk has three context lines
+// either side of its single changed line, so both header ranges count seven.
+const versionHunk = (from: string, to: string, header = "@@ -1,7 +1,7 @@") =>
+  [
+    header,
+    " {",
+    `   "name": "@o/r",`,
+    `   "license": "MIT",`,
+    `-  "version": "${from}",`,
+    `+  "version": "${to}",`,
+    `   "imports": {},`,
+    `   "tasks": {},`,
+    `   "lock": false`,
+  ].join("\n");
+const pinHunk = (
+  pin: string,
+  header = "@@ -38,7 +38,7 @@",
+  scope = "@std",
+) =>
+  [
+    header,
+    `     "${scope}/assert": "jsr:${scope}/assert@1.0.0",`,
+    `     "${scope}/fs": "jsr:${scope}/fs@1.0.0",`,
+    `     "${scope}/json": "jsr:${scope}/json@1.0.0",`,
+    `-    "@stsoftware/tags": "jsr:@stsoftware/tags@1.0.36",`,
+    `+    "@stsoftware/tags": "jsr:@stsoftware/tags@${pin}",`,
+    `     "${scope}/path": "jsr:${scope}/path@1.0.0",`,
+    `     "${scope}/toml": "jsr:${scope}/toml@1.0.0",`,
+    `     "${scope}/yaml": "jsr:${scope}/yaml@1.0.0"`,
+  ].join("\n");
+
+Deno.test("multi-hunk manifest version re-bump awaits the existing fix when the other hunks are unchanged (Issue #4516)", async () => {
+  const pin = pinHunk("1.0.40");
+  const sinceBump = [versionHunk("1.2.3", "1.2.4"), pin].join("\n");
+  const headBump = [versionHunk("1.2.4", "1.2.5"), pin].join("\n");
+  const secondVersionHeader = "@@ -38,7 +38,7 @@";
+  const cases: {
+    name: string;
+    since: string;
+    head: string;
+    findings?: { file: string }[];
+    findingsMissing?: boolean;
+    expected: string | null;
+  }[] = [
+    {
+      name: "version re-bumps and the pin hunk is unchanged",
+      since: sinceBump,
+      head: headBump,
+      expected: "awaiting-fix",
+    },
+    {
+      name: "pin hunk changed at head",
+      since: sinceBump,
+      head: [versionHunk("1.2.4", "1.2.5"), pinHunk("1.0.41")].join("\n"),
+      expected: null,
+    },
+    {
+      name: "two version hunks both changed",
+      since: [
+        versionHunk("1.2.3", "1.2.4"),
+        versionHunk("2.0.0", "2.0.1", secondVersionHeader),
+      ].join("\n"),
+      head: [
+        versionHunk("1.2.4", "1.2.5"),
+        versionHunk("2.0.1", "2.0.2", secondVersionHeader),
+      ].join("\n"),
+      expected: null,
+    },
+    {
+      name: "hunk counts differ",
+      since: versionHunk("1.2.3", "1.2.4"),
+      head: headBump,
+      expected: null,
+    },
+    {
+      name: "finding on the manifest",
+      since: sinceBump,
+      head: headBump,
+      findings: [{ file: "deno.json" }],
+      expected: null,
+    },
+    {
+      name: "pin hunk context moved by a base merge",
+      since: sinceBump,
+      head: [
+        versionHunk("1.2.4", "1.2.5"),
+        pinHunk("1.0.40", "@@ -41,7 +41,7 @@", "@deno"),
+      ].join("\n"),
+      expected: "awaiting-fix",
+    },
+    {
+      name: "findings unavailable",
+      since: sinceBump,
+      head: headBump,
+      findingsMissing: true,
+      expected: null,
+    },
+  ];
+  for (const c of cases) {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [
+        { sha: "merge", parents: 2 },
+        { sha: "bump", parents: 1 },
+      ]),
+      "repos/o/r/compare/main...X": compareFiles([
+        { filename: "deno.json", patch: c.since },
+        { filename: "a.ts", patch: "@@ -1 +1 @@\n-old\n+unfixed" },
+      ]),
+      "repos/o/r/compare/main...head": compareFiles([
+        { filename: "deno.json", patch: c.head },
+        { filename: "a.ts", patch: "@@ -3 +3 @@\n-old\n+unfixed" },
+      ]),
+    });
+    assertEquals(
+      await skipReason(
+        searchPr({ reviews: { nodes: [review("CHANGES_REQUESTED", "X")] } }),
+        "nleck",
+        (since) =>
+          ownDiffUnchanged(
+            gh,
+            "o/r",
+            "main",
+            since,
+            "head",
+            c.findingsMissing ? undefined : c.findings ?? [{ file: "a.ts" }],
+          ),
+      ),
+      c.expected,
+      c.name,
+    );
+  }
+});
+
 Deno.test("manifest version exception refuses hostile long inputs, accepting the same shape when well formed (Issue #4391)", async () => {
   const blanks = " ".repeat(1_000_000);
   const suffix = "a".repeat(100000);

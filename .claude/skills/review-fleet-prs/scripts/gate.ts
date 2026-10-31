@@ -447,8 +447,43 @@ function sameChangedLines(a: string, b: string): boolean {
     );
 }
 
+// Splits a patch into its hunks, each keeping its own header line. A patch that
+// does not open with a hunk header yields null, so it fails closed.
+function splitHunks(patch: string): string[] | null {
+  if (!patch.startsWith("@@")) return null;
+  const hunks: string[][] = [];
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) hunks.push([line]);
+    else hunks.at(-1)!.push(line);
+  }
+  return hunks.map((lines) => lines.join("\n"));
+}
+
+// Whether two patches have the same hunks in the same order, except for at most
+// one hunk whose changed lines differ and which is a version increment on both
+// sides. Each hunk is checked with its own header, so a version hunk is judged
+// alone, and every other hunk must change the same lines (Issue #4516).
+function onlyVersionHunkDiffers(a: string, b: string): boolean {
+  const hunksA = splitHunks(a);
+  const hunksB = splitHunks(b);
+  if (!hunksA || !hunksB || hunksA.length !== hunksB.length) return false;
+  let differing = 0;
+  for (let i = 0; i < hunksA.length; i++) {
+    if (sameChangedLines(hunksA[i]!, hunksB[i]!)) continue;
+    if (!isVersionIncrement(hunksA[i]!) || !isVersionIncrement(hunksB[i]!)) {
+      return false;
+    }
+    differing++;
+  }
+  return differing === 1;
+}
+
 // One complete hunk replacing only a bare version or a JSON/TOML version key.
-// Context counts towards both ranges; truncated or additional edits fail closed.
+// The version exception in ownDiffUnchanged applies to one such hunk of a patch
+// while every other hunk matches (same changed lines), see
+// onlyVersionHunkDiffers; a one-hunk patch is the case where that hunk is the
+// whole patch. Context counts towards both ranges; truncated or additional
+// edits fail closed.
 // Compare two-to-four numeric components exactly, without Number rounding.
 // Suffix-only changes stay reviewable: no prerelease/build ordering is guessed.
 function isVersionIncrement(patch: string): boolean {
@@ -493,8 +528,9 @@ function isVersionIncrement(patch: string): boolean {
 }
 
 // Whether commits since `since` leave this PR's own diff (its change against
-// the base) unchanged, apart from a strict version increment, so the review
-// it got at `since` still stands. In a file no earlier finding names, context
+// the base) unchanged, apart from a strict version increment in one hunk of a
+// patch while every other hunk matches (Issue #4516), so the review it got at
+// `since` still stands. In a file no earlier finding names, context
 // lines that a base merge moved are ignored, while every added or removed
 // line, the hunk count and the hunk order must still match (Issue #4476). In a
 // file an earlier finding names, or any file when the findings are unknown,
@@ -568,8 +604,7 @@ export async function ownDiffUnchanged(
       if (
         fa.status !== "modified" ||
         findingNamesFile ||
-        !isVersionIncrement(fa.patch!) ||
-        !isVersionIncrement(fb.patch!)
+        !onlyVersionHunkDiffers(fa.patch!, fb.patch!)
       ) {
         return false;
       }
