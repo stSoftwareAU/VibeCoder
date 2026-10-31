@@ -1293,7 +1293,7 @@ const SETTLED_PR_LISTING_FRESH_SECONDS = 600;
  * guard (the own-PR rule in `getBlockingPRForIssue`, Issue #2663) needs every
  * open PR of the author, or an older own PR is missed (Issue #4518).
  */
-const OPEN_PR_BY_USER_LIMIT = 100;
+export const OPEN_PR_BY_USER_LIMIT = 100;
 
 /** A merged/closed listing, with the open PRs seen while it has been cached. */
 interface SettledListing<T> {
