@@ -1,0 +1,48 @@
+# Fleet PR babysitter MVP
+
+The babysitter scans the repositories in `.config.json` for open fleet PRs
+with merge conflicts or failed CI. By default it fixes candidates. It takes the same PR branch lock as the fleet's
+CI and conflict workers, rechecks the head, and runs one Codex session in a
+temporary clone. It runs the repository's `quality.sh`, rechecks the PR and
+pushes only if the agent produced a descendant commit and the gate passed.
+
+From the VibeCoder checkout:
+
+```sh
+# Report candidates only; no model calls or PR changes.
+deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --dry-run
+
+# Fix candidates in one pass.
+deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts
+
+# Limit a first execution to one monitored PR.
+deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --repo=owner/name --pr=123
+
+# Repeat every five minutes, after each pass finishes.
+deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --watch
+```
+
+The host needs `gh` authenticated as a fleet account, `git`, `deno`, `codex`
+and RTK. Before execution, put that login in `service_accounts` or
+`fleet_pr_authors` **on every fleet host**. Those workers only trust locks
+written by known fleet accounts. The MVP checks the local configuration; it
+cannot verify other hosts. Use a dedicated account with only the access it
+needs. The agent is asked to use RTK; configure Codex's RTK hook as well.
+
+Only fleet-authored, non-draft, same-repository PRs are considered. A failed
+or unproductive agent attempt is recorded under
+`${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and
+is not retried on that host for the same PR head. Removing the matching state
+file permits a retry. The shared lock prevents simultaneous work; this local
+attempt record does not prevent a different host from retrying later.
+
+This MVP uses the signed-in `gh` identity and Codex; it does not yet mint a
+separate GitHub App token, select providers by remaining quota, handle
+Dependabot, use per-repository quality commands, update a merely behind branch,
+review PRs, or arm auto-merge. It requires `quality.sh` and refuses to push
+when it is missing or fails. It does not change repository review or merge
+rules. Test the read-only pass before running execution mode.
+
+To prepare a separate GitHub identity and API quota, follow the
+[babysitter GitHub App setup](fleet-pr-babysitter-github-app.md). App token
+integration is still required before the runner can use it.
