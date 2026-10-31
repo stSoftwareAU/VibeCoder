@@ -4,7 +4,8 @@ Recognise a bare GitHub GraphQL `Forbidden` as a secondary-limit refusal, latch
 the existing short cool-down and shared pause signal, stop repository sweeps at
 the first refusal, and log deliberate quota-latch skips at INFO, including
 errors wrapped by the production runner. A standalone quota probe also latches
-the cool-down; healthy REST fallback quota cannot resume the sweep. Closes #4494.
+the cool-down; healthy REST fallback quota cannot resume the sweep. Closes
+#4494.
 
 Version bump: none in this change; the merged commit records the final version.
 
@@ -28,8 +29,8 @@ Version bump: none in this change; the merged commit records the final version.
 - A sweep preserves its unfinished repository state when it stops for a rate
   limit; ordinary observation failures continue to be logged at ERROR.
 - Cached stale-cleanup lookups opt into request-error propagation from
-  `fetchPRsByBranch`; its other callers retain their existing error result.
-  This makes the cleanup stop reachable when the per-branch query is refused.
+  `fetchPRsByBranch`; its other callers retain their existing error result. This
+  makes the cleanup stop reachable when the per-branch query is refused.
 
 ### Undiscoverable Facts
 
@@ -43,9 +44,9 @@ Backend and CLI behaviour; no visual surface changed. Regression tests exercise
 the shared classifier, `gh` spawn hook and probe, lifecycle logging, PR retry,
 merged-PR sweep and branch cleanup. The completion-check regressions also drive
 `defaultGhCommand`, the merge-cleanup lifecycle caller and the real
-`merged-pr-issue-sweep` command through the injected subprocess seam. Later-stage
-refusals leave subsequent branches, issues and repositories untouched, and leave
-the unfinished issue-sweep watermark unchanged.
+`merged-pr-issue-sweep` command through the injected subprocess seam.
+Later-stage refusals leave subsequent branches, issues and repositories
+untouched, and leave the unfinished issue-sweep watermark unchanged.
 
 ```mermaid
 sequenceDiagram
@@ -88,11 +89,11 @@ sequenceDiagram
   from `worker/deno` — passed. An initial invocation from the repository root
   selected the wrong Deno lock context and reported an out-of-date lock;
   rerunning from `worker/deno` passed without changing a lockfile.
-- Earlier attempt: `timeout 900 ./quality.sh < /dev/null` timed out with exit 124
-  during the serial Deno test stage. The gate had reported completeness checks,
-  Markdown lint, Semgrep and release-tag ruleset checks passed; the remaining full-gate
-  checks were not verified. The full gate was not rerun during this follow-up;
-  the worker reruns it after completion.
+- Earlier attempt: `timeout 900 ./quality.sh < /dev/null` timed out with exit
+  124 during the serial Deno test stage. The gate had reported completeness
+  checks, Markdown lint, Semgrep and release-tag ruleset checks passed; the
+  remaining full-gate checks were not verified. The full gate was not rerun
+  during this follow-up; the worker reruns it after completion.
 - Base-branch red checks used the new tests with unfixed `origin/main`
   production code: the GraphQL Forbidden classifier and PR retry test failed;
   the merged-PR sweep continued to the next repository; the lifecycle skip
@@ -113,22 +114,22 @@ sequenceDiagram
   was removed.
 - Completion-check reproductions against the incoming head: both primary and
   secondary skips through `defaultGhCommand` logged at ERROR, including the
-  merge-cleanup lifecycle caller; a standalone Forbidden probe set no latch;
-  the real sweep command made eight calls, reaching both repositories despite
-  the probe refusal and healthy REST quota. Each new test passed after its fix.
+  merge-cleanup lifecycle caller; a standalone Forbidden probe set no latch; the
+  real sweep command made eight calls, reaching both repositories despite the
+  probe refusal and healthy REST quota. Each new test passed after its fix.
 - The cached stale-cleanup per-branch refusal initially continued to the next
   branch and repository because `fetchPRsByBranch` swallowed the request error.
   Cleanup now requests propagation; the helper regression also verifies its
   default error result and that neither mode caches a failed request.
 - All five reported condition-negation mutants were applied individually and
-  killed by `worker/deno/tests/branch_cleanup_test.ts`:
-  `branch_cleanup.ts:714` (cached merged prefetch), `:740` (safety query),
-  `:777` (cached merged branch lookup, now `:778`), `:809` (uncached merged
-  branch lookup, now `:810`) and `:834` (deletion, now `:835`). No exemptions.
-  Nine stage-specific cases cover cached and uncached safety queries, merged
-  lookups and deletion, plus cached prefetch; earlier requests succeed before
-  the injected refusal. The initial REST branch-list test now uses a REST
-  secondary-limit response instead of claiming to reach a GraphQL query.
+  killed by `worker/deno/tests/branch_cleanup_test.ts`: `branch_cleanup.ts:714`
+  (cached merged prefetch), `:740` (safety query), `:777` (cached merged branch
+  lookup, now `:778`), `:809` (uncached merged branch lookup, now `:810`) and
+  `:834` (deletion, now `:835`). No exemptions. Nine stage-specific cases cover
+  cached and uncached safety queries, merged lookups and deletion, plus cached
+  prefetch; earlier requests succeed before the injected refusal. The initial
+  REST branch-list test now uses a REST secondary-limit response instead of
+  claiming to reach a GraphQL query.
 - `worker/deno/tests/merged_pr_issue_sweep_test.ts`: three later-stage cases
   inject secondary refusals at the actual timeline, comment and close requests.
   Each fails when its own stop is restored to primary-only handling; no later
@@ -141,9 +142,9 @@ sequenceDiagram
   refusal takes one spawn with no recursive probe, then skips later GraphQL
   calls. The real sweep command's first probe refusal followed by healthy REST
   quota publishes a 60-second signal in its configured work directory, reports
-  the secondary cool-down and skips both repositories before any repo call.
-  An ordinary probe failure still accepts healthy REST fallback quota and
-  reaches both repositories without setting a rate-limit signal.
+  the secondary cool-down and skips both repositories before any repo call. An
+  ordinary probe failure still accepts healthy REST fallback quota and reaches
+  both repositories without setting a rate-limit signal.
 - Changed callers checked: `spawnGh` in `worker/deno/lib/gh_spawn.ts`;
   `runGhCommandRaw` and the quota probe hook in `worker/deno/lib/github.ts`; the
   merged-PR sweep in `worker/deno/lib/merged_pr_issue_sweep.ts`; merged and
@@ -153,10 +154,9 @@ sequenceDiagram
   caller's relevant changed behaviour.
 - Documentation reviewed and updated: the “The primary-quota latch” section of
   `docs/GH-API-OPTIMISATION.md`; related source comments in the changed modules
-  were reviewed. Remaining hits are still accurate:
-  the quota-accounting, chokepoint and truthful-probe paragraphs in
-  `docs/GH-API-OPTIMISATION.md` describe primary-quota-specific details or the
-  shared latch;
+  were reviewed. Remaining hits are still accurate: the quota-accounting,
+  chokepoint and truthful-probe paragraphs in `docs/GH-API-OPTIMISATION.md`
+  describe primary-quota-specific details or the shared latch;
   `docs/IDLE-TASK-FRAMEWORK.md:148` describes the primary-quota effect on its
   GraphQL-backed subcommands; `docs/RELEASE-NOTES.md:301,309,346,433` are
   historical records; `docs/workflows/issue-processing.md:1555` documents PR
