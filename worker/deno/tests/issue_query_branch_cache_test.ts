@@ -6,7 +6,7 @@
  * failure paths can be exercised in isolation.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   fetchClosedPRsByBranch,
   fetchPRsByBranch,
@@ -101,6 +101,47 @@ Deno.test("fetchPRsByBranch - returns empty array on parse failure", async () =>
       Promise.resolve("not json");
     const prs = await fetchPRsByBranch("o/r", "feat", "open", cache, mockGh);
     assertEquals(prs, []);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("fetchPRsByBranch - request errors propagate only when requested and never poison the cache", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  const error = new Error('Post "https://api.github.com/graphql": Forbidden');
+  const failingGh = (): Promise<string> => Promise.reject(error);
+  try {
+    assertEquals(
+      await fetchPRsByBranch("o/r", "feat", "merged", cache, failingGh),
+      [],
+    );
+    assertEquals(
+      await assertRejects(() =>
+        fetchPRsByBranch(
+          "o/r",
+          "feat",
+          "merged",
+          cache,
+          failingGh,
+          { throwOnError: true },
+        )
+      ),
+      error,
+    );
+    let fetched = 0;
+    const prs = await fetchPRsByBranch("o/r", "feat", "merged", cache, () => {
+      fetched++;
+      return Promise.resolve(
+        JSON.stringify([{
+          number: 42,
+          title: "Fix",
+          headRefName: "feat",
+          baseRefName: "main",
+        }]),
+      );
+    }, { throwOnError: true });
+    assertEquals(fetched, 1);
+    assertEquals(prs.map((pr) => pr.number), [42]);
   } finally {
     await cleanup();
   }

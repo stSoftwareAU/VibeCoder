@@ -757,7 +757,28 @@ Deno.test("spawnGh - a GraphQL-backed refusal reaches the exhaustion hook once, 
   }
 });
 
-Deno.test("spawnGh - the hook is not called for REST, for success, for the probe, or for another failure (Issue #1540)", async () => {
+Deno.test("spawnGh - a bare GraphQL Forbidden reaches the rate-limit hook", async () => {
+  clearPrimaryQuotaLatch();
+  const seen: PrimaryQuotaRefusal[] = [];
+  setPrimaryQuotaExhaustionHook((refusal) => {
+    seen.push(refusal);
+    return Promise.resolve();
+  });
+  const forbidden = 'Post "https://api.github.com/graphql": Forbidden';
+  recordingRunner({ code: 1, stderr: forbidden });
+  try {
+    const result = await spawnGh(["pr", "list", "--repo", "o/r"]);
+    assertEquals(result.success, false);
+    assertEquals(seen.length, 1);
+    assertEquals(seen[0]?.stderr, forbidden);
+  } finally {
+    setPrimaryQuotaExhaustionHook(null);
+    restore();
+    clearPrimaryQuotaLatch();
+  }
+});
+
+Deno.test("spawnGh - the hook is not called for REST, success, primary probe refusals, or other failures (Issue #1540)", async () => {
   clearPrimaryQuotaLatch();
   let calls = 0;
   setPrimaryQuotaExhaustionHook(() => {
@@ -768,7 +789,7 @@ Deno.test("spawnGh - the hook is not called for REST, for success, for the probe
     // REST rides the core quota; the same wording there is not the latch's.
     recordingRunner({ code: 1, stderr: QUOTA_REFUSED });
     await spawnGh(["api", "repos/o/r/issues/1"]);
-    // The probe learns the reset and must never feed the hook.
+    // A primary refusal from the probe must not recursively probe again.
     await spawnGh(["api", "graphql", "-f", "query=Q"], {
       bypassQuotaLatch: true,
     });
