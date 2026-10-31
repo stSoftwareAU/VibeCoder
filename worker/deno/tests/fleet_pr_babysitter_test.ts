@@ -7,6 +7,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import {
   babysitterRtkInstruction,
+  cloneForRepair,
   eligibleAuthor,
   reason,
   recoverTemporaryClones,
@@ -16,6 +17,21 @@ import {
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+
+Deno.test("failed clone is attempted once and preserves its original error", async () => {
+  let attempts = 0;
+  const timeout = new Error("clone timed out");
+  await assertRejects(
+    () =>
+      cloneForRepair("owner/repo", "/tmp/clone", () => {
+        attempts++;
+        return Promise.reject(timeout);
+      }),
+    Error,
+    "clone timed out",
+  );
+  assertEquals(attempts, 1);
+});
 
 Deno.test("babysitter supplies RTK guidance only when its probe succeeds", async () => {
   const present: Parameters<typeof babysitterRtkInstruction>[0] = async () => ({
