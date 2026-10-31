@@ -41,9 +41,9 @@ flowchart LR
   permissions or grants anything other than `read`. `getInstallationToken`
   refuses an empty `permissions` object, because GitHub would then mint the
   full-permission token.
-- The prompt gains one sentence telling the agent that `gh` is read-only and
-  that description fixes go in the archived summary. That is advice only; the
-  token is the control.
+- The repair prompt is unchanged. The token is the control: with a read-only
+  `GH_TOKEN`, a `gh` description edit is refused by GitHub, so no prompt rule is
+  needed (an earlier iteration added one; it was removed).
 
 ### Undiscoverable Facts
 
@@ -67,7 +67,10 @@ Backend/CLI change, no UI. Tests that cover it:
   `babysitterAgentEnv` carries the token and rejects an empty one. The RSA key
   is generated at test time, so no key is committed. The launch test exercises
   the mint-to-spawn path in a subprocess with a distinct runner token and checks
-  the requested scope and the token passed to Codex.
+  the requested scope and the token passed to Codex. Two further launch tests
+  cover the ordering: a failed token exchange neither records the per-head
+  attempt nor spawns Codex, and an already attempted head mints a token but does
+  not spawn.
 - `worker/deno/tests/fleet_pr_babysitter_test.ts` checks the spawn environment,
   codex arguments and 90-minute limit with a fake spawn.
 
@@ -115,3 +118,8 @@ existing `github_app_auth_test.ts` is unchanged and passes.
   lint, type checking and completeness checks, but its parallel test pass
   panicked in Deno 2.9.0 while restoring test permissions; the serial pass did
   not run. Semgrep, Checkov and config integration lacked local prerequisites.
+- Latest push (prompt sentence removed, ordering tests added): the two new launch
+  tests in `fleet_babysitter_app_test.ts` pin that a mint failure leaves the
+  attempt unrecorded (`guarded` and `spawned` stay false) and that an attempted
+  head is not spawned. The summary no longer claims a prompt change, matching
+  `git diff main...HEAD` for `fleet_pr_babysitter.ts`.
