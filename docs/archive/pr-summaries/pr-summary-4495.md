@@ -32,12 +32,12 @@ inputs change, and log an unchanged repeat at DEBUG. Closes #4495.
   the production `runHousekeeping` dep in `lib/run_worker.ts`, before the sweep)
   loads `<workDir>/decision_warn_signatures.json`; a signature change rewrites
   it tempfile-then-rename. The directory is passed in, never read from
-  `WORK_DIR`, so a suite that does not configure it cannot touch the live
-  file (Issue #1177); with no store configured the map is memory-only. An
-  A→B→A change warns on each change.
-- Bounded: an entry not seen for 7 days is dropped (on load and on every
-  write); an unchanged sighting re-stamps its entry once a day, so a pair still
-  being re-checked is kept and a closed issue's pair ages out.
+  `WORK_DIR`, so a suite that does not configure it cannot touch the live file
+  (Issue #1177); with no store configured the map is memory-only. An A→B→A
+  change warns on each change.
+- Bounded: an entry not seen for 7 days is dropped (on load and on every write);
+  an unchanged sighting re-stamps its entry once a day, so a pair still being
+  re-checked is kept and a closed issue's pair ages out.
 - A missing file reads as empty; a corrupt or unreadable one, or a failed write,
   is logged at WARNING and degrades to memory-only — it never throws.
 
@@ -92,9 +92,9 @@ Added:
 - `worker/deno/tests/issue_lifecycle_test.ts`: unchanged did-not-land verdict
   warns once across two cycles; the same verdict warns once across a simulated
   worker restart (memory reset, store reloaded) and a changed reason after the
-  restart warns again; a changed reason or PR number warns again; the
-  WARNING and its DEBUG repeat carry `repo`, `issueNumber`, `prNumber` and
-  `reason` in their context.
+  restart warns again; a changed reason or PR number warns again; the WARNING
+  and its DEBUG repeat carry `repo`, `issueNumber`, `prNumber` and `reason` in
+  their context.
 - `worker/deno/tests/missing_criterion_close_guard_3177_test.ts`: unchanged
   missing-criteria verdict warns once; a changed missing set or PR number warns
   again.
@@ -123,17 +123,17 @@ full startup housekeeping; the `run_worker*` tests (grep `runHousekeeping` in
 Red checks: `shouldWarnDecision` forced to return true (re-run on the head) →
 `decision_warn_dedup_test.ts` 8 of 9 tests red, `issue_lifecycle_test.ts` 4 red,
 `missing_criterion_close_guard_3177_test.ts` 2 red, `pr_maintenance_test.ts` 3
-red (two identical warn lines instead of one). Base-branch
-production files with the new tests → 6 site tests red (above). Results on the
-final head (after the PR #4535 review fix), `deno task test:unit` per file, 0
-failed in each: `issue_lifecycle_test.ts` (37 tests at head),
-`missing_criterion_close_guard_3177_test.ts` (19), `pr_maintenance_test.ts` (87),
-`issue_lifecycle_cache_test.ts` (7), `pr_maintenance_issue_state_cache_test.ts`
-(7), `merged_pr_issue_sweep_test.ts` (37), `merged_pr_precheck_phase_test.ts` (9),
+red (two identical warn lines instead of one). Base-branch production files with
+the new tests → 6 site tests red (above). Results on the final head (after the
+PR #4535 review fix), `deno task test:unit` per file, 0 failed in each:
+`issue_lifecycle_test.ts` (37 tests at head),
+`missing_criterion_close_guard_3177_test.ts` (19), `pr_maintenance_test.ts`
+(87), `issue_lifecycle_cache_test.ts` (7),
+`pr_maintenance_issue_state_cache_test.ts` (7), `merged_pr_issue_sweep_test.ts`
+(37), `merged_pr_precheck_phase_test.ts` (9),
 `completion_phase_merged_pr_closure_test.ts` (7), `decision_warn_dedup_test.ts`
-(9), `run_worker_test.ts` (35); 254 in total.
-`deno fmt --check`, `deno lint`, `deno check` clean on the 4 changed `.ts` files
-this round.
+(9), `run_worker_test.ts` (35); 254 in total. `deno fmt --check`, `deno lint`,
+`deno check` clean on the 4 changed `.ts` files this round.
 
 Twinned copies: the did-not-land message is logged at two sites
 (`issue_lifecycle.ts`, `pr_maintenance.ts`); both changed and share a key.
