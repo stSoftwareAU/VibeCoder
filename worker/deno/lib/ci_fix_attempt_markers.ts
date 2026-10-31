@@ -18,6 +18,8 @@
  *        depends-on="owner/repo#149" -->
  *   <!-- vibe-ci-human-gate check="…" head="…" -->
  *   <!-- vibe-ci-infra-rerun head="…" -->
+ *   <!-- vibe-ci-rerun-refused repo="owner/repo" run-id="123" -->
+ *   <!-- vibe-ci-rerun-fallback repo="owner/repo" head="…" -->
  *
  * The human-gate marker (Issue #2727) records that the fleet has already told
  * the pull request a check waits on a human step. It is keyed by **check
@@ -37,7 +39,7 @@
  * makes the bound fleet-wide, the same move Issue #1879 made for the attempt
  * cap.
  *
- * All four use the canonical `vibe-` grammar — a bare prefix and `key="value"`
+ * All marker families use the canonical `vibe-` grammar — a bare prefix and `key="value"`
  * attributes, no colon payload — so none needs an `ACCEPTED_DEVIATIONS`
  * entry in `tests/marker_grammar_test.ts`. That scanner reads marker
  * *literals* out of `lib/`, and these markers are assembled from a name
@@ -85,6 +87,12 @@ export const CI_HUMAN_GATE_MARKER_NAME = "vibe-ci-human-gate";
  * already re-run once by some fleet host (Issue #2919).
  */
 export const CI_INFRA_RERUN_MARKER_NAME = "vibe-ci-infra-rerun";
+
+/** Marker recording a workflow run GitHub permanently refused to rerun. */
+export const CI_RERUN_REFUSAL_MARKER_NAME = "vibe-ci-rerun-refused";
+
+/** Marker recording that fresh CI was pushed for a refused run on a head. */
+export const CI_RERUN_FALLBACK_MARKER_NAME = "vibe-ci-rerun-fallback";
 
 /** Longest check name a marker carries; a longer one is truncated. */
 const MAX_CHECK_NAME_LENGTH = 120;
@@ -148,6 +156,18 @@ export interface CiInfraRerunMarker {
   head: string;
 }
 
+/** A permanently refused workflow run, independent of the PR head. */
+export interface CiRerunRefusalMarker {
+  repo: string;
+  runId: number;
+}
+
+/** Fresh-CI fallback already attempted on a particular PR head. */
+export interface CiRerunFallbackMarker {
+  repo: string;
+  head: string;
+}
+
 /**
  * A pull-request comment as `GitHubClient.getIssueComments` returns it.
  *
@@ -194,6 +214,12 @@ export type CiHumanGateRecord = CiHumanGateMarker & CiFixMarkerContext;
 /** An infra-rerun marker with the comment it was read from (Issue #2919). */
 export type CiInfraRerunRecord = CiInfraRerunMarker & CiFixMarkerContext;
 
+/** A refusal marker with its source comment context. */
+export type CiRerunRefusalRecord = CiRerunRefusalMarker & CiFixMarkerContext;
+
+/** A fallback marker with its source comment context. */
+export type CiRerunFallbackRecord = CiRerunFallbackMarker & CiFixMarkerContext;
+
 /** Every fleet-authored CI-fix marker on a pull request, by signature. */
 export interface FleetCiFixMarkers {
   /** Attempt records, keyed by failure signature, in comment order. */
@@ -209,6 +235,10 @@ export interface FleetCiFixMarkers {
    * Infra-rerun records, keyed by head SHA, in comment order (Issue #2919).
    */
   infraReruns: Map<string, CiInfraRerunRecord[]>;
+  /** Permanent refusals, keyed by lower-case `repo#runId`. */
+  rerunRefusals: Map<string, CiRerunRefusalRecord[]>;
+  /** Fresh-CI fallback markers, keyed by lower-case `repo@head`. */
+  rerunFallbacks: Map<string, CiRerunFallbackRecord[]>;
   /**
    * False when the fleet login set was empty, so nothing could be attributed.
    *
@@ -267,6 +297,16 @@ const INFRA_RERUN_MARKER_RE = new RegExp(
   "g",
 );
 
+const RERUN_REFUSAL_MARKER_RE = new RegExp(
+  `<!--\\s*${CI_RERUN_REFUSAL_MARKER_NAME}(?=\\s)([^]*?)-->`,
+  "g",
+);
+
+const RERUN_FALLBACK_MARKER_RE = new RegExp(
+  `<!--\\s*${CI_RERUN_FALLBACK_MARKER_NAME}(?=\\s)([^]*?)-->`,
+  "g",
+);
+
 /** Read one attribute out of a marker's inner text. */
 function attribute(inner: string, name: string): string | undefined {
   for (const match of inner.matchAll(ATTRIBUTE_RE)) {
@@ -274,6 +314,18 @@ function attribute(inner: string, name: string): string | undefined {
     return match[2];
   }
   return undefined;
+}
+
+/** Require exactly one of each attribute in a new marker family. */
+function hasExactAttributes(
+  inner: string,
+  expected: readonly string[],
+): boolean {
+  const found: string[] = [];
+  for (const match of inner.matchAll(ATTRIBUTE_RE)) {
+    found.push((match[1] ?? "").toLowerCase());
+  }
+  return found.sort().join(",") === [...expected].sort().join(",");
 }
 
 /**
@@ -429,6 +481,30 @@ export function buildCiInfraRerunMarker(options: { head: string }): string {
   return `<!-- ${CI_INFRA_RERUN_MARKER_NAME} head="${options.head}" -->`;
 }
 
+/** Build a fleet marker for a GitHub run that cannot be retried. */
+export function buildCiRerunRefusalMarker(
+  marker: CiRerunRefusalMarker,
+): string {
+  requireField(REPO_SLUG_PATTERN.test(marker.repo), "repo", marker.repo);
+  requireField(
+    Number.isSafeInteger(marker.runId) && marker.runId > 0,
+    "run-id",
+    String(marker.runId),
+  );
+  return `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="${marker.repo}" ` +
+    `run-id="${marker.runId}" -->`;
+}
+
+/** Build a fleet marker for a fresh-CI fallback already attempted on a head. */
+export function buildCiRerunFallbackMarker(
+  marker: CiRerunFallbackMarker,
+): string {
+  requireField(REPO_SLUG_PATTERN.test(marker.repo), "repo", marker.repo);
+  requireField(HEAD_SHA_PATTERN.test(marker.head), "head", marker.head);
+  return `<!-- ${CI_RERUN_FALLBACK_MARKER_NAME} repo="${marker.repo}" ` +
+    `head="${marker.head}" -->`;
+}
+
 /**
  * Re-stamp every human-gate marker in a comment body with `marker`
  * (PR #2762), leaving the prose around it untouched. The gate comment carries
@@ -548,6 +624,44 @@ export function parseCiInfraRerunMarkers(body: string): CiInfraRerunMarker[] {
   return markers;
 }
 
+/** Parse valid permanent-rerun-refusal markers from a comment body. */
+export function parseCiRerunRefusalMarkers(
+  body: string,
+): CiRerunRefusalMarker[] {
+  const markers: CiRerunRefusalMarker[] = [];
+  for (const match of body.matchAll(RERUN_REFUSAL_MARKER_RE)) {
+    const inner = match[1] ?? "";
+    if (!hasExactAttributes(inner, ["repo", "run-id"])) continue;
+    const repo = attribute(inner, "repo") ?? "";
+    const rawRunId = attribute(inner, "run-id") ?? "";
+    if (!REPO_SLUG_PATTERN.test(repo) || !/^[1-9][0-9]*$/.test(rawRunId)) {
+      continue;
+    }
+    const runId = Number(rawRunId);
+    if (!Number.isSafeInteger(runId)) continue;
+    markers.push({ repo, runId });
+  }
+  return markers;
+}
+
+/** Parse valid fresh-CI fallback markers from a comment body. */
+export function parseCiRerunFallbackMarkers(
+  body: string,
+): CiRerunFallbackMarker[] {
+  const markers: CiRerunFallbackMarker[] = [];
+  for (const match of body.matchAll(RERUN_FALLBACK_MARKER_RE)) {
+    const inner = match[1] ?? "";
+    if (!hasExactAttributes(inner, ["repo", "head"])) continue;
+    const repo = attribute(inner, "repo") ?? "";
+    const head = attribute(inner, "head") ?? "";
+    if (!REPO_SLUG_PATTERN.test(repo) || !HEAD_SHA_PATTERN.test(head)) {
+      continue;
+    }
+    markers.push({ repo, head: head.toLowerCase() });
+  }
+  return markers;
+}
+
 /**
  * The comment's first line that is neither empty nor part of a marker.
  *
@@ -584,7 +698,9 @@ function mentionsCiFixMarker(body: string): boolean {
   return body.includes(CI_FIX_ATTEMPT_MARKER_NAME) ||
     body.includes(CI_FIX_DEFERRAL_MARKER_NAME) ||
     body.includes(CI_HUMAN_GATE_MARKER_NAME) ||
-    body.includes(CI_INFRA_RERUN_MARKER_NAME);
+    body.includes(CI_INFRA_RERUN_MARKER_NAME) ||
+    body.includes(CI_RERUN_REFUSAL_MARKER_NAME) ||
+    body.includes(CI_RERUN_FALLBACK_MARKER_NAME);
 }
 
 /**
@@ -605,8 +721,7 @@ function mentionsCiFixMarker(body: string): boolean {
  * @param log - Sink for the unresolved-fleet and discard warnings. Defaults
  *   to `console.warn`, which every entry point has already patched through
  *   `installConsoleRedaction`; tests inject a recorder.
- * @returns Attempt and deferral records grouped by failure signature, and
- *   human-gate records grouped by check name.
+ * @returns Valid fleet-authored marker records, grouped by their key.
  */
 export function collectFleetCiFixMarkers(
   comments: readonly CiFixMarkerComment[],
@@ -617,6 +732,8 @@ export function collectFleetCiFixMarkers(
   const deferrals = new Map<string, CiFixDeferralRecord[]>();
   const humanGates = new Map<string, CiHumanGateRecord[]>();
   const infraReruns = new Map<string, CiInfraRerunRecord[]>();
+  const rerunRefusals = new Map<string, CiRerunRefusalRecord[]>();
+  const rerunFallbacks = new Map<string, CiRerunFallbackRecord[]>();
   const fleet = [...fleetLogins];
 
   if (fleet.length === 0) {
@@ -634,6 +751,8 @@ export function collectFleetCiFixMarkers(
       deferrals,
       humanGates,
       infraReruns,
+      rerunRefusals,
+      rerunFallbacks,
       fleetResolved: false,
       ignoredOutsideFleet: 0,
     };
@@ -666,6 +785,20 @@ export function collectFleetCiFixMarkers(
     for (const marker of parseCiInfraRerunMarkers(body)) {
       append(infraReruns, marker.head, { ...marker, ...context });
     }
+    for (const marker of parseCiRerunRefusalMarkers(body)) {
+      append(
+        rerunRefusals,
+        `${marker.repo.toLowerCase()}#${marker.runId}`,
+        { ...marker, ...context },
+      );
+    }
+    for (const marker of parseCiRerunFallbackMarkers(body)) {
+      append(
+        rerunFallbacks,
+        `${marker.repo.toLowerCase()}@${marker.head}`,
+        { ...marker, ...context },
+      );
+    }
   }
 
   if (ignoredOutsideFleet > 0) {
@@ -681,9 +814,32 @@ export function collectFleetCiFixMarkers(
     deferrals,
     humanGates,
     infraReruns,
+    rerunRefusals,
+    rerunFallbacks,
     fleetResolved: true,
     ignoredOutsideFleet,
   };
+}
+
+/** Whether GitHub has permanently refused this repo/run pair. */
+export function isCiRerunRefused(
+  markers: FleetCiFixMarkers,
+  repo: string,
+  runId: number,
+): boolean {
+  return (markers.rerunRefusals.get(`${repo.toLowerCase()}#${runId}`) ?? [])
+    .length > 0;
+}
+
+/** Whether fresh CI fallback was already attempted for this repo/head. */
+export function isCiRerunFallbackRecordedAt(
+  markers: FleetCiFixMarkers,
+  repo: string,
+  head: string,
+): boolean {
+  return (markers.rerunFallbacks.get(
+    `${repo.toLowerCase()}@${head.toLowerCase()}`,
+  ) ?? []).length > 0;
 }
 
 /**

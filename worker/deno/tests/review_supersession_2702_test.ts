@@ -1,25 +1,25 @@
 /**
- * A CHANGES_REQUESTED review is superseded only by a real fleet fix commit
- * (Issue #2702).
+ * A CHANGES_REQUESTED review is never superseded by a fleet commit (Issues
+ * #2702, #4510).
  *
- * On stSoftwareAU/GRQ#5032 the owner requested changes at 06:47. A fleet host
- * then merged `Develop` into the PR branch through the update-branch call
- * (07:18) and a github-actions version bump followed (07:19). The scan skipped
- * every review whose `commit_id` was not the current head, so a review nobody
- * had answered could never be reached again.
+ * Issue #2702 made a real fleet fix commit after a review supersede it. On
+ * NEAT-AI-Discovery#2443 that rule wrongly retired a review: a CI-fix pass
+ * pushed a single-parent fleet commit after the owner's review (Issue #4510).
+ * A CI-fix pass never answers a review, so the rule is gone. A review is now
+ * retired only by dismissal (the processed marker, Issue #3383) or by the
+ * reviewer's own later review (Issue #2697), and held while a pr_review claim
+ * lease is live.
  *
- * The commit shapes below are the ones GitHub reported for that PR: the base
- * merge is authored by the fleet account, committed by `web-flow`, and has two
- * parents; the bump is authored and committed by `github-actions[bot]`.
+ * The base-merge and bot-bump shapes below are the ones GitHub reported for
+ * stSoftwareAU/GRQ#5032 (Issue #2702): the base merge is authored by the fleet
+ * account and committed by `web-flow`; the bump is authored and committed by
+ * `github-actions[bot]`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
-import {
-  type CommitProvenance,
-  isReviewSupersededByFleetFix,
-} from "../lib/pr_feedback_supersede.ts";
+import type { CommitProvenance } from "../lib/pr_feedback_supersede.ts";
 import { findPrCommentsToFix } from "../lib/pr_maintenance.ts";
 import type { PrScanOptions } from "../lib/pr_maintenance.ts";
 import type { Logger } from "../types.ts";
@@ -39,7 +39,6 @@ const EARLIER_FLEET_FIX: CommitProvenance = {
   authorLogin: "VibeCoderST",
   committerLogin: "VibeCoderST",
   committedAt: "2026-09-27T06:16:50Z",
-  parentCount: 1,
 };
 
 /** `Develop` merged in by a fleet host through the update-branch call. */
@@ -47,7 +46,6 @@ const BASE_MERGE: CommitProvenance = {
   authorLogin: "stservice",
   committerLogin: "web-flow",
   committedAt: "2026-09-27T07:18:10Z",
-  parentCount: 2,
 };
 
 /** The github-actions version bump that followed the merge. */
@@ -55,23 +53,23 @@ const BOT_BUMP: CommitProvenance = {
   authorLogin: "github-actions[bot]",
   committerLogin: "github-actions[bot]",
   committedAt: "2026-09-27T07:19:19Z",
-  parentCount: 1,
 };
 
-/** A fleet commit that actually answers the review. */
-const FLEET_FIX_AFTER_REVIEW: CommitProvenance = {
+/**
+ * A single-parent fleet CI-fix commit pushed after the review. It has the
+ * shape of NEAT-AI-Discovery#2443 commit 68b68f41, which wrongly superseded a
+ * CHANGES_REQUESTED review before Issue #4510.
+ */
+const CI_FIX_AFTER_REVIEW: CommitProvenance = {
   authorLogin: "VibeCoderST",
   committerLogin: "VibeCoderST",
   committedAt: "2026-09-27T07:30:00Z",
-  parentCount: 1,
 };
 
-function makeSilentLogger(infos: string[] = []): Logger {
+function makeSilentLogger(): Logger {
   const noop = () => {};
   return {
-    info: (message: string) => {
-      infos.push(message);
-    },
+    info: noop,
     warn: noop,
     error: noop,
     debug: noop,
@@ -83,95 +81,19 @@ function makeSilentLogger(infos: string[] = []): Logger {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Pure decision logic
-// ---------------------------------------------------------------------------
-
-Deno.test("isReviewSupersededByFleetFix - a base merge and a bot bump leave the review actionable", () => {
-  assertEquals(
-    isReviewSupersededByFleetFix({
-      reviewSubmittedAt: REVIEW_SUBMITTED_AT,
-      commits: [EARLIER_FLEET_FIX, BASE_MERGE, BOT_BUMP],
-      fleetAuthors: FLEET,
-    }),
-    false,
-  );
-});
-
-Deno.test("isReviewSupersededByFleetFix - a fleet fix after the review supersedes it", () => {
-  assertEquals(
-    isReviewSupersededByFleetFix({
-      reviewSubmittedAt: REVIEW_SUBMITTED_AT,
-      commits: [
-        EARLIER_FLEET_FIX,
-        BASE_MERGE,
-        BOT_BUMP,
-        FLEET_FIX_AFTER_REVIEW,
-      ],
-      fleetAuthors: FLEET,
-    }),
-    true,
-  );
-});
-
-Deno.test("isReviewSupersededByFleetFix - a fleet fix from before the review does not supersede it", () => {
-  assertEquals(
-    isReviewSupersededByFleetFix({
-      reviewSubmittedAt: REVIEW_SUBMITTED_AT,
-      commits: [EARLIER_FLEET_FIX],
-      fleetAuthors: FLEET,
-    }),
-    false,
-  );
-});
-
-Deno.test("isReviewSupersededByFleetFix - a human's push is not the fleet answering the review", () => {
-  assertEquals(
-    isReviewSupersededByFleetFix({
-      reviewSubmittedAt: REVIEW_SUBMITTED_AT,
-      commits: [{
-        ...FLEET_FIX_AFTER_REVIEW,
-        authorLogin: OWNER,
-        committerLogin: OWNER,
-      }],
-      fleetAuthors: FLEET,
-    }),
-    false,
-  );
-});
-
-Deno.test("isReviewSupersededByFleetFix - unknown data fails closed to actionable", () => {
-  for (
-    const input of [
-      { reviewSubmittedAt: undefined, commits: [FLEET_FIX_AFTER_REVIEW] },
-      { reviewSubmittedAt: "not a date", commits: [FLEET_FIX_AFTER_REVIEW] },
-      { reviewSubmittedAt: REVIEW_SUBMITTED_AT, commits: null },
-      {
-        reviewSubmittedAt: REVIEW_SUBMITTED_AT,
-        commits: [{ ...FLEET_FIX_AFTER_REVIEW, committedAt: null }],
-      },
-    ]
-  ) {
-    assertEquals(
-      isReviewSupersededByFleetFix({ ...input, fleetAuthors: FLEET }),
-      false,
-      JSON.stringify(input),
-    );
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Composition: the scan itself (findPrCommentsToFix)
-// ---------------------------------------------------------------------------
+/** The gh calls that read the PR's commit history. */
+function commitHistoryReads(calls: readonly string[]): string[] {
+  return calls.filter((call) => call.includes(`pulls/${PR_NUMBER}/commits`));
+}
 
 /**
  * One PR whose only feedback is the owner's CHANGES_REQUESTED review, on a
- * commit that is no longer the head, followed by `commits`.
+ * commit that is no longer the head. The mocked history `commits` is served
+ * if read, so a test can assert the scan never reads it.
  */
 function makeScanOptions(
-  commits: readonly CommitProvenance[] | "unreadable",
+  commits: readonly CommitProvenance[],
   calls: string[],
-  infos: string[] = [],
   reviewCommitId = REVIEWED_SHA,
 ): PrScanOptions {
   const ghCommandFn = (args: string[]): Promise<string> => {
@@ -193,7 +115,6 @@ function makeScanOptions(
       }]));
     }
     if (key.includes(`pulls/${PR_NUMBER}/commits`)) {
-      if (commits === "unreadable") return Promise.reject(new Error("502"));
       // `gh api --paginate --jq '.[] | {…}'` prints one object per line.
       return Promise.resolve(
         commits.map((commit, i) => JSON.stringify({ sha: `c${i}`, ...commit }))
@@ -205,7 +126,7 @@ function makeScanOptions(
   return {
     githubUser: "VibeCoderST",
     repos: [REPO],
-    logger: makeSilentLogger(infos),
+    logger: makeSilentLogger(),
     isRepoAllowed: () => true,
     isAuthorisedCommenter: (login: string) => login === OWNER,
     prAuthors: FLEET,
@@ -213,7 +134,26 @@ function makeScanOptions(
   };
 }
 
-Deno.test("findPrCommentsToFix - a review followed only by a base merge and a bot bump stays actionable (Issue #2702)", async () => {
+Deno.test("findPrCommentsToFix - a single-parent fleet CI-fix commit after the review leaves it actionable and the history unread (Issue #4510)", async () => {
+  const calls: string[] = [];
+  const result = await findPrCommentsToFix(
+    makeScanOptions(
+      [EARLIER_FLEET_FIX, BASE_MERGE, BOT_BUMP, CI_FIX_AFTER_REVIEW],
+      calls,
+    ),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value?.commentType, "pr_review");
+  assertEquals(result.value?.commentId, String(REVIEW_ID));
+  assertEquals(
+    commitHistoryReads(calls),
+    [],
+    "the commit history is never read",
+  );
+});
+
+Deno.test("findPrCommentsToFix - a review followed only by a base merge and a bot bump stays actionable and the history unread (Issues #2702, #4510)", async () => {
   const calls: string[] = [];
   const result = await findPrCommentsToFix(
     makeScanOptions([EARLIER_FLEET_FIX, BASE_MERGE, BOT_BUMP], calls),
@@ -223,50 +163,19 @@ Deno.test("findPrCommentsToFix - a review followed only by a base merge and a bo
   assertEquals(result.value?.commentType, "pr_review");
   assertEquals(result.value?.commentId, String(REVIEW_ID));
   assertEquals(
-    calls.filter((call) => call.includes(`pulls/${PR_NUMBER}/commits`)).length,
-    1,
-    "the commit history is read once",
-  );
-});
-
-Deno.test("findPrCommentsToFix - a review followed by a real fleet fix is superseded, and the skip is logged at info (Issue #2702)", async () => {
-  const calls: string[] = [];
-  const infos: string[] = [];
-  const result = await findPrCommentsToFix(
-    makeScanOptions(
-      [BASE_MERGE, FLEET_FIX_AFTER_REVIEW, BOT_BUMP],
-      calls,
-      infos,
-    ),
-  );
-
-  assert(result.ok);
-  assertEquals(result.value, null);
-  assert(
-    infos.some((message) => message.includes("CHANGES_REQUESTED review")),
-    `expected an info-level skip line, got: ${JSON.stringify(infos)}`,
-  );
-});
-
-Deno.test("findPrCommentsToFix - a review on the current head is actionable without reading the history (Issue #2702)", async () => {
-  const calls: string[] = [];
-  const result = await findPrCommentsToFix(
-    makeScanOptions([], calls, [], HEAD_SHA),
-  );
-
-  assert(result.ok);
-  assertEquals(result.value?.commentId, String(REVIEW_ID));
-  assertEquals(
-    calls.filter((call) => call.includes(`pulls/${PR_NUMBER}/commits`)),
+    commitHistoryReads(calls),
     [],
+    "the commit history is never read",
   );
 });
 
-Deno.test("findPrCommentsToFix - an unreadable history never drops the review (Issue #2702)", async () => {
+Deno.test("findPrCommentsToFix - a review on the current head is actionable without reading the history (Issues #2702, #4510)", async () => {
+  const calls: string[] = [];
   const result = await findPrCommentsToFix(
-    makeScanOptions("unreadable", []),
+    makeScanOptions([], calls, HEAD_SHA),
   );
 
   assert(result.ok);
   assertEquals(result.value?.commentId, String(REVIEW_ID));
+  assertEquals(commitHistoryReads(calls), []);
 });

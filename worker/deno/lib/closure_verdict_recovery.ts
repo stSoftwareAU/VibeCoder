@@ -16,6 +16,9 @@
  * that does not cover every criterion is asked for once more, with the
  * shortfall named; a second short verdict is rendered as it stands, and the
  * gate blocks on it exactly as before. Nothing is invented at any step.
+ * The issue's closing keyword is aligned with the rendered block as well: a
+ * `missing` entry turns `Closes #N` into `Part of #N`, and an all-met verdict
+ * restores it (Issue #4472).
  *
  * ```mermaid
  * flowchart TD
@@ -54,6 +57,7 @@ import {
   parseClosureVerdict,
   renderClosureBlocks,
 } from "./closure_verdict.ts";
+import { alignIssueCloseWithClosure } from "./missing_criterion_close_guard.ts";
 import {
   type IssueContext,
   type PhaseState,
@@ -349,6 +353,12 @@ async function writeSummary(
  * the agent wrote already satisfies both gates — the model writing the block
  * itself is still the happy path, and this is the floor beneath it.
  *
+ * The issue's closing keyword is aligned with the rendered block (Issue
+ * #4472): a `missing` entry turns it into `Part of #N`, as assemblePrBody does
+ * for the PR body, and an all-met verdict restores `Closes #N`. An absent
+ * summary starts from `Closes #N.`, which the alignment turns into
+ * `Part of #N.` when the verdict has a missing entry.
+ *
  * @returns What happened, for the caller's log. Never throws on a missing or
  *   unreadable verdict: the summary is left exactly as the agent wrote it and
  *   the gate blocks on it, which is the existing behaviour.
@@ -482,7 +492,10 @@ export async function renderClosureBlocksFromVerdict(
   const base = existing.trim() === ""
     ? `## Summary\n\nCloses #${issueNumber}.\n`
     : existing;
-  const updated = applyClosureBlocks(base, blocks);
+  const updated = alignIssueCloseWithClosure(
+    applyClosureBlocks(base, blocks),
+    issueNumber,
+  );
   await writeSummary(state.repoPath, relativePath, updated);
 
   const valid = validateAcceptanceClosure({

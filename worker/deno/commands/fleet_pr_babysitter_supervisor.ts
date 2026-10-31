@@ -1,5 +1,9 @@
 /** Run a babysitter pass with private, compressed, bounded logs and an optional health hook. */
-import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+import {
+  runWithTimeout,
+  spawnCommandWithTimeout,
+} from "../lib/subprocess_timeout.ts";
+import { installConsoleRedaction } from "../lib/console_redaction.ts";
 
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
 const KEEP_LOGS = 30;
@@ -59,12 +63,14 @@ export async function recoverLogs(dir: string): Promise<void> {
     );
     const match = partial ?? /^pass-(\d+)-.*\.log$/.exec(entry.name);
     if (!match) continue;
-    const probe = await new Deno.Command("/bin/kill", {
-      args: ["-0", match[1]!],
-      stdout: "null",
-      stderr: "null",
-    }).output();
-    if (probe.success) continue;
+    const probe = await runWithTimeout("/bin/kill", ["-0", match[1]!], {
+      timeoutMs: 10_000,
+    });
+    if (!probe.ok) throw probe.error;
+    if (probe.value.timedOut) {
+      throw new Error("Process liveness probe timed out");
+    }
+    if (probe.value.success) continue;
     try {
       if (partial) await Deno.remove(`${dir}/${entry.name}`);
       else await compress(`${dir}/${entry.name}`);
@@ -108,7 +114,8 @@ async function pass(args: string[], dir: string): Promise<number> {
   };
   let code = 1;
   try {
-    const child = new Deno.Command(Deno.execPath(), {
+    const child = spawnCommandWithTimeout(Deno.execPath(), {
+      timeoutMs: 24 * 60 * 60_000,
       args: [
         "run",
         "--allow-all",
@@ -117,7 +124,7 @@ async function pass(args: string[], dir: string): Promise<number> {
       ],
       stdout: "piped",
       stderr: "piped",
-    }).spawn();
+    });
     // Serialise writes to the single log while continuing to drain both pipes.
     let pending = Promise.resolve();
     const copy = async (
@@ -198,6 +205,7 @@ async function pass(args: string[], dir: string): Promise<number> {
 }
 
 if (import.meta.main) {
+  installConsoleRedaction();
   const home = Deno.env.get("HOME");
   if (!home) throw new Error("HOME is not set");
   const watch = Deno.args.includes("--watch");

@@ -178,6 +178,7 @@ export async function startBabysitterAppAuth(
   mint?: () => Promise<string>,
   refreshMs = 5 * 60_000,
   repositories?: readonly string[],
+  env: Pick<typeof Deno.env, "set" | "delete"> = Deno.env,
 ): Promise<() => void> {
   // Do not let the generic gh wrapper replace this token or fall back to a
   // signed-in user when its own best-effort App minting fails.
@@ -188,8 +189,8 @@ export async function startBabysitterAppAuth(
       "GITHUB_APP_PRIVATE_KEY_PATH",
       "GITHUB_TOKEN",
     ]
-  ) Deno.env.delete(name);
-  Deno.env.set("GH_TOKEN", "babysitter-app-auth-unavailable");
+  ) env.delete(name);
+  env.set("GH_TOKEN", "babysitter-app-auth-unavailable");
   const refresh = async () => {
     try {
       const token = await (mint ? mint() : ensureValidToken(
@@ -200,9 +201,9 @@ export async function startBabysitterAppAuth(
         repositories,
       ));
       if (!token) throw new Error("GitHub App token was empty");
-      Deno.env.set("GH_TOKEN", token);
+      env.set("GH_TOKEN", token);
     } catch (error) {
-      Deno.env.set("GH_TOKEN", "babysitter-app-auth-unavailable");
+      env.set("GH_TOKEN", "babysitter-app-auth-unavailable");
       throw error;
     }
   };

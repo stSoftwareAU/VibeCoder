@@ -21,7 +21,11 @@ import {
   rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "../lib/ci_infrastructure_rerun.ts";
-import type { FleetCiFixMarkers } from "../lib/ci_fix_attempt_markers.ts";
+import {
+  buildCiRerunRefusalMarker,
+  collectFleetCiFixMarkers,
+  type FleetCiFixMarkers,
+} from "../lib/ci_fix_attempt_markers.ts";
 import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import { fakeGithubGraphQL } from "./support/github_graphql_fake.ts";
 import type { Logger } from "../types.ts";
@@ -42,6 +46,8 @@ function emptyFleetMarkers(): FleetCiFixMarkers {
     deferrals: new Map(),
     humanGates: new Map(),
     infraReruns: new Map(),
+    rerunRefusals: new Map(),
+    rerunFallbacks: new Map(),
     fleetResolved: true,
     ignoredOutsideFleet: 0,
   };
@@ -139,11 +145,13 @@ function ghStub(opts: {
   jobs: JobRow[];
   reruns: string[][];
   headRefOid?: string;
-  rerunError?: (runId: string) => boolean;
+  rerunError?: (runId: string) => boolean | string;
   /** Shared across stubs so a second scan sees the first scan's marker post. */
   postedComments?: Array<{ id: number; body: string }>;
   /** When set, `pr comment` posts fail with this message. */
   commentError?: string;
+  /** Collects the Git Data API calls the fresh-CI fallback makes (#4497). */
+  gitApiCalls?: string[][];
 }): (args: string[]) => Promise<string> {
   const {
     redChecks,
@@ -215,12 +223,30 @@ function ghStub(opts: {
     if (key.startsWith("run rerun")) {
       reruns.push(args);
       const runId = args[2] ?? "";
-      if (rerunError && rerunError(runId)) {
-        return Promise.reject(new Error(`rerun refused for ${runId}`));
+      const refusal = rerunError?.(runId);
+      if (refusal) {
+        return Promise.reject(
+          new Error(
+            typeof refusal === "string"
+              ? refusal
+              : `rerun refused for ${runId}`,
+          ),
+        );
       }
       return Promise.resolve("");
     }
     if (key.includes("annotations")) return Promise.resolve("[]");
+    if (key.includes("/git/")) {
+      opts.gitApiCalls?.push(args);
+      if (key.includes("git/ref/heads/")) return Promise.resolve(headRefOid);
+      if (key.includes("-X POST") && key.includes("git/commits")) {
+        return Promise.resolve("d".repeat(40));
+      }
+      if (key.includes("git/commits/")) {
+        return Promise.resolve("c".repeat(40));
+      }
+      return Promise.resolve("");
+    }
     return Promise.resolve("[]");
   };
 }
@@ -230,6 +256,7 @@ async function scan(
   ghFn: (args: string[]) => Promise<string>,
   logger: Logger,
   stateDir: string,
+  maxRetries?: number,
 ) {
   const options: CiCheckScanOptions = {
     githubUser: "testbot",
@@ -239,6 +266,7 @@ async function scan(
     isAuthorisedCommenter: () => true,
     ghCommandFn: ghFn,
     stateDir,
+    ...(maxRetries === undefined ? {} : { maxRetries }),
   };
   const result = await findFailedCiChecks(options);
   assertEquals(result.ok, true);
@@ -519,6 +547,214 @@ Deno.test("findFailedCiChecks - a marker post that fails is logged at error, and
     const found2 = await scan(ghFn2, logger2, stateDir);
     assertEquals(found2, null);
     assertEquals(reruns2.length, 1);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a permanently refused run is not retried by a later scan (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-refused-" });
+  try {
+    const posted: Array<{ id: number; body: string }> = [];
+    const firstReruns: string[][] = [];
+    const permanentRefusal =
+      "gh command failed (exit 1): run 900 cannot be rerun; This workflow run cannot be retried";
+    const firstLogger = makeRecordingLogger();
+    const firstScan = await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: firstReruns,
+        rerunError: () => permanentRefusal,
+        postedComments: posted,
+      }),
+      firstLogger,
+      stateDir,
+    );
+
+    const secondReruns: string[][] = [];
+    const secondLogger = makeRecordingLogger();
+    const secondScan = await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: secondReruns,
+        postedComments: posted,
+      }),
+      secondLogger,
+      stateDir,
+    );
+
+    assertEquals(firstScan, null);
+    assertEquals(secondScan, null);
+    assertEquals(firstReruns.length, 1);
+    assertEquals(secondReruns.length, 0);
+    assertEquals(
+      firstLogger.warns.filter((message) =>
+        message.includes("permanently refused")
+      )
+        .length,
+      1,
+    );
+    assertEquals(
+      secondLogger.warns.filter((message) =>
+        message.includes("permanently refused")
+      )
+        .length,
+      0,
+    );
+    assert(
+      posted.some((comment) => comment.body.includes("vibe-ci-rerun-refused")),
+      "the refusal marker must be persisted on the PR",
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - permanent refusal markers reach the maintenance caller on later scans (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-refused-" });
+  try {
+    const posted: Array<{ id: number; body: string }> = [];
+    const firstReruns: string[][] = [];
+    const permanentRefusal =
+      "gh command failed (exit 1): run 900 cannot be rerun; This workflow run cannot be retried";
+    await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: firstReruns,
+        rerunError: () => permanentRefusal,
+        postedComments: posted,
+      }),
+      makeRecordingLogger(),
+      stateDir,
+    );
+
+    const secondReruns: string[][] = [];
+    await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+        jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+        reruns: secondReruns,
+        postedComments: posted,
+      }),
+      makeRecordingLogger(),
+      stateDir,
+    );
+
+    assertEquals(firstReruns.length, 1);
+    assertEquals(secondReruns.length, 0);
+    assert(
+      posted.some((comment) => comment.body.includes("vibe-ci-rerun-refused")),
+      "the maintenance scan must persist a refusal marker",
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - exhausted check caller honours a persisted refusal marker and requests fresh CI once (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-cap-refused-" });
+  try {
+    await Deno.writeTextFile(`${stateDir}/org_repo_1.retries`, "3");
+    const posted = [{
+      id: 900,
+      body: buildCiRerunRefusalMarker({ repo: REPO, runId: 901 }),
+    }];
+    const reruns: string[][] = [];
+    const gitApiCalls: string[][] = [];
+    const stubOptions = {
+      redChecks: [{ id: 1, name: "Job A", conclusion: "failure" }],
+      jobs: [{
+        id: 1,
+        run_id: 901,
+        conclusion: "failure",
+        steps: [{ name: "tests", conclusion: "failure" }],
+      }],
+      reruns,
+      postedComments: posted,
+      gitApiCalls,
+    };
+    const firstLogger = makeRecordingLogger();
+    const result = await scan(ghStub(stubOptions), firstLogger, stateDir, 3);
+
+    assertEquals(result, null);
+    assertEquals(reruns, []);
+    // An already-refused run is skipped without a WARN on any pass.
+    assertEquals(
+      firstLogger.warns.filter((m) => m.includes("exceeded max retries")),
+      [],
+    );
+    // The refused run still yields fresh CI: one empty commit, fast-forward.
+    const patches = gitApiCalls.filter((args) => args.includes("PATCH"));
+    assertEquals(patches.length, 1);
+    assert(patches[0]?.includes("force=false"));
+    assert(
+      posted.some((c) => c.body.includes("vibe-ci-rerun-fallback")),
+      "the fallback marker must be persisted before the push",
+    );
+
+    // A later scan finds the fallback marker and does not push again.
+    gitApiCalls.length = 0;
+    await scan(ghStub(stubOptions), makeRecordingLogger(), stateDir, 3);
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")), []);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - an exhausted check refused for the first time warns once and requests fresh CI (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-cap-first-" });
+  try {
+    await Deno.writeTextFile(`${stateDir}/org_repo_1.retries`, "3");
+    const gitApiCalls: string[][] = [];
+    const logger = makeRecordingLogger();
+    await scan(
+      ghStub({
+        redChecks: [{ id: 1, name: "Job A", conclusion: "failure" }],
+        jobs: [{
+          id: 1,
+          run_id: 902,
+          conclusion: "failure",
+          steps: [{ name: "tests", conclusion: "failure" }],
+        }],
+        reruns: [],
+        rerunError: () =>
+          "gh command failed (exit 1): This workflow run cannot be retried",
+        gitApiCalls,
+      }),
+      logger,
+      stateDir,
+      3,
+    );
+    assertEquals(
+      logger.warns.filter((m) => m.includes("exceeded max retries")).length,
+      1,
+    );
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")).length, 1);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a refused infrastructure run requests fresh CI once per head (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-fresh-" });
+  try {
+    const posted: Array<{ id: number; body: string }> = [];
+    const gitApiCalls: string[][] = [];
+    const stubOptions = {
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns: [] as string[][],
+      rerunError: () => "This workflow run cannot be retried",
+      postedComments: posted,
+      gitApiCalls,
+    };
+    await scan(ghStub(stubOptions), makeRecordingLogger(), stateDir);
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")).length, 1);
+    await scan(ghStub(stubOptions), makeRecordingLogger(), stateDir);
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")).length, 1);
   } finally {
     await Deno.remove(stateDir, { recursive: true });
   }
@@ -829,6 +1065,113 @@ Deno.test("rerunInfrastructureChecks - an unevaluable fleet bound stands the rer
   );
 });
 
+Deno.test("rerunInfrastructureChecks - permanent refusal is remembered across scans", async () => {
+  const logger = makeRecordingLogger();
+  const calls: string[][] = [];
+  const comments: Array<{ id: number; body: string }> = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "run" && args[1] === "rerun") {
+      return Promise.reject(
+        new Error(
+          "gh command failed (exit 1): This workflow run cannot be retried",
+        ),
+      );
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      comments.push({
+        id: comments.length + 1,
+        body: args[args.indexOf("--body") + 1] ?? "",
+      });
+      return Promise.resolve("");
+    }
+    return Promise.resolve("");
+  };
+  const options = {
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    headSha: HEAD_SHA,
+    infrastructure: [{
+      id: 1,
+      name: "Job A",
+      reason: "cancelled" as const,
+      runId: 901,
+    }],
+    codeRunIds: new Set<number>(),
+    ghCommandFn: gh,
+    logger,
+  };
+  await rerunInfrastructureChecks({
+    ...options,
+    fleetMarkers: emptyFleetMarkers(),
+  });
+  const freshMarkers = collectFleetCiFixMarkers(
+    comments.map((entry) => ({
+      ...entry,
+      author: "testbot",
+      createdAt: "2026-10-31T00:00:00Z",
+    })),
+    ["testbot"],
+    () => {},
+  );
+  await rerunInfrastructureChecks({ ...options, fleetMarkers: freshMarkers });
+
+  assertEquals(calls.filter((args) => args[0] === "run").length, 1);
+  assertEquals(
+    comments.some((entry) => entry.body.includes("vibe-ci-rerun-refused")),
+    true,
+  );
+  assertEquals(
+    logger.warns.filter((message) => message.includes("permanently refused"))
+      .length,
+    1,
+  );
+});
+
+Deno.test("rerunInfrastructureChecks - refusal marker persistence failure is explicit and retryable", async () => {
+  const logger = makeRecordingLogger();
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "run" && args[1] === "rerun") {
+      return Promise.reject(
+        new Error("This workflow run cannot be retried"),
+      );
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      return Promise.reject(new Error("comment write unavailable"));
+    }
+    return Promise.resolve("");
+  };
+  const options = {
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    headSha: HEAD_SHA,
+    infrastructure: [{
+      id: 1,
+      name: "Job A",
+      reason: "cancelled" as const,
+      runId: 902,
+    }],
+    codeRunIds: new Set<number>(),
+    fleetMarkers: emptyFleetMarkers(),
+    ghCommandFn: gh,
+    logger,
+  };
+
+  await rerunInfrastructureChecks(options);
+  await rerunInfrastructureChecks(options);
+
+  assertEquals(calls.filter((args) => args[0] === "run").length, 2);
+  assertEquals(
+    logger.errors.filter((message) =>
+      message.includes("Could not persist permanent rerun refusal") &&
+      message.includes("comment write unavailable")
+    ).length,
+    2,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Startup-failed Actions suites (Issue #4347)
 // ---------------------------------------------------------------------------
@@ -1094,7 +1437,9 @@ Deno.test("startup suite rerun - unavailable workflows and rejected reruns never
     const calls: string[][] = [];
     const run = await rerunFailedJobsOfCheck({
       repo: REPO,
+      prNumber: PR_NUMBER,
       checkId: "suite-77",
+      fleetMarkers: emptyFleetMarkers(),
       logger: makeRecordingLogger(),
       ghCommandFn: (args) => {
         calls.push(args);
@@ -1113,7 +1458,7 @@ Deno.test("startup suite rerun - unavailable workflows and rejected reruns never
         return Promise.reject(new Error("rerun unavailable"));
       },
     });
-    assertEquals(run, null);
+    assertEquals(run.outcome, unavailable ? "unresolved" : "transient-failure");
     assertEquals(
       calls.some((args) => args.some((arg) => arg.includes("actions/jobs/"))),
       false,
@@ -1123,4 +1468,103 @@ Deno.test("startup suite rerun - unavailable workflows and rejected reruns never
       unavailable ? [] : [["run", "rerun", "99", "--repo", REPO]],
     );
   }
+});
+
+Deno.test("rerunFailedJobsOfCheck - permanent GitHub refusal is attempted once across freshly loaded marker scans (Issue #4497)", async () => {
+  const comments: Array<{ id: number; body: string }> = [];
+  const calls: string[][] = [];
+  const logger = makeRecordingLogger();
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "api" && args[1] === `repos/${REPO}/actions/jobs/111`) {
+      return Promise.resolve(
+        JSON.stringify({ run_id: 40637798711, steps: [] }),
+      );
+    }
+    if (args[0] === "run" && args[1] === "rerun") {
+      return Promise.reject(
+        new Error(
+          "gh command failed (exit 1): run 40637798711 cannot be rerun; " +
+            "This workflow run cannot be retried (Issue #2914)",
+        ),
+      );
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      comments.push({
+        id: comments.length + 1,
+        body: args[args.indexOf("--body") + 1] ?? "",
+      });
+      return Promise.resolve("");
+    }
+    return Promise.resolve("");
+  };
+
+  await rerunFailedJobsOfCheck({
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    checkId: "111",
+    fleetMarkers: emptyFleetMarkers(),
+    ghCommandFn: gh,
+    logger,
+  });
+  const freshMarkers = collectFleetCiFixMarkers(
+    comments.map((entry) => ({
+      ...entry,
+      author: "testbot",
+      createdAt: "2026-10-31T00:00:00Z",
+    })),
+    ["testbot"],
+    () => {},
+  );
+  await rerunFailedJobsOfCheck({
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    checkId: "111",
+    fleetMarkers: freshMarkers,
+    ghCommandFn: gh,
+    logger,
+  });
+
+  assertEquals(calls.filter((args) => args[0] === "run").length, 1);
+  assertEquals(
+    logger.warns.filter((message) => message.includes("permanently refused"))
+      .length,
+    1,
+  );
+  assertEquals(
+    comments.some((comment) => comment.body.includes("vibe-ci-rerun-refused")),
+    true,
+  );
+});
+
+Deno.test("rerunFailedJobsOfCheck - transient refusal remains retryable", async () => {
+  let attempts = 0;
+  const logger = makeRecordingLogger();
+  const gh = (args: string[]): Promise<string> => {
+    if (args[0] === "api") {
+      return Promise.resolve(JSON.stringify({ run_id: 333, steps: [] }));
+    }
+    if (args[0] === "run") {
+      attempts++;
+      return Promise.reject(new Error("temporary GitHub API outage"));
+    }
+    return Promise.resolve("");
+  };
+  const options = {
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    checkId: "111",
+    fleetMarkers: emptyFleetMarkers(),
+    ghCommandFn: gh,
+    logger,
+  };
+  assertEquals(
+    (await rerunFailedJobsOfCheck(options)).outcome,
+    "transient-failure",
+  );
+  assertEquals(
+    (await rerunFailedJobsOfCheck(options)).outcome,
+    "transient-failure",
+  );
+  assertEquals(attempts, 2);
 });

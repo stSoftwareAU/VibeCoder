@@ -10,7 +10,15 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { mergedPrIssueSweepCommand } from "../commands/merged_pr_issue_sweep.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { MergedPrIssueSweepResult } from "../lib/merged_pr_issue_sweep.ts";
 import {
   _resetGhSpawnRunner,
   _setGhSpawnRunner,
@@ -28,7 +36,10 @@ import {
   primaryQuotaLatchedUntil,
 } from "../lib/primary_quota_latch.ts";
 import { readRateLimitSignal } from "../lib/rate_limit_signal.ts";
-import { isGraphqlQuotaProbe } from "../lib/graphql_quota_probe.ts";
+import {
+  isGraphqlQuotaProbe,
+  probeGraphqlQuota,
+} from "../lib/graphql_quota_probe.ts";
 
 const RATE_LIMIT_MSG = "GraphQL: API rate limit already exceeded for user";
 
@@ -46,6 +57,168 @@ function rateLimitDoc(reset: number): string {
     resources: { graphql: { reset, remaining: 0 }, core: { reset } },
   });
 }
+
+Deno.test("chokepoint - a standalone Forbidden quota probe latches without recursive probing", async () => {
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "standalone_probe_" });
+  const now = Math.floor(Date.now() / 1000);
+  const seen: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push([...args]);
+    return Promise.resolve(
+      fail('Post "https://api.github.com/graphql": Forbidden'),
+    );
+  });
+  try {
+    const result = await probeGraphqlQuota((args) =>
+      spawnGh(args, { bypassQuotaLatch: true, workDir })
+    );
+    assertEquals(result.ok, false);
+    assertEquals(seen.length, 1);
+    assertEquals(isGraphqlQuotaProbe(seen[0]!), true);
+    assert(isPrimaryQuotaLatched());
+    const until = primaryQuotaLatchedUntil();
+    assert(
+      until !== null && until > now &&
+        until <= now + SECONDARY_LIMIT_BACKOFF_SECONDS + 2,
+    );
+    await assertRejects(
+      () => runGhCommandRaw(["pr", "list", "--repo", "org/repo"]),
+      Error,
+      "secondary rate limit cool-down",
+    );
+    assertEquals(
+      seen.length,
+      1,
+      "the refusal must neither re-probe nor spawn later GraphQL calls",
+    );
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("merged-pr sweep command - a first Forbidden preflight probe stops before repos despite healthy REST quota", async () => {
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "sweep_probe_forbidden_" });
+  const seen: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push([...args]);
+    if (isGraphqlQuotaProbe(args)) {
+      return Promise.resolve(
+        fail('Post "https://api.github.com/graphql": Forbidden'),
+      );
+    }
+    if (args[0] === "api" && args[1] === "rate_limit") {
+      return Promise.resolve(ok(JSON.stringify({
+        resources: {
+          graphql: {
+            limit: 5000,
+            used: 0,
+            remaining: 5000,
+            reset: Math.floor(Date.now() / 1000) + 3600,
+          },
+        },
+      })));
+    }
+    return Promise.resolve(ok("[]"));
+  });
+  try {
+    const result = await mergedPrIssueSweepCommand.execute(
+      { "github-user": "vibe-bot" },
+      {
+        ...buildDefaultWorkerConfig(),
+        workDir,
+        repos: ["org/first", "org/next"],
+      },
+    );
+    assertEquals(result.success, true);
+    assertEquals(seen.filter((args) => isGraphqlQuotaProbe(args)).length, 1);
+    assertEquals(
+      seen.filter((args) => args[0] === "api" && args[1] === "rate_limit")
+        .length,
+      1,
+    );
+    assertEquals(
+      seen.length,
+      2,
+      "no repository request may follow the preflight refusal",
+    );
+    const data = result.data as MergedPrIssueSweepResult | undefined;
+    assertEquals(data?.reposSkipped, 2);
+    assertEquals(data?.failures, []);
+    assertStringIncludes(
+      data?.quotaExhausted ?? "",
+      "secondary rate limit cool-down",
+    );
+    assertStringIncludes(result.message ?? "", "secondary rate limit");
+    const signal = await readRateLimitSignal(workDir);
+    assert(
+      signal.ok,
+      "preflight must publish the cool-down in the command's work directory",
+    );
+    assertEquals(signal.value.kind, "github");
+    assertEquals(signal.value.waitSeconds, SECONDARY_LIMIT_BACKOFF_SECONDS);
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("merged-pr sweep command - an ordinary probe failure still permits a healthy REST fallback and both repos", async () => {
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "sweep_probe_fault_" });
+  const seen: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push([...args]);
+    if (isGraphqlQuotaProbe(args)) {
+      return Promise.resolve(fail("HTTP 500: Internal Server Error"));
+    }
+    if (args[0] === "api" && args[1] === "rate_limit") {
+      return Promise.resolve(ok(JSON.stringify({
+        resources: {
+          graphql: {
+            limit: 5000,
+            remaining: 5000,
+            reset: Math.floor(Date.now() / 1000) + 3600,
+          },
+        },
+      })));
+    }
+    return Promise.resolve(ok("[]"));
+  });
+  try {
+    const result = await mergedPrIssueSweepCommand.execute(
+      { "github-user": "vibe-bot" },
+      {
+        ...buildDefaultWorkerConfig(),
+        workDir,
+        repos: ["org/first", "org/next"],
+      },
+    );
+    const data = result.data as MergedPrIssueSweepResult | undefined;
+    assertEquals(result.success, true);
+    assertEquals(data?.reposSkipped, 0);
+    assertEquals(data?.quotaExhausted, undefined);
+    assertEquals(data?.failures, []);
+    assertEquals(isPrimaryQuotaLatched(), false);
+    assertEquals(seen.filter((args) => isGraphqlQuotaProbe(args)).length, 1);
+    for (const repo of ["org/first", "org/next"]) {
+      assert(
+        seen.some((args) =>
+          args[0] === "issue" && args[1] === "list" && args.includes(repo)
+        ),
+      );
+    }
+    assertEquals((await readRateLimitSignal(workDir)).ok, false);
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
 
 Deno.test("chokepoint - a latched GraphQL call short-circuits without spawning", async () => {
   clearPrimaryQuotaLatch();
@@ -473,6 +646,53 @@ Deno.test("chokepoint #1888 - a refusal on the window boundary latches for the s
     if (signal.ok) {
       assert(signal.value.waitSeconds <= SECONDARY_LIMIT_BACKOFF_SECONDS);
     }
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("chokepoint - a Forbidden quota probe after a rate-limit refusal engages the secondary cool-down", async () => {
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "quota_latch_forbidden_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  const seen: string[] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push(args.join(" "));
+    if (isGraphqlQuotaProbe(args)) {
+      return Promise.resolve(
+        fail('Post "https://api.github.com/graphql": Forbidden'),
+      );
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+
+  try {
+    await assertRejects(
+      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"], { workDir }),
+      Error,
+      "already exceeded",
+    );
+
+    assertEquals(seen.length, 2, "the probe refusal is the observed signal");
+    assert(isPrimaryQuotaLatched(nowSec));
+    const until = primaryQuotaLatchedUntil();
+    assert(until !== null);
+    assert(
+      until <= nowSec + SECONDARY_LIMIT_BACKOFF_SECONDS + 2,
+      `cool-down lasted ${until - nowSec}s instead of one minute`,
+    );
+    const signal = await readRateLimitSignal(workDir);
+    assert(signal.ok, "the shared pause signal should be written");
+    if (signal.ok) {
+      assert(signal.value.waitSeconds <= SECONDARY_LIMIT_BACKOFF_SECONDS);
+    }
+    assertEquals(
+      isPrimaryQuotaLatched(nowSec + SECONDARY_LIMIT_BACKOFF_SECONDS + 1),
+      false,
+      "the latch recovers once the short cool-down expires",
+    );
   } finally {
     _resetGhSpawnRunner();
     clearPrimaryQuotaLatch();

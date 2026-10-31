@@ -6,6 +6,7 @@ import {
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
 import {
+  babysitterRtkInstruction,
   cloneForRepair,
   eligibleAuthor,
   reason,
@@ -30,6 +31,27 @@ Deno.test("failed clone is attempted once and preserves its original error", asy
     "clone timed out",
   );
   assertEquals(attempts, 1);
+});
+
+Deno.test("babysitter supplies RTK guidance only when its probe succeeds", async () => {
+  const present: Parameters<typeof babysitterRtkInstruction>[0] = async () => ({
+    ok: true,
+    value: {
+      success: true,
+      code: 0,
+      stdout: "rtk 1",
+      stderr: "",
+      timedOut: false,
+    },
+  });
+  const absent: Parameters<typeof babysitterRtkInstruction>[0] = async () => ({
+    ok: false,
+    error: new Error("missing"),
+  });
+  const instructions = await babysitterRtkInstruction(present);
+  assert(instructions.includes("each command in a chain"));
+  assert(instructions.includes("rtk recall"));
+  assertEquals(await babysitterRtkInstruction(absent), "");
 });
 
 const pr = {

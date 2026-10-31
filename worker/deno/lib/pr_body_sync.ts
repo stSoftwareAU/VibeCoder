@@ -83,6 +83,7 @@ import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
   withholdIssueClose,
+  withholdsIssueClose,
 } from "./missing_criterion_close_guard.ts";
 import { GITHUB_ISSUE_BODY_MAX_CHARS } from "./idle_task_body_limit.ts";
 import {
@@ -184,8 +185,9 @@ export function assemblePrBody(input: {
   let body = summaryContent
     ? summaryContent + "\n\n"
     : `## Summary\n\nCloses #${input.issueNumber}.\n\n`;
-  const missing = findMissingCriteria(input.summaryContent);
-  if (missing.length > 0) {
+  const withholdClose = withholdsIssueClose(input.summaryContent);
+  if (withholdClose) {
+    const missing = findMissingCriteria(input.summaryContent);
     body = withholdIssueClose(body, input.issueNumber) +
       buildMissingCriteriaPrNote(input.issueNumber, missing) + "\n";
   }
@@ -200,7 +202,7 @@ export function assemblePrBody(input: {
   if (input.assignmentId !== undefined) {
     body += "\n" + buildAssignmentIdMarker(input.assignmentId);
   }
-  if (missing.length > 0) return body;
+  if (withholdClose) return body;
   return ensureReferences(body, input.issueNumber);
 }
 

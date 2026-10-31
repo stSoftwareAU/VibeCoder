@@ -51,6 +51,28 @@ Deno.test("pr creation - a secondary-limit refusal is retried in minutes, not se
   assertEquals(clock.slept, [60_000, 120_000]);
 });
 
+Deno.test("pr creation - a bare GraphQL Forbidden uses the secondary-limit retry", async () => {
+  const clock = fakeClock();
+  let calls = 0;
+  const attempt = await createPrWithSecondaryLimitBackoff({
+    createPr: () => {
+      calls++;
+      if (calls === 1) {
+        return Promise.reject(
+          new Error('Post "https://api.github.com/graphql": Forbidden'),
+        );
+      }
+      return Promise.resolve("https://github.com/o/r/pull/11");
+    },
+    sleepFn: clock.sleepFn,
+    nowMs: clock.nowMs,
+  });
+
+  assertEquals(attempt.kind, "created");
+  assertEquals(calls, 2);
+  assertEquals(clock.slept, [60_000]);
+});
+
 Deno.test("pr creation - Retry-After is honoured over the default step", async () => {
   const clock = fakeClock();
   let calls = 0;
