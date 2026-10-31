@@ -73,8 +73,10 @@ forwarding removed the test fails on the healthy-run `success` assertion; with
 
 - `tests/egress_selfcheck_test.ts` (11 tests at head) and
   `tests/run_worker_test.ts` (35 tests at head) together: 46 passed, 0 failed.
-- The worker test's prior warning/error sink assertions are replaced by stronger
-  assertions on the actual formatted severity for the same markers; its exit,
-  work-order, cleanup and persisted-record checks remain.
+- The Apple worker test keeps the production logging adapters and newly checks a
+  WARNING `[EGRESS-NOT-ENFORCED]` line, an ERROR `[EGRESS-SELFCHECK-FAILED]`
+  line only for a broken launch, no ERROR on a healthy launch, cleanup, and no
+  github-user call on failure. The dialect test captures the marker from
+  `logWarning` and checks that `logError` receives nothing.
 - `deno fmt`, `deno lint` and `deno check --frozen --lock=deno.lock` passed for
   the TypeScript files this PR changes.
