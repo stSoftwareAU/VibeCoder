@@ -60,8 +60,8 @@ flowchart TD
 
 Docs: grepped `README.md` and `docs/` (excluding `docs/archive/`) for
 `Not closing`, `did not land`, `Issue #4396`, `Issue #3177`. No sentence says
-these warn each cycle; the one doc edit is `docs/INTERNALS.md:402-405`, which
-now describes the held-open-pair WARNING/DEBUG behaviour and the
+these warn each cycle; the one doc edit is in `docs/INTERNALS.md`, which
+describes the WARNING/DEBUG behaviour of `ensureIssueClosedIfPrMerged` and the
 `decision_warn_signatures.json` file. Related sentence read and still true:
 `docs/workflows/issue-processing.md:1077` ("log the missing criteria").
 
