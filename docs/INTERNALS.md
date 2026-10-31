@@ -399,7 +399,10 @@ bash `worker/run_core.sh` conductor. It sequences:
    `## Acceptance Criteria` block marks any criterion `missing` used to close
    its issue as completed. The issue stays open with its existing labels so the worker can finish
    it. Both closers record the missing criteria in their diagnostic output;
-   they neither apply `needs-human` nor post repeated hand-off comments.
+   they neither apply `needs-human` nor post repeated hand-off comments. A
+   held-open pair is logged at WARNING once per verdict; an unchanged repeat,
+   including the one the next hourly worker start produces, is logged at DEBUG
+   (`decision_warn_signatures.json` in the work directory, Issue #4495).
    The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.

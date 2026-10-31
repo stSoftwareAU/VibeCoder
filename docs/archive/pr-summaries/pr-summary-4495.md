@@ -12,9 +12,12 @@ inputs change, and log an unchanged repeat at DEBUG. Closes #4495.
 - A repeated identical decision is not actionable; ~380 of ~985 WARNING/ERROR
   lines a day buried the warnings that need action. The decision itself (issue
   stays open) is unchanged.
-- A small process-lifetime signature map follows the existing pattern in
-  `pr_branch_update.ts` (`shouldWarnPrConflictOnce`) rather than adding
-  persisted state.
+- A worker process lasts about an hour (`runDurationSeconds`, default 3600) and
+  every start re-runs the merged-PR issue sweep, which re-checks each held-open
+  pair once. An in-memory map alone would therefore warn once per process, i.e.
+  roughly once per pair per hour — the repeat rate the issue reports (PR #4535
+  review). The last signature per key is kept in a small JSON file on the work
+  volume, so the first sighting in a new process is a DEBUG repeat.
 
 ### Essential Design Decisions
 
@@ -25,8 +28,18 @@ inputs change, and log an unchanged repeat at DEBUG. Closes #4495.
   the sorted `missing` set.
 - `ensureIssueClosedIfPrMerged` and `closeIssuesForMergedPrs` share the
   did-not-land key, so one pair warns once whichever path sees it first.
-- State is process-lifetime: a worker restart reports each pair once again. An
+- State survives a restart: `configureDecisionWarnStore(workDir)` (called from
+  the production `runHousekeeping` dep in `lib/run_worker.ts`, before the sweep)
+  loads `<workDir>/decision_warn_signatures.json`; a signature change rewrites
+  it tempfile-then-rename. The directory is passed in, never read from
+  `WORK_DIR`, so a suite that does not configure it cannot touch the live
+  file (Issue #1177); with no store configured the map is memory-only. An
   A→B→A change warns on each change.
+- Bounded: an entry not seen for 7 days is dropped (on load and on every
+  write); an unchanged sighting re-stamps its entry once a day, so a pair still
+  being re-checked is kept and a closed issue's pair ages out.
+- A missing file reads as empty; a corrupt or unreadable one, or a failed write,
+  is logged at WARNING and degrades to memory-only — it never throws.
 
 ### Undiscoverable Facts
 
@@ -70,10 +83,14 @@ call the real function.
 
 Added:
 
-- `worker/deno/tests/decision_warn_dedup_test.ts`: 4 helper tests (first
-  sighting, changed signature, independent keys, reset).
+- `worker/deno/tests/decision_warn_dedup_test.ts`: 9 tests (first sighting,
+  changed signature, independent keys, reset; restart with an unchanged then a
+  changed signature; no store means a restart warns again; 7-day age-out and
+  daily refresh; corrupt store; prototype-key and malformed entries).
 - `worker/deno/tests/issue_lifecycle_test.ts`: unchanged did-not-land verdict
-  warns once across two cycles; a changed reason or PR number warns again; the
+  warns once across two cycles; the same verdict warns once across a simulated
+  worker restart (memory reset, store reloaded) and a changed reason after the
+  restart warns again; a changed reason or PR number warns again; the
   WARNING and its DEBUG repeat carry `repo`, `issueNumber`, `prNumber` and
   `reason` in their context.
 - `worker/deno/tests/missing_criterion_close_guard_3177_test.ts`: unchanged
@@ -93,27 +110,31 @@ Mutation follow-up: the surviving mutants (the four context properties at
 `logger.debug` call at `pr_maintenance.ts:2659`) are killed by the two new
 context tests; each was re-applied by hand and the matching test went red.
 
+Persistence red checks (PR #4535 review), each reverted after: skipping
+`loadStore` → 5 tests red; skipping the write on a changed signature → 3 red;
+disabling `pruneStale` → the age-out test red; disabling the daily re-stamp →
+the age-out test red. Production wiring (`configureDecisionWarnStore` in
+`run_worker.ts`'s `runHousekeeping` dep): exempt (untestable): the dep runs the
+full startup housekeeping; the `run_worker*` tests (grep `runHousekeeping` in
+`worker/deno/tests`) stub it, so none reaches the real closure.
+
 Red checks: `shouldWarnDecision` forced to return true → the 4 helper tests and
 the 6 site tests go red (two identical warn lines instead of one). Base-branch
 production files with the new tests → 6 site tests red (above). Results on the
-final head: `deno task test:unit` over 9 files (the three above,
-`issue_lifecycle_cache_test.ts`, `pr_maintenance_issue_state_cache_test.ts`,
-`merged_pr_issue_sweep_test.ts`, `merged_pr_precheck_phase_test.ts`,
-`completion_phase_merged_pr_closure_test.ts`, `decision_warn_dedup_test.ts`):
-211 passed, 0 failed. `deno fmt`, `deno lint`, `deno check` clean on the 7
-files.
+final head (after the PR #4535 review fix): `deno task test:unit` over 10
+files (`issue_lifecycle_test.ts`, `missing_criterion_close_guard_3177_test.ts`,
+`pr_maintenance_test.ts`, `issue_lifecycle_cache_test.ts`,
+`pr_maintenance_issue_state_cache_test.ts`, `merged_pr_issue_sweep_test.ts`,
+`merged_pr_precheck_phase_test.ts`, `completion_phase_merged_pr_closure_test.ts`,
+`decision_warn_dedup_test.ts`, `run_worker_test.ts`): 254 passed, 0 failed.
+`deno fmt --check`, `deno lint`, `deno check` clean on the 4 changed `.ts` files
+this round.
 
 Twinned copies: the did-not-land message is logged at two sites
 (`issue_lifecycle.ts`, `pr_maintenance.ts`); both changed and share a key.
 
-`./quality.sh` on this head: every stage passed except `deno tests`, which
-failed only on two tests in
-`worker/deno/tests/completion_phase_repo_formatters_test.ts` ("an unformatted
-Rust change is formatted and committed, then passes the gate" and "cargo fmt
-stages only the branch's .rs files, not an unrelated uncommitted edit"; 31,133
-other tests passed). That file does not import any module this PR changes; I did
-not run those two tests against the base branch, and the serial pass did not run
-because the parallel pass failed. The first gate run also flagged the new module
-as unclaimed by the lib sweep ledger; fixed by
-`docs/audits/lib-sweep-coverage/top-up-4495.json` (`lib_sweep_coverage_test.ts`
-39 passed, `deno task check:manifests` passed).
+`./quality.sh`: the earlier head's run (before the PR #4535 review fix) passed
+every stage except two unrelated tests in
+`worker/deno/tests/completion_phase_repo_formatters_test.ts`; it was not re-run
+on this head. The lib sweep ledger entry is
+`docs/audits/lib-sweep-coverage/top-up-4495.json`.

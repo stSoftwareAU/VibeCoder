@@ -47,6 +47,7 @@ import {
   type BootstrapResult,
   runBootstrap,
 } from "./run_bootstrap.ts";
+import { configureDecisionWarnStore } from "./decision_warn_dedup.ts";
 import {
   type HousekeepingOptions,
   runSignalCleanup,
@@ -518,6 +519,9 @@ export function createDefaultRunWorkerDeps(
       }
     },
     runHousekeeping: async (options, config) => {
+      // Issue #4495: keep "Not closing" decision signatures on the work volume
+      // so the hourly restart does not re-warn about every held-open pair.
+      configureDecisionWarnStore(options.workDir);
       await runStartupHousekeeping(options, config);
     },
     runMainLoop: async ({ repoDir, workDir, githubUser, config }) => {

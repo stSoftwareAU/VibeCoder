@@ -14,7 +14,10 @@ import {
   hasIssueChangeLandedOnBranch,
   unassignAfterPrCreated,
 } from "../lib/issue_lifecycle.ts";
-import { resetDecisionWarnings } from "../lib/decision_warn_dedup.ts";
+import {
+  configureDecisionWarnStore,
+  resetDecisionWarnings,
+} from "../lib/decision_warn_dedup.ts";
 import type { Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1000,6 +1003,47 @@ Deno.test("ensureIssueClosedIfPrMerged - an unchanged did-not-land verdict warns
     1,
     JSON.stringify(debugs),
   );
+});
+
+Deno.test("ensureIssueClosedIfPrMerged - an unchanged did-not-land verdict warns once across a worker restart (PR #4535 review)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-decision-warn-" });
+  try {
+    const { logger, warns, debugs } = recordingLogger();
+    const cycle = (reason: "orphaned" | "unknown") =>
+      ensureIssueClosedIfPrMerged("org/repo", 3339, 3371, "testbot", {
+        ghCommandFn: mergedPrGh,
+        logger,
+        verifyMergeLandedFn: unlandedVerifier(reason),
+      });
+    const countWarns = () =>
+      warns.filter((w) => w.includes("did not land")).length;
+
+    // Process one: first sighting warns.
+    resetDecisionWarnings();
+    configureDecisionWarnStore(workDir);
+    await cycle("orphaned");
+    assertEquals(countWarns(), 1);
+
+    // Process two starts with empty memory; the store carries the verdict.
+    resetDecisionWarnings();
+    configureDecisionWarnStore(workDir);
+    await cycle("orphaned");
+    assertEquals(countWarns(), 1, JSON.stringify(warns));
+    assertEquals(
+      debugs.filter((d) => d.includes("did not land")).length,
+      1,
+      JSON.stringify(debugs),
+    );
+
+    // Process three sees a changed reason and warns again.
+    resetDecisionWarnings();
+    configureDecisionWarnStore(workDir);
+    await cycle("unknown");
+    assertEquals(countWarns(), 2, JSON.stringify(warns));
+  } finally {
+    resetDecisionWarnings();
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("ensureIssueClosedIfPrMerged - a changed did-not-land reason or PR number warns again (Issue #4495)", async () => {
