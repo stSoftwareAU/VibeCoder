@@ -21,7 +21,10 @@ import {
   workerGateCategoryOf,
 } from "./failure_diagnosis.ts";
 import { brokenRefsIn } from "./broken_ref_repair.ts";
+import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 import { isObjectStoreCorruption } from "./object_store_repair.ts";
+
+export { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
 
 /** The narrow set of host/infrastructure fault kinds this module detects. */
 export const HOST_FAULT_KINDS = [
@@ -47,16 +50,18 @@ export function isHostFaultKind(value: string): value is HostFaultKind {
  * The park note is the worker's own words when it stops a build at the floor.
  * The floor sentence itself (`host disk below its floor`) is the same stop
  * when a caller quotes `judgeHostDiskForBuild` without the park note
- * (Issue #4388). A worker-gate marker is still excluded by
- * {@link detectHostFault} before this pattern runs, so a gate that quotes
- * the same text stays an issue failure.
+ * (Issue #4388). These two protective-stop wordings share a narrow matcher
+ * with the run-failure classifier. A worker-gate marker is still excluded by
+ * {@link detectHostFault} before either disk matcher runs, so a gate that
+ * quotes the same text stays an issue failure.
  */
 const DISK_FULL_PATTERN =
-  /No space left on device|\bENOSPC\b|Read-only file system|\bos error 30\b|Parked as infrastructure \(Issue #4360\)|host disk below its floor/i;
+  /No space left on device|\bENOSPC\b|Read-only file system|\bos error 30\b/i;
 
 /** Whether `message` is the host running out of disk, including the read-only fallout. */
 export function isHostDiskFaultText(message: string): boolean {
-  return DISK_FULL_PATTERN.test(message);
+  return DISK_FULL_PATTERN.test(message) ||
+    isHostDiskProtectiveStopText(message);
 }
 
 /**
@@ -139,7 +144,9 @@ export function detectHostFault(
   ) {
     return "clone-corrupt";
   }
-  if (DISK_FULL_PATTERN.test(message)) {
+  if (
+    DISK_FULL_PATTERN.test(message) || isHostDiskProtectiveStopText(message)
+  ) {
     return "disk-full";
   }
   if (CONTAINER_BUILD_FAILED_PATTERN.test(message)) {
