@@ -191,6 +191,19 @@ export const PROVIDER_EGRESS_RULES: Readonly<
       provider: CODEX_PROVIDER_ID,
       reason: "Codex backend for ChatGPT plans",
     },
+    {
+      host: "ab.chatgpt.com",
+      purpose: "agent-provider",
+      provider: CODEX_PROVIDER_ID,
+      reason: "Codex CLI experiment and feature flags",
+    },
+    {
+      host: "*.oaiusercontent.com",
+      purpose: "agent-provider",
+      provider: CODEX_PROVIDER_ID,
+      reason:
+        "ChatGPT file storage the Codex backend hands out signed URLs for",
+    },
   ],
   [GEMINI_PROVIDER_ID]: [
     {
