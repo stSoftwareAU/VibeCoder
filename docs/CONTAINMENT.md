@@ -615,6 +615,7 @@ other Azure accounts remain outside the built-in allowlist.
 | `pypi.org` | Registry | always | Python package index |
 | `files.pythonhosted.org` | Registry | always | Python package files |
 | `static.rust-lang.org` | Registry | always | Rust toolchain downloads |
+| `dl.deno.land` | Registry | always | Deno release downloads |
 | `cdn.playwright.dev` | Registry | always | Playwright browser downloads |
 | `semgrep.dev` | Registry | always | Semgrep `p/default` rules for the quality gate's SAST stage (Issue #4412) |
 | `api.anthropic.com` | Agent provider | `claude` provider enabled | Messages API |

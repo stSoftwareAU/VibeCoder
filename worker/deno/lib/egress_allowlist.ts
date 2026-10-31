@@ -98,6 +98,13 @@ export const BUILTIN_EGRESS_RULES: readonly EgressHostRule[] = [
     reason: "Deno standard library and third-party modules",
   },
   {
+    // `deno upgrade <version>` and `deno compile` (its `denort` runtime)
+    // download Deno release binaries from here (Issue #4566).
+    host: "dl.deno.land",
+    purpose: "registry",
+    reason: "Deno release downloads",
+  },
+  {
     // Deno projects import npm packages as ES modules from here; refused,
     // their `deno task check` fails on every merge (GRQ-AutoTrader `web/`).
     host: "esm.sh",
