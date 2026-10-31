@@ -66,9 +66,9 @@ Backend-only change. The tests call `classifyRunFailure` and
   — passed, 121 passed and 0 failed.
 - Targeted `deno fmt --check`, `deno lint`, and `deno check` on the changed
   TypeScript files — passed.
-- `deno task check:manifests` — passed again after the mutation follow-up,
-  846 passed, 0 failed, 1 ignored; includes the `top-up-4526` coverage entry
-  for `host_disk_protective_stop.ts`.
+- `deno task check:manifests` — passed again after the mutation follow-up, 846
+  passed, 0 failed, 1 ignored; includes the `top-up-4526` coverage entry for
+  `host_disk_protective_stop.ts`.
 - The last `./quality.sh < /dev/null` run failed because the new helper lacked
   that library-sweep entry. The entry is now present and `check:manifests`
   passes. The full gate was not rerun after this correction because the three
