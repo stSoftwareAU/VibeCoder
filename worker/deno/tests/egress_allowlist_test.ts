@@ -47,7 +47,13 @@ const PROVIDER_HOSTS: Readonly<Record<string, string[]>> = {
     "console.anthropic.com",
     "platform.claude.com",
   ],
-  codex: ["api.openai.com", "auth.openai.com", "chatgpt.com"],
+  codex: [
+    "api.openai.com",
+    "auth.openai.com",
+    "chatgpt.com",
+    "ab.chatgpt.com",
+    "*.oaiusercontent.com",
+  ],
   gemini: [
     "generativelanguage.googleapis.com",
     "cloudcode-pa.googleapis.com",

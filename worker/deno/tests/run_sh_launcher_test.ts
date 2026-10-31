@@ -2253,6 +2253,30 @@ Deno.test("run.sh - a host still short after the reclaim names its largest direc
   }
 });
 
+Deno.test("run.sh - a host above its claiming floor but short of the cargo build headroom runs the cache reclaim (Issue #4540)", async () => {
+  // 30 GB free against a 15 GB floor: above the floor, short of the floor
+  // plus the 25 GB cargo headroom, where every cargo claim would be parked.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_DF_AVAIL_KB: String(30 * 1024 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const args = await recorded(harness, "reclaim-host-caches");
+    assert(args, "short of the cargo headroom, the reclaim must run");
+    assertStringIncludes(
+      await runCoreLog(harness),
+      "plus the 25600 MB cargo build headroom",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - a host above its claiming floor does not run the cache reclaim (Issue #4498)", async () => {
   // Above the floor nothing is short, so the reclaim is never asked to remove
   // anything - even on the build path, where the pre-build reset is the one
