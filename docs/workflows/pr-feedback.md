@@ -222,7 +222,11 @@ A body raised before the digest marker existed keeps the older rule:
 rebuilt only when this run's own push changed the summary file. Fix branches
 for a gated milestone head are skipped, and only a worker-authored PR is
 edited. A failed sync is logged once at warning and does not fail the run
-(Issue #3089).
+(Issue #3089). A description written outside the worker (no
+`vibe-worker-issue-N` marker, on a branch other than the run's own
+`issue-<N>-…` branch) is never rebuilt; the prompt tells the agent to update
+it with `gh pr edit <n> --body-file <file>` and name that in
+`.pr_response_message` (Issue #4515).
 
 **Priority 1.64 — Reconcile PR Body Digests** (Issue #3760) covers pushes the
 worker did not make. The re-sync above runs only on the worker's own runs (PR
