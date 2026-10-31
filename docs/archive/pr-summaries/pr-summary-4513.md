@@ -23,8 +23,11 @@ the post-#4234 flow. Closes #4513.
 - The comment says the summary "should" close each criterion and that any left
   unclosed is named on the pull request, "which is raised anyway".
 - Only the three log messages the issue names were reworded to "reported
-  findings"; the other "blocked PR creation" messages in `completion_phase.ts`
-  belong to gates that still block and are left alone.
+  findings". The reproduction-status, result-placeholder, mutation, coverage
+  carry-over and pre-PR verifier "blocked PR creation" messages are advisory too
+  (they report through `reportSummaryRuleBlock`, which "neither fails the run
+  nor stops the pull request"); they were left out only because the issue named
+  three. Only the security-fix and changed-workflow gates still end the run.
 
 ### Undiscoverable Facts
 
