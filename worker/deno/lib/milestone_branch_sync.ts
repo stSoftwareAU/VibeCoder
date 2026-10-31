@@ -3235,10 +3235,10 @@ export async function syncMilestoneBranches(
             const judged = judgeSyncFailure(syncResult.error, agentAllowed);
             let entry: SyncStreakEntry | undefined;
             if (streakPath) {
-              entry = judged.reason === AGENT_DEFERRED_CYCLE_BUDGET
-                ? streaks[streakKey] ?? { count: 0, escalated: false }
-                : recordSyncFailure(streaks[streakKey]);
-              streaks[streakKey] = entry;
+              if (judged.reason !== AGENT_DEFERRED_CYCLE_BUDGET) {
+                streaks[streakKey] = recordSyncFailure(streaks[streakKey]);
+              }
+              entry = streaks[streakKey];
               streaksDirty = true;
             }
 

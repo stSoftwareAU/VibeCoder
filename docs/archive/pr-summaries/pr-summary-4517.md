@@ -76,10 +76,9 @@ existing code and docs.
 
 - New `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`, four
   tests for the original change: sweep with ceiling+3 deferrals (no roll-back,
-  `refusedCycles` 0,
-  `conflictAttempts` 0, sync really ran each cycle); presync twin likewise;
-  mixed deferrals and gate refusals (deferrals do not advance the streak; the
-  gate refusal still climbs on the fourth).
+  `refusedCycles` 0, `conflictAttempts` 0, sync really ran each cycle); presync
+  twin likewise; mixed deferrals and gate refusals (deferrals do not advance the
+  streak; the gate refusal still climbs on the fourth).
 - PR #4581 review: short-cycle operator logs distinguish an uncounted agent
   deferral from a counted merge-gate refusal. A fifth test captures both logs
   and checks that the gate refusal advances `refusedCycles`.
@@ -109,16 +108,21 @@ existing code and docs.
 - Edited `worker/deno/tests/milestone_merge_only_4326_test.ts:223`:
   `conclusion.refusal` for an agent-deferred conclusion is now `undefined` (was
   `true`); red check: with `refusal: true` restored it fails.
-- `worker/deno/lib/milestone_branch_sync.ts:3161` exempt (untestable): the
-  `{ count: 0, escalated: false }` fallback is unreachable. Line 3161 sits
-  inside `if (streakPath)`, and the same block has already stored an entry for
-  the key at line 2619 (`?? { count: 0, escalated: false }`) and line 2760
-  (`openConflictAttempt`) before the sync runs, so `streaks[streakKey]` is never
-  undefined there; flipping `false` to `true` was run and no test can go red.
-  Not removed here because this round changes tests and docs only.
-- Passed at the head: `deno task test:unit` over the new 4517 file, the 4328
-  ladder, 4326 merge-only, `milestone_branch_sync` and `milestone_presync` tests
-  (161 passed, 0 failed). `deno fmt`, `deno lint`, `deno check` on the edited
+- PR #4581 review: the `{ count: 0, escalated: false }` fallback the sweep's
+  failure path carried is removed rather than exempted. Inside `if (streakPath)`
+  the pre-merge ledger block has already stored the entry through
+  `openConflictAttempt`, so the failure path now reads `streaks[streakKey]`
+  directly and only calls `recordSyncFailure` when the reason is not
+  `AGENT_DEFERRED_CYCLE_BUDGET`. Red checks on the head: `if (true)` in place of
+  that reason test fails the 4517 file (4 passed, 1 failed); the old
+  `if (!agentAllowed && conflictError)` log guard restored fails the short-cycle
+  log test (4 passed, 1 failed); the gate-refusal log branch disabled
+  (`else if (false && …)`) fails the same test (4 passed, 1 failed).
+- Passed at the head: `deno task test:unit` over
+  `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts` (5 passed,
+  0 failed), `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (38
+  passed, 0 failed) and `worker/deno/tests/milestone_merge_only_4326_test.ts`
+  (20 passed, 0 failed). `deno fmt`, `deno lint`, `deno check` on the edited
   files: clean. Full `./quality.sh` passed through markdownlint, semgrep and the
   release-tag ruleset checks, then timed out at 580 s in the unit-test stage.
 - Push after the `validate-scripts / validate` failure (Summary freshness,
@@ -129,9 +133,9 @@ existing code and docs.
   approach, so `milestone_branch_sync.ts`, `milestone_sync_streak.ts` and the
   4517 test file are identical to the tree this summary already describes (no
   `resolverFailures` field exists). Re-run:
-  `deno task test:unit tests/milestone_cycle_budget_not_counted_4517_test.ts`
-  (4 passed, 0 failed) and `deno task pr-summary-ci` (Summary freshness passes
-  once this summary is the newest change).
+  `deno task test:unit tests/milestone_cycle_budget_not_counted_4517_test.ts` (5
+  passed, 0 failed at the final head) and `deno task pr-summary-ci` (Summary
+  freshness passes once this summary is the newest change).
 - `deno fmt --check` fails on `docs/INTERNALS.md` and
   `docs/workflows/milestones.md` at HEAD for unrelated paragraphs; they were not
   reflowed.
