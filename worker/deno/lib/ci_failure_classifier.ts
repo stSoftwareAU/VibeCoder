@@ -147,9 +147,14 @@ const HISTORY_REWRITE_CHECK_NAMES: ReadonlyArray<string> = [
  * its scanner "security". The fingerprint line is the strongest signal: its
  * `<sha>:<file>:<rule>:<line>` shape names the commit the finding lives in,
  * which is precisely what makes it unfixable by a further commit.
+ *
+ * "leaks found" is deliberately absent (Issue #4506). gitleaks prints
+ * `INF no leaks found` on a clean scan, and `WRN leaks found: 1` from a passing
+ * `--no-git` negative proof, so the bare phrase anywhere in a job log is not a
+ * commit-range finding. Range-scoped findings are recognised by check name
+ * (HISTORY_REWRITE_CHECK_NAMES) or by the fingerprint regex instead.
  */
 const HISTORY_REWRITE_TEXT_PATTERNS: ReadonlyArray<string> = [
-  "leaks found",
   "secrets detected",
   "verified secret",
 ];
