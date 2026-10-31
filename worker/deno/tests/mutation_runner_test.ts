@@ -546,6 +546,19 @@ Deno.test("runMutationCheck deno - a test under test.include is not mutated, tho
   assertEquals(f.calls.length, 0);
 });
 
+Deno.test("runMutationCheck deno - an invalid deno.json fails the check loud, not as an empty config", async () => {
+  const f = withTests(fake(neatFiles("{ not json"), () => ok()), [
+    "test/Neat.ts",
+  ]);
+  const r = await runMutationCheck(
+    { ...input(), diff: diffFor(NEAT_SRC) },
+    f.seams,
+  );
+  assertEquals(r.kind, "error", JSON.stringify(r));
+  assertStringIncludes(r.reason, "deno.json");
+  assertEquals(f.calls.length, 0);
+});
+
 Deno.test("runMutationCheck deno - with a test and its source in the diff, only the source is mutated", async () => {
   const f = withTests(
     fake(neatFiles(), () => ok()),

@@ -200,6 +200,11 @@ Deno.test("resolveImportSpecifier - the longest matching prefix key wins", () =>
   assertEquals(resolveImportSpecifier("@a/c.ts", c, ""), "a/c.ts");
 });
 
+Deno.test("resolveImportSpecifier - a key without a trailing slash is not a prefix", () => {
+  const c = withImports({ "util": "./src/" });
+  assertEquals(resolveImportSpecifier("utility", c, ""), null);
+});
+
 Deno.test("resolveImportSpecifier - a jsr: or npm: target resolves to nothing", () => {
   const c = withImports({
     "@std/assert": "jsr:@std/assert@1",
