@@ -41,6 +41,7 @@ import type {
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
+import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -235,11 +236,13 @@ async function runScenario(options: RunOptions) {
   const workDir = await Deno.makeTempDir();
   try {
     let callCount = 0;
+    const prompts: string[] = [];
     const behaviours = options.runBehaviours ?? ["ok"];
     const mockClaude: Partial<ClaudeDeps> = {
-      runClaudeWithRetry: (async (_opts: { prompt: string }) => {
+      runClaudeWithRetry: (async (opts: { prompt: string }) => {
         const behaviour = behaviours[callCount] ?? "nothing";
         callCount++;
+        prompts.push(opts.prompt);
         if (behaviour === "rebuttal") {
           await Deno.writeTextFile(
             prResponseMessagePath(workDir),
@@ -332,7 +335,7 @@ async function runScenario(options: RunOptions) {
     };
 
     const result = await processPrFeedback(options.input, processorDeps);
-    return { captured, result };
+    return { captured, result, prompts };
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -1031,6 +1034,66 @@ Deno.test("review-fix verifier - recovery must clear before pushing", async () =
       e.startsWith("markCommentProcessed:pr_review:rv-555:addressed")
     ),
     true,
+  );
+});
+
+Deno.test("review-fix verifier - an unavailable verifier does not block: the fix is pushed and addressed, with no failure charged (Issue #4509)", async () => {
+  const events: string[] = [];
+  let checks = 0;
+  const { prompts, result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["ok"],
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 1,
+      finalUnpushedCount: 0,
+    },
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    feedbackVerifierFn: (input, deps) => {
+      checks++;
+      // Real verifyFeedbackFix; only the `pr view` metadata read and the
+      // verifier's own verdict are stubbed.
+      return verifyFeedbackFix(input, {
+        ...deps,
+        runGh: (args) =>
+          args.includes("baseRefName,headRefName,title,body,files")
+            ? Promise.resolve(JSON.stringify({
+              baseRefName: "main",
+              headRefName: "foreign-branch",
+              title: "Review fix",
+              body: "claims",
+              files: [],
+            }))
+            : deps.runGh(args),
+        verify: () =>
+          Promise.resolve({
+            status: "not_checked",
+            reason: "verifier reply was not usable",
+          }),
+      });
+    },
+  });
+
+  assertEquals(checks, 1);
+  // The verifier-recovery turn is identified by its prompt; the in-run
+  // no-change retry (Issue #3246) is a separate path and is not counted.
+  assertEquals(
+    prompts.some((p) => p.includes("review-fix verifier blocked this round")),
+    false,
+    "an unavailable verifier must not trigger a recovery turn",
+  );
+  assertEquals(result.ok && result.value.processed, true);
+  assertEquals(events.filter((e) => e === "commitAndPushPending").length, 1);
+  assertEquals(
+    events.some((e) =>
+      e.startsWith("markCommentProcessed:pr_review:rv-555:addressed")
+    ),
+    true,
+  );
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure:")).length,
+    0,
   );
 });
 

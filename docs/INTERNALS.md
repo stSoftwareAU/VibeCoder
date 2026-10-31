@@ -2269,7 +2269,9 @@ runs the disposable verifier after committing and formatting, before pushing
 (Issue #3784). It supplies the complete earlier problem/Fix pairs and requires
 one evidenced `fixed` verdict per numbered finding. Missing, duplicate,
 `partly` or `not fixed` verdicts become blocking findings. An unavailable
-verifier also blocks this path. One correction turn is allowed; a remaining
+verifier does not block this path: it is logged as not checked, the fix is
+pushed, and the fleet review of the pushed head decides (Issue #4509). One
+correction turn is allowed for a blocked verdict; a remaining
 block keeps the review outstanding and charges a failed attempt. The PR stays
 armed for auto-merge: GitHub holds the merge on the outstanding review, and PRs
 do not merge until they have a review approval and CI is green (Issue #4291).
