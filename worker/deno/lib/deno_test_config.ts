@@ -12,13 +12,13 @@
  *
  * - `test.include` / `test.exclude`, matched against paths relative to the
  *   config's directory, with `*`, `?`, `**` and flat `{a,b}` braces. Negation
- *   (`!`) is refused, not guessed at.
+ *   (`!`) falls back to the suffix rule, with a warning.
  * - `imports`, kept only where the target is a local `./` or `../` path. A
  *   `jsr:`, `npm:` or remote target names no repository file, so it is dropped.
  *
  * Limits: `importMap` files and `scopes` are not read.
  *
- * Pure: no I/O. The caller reads the file and passes its text in.
+ * The caller reads the file and passes its text in.
  *
  * Australian English spelling used throughout.
  */
@@ -53,7 +53,7 @@ function causeOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** A `test.include` or `test.exclude` list: absent is empty, otherwise strings without negation. */
+/** A `test.include` or `test.exclude` list: absent is empty, otherwise strings. */
 function patternList(
   value: unknown,
   field: string,
@@ -63,15 +63,7 @@ function patternList(
   if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) {
     throw new Error(`${source}: ${field} must be an array of strings`);
   }
-  const entries = value as string[];
-  for (const entry of entries) {
-    if (entry.startsWith("!")) {
-      throw new Error(
-        `${source}: ${field} entry "${entry}" is unsupported: negation (!) is not supported`,
-      );
-    }
-  }
-  return entries;
+  return value as string[];
 }
 
 /** The `imports` entries whose target is a local `./` or `../` path. */
@@ -96,8 +88,8 @@ function localImports(value: unknown, source: string): Map<string, string> {
 /**
  * Read the fields the mutation check uses from a `deno.json` / `deno.jsonc`.
  * Empty or whitespace-only text is an empty config. Throws an `Error` naming
- * `source` and the field at fault on invalid JSON, a non-object top level, a
- * wrongly typed field, or a negated (`!`) include or exclude entry.
+ * `source` and the field at fault on invalid JSON, a non-object top level,
+ * or a wrongly typed field. Negated patterns fall back to the suffix rule.
  */
 export function parseDenoProjectConfig(
   text: string,
@@ -120,11 +112,17 @@ export function parseDenoProjectConfig(
     if (block === null) throw new Error(`${source}: test must be an object`);
     test = block;
   }
-  return {
-    include: patternList(test.include, "test.include", source),
-    exclude: patternList(test.exclude, "test.exclude", source),
-    imports: localImports(root.imports, source),
-  };
+  let include = patternList(test.include, "test.include", source);
+  let exclude = patternList(test.exclude, "test.exclude", source);
+  const imports = localImports(root.imports, source);
+  if ([...include, ...exclude].some((entry) => entry.startsWith("!"))) {
+    console.warn(
+      `${source}: negated test patterns are unsupported; using the test filename suffix rule`,
+    );
+    include = [];
+    exclude = [];
+  }
+  return { include, exclude, imports };
 }
 
 /** Segments of a repo-relative path, dropping empty and `.` parts. */
@@ -260,10 +258,14 @@ function matchSegments(
 function matchesAny(
   entries: readonly string[],
   path: readonly string[],
+  include = false,
 ): boolean {
-  return entries.some((entry) =>
-    compileEntry(entry).some((pattern) => matchSegments(pattern, path))
-  );
+  return entries.some((entry) => {
+    if (include && !/[*?{]/.test(entry)) {
+      return segmentsOf(entry).join("/") === path.join("/");
+    }
+    return compileEntry(entry).some((pattern) => matchSegments(pattern, path));
+  });
 }
 
 /**
@@ -278,7 +280,8 @@ export function isDenoTestPath(
 ): boolean {
   if (isDenoTestFile(relToConfigDir)) return true;
   const path = segmentsOf(relToConfigDir);
-  return matchesAny(config.include, path) && !matchesAny(config.exclude, path);
+  return matchesAny(config.include, path, true) &&
+    !matchesAny(config.exclude, path);
 }
 
 /**

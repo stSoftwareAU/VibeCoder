@@ -198,11 +198,12 @@ other kinds on each line.
 A test file is one named `*_test.*` or `*.test.*`, or one that the nearest
 `deno.json` or `deno.jsonc` above it matches under `test.include` and does not
 match under `test.exclude`. Test files are never mutated. Those two fields take
-paths relative to the config file's directory: a file path, a directory (which
-matches everything beneath it), or a glob with `*` (within one path segment),
-`?`, `**` (zero or more segments) and flat `{a,b}` braces. A `!` negation entry
-is refused with an error, not guessed at. A test imports a module when it names
-it by a relative specifier (`./`, `../`), or by a bare specifier that the same
+paths relative to the config file's directory: a file path or a glob with `*`
+(within one path segment), `?`, `**` (zero or more segments) and flat `{a,b}`
+braces. A directory in `test.include` does not add unsuffixed files; a directory
+in `test.exclude` matches everything beneath it. If either list contains a `!`
+negation, both lists fall back to the suffix rule and a warning is logged. A
+test imports a module when it names it by a relative specifier (`./`, `../`), or by a bare specifier that the same
 project's `imports` map resolves to a local path: with `"@neat/": "./src/NEAT/"`,
 `@neat/Neat.ts` is `src/NEAT/Neat.ts`. A `jsr:`, `npm:` or remote target names no
 local file, so it counts for nothing. The `importMap` files and `scopes` are not

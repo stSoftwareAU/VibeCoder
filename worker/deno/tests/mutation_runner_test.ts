@@ -198,6 +198,26 @@ Deno.test("runMutationCheck - a diff touching only a test file is not applicable
 // runMutationCheck - Deno
 // ---------------------------------------------------------------------------
 
+Deno.test("runMutationCheck deno - directory includes and negations do not suppress mutation", async () => {
+  for (
+    const test of [
+      { include: ["lib/"] },
+      { exclude: ["fixtures/", "!fixtures/keep_test.ts"] },
+    ]
+  ) {
+    const f = fake(
+      denoFiles({
+        [`${REPO}/deno.json`]: JSON.stringify({ test }),
+      }),
+      scripted(1),
+    );
+    const result = await runMutationCheck(input(), f.seams);
+    assert(result.kind === "completed");
+    assert(result.total > 0);
+    assertEquals(result.killed, result.total);
+  }
+});
+
 Deno.test("runMutationCheck deno - mutants that leave tests green survive", async () => {
   const f = fake(denoFiles(), scripted(0));
   const r = await runMutationCheck(input(), f.seams);
@@ -1213,6 +1233,19 @@ Deno.test("listTestFiles - the real seam lists suffix tests and include-matched 
       "test/a.ts",
       "test/ci/b.ts",
       "worker/deno/tests/w.ts",
+    ]);
+  });
+});
+
+Deno.test("listTestFiles - a directory include lists suffix tests, not source files", async () => {
+  await realRepo(async (repo) => {
+    await writeRepoFiles(repo, {
+      "deno.json": '{"test":{"include":["src/"]}}',
+      "src/foo.ts": SOURCE,
+      "src/foo_test.ts": "",
+    });
+    assertEquals(await defaultMutationRunnerSeams().listTestFiles(repo), [
+      "src/foo_test.ts",
     ]);
   });
 });

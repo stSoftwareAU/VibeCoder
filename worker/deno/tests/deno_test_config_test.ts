@@ -111,17 +111,16 @@ Deno.test("parseDenoProjectConfig - a non-object test or imports field throws na
   assertThrows(() => parse('{"imports":{"@a/":1}}'), Error, "imports");
 });
 
-Deno.test("parseDenoProjectConfig - a negated include or exclude entry throws naming the entry", () => {
-  assertThrows(
-    () => parse('{"test":{"include":["!test/**"]}}'),
-    Error,
-    "!test/**",
-  );
-  assertThrows(
-    () => parse('{"test":{"exclude":["!x.ts"]}}'),
-    Error,
-    "!x.ts",
-  );
+Deno.test("parseDenoProjectConfig - negation falls back to suffix rules and retains imports", () => {
+  for (const field of ["include", "exclude"]) {
+    const c = parse(JSON.stringify({
+      test: { include: ["test/**"], [field]: ["!test/keep.ts"] },
+      imports: { "@lib/": "./lib/" },
+    }));
+    assertEquals(c.include, []);
+    assertEquals(c.exclude, []);
+    assertEquals(c.imports.get("@lib/"), "./lib/");
+  }
 });
 
 Deno.test("parseDenoProjectConfig - only local relative import targets are kept", () => {
@@ -161,12 +160,14 @@ Deno.test("isDenoTestPath - exclude wins over include", () => {
   assertEquals(isDenoTestPath("test/fixtures/c.ts", c), false);
 });
 
-Deno.test("isDenoTestPath - a bare directory entry matches everything beneath it", () => {
-  const c = parse('{"test":{"include":["test"]}}');
-  assert(isDenoTestPath("test/a.ts", c));
-  assert(isDenoTestPath("test/ci/b.ts", c));
-  assertEquals(isDenoTestPath("testing/a.ts", c), false);
-  assertEquals(isDenoTestPath("src/a.ts", c), false);
+Deno.test("isDenoTestPath - a directory include retains the suffix rule", () => {
+  for (const entry of ["src/", "."]) {
+    const c = parse(JSON.stringify({ test: { include: [entry] } }));
+    assertEquals(isDenoTestPath("src/foo.ts", c), false);
+    assert(isDenoTestPath("src/foo_test.ts", c));
+  }
+  const file = parse('{"test":{"include":["src/foo.ts"]}}');
+  assert(isDenoTestPath("src/foo.ts", file));
 });
 
 Deno.test("isDenoTestPath - a ./ prefix and a trailing slash are ignored", () => {
