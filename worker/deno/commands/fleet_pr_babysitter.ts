@@ -279,6 +279,39 @@ async function readPr(repo: string, number: number): Promise<Pr> {
     ]),
   );
 }
+async function dismissAddressedReviews(
+  repo: string,
+  number: number,
+  reviews: Review[],
+  expectedHead: string,
+): Promise<void> {
+  if (!reviews.length) return;
+  if (
+    !await waitForPushedHead(
+      async () => (await readPr(repo, number)).headRefOid,
+      expectedHead,
+    )
+  ) {
+    throw new Error("PR head changed; leaving reviews untouched");
+  }
+  const currentIds = new Set(
+    (await readRequestedReviews(repo, number)).map((review) => review.id),
+  );
+  for (const review of reviews) {
+    if (!currentIds.has(review.id)) continue;
+    const dismissal = await markCommentProcessed(
+      repo,
+      "pr_review",
+      String(review.id),
+      number,
+      "addressed",
+      runGhCommand,
+    );
+    if (!dismissal.ok) throw dismissal.error;
+    console.log(`${repo}#${number}: dismissed addressed review ${review.id}`);
+  }
+}
+
 /** Isolate GitHub writes for each concurrent repair to its target repository. */
 export function withBabysitterWriteScope<T>(
   repo: string,
@@ -466,6 +499,10 @@ async function fix(
     }
     if (!(await run("git", ["status", "--porcelain"], dir))) {
       console.log(`${repo}#${pr.number}: agent made no changes`);
+      if (renewalFailed) {
+        throw new Error("PR lock renewal failed; leaving reviews untouched");
+      }
+      await dismissAddressedReviews(repo, pr.number, reviews, pr.headRefOid);
       return;
     }
     await run("git", ["diff", "--check"], dir);
@@ -499,34 +536,7 @@ async function fix(
     console.log(`${repo}#${pr.number}: pushed fix as ${login}`);
     if (reviews.length > 0) {
       const pushedHead = await run("git", ["rev-parse", "HEAD"], dir);
-      if (
-        !await waitForPushedHead(
-          async () => (await readPr(repo, pr.number)).headRefOid,
-          pushedHead,
-        )
-      ) {
-        throw new Error("PR changed after push; leaving reviews untouched");
-      }
-      const currentIds = new Set(
-        (await readRequestedReviews(repo, pr.number)).map((review) =>
-          review.id
-        ),
-      );
-      for (const review of reviews) {
-        if (!currentIds.has(review.id)) continue;
-        const dismissal = await markCommentProcessed(
-          repo,
-          "pr_review",
-          String(review.id),
-          pr.number,
-          "addressed",
-          runGhCommand,
-        );
-        if (!dismissal.ok) throw dismissal.error;
-        console.log(
-          `${repo}#${pr.number}: dismissed addressed review ${review.id}`,
-        );
-      }
+      await dismissAddressedReviews(repo, pr.number, reviews, pushedHead);
     }
   } finally {
     renewal.stop();
