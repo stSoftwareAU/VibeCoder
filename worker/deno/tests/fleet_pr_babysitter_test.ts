@@ -32,6 +32,14 @@ Deno.test("author filter permits an explicit PR without widening fleet scans", (
 Deno.test("babysitter selects only conflicts and failed CI", () => {
   assertEquals(reason(pr), null);
   assertEquals(
+    reason({
+      ...pr,
+      mergeStateStatus: "BEHIND",
+      statusCheckRollup: [{ status: "IN_PROGRESS" }],
+    }),
+    null,
+  );
+  assertEquals(
     reason({ ...pr, mergeStateStatus: "BEHIND" }),
     "branch behind base",
   );

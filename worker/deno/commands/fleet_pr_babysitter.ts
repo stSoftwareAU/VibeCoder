@@ -226,7 +226,13 @@ export function reason(pr: Pr): string | null {
   if (pr.reviewDecision === "CHANGES_REQUESTED") {
     return "requested review changes";
   }
-  if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
+  if (
+    pr.mergeStateStatus === "BEHIND" &&
+    !pr.statusCheckRollup.some((check) =>
+      (check.status !== undefined && check.status !== "COMPLETED") ||
+      check.state === "PENDING"
+    )
+  ) return "branch behind base";
   return null;
 }
 
