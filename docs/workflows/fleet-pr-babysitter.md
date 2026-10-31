@@ -4,7 +4,9 @@ The babysitter scans the repositories in `.config.json` for open fleet PRs
 with merge conflicts, outdated branches, failed CI or requested review changes. By default it fixes candidates. It takes the same PR branch lock as the fleet's
 CI and conflict workers, rechecks the head, and runs one Codex session in a
 temporary clone. Up to two independent PR repairs run at once, each with a
-90-minute Codex limit and its own branch lock. After Codex reports a completed fix, the babysitter commits
+90-minute Codex limit and its own branch lock. While repairs run, it rescans
+every five minutes and queues newly actionable PRs without starting two repairs
+for the same PR. After Codex reports a completed fix, the babysitter commits
 it locally, checks for whitespace errors and conflict markers, and rechecks the
 PR. It pushes only if the PR still matches the original head. Once a review fix is pushed,
 the babysitter dismisses the addressed review if it is still the current review

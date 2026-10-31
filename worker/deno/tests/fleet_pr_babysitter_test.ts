@@ -140,14 +140,18 @@ Deno.test("repairs run in parallel within the limit and failures do not block ot
   let active = 0;
   let peak = 0;
   const completed: number[] = [];
-  const tasks = [0, 1, 2].map((id) => async () => {
-    active++;
-    peak = Math.max(peak, active);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    active--;
-    completed.push(id);
-    if (id === 0) throw new Error("repair failed");
-  });
+  const tasks = [0, 1, 2].map((id) => ({
+    key: String(id),
+    version: "head",
+    run: async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active--;
+      completed.push(id);
+      if (id === 0) throw new Error("repair failed");
+    },
+  }));
   await assertRejects(() => runRepairs(tasks, 2), AggregateError);
   assertEquals(peak, 2);
   assertEquals(completed.sort(), [0, 1, 2]);
@@ -163,4 +167,33 @@ Deno.test("only each reviewer's current changes request remains actionable", () 
     ]).map((review) => review.id),
     [1],
   );
+});
+
+Deno.test("long repairs do not prevent new PR discovery", async () => {
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => release = resolve);
+  const completed: string[] = [];
+  let scans = 0;
+  const first = {
+    key: "one",
+    version: "a",
+    run: async () => {
+      await waiting;
+      completed.push("one");
+    },
+  };
+  const second = {
+    key: "two",
+    version: "a",
+    run: async () => {
+      completed.push("two");
+      release();
+    },
+  };
+  await runRepairs([first], 2, () => {
+    scans++;
+    return Promise.resolve([first, second]);
+  }, 5);
+  assertEquals(completed, ["two", "one"]);
+  assertEquals(scans, 1);
 });

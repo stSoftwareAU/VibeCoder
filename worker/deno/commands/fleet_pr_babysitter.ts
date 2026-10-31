@@ -79,29 +79,76 @@ async function readRequestedReviews(
   return requestedReviews(pages.flat());
 }
 
-/** Run independent repairs with a fixed limit; one failure must not stop others. */
+export interface RepairTask {
+  key: string;
+  version: string;
+  run: () => Promise<void>;
+}
+
+/** Keep scanning while bounded, independent repairs are running. */
 export async function runRepairs(
-  tasks: (() => Promise<void>)[],
+  tasks: RepairTask[],
   limit = 2,
+  refresh?: () => Promise<RepairTask[]>,
+  pollMs = 300_000,
 ): Promise<void> {
+  const queue: RepairTask[] = [];
+  const seen = new Set<string>();
+  const running = new Map<string, Promise<void>>();
   const failures: unknown[] = [];
-  let next = 0;
-  const worker = async () => {
-    while (next < tasks.length) {
-      const task = tasks[next++]!;
-      try {
-        await task();
-      } catch (error) {
-        failures.push(error);
-        console.error("Babysitter repair failed:", error);
-      }
+  const enqueue = (items: RepairTask[]) => {
+    for (const item of items) {
+      const version = JSON.stringify([item.key, item.version]);
+      if (seen.has(version)) continue;
+      seen.add(version);
+      queue.push(item);
     }
   };
-  await Promise.all(
-    Array.from({ length: Math.min(limit, tasks.length) }, worker),
-  );
+  enqueue(tasks);
+  let nextPoll = Date.now() + pollMs;
+  while (queue.length || running.size) {
+    while (running.size < limit) {
+      const index = queue.findIndex((task) => !running.has(task.key));
+      if (index < 0) break;
+      const task = queue.splice(index, 1)[0]!;
+      const promise = task.run().catch((error) => {
+        failures.push(error);
+        console.error("Babysitter repair failed:", error);
+      }).finally(() => running.delete(task.key));
+      running.set(task.key, promise);
+    }
+    if (!running.size) break;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = refresh
+      ? new Promise<"poll">((resolve) => {
+        timer = setTimeout(
+          () => resolve("poll"),
+          Math.max(0, nextPoll - Date.now()),
+        );
+      })
+      : new Promise<"poll">(() => {});
+    const outcome = await Promise.race([
+      ...[...running.values()].map((promise) =>
+        promise.then(() => "done" as const)
+      ),
+      tick,
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (outcome === "poll" && refresh) {
+      try {
+        enqueue(await refresh());
+      } catch (error) {
+        failures.push(error);
+        console.error("Babysitter scan failed:", error);
+      }
+      nextPoll = Date.now() + pollMs;
+    }
+  }
   if (failures.length) {
-    throw new AggregateError(failures, "One or more PR repairs failed");
+    throw new AggregateError(
+      failures,
+      "One or more PR repairs or scans failed",
+    );
   }
 }
 
@@ -476,45 +523,58 @@ async function pass(
       `Add App identity ${login} to service_accounts or fleet_pr_authors on every fleet host before running fixes, so workers trust its locks`,
     );
   }
-  const repairs: (() => Promise<void>)[] = [];
-  for (const repo of config.repos) {
-    if (repoFilter && repo !== repoFilter) continue;
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
-      throw new Error(`Invalid repository: ${repo}`);
-    }
-    const prs: Pr[] = prFilter !== undefined
-      ? [await readPr(repo, prFilter)]
-      : JSON.parse(
-        await run("gh", [
-          "pr",
-          "list",
-          "--repo",
-          repo,
-          "--state",
-          "open",
-          "--limit",
-          "100",
-          "--json",
-          fields,
-        ]),
-      );
-    for (const pr of prs) {
-      if (prFilter !== undefined && pr.number !== prFilter) continue;
-      const why = reason(pr);
-      if (!why && prFilter !== undefined) {
-        console.log(
-          `${repo}#${pr.number}: no actionable conflict, outdated branch, failed CI or requested review changes, or PR is not eligible`,
-        );
+  const discover = async (): Promise<RepairTask[]> => {
+    const repairs: RepairTask[] = [];
+    for (const repo of config.repos) {
+      if (repoFilter && repo !== repoFilter) continue;
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+        throw new Error(`Invalid repository: ${repo}`);
       }
-      if (
-        !why ||
-        !eligibleAuthor(pr.author.login, authors, prFilter !== undefined)
-      ) continue;
-      console.log(`${repo}#${pr.number}: ${why}`);
-      if (execute) repairs.push(() => fix(repo, pr, authors, login));
+      const prs: Pr[] = prFilter !== undefined
+        ? [await readPr(repo, prFilter)]
+        : JSON.parse(
+          await run("gh", [
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            fields,
+          ]),
+        );
+      for (const pr of prs) {
+        if (prFilter !== undefined && pr.number !== prFilter) continue;
+        const why = reason(pr);
+        if (!why && prFilter !== undefined) {
+          console.log(
+            `${repo}#${pr.number}: no actionable conflict, outdated branch, failed CI or requested review changes, or PR is not eligible`,
+          );
+        }
+        if (
+          !why ||
+          !eligibleAuthor(pr.author.login, authors, prFilter !== undefined)
+        ) continue;
+        console.log(`${repo}#${pr.number}: ${why}`);
+        if (execute) {
+          repairs.push({
+            key: `${repo}#${pr.number}`,
+            version: `${pr.headRefOid}:${why}`,
+            run: () => fix(repo, pr, authors, login),
+          });
+        }
+      }
     }
-  }
-  await runRepairs(repairs);
+    return repairs;
+  };
+  await runRepairs(
+    await discover(),
+    2,
+    execute && prFilter === undefined ? discover : undefined,
+  );
 }
 if (import.meta.main) {
   installConsoleRedaction();
