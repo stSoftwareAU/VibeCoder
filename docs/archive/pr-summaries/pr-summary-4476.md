@@ -69,9 +69,9 @@ Twinned rule: none found (`normalisePatch` had no other caller).
 
 ## Test Plan
 
-Added to `worker/deno/tests/review_fleet_prs_gate_2675_test.ts` (8 tests named
-"(Issue #4476)" and 2 named "(PR #4525 review)"; no existing test or assertion
-edited or removed):
+`worker/deno/tests/review_fleet_prs_gate_2675_test.ts` (35 tests at head, 35
+passed; of these, 8 are named "(Issue #4476)" and 2 "(PR #4525 review)"; no
+existing test or assertion edited or removed). The added ones cover:
 
 - Context a base merge moved, added lines identical → `awaiting-fix` via
   `skipReason`.

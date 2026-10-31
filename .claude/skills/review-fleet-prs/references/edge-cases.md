@@ -67,8 +67,9 @@ unchanged context, but its declared line counts must match and it must
 contain exactly one removed line immediately followed by one added line. The
 two lines must be identical apart from the version token, including spacing
 and punctuation. This covers a workflow bump committed separately or in a
-base-merge resolution. Every other file must still match on its added and
-removed lines.
+base-merge resolution. Every other file must still match under the rules
+above: on its added and removed lines, and also on its context lines in a file
+an earlier finding names (or any file when the findings are unknown).
 
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or
