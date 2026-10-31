@@ -928,3 +928,41 @@ Deno.test("quality uses its own observation time and cannot reopen an explicitly
       false,
     );
   }));
+
+Deno.test("closed-PR observation logs latch skips at info and genuine faults at error", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "closed_pr_observation_" });
+  try {
+    const run = async (message: string) => {
+      const lines: string[] = [];
+      await recordClosedLifecyclePrs(
+        { workDir: dir, repos: ["org/repo"], githubUser: "vibe-bot" },
+        () => Promise.reject(new Error(message)),
+        {
+          info: (line) => lines.push(`info:${line}`),
+          error: (line) => lines.push(`error:${line}`),
+        },
+      );
+      return lines;
+    };
+
+    for (
+      const skip of [
+        "gh command skipped: GraphQL primary quota exhausted",
+        "gh command failed (exit 1): gh command skipped: GitHub secondary rate limit cool-down (API rate limit already exceeded)",
+      ]
+    ) {
+      const lines = await run(skip);
+      assertEquals(lines.length, 1, skip);
+      assertEquals(lines[0]?.startsWith("info:"), true, skip);
+      assertStringIncludes(lines[0]!, "gh command skipped:");
+    }
+
+    // A quoted skip inside a genuine fault is still a fault.
+    const fault = await run("invalid response containing gh command skipped:");
+    assertEquals(fault.length, 1);
+    assertEquals(fault[0]?.startsWith("error:"), true);
+    assertStringIncludes(fault[0]!, "Lifecycle closed-PR observation failed");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

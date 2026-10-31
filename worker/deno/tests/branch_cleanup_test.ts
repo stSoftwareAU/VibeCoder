@@ -1452,3 +1452,171 @@ Deno.test("branch cleanup - the cleanup-orphaned command reports the skip rather
     await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
   }
 });
+
+Deno.test("branch cleanup - stale cached merged lookup failure that is not a rate limit continues the sweep", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "stale_cleanup_502_" });
+  const calls: string[][] = [];
+  const warnings: string[] = [];
+  let failed = false;
+  try {
+    const result = await cleanupStaleRemoteBranches(
+      ["org/first", "org/next"],
+      "vibe-bot",
+      {
+        workDir: dir,
+        cache: new IssueCache(`${dir}/cache`),
+        logger: { info: () => {}, warn: (message) => warnings.push(message) },
+        ghCommandFn: (args) => {
+          calls.push([...args]);
+          if (args[0] === "api" && args[1]?.endsWith("/branches")) {
+            return Promise.resolve("issue-1-fix\nissue-2-later\n");
+          }
+          if (args.includes("--author")) return Promise.resolve("[]");
+          if (args.includes("open")) return Promise.resolve("");
+          if (args.includes("merged")) {
+            if (!failed) {
+              failed = true;
+              return Promise.reject(
+                new Error(
+                  "gh command failed (exit 1): HTTP 502: Bad Gateway",
+                ),
+              );
+            }
+            return Promise.resolve("[]");
+          }
+          if (args.includes("DELETE")) return Promise.resolve("");
+          throw new Error(`Unexpected test request: ${args.join(" ")}`);
+        },
+      },
+    );
+
+    assertEquals(failed, true, "the fixture must reach the lookup failure");
+    assertEquals(result, {
+      ok: true,
+      value: { deletedCount: 0, skippedCount: 0 },
+    });
+    assertEquals(
+      calls.some((args) => args.some((arg) => arg.includes("issue-2-later"))),
+      true,
+      "the next branch must still be looked up",
+    );
+    assertEquals(
+      calls.some((args) => args.some((arg) => arg.includes("org/next"))),
+      true,
+      "the next repository must still be swept",
+    );
+    assertEquals(warnings, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Each later stage of the merged-branch sweep stops every later branch and
+// repository on a primary or secondary refusal (PR #4536 review).
+for (
+  const [kind, graphql, rest] of [
+    [
+      "secondary",
+      'Post "https://api.github.com/graphql": Forbidden',
+      "You have exceeded a secondary rate limit",
+    ],
+    [
+      "primary",
+      "GraphQL: API rate limit already exceeded",
+      "API rate limit already exceeded for user ID 1",
+    ],
+  ] as const
+) {
+  for (
+    const stage of [
+      "ref probe",
+      "head safety query",
+      "base safety query",
+      "branch deletion",
+    ]
+  ) {
+    Deno.test(`branch cleanup - merged ${kind} ${stage} refusal stops later branches and repos`, async () => {
+      const dir = await Deno.makeTempDir({ prefix: "merged_cleanup_limit_" });
+      const watermarkPath = mergedSweepWatermarkPath(dir);
+      const original = JSON.stringify({
+        version: 2,
+        repos: { "org/first": { processed: [41] } },
+      });
+      await Deno.writeTextFile(watermarkPath, original);
+      const calls: string[][] = [];
+      const afterRefusal: string[][] = [];
+      const info: string[] = [];
+      const warnings: string[] = [];
+      let refused = false;
+      const refusal = stage.includes("safety") ? graphql : rest;
+      try {
+        const result = await cleanupMergedPrBranches(
+          ["org/first", "org/next"],
+          "vibe-bot",
+          {
+            workDir: dir,
+            watermarkPath,
+            logger: {
+              info: (message) => info.push(message),
+              warn: (message) => warnings.push(message),
+            },
+            ghCommandFn: (args) => {
+              calls.push([...args]);
+              if (refused) afterRefusal.push([...args]);
+              let currentStage: string;
+              let response: string;
+              if (args.includes("--author")) {
+                return Promise.resolve(JSON.stringify([
+                  { number: 1, title: "Fix", headRefName: "issue-1-fix" },
+                  { number: 2, title: "Later", headRefName: "issue-2-later" },
+                ]));
+              } else if (args.includes("DELETE")) {
+                currentStage = "branch deletion";
+                response = "";
+              } else if (args[0] === "api") {
+                currentStage = "ref probe";
+                response = '{"ref": "refs/heads/x"}';
+              } else if (args.includes("open")) {
+                currentStage = args.includes("--head")
+                  ? "head safety query"
+                  : "base safety query";
+                response = "";
+              } else {
+                throw new Error(`Unexpected test request: ${args.join(" ")}`);
+              }
+              if (currentStage === stage && !refused) {
+                refused = true;
+                return Promise.reject(new Error(refusal));
+              }
+              return Promise.resolve(response);
+            },
+          },
+        );
+
+        assertEquals(refused, true, "the fixture must reach the refusal");
+        assertEquals(afterRefusal, [], "no request may follow the refusal");
+        assertEquals(
+          calls.some((args) =>
+            args.some((arg) =>
+              arg.includes("org/next") || arg.includes("issue-2-later")
+            )
+          ),
+          false,
+          "the next branch and repository must never be contacted",
+        );
+        assert(result.ok);
+        assertEquals(result.value.deletedCount, 0);
+        assertEquals(
+          result.value.skippedCount,
+          stage.includes("safety") ? 1 : 0,
+        );
+        assertEquals(warnings, []);
+        assertEquals(info.length, 1);
+        assertStringIncludes(info[0]!, refusal);
+        assertEquals(await Deno.readTextFile(watermarkPath), original);
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    });
+  }
+}

@@ -783,7 +783,9 @@ export async function cleanupStaleRemoteBranches(
             );
             break staleRepos;
           }
-          throw error;
+          // Any other lookup failure leaves the branch for the next sweep,
+          // as the uncached path does.
+          continue;
         }
         mergedPr = merged.length > 0 && merged[0]
           ? String(merged[0].number)

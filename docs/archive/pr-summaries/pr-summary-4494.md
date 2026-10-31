@@ -29,8 +29,10 @@ Version bump: none in this change; the merged commit records the final version.
 - A sweep preserves its unfinished repository state when it stops for a rate
   limit; ordinary observation failures continue to be logged at ERROR.
 - Cached stale-cleanup lookups opt into request-error propagation from
-  `fetchPRsByBranch`; its other callers retain their existing error result. This
-  makes the cleanup stop reachable when the per-branch query is refused.
+  `fetchPRsByBranch`; its other callers retain their existing error result. The
+  cleanup stops on a rate-limit refusal; any other lookup failure skips that
+  branch (as the uncached path does) rather than escaping the Result-returning
+  sweep.
 
 ### Undiscoverable Facts
 
@@ -80,7 +82,7 @@ sequenceDiagram
 
 - `deno task test:unit` targeting
   `tests/{secondary_rate_limit,gh_spawn,pr_creation_retry,merged_pr_issue_sweep,lifecycle_pr_observation,github_primary_quota_latch,branch_cleanup,issue_query_branch_cache,branch_cleanup_cache,branch_cleanup_merged_telemetry,github_rate_limit_preflight,graphql_quota_probe,pr_issue_linking_cache,pr_issue_linking,primary_quota_latch}_test.ts`
-  — passed, 321 tests across 15 files. The brace list abbreviates the explicit
+  — passed, 331 tests across 15 files. The brace list abbreviates the explicit
   paths passed to the task.
 - `deno task check:manifests` — passed, 846 tests and 1 ignored.
 - `deno fmt --check` on all 16 changed TypeScript files — passed.
@@ -121,6 +123,19 @@ sequenceDiagram
   branch and repository because `fetchPRsByBranch` swallowed the request error.
   Cleanup now requests propagation; the helper regression also verifies its
   default error result and that neither mode caches a failed request.
+- PR #4536 review round: the cached stale lookup no longer rethrows a
+  non-rate-limit error (`branch_cleanup.ts` `continue`), covered by
+  `worker/deno/tests/branch_cleanup_test.ts` (a 502 on the first lookup still
+  resolves `ok` and reaches `issue-2-later` and `org/next`; rethrowing made it
+  fail). `cleanupMergedPrBranches` has eight stage-specific cases (primary and
+  secondary × ref probe, head safety query, base safety query, deletion) over
+  two repositories and two branches; turning each of the probe, assessment and
+  deletion `break reposLoop` into `continue` failed its cases, and so did
+  turning the fetch stop into `continue reposLoop`. `recordClosedLifecyclePrs`
+  now shares `isLatchSkipMessage` with `recordLifecyclePrFromGithub`, logging
+  latch skips (bare or `gh command failed (exit N):`-wrapped) at INFO and
+  genuine faults, even those quoting the skip text, at ERROR; disabling that
+  branch failed `worker/deno/tests/lifecycle_pr_observation_test.ts`.
 - All five reported condition-negation mutants were applied individually and
   killed by `worker/deno/tests/branch_cleanup_test.ts`: `branch_cleanup.ts:714`
   (cached merged prefetch), `:740` (safety query), `:777` (cached merged branch

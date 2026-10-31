@@ -485,9 +485,11 @@ again; a healthy REST quota fallback cannot clear the cool-down or let the
 merged-PR issue sweep proceed. Repository sweeps stop at the first primary
 or secondary refusal, leaving the current repository's unfinished watermark
 state for the next cycle. A call skipped by either latch is logged as INFO
-by lifecycle observation, including skips wrapped by `runGhOrThrow`, while
-actual observation faults remain ERROR. Cached stale-branch lookups propagate
-request failures to the cleanup sweep so it can stop at the refusal too.
+by lifecycle observation (per-PR snapshots and the closed-PR listing),
+including skips wrapped by `runGhOrThrow`, while actual observation faults
+remain ERROR. Cached stale-branch lookups propagate request failures to the
+cleanup sweep so it can stop at a rate-limit refusal; any other lookup failure
+skips that branch until the next sweep, as the uncached lookup does.
 
 ### How the two counters relate
 
