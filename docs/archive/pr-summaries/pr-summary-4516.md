@@ -59,9 +59,10 @@ version exception.
 
 ## Test Plan
 
-Added `multi-hunk manifest version re-bump awaits the existing fix when the
-other hunks are unchanged (Issue #4516)` in
-`worker/deno/tests/review_fleet_prs_gate_2675_test.ts`, seven cases:
+Added
+`multi-hunk manifest version re-bump awaits the existing fix when the
+other hunks are unchanged (Issue #4516)`
+in `worker/deno/tests/review_fleet_prs_gate_2675_test.ts`, seven cases:
 
 - version re-bumps, pin hunk identical: `awaiting-fix`.
 - pin hunk changed at head: reviewed.
@@ -73,7 +74,8 @@ other hunks are unchanged (Issue #4516)` in
 
 No existing test was edited and no assertion removed; the single-hunk tests and
 `manifest version exception still reviews other edits and malformed patches
-(Issue #4391)` (including its "second hunk" case) pass unmodified.
+(Issue #4391)`
+(including its "second hunk" case) pass unmodified.
 
 Red-check: with the old `!isVersionIncrement(fa) || !isVersionIncrement(fb)`
 condition restored, the first case failed (`null` instead of `"awaiting-fix"`);
@@ -95,7 +97,7 @@ Docs read and updated: `.claude/skills/review-fleet-prs/SKILL.md` rule 8 and
 re-bumps" (the pin sentence now says a pin that differs is still reviewed). No
 other doc mentions the rule.
 
-Not covered by a dedicated test: the "patch does not open with `@@`" null
-branch of `splitHunks` (the version hunk check also rejects it).
+Not covered by a dedicated test: the "patch does not open with `@@`" null branch
+of `splitHunks` (the version hunk check also rejects it).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
