@@ -119,16 +119,17 @@ async function makeRepo(
   return { tmp, repo };
 }
 
-/** True when `cargo` and `cargo fmt` are both runnable; the Rust tests skip otherwise. */
+/** True when `cargo` and `rustfmt` are both runnable; the Rust tests skip otherwise. */
 async function hasCargo(): Promise<boolean> {
-  const probes: [string, string[]][] = [
-    ["cargo", ["--version"]],
-    ["cargo", ["fmt", "--version"]],
-  ];
-  for (const [bin, args] of probes) {
+  for (
+    const [bin, flag] of [["cargo", "--version"], [
+      "rustfmt",
+      "--version",
+    ]] as const
+  ) {
     try {
       const out = await new Deno.Command(bin, {
-        args,
+        args: [flag],
         stdin: "null",
         stdout: "null",
         stderr: "null",
@@ -482,7 +483,7 @@ Deno.test({
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
     if (!await hasCargo()) {
-      console.warn("skipping Rust formatter test: cargo fmt not runnable");
+      console.warn("skipping Rust formatter test: cargo/rustfmt not installed");
       return;
     }
     const { tmp, repo } = await makeCargoRepo({ "src/lib.rs": UNFORMATTED_RS });
@@ -569,7 +570,7 @@ Deno.test({
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
     if (!await hasCargo()) {
-      console.warn("skipping cargo staging test: cargo fmt not runnable");
+      console.warn("skipping cargo staging test: cargo/rustfmt not installed");
       return;
     }
     const { tmp, repo } = await makeCargoRepo({ "src/lib.rs": UNFORMATTED_RS });

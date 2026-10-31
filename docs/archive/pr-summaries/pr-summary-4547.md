@@ -2,52 +2,53 @@
 
 The four checks the tracker names (`gh spawn chokepoint`,
 `git spawn chokepoint`, `spawn timeout`, `git ref chokepoint`) pass on the
-current default branch, so the tracker is stale for them. The default-branch
-gate was still red for a different reason: two Rust formatter tests failed on
-hosts where `cargo` and `rustfmt` exist but `cargo fmt` is not runnable. This
-change makes those tests skip on such hosts. Closes #4547.
+current default branch, so the tracker is stale for them. This change makes no
+code change: the tracker's four checks were not failing, and the one other red
+stage on this host (two Rust formatter tests) was a host toolchain fault, not a
+repository defect. Closes #4547.
 
 ## Spec
 
 ### Intent and Rationale
 
-- `hasCargo()` probed `cargo --version` and `rustfmt --version`, but the
-  production formatter runs `cargo fmt`. With a rustup proxy and no default
-  toolchain, `cargo fmt` fails ("rustup could not choose a version of cargo-fmt
-  to run"), so the tests ran and failed rather than skipping.
-- The probe now runs the command the code under test runs.
+- On the untouched default branch, `./quality.sh` showed the four named checks
+  passing and `deno tests` failing with exactly two Rust formatter tests.
+- Those tests need a runnable `cargo fmt`. The host's rustup proxy had a
+  toolchain installed but no default configured, so `cargo fmt` failed
+  ("rustup could not choose a version of cargo-fmt to run").
+- An earlier attempt widened the tests' skip guard to also probe
+  `cargo fmt --version`. The verifier rejected that as loosening the tests, so
+  it was reverted: the test file is identical to the default branch.
 
 ### Essential Design Decisions
 
-- Only the test guard changed; production formatter behaviour is untouched.
+- No test or production code is changed; the Rust tests keep running fully.
+- The host was fixed instead: the installed toolchain was set as the rustup
+  default (`~/.rustup/settings.toml`, the same effect as `rustup default`).
 
 ### Undiscoverable Facts
 
-- The failure is host-specific: this host's rustup has no default toolchain
-  configured.
+- The failure is host-specific: it appears only where `cargo` exists but no
+  rustup default toolchain is configured. Setting `RUSTUP_TOOLCHAIN` in the
+  environment is not enough, because the pre-push gate run by the tests
+  scrubs the environment; the default has to be set in rustup settings.
 
 ## Evidence
 
-- Before the change, `./quality.sh` on the untouched default branch showed the
-  four named checks PASSED (1276–1309 files scanned) and `deno tests` FAILED
-  with exactly two failures:
-  `completion - an unformatted Rust change is formatted and committed, then passes the gate`
-  and
-  `completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit`,
-  both with `formatter should commit the Rust fix`.
-- `cargo --version` exits 0, `rustfmt --version` exits 0, `cargo fmt --version`
-  exits 1 on this host.
+- Before the host fix, `cargo fmt --version` exited 1 and the two Rust tests
+  in `tests/completion_phase_repo_formatters_test.ts` failed with
+  `formatter should commit the Rust fix`.
+- After the host fix, `cargo fmt --version` prints `rustfmt 1.10.0-stable` and
+  `cd worker/deno && deno task test:unit tests/completion_phase_repo_formatters_test.ts < /dev/null`
+  gives 8 passed, 0 failed, with the Rust tests running (not skipped).
+- The full `./quality.sh` ran to completion on the head: `Result: PASSED (with
+  skipped checks)`. `gh spawn chokepoint`, `git spawn chokepoint`,
+  `spawn timeout`, `git ref chokepoint`, `deno tests`, `deno lint`,
+  `deno type check` and `deno fmt` all PASSED; only `config integration` and
+  `checkov` were skipped.
 
 ## Test Plan
 
-- `cd worker/deno && deno task test:unit tests/completion_phase_repo_formatters_test.ts < /dev/null`:
-  passed (8 passed, 0 failed); the two Rust tests take the skip branch on this
-  host.
-- `deno fmt --check` on the edited file: passed.
-- No assertions were removed or changed. The guard is a skip condition, so the
-  Rust tests still run fully on hosts where `cargo fmt` works.
-- Two further full `./quality.sh` runs after the change hit the 10-minute tool
-  cap during the deno tests stage; every stage before it passed. The first full
-  run before the change showed only the two failures above.
-
-<!-- vibe-quality-gate-skipped reason="full ./quality.sh exceeded the 10-minute command cap twice after the change (all stages before deno tests passed); the pre-change run showed only the two Rust tests failing, which the targeted test file now passes" -->
+- No assertions were added, removed or changed; the diff against the default
+  branch is this summary file only.
+- Run `./quality.sh` to completion (done, see Evidence).
