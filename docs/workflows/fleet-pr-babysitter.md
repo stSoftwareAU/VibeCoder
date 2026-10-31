@@ -9,6 +9,10 @@ pushes only if the agent produced a descendant commit and the gate passed.
 From the VibeCoder checkout:
 
 ```sh
+# Interactive setup and preflight. It asks whether to install a launch agent;
+# answer no until you have manually tested a fix.
+deno run --allow-all worker/deno/commands/fleet_pr_babysitter_setup.ts
+
 # Report candidates only; no model calls or PR changes.
 deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --dry-run
 
@@ -21,6 +25,22 @@ deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --repo=owner/na
 # Repeat every five minutes, after each pass finishes.
 deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --watch
 ```
+
+Setup prompts for the GitHub App ID and private-key path, discovers the App
+installation, and verifies its permissions, repository access and GraphQL
+quota without printing credentials. It checks the local fleet-lock identities
+and required commands. For a non-interactive preflight, use `--check` and
+`--app-id=<id>`; the key defaults to
+`~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass `--key=<path>`.
+
+On the always-on Mac, rerun setup after manual testing and answer yes to the
+launch-agent question. You must also type `INSTALL` to confirm. Setup checks
+that the signed-in `gh` account is a configured fleet identity, creates a new
+launchd job and starts it; it refuses to overwrite an existing job. The agent
+uses the signed-in `gh` account, not the App, until App authentication is
+implemented. Every fleet host must trust that account's branch locks. To stop
+the agent, use the `launchctl bootout` command printed by setup; its output is
+kept in `~/.vibe-coder/fleet-pr-babysitter/service.log`.
 
 The host needs `gh` authenticated as a fleet account, `git`, `deno`, `codex`
 and RTK. Before execution, put that login in `service_accounts` or

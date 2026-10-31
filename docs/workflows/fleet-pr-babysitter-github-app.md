@@ -50,6 +50,11 @@ needs to do the following:
 If permissions are changed later, an organisation owner may need to accept the
 new permission request for each installation before tokens receive them.
 
+Run the interactive setup described in [the babysitter MVP](fleet-pr-babysitter.md)
+to check the key, installation permissions, repository access and quota. It
+offers to install a macOS launch agent after you have manually tested a fix.
+The launch agent currently uses the signed-in `gh` account, not the App.
+
 ## Coordinate with the fleet
 
 The App's comment author is `<app-slug>[bot]`. Every fleet host must recognise
