@@ -603,11 +603,11 @@ Deno.test("run_callbacks - a cycle env has no run-only scalars (Issue #1955)", (
 /** The egress proxy the worker container is started with, in every spelling. */
 const EGRESS_PROXY: Record<string, string> = {
   HTTPS_PROXY: "http://172.17.0.2:3128",
-  HTTP_PROXY: "http://172.17.0.2:3128",
+  HTTP_PROXY: "http://172.17.0.2:3129",
   NO_PROXY: "localhost,127.0.0.1",
-  https_proxy: "http://172.17.0.2:3128",
-  http_proxy: "http://172.17.0.2:3128",
-  no_proxy: "localhost,127.0.0.1",
+  https_proxy: "http://172.17.0.2:3130",
+  http_proxy: "http://172.17.0.2:3131",
+  no_proxy: "localhost,127.0.0.1,::1",
 };
 
 /** A proxy URL whose userinfo carries a credential; it must never cross. */

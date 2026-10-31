@@ -404,11 +404,11 @@ Deno.test("host_failure_hook - the child environment carries nothing beyond the 
 
 const EGRESS_PROXY: Record<string, string> = {
   HTTPS_PROXY: "http://172.17.0.2:3128",
-  HTTP_PROXY: "http://172.17.0.2:3128",
+  HTTP_PROXY: "http://172.17.0.2:3129",
   NO_PROXY: "localhost,127.0.0.1",
-  https_proxy: "http://172.17.0.2:3128",
-  http_proxy: "http://172.17.0.2:3128",
-  no_proxy: "localhost,127.0.0.1",
+  https_proxy: "http://172.17.0.2:3130",
+  http_proxy: "http://172.17.0.2:3131",
+  no_proxy: "localhost,127.0.0.1,::1",
 };
 
 const CREDENTIAL_PROXY_URL = "http://ci-user:s3cret-pass@proxy:3128";

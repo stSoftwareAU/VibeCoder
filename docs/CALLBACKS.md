@@ -81,9 +81,9 @@ flowchart LR
 
 ## Host-level failures — `callbacks.host_failure`
 
-A host-level failure — the container launcher crash-looping, the checkout
-update failing run after run — happens **before** any issue is claimed and
-before a container exists, so none of the hooks above can report it.
+A host-level failure — the container launcher crash-looping, the checkout update
+failing run after run — happens **before** any issue is claimed and before a
+container exists, so none of the hooks above can report it.
 `callbacks.host_failure` is that report, under the same contract: a versioned
 JSON document at `VIBECODER_CALLBACK_CONTEXT`, scalar `VIBECODER_*` facts, a
 cleared environment, and the same `timeout_seconds` budget.
@@ -109,29 +109,31 @@ flowchart LR
 
 Three properties are specific to it:
 
-- **It is a host path.** The launcher spawns it on the host's own filesystem,
-  so — unlike every other key — a path inside the container is the wrong
-  answer. The [conformance fixture](#the-conformance-fixture) cannot drive it
-  for the same reason: the fixture runs where the worker runs.
+- **It is a host path.** The launcher spawns it on the host's own filesystem, so
+  — unlike every other key — a path inside the container is the wrong answer.
+  The [conformance fixture](#the-conformance-fixture) cannot drive it for the
+  same reason: the fixture runs where the worker runs.
 - **The read is targeted.** The host validates `host_failure` and
-  `timeout_seconds` only, so a `success` hook naming a container path it
-  cannot see never stops the host hook from firing. An absent key means no
-  hook; a malformed one is reported rather than quietly answered as absent.
-- **Failures only, never recovery.** The hook is told what is broken, never
-  that it healed: a condition that clears fires nothing and is one local line
-  in the host's own log. A hook that wants a recovery signal derives it from
-  the reports stopping.
+  `timeout_seconds` only, so a `success` hook naming a container path it cannot
+  see never stops the host hook from firing. An absent key means no hook; a
+  malformed one is reported rather than quietly answered as absent.
+- **Failures only, never recovery.** The hook is told what is broken, never that
+  it healed: a condition that clears fires nothing and is one local line in the
+  host's own log. A hook that wants a recovery signal derives it from the
+  reports stopping.
 
 ### What the hook receives
 
 The same cleared environment as every other hook — only `PATH`, `HOME`, `LANG`,
 `TZ`, `TMPDIR` and the proxy variables are inherited — plus a versioned JSON
-document at `VIBECODER_CALLBACK_CONTEXT` (Issue #2107). The proxy variables
-(`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms) name the
-egress proxy and carry no credential: a value containing `@` is dropped, since
-its userinfo could hold one. `schemaVersion` stays at the contract's current
-version: a new event is not a breaking change to the fields an existing hook
-already reads (see [Versioning](#versioning--the-contract-is-additive)).
+document at `VIBECODER_CALLBACK_CONTEXT` (Issue #2107). This hook is spawned on
+the host, so it inherits the host launcher's own proxy variables (`HTTPS_PROXY`,
+`HTTP_PROXY`, `NO_PROXY` and their lower-case forms) when the launcher has them
+set, usually none. The egress proxy variables exist only inside the container,
+so they do not reach this hook. A value containing `@` is dropped, since its
+userinfo could hold a credential. `schemaVersion` stays at the contract's
+current version: a new event is not a breaking change to the fields an existing
+hook already reads (see [Versioning](#versioning--the-contract-is-additive)).
 
 ```json
 {
@@ -192,28 +194,28 @@ once the consecutive-failure count crosses the failing phase's threshold, and
 its cadence is the streak's, not the failure's:
 
 - **Crossing, then +1 h, then daily.** The threshold crossing delivers
-  immediately with `delivery` `first`/1; the first follow-up comes an hour
-  later and everything after that daily, each one `repeat` with the running
+  immediately with `delivery` `first`/1; the first follow-up comes an hour later
+  and everything after that daily, each one `repeat` with the running
   `delivery.count`. A genuinely stuck host stays visible without filling the
   channel, and a hook can tell a new incident from an update of one it already
   holds.
 - **A streak is its phase and its start.** Failures 4 … 54 of one ongoing
-  condition are the same streak, so they are the same report; a different
-  phase, or a clean run in between, starts a new one.
+  condition are the same streak, so they are the same report; a different phase,
+  or a clean run in between, starts a new one.
 - **Five attempts, then `escalation_lost`.** A delivery that returns anything
-  but `ok` is queued and retried on the next cycle — `attempt` counts them —
-  and the fifth failure records `escalation_lost` in the self-heal health
-  report rather than dropping the escalation silently. The per-cycle retry
-  stops there; the streak's own re-notify schedule still governs, so a host
-  that is still broken reports again when the schedule next falls due.
+  but `ok` is queued and retried on the next cycle — `attempt` counts them — and
+  the fifth failure records `escalation_lost` in the self-heal health report
+  rather than dropping the escalation silently. The per-cycle retry stops there;
+  the streak's own re-notify schedule still governs, so a host that is still
+  broken reports again when the schedule next falls due.
 - **`logTail` carries the launcher's own tail**, redacted before it leaves the
   process: a hook is an operator's channel, not a trusted vault.
 - **No hook is not a fault.** A host with no `callbacks.host_failure` records
   the `escalated` event locally with `no_hook_configured`; a `callbacks` block
-  that will not parse records `config_invalid` with the read's own error
-  beside it. When there is also no crash channel to fall back on there is
-  nothing left to try, so the report is not queued for retry at all — the
-  streak's re-notify schedule is the whole record.
+  that will not parse records `config_invalid` with the read's own error beside
+  it. When there is also no crash channel to fall back on there is nothing left
+  to try, so the report is not queued for retry at all — the streak's re-notify
+  schedule is the whole record.
 
 ### What the checkout update sends
 
@@ -223,12 +225,12 @@ The host-side checkout update is the other caller (Issue #2110). Its cadence:
   fifteen minutes fire the hook once, with `condition` and `phase` both
   `checkout_update` and `delivery` `first`/1. Later failures in the same streak
   fire nothing.
-- **Five attempts, then `escalation_lost`.** An invocation that returns
-  anything but `ok` is retried on each later failing run — `attempt` counts
-  them — and the fifth failure abandons the report for that streak, recording
+- **Five attempts, then `escalation_lost`.** An invocation that returns anything
+  but `ok` is retried on each later failing run — `attempt` counts them — and
+  the fifth failure abandons the report for that streak, recording
   `escalation_lost` in `run_core.log` and `~/logs/self-heal.jsonl`.
-- **Failures only.** A run that updates cleanly fires no hook: the condition
-  has cleared, and the recovery is one local line.
+- **Failures only.** A run that updates cleanly fires no hook: the condition has
+  cleared, and the recovery is one local line.
 - **No hook is not a fault.** A host with no `callbacks.host_failure` records
   `no_hook_configured` once per streak; a `callbacks` block that will not parse
   records `config_invalid`. Neither blocks the update.
@@ -325,13 +327,12 @@ counts the streak and writes one record the operator of the host can act on.
 - The worker keeps a consecutive-failure count **per event** in
   `$WORK_DIR/callback-failure-streaks.json`. It survives the run boundary,
   because the condition does.
-- **The same file is published to the host log directory** — `~/logs`, the
-  mount `worker.log` already goes to (Issue #2297). The work volume does not
-  survive a launcher reset of `vibe-work` and the host log directory does, so
-  the count is read back from the host copy whenever the work-volume copy is
-  missing. On GRQ-25 that is the difference between one record saying *failing
-  since 16 Sep 08:58Z* and four records each claiming a fresh three-issue
-  streak.
+- **The same file is published to the host log directory** — `~/logs`, the mount
+  `worker.log` already goes to (Issue #2297). The work volume does not survive a
+  launcher reset of `vibe-work` and the host log directory does, so the count is
+  read back from the host copy whenever the work-volume copy is missing. On
+  GRQ-25 that is the difference between one record saying _failing since 16 Sep
+  08:58Z_ and four records each claiming a fresh three-issue streak.
 - On the **third** consecutive failing issue, the worker writes **one** `ERROR`
   record to its own log, naming the hook path, the streak, the last
   `owner/repo#issue`, the status, the exit code, the duration, the hook's
@@ -349,11 +350,11 @@ counts the streak and writes one record the operator of the host can act on.
   threshold crossing, none is closed on recovery, and no `host_failure` hook is
   invoked from inside the container. The log record and the count file are the
   host's own record, and nothing about either alters the run's own result.
-- **A copy that cannot be read or written is said out loud**, at `WARNING` —
-  the run carries on, and someone should fix the mount. Each directory is
-  attempted independently and the line names the file and the reason, so a host
-  whose log mount is read-only learns it instead of quietly publishing nothing.
-  A copy that is simply not there yet is silent: that is the first run.
+- **A copy that cannot be read or written is said out loud**, at `WARNING` — the
+  run carries on, and someone should fix the mount. Each directory is attempted
+  independently and the line names the file and the reason, so a host whose log
+  mount is read-only learns it instead of quietly publishing nothing. A copy
+  that is simply not there yet is silent: that is the first run.
 
 ### What the host can read (Issue #2297)
 
@@ -379,22 +380,21 @@ flowchart LR
   healthy" is a fact a reader needs, and absence cannot state it.
 - **The per-cycle liveness line** carries the same counts:
   `[liveness] tick=… live_epoch=… last_productive=… hook_fail_success=0
-  hook_fail_failure=0 hook_fail_always=0`. All three hooks are always named, so
-  a host-side parser reads a fixed set of hook fields. When that line is
-  written — the liveness guard returned ok — it also ends with
-  `mem_available_mib=<n|unavailable>`, `pressure_memory=<text>` and
-  `pressure_cpu=<text>`. `<n>` is `MemAvailable` from `/proc/meminfo`,
-  converted from kibibytes to mebibytes and rounded to an integer; `0` is a
-  real reading. `<text>` is `/proc/pressure/memory` or `/proc/pressure/cpu`
-  with each run of whitespace collapsed to a comma, or `empty` when that
-  file was readable but blank. A file that cannot be read, and a meminfo
-  with no `MemAvailable:` line, is the token `unavailable` — the field is
-  still present, and it is not `0`. A guard error logs a warning and does
-  not write the tick line, so these fields are absent then too. The
-  `[liveness] ALERT` line does not carry them.
-- **`fleet-summary:` carries `hook_failures=N`** — failing hook invocations
-  this run — beside `claims=`, `successes=` and `failures=`, so a run whose
-  every heartbeat was lost cannot read as clean.
+  hook_fail_failure=0 hook_fail_always=0`.
+  All three hooks are always named, so a host-side parser reads a fixed set of
+  hook fields. When that line is written — the liveness guard returned ok — it
+  also ends with `mem_available_mib=<n|unavailable>`, `pressure_memory=<text>`
+  and `pressure_cpu=<text>`. `<n>` is `MemAvailable` from `/proc/meminfo`,
+  converted from kibibytes to mebibytes and rounded to an integer; `0` is a real
+  reading. `<text>` is `/proc/pressure/memory` or `/proc/pressure/cpu` with each
+  run of whitespace collapsed to a comma, or `empty` when that file was readable
+  but blank. A file that cannot be read, and a meminfo with no `MemAvailable:`
+  line, is the token `unavailable` — the field is still present, and it is not
+  `0`. A guard error logs a warning and does not write the tick line, so these
+  fields are absent then too. The `[liveness] ALERT` line does not carry them.
+- **`fleet-summary:` carries `hook_failures=N`** — failing hook invocations this
+  run — beside `claims=`, `successes=` and `failures=`, so a run whose every
+  heartbeat was lost cannot read as clean.
 
 **What a hook author owes in return.** The worker bounds a hook's wall clock and
 reports its outcome; it cannot see inside it. A hook that retries must classify
@@ -412,9 +412,9 @@ its own failures:
 
 ## A hard-killed run — `failureClass` `hard_kill`
 
-When the launcher reaps a wedged container, it first writes a bounded,
-redacted evidence file, `hard-kill-<container>-<epoch>.json`, into the host log
-directory (`~/logs`). See
+When the launcher reaps a wedged container, it first writes a bounded, redacted
+evidence file, `hard-kill-<container>-<epoch>.json`, into the host log directory
+(`~/logs`). See
 [Resilience and concurrency — wedged container watchdog](workflows/resilience-and-concurrency.md#-wedged-container-watchdog).
 On the next worker start, inside the first scan cycle, the worker reports each
 such file, oldest first (Issue #4254).
@@ -443,8 +443,8 @@ flowchart TD
   `trigger`: `watchdog` for the wedged-container reap, or `pre_launch` for the
   stale-container reap before a launch. The phase is read from the evidence's
   last worker-log lines (`[phase] <name>`, `phase=<name>` or
-  `[agent-progress] <name>:`), and is `unknown` when none is present or the
-  name is not a recognised worker phase. Log text cannot invent public signatures.
+  `[agent-progress] <name>:`), and is `unknown` when none is present or the name
+  is not a recognised worker phase. Log text cannot invent public signatures.
 - **Filing.** One issue is filed in `stSoftwareAU/VibeCoder` with the label
   `bug`. Its body carries the marker `<!-- VIBE_RUN_FAILURE:<signature> -->`,
   the host, the container, the run id, the handler, the phase, the trigger, the
@@ -452,12 +452,12 @@ flowchart TD
   must match the launcher shapes: hostname, `vibe-coder-*` container name,
   `vibe-<base36>-<six-hex>` run id (or `unknown`), `watchdog` or `pre_launch`
   trigger, and timestamps. Free-text reasons or malformed facts are kept and
-  logged as errors without filing, commenting or attesting. That repository is public and the
-  killed run may have been working a private one, so no evidence text, last log
-  line, tool call or source repository is posted. They stay in the archived
-  file on the host (Issue #4315 review). The marker is the
-  dedup key. It is matched only on issues authored by a fleet account, the same
-  rule the run-failure issues follow (`worker/deno/lib/run_failure_issue.ts`).
+  logged as errors without filing, commenting or attesting. That repository is
+  public and the killed run may have been working a private one, so no evidence
+  text, last log line, tool call or source repository is posted. They stay in
+  the archived file on the host (Issue #4315 review). The marker is the dedup
+  key. It is matched only on issues authored by a fleet account, the same rule
+  the run-failure issues follow (`worker/deno/lib/run_failure_issue.ts`).
 - **Repeats.** While an issue with the same signature is open, another kill with
   that signature adds a follow-up comment and files no new issue. The first
   repeat in a 24 h window posts one comment; later repeats in that window append
@@ -489,21 +489,21 @@ flowchart TD
   is counted until filing succeeds, so the retry reports the kill once. Within
   one pass, a repeat of a signature filed moments earlier goes straight to that
   issue, without waiting for GitHub search to index it. If the file cannot be
-  archived after the
-  report, it stays, the failure is logged as a warning, and the next start
-  reports the kill again. A malformed or wrong-version file is logged as an
-  error and kept; it is never deleted. On each reporting pass, archived evidence
-  is pruned to the transcript retention window: 30 days and at most 2,000 files,
-  deleting the oldest first. Cleanup also runs after archiving, so the cap
-  applies to newly reported files. Symlink archives are refused; cleanup
-  failures are logged as warnings. Pending malformed evidence is not pruned.
+  archived after the report, it stays, the failure is logged as a warning, and
+  the next start reports the kill again. A malformed or wrong-version file is
+  logged as an error and kept; it is never deleted. On each reporting pass,
+  archived evidence is pruned to the transcript retention window: 30 days and at
+  most 2,000 files, deleting the oldest first. Cleanup also runs after
+  archiving, so the cap applies to newly reported files. Symlink archives are
+  refused; cleanup failures are logged as warnings. Pending malformed evidence
+  is not pruned.
 - **Additive contract.** `hard_kill` is a new value of the existing
   `outcome.failureClass` field, and a new key in the fleet summary's failure
-  classes. Nothing is removed and no meaning changes, so `schemaVersion` stays at
-  2, and a hook written before this change keeps parsing the payload. The hooks in
-  `stSoftwareAU/GRQ-VibeCoder` (`callbacks/failure.sh`) and the health board in
-  `stSoftwareAU/GRQ-health` are outside this repository. They consume the
-  `hard_kill` reason; this page does not describe what they do with it.
+  classes. Nothing is removed and no meaning changes, so `schemaVersion` stays
+  at 2, and a hook written before this change keeps parsing the payload. The
+  hooks in `stSoftwareAU/GRQ-VibeCoder` (`callbacks/failure.sh`) and the health
+  board in `stSoftwareAU/GRQ-health` are outside this repository. They consume
+  the `hard_kill` reason; this page does not describe what they do with it.
 
 ## What a hook receives
 
@@ -585,70 +585,70 @@ invocation (mode `0600`) and removed after it exits:
 
 The same facts are exported as scalars, one variable each:
 
-| Environment variable                     | JSON field                      | Always present | Meaning                                                                                                              |
-| ---------------------------------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `VIBECODER_CALLBACK_SCHEMA_VERSION`      | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                           |
-| `VIBECODER_CALLBACK_EVENT`               | `event`                         | yes            | `success`, `failure`, `always`, `cycle` or `host_failure`                                                            |
-| `VIBECODER_CALLBACK_CONTEXT`             | —                               | yes            | Path to the JSON document for this invocation                                                                        |
-| `VIBECODER_RUN_ID`                       | `runId`                         | yes            | Worker run id                                                                                                        |
-| `VIBECODER_RESULT`                       | `result`                        | yes            | The run's own result: `success` or `failure`                                                                         |
-| `VIBECODER_REPOSITORY`                   | `repository`                    | yes            | `owner/repo` the run worked                                                                                          |
-| `VIBECODER_ISSUE_NUMBER`                 | `issueNumber`                   | yes            | Issue number the run worked                                                                                          |
-| `VIBECODER_HOST`                         | `host`                          | yes            | Host the worker runs on                                                                                              |
-| `VIBECODER_WORKER_NAME`                  | `workerName`                    | no             | Operator-configured worker name                                                                                      |
-| `VIBECODER_MODE`                         | `mode`                          | no             | Workflow the run served: the configured implementation label (`work-on`) or `idle-task`                              |
-| `VIBECODER_PROVIDER`                     | `provider`                      | no             | Agent provider that served the run                                                                                   |
-| `VIBECODER_SESSION_ID`                   | `sessionId`                     | no             | Agent session id                                                                                                     |
-| `VIBECODER_SESSION_LOG_PATH`             | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                             |
-| `VIBECODER_SESSION_LOG_ABSENT_REASON`    | `sessionLogAbsentReason`        | no             | Why the path is missing (`tee_disabled`, `log_dir_unavailable`, `size_cap_exceeded`, `write_failed`, `file_missing`) |
-| `VIBECODER_STARTED_AT`                   | `startedAt`                     | yes            | ISO-8601 claim time                                                                                                  |
-| `VIBECODER_FINISHED_AT`                  | `finishedAt`                    | yes            | ISO-8601 termination time                                                                                            |
-| `VIBECODER_DURATION_SECONDS`             | `durationSeconds`               | yes            | Wall-clock seconds from claim to termination                                                                         |
-| `VIBECODER_EXIT_CODE`                    | `exitCode`                      | yes            | `0` on success, non-zero on failure                                                                                  |
-| `VIBECODER_INPUT_TOKENS`                 | `telemetry.inputTokens`         | no             | Input tokens the run reported                                                                                        |
-| `VIBECODER_OUTPUT_TOKENS`                | `telemetry.outputTokens`        | no             | Output tokens the run reported                                                                                       |
-| `VIBECODER_CACHE_CREATION_TOKENS`        | `telemetry.cacheCreationTokens` | no             | Cache-creation tokens                                                                                                |
-| `VIBECODER_CACHE_READ_TOKENS`            | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                    |
-| `VIBECODER_ESTIMATED_COST_USD`           | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
-| `VIBECODER_TURNS`                        | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                    |
-| `VIBECODER_MODEL`                        | `telemetry.model`               | no             | Main served model of the invocation with the biggest token total (its sub-agents' tokens count toward that total, but the reported model is the invocation's own main model, not a sub-agent's)               |
-| `VIBECODER_EFFORT`                       | `telemetry.effort`              | no             | Effort that same dominant invocation was started with (`low`, `medium`, `high`, `xhigh`, `max`) — Issue #2573        |
-| `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
-| `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
-| `VIBECODER_OUTCOME_CATEGORY`             | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                |
-| `VIBECODER_OUTCOME_PHASE`                | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
-| `VIBECODER_OUTCOME_FAILURE_CLASS`        | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked; `hard_kill` for a hard-killed run                 |
-| `VIBECODER_PR_NUMBER`                    | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
-| `VIBECODER_GRAFT_ENABLED`                | `graft.enabled`                 | yes            | Whether the Graft repo-context switch was on for this run (`true`/`false`)                                           |
-| `VIBECODER_GRAFT_STATUS`                 | `graft.status`                  | yes            | `ok`, `failed` or `off`                                                                                              |
-| `VIBECODER_GRAFT_BUILD_SECONDS`          | `graft.buildSeconds`            | no             | Wall-clock seconds `graft build` took                                                                                |
-| `VIBECODER_GRAFT_BUNDLE_CHARS`           | `graft.bundleChars`             | no             | Characters of bundle text `graft ask` returned                                                                       |
-| `VIBECODER_GRAFT_NODE_COUNT`             | `graft.nodeCount`               | no             | Nodes in the built graph                                                                                             |
-| `VIBECODER_GRAFT_CALL_EDGE_COUNT`        | `graft.callEdgeCount`           | no             | Edges in the built graph whose relation is `calls`                                                                   |
-| `VIBECODER_GRAFT_QUERIES`                | `graft.queries`                 | no             | `graft_*` MCP tool calls the agent made this run (Issue #2314); absent when the tools were not handed over |
-| `VIBECODER_CODEGRAPH_ENABLED`            | `codegraph.enabled`             | yes            | Whether the host's CodeGraph switch was on for this run (`true` or `false`)                                          |
-| `VIBECODER_CODEGRAPH_STATUS`             | `codegraph.status`              | yes            | `ok`, `failed`, `unsupported` (no MCP transport on this provider) or `off` (switch off)                              |
-| `VIBECODER_CODEGRAPH_INDEX_SECONDS`      | `codegraph.indexSeconds`        | no             | Wall-clock seconds the index step took, when it was started                                                          |
-| `VIBECODER_CODEGRAPH_NODE_COUNT`         | `codegraph.nodeCount`           | no             | Nodes in the index                                                                                                   |
-| `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT` | `codegraph.relationshipCount`   | no             | Relationships (edges) in the index                                                                                   |
-| `VIBECODER_CODEGRAPH_QUERIES`            | `codegraph.queries`             | no             | `codegraph_explore` calls the agent made this run                                                                    |
-| `VIBECODER_RTK_ENABLED`                  | `rtk.enabled`                   | yes            | Whether the host's RTK output switch was on for this run (`true` or `false`)                                         |
-| `VIBECODER_RTK_STATUS`                   | `rtk.status`                    | yes            | `ok`, `failed`, `unsupported` (this provider takes no hook) or `off` (switch off, or the run ended before RTK ran) |
-| `VIBECODER_RTK_SAVED_TOKENS`             | `rtk.savedTokens`               | no             | RTK's own indicative count of tokens its filtering saved during the run                                              |
-| `VIBECODER_WORKER_VERSION`               | `workerVersion`                 | no             | Worker binary version that produced this run                                                                         |
-| `VIBECODER_WORKER_COMMIT`                | `workerCommit`                  | no             | Git commit SHA of the worker code that produced this run                                                              |
-| `VIBECODER_UPDATE_MODE`                  | `updateMode`                    | no             | `dynamic` or `frozen` (Issue #4120). Omitted when the checkout could not be read                                      |
-| `VIBECODER_PINNED_REF`                   | `pinnedRef`                     | no             | The ref a frozen checkout is held at. Omitted unless `updateMode` is `frozen`                                         |
+| Environment variable                     | JSON field                      | Always present | Meaning                                                                                                                                                                                         |
+| ---------------------------------------- | ------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VIBECODER_CALLBACK_SCHEMA_VERSION`      | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                                                                                                      |
+| `VIBECODER_CALLBACK_EVENT`               | `event`                         | yes            | `success`, `failure`, `always`, `cycle` or `host_failure`                                                                                                                                       |
+| `VIBECODER_CALLBACK_CONTEXT`             | —                               | yes            | Path to the JSON document for this invocation                                                                                                                                                   |
+| `VIBECODER_RUN_ID`                       | `runId`                         | yes            | Worker run id                                                                                                                                                                                   |
+| `VIBECODER_RESULT`                       | `result`                        | yes            | The run's own result: `success` or `failure`                                                                                                                                                    |
+| `VIBECODER_REPOSITORY`                   | `repository`                    | yes            | `owner/repo` the run worked                                                                                                                                                                     |
+| `VIBECODER_ISSUE_NUMBER`                 | `issueNumber`                   | yes            | Issue number the run worked                                                                                                                                                                     |
+| `VIBECODER_HOST`                         | `host`                          | yes            | Host the worker runs on                                                                                                                                                                         |
+| `VIBECODER_WORKER_NAME`                  | `workerName`                    | no             | Operator-configured worker name                                                                                                                                                                 |
+| `VIBECODER_MODE`                         | `mode`                          | no             | Workflow the run served: the configured implementation label (`work-on`) or `idle-task`                                                                                                         |
+| `VIBECODER_PROVIDER`                     | `provider`                      | no             | Agent provider that served the run                                                                                                                                                              |
+| `VIBECODER_SESSION_ID`                   | `sessionId`                     | no             | Agent session id                                                                                                                                                                                |
+| `VIBECODER_SESSION_LOG_PATH`             | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                                                                                                        |
+| `VIBECODER_SESSION_LOG_ABSENT_REASON`    | `sessionLogAbsentReason`        | no             | Why the path is missing (`tee_disabled`, `log_dir_unavailable`, `size_cap_exceeded`, `write_failed`, `file_missing`)                                                                            |
+| `VIBECODER_STARTED_AT`                   | `startedAt`                     | yes            | ISO-8601 claim time                                                                                                                                                                             |
+| `VIBECODER_FINISHED_AT`                  | `finishedAt`                    | yes            | ISO-8601 termination time                                                                                                                                                                       |
+| `VIBECODER_DURATION_SECONDS`             | `durationSeconds`               | yes            | Wall-clock seconds from claim to termination                                                                                                                                                    |
+| `VIBECODER_EXIT_CODE`                    | `exitCode`                      | yes            | `0` on success, non-zero on failure                                                                                                                                                             |
+| `VIBECODER_INPUT_TOKENS`                 | `telemetry.inputTokens`         | no             | Input tokens the run reported                                                                                                                                                                   |
+| `VIBECODER_OUTPUT_TOKENS`                | `telemetry.outputTokens`        | no             | Output tokens the run reported                                                                                                                                                                  |
+| `VIBECODER_CACHE_CREATION_TOKENS`        | `telemetry.cacheCreationTokens` | no             | Cache-creation tokens                                                                                                                                                                           |
+| `VIBECODER_CACHE_READ_TOKENS`            | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                                                                                               |
+| `VIBECODER_ESTIMATED_COST_USD`           | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                                                                                                          |
+| `VIBECODER_TURNS`                        | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                                                                                               |
+| `VIBECODER_MODEL`                        | `telemetry.model`               | no             | Main served model of the invocation with the biggest token total (its sub-agents' tokens count toward that total, but the reported model is the invocation's own main model, not a sub-agent's) |
+| `VIBECODER_EFFORT`                       | `telemetry.effort`              | no             | Effort that same dominant invocation was started with (`low`, `medium`, `high`, `xhigh`, `max`) — Issue #2573                                                                                   |
+| `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                                                                                                    |
+| `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                                                                                           |
+| `VIBECODER_OUTCOME_CATEGORY`             | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                                                                                           |
+| `VIBECODER_OUTCOME_PHASE`                | `outcome.phase`                 | no             | Phase that terminated the run                                                                                                                                                                   |
+| `VIBECODER_OUTCOME_FAILURE_CLASS`        | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked; `hard_kill` for a hard-killed run                                                                                            |
+| `VIBECODER_PR_NUMBER`                    | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                                                                                                       |
+| `VIBECODER_GRAFT_ENABLED`                | `graft.enabled`                 | yes            | Whether the Graft repo-context switch was on for this run (`true`/`false`)                                                                                                                      |
+| `VIBECODER_GRAFT_STATUS`                 | `graft.status`                  | yes            | `ok`, `failed` or `off`                                                                                                                                                                         |
+| `VIBECODER_GRAFT_BUILD_SECONDS`          | `graft.buildSeconds`            | no             | Wall-clock seconds `graft build` took                                                                                                                                                           |
+| `VIBECODER_GRAFT_BUNDLE_CHARS`           | `graft.bundleChars`             | no             | Characters of bundle text `graft ask` returned                                                                                                                                                  |
+| `VIBECODER_GRAFT_NODE_COUNT`             | `graft.nodeCount`               | no             | Nodes in the built graph                                                                                                                                                                        |
+| `VIBECODER_GRAFT_CALL_EDGE_COUNT`        | `graft.callEdgeCount`           | no             | Edges in the built graph whose relation is `calls`                                                                                                                                              |
+| `VIBECODER_GRAFT_QUERIES`                | `graft.queries`                 | no             | `graft_*` MCP tool calls the agent made this run (Issue #2314); absent when the tools were not handed over                                                                                      |
+| `VIBECODER_CODEGRAPH_ENABLED`            | `codegraph.enabled`             | yes            | Whether the host's CodeGraph switch was on for this run (`true` or `false`)                                                                                                                     |
+| `VIBECODER_CODEGRAPH_STATUS`             | `codegraph.status`              | yes            | `ok`, `failed`, `unsupported` (no MCP transport on this provider) or `off` (switch off)                                                                                                         |
+| `VIBECODER_CODEGRAPH_INDEX_SECONDS`      | `codegraph.indexSeconds`        | no             | Wall-clock seconds the index step took, when it was started                                                                                                                                     |
+| `VIBECODER_CODEGRAPH_NODE_COUNT`         | `codegraph.nodeCount`           | no             | Nodes in the index                                                                                                                                                                              |
+| `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT` | `codegraph.relationshipCount`   | no             | Relationships (edges) in the index                                                                                                                                                              |
+| `VIBECODER_CODEGRAPH_QUERIES`            | `codegraph.queries`             | no             | `codegraph_explore` calls the agent made this run                                                                                                                                               |
+| `VIBECODER_RTK_ENABLED`                  | `rtk.enabled`                   | yes            | Whether the host's RTK output switch was on for this run (`true` or `false`)                                                                                                                    |
+| `VIBECODER_RTK_STATUS`                   | `rtk.status`                    | yes            | `ok`, `failed`, `unsupported` (this provider takes no hook) or `off` (switch off, or the run ended before RTK ran)                                                                              |
+| `VIBECODER_RTK_SAVED_TOKENS`             | `rtk.savedTokens`               | no             | RTK's own indicative count of tokens its filtering saved during the run                                                                                                                         |
+| `VIBECODER_WORKER_VERSION`               | `workerVersion`                 | no             | Worker binary version that produced this run                                                                                                                                                    |
+| `VIBECODER_WORKER_COMMIT`                | `workerCommit`                  | no             | Git commit SHA of the worker code that produced this run                                                                                                                                        |
+| `VIBECODER_UPDATE_MODE`                  | `updateMode`                    | no             | `dynamic` or `frozen` (Issue #4120). Omitted when the checkout could not be read                                                                                                                |
+| `VIBECODER_PINNED_REF`                   | `pinnedRef`                     | no             | The ref a frozen checkout is held at. Omitted unless `updateMode` is `frozen`                                                                                                                   |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
 `VIBECODER_CYCLE_END_REASON` (`no_eligible_work`, `quota_paused`,
-`rate_limited`, `shutdown`, `host_fault`, `error`). `host_fault` was
-**added** without a version bump (Issue #3179): the container's root
-filesystem went read-only, so the run is ending for a fresh container. The
-cause is the host, not an issue or a provider. It does **not** receive run-only scalars
-(`RESULT`, `REPOSITORY`, `ISSUE_NUMBER`, `EXIT_CODE`, …), so it cannot be
-mistaken for a run hook.
+`rate_limited`, `shutdown`, `host_fault`, `error`). `host_fault` was **added**
+without a version bump (Issue #3179): the container's root filesystem went
+read-only, so the run is ending for a fresh container. The cause is the host,
+not an issue or a provider. It does **not** receive run-only scalars (`RESULT`,
+`REPOSITORY`, `ISSUE_NUMBER`, `EXIT_CODE`, …), so it cannot be mistaken for a
+run hook.
 
 `mode`, `telemetry.turns` and `telemetry.model` were **added** to schema 2
 without a version bump (Issue #2100), exactly as
@@ -656,29 +656,29 @@ without a version bump (Issue #2100), exactly as
 optional, and a hook written before they existed is unaffected:
 
 - `mode` names the workflow the run served, so a fleet archive can compare
-  implementation runs only. Run callbacks fire for the issue scan's own
-  claims, so today the value is the configured implementation label
-  (`work-on`, or your own if you renamed it) or `idle-task`; it is absent
-  when no implementation label is configured. A **grill-me, quorum, planning,
-  question, refine-issue or custom-label run emits no run callback at all** —
-  those routes answer their issue and return without one — so no context is
-  produced for them rather than one carrying their label. If a future release
-  gives those routes callbacks, they will report their own label here, and
-  that too is additive.
-- `telemetry.turns` is summed over the invocations that reported a turn
-  count, and is absent when none did — never nought.
-- `telemetry.model` is the served model of the invocation with the biggest
-  token total (its sub-agents' tokens included, Issue #3603), falling back to
-  that invocation's requested model when the API reported none. Tokens rather than estimated cost, so a model with no
-  pricing row can still be named; it is present whenever `telemetry` is.
+  implementation runs only. Run callbacks fire for the issue scan's own claims,
+  so today the value is the configured implementation label (`work-on`, or your
+  own if you renamed it) or `idle-task`; it is absent when no implementation
+  label is configured. A **grill-me, quorum, planning, question, refine-issue or
+  custom-label run emits no run callback at all** — those routes answer their
+  issue and return without one — so no context is produced for them rather than
+  one carrying their label. If a future release gives those routes callbacks,
+  they will report their own label here, and that too is additive.
+- `telemetry.turns` is summed over the invocations that reported a turn count,
+  and is absent when none did — never nought.
+- `telemetry.model` is the served model of the invocation with the biggest token
+  total (its sub-agents' tokens included, Issue #3603), falling back to that
+  invocation's requested model when the API reported none. Tokens rather than
+  estimated cost, so a model with no pricing row can still be named; it is
+  present whenever `telemetry` is.
 
 `telemetry.effort` was **added** the same way (Issue #2573), for the per-phase
 effort sweep on Opus 5.5. It is the effort the invocation `telemetry.model`
-names was started with — the value the worker passed on the command line,
-after every `phase_effort_overrides` and environment override was applied — so
-a pilot host's runs from before and after its override change can be told
-apart run by run. It is omitted, never guessed, when that invocation recorded
-no effort (a provider that takes none).
+names was started with — the value the worker passed on the command line, after
+every `phase_effort_overrides` and environment override was applied — so a pilot
+host's runs from before and after its override change can be told apart run by
+run. It is omitted, never guessed, when that invocation recorded no effort (a
+provider that takes none).
 
 The `graft` block was **added** the same way (Issue #2104, part of #2060), and
 is the one optional-looking fact that is present on **every** run context:
@@ -690,70 +690,70 @@ is the one optional-looking fact that is present on **every** run context:
   against one with it instead of reading silence as a missing run.
 - `status` is `ok` when the bundle came back, `failed` when the collection was
   attempted and did not, and `off` when nothing was attempted. A `failed`
-  collection reports whichever figures it reached, so a failure the run
-  recorded is visible as a failure rather than as a clean-looking `off`.
+  collection reports whichever figures it reached, so a failure the run recorded
+  is visible as a failure rather than as a clean-looking `off`.
 - The two fields are independent, and `{ "enabled": true, "status": "off" }` is
   the combination worth reading: the host **had** Graft switched on and the run
   ended before the collection — a setup failure, a refused claim. `enabled`
   states the host's real switch setting rather than a default, so an early exit
-  on a Graft host is never archived as a host that never opted in — on every
-  run that returned a result. Where no result carried a block at all — a run
-  that threw, or one the loop could not complete — the block falls back to
+  on a Graft host is never archived as a host that never opted in — on every run
+  that returned a result. Where no result carried a block at all — a run that
+  threw, or one the loop could not complete — the block falls back to
   `{ "enabled": false, "status": "off" }`: the switch was never read, so this
   says only that nothing was recorded.
-- `buildSeconds`, `bundleChars`, `nodeCount`, `callEdgeCount` and `queries`
-  are present only when the collection actually reached them, and are **omitted** — not
-  emitted as an empty string — when it did not. A figure that really is nought
-  is reported as `0`: a graph with no nodes is a measurement, not an absence.
-- The Graft **bundle text** is never published. It is repository source,
-  already spent on the run's prompt; only the figures above cross the boundary.
+- `buildSeconds`, `bundleChars`, `nodeCount`, `callEdgeCount` and `queries` are
+  present only when the collection actually reached them, and are **omitted** —
+  not emitted as an empty string — when it did not. A figure that really is
+  nought is reported as `0`: a graph with no nodes is a measurement, not an
+  absence.
+- The Graft **bundle text** is never published. It is repository source, already
+  spent on the run's prompt; only the figures above cross the boundary.
 
 `codegraph` is an **additive** block (Issue #2162, part of #2145) carried by
 every run document, so the CodeGraph trial's figures are comparable across
-hosts. A host without the switch reports
-`{ "enabled": false, "status": "off" }` rather than nothing at all, and a run
-whose index step failed reports `"status": "failed"` with whatever figures it
-did gather. Each figure — `indexSeconds`, `nodeCount`, `relationshipCount`,
-`queries` — is **omitted** when the step never produced it, because a missing
-count must not read as an index of zero nodes; a figure of `0` is published as
-`0`, because zero nodes is a measurement rather than an absence. `off` means
-the **switch** was off: a run on a switched-on host that ended before the
-index step reports `"status": "failed"` instead, so it is never counted on the
-switch-off side of the trial. Nothing else in the contract moved:
-`schemaVersion` stays at 2, and a hook that knows nothing about CodeGraph
-ignores the block.
+hosts. A host without the switch reports `{ "enabled": false, "status": "off" }`
+rather than nothing at all, and a run whose index step failed reports
+`"status": "failed"` with whatever figures it did gather. Each figure —
+`indexSeconds`, `nodeCount`, `relationshipCount`, `queries` — is **omitted**
+when the step never produced it, because a missing count must not read as an
+index of zero nodes; a figure of `0` is published as `0`, because zero nodes is
+a measurement rather than an absence. `off` means the **switch** was off: a run
+on a switched-on host that ended before the index step reports
+`"status": "failed"` instead, so it is never counted on the switch-off side of
+the trial. Nothing else in the contract moved: `schemaVersion` stays at 2, and a
+hook that knows nothing about CodeGraph ignores the block.
 
-`rtk` is an **additive** block (Issue #2386, part of #2328) carried by every
-run document, so the RTK output trial can tell a run whose Bash output was
-condensed from one whose output was not. **`enabled` is the host's switch,
-stated truthfully whatever became of the run**: an issue run that ended before
-RTK was prepared — a refused claim, an early exit — on a switched-on host
-reports `{ "enabled": true, "status": "off" }`, never a fabricated `false`,
-because the trial separates enabled runs from control runs by this block alone
-(the rule the `graft` block follows, Issue #2104). `status: "off"` beside
-`enabled: false` is a host with the switch off. A run that reaches the
-callbacks carrying no RTK outcome at all — it threw, or the cycle drained first
-— says the same thing (`rtkNotRun`): the host's real switch and
-`"status": "off"`. It does not say `failed`, as the `codegraph` block's
-equivalent does, because for RTK `failed` means the preflight ran and the
-binary was missing — a host fault to act on. `failed` means the switch was on and the run got no
-filtering, and `unsupported` that the provider takes no hook. `savedTokens` is
-RTK's **own indicative figure**, read from a tracking store that concurrent
-lanes share, so a neighbour can inflate it: read the trial from the run's token
-and cost telemetry, never from this number. It is **omitted** — never blank,
-and never `0` standing in for "unknown" — unless RTK's gain store was read both
-before and after the run; a measured `0` is published as `0`. Nothing else in
-the contract moved: `schemaVersion` stays at 2, and a hook that knows nothing
-about RTK ignores the block.
+`rtk` is an **additive** block (Issue #2386, part of #2328) carried by every run
+document, so the RTK output trial can tell a run whose Bash output was condensed
+from one whose output was not. **`enabled` is the host's switch, stated
+truthfully whatever became of the run**: an issue run that ended before RTK was
+prepared — a refused claim, an early exit — on a switched-on host reports
+`{ "enabled": true, "status": "off" }`, never a fabricated `false`, because the
+trial separates enabled runs from control runs by this block alone (the rule the
+`graft` block follows, Issue #2104). `status: "off"` beside `enabled: false` is
+a host with the switch off. A run that reaches the callbacks carrying no RTK
+outcome at all — it threw, or the cycle drained first — says the same thing
+(`rtkNotRun`): the host's real switch and `"status": "off"`. It does not say
+`failed`, as the `codegraph` block's equivalent does, because for RTK `failed`
+means the preflight ran and the binary was missing — a host fault to act on.
+`failed` means the switch was on and the run got no filtering, and `unsupported`
+that the provider takes no hook. `savedTokens` is RTK's **own indicative
+figure**, read from a tracking store that concurrent lanes share, so a neighbour
+can inflate it: read the trial from the run's token and cost telemetry, never
+from this number. It is **omitted** — never blank, and never `0` standing in for
+"unknown" — unless RTK's gain store was read both before and after the run; a
+measured `0` is published as `0`. Nothing else in the contract moved:
+`schemaVersion` stays at 2, and a hook that knows nothing about RTK ignores the
+block.
 
-The `brief` block and `VIBECODER_BRIEF_ENABLED` (Issue #2603) were removed
-with the brief toolchain (Issue #2699) before any host switched it on; no
-deployed extension read them.
+The `brief` block and `VIBECODER_BRIEF_ENABLED` (Issue #2603) were removed with
+the brief toolchain (Issue #2699) before any host switched it on; no deployed
+extension read them.
 
-`workerVersion` and `workerCommit` are **additive** scalars (Issue #2444, part of
-\#2327) that identify the worker binary and its source that produced this run.
-Each is **omitted** — never blank, never a placeholder — when the worker's own
-build metadata could not be read at invocation time. When present:
+`workerVersion` and `workerCommit` are **additive** scalars (Issue #2444, part
+of \#2327) that identify the worker binary and its source that produced this
+run. Each is **omitted** — never blank, never a placeholder — when the worker's
+own build metadata could not be read at invocation time. When present:
 
 - `workerVersion` is the semantic version string of the worker binary (e.g.
   `"1.4.2"`).
@@ -768,14 +768,14 @@ worker changes with productivity or fault rates. The fields are exported to
 respectively.
 
 `updateMode` and `pinnedRef` are **additive** scalars on the same contract
-(Issue #4120). `schemaVersion` stays at 2. `updateMode` is `"dynamic"` when
-the checkout tracks its branch, including a checkout with no `.config.json`,
-and `"frozen"` when the checkout is pinned. `pinnedRef` is the tag or SHA
-that pin names, and it is **omitted** unless the mode is `frozen`. A checkout
-git cannot describe omits `workerVersion` and `workerCommit` rather than
-publishing a blank; a config that is present but unreadable, malformed, or
-frozen without a usable pin fails the run instead of being reported as
-dynamic. The run-stats comment carries the same identity on one line,
+(Issue #4120). `schemaVersion` stays at 2. `updateMode` is `"dynamic"` when the
+checkout tracks its branch, including a checkout with no `.config.json`, and
+`"frozen"` when the checkout is pinned. `pinnedRef` is the tag or SHA that pin
+names, and it is **omitted** unless the mode is `frozen`. A checkout git cannot
+describe omits `workerVersion` and `workerCommit` rather than publishing a
+blank; a config that is present but unreadable, malformed, or frozen without a
+usable pin fails the run instead of being reported as dynamic. The run-stats
+comment carries the same identity on one line,
 `- **Worker:** 1.10.124 (abc1234), dynamic`, or
 `- **Worker:** 1.10.124 (abc1234), frozen at <ref>` when frozen. The comment's
 commit is the first seven characters of the 40-character `workerCommit`.
@@ -790,22 +790,21 @@ Other optional facts the run could not supply — no provider, no session — ar
 empty, so `[ -n "$VIBECODER_SESSION_ID" ]` is a truthful test. `result` and
 `exitCode` are unchanged (Issue #1947): hooks keyed on them keep working.
 
-
 ### Lifecycle ledger cross-reference
 
-The schema-2 callback contract is unchanged. Its run summary and the
-append-only lifecycle ledger share token extraction and pricing, but have
-different scopes: the callback summarises an issue run, while ledger events
-retain assignment identity, individual invocations and later PR work.
+The schema-2 callback contract is unchanged. Its run summary and the append-only
+lifecycle ledger share token extraction and pricing, but have different scopes:
+the callback summarises an issue run, while ledger events retain assignment
+identity, individual invocations and later PR work.
 
-| Callback field | Lifecycle field or interpretation |
-|----------------|-----------------------------------|
-| `telemetry.inputTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens` | Invocation `models[].tokens` counters, retained per model rather than as one run total |
-| `telemetry.estimatedCostUsd` | Invocation `estimatedApiEquivalentUsd`; the ledger explicitly labels the estimate API-equivalent |
-| `telemetry.model` | Invocation `servedModel` when observable, plus `requestedModel` and per-model `models[].model`; the callback selects its dominant invocation |
-| `telemetry.effort` | Invocation `effort`; the callback reports the dominant invocation's effort |
-| `telemetryAbsentReason` | Invocation `usage: "unknown"` and `telemetryAbsentReason`; unknown pricing uses `pricing: "unknown"` with no USD value |
-| Callback run outcome | Separate from ledger PR outcomes: a successful run is not proof of a reviewed, quality-green merge |
+| Callback field                                                                    | Lifecycle field or interpretation                                                                                                            |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telemetry.inputTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens` | Invocation `models[].tokens` counters, retained per model rather than as one run total                                                       |
+| `telemetry.estimatedCostUsd`                                                      | Invocation `estimatedApiEquivalentUsd`; the ledger explicitly labels the estimate API-equivalent                                             |
+| `telemetry.model`                                                                 | Invocation `servedModel` when observable, plus `requestedModel` and per-model `models[].model`; the callback selects its dominant invocation |
+| `telemetry.effort`                                                                | Invocation `effort`; the callback reports the dominant invocation's effort                                                                   |
+| `telemetryAbsentReason`                                                           | Invocation `usage: "unknown"` and `telemetryAbsentReason`; unknown pricing uses `pricing: "unknown"` with no USD value                       |
+| Callback run outcome                                                              | Separate from ledger PR outcomes: a successful run is not proof of a reviewed, quality-green merge                                           |
 
 Estimated API-equivalent cost is observed usage multiplied by the published
 per-model rows in `cost_estimate.ts`, always an estimate. It excludes
@@ -823,14 +822,14 @@ sides of the boundary:
 
 - **VibeCoder only adds.** A new field, a new value in an existing field, a new
   event — none of these bumps `schemaVersion`. Every field an earlier version
-  exported is still exported, under the same name, with the same meaning and
-  the same type. `worker/deno/tests/callback_schema_compat_test.ts` pins the
-  schema 1 field set so a removal fails in review rather than in the fleet.
-- **A bump is a fleet-wide breaking change.** The number moves only when a
-  field is removed or its meaning changes, and that is a decision with a
-  release-notes entry, a release-floor move and the extensions upgraded
-  **before** the worker ships — never a side effect of a feature. The worker
-  updates itself on every host within the hour; an operator's hooks do not.
+  exported is still exported, under the same name, with the same meaning and the
+  same type. `worker/deno/tests/callback_schema_compat_test.ts` pins the schema
+  1 field set so a removal fails in review rather than in the fleet.
+- **A bump is a fleet-wide breaking change.** The number moves only when a field
+  is removed or its meaning changes, and that is a decision with a release-notes
+  entry, a release-floor move and the extensions upgraded **before** the worker
+  ships — never a side effect of a feature. The worker updates itself on every
+  host within the hour; an operator's hooks do not.
 - **A hook refuses the versions it cannot read, not the versions it has not
   met.** Refuse a malformed version, and refuse a version _older_ than the one
   the hook was written against if it depends on a later field. A **newer**
@@ -838,13 +837,13 @@ sides of the boundary:
   once that the contract has moved so the extension author looks at what was
   added.
 
-**The scar (Issues #2039, #2041).** On 2026-09-11 schema 2 added `outcome`,
-the absence reasons and the cycle event — all additive — and the number was
-raised anyway. The deployed hooks did exactly what this page then told them
-to, refused a version they did not know, and every callback on every host in
-the fleet failed on every issue: no health heartbeat, no run archive, one
-escalation per host per hook, and a reinstall by hand on each host to recover.
-Nothing about the change needed a bump; the bump was the outage.
+**The scar (Issues #2039, #2041).** On 2026-09-11 schema 2 added `outcome`, the
+absence reasons and the cycle event — all additive — and the number was raised
+anyway. The deployed hooks did exactly what this page then told them to, refused
+a version they did not know, and every callback on every host in the fleet
+failed on every issue: no health heartbeat, no run archive, one escalation per
+host per hook, and a reinstall by hand on each host to recover. Nothing about
+the change needed a bump; the bump was the outage.
 
 The worker records a hook that refuses its schema version the same way it
 records any other permanent hook failure
@@ -938,7 +937,9 @@ Notes that apply to all four:
   outlives the hook — it will hold the output pipes past the timeout.
 - Do not assume any environment beyond `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`,
   the proxy variables and the `VIBECODER_*` set above. A proxy variable is set
-  only when the worker had one, and never with a value containing `@`.
+  only when the process that spawns the hook had one (the worker for run and
+  cycle hooks, the host launcher for the host-failure hook), and never with a
+  value containing `@`.
 
 ## The conformance fixture
 

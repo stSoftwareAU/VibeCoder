@@ -1,10 +1,12 @@
 ## Summary
 
-Run, cycle and host-failure callbacks now inherit the egress proxy variables
-(`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms), so a
-hook's `git clone` and `curl` go through the CONNECT proxy instead of failing
-with `Could not resolve host`. A proxy value containing `@` is dropped. Closes
-#4496.
+Run, cycle and host-failure callbacks now inherit the proxy variables
+(`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms) of the
+process that spawns them. Run and cycle hooks run in the worker container, so
+their `git clone` and `curl` go through the egress CONNECT proxy instead of
+failing with `Could not resolve host`. The host-failure hook is spawned on the
+host and gets the host launcher's own proxy variables, usually none. A proxy
+value containing `@` is dropped. Closes #4496.
 
 Version bump: no `VERSION` change in this PR; the merged commit records the
 final version.
@@ -24,8 +26,14 @@ final version.
 - The `@` check applies to all six proxy names, including `NO_PROXY`, as the
   issue says "drop any value that contains `@`". A dropped value is omitted
   whole, never rewritten.
-- Cycle and host-failure hooks get the same variables as run hooks: they spawn
-  from the same container and `INHERITED_ENV_VARS` already covered all three.
+- Cycle and host-failure hooks share the same inheritance code as run hooks
+  (`INHERITED_ENV_VARS` already covered all three). The cycle hook runs in the
+  worker container (`runCycleCallback` in `run_core_production_deps.ts`), so it
+  gets the egress proxy. The host-failure hook is spawned on the host, before a
+  container exists (`checkout_update.ts`, `container_restart_backoff.ts`), so it
+  inherits whatever proxy variables the host launcher has set, usually none; the
+  egress proxy variables exist only in the container environment
+  (`container_launch.ts` `workerEnv`).
 - Additive only: `CALLBACK_SCHEMA_VERSION` is unchanged.
 
 ### Undiscoverable Facts
@@ -80,7 +88,12 @@ Backend only; no UI files touched.
 - Red checks: the `@` condition forced false → the userinfo tests fail (run,
   cycle and host-failure); the proxy names removed from `INHERITED_ENV_VARS` → 6
   tests fail.
-- `deno task test:unit` over the four callback test files: 89 passed, 0 failed.
-  `deno fmt`, `deno lint` and `deno check` on the touched files: clean.
-- `./quality.sh` on the final head: `Result: PASSED (with skipped checks)`; deno
-  lint, type check and fmt passed.
+- Distinct fixture values (PR #4534 review): in `run_callbacks_test.ts` and
+  `host_failure_hook_test.ts` each of the six names has its own value (different
+  ports for the four URL names, different host lists for `NO_PROXY` and
+  `no_proxy`). Red check: `inheritedEnv` reading `readEnv(name.toUpperCase())` →
+  3 tests fail (the run, cycle and host-failure pass-through tests); restored.
+- `deno task test:unit` over `run_callbacks_test.ts`,
+  `host_failure_hook_test.ts`, `run_callbacks_integration_test.ts` and
+  `run_callbacks_config_test.ts`: 92 passed, 0 failed. `deno fmt` on the touched
+  files: clean.
