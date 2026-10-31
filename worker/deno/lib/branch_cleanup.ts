@@ -771,6 +771,7 @@ export async function cleanupStaleRemoteBranches(
             "merged",
             cleanupOptions.cache,
             ghFn,
+            { throwOnError: true },
           );
         } catch (error) {
           const message = errorMessage(error);

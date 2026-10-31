@@ -13,7 +13,16 @@ import { classifyLifecycleOutcome } from "../lib/lifecycle_outcomes.ts";
 import { buildAssignmentIdMarker } from "../lib/pr_body.ts";
 import type { PrRollup } from "../lib/check_runs_batch.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
-import { cleanupMergedPrBranches } from "../lib/branch_cleanup.ts";
+import {
+  cleanupMergedPrBranches,
+  defaultGhCommand,
+} from "../lib/branch_cleanup.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
+import {
+  clearPrimaryQuotaLatch,
+  latchPrimaryQuota,
+} from "../lib/primary_quota_latch.ts";
+import { defaultLogger } from "../lib/logger.ts";
 import {
   buildFailedCheckRunsLookup,
   findFailedCiChecks,
@@ -102,6 +111,121 @@ Deno.test("PR observations log quota-latch skips at info and genuine faults at e
   assertEquals(lines[1]?.startsWith("info:"), true);
   assertEquals(lines[2]?.startsWith("error:"), true);
   assertEquals(lines.length, 3);
+});
+
+for (const kind of ["primary", "secondary"] as const) {
+  Deno.test(`PR observations log ${kind} skips through defaultGhCommand at info`, async () => {
+    clearPrimaryQuotaLatch();
+    const info: string[] = [];
+    const errors: string[] = [];
+    let spawns = 0;
+    _setGhSpawnRunner(() => {
+      spawns++;
+      throw new Error("a latched observation must not spawn");
+    });
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      latchPrimaryQuota(now + 3600, now, kind);
+      await recordLifecyclePrFromGithub(
+        { workDir: "/unused", repo: "org/repo", prNumber: 10 },
+        defaultGhCommand,
+        {
+          info: (message) => info.push(message),
+          error: (message) => errors.push(message),
+        },
+      );
+      assertEquals(errors, []);
+      assertEquals(info.length, 1);
+      assertStringIncludes(
+        info[0]!,
+        "gh command failed (exit 1): gh command skipped:",
+      );
+      assertEquals(spawns, 0);
+    } finally {
+      _resetGhSpawnRunner();
+      clearPrimaryQuotaLatch();
+    }
+  });
+
+  Deno.test(`merge cleanup lifecycle caller logs a wrapped ${kind} skip at info`, () =>
+    withLedger(async (_path, dir) => {
+      clearPrimaryQuotaLatch();
+      const info: string[] = [];
+      const errors: string[] = [];
+      const originalInfo = defaultLogger.info;
+      const originalError = defaultLogger.error;
+      defaultLogger.info = (message) => {
+        info.push(message);
+      };
+      defaultLogger.error = (message) => {
+        errors.push(message);
+      };
+      const calls: string[][] = [];
+      _setGhSpawnRunner((args) => {
+        calls.push([...args]);
+        const now = Math.floor(Date.now() / 1000);
+        latchPrimaryQuota(now + 3600, now, kind);
+        return Promise.resolve({
+          success: true,
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify([{
+            number: 10,
+            title: "Fix",
+            headRefName: "",
+            body: snapshot.body,
+            mergedAt: terminal.mergedAt,
+          }]),
+        });
+      });
+      try {
+        const result = await cleanupMergedPrBranches(["org/repo"], "bot", {
+          workDir: dir,
+        });
+        assertEquals(result.ok, true);
+        assertEquals(errors, []);
+        assertEquals(info.length, 1);
+        assertStringIncludes(
+          info[0]!,
+          "Lifecycle PR observation skipped for org/repo#10",
+        );
+        assertEquals(calls.length, 1);
+        assertEquals(calls[0]?.slice(0, 2), ["pr", "list"]);
+      } finally {
+        defaultLogger.info = originalInfo;
+        defaultLogger.error = originalError;
+        _resetGhSpawnRunner();
+        clearPrimaryQuotaLatch();
+      }
+    }));
+}
+
+Deno.test("PR observations keep wrapped genuine faults at error even when they quote a skip", async () => {
+  const info: string[] = [];
+  const errors: string[] = [];
+  _setGhSpawnRunner(() =>
+    Promise.resolve({
+      success: false,
+      code: 1,
+      stdout: "",
+      stderr: "invalid snapshot containing gh command skipped: text",
+    })
+  );
+  try {
+    await recordLifecyclePrFromGithub(
+      { workDir: "/unused", repo: "org/repo", prNumber: 10 },
+      defaultGhCommand,
+      {
+        info: (message) => info.push(message),
+        error: (message) => errors.push(message),
+      },
+    );
+    assertEquals(info, []);
+    assertEquals(errors.length, 1);
+    assertStringIncludes(errors[0]!, "invalid snapshot");
+  } finally {
+    _resetGhSpawnRunner();
+  }
 });
 Deno.test("PR observations never infer pre-merge gates from a post-merge snapshot", () =>
   withLedger(async (path) => {

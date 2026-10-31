@@ -479,12 +479,15 @@ run.
 
 A bare `Forbidden` from `Post "https://api.github.com/graphql"` is
 classified as a secondary-limit refusal. The worker latches GraphQL-backed
-calls for the short cool-down and writes the shared rate-limit signal; if
-the quota probe itself receives that refusal, it does not turn it into an
-hour-long primary-quota latch. Repository sweeps stop at the first primary
+calls for the short cool-down and writes the shared rate-limit signal. A
+standalone quota probe can discover and latch that refusal without probing
+again; a healthy REST quota fallback cannot clear the cool-down or let the
+merged-PR issue sweep proceed. Repository sweeps stop at the first primary
 or secondary refusal, leaving the current repository's unfinished watermark
 state for the next cycle. A call skipped by either latch is logged as INFO
-by lifecycle observation, while actual observation faults remain ERROR.
+by lifecycle observation, including skips wrapped by `runGhOrThrow`, while
+actual observation faults remain ERROR. Cached stale-branch lookups propagate
+request failures to the cleanup sweep so it can stop at the refusal too.
 
 ### How the two counters relate
 

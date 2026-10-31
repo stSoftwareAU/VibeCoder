@@ -197,7 +197,12 @@ export async function recordLifecyclePrFromGithub(
     const message = redactSecrets(
       error instanceof Error ? error.message : String(error),
     );
-    if (message.startsWith(PRIMARY_QUOTA_SKIP_PREFIX)) {
+    // The bare runner throws the skip directly; runGhOrThrow adds its exit
+    // context. Only strip that anchored wrapper, never a quoted skip in a fault.
+    if (
+      message.replace(/^gh command failed \(exit \d+\): /, "")
+        .startsWith(PRIMARY_QUOTA_SKIP_PREFIX)
+    ) {
       (logger.info ?? defaultLogger.info.bind(defaultLogger))(
         `Lifecycle PR observation skipped for ${input.repo}#${input.prNumber}: ${message}`,
       );

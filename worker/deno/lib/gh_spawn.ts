@@ -628,11 +628,13 @@ export async function spawnGh(
     // Issue #1540: the refusal is recognised here, where it is seen, and
     // handed to the registered hook, which latches and writes the shared
     // signal. The hook probes only when the response may be primary quota;
-    // the quota probe itself (`bypassQuotaLatch`) must not recurse.
+    // a primary refusal from the quota probe must not recurse. A secondary
+    // refusal needs no probe, so it also latches when the probe sees it first.
     if (
-      !result.success && !options.bypassQuotaLatch &&
+      !result.success &&
       !isQuotaExemptGhCall(args) && quotaExhaustionHook !== null &&
-      (isPrimaryRateLimitMessage(result.stderr) ||
+      ((!options.bypassQuotaLatch &&
+        isPrimaryRateLimitMessage(result.stderr)) ||
         isSecondaryOnlyRateLimitMessage(
           result.stderr,
           isPrimaryRateLimitMessage,
