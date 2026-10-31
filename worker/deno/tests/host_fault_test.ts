@@ -13,7 +13,9 @@ import {
   describeHostFault,
   detectHostFault,
   HOST_FAULT_KINDS,
+  hostDiskInfrastructureFailure,
   type HostFaultKind,
+  isHostDiskFaultText,
   isHostFaultKind,
   isQualityGateFailureRecord,
   parseHostFaultMarker,
@@ -94,6 +96,24 @@ Deno.test("host fault - detects disk-full from 'No space left on device'", () =>
 
 Deno.test("host fault - detects disk-full from ENOSPC", () => {
   assertEquals(detectHostFault("write failed: ENOSPC"), "disk-full");
+});
+
+Deno.test("host fault - disk exhaustion without a protective stop remains an infrastructure failure", () => {
+  for (
+    const reason of [
+      DISK_FULL_MESSAGE,
+      "write failed: ENOSPC",
+      "Read-only file system",
+      "tmpdir failed: os error 30",
+    ]
+  ) {
+    assertEquals(isHostDiskFaultText(reason), true, reason);
+    assertEquals(hostDiskInfrastructureFailure(reason), {
+      category: "internal_error",
+      status: "failure",
+      reason,
+    });
+  }
 });
 
 Deno.test("host fault - detects container-build-failed", () => {

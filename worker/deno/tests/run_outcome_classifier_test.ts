@@ -835,6 +835,40 @@ Deno.test("classify #4429 - intentional host-disk parking is not code-fixable", 
   assertEquals(exhausted.fixability, "code_fixable");
 });
 
+Deno.test("classify #4526 - worker-authored host-disk floor stops are not code-fixable", () => {
+  const floorOnly =
+    "Claude execution failed: host disk below its floor — floor 46.0 GB; a repository build or test would grow host disk further, so it waits until the host recovers (Issue #3178)";
+  const quotedFloor = formatDetailedFailureMessage("Claude execution failed", {
+    elapsedSeconds: 1,
+    outputSize: 1,
+    lastOutputSnippet: redactedTail(
+      "host disk below its floor — floor 46.0 GB; a repository build or test would grow host disk further, so it waits until the host recovers (Issue #3178)",
+      500,
+    ),
+  });
+
+  for (const declaredCategory of [true, false]) {
+    const protectiveStop = classifyRunFailure(
+      "internal_error",
+      floorOnly,
+      declaredCategory,
+    );
+    assertEquals(protectiveStop.failureClass, "disk-full");
+    assertEquals(protectiveStop.fixability, "not_code_fixable");
+
+    const agentQuote = classifyRunFailure(
+      "internal_error",
+      quotedFloor,
+      declaredCategory,
+    );
+    assertEquals(agentQuote.failureClass, "worker-crash");
+    assertEquals(agentQuote.fixability, "code_fixable");
+  }
+
+  const otherCategory = classifyRunFailure("killed", floorOnly, false);
+  assertEquals(otherCategory.failureClass, "killed-unknown");
+});
+
 Deno.test("classify #1658 - a trigger token inside a branch-name slug is not out-of-credit, oom or worker-crash", () => {
   const credit = classifyRunFailure(
     "unknown",
