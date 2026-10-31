@@ -73,16 +73,25 @@ Added:
 - `worker/deno/tests/decision_warn_dedup_test.ts`: 4 helper tests (first
   sighting, changed signature, independent keys, reset).
 - `worker/deno/tests/issue_lifecycle_test.ts`: unchanged did-not-land verdict
-  warns once across two cycles; a changed reason or PR number warns again.
+  warns once across two cycles; a changed reason or PR number warns again; the
+  WARNING and its DEBUG repeat carry `repo`, `issueNumber`, `prNumber` and
+  `reason` in their context.
 - `worker/deno/tests/missing_criterion_close_guard_3177_test.ts`: unchanged
   missing-criteria verdict warns once; a changed missing set or PR number warns
   again.
 - `worker/deno/tests/pr_maintenance_test.ts`: `closeIssuesForMergedPrs` warns
-  once across two cycles for an unlanded merge; a changed reason warns again.
+  once across two cycles for an unlanded merge; a changed reason warns again;
+  the WARNING context and the DEBUG repeat (message and context) carry `repo`,
+  `issueNumber`, `prNumber` and `reason`.
 
 Edited: the existing #4396 did-not-land test in `issue_lifecycle_test.ts` now
 calls `resetDecisionWarnings()` first (module state is shared within a file); no
 assertion was removed or changed.
+
+Mutation follow-up: the surviving mutants (the four context properties at
+`issue_lifecycle.ts:348-351` and `pr_maintenance.ts:2646-2649`, and the deleted
+`logger.debug` call at `pr_maintenance.ts:2659`) are killed by the two new
+context tests; each was re-applied by hand and the matching test went red.
 
 Red checks: `shouldWarnDecision` forced to return true → the 4 helper tests and
 the 6 site tests go red (two identical warn lines instead of one). Base-branch

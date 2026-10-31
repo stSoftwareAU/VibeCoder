@@ -1929,6 +1929,8 @@ function unlandedCloseOptions(
   reason: "orphaned" | "unknown",
   warns: string[],
   closedIssues: string[],
+  debugs: { message: string; context: unknown }[] = [],
+  warnContexts: unknown[] = [],
 ): CloseIssuesOptions {
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -1952,8 +1954,12 @@ function unlandedCloseOptions(
       ghCommandFn: ghFn,
       logger: {
         ...makeSilentLogger(),
-        warn: (m: string) => {
+        warn: (m: string, ctx?: unknown) => {
           warns.push(m);
+          warnContexts.push(ctx);
+        },
+        debug: (m: string, ctx?: unknown) => {
+          debugs.push({ message: m, context: ctx });
         },
       },
     }),
@@ -1999,6 +2005,32 @@ Deno.test("closeIssuesForMergedPrs - a changed did-not-land reason warns again (
     unlandedCloseOptions("unknown", warns, closedIssues),
   );
   assertEquals(countWarns(), 2, "a changed landing reason warns again");
+});
+
+Deno.test("closeIssuesForMergedPrs - the did-not-land warning and its DEBUG repeat carry repo, issue, PR and reason (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const warns: string[] = [];
+  const debugs: { message: string; context: unknown }[] = [];
+  const warnContexts: unknown[] = [];
+  const options = unlandedCloseOptions(
+    "orphaned",
+    warns,
+    [],
+    debugs,
+    warnContexts,
+  );
+  await closeIssuesForMergedPrs(options);
+  await closeIssuesForMergedPrs(options);
+  const expected = {
+    repo: options.repos[0],
+    issueNumber: "50",
+    prNumber: 100,
+    reason: "orphaned",
+  };
+  assertEquals(warnContexts, [expected]);
+  assertEquals(debugs.length, 1, "the unchanged repeat is logged at DEBUG");
+  assertEquals(debugs[0]!.message.includes("did not land"), true);
+  assertEquals(debugs[0]!.context, expected);
 });
 
 // ============================================================================

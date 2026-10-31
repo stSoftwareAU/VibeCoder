@@ -939,20 +939,24 @@ function unlandedVerifier(reason: "orphaned" | "unknown") {
     });
 }
 
-/** A logger that records warn and debug messages (Issue #4495). */
+/** A logger that records warn and debug messages and contexts (Issue #4495). */
 function recordingLogger() {
   const warns: string[] = [];
   const debugs: string[] = [];
+  const warnContexts: unknown[] = [];
+  const debugContexts: unknown[] = [];
   const logger: Logger = {
     ...makeLogger(),
-    warn: (m: string) => {
+    warn: (m: string, ctx?: unknown) => {
       warns.push(m);
+      warnContexts.push(ctx);
     },
-    debug: (m: string) => {
+    debug: (m: string, ctx?: unknown) => {
       debugs.push(m);
+      debugContexts.push(ctx);
     },
   };
-  return { logger, warns, debugs };
+  return { logger, warns, debugs, warnContexts, debugContexts };
 }
 
 /** The gh answers for a merged PR; the landing verdict is injected. */
@@ -1016,4 +1020,24 @@ Deno.test("ensureIssueClosedIfPrMerged - a changed did-not-land reason or PR num
   assertEquals(countWarns(), 2, "a changed landing reason warns again");
   await run(3372, "unknown");
   assertEquals(countWarns(), 3, "a different PR number warns again");
+});
+
+Deno.test("ensureIssueClosedIfPrMerged - the did-not-land warning and its DEBUG repeat carry repo, issue, PR and reason (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const { logger, warnContexts, debugContexts } = recordingLogger();
+  const deps = {
+    ghCommandFn: mergedPrGh,
+    logger,
+    verifyMergeLandedFn: unlandedVerifier("orphaned"),
+  };
+  await ensureIssueClosedIfPrMerged("org/repo", 3339, 3371, "testbot", deps);
+  await ensureIssueClosedIfPrMerged("org/repo", 3339, 3371, "testbot", deps);
+  const expected = {
+    repo: "org/repo",
+    issueNumber: 3339,
+    prNumber: 3371,
+    reason: "orphaned",
+  };
+  assertEquals(warnContexts, [expected]);
+  assertEquals(debugContexts, [expected]);
 });
