@@ -20,7 +20,10 @@ needs to do the following:
 2. Clear **Active** under **Webhook**. The babysitter polls and does not need
    inbound webhooks. Select **Only on this account** for installation scope if
    all monitored repositories belong to this organisation.
-3. Under **Repository permissions**, grant:
+3. Under **Repository permissions**, grant the following. The Codex agent's
+   read-only token is narrowed from these grants and needs the App to hold
+   Contents, Pull requests, Issues, Checks and Actions read, which are already
+   granted below:
    - **Contents: read and write** — clone and push branch fixes.
    - **Pull requests: read and write** — inspect PRs and maintain branches.
    - **Issues: read and write** — acquire, renew and release the fleet's
@@ -82,8 +85,11 @@ requests human reviewers on new PRs, and an App cannot be requested as one.
 
 Setup supports monitored repositories under one owner and verifies the App's
 permissions. Configure the bot as a trusted lock author on every fleet host;
-setup can verify only its own host. Installation tokens are refreshed during
-long passes. Keep tokens out of command-line arguments and logs.
+setup can verify only its own host. The runner's installation token is
+refreshed during long passes. The Codex agent gets a separate read-only token
+for the target repository, which is not refreshed and needs the App to hold
+Contents, Pull requests, Issues, Checks and Actions read (already granted).
+Keep tokens out of command-line arguments and logs.
 
 First run a read-only scan and check GitHub's rate-limit
 response for the installation identity. Then test one PR while another fleet

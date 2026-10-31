@@ -83,6 +83,12 @@ not to ask questions. When a fix
 needs a human decision, it should report the blocker and stop without a
 commit. The sandbox still applies; an unavailable
 permission or credential can stop a run and must be corrected by the operator.
+Codex gets its own installation token, minted per repair for the target
+repository only, with read-only permissions (contents, pull requests, issues,
+checks, actions). Every GitHub write (lock, push, branch update, review
+dismissal) is made by the runner with its own token. The agent token lasts
+about an hour and is not refreshed, so reads late in a longer repair can fail.
+PR description fixes reach GitHub only via the archived summary.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
 An explicitly selected `--repo` scans that repository regardless of PR author;
