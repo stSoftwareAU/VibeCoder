@@ -12,6 +12,7 @@ import {
   renderPreprReviewResolved,
 } from "../lib/prepr_review_record.ts";
 import { alwaysLanded } from "./fixtures/merge_landing_stub.ts";
+import { resetDecisionWarnings } from "../lib/decision_warn_dedup.ts";
 import {
   type AutoMergeOptions,
   type CiCheckScanOptions,
@@ -1918,6 +1919,86 @@ Deno.test("closeIssuesForMergedPrs - skips when no issue number in title", async
   if (result.ok) {
     assertEquals(result.value.closedCount, 0);
   }
+});
+
+/**
+ * Close options for one open issue #50 with merged PR #100 that did not land
+ * (Issue #4495). Warnings land in `warns`; closes in `closedIssues`.
+ */
+function unlandedCloseOptions(
+  reason: "orphaned" | "unknown",
+  warns: string[],
+  closedIssues: string[],
+): CloseIssuesOptions {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("pr list")) {
+      return JSON.stringify([{ number: 100, title: "Fix (Issue #50)" }]);
+    }
+    if (key.includes("issue view")) return "OPEN";
+    if (key.includes("issue close")) closedIssues.push(args[2]!);
+    return "[]";
+  };
+  return {
+    verifyMergeLandedFn: () =>
+      Promise.resolve({
+        landed: false as const,
+        reason,
+        detail: "the merge commit is not reachable from Develop",
+        mergeCommit: "dea1fdcc",
+        baseRefName: "milestone/clean-up",
+      }),
+    ...makeBaseScanOptions({
+      ghCommandFn: ghFn,
+      logger: {
+        ...makeSilentLogger(),
+        warn: (m: string) => {
+          warns.push(m);
+        },
+      },
+    }),
+    extractIssueNumber: (title: string) => {
+      const match = title.match(/Issue #(\d+)/);
+      return match ? match[1]! : null;
+    },
+  };
+}
+
+Deno.test("closeIssuesForMergedPrs - a merged PR that did not land warns once across two cycles (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const warns: string[] = [];
+  const closedIssues: string[] = [];
+  const options = unlandedCloseOptions("orphaned", warns, closedIssues);
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const result = await closeIssuesForMergedPrs(options);
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.closedCount, 0);
+  }
+  assertEquals(
+    warns.filter((w) => w.includes("did not land")).length,
+    1,
+    JSON.stringify(warns),
+  );
+  assertEquals(closedIssues, [], "an unlanded merge must not close the issue");
+});
+
+Deno.test("closeIssuesForMergedPrs - a changed did-not-land reason warns again (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const warns: string[] = [];
+  const closedIssues: string[] = [];
+  const countWarns = () =>
+    warns.filter((w) => w.includes("did not land")).length;
+  await closeIssuesForMergedPrs(
+    unlandedCloseOptions("orphaned", warns, closedIssues),
+  );
+  await closeIssuesForMergedPrs(
+    unlandedCloseOptions("orphaned", warns, closedIssues),
+  );
+  assertEquals(countWarns(), 1, JSON.stringify(warns));
+  await closeIssuesForMergedPrs(
+    unlandedCloseOptions("unknown", warns, closedIssues),
+  );
+  assertEquals(countWarns(), 2, "a changed landing reason warns again");
 });
 
 // ============================================================================

@@ -14,6 +14,7 @@ import {
   hasIssueChangeLandedOnBranch,
   unassignAfterPrCreated,
 } from "../lib/issue_lifecycle.ts";
+import { resetDecisionWarnings } from "../lib/decision_warn_dedup.ts";
 import type { Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -867,6 +868,7 @@ Deno.test("handlePrClosedAfterCreation - no merged match in cache falls through 
 });
 
 Deno.test("ensureIssueClosedIfPrMerged - a merged PR whose change did not land leaves the issue OPEN with the reason (Issue #4396)", async () => {
+  resetDecisionWarnings(); // Issue #4495: the first verdict warns; earlier tests may have recorded it
   let closedIssue = false;
   const warns: string[] = [];
   const logger = {
@@ -923,4 +925,95 @@ Deno.test("ensureIssueClosedIfPrMerged - a merged PR whose change did not land l
   }
   assertEquals(closedIssue, false, "the issue must stay open");
   assert(warns.some((w) => w.includes("did not land")), JSON.stringify(warns));
+});
+
+/** A did-not-land verdict with the given reason (Issue #4495). */
+function unlandedVerifier(reason: "orphaned" | "unknown") {
+  return () =>
+    Promise.resolve({
+      landed: false as const,
+      reason,
+      detail: "the merge commit is not reachable from Develop",
+      mergeCommit: "dea1fdcc",
+      baseRefName: "milestone/clean-up",
+    });
+}
+
+/** A logger that records warn and debug messages (Issue #4495). */
+function recordingLogger() {
+  const warns: string[] = [];
+  const debugs: string[] = [];
+  const logger: Logger = {
+    ...makeLogger(),
+    warn: (m: string) => {
+      warns.push(m);
+    },
+    debug: (m: string) => {
+      debugs.push(m);
+    },
+  };
+  return { logger, warns, debugs };
+}
+
+/** The gh answers for a merged PR; the landing verdict is injected. */
+const mergedPrGh = (args: string[]) => {
+  if (args.includes("pr") && args.includes("view")) {
+    return Promise.resolve(JSON.stringify({
+      state: "MERGED",
+      mergeCommit: { oid: "dea1fdcc" },
+      baseRefName: "milestone/clean-up",
+    }));
+  }
+  return Promise.resolve("");
+};
+
+Deno.test("ensureIssueClosedIfPrMerged - an unchanged did-not-land verdict warns once across two cycles (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const { logger, warns, debugs } = recordingLogger();
+  const deps = {
+    ghCommandFn: mergedPrGh,
+    logger,
+    verifyMergeLandedFn: unlandedVerifier("orphaned"),
+  };
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const result = await ensureIssueClosedIfPrMerged(
+      "org/repo",
+      3339,
+      3371,
+      "testbot",
+      deps,
+    );
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.closed, false);
+  }
+  assertEquals(
+    warns.filter((w) => w.includes("did not land")).length,
+    1,
+    JSON.stringify(warns),
+  );
+  assertEquals(
+    debugs.filter((d) => d.includes("did not land")).length,
+    1,
+    JSON.stringify(debugs),
+  );
+});
+
+Deno.test("ensureIssueClosedIfPrMerged - a changed did-not-land reason or PR number warns again (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const { logger, warns } = recordingLogger();
+  const run = (prNumber: number, reason: "orphaned" | "unknown") =>
+    ensureIssueClosedIfPrMerged("org/repo", 3339, prNumber, "testbot", {
+      ghCommandFn: mergedPrGh,
+      logger,
+      verifyMergeLandedFn: unlandedVerifier(reason),
+    });
+  const countWarns = () =>
+    warns.filter((w) => w.includes("did not land")).length;
+  await run(3371, "orphaned");
+  await run(3371, "orphaned");
+  assertEquals(countWarns(), 1, JSON.stringify(warns));
+  await run(3371, "unknown");
+  assertEquals(countWarns(), 2, "a changed landing reason warns again");
+  await run(3372, "unknown");
+  assertEquals(countWarns(), 3, "a different PR number warns again");
 });
