@@ -125,11 +125,13 @@ Three properties are specific to it:
 ### What the hook receives
 
 The same cleared environment as every other hook — only `PATH`, `HOME`, `LANG`,
-`TZ` and `TMPDIR` are inherited — plus a versioned JSON document at
-`VIBECODER_CALLBACK_CONTEXT` (Issue #2107). `schemaVersion` stays at the
-contract's current version: a new event is not a breaking change to the fields
-an existing hook already reads (see
-[Versioning](#versioning--the-contract-is-additive)).
+`TZ`, `TMPDIR` and the proxy variables are inherited — plus a versioned JSON
+document at `VIBECODER_CALLBACK_CONTEXT` (Issue #2107). The proxy variables
+(`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms) name the
+egress proxy and carry no credential: a value containing `@` is dropped, since
+its userinfo could hold one. `schemaVersion` stays at the contract's current
+version: a new event is not a breaking change to the fields an existing hook
+already reads (see [Versioning](#versioning--the-contract-is-additive)).
 
 ```json
 {
@@ -506,9 +508,16 @@ flowchart TD
 ## What a hook receives
 
 The environment is **cleared** before it is populated: only `PATH`, `HOME`,
-`LANG`, `TZ` and `TMPDIR` are inherited from the worker, so no credential
-crosses into a callback. Prompt bodies and transcript contents are never
-exported.
+`LANG`, `TZ`, `TMPDIR` and the proxy variables are inherited from the worker, so
+no credential crosses into a callback. The proxy variables (`HTTPS_PROXY`,
+`HTTP_PROXY`, `NO_PROXY` and their lower-case forms) name the egress proxy, the
+only way out of the container, so a hook can reach a remote through it. A proxy
+value containing `@` is dropped, since its userinfo could hold a credential.
+Prompt bodies and transcript contents are never exported.
+
+Passing these variables is additive: it is not a schema bump, and
+`schemaVersion` stays where it is (see
+[Versioning](#versioning--the-contract-is-additive)).
 
 `VIBECODER_CALLBACK_CONTEXT` names a versioned JSON document written for that
 invocation (mode `0600`) and removed after it exits:
@@ -927,8 +936,9 @@ Notes that apply to all four:
   reported, and never changes the run's own result.
 - Finish well inside `timeout_seconds`, and do not fork a background child that
   outlives the hook — it will hold the output pipes past the timeout.
-- Do not assume any environment beyond `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`
-  and the `VIBECODER_*` set above.
+- Do not assume any environment beyond `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`,
+  the proxy variables and the `VIBECODER_*` set above. A proxy variable is set
+  only when the worker had one, and never with a value containing `@`.
 
 ## The conformance fixture
 

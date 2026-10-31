@@ -3647,9 +3647,12 @@ flowchart LR
 ### What a hook receives
 
 The environment is **cleared** before it is populated: only `PATH`, `HOME`,
-`LANG`, `TZ` and `TMPDIR` are inherited from the worker, so no credential
-crosses into a callback. Transcript **contents** are never exported — only the
-path, and reading it is the callback author's decision.
+`LANG`, `TZ`, `TMPDIR` and the proxy variables are inherited from the worker, so
+no credential crosses into a callback. The proxy variables (`HTTPS_PROXY`,
+`HTTP_PROXY`, `NO_PROXY` and their lower-case forms) name the egress proxy and
+carry no credential: a value containing `@` is dropped, since its userinfo could
+hold one. Transcript **contents** are never exported — only the path, and
+reading it is the callback author's decision.
 
 `VIBECODER_CALLBACK_CONTEXT` names a versioned JSON document written for that
 invocation and removed after it exits:
