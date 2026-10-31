@@ -176,6 +176,12 @@ Deno.test("Issue #4360 - a parked build names the floor and is not a gate verdic
   assertStringIncludes(parked!, "Parked as infrastructure (Issue #4360).");
   const fault = hostDiskInfrastructureFailure(parked!);
   assertEquals(fault?.category, "internal_error");
+  const floorOnly = "host disk below its floor — floor 46.0 GB (Issue #3178)";
+  assertEquals(
+    hostDiskInfrastructureFailure(floorOnly)?.category,
+    "internal_error",
+  );
+  assertEquals(detectHostFault(floorOnly, "internal_error"), "disk-full");
   assertEquals(
     detectHostFault(
       `${SECURITY_FIX_GATE_MARKER}: ${parked}`,
