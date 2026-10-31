@@ -149,23 +149,31 @@ unreadable-store test red (temp file left). Production wiring is covered by
 produce one warning. Before the call moved into housekeeping, the new test
 failed because the store file was absent.
 
-Red checks: `shouldWarnDecision` forced to return true (re-run on the head) →
-`decision_warn_dedup_test.ts` 10 of 12 tests red, `issue_lifecycle_test.ts` 4
-red, `missing_criterion_close_guard_3177_test.ts` 2 red,
-`pr_maintenance_test.ts` 3 red (two identical warn lines instead of one).
-Base-branch production files with the new tests → 9 site tests red (above).
+Red checks: `shouldWarnDecision` forced to return true (`return true;` as its
+first statement), re-run on the head, one `deno task test:unit` per file:
+`decision_warn_dedup_test.ts` (12 tests at head) 10 red, 2 passed;
+`issue_lifecycle_test.ts` (37 tests at head) 4 red, 33 passed;
+`missing_criterion_close_guard_3177_test.ts` (25 tests at head) 2 red, 23
+passed; `pr_maintenance_test.ts` (87 tests at head) 3 red, 84 passed. The
+`issue_lifecycle`, `missing_criterion_close_guard_3177` and `pr_maintenance`
+failures show two identical warn lines instead of one. The edit was reverted
+after. Base-branch production files with the new tests → 9 site tests red
+(above).
 
-Results on the head, `deno task test:unit` per file, 0 failed in each:
-`decision_warn_dedup_test.ts` (12 tests at head), `issue_lifecycle_test.ts`
-(37), `missing_criterion_close_guard_3177_test.ts` (25),
-`pr_maintenance_test.ts` (87), `run_housekeeping_test.ts` (25),
+Results on the head, `deno task test:unit` per file, 0 failed in each (test
+counts at head): `decision_warn_dedup_test.ts` (12 tests),
+`issue_lifecycle_test.ts` (37), `missing_criterion_close_guard_3177_test.ts`
+(25), `pr_maintenance_test.ts` (87), `run_housekeeping_test.ts` (25),
 `run_worker_test.ts` (37), `issue_lifecycle_cache_test.ts` (7),
 `pr_maintenance_issue_state_cache_test.ts` (7), `merged_pr_issue_sweep_test.ts`
 (41), `merged_pr_precheck_phase_test.ts` (9),
-`completion_phase_merged_pr_closure_test.ts` (7); 294 in total.
-`deno fmt
---check`, `deno lint` and `deno check` are clean on the nine changed
-`.ts` files.
+`completion_phase_merged_pr_closure_test.ts` (7); 12+37+25+87+25+37+7+7+41+9+7 =
+294 in total. Of these, `run_worker_test.ts`, `issue_lifecycle_cache_test.ts`,
+`pr_maintenance_issue_state_cache_test.ts`, `merged_pr_issue_sweep_test.ts`,
+`merged_pr_precheck_phase_test.ts` and
+`completion_phase_merged_pr_closure_test.ts` are unchanged by this PR and were
+run only as regression coverage of callers. `deno fmt --check`, `deno lint` and
+`deno check` are clean on the nine changed `.ts` files.
 
 Twinned copies: the did-not-land message is logged at two sites
 (`issue_lifecycle.ts`, `pr_maintenance.ts`); both changed and share a key.
