@@ -63,7 +63,7 @@ Docs: grepped `README.md` and `docs/` (excluding `docs/archive/`) for
 these warn each cycle; the one doc edit is `docs/INTERNALS.md:402-405`, which
 now describes the held-open-pair WARNING/DEBUG behaviour and the
 `decision_warn_signatures.json` file. Related sentence read and still true:
-`docs/workflows/issue-processing.md:1073-1076` ("log the missing criteria").
+`docs/workflows/issue-processing.md:1077` ("log the missing criteria").
 
 Callers of the changed functions: both warn sites in
 `ensureIssueClosedIfPrMerged` (callers pass through unchanged return values) and
@@ -76,8 +76,8 @@ call the real function.
   `Not closing the issue: the merged PR marks acceptance criteria missing …`
   logged at WARNING again on every cycle with unchanged inputs.
 - **status** — `verified` — with `lib/issue_lifecycle.ts` and
-  `lib/pr_maintenance.ts` restored to the base commit and the new tests kept, 6
-  of the new site tests fail (140 run: 134 passed, 6 failed); they pass on the
+  `lib/pr_maintenance.ts` restored to the base commit and the new tests kept, 9
+  of the new site tests fail (149 run: 140 passed, 9 failed); they pass on the
   fix.
 - **regression test** —
   `worker/deno/tests/issue_lifecycle_test.ts::ensureIssueClosedIfPrMerged - an unchanged did-not-land verdict warns once across two cycles (Issue #4495)`
@@ -117,8 +117,8 @@ calls `resetDecisionWarnings()` first (module state is shared within a file); no
 assertion was removed or changed.
 
 Mutation follow-up: the surviving mutants (the four context properties at
-`issue_lifecycle.ts:348-351` and `pr_maintenance.ts:2646-2649`, and the deleted
-`logger.debug` call at `pr_maintenance.ts:2659`) are killed by the two new
+`issue_lifecycle.ts:348-351` and `pr_maintenance.ts:2638-2641`, and the deleted
+`logger.debug` call at `pr_maintenance.ts:2651`) are killed by the two new
 context tests; each was re-applied by hand and the matching test went red.
 
 Persistence red checks (PR #4535 review, re-run on the head, each reverted
@@ -145,19 +145,19 @@ Red checks: `shouldWarnDecision` forced to return true (re-run on the head) →
 `decision_warn_dedup_test.ts` 10 of 12 tests red, `issue_lifecycle_test.ts` 4
 red, `missing_criterion_close_guard_3177_test.ts` 2 red,
 `pr_maintenance_test.ts` 3 red (two identical warn lines instead of one).
-Base-branch production files with the new tests → 6 site tests red (above).
+Base-branch production files with the new tests → 9 site tests red (above).
 
 Results on the head, `deno task test:unit` per file, 0 failed in each:
 `decision_warn_dedup_test.ts` (12 tests at head), `issue_lifecycle_test.ts`
-(37), `missing_criterion_close_guard_3177_test.ts` (19),
+(37), `missing_criterion_close_guard_3177_test.ts` (25),
 `pr_maintenance_test.ts` (87), `run_housekeeping_test.ts` (25),
-`run_worker_test.ts` (35), `issue_lifecycle_cache_test.ts` (7),
+`run_worker_test.ts` (37), `issue_lifecycle_cache_test.ts` (7),
 `pr_maintenance_issue_state_cache_test.ts` (7), `merged_pr_issue_sweep_test.ts`
-(37), `merged_pr_precheck_phase_test.ts` (9),
-`completion_phase_merged_pr_closure_test.ts` (7); 282 in total.
+(41), `merged_pr_precheck_phase_test.ts` (9),
+`completion_phase_merged_pr_closure_test.ts` (7); 294 in total.
 `deno fmt
 --check`, `deno lint` and `deno check` are clean on the nine changed
-`.ts` files plus `lib/run_worker.ts`.
+`.ts` files.
 
 Twinned copies: the did-not-land message is logged at two sites
 (`issue_lifecycle.ts`, `pr_maintenance.ts`); both changed and share a key.
