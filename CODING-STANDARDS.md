@@ -1952,8 +1952,10 @@ run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
 (reproduction status, test results, "known defect" notes, named functions and
 files) matches the head — an illustrative example ("for example `X`") is a
-claim too. The first-run claim check that blocked a false claim before the
-pull request was raised was removed (Issue #4234).
+claim too. For counts, `path:line` citations and run results, "the head"
+means the PR's last own commit, not a later merge of the base branch. The
+first-run claim check that blocked a false claim before the pull request was
+raised was removed (Issue #4234).
 Every file or behaviour the summary says the PR changes
 must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
 from the base branch can supersede the change — and an abandoned iteration's
@@ -1961,8 +1963,10 @@ description is replaced by the one that shipped. A summary that contradicts the
 diff is a blocking self-review finding. The same holds for every doc the diff
 adds or edits — a README or `docs/` page, an audit record, the doc comment
 above a changed function: each assertion it makes must match the head code.
-After any merge of the base branch into the branch, re-verify each claim; one
-whose subject the merge absorbed is dropped, or the work redone. A
+A merge of the base branch can absorb the PR's change, and a claim whose
+subject the merge absorbed is dropped, or the work redone. Counts, `path:line`
+citations and run results that were true at the PR's last own commit stay as
+written when a base merge only moves them. A
 Standards-review violation the diff itself introduced is fixed before the PR
 is raised, never listed as standing, and a PR whose core deliverable is
 `missing` is not raised over a `Closes #<n>` — finish the work, except when

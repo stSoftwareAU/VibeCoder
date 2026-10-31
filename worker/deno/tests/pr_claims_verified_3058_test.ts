@@ -3,8 +3,13 @@
  * final diff; standing violations the diff introduced block the PR.
  */
 
-import { assertStringIncludes } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import { assertFalse, assertStringIncludes } from "@std/assert";
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 Deno.test("Issue #3058 - issue prompt blocks the PR for a violation the diff introduced", async () => {
   const body = flat(
@@ -160,4 +165,31 @@ Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification r
   ) {
     assertStringIncludes(prSummaryAndEvidence, required);
   }
+});
+
+// Issue #4563: a base-branch merge that only moves a figure leaves the summary
+// as written; only a claim whose subject the merge absorbed is dropped.
+Deno.test("Issue #4563 - a base merge that only moves a figure does not reopen the summary", async () => {
+  const standards = await readRepoDoc("CODING-STANDARDS.md");
+  const issuePrompt = await readRepoDoc("prompts/issue/prompt.md");
+
+  const standardsSummary = flat(section(standards, "PR Summary and Evidence"));
+  const promptSummary = flat(section(issuePrompt, "PR Summary File"));
+  for (
+    const required of [
+      "stay as written when a base merge only moves them",
+      `"the head" means the PR's last own commit`,
+    ]
+  ) {
+    assertStringIncludes(standardsSummary, required);
+    assertStringIncludes(promptSummary, required);
+  }
+
+  // A whole-file absence check: flatWholeFile, so a wrapped phrase still matches.
+  assertFalse(
+    flatWholeFile(standards).includes("After any merge of the base branch"),
+  );
+  assertFalse(
+    flatWholeFile(issuePrompt).includes("After any merge of the base branch"),
+  );
 });
