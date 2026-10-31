@@ -3,6 +3,7 @@ import {
   eligibleAuthor,
   reason,
   recoverTemporaryClones,
+  requestedReviews,
   runRepairs,
   validateAndCommit,
 } from "../commands/fleet_pr_babysitter.ts";
@@ -18,6 +19,8 @@ const pr = {
   isCrossRepository: false,
   isDraft: false,
   mergeable: "MERGEABLE",
+  mergeStateStatus: "CLEAN",
+  reviewDecision: null,
   statusCheckRollup: [{ conclusion: "SUCCESS" }],
 };
 Deno.test("author filter permits an explicit PR without widening fleet scans", () => {
@@ -28,6 +31,14 @@ Deno.test("author filter permits an explicit PR without widening fleet scans", (
 
 Deno.test("babysitter selects only conflicts and failed CI", () => {
   assertEquals(reason(pr), null);
+  assertEquals(
+    reason({ ...pr, mergeStateStatus: "BEHIND" }),
+    "branch behind base",
+  );
+  assertEquals(
+    reason({ ...pr, reviewDecision: "CHANGES_REQUESTED" }),
+    "requested review changes",
+  );
   assertEquals(reason({ ...pr, mergeable: "CONFLICTING" }), "merge conflict");
   assertEquals(
     reason({ ...pr, statusCheckRollup: [{ conclusion: "FAILURE" }] }),
@@ -140,4 +151,16 @@ Deno.test("repairs run in parallel within the limit and failures do not block ot
   await assertRejects(() => runRepairs(tasks, 2), AggregateError);
   assertEquals(peak, 2);
   assertEquals(completed.sort(), [0, 1, 2]);
+});
+
+Deno.test("only each reviewer's current changes request remains actionable", () => {
+  assertEquals(
+    requestedReviews([
+      { id: 1, state: "CHANGES_REQUESTED", user: { login: "alice" } },
+      { id: 2, state: "COMMENTED", user: { login: "alice" } },
+      { id: 3, state: "CHANGES_REQUESTED", user: { login: "bob" } },
+      { id: 4, state: "APPROVED", user: { login: "BOB" } },
+    ]).map((review) => review.id),
+    [1],
+  );
 });

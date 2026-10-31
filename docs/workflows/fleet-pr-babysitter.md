@@ -1,12 +1,14 @@
 # Fleet PR babysitter MVP
 
 The babysitter scans the repositories in `.config.json` for open fleet PRs
-with merge conflicts or failed CI. By default it fixes candidates. It takes the same PR branch lock as the fleet's
+with merge conflicts, outdated branches, failed CI or requested review changes. By default it fixes candidates. It takes the same PR branch lock as the fleet's
 CI and conflict workers, rechecks the head, and runs one Codex session in a
 temporary clone. Up to two independent PR repairs run at once, each with a
 90-minute Codex limit and its own branch lock. After Codex reports a completed fix, the babysitter commits
 it locally, checks for whitespace errors and conflict markers, and rechecks the
-PR. It pushes only if the PR still matches the original head. GitHub CI then
+PR. It pushes only if the PR still matches the original head. Once a review fix is pushed,
+the babysitter dismisses the addressed review if it is still the current review
+and the PR head has not changed. GitHub CI then
 runs the repository's quality and regression checks on the updated branch.
 
 From the VibeCoder checkout:
@@ -86,7 +88,7 @@ attempt record does not prevent a different host from retrying later.
 
 This MVP uses the configured GitHub App and Codex; it does not yet select
 providers by remaining quota, handle
-Dependabot, use per-repository quality commands, update a merely behind branch,
+Dependabot, use per-repository quality commands,
 review PRs, or arm auto-merge. It does not change repository CI, review, or
 merge rules. Test the read-only pass before running execution mode.
 
