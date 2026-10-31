@@ -9,8 +9,8 @@ itself. That is false for a PR raised outside the worker: its body has no
 stayed, and the next review sent the PR back (VibeCoder#4502). The three prompts
 now say the rebuild covers a worker-built description only, and that a
 description written outside the worker is updated with
-`gh pr edit <n> --body-file <file>` and named in `.pr_response_message`. Closes
-#4515.
+`gh pr edit <n> --body-file <file>` and named in `.pr_response_message`.
+Closes #4515.
 
 ## Spec
 
@@ -57,20 +57,19 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
   clause built from `PR_RESPONSE_MESSAGE_FILE`. It rejects the old ban. The
   dependency-audit section also requires the marker-scoped rebuild and live
   body update for its tracking issue.
-- The original three tests pass on the head; with the three prompt
-  sections restored from `main`, it fails (0 passed, 3 failed).
+- The head test file passes (4 passed, 0 failed); with the three prompts
+  restored from `main`, it fails (0 passed, 4 failed).
 - `deno task drift-pins-on-base` confirmed every required phrase is absent from
   each corresponding section on `main`.
-- Changing `PR_RESPONSE_MESSAGE_FILE` at its source made all three tests fail
+- Changing `PR_RESPONSE_MESSAGE_FILE` at its source made all four tests fail
   on the missing reporting clause; the source was restored afterwards.
+- Changing `WORKER_PR_MARKER_PREFIX` at its source made all four tests fail
+  on the missing marker; the source was restored afterwards.
 - No assertion removed or edited in an existing test.
 - Related rules checked: the "Keep the PR summary true to the head" paragraph in
   each of the three prompts, and `docs/workflows/` text on the digest marker and
   "only a PR the worker authored is edited"; they agree with the new wording.
 
-The additional dependency-audit test failed before the guidance changed and
-passes with the corrected guidance.
-
-`markdownlint-cli2` on the summary and the three prompts: 0 issues (prior run).
+`markdownlint-cli2` on the summary: 0 issues.
 
 <!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes longer than the 600s foreground command cap (a run on an earlier branch timed out at 580s inside the deno test stage); only targeted checks ran, CI runs the full gate" -->
