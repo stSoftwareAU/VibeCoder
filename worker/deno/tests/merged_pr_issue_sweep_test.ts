@@ -522,6 +522,40 @@ Deno.test("sweepMergedPrIssues - a repo whose scan fails is reported and does no
   assertStringIncludes(result.message, "1 repo failure");
 });
 
+Deno.test("sweepMergedPrIssues - a GraphQL Forbidden stops the sweep without recording a repo failure", async () => {
+  const lines: string[] = [];
+  const scanned: string[] = [];
+  const forbidden = 'Post "https://api.github.com/graphql": Forbidden';
+  const result = await sweepMergedPrIssues(
+    baseOptions({ repos: ["org/first", "org/next"] }),
+    {
+      ghCommandFn: async () => "",
+      logger: makeLogger(lines),
+      fetchOpenIssuesFn: async (repo) => {
+        scanned.push(repo);
+        throw new Error(forbidden);
+      },
+      fetchClosedPRsFn: async () => [],
+      isQuotaLatchedFn: () => false,
+    },
+  );
+
+  assertEquals(scanned, ["org/first"]);
+  assertEquals(result.failures, []);
+  assertEquals(result.reposSkipped, 2);
+  assertStringIncludes(result.quotaExhausted ?? "", forbidden);
+  assertStringIncludes(
+    lines[0] ?? "",
+    "GraphQL secondary rate limit — sweep skipped",
+  );
+  assertStringIncludes(
+    result.message,
+    "secondary rate limit, sweep skipped",
+  );
+  assertEquals(lines.filter((line) => line.startsWith("error:")), []);
+  assertEquals(lines.filter((line) => line.startsWith("warn:")).length, 1);
+});
+
 Deno.test("sweepMergedPrIssues - no repos is a clean no-op", async () => {
   const calls: GhCalls = { closes: [] };
   const result = await sweepMergedPrIssues(

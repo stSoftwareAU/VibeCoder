@@ -40,16 +40,16 @@ export const SECONDARY_RATE_LIMIT_DELAYS_MS: readonly number[] = [
 export const MAX_RETRY_AFTER_SECONDS = 1800;
 
 /**
- * The wording GitHub uses when the secondary limit refuses a write, plus the
- * worker's own cool-down skip message (`primary_quota_latch.ts`), which
- * names the same limit.
+ * The wording GitHub uses when the secondary limit refuses a write, plus a
+ * bare Forbidden from the GraphQL endpoint, and the worker's own cool-down
+ * skip message (`primary_quota_latch.ts`), which names the same limit.
  *
  * Deliberately narrow: the primary quota's "API rate limit exceeded" must
  * NOT match, because that refusal has a REST way round it and this one does
  * not.
  */
 const SECONDARY_RATE_LIMIT_RE =
-  /secondary rate limit|abuse detection|temporarily blocked from content creation|was submitted too quickly/i;
+  /secondary rate limit|abuse detection|temporarily blocked from content creation|was submitted too quickly|post\s+["']https:\/\/api\.github\.com\/graphql["']:\s*forbidden/i;
 
 /** Whether an error message reports GitHub's secondary (burst) rate limit. */
 export function isSecondaryRateLimitMessage(message: string): boolean {

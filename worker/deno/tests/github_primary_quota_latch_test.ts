@@ -479,3 +479,50 @@ Deno.test("chokepoint #1888 - a refusal on the window boundary latches for the s
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+Deno.test("chokepoint - a Forbidden quota probe after a rate-limit refusal engages the secondary cool-down", async () => {
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "quota_latch_forbidden_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  const seen: string[] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push(args.join(" "));
+    if (isGraphqlQuotaProbe(args)) {
+      return Promise.resolve(
+        fail('Post "https://api.github.com/graphql": Forbidden'),
+      );
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+
+  try {
+    await assertRejects(
+      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"], { workDir }),
+      Error,
+      "already exceeded",
+    );
+
+    assertEquals(seen.length, 2, "the probe refusal is the observed signal");
+    assert(isPrimaryQuotaLatched(nowSec));
+    const until = primaryQuotaLatchedUntil();
+    assert(until !== null);
+    assert(
+      until <= nowSec + SECONDARY_LIMIT_BACKOFF_SECONDS + 2,
+      `cool-down lasted ${until - nowSec}s instead of one minute`,
+    );
+    const signal = await readRateLimitSignal(workDir);
+    assert(signal.ok, "the shared pause signal should be written");
+    if (signal.ok) {
+      assert(signal.value.waitSeconds <= SECONDARY_LIMIT_BACKOFF_SECONDS);
+    }
+    assertEquals(
+      isPrimaryQuotaLatched(nowSec + SECONDARY_LIMIT_BACKOFF_SECONDS + 1),
+      false,
+      "the latch recovers once the short cool-down expires",
+    );
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

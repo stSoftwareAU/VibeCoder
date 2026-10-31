@@ -34,7 +34,8 @@
  * recorded in {@link MergedPrIssueSweepResult.failures} and surfaces as a
  * failed housekeeping step rather than an empty, green sweep.
  *
- * Quota is the one exception, and it is a skip, not a failure (Issue #1477).
+ * A GraphQL quota or secondary-limit refusal is a skip, not a failure
+ * (Issue #1477).
  * The sweep used to loop every monitored repo against an exhausted GraphQL
  * quota — nineteen doomed calls in seven seconds, reported as nineteen repo
  * failures for one condition. Now it pre-flights once per sweep, stops at
@@ -72,6 +73,10 @@ import {
   isPrimaryQuotaLatched,
   isPrimaryRateLimitMessage,
 } from "./primary_quota_latch.ts";
+import {
+  isSecondaryOnlyRateLimitMessage,
+  isSecondaryRateLimitMessage,
+} from "./secondary_rate_limit.ts";
 import {
   isProcessed,
   loadProcessedSweepState,
@@ -194,11 +199,11 @@ export interface MergedPrIssueSweepResult {
   /** Loud failures: a repo that could not be scanned, or a close that failed. */
   failures: string[];
   /**
-   * Set when the sweep stopped for want of GraphQL quota (Issue #1477): the
-   * one-line condition. Not a failure — the sweep resumes next cycle.
+   * Set when the sweep stopped for a primary quota or secondary limit
+   * (Issue #1477): the one-line condition. Not a failure — it resumes next cycle.
    */
   quotaExhausted?: string;
-  /** Repos left unswept by the quota stop, including the one that hit it. */
+  /** Repos left unswept by the rate-limit stop, including the one that hit it. */
   reposSkipped: number;
   /** Candidates skipped without a call because their PR is already processed. */
   alreadyProcessed: number;
@@ -270,6 +275,17 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function isSweepRateLimit(message: string): boolean {
+  return isPrimaryRateLimitMessage(message) ||
+    isSecondaryOnlyRateLimitMessage(message, isPrimaryRateLimitMessage);
+}
+
+function sweepRateLimitLabel(message: string): string {
+  return isSecondaryRateLimitMessage(message)
+    ? "secondary rate limit"
+    : "quota exhausted";
+}
+
 /** Order-insensitive equality of two processed-number lists. */
 function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
   if (a.length !== b.length) return false;
@@ -278,7 +294,7 @@ function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
 }
 
 /**
- * Record the quota stop (Issue #1477): one warning line naming the
+ * Record the rate-limit stop (Issue #1477): one warning line naming the
  * condition and how much of the sweep it left for the next cycle. Never a
  * failure — nothing is wrong with any repository.
  */
@@ -292,7 +308,8 @@ function stopForQuota(
   result.quotaExhausted = condition;
   result.reposSkipped = reposTotal - reposDone;
   logger.warn(
-    `[merged-pr-issue-sweep] GraphQL quota exhausted — sweep skipped, ` +
+    `[merged-pr-issue-sweep] GraphQL ${sweepRateLimitLabel(condition)} — ` +
+      `sweep skipped, ` +
       `${result.reposSkipped} of ${reposTotal} repo(s) left for the next ` +
       `cycle: ${condition}`,
   );
@@ -390,7 +407,7 @@ export async function sweepMergedPrIssues(
       closedPRs = await fetchClosedPRs(repo);
     } catch (err) {
       const message = errorMessage(err);
-      if (isPrimaryRateLimitMessage(message)) {
+      if (isSweepRateLimit(message)) {
         // The first call told us the quota is gone. Every repo after this
         // one would fail the same way — one condition, reported once.
         stopForQuota(result, logger, reposTotal, reposDone, message);
@@ -509,7 +526,7 @@ export async function sweepMergedPrIssues(
         );
       } catch (err) {
         const message = errorMessage(err);
-        if (isPrimaryRateLimitMessage(message)) {
+        if (isSweepRateLimit(message)) {
           stopForQuota(result, logger, reposTotal, reposDone, message);
           break repos;
         }
@@ -543,7 +560,7 @@ export async function sweepMergedPrIssues(
         }
       } catch (err) {
         const message = errorMessage(err);
-        if (isPrimaryRateLimitMessage(message)) {
+        if (isSweepRateLimit(message)) {
           stopForQuota(result, logger, reposTotal, reposDone, message);
           break repos;
         }
@@ -570,7 +587,7 @@ export async function sweepMergedPrIssues(
       );
 
       if (!closeResult.ok) {
-        if (isPrimaryRateLimitMessage(closeResult.error.message)) {
+        if (isSweepRateLimit(closeResult.error.message)) {
           stopForQuota(
             result,
             logger,
@@ -603,7 +620,7 @@ export async function sweepMergedPrIssues(
 
     reposDone++;
     // Reached only when the repo's fetch succeeded and its loop completed, so
-    // a failed fetch or a quota stop leaves this repo's entry untouched.
+    // a failed fetch or rate-limit stop leaves this repo's entry untouched.
     if (state) {
       const before = state.repos[repo]?.processed ?? [];
       let next = pruneToWindow(state, repo, windowNumbers);
@@ -648,7 +665,8 @@ function summarise(
     ? `, ${result.alreadyProcessed} already processed`
     : "";
   const quotaNote = result.quotaExhausted !== undefined
-    ? ` — quota exhausted, sweep skipped (${result.reposSkipped} repo(s) ` +
+    ? ` — ${sweepRateLimitLabel(result.quotaExhausted)}, sweep skipped ` +
+      `(${result.reposSkipped} repo(s) ` +
       `left), resumes next cycle`
     : "";
   return `closed ${result.closed} of ${result.candidates} ` +

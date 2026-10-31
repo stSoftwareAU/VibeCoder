@@ -78,6 +78,31 @@ Deno.test("PR observations record gates before merge and replay without double c
     assertEquals(events.length, 5);
     assertEquals(classifyLifecycleOutcome(events).success, true);
   }));
+
+Deno.test("PR observations log quota-latch skips at info and genuine faults at error", async () => {
+  const lines: string[] = [];
+  const logger = {
+    info: (message: string) => lines.push(`info:${message}`),
+    error: (message: string) => lines.push(`error:${message}`),
+  };
+  const invoke = (message: string) =>
+    recordLifecyclePrFromGithub(
+      { workDir: "/unused", repo: "org/repo", prNumber: 10 },
+      () => Promise.reject(new Error(message)),
+      logger,
+    );
+
+  await invoke("gh command skipped: GraphQL primary quota exhausted");
+  await invoke(
+    "gh command skipped: GitHub secondary rate limit cool-down (API rate limit already exceeded)",
+  );
+  await invoke("GitHub returned an invalid PR snapshot");
+
+  assertEquals(lines[0]?.startsWith("info:"), true);
+  assertEquals(lines[1]?.startsWith("info:"), true);
+  assertEquals(lines[2]?.startsWith("error:"), true);
+  assertEquals(lines.length, 3);
+});
 Deno.test("PR observations never infer pre-merge gates from a post-merge snapshot", () =>
   withLedger(async (path) => {
     await record(path, terminal, "2026-10-01T00:00:04.000Z");

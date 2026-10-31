@@ -15,6 +15,7 @@ import {
 import { branchCleanupCommand } from "../commands/branch_cleanup.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
+import { mergedSweepWatermarkPath } from "../lib/merged_sweep_watermark.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,6 +53,94 @@ Deno.test("branch cleanup - cleanupMergedPrBranches returns zero counts for empt
     assertEquals(result.value.deletedCount, 0);
     assertEquals(result.value.skippedCount, 0);
   }
+});
+
+Deno.test("branch cleanup - GraphQL Forbidden stops the sweep and preserves the watermark", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "branch_cleanup_forbidden_" });
+  const watermarkPath = mergedSweepWatermarkPath(dir);
+  const original = JSON.stringify({
+    version: 2,
+    repos: { "org/first": { processed: [41] } },
+  });
+  await Deno.writeTextFile(watermarkPath, original);
+  const calls: string[][] = [];
+  const levels: string[] = [];
+  const forbidden = 'Post "https://api.github.com/graphql": Forbidden';
+
+  try {
+    const result = await cleanupMergedPrBranches(
+      ["org/first", "org/next"],
+      "vibe-bot",
+      {
+        watermarkPath,
+        logger: {
+          warn: (message) => levels.push(`warn:${message}`),
+          info: (message) => levels.push(`info:${message}`),
+        },
+        ghCommandFn: async (args) => {
+          calls.push(args);
+          throw new Error(forbidden);
+        },
+      },
+    );
+
+    assertEquals(result.ok, true);
+    assertEquals(calls.length, 1);
+    assertEquals(levels.length, 1);
+    assertEquals(levels[0]?.startsWith("info:"), true);
+    assertEquals(await Deno.readTextFile(watermarkPath), original);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("branch cleanup - primary quota refusal also stops later repositories", async () => {
+  const calls: string[][] = [];
+  const levels: string[] = [];
+  const result = await cleanupMergedPrBranches(
+    ["org/first", "org/next"],
+    "vibe-bot",
+    {
+      logger: {
+        warn: (message) => levels.push(`warn:${message}`),
+        info: (message) => levels.push(`info:${message}`),
+      },
+      ghCommandFn: async (args) => {
+        calls.push(args);
+        throw new Error("GraphQL: API rate limit already exceeded");
+      },
+    },
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(calls.length, 1);
+  assertEquals(levels.length, 1);
+  assertEquals(levels[0]?.startsWith("info:"), true);
+});
+
+Deno.test("branch cleanup - stale-branch GraphQL Forbidden stops the repository sweep", async () => {
+  const calls: string[][] = [];
+  const levels: string[] = [];
+  const forbidden = 'Post "https://api.github.com/graphql": Forbidden';
+  const result = await cleanupStaleRemoteBranches(
+    ["org/first", "org/next"],
+    "vibe-bot",
+    {
+      logger: {
+        warn: (message) => levels.push(`warn:${message}`),
+        info: (message) => levels.push(`info:${message}`),
+      },
+      ghCommandFn: async (args) => {
+        calls.push(args);
+        throw new Error(forbidden);
+      },
+    },
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(calls.length, 1);
+  assertEquals(levels.length, 1);
+  assertEquals(levels[0]?.startsWith("info:"), true);
 });
 
 Deno.test("branch cleanup - cleanupMergedPrBranches deletes merged branches", async () => {

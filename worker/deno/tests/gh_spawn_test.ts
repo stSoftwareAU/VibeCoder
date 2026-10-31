@@ -757,6 +757,27 @@ Deno.test("spawnGh - a GraphQL-backed refusal reaches the exhaustion hook once, 
   }
 });
 
+Deno.test("spawnGh - a bare GraphQL Forbidden reaches the rate-limit hook", async () => {
+  clearPrimaryQuotaLatch();
+  const seen: PrimaryQuotaRefusal[] = [];
+  setPrimaryQuotaExhaustionHook((refusal) => {
+    seen.push(refusal);
+    return Promise.resolve();
+  });
+  const forbidden = 'Post "https://api.github.com/graphql": Forbidden';
+  recordingRunner({ code: 1, stderr: forbidden });
+  try {
+    const result = await spawnGh(["pr", "list", "--repo", "o/r"]);
+    assertEquals(result.success, false);
+    assertEquals(seen.length, 1);
+    assertEquals(seen[0]?.stderr, forbidden);
+  } finally {
+    setPrimaryQuotaExhaustionHook(null);
+    restore();
+    clearPrimaryQuotaLatch();
+  }
+});
+
 Deno.test("spawnGh - the hook is not called for REST, for success, for the probe, or for another failure (Issue #1540)", async () => {
   clearPrimaryQuotaLatch();
   let calls = 0;

@@ -73,6 +73,7 @@ import {
   isQuotaExemptGhCall,
   primaryQuotaSkipMessage,
 } from "./primary_quota_latch.ts";
+import { isSecondaryOnlyRateLimitMessage } from "./secondary_rate_limit.ts";
 import {
   getGhTimeoutForOperation,
   GH_TIMEOUT_EXIT_CODE,
@@ -128,8 +129,8 @@ export interface GhSpawnOptions {
    */
   bypassQuotaLatch?: boolean;
   /**
-   * Where the shared rate-limit signal is written when this call is the one
-   * that discovers the primary quota is exhausted (Issue #1540). Defaults to
+   * Where the shared rate-limit signal is written when this call discovers a
+   * GraphQL primary-quota or secondary-limit refusal (Issue #1540). Defaults to
    * the `WORK_DIR` the run driver exports; `runGhCommandRaw` threads its own
    * override through here.
    */
@@ -137,8 +138,8 @@ export interface GhSpawnOptions {
 }
 
 /**
- * What the chokepoint reports when a GraphQL-backed call comes back refused
- * for want of primary quota (Issue #1540).
+ * What the chokepoint reports when a GraphQL-backed call is refused for a
+ * primary quota or secondary limit (Issue #1540).
  */
 export interface PrimaryQuotaRefusal {
   /** The `gh` arguments that were refused. */
@@ -150,8 +151,9 @@ export interface PrimaryQuotaRefusal {
 }
 
 /**
- * Registered by `github.ts` at load: probes the reset, latches the process
- * and writes the shared rate-limit signal (Issue #42). A hook rather than an
+ * Registered by `github.ts` at load: classifies quota refusals, probes the
+ * primary reset when needed, latches the process and writes the shared signal
+ * (Issue #42). A hook rather than an
  * import because `github.ts` imports this module. Null until registered, so
  * a tool or test that never loads `github.ts` spawns exactly as before.
  */
@@ -162,7 +164,7 @@ export type PrimaryQuotaExhaustionHook = (
 let quotaExhaustionHook: PrimaryQuotaExhaustionHook | null = null;
 
 /**
- * Install the exhaustion hook the chokepoint calls on the first refusal
+ * Install the rate-limit hook the chokepoint calls on the first refusal
  * (Issue #1540). `github.ts` registers the production one at module load.
  */
 export function setPrimaryQuotaExhaustionHook(
@@ -623,18 +625,18 @@ export async function spawnGh(
         );
       }
     }
-    // Issue #1540: the latch used to be SET only from `runGhCommandRaw`'s
-    // catch, so the thirty-odd modules that spawn through this chokepoint
-    // directly saw the refusal, logged it, retried it — four real spawns on
-    // one auto-merge — and never latched. The refusal is recognised here,
-    // where it is seen, and handed to the registered hook, which probes the
-    // reset, latches the process and writes the shared signal. Not for the
-    // probe itself (`bypassQuotaLatch`): it is the call that learns the reset,
-    // and the hook coalesces a refusal it is already recording.
+    // Issue #1540: the refusal is recognised here, where it is seen, and
+    // handed to the registered hook, which latches and writes the shared
+    // signal. The hook probes only when the response may be primary quota;
+    // the quota probe itself (`bypassQuotaLatch`) must not recurse.
     if (
       !result.success && !options.bypassQuotaLatch &&
       !isQuotaExemptGhCall(args) && quotaExhaustionHook !== null &&
-      isPrimaryRateLimitMessage(result.stderr)
+      (isPrimaryRateLimitMessage(result.stderr) ||
+        isSecondaryOnlyRateLimitMessage(
+          result.stderr,
+          isPrimaryRateLimitMessage,
+        ))
     ) {
       try {
         await quotaExhaustionHook({
