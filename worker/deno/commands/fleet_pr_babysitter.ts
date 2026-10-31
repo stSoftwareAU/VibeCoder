@@ -112,6 +112,16 @@ export function reason(pr: Pr): string | null {
   ) return "failed CI";
   return null;
 }
+
+/** Explicitly selected PRs may be repaired even when their author is not a fleet account. */
+export function eligibleAuthor(
+  author: string,
+  authors: string[],
+  selected: boolean,
+): boolean {
+  return selected ||
+    authors.some((a) => a.toLowerCase() === author.toLowerCase());
+}
 async function readPr(repo: string, number: number): Promise<Pr> {
   return JSON.parse(
     await run("gh", [
@@ -334,26 +344,33 @@ async function pass(
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
       throw new Error(`Invalid repository: ${repo}`);
     }
-    const prs: Pr[] = JSON.parse(
-      await run("gh", [
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--limit",
-        "100",
-        "--json",
-        fields,
-      ]),
-    );
+    const prs: Pr[] = prFilter !== undefined
+      ? [await readPr(repo, prFilter)]
+      : JSON.parse(
+        await run("gh", [
+          "pr",
+          "list",
+          "--repo",
+          repo,
+          "--state",
+          "open",
+          "--limit",
+          "100",
+          "--json",
+          fields,
+        ]),
+      );
     for (const pr of prs) {
       if (prFilter !== undefined && pr.number !== prFilter) continue;
       const why = reason(pr);
+      if (!why && prFilter !== undefined) {
+        console.log(
+          `${repo}#${pr.number}: no actionable conflict or failed CI, or PR is not eligible`,
+        );
+      }
       if (
         !why ||
-        !authors.some((a) => a.toLowerCase() === pr.author.login.toLowerCase())
+        !eligibleAuthor(pr.author.login, authors, prFilter !== undefined)
       ) continue;
       console.log(`${repo}#${pr.number}: ${why}`);
       if (execute) await fix(repo, pr, authors, login);

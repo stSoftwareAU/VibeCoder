@@ -72,7 +72,9 @@ needs a human decision, it should report the blocker and stop without a
 commit. The sandbox still applies; an unavailable
 permission or credential can stop a run and must be corrected by the operator.
 
-Only fleet-authored, non-draft, same-repository PRs are considered. A failed
+Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
+An explicitly selected `--repo` and `--pr` can also target another author's
+PR, while retaining the same lock and quality checks. A failed
 or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and
 is not retried on that host for the same PR head. Removing the matching state

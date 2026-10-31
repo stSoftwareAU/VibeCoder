@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  eligibleAuthor,
   reason,
   recoverTemporaryClones,
   validateAndCommit,
@@ -51,6 +52,12 @@ Deno.test("isolated fix commits before quality and a failed quality gate stops v
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("author filter permits an explicit PR without widening fleet scans", () => {
+  assert(eligibleAuthor("VibeCoderST", ["vibecoderst"], false));
+  assert(!eligibleAuthor("human", ["VibeCoderST"], false));
+  assert(eligibleAuthor("human", ["VibeCoderST"], true));
 });
 
 Deno.test("babysitter selects only conflicts and failed CI", () => {
