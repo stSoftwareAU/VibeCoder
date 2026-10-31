@@ -3,8 +3,8 @@
 Run, cycle and host-failure callbacks now inherit the egress proxy variables
 (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms), so a
 hook's `git clone` and `curl` go through the CONNECT proxy instead of failing
-with `Could not resolve host`. A proxy value containing `@` is dropped.
-Closes #4496.
+with `Could not resolve host`. A proxy value containing `@` is dropped. Closes
+#4496.
 
 Version bump: no `VERSION` change in this PR; the merged commit records the
 final version.
@@ -69,13 +69,13 @@ Backend only; no UI files touched.
 - `worker/deno/tests/run_callbacks_integration_test.ts`: the spelled-out
   allowlist of the "no worker credential reaches the hook environment" test now
   names the six proxy names. Removed from it: the five-name allowlist literal
-  `["PATH", "HOME", "LANG", "TZ", "TMPDIR"]`.
-  Required by: "Add `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms to the inherited set".
+  `["PATH", "HOME", "LANG", "TZ", "TMPDIR"]`. Required by: "Add `HTTPS_PROXY`,
+  `HTTP_PROXY`, `NO_PROXY` and their lower-case forms to the inherited set".
   Replaced by: the same list plus the six names; the test still fails on any
   other leaked name.
 - Red checks: the `@` condition forced false → the userinfo tests fail (run,
-  cycle and host-failure); the proxy names removed from `INHERITED_ENV_VARS` →
-  6 tests fail.
+  cycle and host-failure); the proxy names removed from `INHERITED_ENV_VARS` → 6
+  tests fail.
 - `deno task test:unit` over the four callback test files: 89 passed, 0 failed.
   `deno fmt`, `deno lint` and `deno check` on the touched files: clean.
 - `./quality.sh` on the final head: `Result: PASSED (with skipped checks)`; deno
