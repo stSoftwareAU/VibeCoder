@@ -65,8 +65,8 @@ is unchanged.
   - The "stays actionable" and "current head" scan tests are kept; the
     human-push and unknown-data cases have no remaining code to test.
 - Added to `worker/deno/tests/pr_feedback_supersede_test.ts`: "a bot's later
-  commit does not supersede, even with a fleet author" reaches the `[bot]`
-  early return in `isFleetAnswerAfter`
+  commit does not supersede, even with a fleet author" reaches the `[bot]` early
+  return in `isFleetAnswerAfter`
   (`worker/deno/lib/pr_feedback_supersede.ts:123`), which the removed review
   tests used to cover; the coverage-carry-over line is now reached by a head
   test. 9 passed in that file.
