@@ -36,9 +36,10 @@ export const MILESTONE_CONFLICT_ATTEMPT_BUDGET = CONFLICT_RESOLUTION_BUDGET;
 
 /**
  * Consecutive cycles a milestone branch may be **refused** a conflict
- * resolution — a not-charged verdict such as "agent deferred: cycle budget" or
- * a merge gate that refused the resolution — before the ladder climbs to the
- * roll-back anyway (Issue #4328).
+ * resolution — a not-charged verdict such as the merge gate refusing the
+ * resolution — before the ladder climbs to the roll-back anyway (Issue #4328).
+ * A cycle-budget deferral ("agent deferred: cycle budget") is not a refusal
+ * and is never counted here (Issue #4517).
  *
  * A refusal never spends the conflict budget, so without this ceiling a branch
  * refused every cycle would be retried for ever and never reach the roll-back.
@@ -128,7 +129,12 @@ export interface GateRefusalRecord {
 
 /** One branch's streak state. */
 export interface SyncStreakEntry {
-  /** Consecutive failed sync cycles for this branch. */
+  /**
+   * Consecutive failed sync cycles for this branch, a cycle-budget deferral
+   * excepted (Issue #4517). The resolver recovery ladder reads it as the
+   * number of prior declines, so a deferral that added to it would carry the
+   * first real decline to a later rung.
+   */
   count: number;
   /** True once the needs-human comment has been posted for this streak. */
   escalated: boolean;
@@ -226,8 +232,9 @@ export interface SyncStreakEntry {
   /** Merge SHAs those roll-backs undid (Issue #1781). */
   revertedShas?: string[];
   /**
-   * Consecutive cycles refused a conflict resolution with a not-charged
-   * verdict (Issue #4328). A charged conclusion zeroes it. Absent reads as 0.
+   * Consecutive cycles refused a conflict resolution with a refusal verdict
+   * (Issue #4328). A cycle-budget deferral is not a refusal and does not
+   * count (Issue #4517). A charged conclusion zeroes it. Absent reads as 0.
    */
   refusedCycles?: number;
   /**
