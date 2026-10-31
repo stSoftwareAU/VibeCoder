@@ -249,7 +249,9 @@ for (const cached of [false, true]) {
 /** Journal entries written under `workDir`, parsed. */
 async function readSelfHealJournal(
   workDir: string,
-): Promise<Array<{ action: string; result: string; reason: string }>> {
+): Promise<
+  Array<{ module: string; action: string; result: string; reason: string }>
+> {
   const text = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
   return text.trim().split("\n").map((line) => JSON.parse(line));
 }
@@ -321,6 +323,7 @@ for (const stage of ["ref probe", "safety query", "branch deletion"]) {
         e.result === "ok"
       );
       assertEquals(ok.length, 1);
+      assertEquals(ok[0]?.module, "branch_cleanup");
       assertEquals(ok[0]?.action, "merged_branch_delete");
       assertStringIncludes(ok[0]!.reason, "org/first: deleted 1 merged-PR");
       assertStringIncludes(ok[0]!.reason, "issue-1-fix");
@@ -413,6 +416,7 @@ for (
           e.result === "ok"
         );
         assertEquals(ok.length, 1);
+        assertEquals(ok[0]?.module, "branch_cleanup");
         assertEquals(ok[0]?.action, "stale_remote_delete");
         assertStringIncludes(ok[0]!.reason, "org/first: deleted 1 stale");
         assertStringIncludes(ok[0]!.reason, "issue-1-fix");
@@ -672,6 +676,33 @@ Deno.test("branch cleanup - cleanupStaleRemoteBranches deletes branches for merg
     assertEquals(result.value.deletedCount, 2);
     assertEquals(result.value.skippedCount, 0);
   }
+});
+
+Deno.test("branch cleanup - cleanupStaleRemoteBranches journals one ok summary when the sweep finishes without a stop", async () => {
+  await withSandboxedWorkDir(async (workDir) => {
+    const { ghCommandFn } = createMockGh({
+      "repos/org/repo/branches": "issue-1-fix\nissue-2-update\n",
+      "--state open": "",
+      "--state merged": "42",
+      "-X DELETE": "",
+    });
+
+    const result = await cleanupStaleRemoteBranches(
+      ["org/repo"],
+      "testuser",
+      { ghCommandFn, workDir },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.deletedCount, 2);
+    const ok = (await readSelfHealJournal(workDir)).filter((e) =>
+      e.result === "ok"
+    );
+    assertEquals(ok.length, 1);
+    assertEquals(ok[0]?.module, "branch_cleanup");
+    assertEquals(ok[0]?.action, "stale_remote_delete");
+    assertStringIncludes(ok[0]!.reason, "org/repo: deleted 2 stale remote");
+  });
 });
 
 Deno.test("branch cleanup - cleanupStaleRemoteBranches skips branches with open PRs", async () => {

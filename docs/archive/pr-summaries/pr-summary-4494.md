@@ -137,14 +137,15 @@ sequenceDiagram
   genuine faults, even those quoting the skip text, at ERROR; disabling that
   branch failed `worker/deno/tests/lifecycle_pr_observation_test.ts`.
 - All five reported condition-negation mutants were applied individually and
-  killed by `worker/deno/tests/branch_cleanup_test.ts`: `branch_cleanup.ts:714`
-  (cached merged prefetch), `:740` (safety query), `:777` (cached merged branch
-  lookup, now `:778`), `:809` (uncached merged branch lookup, now `:812`) and
-  `:834` (deletion, now `:837`). No exemptions. Nine stage-specific cases cover
-  cached and uncached safety queries, merged lookups and deletion, plus cached
-  prefetch; earlier requests succeed before the injected refusal. The initial
-  REST branch-list test now uses a REST secondary-limit response instead of
-  claiming to reach a GraphQL query.
+  killed by `worker/deno/tests/branch_cleanup_test.ts`: the cached merged
+  prefetch, the safety query, the cached merged branch lookup, the uncached
+  merged branch lookup and the stale-sweep deletion in
+  `worker/deno/lib/branch_cleanup.ts` (line numbers omitted as they shift with
+  each edit). No exemptions. Nine stage-specific cases cover cached and uncached
+  safety queries, merged lookups and deletion, plus cached prefetch; earlier
+  requests succeed before the injected refusal. The initial REST branch-list
+  test now uses a REST secondary-limit response instead of claiming to reach a
+  GraphQL query.
 - PR #4536 review round (journal): the mid-repo rate-limit stops in
   `cleanupMergedPrBranches` (ref probe, safety assessment, deletion) and
   `cleanupStaleRemoteBranches` (safety check, cached and uncached lookup,
@@ -157,8 +158,7 @@ sequenceDiagram
   `issue-1-fix`, refuse on `issue-2-later`, and assert the `ok` summary naming
   the first branch plus no request after the refusal. With `branch_cleanup.ts`
   restored from the previous commit all seven cases failed (journal file
-  missing). The line numbers in the mutation bullet above are as of the previous
-  round and have since shifted.
+  missing). The mutation bullet above names the sites rather than line numbers.
 - `worker/deno/tests/merged_pr_issue_sweep_test.ts`: three later-stage cases
   inject secondary refusals at the actual timeline, comment and close requests.
   Each fails when its own stop is restored to primary-only handling; no later
@@ -191,3 +191,11 @@ sequenceDiagram
   historical records; `docs/workflows/issue-processing.md:1555` documents PR
   creation backoff, a separate retry path.
 - `git diff --check` — passed. No `deno.lock` changes.
+- PR #4536 mutation round: three survivors in the flush helpers are now pinned.
+  The `module: "branch_cleanup"` property of both flush events (merged and
+  stale) is asserted in the existing flush cases; with each deleted (via
+  `--no-check`) the suite failed. A new case,
+  `cleanupStaleRemoteBranches journals one ok summary when the sweep finishes
+  without a stop`,
+  covers the final `await flushStaleSummary()`; deleting that call failed it. No
+  exemptions.
