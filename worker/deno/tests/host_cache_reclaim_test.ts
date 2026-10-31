@@ -43,6 +43,7 @@ import {
   type ReclaimHostCachesDeps,
   runReclaimHostCaches,
 } from "../commands/reclaim_host_caches.ts";
+import { EPHEMERAL_CARGO_HEADROOM_BYTES } from "../lib/heavy_build_gate.ts";
 
 const GIB = 1_073_741_824;
 const KIB_PER_GIB = 1_048_576;
@@ -674,6 +675,102 @@ Deno.test("free space already at or above the floor removes nothing and does not
     assertEquals(result.removed.length, 0);
     assertEquals(processTableRead, false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4540: the reclaim reaches the cargo build headroom, not just the floor.
+// ---------------------------------------------------------------------------
+
+Deno.test("above the floor but short of the cargo build headroom, a stale cache is removed (Issue #4540)", async () => {
+  await withRoot(async (root) => {
+    const stale = await makeCache(root, "stale-target", { ageMs: STALE_MS });
+    const result = await reclaimHostCaches(
+      {
+        freeBytes: 50 * GIB,
+        floorBytes: 46 * GIB,
+        headroomBytes: 10 * GIB,
+        cargoHeadroomBytes: 25 * GIB,
+        minAgeMs: DAY,
+        roots: [root],
+        protect: [],
+      },
+      reclaimDeps({ dirSizeBytes: async () => 30 * GIB }),
+    );
+    assertEquals(removedPaths(result), [stale]);
+    assertEquals(result.targetBytes, 71 * GIB, "floor + the larger headroom");
+    assertEquals(result.freeBytesAfter, 80 * GIB);
+    assertEquals(result.shortBytes, 0);
+  });
+});
+
+Deno.test("at the floor plus the cargo build headroom, nothing is removed and the process table is not read (Issue #4540)", async () => {
+  await withRoot(async (root) => {
+    const stale = await makeCache(root, "stale-target", { ageMs: STALE_MS });
+    let processTableRead = false;
+    const result = await reclaimHostCaches(
+      {
+        freeBytes: 71 * GIB,
+        floorBytes: 46 * GIB,
+        headroomBytes: 10 * GIB,
+        cargoHeadroomBytes: 25 * GIB,
+        minAgeMs: DAY,
+        roots: [root],
+        protect: [],
+      },
+      reclaimDeps({
+        processSnapshot: async () => {
+          processTableRead = true;
+          return ["cargo"];
+        },
+      }),
+    );
+    assertEquals(await exists(stale), true);
+    assertEquals(result.removed.length, 0);
+    assertEquals(processTableRead, false);
+  });
+});
+
+Deno.test("command: above the floor but short of the cargo build headroom, the reclaim runs (Issue #4540)", async () => {
+  await withRoot(async (root) => {
+    const cache = await makeCache(root, "stale-target", { ageMs: STALE_MS });
+    const config = await writeConfig(root, {
+      host_cache_reclaim_roots: [root],
+    });
+    const result = await runReclaimHostCaches(
+      {
+        config,
+        "free-kb": String(2 * KIB_PER_GIB),
+        "floor-kb": String(KIB_PER_GIB),
+      },
+      commandDeps({ dirSizeBytes: async () => 30 * GIB }),
+    );
+    assertEquals(result.success, true);
+    assertEquals(await exists(cache), false);
+    assertStringIncludes(result.message, `removed ${cache}`);
+  });
+});
+
+Deno.test("the launchers start the reclaim at the floor plus the cargo build headroom (Issue #4540)", async () => {
+  const kb = EPHEMERAL_CARGO_HEADROOM_BYTES / 1024;
+  const sh = await Deno.readTextFile(
+    new URL("../../../run.sh", import.meta.url),
+  );
+  assertStringIncludes(sh, `CARGO_BUILD_HEADROOM_KB=${kb}`);
+  assertStringIncludes(
+    sh,
+    "if ((avail_kb < floor_kb + CARGO_BUILD_HEADROOM_KB)); then",
+  );
+  const ps1 = await Deno.readTextFile(
+    new URL("../../../run.ps1", import.meta.url),
+  );
+  assertStringIncludes(
+    ps1,
+    `$cacheCargoHeadroomBytes = [int64]${EPHEMERAL_CARGO_HEADROOM_BYTES}`,
+  );
+  assertStringIncludes(
+    ps1,
+    "if ($cacheFreeBytes -lt ($cacheFloorBytes + $cacheCargoHeadroomBytes)) {",
+  );
 });
 
 Deno.test("a recent write to a grandchild keeps an otherwise stale cache fresh", async () => {
@@ -1603,7 +1700,7 @@ Deno.test("command: a disabled config removes nothing and says so", async () => 
   });
 });
 
-Deno.test("command: free space above the floor says there is nothing to do", async () => {
+Deno.test("command: free space at the floor plus the cargo build headroom says there is nothing to do (Issue #4540)", async () => {
   await withRoot(async (root) => {
     const cache = await makeCache(root, "stale-target", { ageMs: STALE_MS });
     const config = await writeConfig(root, {
@@ -1612,7 +1709,9 @@ Deno.test("command: free space above the floor says there is nothing to do", asy
     const result = await runReclaimHostCaches(
       {
         config,
-        "free-kb": String(2 * KIB_PER_GIB),
+        "free-kb": String(
+          KIB_PER_GIB + EPHEMERAL_CARGO_HEADROOM_BYTES / 1024,
+        ),
         "floor-kb": String(KIB_PER_GIB),
       },
       commandDeps(),
