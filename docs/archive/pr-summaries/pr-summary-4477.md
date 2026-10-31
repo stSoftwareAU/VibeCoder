@@ -49,6 +49,10 @@ Prompt and docs only; no UI files touched.
   the skeleton lead-in (both now say the criteria-less block holds only
   `missing` entries with a `reason:`, no provenance marker and no `reviewer:`
   field).
+- `prompts/issue/prompt.md`: the criteria-less skeleton's example Summary now
+  says the tablet breakpoint is still outstanding and ends `Part of
+  #{{ISSUE_NUMBER}}`, because that skeleton keeps a `missing` entry and so must
+  not claim to close the issue (commit 193bfbce).
 - `prompts/pr_feedback/prompt.md`: "Stopping the PR from closing its issue".
 - `DESIGN-PRINCIPLES.md` ("Unmet acceptance criteria are named…") and
   `docs/workflows/issue-processing.md` (closure gate and "At PR creation").
@@ -104,6 +108,10 @@ this issue has no criteria heading and nothing in it is left undone, so
   `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts` is among
   the `issue_prompt_*` files (7 tests at head). Combined run at head: 160
   passed, 0 failed.
+- Push 193bfbce (skeleton example Summary changed from `Closes` to `Part of`):
+  prose only; no pinned phrase sits in the edited lines, so
+  `issue_prompt_criteria_less_closure_4477_test.ts` is unaffected. Re-run on the
+  head: see the `deno test` result below.
 - No existing assertion was removed or edited.
 - Docs: `deno fmt --check` already fails on `DESIGN-PRINCIPLES.md` and
   `docs/workflows/issue-processing.md` on base; not reformatted.
