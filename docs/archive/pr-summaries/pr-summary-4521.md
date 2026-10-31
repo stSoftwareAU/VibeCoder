@@ -11,10 +11,10 @@ Version bump: not applicable; no `VERSION` file is touched.
 
 ### Intent and Rationale
 
-- #4521 is a worker-filed fallback record ("the conflict resolver declined"). The
-  decline and the roll-back are the designed ladder (Issue #4328); the defect in
-  the record is the two `not recorded` fields, which the roll-back rung left
-  empty (`fallback: {}`) while the hand-off path filled them.
+- #4521 is a worker-filed fallback record ("the conflict resolver declined").
+  The decline and the roll-back are the designed ladder (Issue #4328); the
+  defect in the record is the two `not recorded` fields, which the roll-back
+  rung left empty (`fallback: {}`) while the hand-off path filled them.
 - The pass measures how far behind a branch is only for a repository with two or
   more milestone branches (`orderRepoMilestones`), so a lone branch reached the
   filing unmeasured on both paths.
@@ -22,8 +22,8 @@ Version bump: not applicable; no `VERSION` file is touched.
 ### Essential Design Decisions
 
 - One `buildFallbackContext` now serves `applyResolverRecovery` and
-  `handOffSpentBudget`; an unmeasured branch is measured at the fallback with the
-  injected `behindCountFn` (rare path, best-effort, a failure is logged).
+  `handOffSpentBudget`; an unmeasured branch is measured at the fallback with
+  the injected `behindCountFn` (rare path, best-effort, a failure is logged).
 - A branch that never synced has no `lastSyncedDefaultSha`, so the behind-since
   compare is bounded by the branch itself: its first listed commit is the oldest
   one the branch lacks.
@@ -57,11 +57,12 @@ VibeCoder.
 
 ## Reproduction
 
-- **symptom** — the roll-back rung's `merge-fallback` record read "Commits behind
-  the base: not recorded" and "Behind since: not recorded".
+- **symptom** — the roll-back rung's `merge-fallback` record read "Commits
+  behind the base: not recorded" and "Behind since: not recorded".
 - **status** — `verified` — both new tests failed against the base-branch
   `milestone_branch_sync.ts` and pass after the fix.
-- **regression test** — `worker/deno/tests/milestone_branch_sync_test.ts::syncMilestoneBranches - the ladder's roll-back of a lone branch files how far behind the base it was and since when (Issue #4521)`
+- **regression test** —
+  `worker/deno/tests/milestone_branch_sync_test.ts::syncMilestoneBranches - the ladder's roll-back of a lone branch files how far behind the base it was and since when (Issue #4521)`
 
 ## Test Plan
 
@@ -80,7 +81,9 @@ of `measureBehind`, and the `conflictedFiles` argument at the same-cycle site
 (that site is unchanged in effect, it already passed them). No existing test was
 edited.
 
-Results on the final head: `deno task test:unit tests/milestone_branch_sync_test.ts tests/milestone_fallback_flag_test.ts`: 90 passed, 0 failed.
+Results on the final head:
+`deno task test:unit tests/milestone_branch_sync_test.ts tests/milestone_fallback_flag_test.ts`:
+90 passed, 0 failed.
 
 `./quality.sh`: every stage passed except `deno tests` (31306 passed, 3 failed),
 all three failing on the base branch too and not touching this change:
