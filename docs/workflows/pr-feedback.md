@@ -561,7 +561,9 @@ Six checks run, each only when it applies:
    test file (a red-on-base line usually names the production file it
    swapped in), it is compared with the section's sole changed test file
    — the one test file the section names that the PR diff adds or edits —
-   and skipped when there are none or several.
+   and is not compared when there are several (reported as unchecked, below).
+   When the PR changed no countable test file at all (for example only Rust
+   or shell tests), a file-less red result is out of scope, not unchecked.
    A file is left out when a declaration is inside a block, parentheses, or
    a loop, or the scan ends inside a literal or with unbalanced depth.
    A hard-wrapped paragraph or list item is read as one unit, using the
@@ -594,7 +596,8 @@ Six checks run, each only when it applies:
    scope. Blocks with unknown test files or mixed `tests`/`passed` figures are
    unchecked, as is a paired result naming an unchanged test file, several
    files whose runs differ, a red result with no file and no sole changed test
-   file, several counts that do not each follow the test file they count, or
+   file while the PR changed a countable test file (with none, it is out of
+   scope), several counts that do not each follow the test file they count, or
    different counts for one test file. Each unchecked figure is drift, not a
    log line: it goes to the recovery turn below.
 3. **Docs sweep re-check** — removed (Issue #4234). A feedback push still updates the manuals the change makes false. The worker does not re-check a Docs sweep line.

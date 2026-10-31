@@ -519,11 +519,13 @@ export interface UncheckedRunResult {
  * differ for one file), a paired run result in a block naming a test file that
  * is not one of the PR's changed test files, a block naming several files whose
  * runs differ, or a red result naming no test file when the section has no
- * sole changed test file. In a multi-claim block a partial addition, a figure
- * naming an unchanged file, or a token-less count in its own sentence is
- * reported on its own, and does not block the other figures (Issue #3740). A
- * `quality.sh` block and a file-less green run are out of scope by design and
- * are not reported. Comes from the same scan as `findTestPlanMismatches`.
+ * sole changed test file while the PR changed at least one countable test file;
+ * with none, such a result is out of scope. In a multi-claim block a partial
+ * addition, a figure naming an unchanged file, or a token-less count in its own
+ * sentence is reported on its own, and does not block the other figures (Issue
+ * #3740). A `quality.sh` block, a file-less green run, and a file-less red run
+ * when the PR changed no countable test file are out of scope by design and are
+ * not reported. Comes from the same scan as `findTestPlanMismatches`.
  */
 export function findUncheckedRunResults(
   opts: TestPlanScanOptions,
@@ -1090,6 +1092,8 @@ function checkRunResults(
     // A green full-suite line must never be compared; only a red run is.
     candidates = runs.filter((r) => r.failed > 0);
     if (candidates.length === 0) return { kind: "ok" };
+    // A red run ran a changed test file; with none countable, nothing to compare.
+    if (headCounts.size === 0) return { kind: "ok" };
     if (soleFile === undefined) {
       return {
         kind: "unchecked",
