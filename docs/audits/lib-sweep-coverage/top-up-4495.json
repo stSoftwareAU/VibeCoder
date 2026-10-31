@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4495",
   "definition": "New helper introduced by Issue #4495; owns process-lifetime suppression of repeated identical 'Not closing' warnings, keyed by decision with a signature of its inputs.",
   "status": "claimed",
-  "sweptAt": "c299bb827ad9e53557da30a72ece3cee92d26f2a",
+  "sweptAt": "b9565f67a2767afa5a56412ea589ac3d15451244",
   "paths": [
     "worker/deno/lib/decision_warn_dedup.ts"
   ]
