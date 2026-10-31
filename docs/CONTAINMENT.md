@@ -623,6 +623,8 @@ other Azure accounts remain outside the built-in allowlist.
 | `api.openai.com` | Agent provider | `codex` provider enabled | Responses API |
 | `auth.openai.com` | Agent provider | `codex` provider enabled | ChatGPT sign-in token refresh |
 | `chatgpt.com` | Agent provider | `codex` provider enabled | Codex backend for ChatGPT plans |
+| `ab.chatgpt.com` | Agent provider | `codex` provider enabled | Codex CLI experiment and feature flags |
+| `*.oaiusercontent.com` | Agent provider | `codex` provider enabled | ChatGPT file storage the Codex backend hands out signed URLs for |
 | `generativelanguage.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini API |
 | `cloudcode-pa.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini CLI Google sign-in backend |
 | `oauth2.googleapis.com` | Agent provider | `gemini` provider enabled | Google OAuth token refresh |

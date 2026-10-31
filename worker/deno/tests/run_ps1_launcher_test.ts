@@ -36,6 +36,7 @@ import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { appleChildOutput } from "../lib/apple_egress_launch.ts";
+import { EPHEMERAL_CARGO_HEADROOM_BYTES } from "../lib/heavy_build_gate.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   buildCount,
@@ -1323,12 +1324,41 @@ Deno.test({
   },
 });
 
+/**
+ * Free gigabytes on the drive that holds the temp directory, where the
+ * harness's fake HOME lives, or null when `df` cannot say. run.ps1 measures
+ * the real drive, so a test of its thresholds has to know what it will see.
+ */
+async function tempDriveFreeGb(): Promise<number | null> {
+  const dir = await Deno.makeTempDir({ prefix: "run-ps1-drive-" });
+  try {
+    const out = await new Deno.Command("df", {
+      args: ["-kP", dir],
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    if (!out.success) return null;
+    const line = new TextDecoder().decode(out.stdout).trim().split("\n").pop();
+    const kb = Number(line?.split(/\s+/)[3]);
+    return Number.isFinite(kb) ? kb / (1024 * 1024) : null;
+  } catch {
+    return null;
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const DRIVE_FREE_GB = ignore ? null : await tempDriveFreeGb();
+const CARGO_HEADROOM_GB = EPHEMERAL_CARGO_HEADROOM_BYTES / 1_073_741_824;
+
 Deno.test({
   name:
-    "run.ps1 - a host above its claiming floor does not run the host cache reclaim (Issue #4498)",
-  ignore,
+    "run.ps1 - a host with the floor plus the cargo build headroom free does not run the host cache reclaim (Issues #4498, #4540)",
+  // A floor of zero: the reclaim stays quiet only where the drive itself has
+  // the cargo headroom free, with a margin for writes during the test.
+  ignore: ignore || DRIVE_FREE_GB === null ||
+    DRIVE_FREE_GB < CARGO_HEADROOM_GB + 5,
   fn: async () => {
-    // A floor of zero: whatever the drive has free is above it.
     const harness = await setupHarness({
       STUB_IMAGE_INSPECT_EXIT: "0",
       VIBE_HOST_DISK_LOW_FLOOR_GB: "0",
@@ -1340,9 +1370,34 @@ Deno.test({
       assertEquals(
         await recorded(harness, "reclaim-host-caches"),
         null,
-        "a host above its floor must not reclaim",
+        "a host with the cargo headroom free must not reclaim",
       );
       assertEquals(outcome.stderr.includes("[HOST_CACHE_RECLAIM]"), false);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a host above its claiming floor but short of the cargo build headroom runs the host cache reclaim (Issue #4540)",
+  ignore: ignore || DRIVE_FREE_GB === null,
+  fn: async () => {
+    // A floor about 10 GB under what the drive has free: above the floor,
+    // well short of the floor plus the 25 GB cargo headroom.
+    const floorGb = Math.max(0, Math.floor(DRIVE_FREE_GB! - 10));
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      VIBE_HOST_DISK_LOW_FLOOR_GB: String(floorGb),
+      VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+      const args = await recorded(harness, "reclaim-host-caches");
+      assert(args, "short of the cargo headroom, the reclaim must run");
+      assertEquals(argAfter(args, "--floor-kb"), String(floorGb * 1024 * 1024));
     } finally {
       await harness.cleanup();
     }
