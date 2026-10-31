@@ -24,6 +24,9 @@ Version bump: not applicable; no `VERSION` file is touched.
 - One `buildFallbackContext` now serves `applyResolverRecovery` and
   `handOffSpentBudget`; an unmeasured branch is measured at the fallback with
   the injected `behindCountFn` (rare path, best-effort, a failure is logged).
+- The context is built **before** `rollbackFn` runs, in both functions. A merged
+  roll-back pushes the base tip onto the branch, so measured afterwards the
+  branch reads 0 behind and the behind-since compare lists no commits.
 - A branch that never synced has no `lastSyncedDefaultSha`, so the behind-since
   compare is bounded by the branch itself: its first listed commit is the oldest
   one the branch lacks.
@@ -67,23 +70,40 @@ VibeCoder.
 ## Test Plan
 
 Added to `worker/deno/tests/milestone_branch_sync_test.ts` (helper
-`ladderRollbackFiling`, a lone milestone, injected filer and `gh`):
+`rollbackFiling`, a lone milestone, injected filer and `gh`):
 
 - `syncMilestoneBranches - the ladder's roll-back of a lone branch files how far behind the base it was and since when (Issue #4521)`:
   behind-by 7 and the date are filed, compare from the last synced tip.
 - `syncMilestoneBranches - a branch that never synced bounds the behind-since compare with the branch itself (Issue #4521)`.
+- `... a spent budget found at the start of a cycle files the gap read before the roll-back`
+  (hand-off at the cycle-start site) and `... a budget spent in this cycle files
+  the conflicted files and the gap read before the roll-back` (hand-off at the
+  same-cycle site, where the error is in hand).
+- `... a behind-by that cannot be measured is logged with its reason and filed as not recorded`.
 
-Red checks: base-branch production file restored → both fail; only
-`?? milestone.milestoneBranch` removed → the second fails.
+The helper `rollbackFiling` mocks a real roll-back: `behindCountFn` answers 7
+before the roll-back and 0 after it, and the compare answers a date before and
+`null` after, so a context read after the roll-back fails every test above.
+The same-cycle ladder rung (`applyResolverRecovery` with a `conflictError`) is
+the one call site without its own test; it shares `buildFallbackContext` and the
+before-the-roll-back call with the cycle-start rung.
 
-Not covered by a dedicated test: the `behindCountFn` failure/throw log branches
-of `measureBehind`, and the `conflictedFiles` argument at the same-cycle site
-(that site is unchanged in effect, it already passed them). No existing test was
-edited.
+Red checks: base-order production file (context built after `rollbackFn`) →
+4 tests fail; `!(conflictedFiles.length > 0)` (line 1994 mutation) → the
+same-cycle test fails; `err instanceof Error` negated (line 2034 mutation) → the
+unmeasurable behind-by test fails; base-branch production file → the first two
+fail; only `?? milestone.milestoneBranch` removed → the second fails.
+
+Verifier findings (all five): the ordering defect at the two `buildFallbackContext`
+calls and the four callers it reaches (cycle-start rung, same-cycle rung,
+cycle-start hand-off, same-cycle hand-off) are fixed by building the context
+before the roll-back; the callers keep their signatures and results.
+
+No existing test was edited.
 
 Results on the final head:
 `deno task test:unit tests/milestone_branch_sync_test.ts tests/milestone_fallback_flag_test.ts`:
-90 passed, 0 failed.
+93 passed, 0 failed.
 
 `./quality.sh`: every stage passed except `deno tests` (31306 passed, 3 failed),
 all three failing on the base branch too and not touching this change:

@@ -2094,6 +2094,15 @@ export async function syncMilestoneBranches(
           `the conflict resolver declined, so this cycle rolls the branch ` +
           `back (Issue #4328)`,
       );
+      // Read before the roll-back: a merged one pushes the base tip onto the
+      // branch, which leaves nothing behind to measure.
+      const fallback = await buildFallbackContext(
+        repo,
+        milestone,
+        entry,
+        behindBy,
+        conflictError,
+      );
       const outcome = await rollbackFn(request);
       if (isRollbackOutcome(outcome)) {
         entry = await applyRollbackOutcome({
@@ -2102,13 +2111,7 @@ export async function syncMilestoneBranches(
           entry,
           outcome,
           attempts: request.attempts,
-          fallback: await buildFallbackContext(
-            repo,
-            milestone,
-            entry,
-            behindBy,
-            conflictError,
-          ),
+          fallback,
           ...(entry.lastSyncedDefaultSha !== undefined
             ? { defaultSha: entry.lastSyncedDefaultSha }
             : {}),
@@ -2268,6 +2271,15 @@ export async function syncMilestoneBranches(
 
     // Every automatic rung has been spent, so the branch is rolled back rather
     // than reported to anyone (Issue #1781).
+    // Read before the roll-back, which leaves a merged branch level with the
+    // base (Issue #4521).
+    const fallback = await buildFallbackContext(
+      repo,
+      milestone,
+      entry,
+      behindBy,
+      conflictError,
+    );
     const outcome = await rollbackFn({
       repo,
       milestoneBranch: branch,
@@ -2295,13 +2307,7 @@ export async function syncMilestoneBranches(
       entry,
       outcome,
       attempts,
-      fallback: await buildFallbackContext(
-        repo,
-        milestone,
-        entry,
-        behindBy,
-        conflictError,
-      ),
+      fallback,
       ...(defaultSha !== undefined ? { defaultSha } : {}),
       fileMergeFallbackFn,
       ghCommandFn,
