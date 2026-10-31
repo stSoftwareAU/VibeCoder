@@ -37,6 +37,7 @@ import {
 } from "../lib/pr_issue_linking.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { ensureIssueClosedIfPrMerged } from "../lib/issue_lifecycle.ts";
+import { resetDecisionWarnings } from "../lib/decision_warn_dedup.ts";
 import type { MergeLanding } from "../lib/merge_landing.ts";
 import type { Logger } from "../types.ts";
 import { classifyExistingPrForIssue } from "../lib/superseding_pr.ts";
@@ -535,4 +536,85 @@ Deno.test("ensureIssueClosedIfPrMerged - an all-met merged PR still closes the i
   assert(result.ok);
   assertEquals(result.value.closed, true);
   assertEquals(w.closed, [String(ISSUE)]);
+});
+
+/** A logger recording warn and debug messages (Issue #4495). */
+function captureLogger() {
+  const warns: string[] = [];
+  const debugs: string[] = [];
+  const logger: Logger = {
+    ...makeLogger(),
+    warn: (m: string) => {
+      warns.push(m);
+    },
+    debug: (m: string) => {
+      debugs.push(m);
+    },
+  };
+  return { logger, warns, debugs };
+}
+
+const countMissingWarns = (warns: string[]) =>
+  warns.filter((w) => w.includes("acceptance criteria missing")).length;
+
+Deno.test("ensureIssueClosedIfPrMerged - an unchanged missing-criteria verdict warns once across two cycles (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const w = world(MISSING_SUMMARY);
+  const { logger, warns, debugs } = captureLogger();
+  const deps = {
+    ghCommandFn: w.fn,
+    logger,
+    verifyMergeLandedFn: milestoneLanded,
+  };
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const result = await ensureIssueClosedIfPrMerged(
+      "owner/repo",
+      ISSUE,
+      2459,
+      "bot-user",
+      deps,
+    );
+    assert(result.ok);
+    assertEquals(result.value.closed, false);
+  }
+  assertEquals(countMissingWarns(warns), 1, JSON.stringify(warns));
+  assertEquals(
+    debugs.filter((d) => d.includes("acceptance criteria missing")).length,
+    1,
+    JSON.stringify(debugs),
+  );
+  assertEquals(w.closed, []);
+});
+
+Deno.test("ensureIssueClosedIfPrMerged - a changed missing set or PR number warns again (Issue #4495)", async () => {
+  resetDecisionWarnings();
+  const { logger, warns } = captureLogger();
+  // The same summary with the two `drift`/`agreement` criteria removed, so the
+  // missing set differs from MISSING_SUMMARY's.
+  const fewerMissing = MISSING_SUMMARY.split("\n")
+    .filter((line) =>
+      !line.includes("drift test") && !line.includes("agreement test")
+    )
+    .join("\n");
+  const run = (body: string, prNumber: number) =>
+    ensureIssueClosedIfPrMerged("owner/repo", ISSUE, prNumber, "bot-user", {
+      ghCommandFn: world(body).fn,
+      logger,
+      verifyMergeLandedFn: milestoneLanded,
+    });
+  await run(MISSING_SUMMARY, 2459);
+  await run(MISSING_SUMMARY, 2459);
+  assertEquals(countMissingWarns(warns), 1, JSON.stringify(warns));
+  await run(fewerMissing, 2459);
+  assertEquals(
+    countMissingWarns(warns),
+    2,
+    "a changed missing set warns again",
+  );
+  await run(fewerMissing, 2460);
+  assertEquals(
+    countMissingWarns(warns),
+    3,
+    "a different PR number warns again",
+  );
 });
