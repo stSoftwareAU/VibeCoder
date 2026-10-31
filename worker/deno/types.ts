@@ -439,6 +439,8 @@ export interface WorkerConfig {
   sleepInterval: number;
   /** Maximum issues worked concurrently per host (Issue #4174; default 1). */
   maxConcurrentIssues: number;
+  /** Whether this host runs periodic PR maintenance scans. */
+  prScanningEnabled?: boolean;
   /** Seconds to wait when credits are exhausted */
   creditWaitInterval: number;
   /** Timeout in seconds for issue refinement */
@@ -1481,6 +1483,8 @@ export interface ConfigFile {
   sleep_interval?: number;
   /** Concurrent-issue slot count (Issue #4174; integer 1..8, default 1). */
   max_concurrent_issues?: number;
+  /** Whether this host runs periodic PR maintenance scans (default true). */
+  pr_scanning_enabled?: boolean;
   credit_wait_interval?: number;
   refinement_timeout?: number;
   refinement_kill_after?: number;

@@ -156,6 +156,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "max_clarification_rounds",
   "sleep_interval",
   "max_concurrent_issues",
+  "pr_scanning_enabled",
   "credit_wait_interval",
   "refinement_timeout",
   "refinement_kill_after",

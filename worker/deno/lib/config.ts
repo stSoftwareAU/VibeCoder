@@ -936,6 +936,13 @@ export async function loadConfig(
     OPERATIONAL_DEFAULTS.maxClarificationRounds;
   const sleepInterval = file.sleep_interval ??
     OPERATIONAL_DEFAULTS.sleepInterval;
+  if (
+    file.pr_scanning_enabled !== undefined &&
+    typeof file.pr_scanning_enabled !== "boolean"
+  ) {
+    throw new Error("pr_scanning_enabled must be a boolean");
+  }
+  const prScanningEnabled = file.pr_scanning_enabled ?? true;
   const maxConcurrentIssues = file.max_concurrent_issues ??
     OPERATIONAL_DEFAULTS.maxConcurrentIssues;
   const creditWaitInterval = file.credit_wait_interval ??
@@ -1336,6 +1343,7 @@ export async function loadConfig(
     sleepInterval,
     trustedAuthorsCacheHours,
     maxConcurrentIssues,
+    prScanningEnabled,
     creditWaitInterval,
     refinementTimeout,
     refinementKillAfter,

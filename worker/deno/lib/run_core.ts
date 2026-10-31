@@ -238,6 +238,8 @@ export interface RunCoreConfig {
    * a sub-issue of #4168.
    */
   maxConcurrentIssues: number;
+  /** Whether periodic PR maintenance runs on this host. */
+  prScanningEnabled?: boolean;
   /** Maximum consecutive failures before exit (default: 10). */
   maxConsecutiveFailures: number;
   /** Rate limit backoff duration (seconds, default: 300). */
@@ -1796,6 +1798,7 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     // default and the config default cannot drift apart again.
     sleepInterval: OPERATIONAL_DEFAULTS.sleepInterval,
     maxConcurrentIssues: 1,
+    prScanningEnabled: true,
     agentProviderFallback: [],
     claudeWeekPaceDrain: true,
     maxConsecutiveFailures: 10,
@@ -2270,6 +2273,22 @@ export function buildPriorityDispatchTable(
         Promise.resolve({ ok: true as const, value: { processed: false } }),
     },
   ];
+
+  // Host-local opt-out for work assigned to an external PR babysitter.
+  if (config.prScanningEnabled === false) {
+    const scans = new Set([
+      "PR Feedback",
+      "Spelling Fix",
+      "CI Fix",
+      "Update PR Branches",
+      "Resolve PR Merge Conflicts",
+      "Nudge Stalled CI",
+      "Blocking PR Stall Repair",
+    ]);
+    return table.filter((handler) => !scans.has(handler.name)).sort((a, b) =>
+      a.priority - b.priority
+    );
+  }
 
   // Sort by ascending priority (belt-and-suspenders — already in order)
   table.sort((a, b) => a.priority - b.priority);
