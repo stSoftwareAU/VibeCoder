@@ -2,6 +2,11 @@
 import { loadConfig } from "../lib/config.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
+import {
+  createWriteRepoAllowlistContext,
+  seedWriteRepoAllowlist,
+  withWriteRepoAllowlistContext,
+} from "../lib/write_repo_allowlist.ts";
 import { markCommentProcessed } from "../lib/pr_comments.ts";
 import {
   babysitterAppIdentity,
@@ -306,6 +311,24 @@ async function dismissAddressedReviews(
     console.log(`${repo}#${number}: dismissed addressed review ${review.id}`);
   }
 }
+
+/** Isolate GitHub writes for each concurrent repair to its target repository. */
+export function withBabysitterWriteScope<T>(
+  repo: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+    throw new Error(`Invalid repository: ${repo}`);
+  }
+  return withWriteRepoAllowlistContext(
+    createWriteRepoAllowlistContext(),
+    () => {
+      seedWriteRepoAllowlist(repo);
+      return action();
+    },
+  );
+}
+
 async function fix(
   repo: string,
   initial: Pr,
@@ -598,7 +621,11 @@ async function pass(
           repairs.push({
             key: `${repo}#${pr.number}`,
             version: `${pr.headRefOid}:${why}`,
-            run: () => fix(repo, pr, authors, login),
+            run: () =>
+              withBabysitterWriteScope(
+                repo,
+                () => fix(repo, pr, authors, login),
+              ),
           });
         }
       }

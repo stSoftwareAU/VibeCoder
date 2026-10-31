@@ -1,5 +1,11 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  enforceGhWriteAllowlist,
+  isWriteRepoAllowed,
+  isWriteRepoAllowlistActive,
+  WriteRepoBlockedError,
+} from "../lib/write_repo_allowlist.ts";
+import {
   eligibleAuthor,
   reason,
   recoverTemporaryClones,
@@ -7,6 +13,7 @@ import {
   runRepairs,
   validateAndCommit,
   waitForPushedHead,
+  withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
 
 const pr = {
@@ -222,4 +229,34 @@ Deno.test("review dismissal waits for GitHub to report the pushed head", async (
     await waitForPushedHead(() => Promise.resolve("other"), "new", 2, 1),
     false,
   );
+});
+
+Deno.test("parallel babysitter repairs restrict writes to their own repository", async () => {
+  const results = await Promise.all(
+    ["org/one", "org/two"].map((repo) =>
+      withBabysitterWriteScope(repo, async () => {
+        await Promise.resolve();
+        assert(isWriteRepoAllowlistActive());
+        assert(isWriteRepoAllowed(repo));
+        assert(!isWriteRepoAllowed(repo === "org/one" ? "org/two" : "org/one"));
+        await enforceGhWriteAllowlist([
+          "api",
+          "-X",
+          "POST",
+          `repos/${repo}/issues/1/comments`,
+          "-f",
+          "body=lock",
+        ]);
+        await assertRejects(() =>
+          enforceGhWriteAllowlist([
+            "api",
+            "-X",
+            "PUT",
+            "repos/org/unrelated/pulls/1/update-branch",
+          ]), WriteRepoBlockedError);
+        return repo;
+      })
+    ),
+  );
+  assertEquals(results, ["org/one", "org/two"]);
 });
