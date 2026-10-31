@@ -56,7 +56,8 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
   describes the outside-worker body and edit command, and requires the reporting
   clause built from `PR_RESPONSE_MESSAGE_FILE`. It rejects the old ban. The
   dependency-audit section also requires the marker-scoped rebuild and live
-  body update for its tracking issue.
+  body update for its tracking issue; it is excluded from the main ci_fix
+  section check so it cannot satisfy that check's pins.
 - The head test file passes (4 passed, 0 failed); with the three prompts
   restored from `main`, it fails (0 passed, 4 failed).
 - `deno task drift-pins-on-base` confirmed every required phrase is absent from
@@ -65,6 +66,8 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
   on the missing reporting clause; the source was restored afterwards.
 - Changing `WORKER_PR_MARKER_PREFIX` at its source made all four tests fail
   on the missing marker; the source was restored afterwards.
+- Removing the `gh pr edit` clause from the main ci_fix guidance made its test
+  fail (3 passed, 1 failed); the prompt was restored afterwards.
 - No assertion removed or edited in an existing test.
 - Related rules checked: the "Keep the PR summary true to the head" paragraph in
   each of the three prompts, and `docs/workflows/` text on the digest marker and
@@ -72,4 +75,4 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
 
 `markdownlint-cli2` on the summary: 0 issues.
 
-<!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes longer than the 600s foreground command cap (a run on an earlier branch timed out at 580s inside the deno test stage); only targeted checks ran, CI runs the full gate" -->
+<!-- vibe-quality-gate-skipped reason="the full ./quality.sh failed in the Deno test stage; a separate unit run reproduced a Deno 2.9.0 parallel test permissions panic. Semgrep and Checkov were unavailable locally; CI runs the full gate" -->

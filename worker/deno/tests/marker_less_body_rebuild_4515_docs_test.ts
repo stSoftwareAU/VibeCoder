@@ -24,7 +24,12 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
 import { PR_RESPONSE_MESSAGE_FILE } from "../lib/worker_state_paths.ts";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  flat,
+  readRepoDoc,
+  section,
+  withoutSection,
+} from "./support/markdown_docs.ts";
 
 const TYPES_AND_SECTIONS: readonly [type: string, heading: string][] = [
   ["pr_feedback", "Making Changes"],
@@ -39,7 +44,12 @@ for (const [type, heading] of TYPES_AND_SECTIONS) {
   const doc = `prompts/${type}/prompt.md`;
 
   Deno.test(`Issue #4515 - ${type} says a marker-less description is edited with gh pr edit`, async () => {
-    const body = flat(section(await readRepoDoc(doc), heading));
+    const scoped = section(await readRepoDoc(doc), heading);
+    const body = flat(
+      type === "ci_fix"
+        ? withoutSection(scoped, "Dependency audit failures")
+        : scoped,
+    );
 
     for (
       const required of [
