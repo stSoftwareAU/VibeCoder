@@ -60,6 +60,7 @@ import { getEnvNumberOrDefault } from "./config.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { terminateDescendants } from "./pid_guard.ts";
 import { createLogger } from "./logger.ts";
+import { configureDecisionWarnStore } from "./decision_warn_dedup.ts";
 
 /**
  * Canonical housekeeping step order (Issue #3502). Exposed so tests and callers
@@ -469,6 +470,8 @@ export async function runStartupHousekeeping(
   config: WorkerConfig,
   depsOverride: Partial<HousekeepingDeps> = {},
 ): Promise<HousekeepingResult> {
+  // Load decisions before the merged-PR sweep so hourly restarts stay quiet.
+  configureDecisionWarnStore(options.workDir);
   const deps: HousekeepingDeps = {
     ...createDefaultHousekeepingDeps(),
     ...depsOverride,

@@ -400,7 +400,13 @@ bash `worker/run_core.sh` conductor. It sequences:
    its issue as completed. The issue stays open with its existing labels so the worker can finish
    it. Both closers record the missing criteria in their diagnostic output;
    they neither apply `needs-human` nor post repeated hand-off comments.
-   The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
+   `ensureIssueClosedIfPrMerged` (the sweep and recovery path) logs a
+   did-not-land or missing-criteria hold at WARNING once per verdict; an
+   unchanged repeat, including the one the next hourly worker start produces,
+   is logged at DEBUG (`decision_warn_signatures.json` in the work directory,
+   Issue #4495).
+   When a criterion is marked missing, the PR itself is raised as `Part of #N`
+   rather than `Closes #N`
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.
 

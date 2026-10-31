@@ -35,6 +35,7 @@ import {
   extractIssueNumberFromPrTitle,
 } from "./pr_body.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
+import { shouldWarnDecision } from "./decision_warn_dedup.ts";
 import {
   findRollbackAfterMerge,
   type RollbackRecord,
@@ -2629,10 +2630,26 @@ export async function closeIssuesForMergedPrs(
           const landing = await (options.verifyMergeLandedFn ??
             verifyMergeLanded)(repo, prNumber, ghCommandFn);
           if (!landing.landed) {
-            logger.warn(
-              `Not closing issue #${issueNumber}: PR #${prNumber} merged but did not land — ${landing.detail} (Issue #4396)`,
-              { repo, issueNumber, prNumber, reason: landing.reason },
-            );
+            // Issue #4495: warn once per verdict (shared key with
+            // ensureIssueClosedIfPrMerged); an unchanged repeat is DEBUG.
+            const notLandedMessage =
+              `Not closing issue #${issueNumber}: PR #${prNumber} merged but did not land — ${landing.detail} (Issue #4396)`;
+            const notLandedContext = {
+              repo,
+              issueNumber,
+              prNumber,
+              reason: landing.reason,
+            };
+            if (
+              shouldWarnDecision(
+                `not-landed:${repo}#${issueNumber}:pr${prNumber}`,
+                landing.reason,
+              )
+            ) {
+              logger.warn(notLandedMessage, notLandedContext);
+            } else {
+              logger.debug(notLandedMessage, notLandedContext);
+            }
             continue;
           }
           // Issue #1770: a milestone roll-back reverted this PR, so the
