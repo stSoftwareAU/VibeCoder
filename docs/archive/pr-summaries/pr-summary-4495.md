@@ -93,3 +93,14 @@ Results on the final head: `deno task test:unit` over 9 files (the three above,
 
 Twinned copies: the did-not-land message is logged at two sites
 (`issue_lifecycle.ts`, `pr_maintenance.ts`); both changed and share a key.
+
+`./quality.sh` on this head: every stage passed except `deno tests`, which failed
+only on two tests in `worker/deno/tests/completion_phase_repo_formatters_test.ts`
+("an unformatted Rust change is formatted and committed, then passes the gate"
+and "cargo fmt stages only the branch's .rs files, not an unrelated uncommitted
+edit"; 31,133 other tests passed). That file does not import any module this PR
+changes; I did not run those two tests against the base branch, and the serial
+pass did not run because the parallel pass failed. The first gate run also
+flagged the new module as unclaimed by the lib sweep ledger; fixed by
+`docs/audits/lib-sweep-coverage/top-up-4495.json` (`lib_sweep_coverage_test.ts`
+39 passed, `deno task check:manifests` passed).
