@@ -20,7 +20,12 @@ import {
   getCiCheckRetryCount,
   recordCiCheckRetry,
 } from "../lib/pr_ci_checks.ts";
-import { buildCiRerunRefusalMarker } from "../lib/ci_fix_attempt_markers.ts";
+import {
+  buildCiRerunFallbackMarker,
+  buildCiRerunRefusalMarker,
+} from "../lib/ci_fix_attempt_markers.ts";
+
+const HEAD = "a".repeat(40);
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import { milestoneFixBranchFor } from "../lib/milestone_fix_pr.ts";
@@ -328,7 +333,7 @@ Deno.test("processCiFailure - max retries re-runs the check and asks nobody to i
   }
 });
 
-Deno.test("processCiFailure - max retry caller honours the persisted refusal marker (Issue #4497)", async () => {
+Deno.test("processCiFailure - max retry caller honours the persisted refusal marker and requests fresh CI once (Issue #4497)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const stateDir = `${tmpDir}/.ci_check_state`;
@@ -348,6 +353,16 @@ Deno.test("processCiFailure - max retry caller honours the persisted refusal mar
       if (args[1] === "repos/org/repo/actions/jobs/67890") {
         return Promise.resolve(JSON.stringify({ run_id: 808, steps: [] }));
       }
+      if (args[1] === "repos/org/repo/pulls/42") {
+        return Promise.resolve(`${HEAD}\n`);
+      }
+      if (args[1]?.startsWith("repos/org/repo/git/ref/heads/")) {
+        return Promise.resolve(HEAD);
+      }
+      if (args.includes("POST")) return Promise.resolve("d".repeat(40));
+      if (args[1]?.startsWith("repos/org/repo/git/commits/")) {
+        return Promise.resolve("c".repeat(40));
+      }
       return Promise.resolve("");
     };
     const deps = createMockDeps({
@@ -359,7 +374,7 @@ Deno.test("processCiFailure - max retry caller honours the persisted refusal mar
         }),
       },
     });
-    const result = await processCiFailure(makeInput(), {
+    const processorDeps: CiProcessorDeps = {
       promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
@@ -368,13 +383,38 @@ Deno.test("processCiFailure - max retry caller honours the persisted refusal mar
       maxCiRetries: 3,
       fleetLogins: ["testbot"],
       ghCommandFn: gh,
-    });
+    };
+    const result = await processCiFailure(makeInput(), processorDeps);
 
     assertEquals(result.ok, true);
     assertEquals(
       ghCalls.filter((args) => args[0] === "run" && args[1] === "rerun"),
       [],
     );
+    // GitHub will never re-run run 808, so one empty commit asks for fresh CI.
+    assertEquals(
+      ghCalls.filter((args) => args.includes("PATCH")).length,
+      1,
+    );
+    assertEquals(
+      ghCalls.filter((args) =>
+        args[0] === "pr" && args[1] === "comment" &&
+        args.some((a) => a.includes("vibe-ci-rerun-fallback"))
+      ).length,
+      1,
+    );
+
+    // The fallback marker is now on the PR, so a repeat pass pushes nothing.
+    comments.push({
+      id: 2,
+      body: buildCiRerunFallbackMarker({ repo: "org/repo", head: HEAD }),
+      createdAt: "2026-10-31T00:01:00Z",
+      author: "testbot",
+      reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+    });
+    ghCalls.length = 0;
+    await processCiFailure(makeInput(), processorDeps);
+    assertEquals(ghCalls.filter((args) => args.includes("PATCH")), []);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

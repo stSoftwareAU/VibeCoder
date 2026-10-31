@@ -150,6 +150,8 @@ function ghStub(opts: {
   postedComments?: Array<{ id: number; body: string }>;
   /** When set, `pr comment` posts fail with this message. */
   commentError?: string;
+  /** Collects the Git Data API calls the fresh-CI fallback makes (#4497). */
+  gitApiCalls?: string[][];
 }): (args: string[]) => Promise<string> {
   const {
     redChecks,
@@ -234,6 +236,17 @@ function ghStub(opts: {
       return Promise.resolve("");
     }
     if (key.includes("annotations")) return Promise.resolve("[]");
+    if (key.includes("/git/")) {
+      opts.gitApiCalls?.push(args);
+      if (key.includes("git/ref/heads/")) return Promise.resolve(headRefOid);
+      if (key.includes("-X POST") && key.includes("git/commits")) {
+        return Promise.resolve("d".repeat(40));
+      }
+      if (key.includes("git/commits/")) {
+        return Promise.resolve("c".repeat(40));
+      }
+      return Promise.resolve("");
+    }
     return Promise.resolve("[]");
   };
 }
@@ -641,7 +654,7 @@ Deno.test("findFailedCiChecks - permanent refusal markers reach the maintenance 
   }
 });
 
-Deno.test("findFailedCiChecks - exhausted check caller honours a persisted refusal marker (Issue #4497)", async () => {
+Deno.test("findFailedCiChecks - exhausted check caller honours a persisted refusal marker and requests fresh CI once (Issue #4497)", async () => {
   const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-cap-refused-" });
   try {
     await Deno.writeTextFile(`${stateDir}/org_repo_1.retries`, "3");
@@ -650,25 +663,98 @@ Deno.test("findFailedCiChecks - exhausted check caller honours a persisted refus
       body: buildCiRerunRefusalMarker({ repo: REPO, runId: 901 }),
     }];
     const reruns: string[][] = [];
-    const result = await scan(
+    const gitApiCalls: string[][] = [];
+    const stubOptions = {
+      redChecks: [{ id: 1, name: "Job A", conclusion: "failure" }],
+      jobs: [{
+        id: 1,
+        run_id: 901,
+        conclusion: "failure",
+        steps: [{ name: "tests", conclusion: "failure" }],
+      }],
+      reruns,
+      postedComments: posted,
+      gitApiCalls,
+    };
+    const firstLogger = makeRecordingLogger();
+    const result = await scan(ghStub(stubOptions), firstLogger, stateDir, 3);
+
+    assertEquals(result, null);
+    assertEquals(reruns, []);
+    // An already-refused run is skipped without a WARN on any pass.
+    assertEquals(
+      firstLogger.warns.filter((m) => m.includes("exceeded max retries")),
+      [],
+    );
+    // The refused run still yields fresh CI: one empty commit, fast-forward.
+    const patches = gitApiCalls.filter((args) => args.includes("PATCH"));
+    assertEquals(patches.length, 1);
+    assert(patches[0]?.includes("force=false"));
+    assert(
+      posted.some((c) => c.body.includes("vibe-ci-rerun-fallback")),
+      "the fallback marker must be persisted before the push",
+    );
+
+    // A later scan finds the fallback marker and does not push again.
+    gitApiCalls.length = 0;
+    await scan(ghStub(stubOptions), makeRecordingLogger(), stateDir, 3);
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")), []);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - an exhausted check refused for the first time warns once and requests fresh CI (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-cap-first-" });
+  try {
+    await Deno.writeTextFile(`${stateDir}/org_repo_1.retries`, "3");
+    const gitApiCalls: string[][] = [];
+    const logger = makeRecordingLogger();
+    await scan(
       ghStub({
         redChecks: [{ id: 1, name: "Job A", conclusion: "failure" }],
         jobs: [{
           id: 1,
-          run_id: 901,
+          run_id: 902,
           conclusion: "failure",
           steps: [{ name: "tests", conclusion: "failure" }],
         }],
-        reruns,
-        postedComments: posted,
+        reruns: [],
+        rerunError: () =>
+          "gh command failed (exit 1): This workflow run cannot be retried",
+        gitApiCalls,
       }),
-      makeRecordingLogger(),
+      logger,
       stateDir,
       3,
     );
+    assertEquals(
+      logger.warns.filter((m) => m.includes("exceeded max retries")).length,
+      1,
+    );
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")).length, 1);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
 
-    assertEquals(result, null);
-    assertEquals(reruns, []);
+Deno.test("findFailedCiChecks - a refused infrastructure run requests fresh CI once per head (Issue #4497)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-fresh-" });
+  try {
+    const posted: Array<{ id: number; body: string }> = [];
+    const gitApiCalls: string[][] = [];
+    const stubOptions = {
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns: [] as string[][],
+      rerunError: () => "This workflow run cannot be retried",
+      postedComments: posted,
+      gitApiCalls,
+    };
+    await scan(ghStub(stubOptions), makeRecordingLogger(), stateDir);
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")).length, 1);
+    await scan(ghStub(stubOptions), makeRecordingLogger(), stateDir);
+    assertEquals(gitApiCalls.filter((a) => a.includes("PATCH")).length, 1);
   } finally {
     await Deno.remove(stateDir, { recursive: true });
   }

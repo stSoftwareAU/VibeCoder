@@ -321,15 +321,11 @@ function hasExactAttributes(
   inner: string,
   expected: readonly string[],
 ): boolean {
-  const found = new Set<string>();
+  const found: string[] = [];
   for (const match of inner.matchAll(ATTRIBUTE_RE)) {
-    const name = match[1]?.toLowerCase();
-    if (name === undefined || !expected.includes(name) || found.has(name)) {
-      return false;
-    }
-    found.add(name);
+    found.push((match[1] ?? "").toLowerCase());
   }
-  return found.size === expected.length;
+  return found.sort().join(",") === [...expected].sort().join(",");
 }
 
 /**

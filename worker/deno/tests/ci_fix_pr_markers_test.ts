@@ -108,6 +108,8 @@ Deno.test("readPrCiFixMarkers - a failed comment read is reported as a read fail
   assertEquals(state.readFailed, true, "the caller must be able to stand down");
   assertEquals(state.comments, []);
   assertEquals(state.markers.attempts.size, 0);
+  assertEquals(state.markers.rerunRefusals.size, 0);
+  assertEquals(state.markers.rerunFallbacks.size, 0);
   assertEquals(recorded.errors.length, 1);
   assertStringIncludes(recorded.errors[0] ?? "", "stands down");
 });

@@ -142,6 +142,7 @@ import {
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { rerunFailedJobsOfCheck } from "./ci_infrastructure_rerun.ts";
 import { nudgeCi } from "./pr_ci_nudge.ts";
+import { requestFreshCiAfterRerunRefusal } from "./ci_rerun_fresh_ci.ts";
 import { replyToComment as postPrComment } from "./pr_comments.ts";
 import {
   buildCiRerunFallbackMarker,
@@ -892,7 +893,7 @@ async function _processCiFailureLocked(
         { repo, prNumber, checkRunId },
       );
     } else {
-      await rerunFailedJobsOfCheck({
+      const exhaustedRerun = await rerunFailedJobsOfCheck({
         repo,
         prNumber,
         checkId: checkRunId,
@@ -900,6 +901,39 @@ async function _processCiFailureLocked(
         ghCommandFn: ghFn,
         logger,
       });
+      if (
+        exhaustedRerun.outcome === "permanent-refusal" ||
+        exhaustedRerun.outcome === "already-refused"
+      ) {
+        // Issue #4497: a refused run never yields new CI, so ask for fresh CI
+        // with one guarded empty commit (deduplicated per repo and head).
+        let headSha: string | undefined;
+        try {
+          headSha = (await ghFn([
+            "api",
+            `repos/${repo}/pulls/${prNumber}`,
+            "--jq",
+            ".head.sha",
+          ])).trim();
+        } catch (error) {
+          logger.error(
+            `Could not read the head of ${repo}#${prNumber} for the ` +
+              `fresh-CI fallback: ${
+                error instanceof Error ? error.message : String(error)
+              } (Issue #4497)`,
+            { repo, prNumber, checkRunId },
+          );
+        }
+        await requestFreshCiAfterRerunRefusal({
+          repo,
+          prNumber,
+          branchName: input.branchName,
+          headSha,
+          fleetMarkers: rerunMarkerState.markers,
+          ghCommandFn: ghFn,
+          logger,
+        });
+      }
     }
 
     return {

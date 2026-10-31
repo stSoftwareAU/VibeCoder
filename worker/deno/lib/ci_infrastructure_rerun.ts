@@ -36,6 +36,7 @@ import {
   isInfraRerunRecordedAt,
 } from "./ci_fix_attempt_markers.ts";
 import { replyToComment } from "./pr_comments.ts";
+import { requestFreshCiAfterRerunRefusal } from "./ci_rerun_fresh_ci.ts";
 import {
   isDownstreamOfRedJob,
   type JobNeedsMap,
@@ -258,6 +259,8 @@ export async function rerunInfrastructureChecks(opts: {
   infrastructure: InfrastructureCheck[];
   codeRunIds: ReadonlySet<number>;
   fleetMarkers: FleetCiFixMarkers;
+  /** PR head branch; enables the fresh-CI fallback after a refusal (#4497). */
+  branchName?: string;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
 }): Promise<number[]> {
@@ -265,6 +268,7 @@ export async function rerunInfrastructureChecks(opts: {
     repo,
     prNumber,
     headSha,
+    branchName,
     infrastructure,
     codeRunIds,
     fleetMarkers,
@@ -346,8 +350,10 @@ export async function rerunInfrastructureChecks(opts: {
   }
 
   const rerun: number[] = [];
+  let refused = false;
   for (const runId of candidates) {
     if (isCiRerunRefused(fleetMarkers, repo, runId)) {
+      refused = true;
       logger.info(
         `Skipping permanently refused workflow run ${runId} on ${repo} ` +
           `(Issue #4497)`,
@@ -367,6 +373,7 @@ export async function rerunInfrastructureChecks(opts: {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("This workflow run cannot be retried")) {
+        refused = true;
         logger.warn(
           `GitHub permanently refused workflow run ${runId} on ${repo}#${prNumber}: ` +
             `${message} (Issue #4497)`,
@@ -414,6 +421,20 @@ export async function rerunInfrastructureChecks(opts: {
         { repo, prNumber, headSha },
       );
     }
+  }
+
+  // Issue #4497: a refused run can never produce a new CI signal, so when no
+  // other run was re-run, ask for fresh CI with one guarded empty commit.
+  if (refused && rerun.length === 0 && branchName !== undefined) {
+    await requestFreshCiAfterRerunRefusal({
+      repo,
+      prNumber,
+      branchName,
+      headSha,
+      fleetMarkers,
+      ghCommandFn,
+      logger,
+    });
   }
 
   return rerun;

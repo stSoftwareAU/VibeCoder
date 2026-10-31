@@ -28,6 +28,15 @@ Version bump: none for this change.
   and verifies the remote push.
 - A failed or unverified fallback is reported with its cause. A transient rerun
   failure remains retryable.
+- The infrastructure-rerun path and both exhausted-check callers have no
+  checkout, so they request fresh CI through
+  `lib/ci_rerun_fresh_ci.ts::requestFreshCiAfterRerunRefusal`: an empty commit
+  made with the Git Data API on the head's own tree, then a non-force ref
+  update. It uses the same repo/head fallback marker (posted first), skips gated
+  milestone heads, and stands down if the branch moved.
+- A run already recorded as refused is skipped at info level by the scan; the
+  `CI check exceeded max retries` WARN is logged only when the rerun outcome is
+  not `already-refused`.
 
 ### Undiscoverable Facts
 
@@ -86,13 +95,30 @@ tooling was added.
 - `worker/deno/tests/pr_ci_processor_test.ts` —
   `deno task test:unit tests/pr_ci_processor_test.ts`: passed, 45 tests. Covers
   the exhausted-check processor caller with and without a refusal marker.
+- `worker/deno/tests/ci_rerun_fresh_ci_test.ts`:
+  `deno task test:unit tests/ci_rerun_fresh_ci_test.ts`: passed. Covers the
+  marker-then-commit-then-fast-forward order, missing head, unresolved fleet,
+  duplicate head, gated head, moved branch, marker write failure and rejected
+  ref update.
+- The refused-run tests in `ci_infrastructure_rerun_2914_test.ts` and
+  `pr_ci_processor_test.ts` assert one fresh-CI push per head for the
+  infrastructure path, the scanner's exhausted-check path and the processor's
+  exhausted-check path, no push on a repeat pass, and no max-retries WARN for an
+  already-refused run.
+- Mutation check (`ci_fix_attempt_markers.ts`, `ci_fix_pr_markers.ts`): added
+  tests for invalid-repo parsing, unknown or missing attributes, fallback
+  builder validation, outsider and unresolved-fleet refusal/fallback markers and
+  the empty marker maps. `hasExactAttributes` was simplified to one comparison
+  of the sorted attribute names, which removes the two operands that could not
+  be pinned.
 - Mutation check: disabling the refused-run guard made the fresh-scan test issue
   a second rerun and fail; disabling fallback dedup made the persisted-marker
   test push a duplicate empty commit and fail. Both source guards were restored.
 - `deno fmt --check`, `deno lint`, and `deno check` on the changed TypeScript
   files — passed.
-- After merging current `origin/main`, the four touched test files passed
-  together (128 tests) and `deno fmt --check` passed on the changed files.
+- The touched test files, `marker_grammar_test.ts` and the two maintenance
+  deferral/merge-queue tests passed together; `deno fmt --check`, `deno lint`
+  and `deno check` passed on the changed files.
 - `./quality.sh`: every stage passed (chokepoints, completeness checks,
   markdownlint, semgrep, deno lint, type check, fmt) except `deno tests`, whose
   parallel pass had 3 failures out of 31170 passed; the serial pass did not run.

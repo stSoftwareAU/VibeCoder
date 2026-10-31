@@ -100,6 +100,7 @@ import {
   rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "./ci_infrastructure_rerun.ts";
+import { requestFreshCiAfterRerunRefusal } from "./ci_rerun_fresh_ci.ts";
 import {
   buildJobNeedsMap,
   isDownstreamOfRedJob,
@@ -1893,6 +1894,7 @@ export async function findFailedCiChecks(
           infrastructure: classified.infrastructure,
           codeRunIds: classified.codeRunIds,
           fleetMarkers: parked.markers,
+          branchName,
           ghCommandFn,
           logger,
         });
@@ -1964,14 +1966,7 @@ export async function findFailedCiChecks(
         if (retryCount >= maxRetries && check.checkSuiteId === undefined) {
           // Issue #4304: attempt to re-run a spent check instead of leaving it
           // for a person. Issue #4497 remembers GitHub's permanent refusal.
-          logger.warn("CI check exceeded max retries — attempting a re-run", {
-            repo,
-            prNumber,
-            checkName: check.name,
-            retries: retryCount,
-            maxRetries,
-          });
-          await rerunFailedJobsOfCheck({
+          const rerunResult = await rerunFailedJobsOfCheck({
             repo,
             prNumber,
             checkId,
@@ -1988,6 +1983,34 @@ export async function findFailedCiChecks(
             ghCommandFn,
             logger,
           });
+          // A run already recorded as refused is skipped at info level (the
+          // rerun helper logs it), so a permanent refusal is not re-warned on
+          // every scan (Issue #4497).
+          if (rerunResult.outcome !== "already-refused") {
+            logger.warn("CI check exceeded max retries — attempted a re-run", {
+              repo,
+              prNumber,
+              checkName: check.name,
+              retries: retryCount,
+              maxRetries,
+              outcome: rerunResult.outcome,
+            });
+          }
+          if (
+            parked !== undefined &&
+            (rerunResult.outcome === "permanent-refusal" ||
+              rerunResult.outcome === "already-refused")
+          ) {
+            await requestFreshCiAfterRerunRefusal({
+              repo,
+              prNumber,
+              branchName,
+              headSha: pr.headRefOid,
+              fleetMarkers: parked.markers,
+              ghCommandFn,
+              logger,
+            });
+          }
           continue;
         }
 
