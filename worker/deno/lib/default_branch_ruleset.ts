@@ -39,8 +39,9 @@
  *     context can never be written. When nothing matches, no ruleset is
  *     created.
  *   - **Converges additively** (Issue #3656). Updating the worker's own
- *     ruleset sends the union of its current and desired contexts, so a check
- *     someone else added to it survives.
+ *     ruleset writes the union of its desired contexts and the contexts
+ *     already live in it, each live check keeping its `integration_id`
+ *     (Issue #4487), so a check someone else added to it survives.
  *   - **Never weakens the ruleset it updates** (Issue #1290). The update is a
  *     full-document PUT, so the live ruleset is read first and every rule the
  *     worker does not model — `pull_request`, `non_fast_forward`, `deletion`,
@@ -505,6 +506,26 @@ export async function planDefaultBranchRuleset(
     };
   }
 
+  // A malformed live required check throws from the builder; refuse the update
+  // loudly rather than writing a body that silently forgets it (Issue #4487).
+  let body: RulesetBody;
+  try {
+    body = buildDefaultBranchRulesetUpdateBody(
+      VIBE_RULESET_NAME,
+      contexts,
+      live.value,
+      queue,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to update ruleset ${ours.id} in ${repo}: ${message}`,
+      ),
+    };
+  }
+
   return {
     ok: true,
     plan: {
@@ -513,12 +534,7 @@ export async function planDefaultBranchRuleset(
       preserved: currentContexts,
       preservedRules: preservedRulesFromDetail(live.value).map((r) => r.type),
       legacyClassicProtection,
-      body: buildDefaultBranchRulesetUpdateBody(
-        VIBE_RULESET_NAME,
-        contexts,
-        live.value,
-        queue,
-      ),
+      body,
       rulesetId: ours.id,
       mergeQueue,
     },
