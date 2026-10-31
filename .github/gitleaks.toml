@@ -73,6 +73,10 @@ regexes = [
   # this alternating letter/digit PAT literal. Keep the history scan's
   # exception limited to that exact declaration; the fixture is now assembled.
   '''^\s*const TOKEN = "gh[p]_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";\s*$''',
+  # Issue #4572: a test-only RSA key was committed before the test switched
+  # to generating its own key. Match this fixture's unique base64 prefix only,
+  # so other private keys in the same file and commit remain detectable.
+  '''MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDGqkt46j7Fr/zi''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
