@@ -17,7 +17,7 @@ needs to do the following:
 
 1. In GitHub, open the organisation's **Settings → Developer settings →
    GitHub Apps**, and select **New GitHub App**. Choose a unique name such as
-   `stsoftware-pr-babysitter`; record its App ID and slug. A homepage URL is
+   `fleet-pr-babysitter`; record its App ID and slug. A homepage URL is
    required by the registration form; use your organisation's project URL.
 2. Clear **Active** under **Webhook**. The babysitter polls and does not need
    inbound webhooks. Select **Only on this account** for installation scope if
@@ -42,7 +42,7 @@ needs to do the following:
    repositories according to your organisation's policy.
 5. On the App's **General** page, generate a private key. Store the downloaded
    PEM outside the checkout, for example at
-   `~/.vibe-coder/stsoftware-pr-babysitter.private-key.pem`, with access
+   `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, with access
    restricted to the service account (`chmod 600` on Unix). Do not commit it,
    paste it into a PR or put it in logs. Record the App ID, key path, App slug
    and installation owner for the eventual runner configuration.
