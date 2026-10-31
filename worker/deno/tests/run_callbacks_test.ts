@@ -597,3 +597,113 @@ Deno.test("run_callbacks - a cycle env has no run-only scalars (Issue #1955)", (
   assert(!("VIBECODER_ISSUE_NUMBER" in env));
   assert(!("VIBECODER_EXIT_CODE" in env));
 });
+
+// --- Egress proxy inheritance (Issue #4496) --------------------------------
+
+/** The egress proxy the worker container is started with, in every spelling. */
+const EGRESS_PROXY: Record<string, string> = {
+  HTTPS_PROXY: "http://172.17.0.2:3128",
+  HTTP_PROXY: "http://172.17.0.2:3129",
+  NO_PROXY: "localhost,127.0.0.1",
+  https_proxy: "http://172.17.0.2:3130",
+  http_proxy: "http://172.17.0.2:3131",
+  no_proxy: "localhost,127.0.0.1,::1",
+};
+
+/** A proxy URL whose userinfo carries a credential; it must never cross. */
+const CREDENTIAL_PROXY_URL = "http://ci-user:s3cret-pass@proxy:3128";
+const CREDENTIAL_TEXT = "s3cret-pass";
+
+Deno.test("run_callbacks - proxy variables reach the hook as the worker set them (Issue #4496)", () => {
+  const env = buildCallbackEnv(
+    context(),
+    "success",
+    "/tmp/c.json",
+    (name) => EGRESS_PROXY[name],
+  );
+  for (const [name, value] of Object.entries(EGRESS_PROXY)) {
+    assertEquals(env[name], value, name);
+  }
+});
+
+Deno.test("run_callbacks - a proxy URL with userinfo is not passed through (Issue #4496)", () => {
+  const worker: Record<string, string> = {
+    PATH: "/usr/bin",
+    NO_PROXY: "localhost,127.0.0.1",
+    HTTPS_PROXY: CREDENTIAL_PROXY_URL,
+    HTTP_PROXY: CREDENTIAL_PROXY_URL,
+    https_proxy: CREDENTIAL_PROXY_URL,
+    http_proxy: CREDENTIAL_PROXY_URL,
+  };
+  const env = buildCallbackEnv(
+    context(),
+    "success",
+    "/tmp/c.json",
+    (name) => worker[name],
+  );
+  for (
+    const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]
+  ) {
+    assert(!(name in env), `${name} must not be exported`);
+  }
+  for (const value of Object.values(env)) {
+    assert(!value.includes(CREDENTIAL_TEXT), "a credential reached a hook");
+  }
+  // Positive control: clean siblings in the same fixture still cross.
+  assertEquals(env.PATH, "/usr/bin");
+  assertEquals(env.NO_PROXY, "localhost,127.0.0.1");
+});
+
+Deno.test("run_callbacks - the cycle hook inherits proxy variables as the worker set them (Issue #4496)", () => {
+  const env = buildCycleCallbackEnv(
+    cycleContext(),
+    "/tmp/cycle.json",
+    (name) => EGRESS_PROXY[name],
+  );
+  for (const [name, value] of Object.entries(EGRESS_PROXY)) {
+    assertEquals(env[name], value, name);
+  }
+});
+
+Deno.test("run_callbacks - the cycle hook drops a proxy URL with userinfo (Issue #4496)", () => {
+  const worker: Record<string, string> = {
+    PATH: "/usr/bin",
+    NO_PROXY: "localhost,127.0.0.1",
+    HTTPS_PROXY: CREDENTIAL_PROXY_URL,
+    HTTP_PROXY: CREDENTIAL_PROXY_URL,
+    https_proxy: CREDENTIAL_PROXY_URL,
+    http_proxy: CREDENTIAL_PROXY_URL,
+  };
+  const env = buildCycleCallbackEnv(
+    cycleContext(),
+    "/tmp/cycle.json",
+    (name) => worker[name],
+  );
+  for (
+    const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]
+  ) {
+    assert(!(name in env), `${name} must not be exported`);
+  }
+  for (const value of Object.values(env)) {
+    assert(!value.includes(CREDENTIAL_TEXT), "a credential reached a hook");
+  }
+  // Positive control: clean siblings in the same fixture still cross.
+  assertEquals(env.PATH, "/usr/bin");
+  assertEquals(env.NO_PROXY, "localhost,127.0.0.1");
+});
+
+Deno.test("run_callbacks - the userinfo check applies to proxy names only (Issue #4496)", () => {
+  const worker: Record<string, string> = {
+    PATH: "/opt/user@host/bin:/usr/bin",
+    HTTPS_PROXY: CREDENTIAL_PROXY_URL,
+  };
+  const env = buildCallbackEnv(
+    context(),
+    "success",
+    "/tmp/c.json",
+    (name) => worker[name],
+  );
+  // A non-proxy inherited name keeps a value with `@`; only proxy names drop it.
+  assertEquals(env.PATH, "/opt/user@host/bin:/usr/bin");
+  assert(!("HTTPS_PROXY" in env));
+});

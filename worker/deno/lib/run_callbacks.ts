@@ -69,9 +69,26 @@ export const CALLBACK_SCHEMA_VERSION = 2;
 export const MAX_CAPTURED_OUTPUT_CHARS = 4000;
 
 /**
+ * Proxy variables inherited from the worker (Issue #4496). They name the egress
+ * CONNECT proxy, the only way out of the container because its internal
+ * network has no DNS, so a hook that reaches a remote needs them. Copied only
+ * when the value contains no `@`: userinfo (`user:pass@`) could carry a
+ * credential, so such a value is dropped whole. See {@link inheritedEnv}.
+ */
+const PROXY_ENV_VARS: readonly string[] = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "no_proxy",
+];
+
+/**
  * Environment variables inherited from the worker. Deliberately tiny: enough
- * for a portable shell hook to find its interpreter and home directory, and
- * nothing that could carry a credential.
+ * for a portable shell hook to find its interpreter and home directory, the
+ * proxy variables it needs to reach a remote (Issue #4496), and nothing that
+ * could carry a credential.
  */
 export const INHERITED_ENV_VARS: readonly string[] = [
   "PATH",
@@ -79,7 +96,31 @@ export const INHERITED_ENV_VARS: readonly string[] = [
   "LANG",
   "TZ",
   "TMPDIR",
+  ...PROXY_ENV_VARS,
 ];
+
+/**
+ * The inherited minimum, read through `readEnv` (Issue #4496).
+ *
+ * Every {@link INHERITED_ENV_VARS} name that is set is copied, except a proxy
+ * variable whose value contains `@`: that value is userinfo and could carry a
+ * credential, so it is dropped rather than rewritten.
+ *
+ * @param readEnv - Reads one worker environment variable
+ * @returns The inherited entries only
+ */
+export function inheritedEnv(
+  readEnv: (name: string) => string | undefined,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of INHERITED_ENV_VARS) {
+    const value = readEnv(name);
+    if (value === undefined) continue;
+    if (PROXY_ENV_VARS.includes(name) && value.includes("@")) continue;
+    env[name] = value;
+  }
+  return env;
+}
 
 /** Token and cost telemetry for the run, when the providers reported it. */
 export interface CallbackRunTelemetry {
@@ -726,11 +767,7 @@ export function buildCallbackEnv(
   contextFilePath: string,
   readEnv: (name: string) => string | undefined = readEnvSafe,
 ): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const name of INHERITED_ENV_VARS) {
-    const value = readEnv(name);
-    if (value !== undefined) env[name] = value;
-  }
+  const env = inheritedEnv(readEnv);
   put(env, "VIBECODER_CALLBACK_SCHEMA_VERSION", CALLBACK_SCHEMA_VERSION);
   put(env, "VIBECODER_CALLBACK_EVENT", event);
   put(env, "VIBECODER_CALLBACK_CONTEXT", contextFilePath);
@@ -824,11 +861,7 @@ export function buildCycleCallbackEnv(
   contextFilePath: string,
   readEnv: (name: string) => string | undefined = readEnvSafe,
 ): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const name of INHERITED_ENV_VARS) {
-    const value = readEnv(name);
-    if (value !== undefined) env[name] = value;
-  }
+  const env = inheritedEnv(readEnv);
   put(env, "VIBECODER_CALLBACK_SCHEMA_VERSION", CALLBACK_SCHEMA_VERSION);
   put(env, "VIBECODER_CALLBACK_EVENT", "cycle");
   put(env, "VIBECODER_CALLBACK_CONTEXT", contextFilePath);
