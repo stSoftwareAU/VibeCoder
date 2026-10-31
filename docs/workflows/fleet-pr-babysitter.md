@@ -3,8 +3,9 @@
 The babysitter scans the repositories in `.config.json` for open fleet PRs
 with merge conflicts or failed CI. By default it fixes candidates. It takes the same PR branch lock as the fleet's
 CI and conflict workers, rechecks the head, and runs one Codex session in a
-temporary clone. It runs the repository's `quality.sh`, rechecks the PR and
-pushes only if the agent produced a descendant commit and the gate passed.
+temporary clone. After Codex reports a completed fix, the babysitter commits
+it locally, runs the repository's `quality.sh`, and rechecks the PR. It pushes
+only if the gate passes and the PR still matches the original head.
 
 From the VibeCoder checkout:
 
@@ -49,6 +50,9 @@ before compression. These logs may contain model output and are private to the
 host user; do not publish them. If a process is interrupted or compression
 fails, its uncompressed log remains available for diagnosis and the next pass
 retries compression after confirming that its owner has exited.
+Each pass also removes its temporary PR clones after use. A later pass removes
+clones left by an interrupted babysitter after confirming their owner exited;
+it leaves live and unrelated directories alone.
 
 An optional executable `~/.vibe-coder/fleet-pr-babysitter/health-hook` receives
 the pass exit code as its sole argument. It is bounded to ten minutes; hook
