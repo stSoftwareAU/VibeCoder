@@ -2207,8 +2207,9 @@ async function runNudgeRung(
 
   // The ancestry was checked against the clone's HEAD, but the ladder is keyed
   // on the head GitHub reports. When the two differ the clone is not at the PR
-  // head — `preparePrBranch` fast-forwards best-effort — and the comment would
-  // then evidence a claim about a commit nobody checked. Refuse instead.
+  // head (`preparePrBranch` resets the branch onto the fetched tip, but not
+  // when the fetch fails) and the comment would then evidence a claim about a
+  // commit nobody checked. Refuse instead.
   const localHead = await readHeadSha(run, workDir, logger, repo);
   const ghHead = previousHead.trim().toLowerCase();
   if (localHead === null || localHead !== ghHead) {

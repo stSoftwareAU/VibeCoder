@@ -453,6 +453,14 @@ the skip is `branch_held` — clone contention, not a PR fault — and no CI-fix
 retry is spent on it: a retry is recorded only once the PR branch is actually
 checked out.
 
+`preparePrBranch` starts every CI-fix, PR-feedback and spelling pass from the
+PR branch's head on origin (Issue #4530): after the fetch it runs
+`git checkout -B <branch> FETCH_HEAD`, so a local branch that diverged from
+origin — for example an unpushed sync merge — cannot seed the pass. Local
+commits that reset drops are logged at warn level by SHA (at most 20). When
+the fetch itself fails there is no fetched tip, so the pass falls back to
+checking out the local branch with a best-effort `git pull --ff-only`.
+
 `${WORK_DIR}/worktrees` is a reserved work-root name, so the stale-work-dir
 sweep never mistakes it for a disposable clone. The startup orphan-worktree
 sweep may still reclaim a lane worktree that has sat untouched for
