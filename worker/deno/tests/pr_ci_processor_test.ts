@@ -2142,7 +2142,10 @@ Deno.test("processCiFailure - a refused milestone-fix branch checkout spends no 
         // not apply — the checkout stays refused for this cycle, same as
         // the "another worktree" case `preparePrBranch` handles.
         runGitCommand: ((args: string[]) => {
-          if (args[0] === "checkout" && args[1] === "-B") {
+          if (
+            args[0] === "checkout" && args[1] === "-B" &&
+            args[2]?.startsWith("milestone-fix/")
+          ) {
             return Promise.resolve({
               ok: true,
               value: {
@@ -2531,8 +2534,13 @@ Deno.test("processCiFailure - two check runs on the same gated milestone PR neve
         },
         git: {
           runGitCommand: ((args: string[]) => {
-            if (args[0] === "checkout" && args[1] === "-B") {
-              checkoutBranches.push(args[2]!);
+            // The fix-branch cut only: `preparePrBranch` also runs
+            // `checkout -B <pr-branch> FETCH_HEAD` (Issue #4530).
+            if (
+              args[0] === "checkout" && args[1] === "-B" &&
+              args[2]?.startsWith("milestone-fix/")
+            ) {
+              checkoutBranches.push(args[2]);
             }
             if (args[0] === "ls-remote") {
               // Exit 2 ("no matching refs") — no stale branch either time
@@ -2811,7 +2819,10 @@ Deno.test("processCiFailure - an ls-remote failure (non-2 exit) stands down inst
       "Claude must not run when the stale-branch check itself failed",
     );
     assertEquals(
-      gitCommands.some((args) => args[0] === "checkout" && args[1] === "-B"),
+      gitCommands.some((args) =>
+        args[0] === "checkout" && args[1] === "-B" &&
+        args[2]?.startsWith("milestone-fix/")
+      ),
       false,
       "no fix branch is cut when ls-remote's result could not be trusted",
     );

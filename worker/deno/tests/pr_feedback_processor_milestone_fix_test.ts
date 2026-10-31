@@ -29,6 +29,15 @@ const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 const MILESTONE_HEAD = "milestone/2794-worker-deno-milestone-fix-pr";
 
+/**
+ * Whether a `checkout -B <name>` target is the processor's milestone-fix
+ * branch. `preparePrBranch` also uses `checkout -B <pr-branch> FETCH_HEAD`
+ * (Issue #4530), so `-B` alone no longer identifies the fix-branch checkout.
+ */
+function isFixBranch(name: string | undefined): boolean {
+  return name?.startsWith("milestone-fix/") === true;
+}
+
 function makeSilentLogger(): Logger {
   const noop = () => {};
   return {
@@ -208,7 +217,9 @@ Deno.test("processPrFeedback - gated head: works on a fix branch and raises a fi
   if (!result.ok) return;
 
   // A checkout -B onto a milestone-fix branch happened before Claude ran.
-  const checkout = gitCalls.find((c) => c[0] === "checkout" && c[1] === "-B");
+  const checkout = gitCalls.find((c) =>
+    c[0] === "checkout" && c[1] === "-B" && isFixBranch(c[2])
+  );
   if (!checkout) throw new Error("expected a checkout -B call");
   const fixBranch = checkout[2] as string;
   assertStringIncludes(fixBranch, "milestone-fix/");
@@ -341,7 +352,9 @@ Deno.test("processPrFeedback - gated head: fix-branch checkout failure => honest
     git: {
       runGitCommand: ((args: string[], _opts?: unknown) => {
         gitCalls.push(args);
-        if (args[0] === "checkout" && args[1] === "-B") {
+        if (
+          args[0] === "checkout" && args[1] === "-B" && isFixBranch(args[2])
+        ) {
           return Promise.resolve({
             ok: true,
             value: { code: 1, stdout: "", stderr: "cannot lock ref" },
@@ -403,7 +416,9 @@ Deno.test("processPrFeedback - non-gated head: unchanged behaviour, pushes to th
   assertEquals(result.ok, true);
   if (!result.ok) return;
 
-  const checkout = gitCalls.find((c) => c[0] === "checkout" && c[1] === "-B");
+  const checkout = gitCalls.find((c) =>
+    c[0] === "checkout" && c[1] === "-B" && isFixBranch(c[2])
+  );
   assertEquals(checkout, undefined, "no fix-branch checkout expected");
 
   const created = captured.calls.find((c) =>
@@ -429,7 +444,11 @@ Deno.test("processPrFeedback - gated head: PR branch held elsewhere => stands do
     git: {
       runGitCommand: ((args: string[], _opts?: unknown) => {
         gitCalls.push(args);
-        if (args[0] === "checkout" && args[1] === "--end-of-options") {
+        // `preparePrBranch`'s reset onto the fetched tip (Issue #4530).
+        if (
+          args[0] === "checkout" && args[1] === "-B" &&
+          args[2] === MILESTONE_HEAD
+        ) {
           return Promise.resolve({
             ok: true,
             value: {
@@ -466,7 +485,9 @@ Deno.test("processPrFeedback - gated head: PR branch held elsewhere => stands do
 
   // No fix branch was ever cut, and no fix PR was raised, from the
   // unverified HEAD.
-  const checkoutB = gitCalls.find((c) => c[0] === "checkout" && c[1] === "-B");
+  const checkoutB = gitCalls.find((c) =>
+    c[0] === "checkout" && c[1] === "-B" && isFixBranch(c[2])
+  );
   assertEquals(checkoutB, undefined, "no fix-branch checkout expected");
   const created = captured.calls.find((c) =>
     c[0] === "pr" && c[1] === "create"
@@ -505,7 +526,11 @@ Deno.test("processPrFeedback - gated head: pr_review branch_held => releases wit
     git: {
       runGitCommand: ((args: string[], _opts?: unknown) => {
         gitCalls.push(args);
-        if (args[0] === "checkout" && args[1] === "--end-of-options") {
+        // `preparePrBranch`'s reset onto the fetched tip (Issue #4530).
+        if (
+          args[0] === "checkout" && args[1] === "-B" &&
+          args[2] === MILESTONE_HEAD
+        ) {
           return Promise.resolve({
             ok: true,
             value: {
@@ -665,7 +690,11 @@ Deno.test("processPrFeedback - gated head: branch_held with a failed reaction DE
     git: {
       runGitCommand: ((args: string[], _opts?: unknown) => {
         gitCalls.push(args);
-        if (args[0] === "checkout" && args[1] === "--end-of-options") {
+        // `preparePrBranch`'s reset onto the fetched tip (Issue #4530).
+        if (
+          args[0] === "checkout" && args[1] === "-B" &&
+          args[2] === MILESTONE_HEAD
+        ) {
           return Promise.resolve({
             ok: true,
             value: {
@@ -803,7 +832,9 @@ Deno.test("processPrFeedback - gated head: agent pushed the fix branch itself, l
   assertEquals(result.ok, true);
   if (!result.ok) return;
 
-  const checkout = gitCalls.find((c) => c[0] === "checkout" && c[1] === "-B");
+  const checkout = gitCalls.find((c) =>
+    c[0] === "checkout" && c[1] === "-B" && isFixBranch(c[2])
+  );
   if (!checkout) throw new Error("expected a checkout -B call");
   const fixBranch = checkout[2] as string;
 
