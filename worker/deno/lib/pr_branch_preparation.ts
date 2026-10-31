@@ -26,6 +26,7 @@ import {
 import {
   assertSafeGitRef,
   buildCheckoutArgs,
+  buildCheckoutResetBranchArgs,
   buildFetchArgs,
   buildPullArgs,
 } from "./git_ref_args.ts";
@@ -70,10 +71,16 @@ export interface PreparePrBranchDeps {
 /**
  * Fetch and check out the PR's head branch before running Claude (Issue #1455).
  *
- * Mirrors the shell `work_on_*` behaviours from `issue_worker.sh`: fetch
- * the branch from origin, check it out, and best-effort fast-forward to
- * the remote tip. Failures are logged as warnings but not fatal — Claude
- * will still run, and downstream push logic will surface any real
+ * Fetches the branch from origin and checks it out *at the fetched tip*
+ * (`git checkout -B <branch> FETCH_HEAD`), so every pass starts from the PR's
+ * head on origin (Issue #4530). Reusing the clone's local branch and trying
+ * `git pull --ff-only` failed silently once the local branch had diverged: a
+ * fix branch was cut from an unpushed local merge commit, hours behind the PR
+ * head. Local commits the reset drops are logged at warn level by SHA. When
+ * the fetch itself fails (not a missing branch) there is no fetched tip, so
+ * the previous behaviour stands: check out the local branch and try a
+ * best-effort fast-forward. Failures are logged as warnings but not fatal —
+ * Claude will still run, and downstream push logic will surface any real
  * problems.
  *
  * @param branchName - The PR head branch name.
@@ -114,8 +121,16 @@ export async function preparePrBranch(
     }
   }
 
+  const fetched = fetchResult.ok && fetchResult.value.code === 0;
+  if (fetched) await warnOnDroppedLocalCommits(branchName, deps);
+  // With a fetched tip the branch is reset onto it; without one the local
+  // branch is all there is.
+  const checkoutArgs = fetched
+    ? buildCheckoutResetBranchArgs(branchName, "FETCH_HEAD")
+    : buildCheckoutArgs(branchName);
+
   let checkoutResult = await git.runGitCommand(
-    buildCheckoutArgs(branchName),
+    checkoutArgs,
     { cwd },
   );
   if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
@@ -142,7 +157,7 @@ export async function preparePrBranch(
       });
       if (released) {
         checkoutResult = await git.runGitCommand(
-          buildCheckoutArgs(branchName),
+          checkoutArgs,
           { cwd },
         );
       }
@@ -164,7 +179,9 @@ export async function preparePrBranch(
     };
   }
 
-  // Best-effort pull to sync with the remote — harmless if already up to date.
+  // The branch already sits on the fetched tip; only the fallback (no fetch)
+  // still needs the best-effort pull.
+  if (fetched) return { ok: true };
   const pullResult = await git.runGitCommand(
     buildPullArgs("origin", branchName, { ffOnly: true }),
     { cwd },
@@ -176,6 +193,42 @@ export async function preparePrBranch(
     });
   }
   return { ok: true };
+}
+
+/** Most local-only commits named in the warning; bounds a runaway history. */
+const DROPPED_COMMIT_LOG_LIMIT = 20;
+
+/**
+ * Warn, by SHA, about commits on the local `branchName` that the fetched tip
+ * (`FETCH_HEAD`) does not hold — the checkout that follows drops them
+ * (Issue #4530). Silent when the local branch is absent, behind or equal.
+ */
+async function warnOnDroppedLocalCommits(
+  branchName: string,
+  deps: PreparePrBranchDeps,
+): Promise<void> {
+  const { logger, git, cwd } = deps;
+  const result = await git.runGitCommand(
+    [
+      "rev-list",
+      `--max-count=${DROPPED_COMMIT_LOG_LIMIT}`,
+      `refs/heads/${branchName}`,
+      "--not",
+      "FETCH_HEAD",
+      "--",
+    ],
+    { cwd },
+  );
+  // A non-zero exit is the expected "no such local branch" case.
+  if (!result.ok || result.value.code !== 0) return;
+  const shas = result.value.stdout.split("\n").map((l) => l.trim()).filter(
+    (l) => l !== "",
+  );
+  if (shas.length === 0) return;
+  logger.warn(
+    "Discarding local commits that are not on the PR branch on origin",
+    { branchName, shas, limit: DROPPED_COMMIT_LOG_LIMIT },
+  );
 }
 
 /**
