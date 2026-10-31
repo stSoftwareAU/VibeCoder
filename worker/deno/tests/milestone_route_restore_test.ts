@@ -430,6 +430,12 @@ Deno.test("a not-ahead child on an unprotected base is squash-merged once CI is 
   const created = calls[createAt]!;
   assertEquals(created[created.indexOf("--head") + 1], BRANCH);
   assertEquals(created[created.indexOf("--base") + 1], DEFAULT);
+  const body = createdRollupBody(calls);
+  assertStringIncludes(body, `has changes \`${DEFAULT}\` does not have.`);
+  assert(
+    !body.includes("still has open work"),
+    "the body does not claim open work",
+  );
   assert(
     !calls.some((args) => args[0] === "pr" && args[1] === "edit"),
     "the child is not retargeted onto the default branch",
