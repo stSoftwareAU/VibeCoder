@@ -154,7 +154,16 @@ async function fix(
     }
     child = spawnCommandWithTimeout("codex", {
       timeoutMs: 30 * 60_000,
-      args: ["exec", "--full-auto", "--cd", dir, prompt],
+      args: [
+        "exec",
+        "-c",
+        'approval_policy="never"',
+        "--sandbox",
+        "workspace-write",
+        "--cd",
+        dir,
+        prompt,
+      ],
       stdin: "null",
       stdout: "inherit",
       stderr: "inherit",
