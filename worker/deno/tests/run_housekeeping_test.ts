@@ -24,6 +24,11 @@ import {
   type SignalHandlerDeps,
   sweepVolatileCliState,
 } from "../lib/run_housekeeping.ts";
+import {
+  decisionWarnStorePath,
+  resetDecisionWarnings,
+  shouldWarnDecision,
+} from "../lib/decision_warn_dedup.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
@@ -63,6 +68,8 @@ function recordingDeps(
       order.push(step.id);
       return Promise.resolve({ success: true, message: `${step.id} ok` });
     },
+    // No-op: the shared "/tmp/work" fixture must never be read from disk.
+    configureDecisionStore: () => {},
     log: (msg) => logs.push(`log:${msg}`),
     logError: (msg) => logs.push(`err:${msg}`),
     ...overrides,
@@ -108,6 +115,43 @@ Deno.test("runStartupHousekeeping - runs every step in canonical order", async (
   assertEquals(order, [...HOUSEKEEPING_STEP_IDS]);
   assertEquals(result.stepsRun, [...HOUSEKEEPING_STEP_IDS]);
   assertEquals(result.failures, []);
+});
+
+Deno.test("runStartupHousekeeping - configures persisted decisions before the merged PR sweep", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "decision-housekeeping-" });
+  const warnings: boolean[] = [];
+  const deps = recordingDeps([], [], {
+    env: emptyEnv,
+    // The production default, so a broken default wiring turns this red.
+    configureDecisionStore:
+      createDefaultHousekeepingDeps().configureDecisionStore,
+    runStep: (step) => {
+      if (step.id === "merged-pr-issue-sweep") {
+        warnings.push(shouldWarnDecision("issue-pr", "held-open"));
+      }
+      return Promise.resolve({ success: true, message: "ok" });
+    },
+  });
+  try {
+    resetDecisionWarnings();
+    await runStartupHousekeeping(
+      baseOptions({ workDir }),
+      buildDefaultWorkerConfig(),
+      deps,
+    );
+    // A fresh process must reload the signature written during the first sweep.
+    await Deno.stat(decisionWarnStorePath(workDir));
+    resetDecisionWarnings();
+    await runStartupHousekeeping(
+      baseOptions({ workDir }),
+      buildDefaultWorkerConfig(),
+      deps,
+    );
+    assertEquals(warnings, [true, false]);
+  } finally {
+    resetDecisionWarnings();
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("runStartupHousekeeping - a failing step is logged loud but does not abort", async () => {
