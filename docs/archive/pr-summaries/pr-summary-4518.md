@@ -21,7 +21,8 @@ the final version.
 
 - One constant drives both the `--limit` and the settled-listing truncation rule
   in `openPrNumbersByUser` (a full listing reads as unknown), so they stay in
-  step. That rule still returns `null` at 100 open PRs, as it did at 10.
+  step. That rule still returns `null` at 100 open PRs, as it did at 10. The
+  constant is exported so the settled-listing test uses the same boundary.
 - The `prs_<login>` cache entry keeps its shape (an array of PRs), so no key
   bump is needed; an entry cached under the old limit expires with the cache.
 - The claim-time re-check (`liveFleetPrRecheck`) and the prefetch share
@@ -58,6 +59,9 @@ hold).
   `fleet_duplicate_prevention`, `recent_activity_cache` and
   `stuck_issue_detector` tests (102 passed, 0 failed). `deno fmt`, `deno lint`,
   `deno check` on the touched files: clean.
-- No existing test was edited.
+- Updated `settled_pr_listing_2409_test.ts` to derive its full-listing fixture
+  from `OPEN_PR_BY_USER_LIMIT`; both merged and closed listings still verify
+  that a full open listing proves nothing. Passed: `deno test` on that file
+  (14 passed, 0 failed).
 
 <!-- vibe-quality-gate-skipped reason="the full ./quality.sh takes about 15 minutes and did not fit the remaining run budget alongside the other pending PRs; targeted tests ran, CI runs the full gate" -->
