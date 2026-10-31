@@ -75,10 +75,14 @@ existing code and docs.
 ## Test Plan
 
 - New `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`, four
-  tests: sweep with ceiling+3 deferrals (no roll-back, `refusedCycles` 0,
+  tests for the original change: sweep with ceiling+3 deferrals (no roll-back,
+  `refusedCycles` 0,
   `conflictAttempts` 0, sync really ran each cycle); presync twin likewise;
   mixed deferrals and gate refusals (deferrals do not advance the streak; the
   gate refusal still climbs on the fourth).
+- PR #4581 review: short-cycle operator logs distinguish an uncounted agent
+  deferral from a counted merge-gate refusal. A fifth test captures both logs
+  and checks that the gate refusal advances `refusedCycles`.
 - Red check: restoring `refusal: true` in the `!agentAllowed` verdict fails the
   first three (cycle 4 rolled back / deferral 1 counted / streak advanced).
 - PR #4581 review: a deferral cycle still added one to `SyncStreakEntry.count`,
