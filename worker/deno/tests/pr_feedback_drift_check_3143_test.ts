@@ -1141,8 +1141,10 @@ Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check i
   const { dir, beforeSha } = await setupBaseline();
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
-    // No test file is named anywhere in the Test Plan, so a red result has no
-    // sole changed test file to be compared with.
+    // A countable test file is changed (so the PR has one for the recount to
+    // count), but no test file is named anywhere in the Test Plan, so a red
+    // result has no sole changed test file to be compared with (Issue #4537).
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V2);
     await writeFile(
       dir,
       SUMMARY_PATH,

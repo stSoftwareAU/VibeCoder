@@ -296,6 +296,24 @@ Deno.test("unchecked run results - (c) a red result with no file and no sole cha
   assert(found[0]!.reason.includes("no sole changed test file"));
 });
 
+Deno.test("unchecked run results - a file-less red result is out of scope when the PR changed no countable test file (Issue #4537)", () => {
+  // A Rust-only PR: the named .rs file is not countable, so headCounts is empty.
+  const summary =
+    "## Test Plan\n\n- Red on base: 5 passed, 2 failed (`tests/issue_2404_watchdog_abort_delay_cap.rs`, 7 tests at head).\n";
+  const none = new Map<string, TestDeclarationCounts>();
+  assertEquals(findUncheckedRunResults({ summary, headCounts: none }), []);
+  assertEquals(findTestPlanMismatches({ summary, headCounts: none }), []);
+  // Positive control: with two countable changed test files the same
+  // file-less red result is still reported as unchecked.
+  const two = counts({
+    "worker/deno/tests/a_test.ts": 40,
+    "worker/deno/tests/b_test.ts": 40,
+  });
+  const found = findUncheckedRunResults({ summary, headCounts: two });
+  assertEquals(found.length, 1);
+  assert(found[0]!.reason.includes("no sole changed test file"));
+});
+
 Deno.test("unchecked run results - quality.sh and file-less green blocks are not reported", () => {
   const summary = "## Test Plan\n\nChanged `tests/foo_test.ts`.\n\n" +
     "- `./quality.sh < /dev/null`: `deno test` 26066 passed, 1 failed (`worker/deno/tests/issue_cache_test.ts`).\n\n" +
