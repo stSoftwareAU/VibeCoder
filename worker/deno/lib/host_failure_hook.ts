@@ -39,7 +39,7 @@
 import {
   CALLBACK_SCHEMA_VERSION,
   type CallbackInvocation,
-  INHERITED_ENV_VARS,
+  inheritedEnv,
   invokeCallback,
   type InvokeCallbackSeams,
 } from "./run_callbacks.ts";
@@ -244,11 +244,7 @@ export function buildHostFailureEnv(
   readEnv: (name: string) => string | undefined = readEnvSafe,
   facts: WorkerBuildFacts = workerBuildFacts(),
 ): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const name of INHERITED_ENV_VARS) {
-    const value = readEnv(name);
-    if (value !== undefined) env[name] = value;
-  }
+  const env = inheritedEnv(readEnv);
   put(env, "VIBECODER_CALLBACK_SCHEMA_VERSION", CALLBACK_SCHEMA_VERSION);
   put(env, "VIBECODER_CALLBACK_EVENT", HOST_FAILURE_EVENT);
   put(env, "VIBECODER_CALLBACK_CONTEXT", contextFilePath);
