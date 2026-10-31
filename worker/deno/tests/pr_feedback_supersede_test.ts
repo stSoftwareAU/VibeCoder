@@ -115,6 +115,23 @@ Deno.test("isSupersededByFleetPush - matches the fleet login case-insensitively"
   );
 });
 
+Deno.test("isSupersededByFleetPush - a bot's later commit does not supersede, even with a fleet author", () => {
+  assertEquals(
+    isSupersededByFleetPush({
+      commentCreatedAt: "2026-08-21T04:49:36Z",
+      headCommit: {
+        sha: HEAD_SHA,
+        authorLogin: FLEET_HOST,
+        committerLogin: "github-actions[bot]",
+        committedAt: "2026-08-21T04:55:29Z",
+      },
+      fleetAuthors: [FLEET_HOST, "github-actions[bot]"],
+      now: NOW,
+    }),
+    false,
+  );
+});
+
 Deno.test("isSupersededByFleetPush - missing or unparseable data claims the comment", () => {
   // Unknown state must never silently swallow feedback.
   assertEquals(

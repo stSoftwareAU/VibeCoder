@@ -165,9 +165,9 @@ merge until they have a review approval and CI is green.
    per reviewer. A request is retired by its dismissal (the processed marker)
    or by the same reviewer's later `APPROVED` or `CHANGES_REQUESTED` review;
    every change request it skips is logged at INFO with the reason.
-   Of those still outstanding, a review is skipped only when a **fleet fix
-   commit** landed after it — never because a base merge or a bot's formatting or
-   version bump moved the head (Issue #2702). That skip is logged at info.
+   Of those still outstanding, no commit retires a review (Issue #4510): not a
+   fleet fix or CI-fix commit, not a base merge, not a bot's formatting or
+   version bump, and not a head move. No commit history is read for reviews.
    A review already covered by a **live, fleet-authored claim lease**
    (Issue #3383) is skipped too — not yet dismissed, just claimed by a run
    still in flight; a lapsed lease (the run timed out, crashed or went
@@ -178,7 +178,7 @@ merge until they have a review approval and CI is green.
        R["Read every page of reviews<br/>(gh api --paginate)"] --> L["Latest submitted review<br/>per reviewer (COMMENTED ignored)"]
        L --> Q{"Latest is<br/>CHANGES_REQUESTED?"}
        Q -- "no: DISMISSED,<br/>later APPROVED" --> S["Skip — INFO log<br/>with the reason"]
-       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Fleet fix commit after it?<br/>Live claim lease?"}
+       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Live claim lease?"}
        O -- yes --> S
        O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>with a lease line"]
        C --> F["Feedback run"]
@@ -376,12 +376,13 @@ second failure below. Each of those first three outcomes also requires its
 own announcement to have actually reached the PR — the push-success reply,
 the rebuttal, or the escape-hatch reply. A `gh` call that fails to post that
 announcement charges a failed attempt instead of dismissing a review nothing
-was said about (Issue #3408 review). Any other outcome — an agent error, a
-timeout, a push that never lands on the remote, a fix pushed to a gated
-head's fix branch whose PR could not be raised (retried next cycle, since
-`raiseMilestoneFixPr` reuses an open fix PR), no fix and no rebuttal (above),
-or any outcome that settles nothing, such as a prompt-build failure — is
-charged as a failed attempt instead (Issue #4304):
+was said about (Issue #3408 review). Any other outcome — an agent error (other
+than a host-disk fault, which is released without a charge; Issue #4511, see
+`docs/CONTAINER.md`), a timeout, a push that never lands on the remote, a fix
+pushed to a gated head's fix branch whose PR could not be raised (retried next
+cycle, since `raiseMilestoneFixPr` reuses an open fix PR), no fix and no
+rebuttal (above), or any outcome that settles nothing, such as a prompt-build
+failure — is charged as a failed attempt instead (Issue #4304):
 
 - The **first** failure posts a "First Attempt" reply carrying a hidden
   `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker and leaves the review

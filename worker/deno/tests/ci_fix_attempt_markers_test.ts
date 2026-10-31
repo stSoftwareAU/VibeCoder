@@ -16,22 +16,30 @@ import {
   buildCiFixDeferralMarker,
   buildCiHumanGateMarker,
   buildCiInfraRerunMarker,
+  buildCiRerunFallbackMarker,
+  buildCiRerunRefusalMarker,
   CI_FIX_ATTEMPT_MARKER_NAME,
   CI_FIX_DEFERRAL_MARKER_NAME,
   CI_HUMAN_GATE_MARKER_NAME,
   CI_INFRA_RERUN_MARKER_NAME,
+  CI_RERUN_FALLBACK_MARKER_NAME,
+  CI_RERUN_REFUSAL_MARKER_NAME,
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
   countAttempts,
   findDeferral,
   findHumanGate,
   findNoChangeComment,
+  isCiRerunFallbackRecordedAt,
+  isCiRerunRefused,
   isHumanGateParkedAt,
   isInfraRerunRecordedAt,
   parseCiFixAttemptMarkers,
   parseCiFixDeferralMarkers,
   parseCiHumanGateMarkers,
   parseCiInfraRerunMarkers,
+  parseCiRerunFallbackMarkers,
+  parseCiRerunRefusalMarkers,
   restampHumanGateMarker,
 } from "../lib/ci_fix_attempt_markers.ts";
 
@@ -792,4 +800,184 @@ Deno.test("ci_fix_attempt_markers - infra-rerun markers are collected from the f
   assertEquals(isInfraRerunRecordedAt(collected, HEAD), true);
   assertEquals(collected.ignoredOutsideFleet, 1);
   assertEquals(warnings.length, 1);
+});
+
+Deno.test("ci_fix_attempt_markers - refused run IDs are repo-scoped, permanent, and fleet-authored", () => {
+  const first = buildCiRerunRefusalMarker({ repo: "org/repo", runId: 101 });
+  const second = buildCiRerunRefusalMarker({ repo: "org/repo", runId: 102 });
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({ author: "outsider", body: first }),
+      comment({ id: 2, body: first }),
+      comment({ id: 3, body: second }),
+      comment({
+        id: 4,
+        body:
+          `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/../repo" run-id="101" -->`,
+      }),
+      comment({
+        id: 5,
+        body:
+          `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/repo" run-id="9007199254740992" -->`,
+      }),
+    ],
+    FLEET,
+    () => {},
+  );
+
+  assertEquals(isCiRerunRefused(collected, "org/repo", 101), true);
+  assertEquals(isCiRerunRefused(collected, "ORG/REPO", 101), true);
+  assertEquals(isCiRerunRefused(collected, "org/repo", 102), true);
+  assertEquals(isCiRerunRefused(collected, "other/repo", 101), false);
+  assertEquals(isCiRerunRefused(collected, "org/repo", 103), false);
+  assertEquals(collected.rerunRefusals.get("org/repo#101")?.length, 1);
+  assertEquals(parseCiRerunRefusalMarkers(first), [{
+    repo: "org/repo",
+    runId: 101,
+  }]);
+});
+
+Deno.test("ci_fix_attempt_markers - malformed refusal and fallback markers are rejected", () => {
+  assertThrows(
+    () => buildCiRerunRefusalMarker({ repo: "../repo", runId: 1 }),
+    Error,
+    "repo is not valid",
+  );
+  assertThrows(
+    () => buildCiRerunRefusalMarker({ repo: "org/repo", runId: 0 }),
+    Error,
+    "run-id is not valid",
+  );
+  assertEquals(
+    parseCiRerunRefusalMarkers(
+      `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/repo" run-id="0" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiRerunRefusalMarkers(
+      `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/repo" run-id="1" run-id="2" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiRerunRefusalMarkers(
+      `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/repo" run-id="1" head="${HEAD}" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiRerunFallbackMarkers(
+      `<!-- ${CI_RERUN_FALLBACK_MARKER_NAME} repo="org/repo" head="short" -->`,
+    ),
+    [],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - fallback markers deduplicate by repo and head", () => {
+  const marker = buildCiRerunFallbackMarker({ repo: "org/repo", head: HEAD });
+  const collected = collectFleetCiFixMarkers(
+    [comment({ body: marker })],
+    FLEET,
+    () => {},
+  );
+  assertEquals(
+    marker,
+    `<!-- ${CI_RERUN_FALLBACK_MARKER_NAME} repo="org/repo" head="${HEAD}" -->`,
+  );
+  assertEquals(isCiRerunFallbackRecordedAt(collected, "ORG/REPO", HEAD), true);
+  assertEquals(
+    isCiRerunFallbackRecordedAt(collected, "org/repo", "b".repeat(40)),
+    false,
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - an invalid repo is rejected when parsing refusal and fallback markers (Issue #4497)", () => {
+  assertEquals(
+    parseCiRerunRefusalMarkers(
+      `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/../repo" run-id="101" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiRerunFallbackMarkers(
+      `<!-- ${CI_RERUN_FALLBACK_MARKER_NAME} repo="org/../repo" head="${HEAD}" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiRerunFallbackMarkers(
+      buildCiRerunFallbackMarker({ repo: "org/repo", head: HEAD }),
+    ),
+    [{ repo: "org/repo", head: HEAD }],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - a marker with an unknown or missing attribute is rejected (Issue #4497)", () => {
+  assertEquals(
+    parseCiRerunRefusalMarkers(
+      `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/repo" run-id="1" extra="x" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiRerunRefusalMarkers(
+      `<!-- ${CI_RERUN_REFUSAL_MARKER_NAME} repo="org/repo" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiRerunFallbackMarkers(
+      `<!-- ${CI_RERUN_FALLBACK_MARKER_NAME} repo="org/repo" head="${HEAD}" extra="x" -->`,
+    ),
+    [],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - building a fallback marker validates repo and head (Issue #4497)", () => {
+  assertThrows(
+    () => buildCiRerunFallbackMarker({ repo: "../repo", head: HEAD }),
+    Error,
+    "repo is not valid",
+  );
+  assertThrows(
+    () => buildCiRerunFallbackMarker({ repo: "org/repo", head: "short" }),
+    Error,
+    "head is not valid",
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - refusal and fallback markers from outside the fleet are counted as ignored (Issue #4497)", () => {
+  const refusal = buildCiRerunRefusalMarker({ repo: "org/repo", runId: 7 });
+  const fallback = buildCiRerunFallbackMarker({ repo: "org/repo", head: HEAD });
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({ author: "outsider", body: refusal }),
+      comment({ id: 2, author: "outsider", body: fallback }),
+    ],
+    FLEET,
+    () => {},
+  );
+  assertEquals(collected.ignoredOutsideFleet, 2);
+  assertEquals(isCiRerunRefused(collected, "org/repo", 7), false);
+  assertEquals(isCiRerunFallbackRecordedAt(collected, "org/repo", HEAD), false);
+});
+
+Deno.test("ci_fix_attempt_markers - an unresolved fleet logs refusal and fallback markers and returns empty maps (Issue #4497)", () => {
+  const refusal = buildCiRerunRefusalMarker({ repo: "org/repo", runId: 7 });
+  const fallback = buildCiRerunFallbackMarker({ repo: "org/repo", head: HEAD });
+  for (const body of [refusal, fallback]) {
+    const logged: string[] = [];
+    const collected = collectFleetCiFixMarkers(
+      [comment({ body })],
+      [],
+      (line) => logged.push(line),
+    );
+    assertEquals(collected.fleetResolved, false);
+    assertEquals(logged.length, 1);
+    assertEquals(collected.rerunRefusals instanceof Map, true);
+    assertEquals(collected.rerunRefusals.size, 0);
+    assertEquals(collected.rerunFallbacks instanceof Map, true);
+    assertEquals(collected.rerunFallbacks.size, 0);
+  }
 });

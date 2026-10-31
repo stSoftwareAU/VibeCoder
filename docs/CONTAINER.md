@@ -1359,6 +1359,16 @@ not retried in-process: repeating the agent invocation cannot replenish the
 budget. A later scheduled cycle reads the host again. This does not turn a
 disk failure into a successful run or a scheduled finish-deadline release.
 
+The PR-feedback lane follows the same rule (Issue #4511): when the agent
+invocation for a PR comment or review fails with a host-disk fault (including
+the park note), the lane logs a warning and releases the comment instead of
+charging it. It posts no "Automated Processing Failed" comment and counts no
+strike towards the two-strike close-and-redo (Issue #4304). The comment is
+retried on a later cycle once the host has room: a review's lease lapses, and
+for any other comment the processed mark is removed. If that mark cannot be
+removed, the failure is charged as before. Other agent failures are charged as
+before.
+
 Where the runtime refuses the trim **and** the host is below the floor, the
 launch ends with status 74. Deleting files in that volume does not return
 host blocks; leaving the container discards the ephemeral layer, and the next
@@ -1460,8 +1470,14 @@ sizing directories does not need the process table. On a host without `lsof`,
 install it (for example `apt install lsof` or `dnf install lsof`) to let the
 reclaim run.
 
+The reclaim runs on any launch where the host is short of the claiming floor
+plus the 25 GB cargo build headroom, not only below the floor (Issue #4540).
+In that band the worker does not claim issues in a cargo repository (see the
+ephemeral root's budget below), so stale caches are cleared there too.
 Candidates go oldest first, and the reclaim stops once the host has the
-claiming floor plus `host_cache_reclaim_headroom_gb` (10 by default) free.
+claiming floor plus the larger of `host_cache_reclaim_headroom_gb` (10 by
+default) and the 25 GB cargo build headroom free. Volume recreation still
+weighs the floor alone.
 
 The roots include world-writable scratch directories, where another account
 could swap a directory it owns for a symlink between the walk and the delete.
@@ -1495,7 +1511,7 @@ false` in the moved file switches the reclaim off:
 |---|---|---|
 | `host_cache_reclaim_enabled` | `true` | `false` switches the reclaim off. No environment variable overrides it. |
 | `host_cache_reclaim_min_age_hours` | `24` | A cache must be at least this old to be removed. |
-| `host_cache_reclaim_headroom_gb` | `10` | Free space to reach beyond the claiming floor before the reclaim stops. |
+| `host_cache_reclaim_headroom_gb` | `10` | Free space to reach beyond the claiming floor before the reclaim stops. The 25 GB cargo build headroom applies when it is larger (Issue #4540). |
 | `host_cache_reclaim_roots` | none | Extra absolute directories to search, in addition to the locations above. |
 
 **What the log says.** Every line the command prints goes to stderr and to
@@ -1715,7 +1731,13 @@ build artefacts.
   Short of the headroom, other checkouts' target directories are pruned,
   largest first, skipping any written to in the last 20 minutes and the
   building checkout's own incremental cache. If the build is still not covered,
-  the new step is parked. Once started, active-process
+  the new step is parked. The issue scan asks the same question as a dry
+  run before it claims (Issue #4540): a repository whose existing clone holds
+  a cargo project the host could not build is left out of that cycle's scan,
+  so the slot goes to other work instead of a claim parked and released at
+  once. Nothing is pruned at scan time, a repository not yet cloned is
+  claimable, and the scan logs once when the deferral starts and once when it
+  ends. Once started, active-process
   polling enforces the host floor;
   it does not demand another 25 GB while the admitted work consumes its
   headroom (Issue #4390). A cargo-only milestone tree can still land that cycle

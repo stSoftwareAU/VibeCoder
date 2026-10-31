@@ -385,6 +385,23 @@ The listener's random banner proves a host service really exists; a closed
 port is never sufficient firewall evidence. This measures the host gateway
 and the host's LAN interfaces, not every possible LAN destination.
 
+The start-up self-check waits for the egress proxy before it probes. It polls
+the proxy every 250 ms for up to 30 s until the proxy accepts TCP connections;
+the proxy logs `[EGRESS_PROXY] listening on <addr>` when it is ready. No
+allowlisted CONNECT is spent against a closed port during that wait. If nothing
+listens after 30 s, the proxy check fails with
+`proxyAllowed=failed (no listener after 30000ms (refused))`. Otherwise the
+allowlisted CONNECT to `api.github.com` is tried three times, with 5 s per
+attempt and 1 s between attempts. A refusal (`403 EGRESS_DENIED`) is final and
+is not retried. Each attempt is written to the run log through the worker's
+logger as a `[run-worker]` line of the form `[egress-selfcheck] allowlisted
+CONNECT to api.github.com <what it saw> (attempt n of 3)`, not to a stray
+stderr stream. A failed check emits an `[EGRESS-SELFCHECK-FAILED]` marker that
+names the probe and what it saw, for example `[EGRESS-SELFCHECK-FAILED]
+proxy_unavailable proxyAllowed=failed (refused ×3)`. On Apple the marker also
+reports `proxyAllowlist`, for example `[EGRESS-SELFCHECK-FAILED]
+proxyAllowlist=failed proxyAllowed=failed (HTTP/1.1 502 Bad Gateway ×3)`.
+
 Each `run_core.log` start records runtime version, macOS version, selected
 mode, raw observations, negative control, allowed CONNECT paths, per-control
 results and failures. The coarse legacy verdict remains `not_enforced` and
@@ -598,6 +615,7 @@ other Azure accounts remain outside the built-in allowlist.
 | `pypi.org` | Registry | always | Python package index |
 | `files.pythonhosted.org` | Registry | always | Python package files |
 | `static.rust-lang.org` | Registry | always | Rust toolchain downloads |
+| `dl.deno.land` | Registry | always | Deno release downloads |
 | `cdn.playwright.dev` | Registry | always | Playwright browser downloads |
 | `semgrep.dev` | Registry | always | Semgrep `p/default` rules for the quality gate's SAST stage (Issue #4412) |
 | `api.anthropic.com` | Agent provider | `claude` provider enabled | Messages API |
@@ -606,6 +624,8 @@ other Azure accounts remain outside the built-in allowlist.
 | `api.openai.com` | Agent provider | `codex` provider enabled | Responses API |
 | `auth.openai.com` | Agent provider | `codex` provider enabled | ChatGPT sign-in token refresh |
 | `chatgpt.com` | Agent provider | `codex` provider enabled | Codex backend for ChatGPT plans |
+| `ab.chatgpt.com` | Agent provider | `codex` provider enabled | Codex CLI experiment and feature flags |
+| `*.oaiusercontent.com` | Agent provider | `codex` provider enabled | ChatGPT file storage the Codex backend hands out signed URLs for |
 | `generativelanguage.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini API |
 | `cloudcode-pa.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini CLI Google sign-in backend |
 | `oauth2.googleapis.com` | Agent provider | `gemini` provider enabled | Google OAuth token refresh |

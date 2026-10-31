@@ -212,8 +212,8 @@ worker's next launch builds it.
 
 ## As a GitHub App
 
-With `pr_reviewer_app` in `.config.json` (see
-[CONFIGURATION.md](../../../../docs/CONFIGURATION.md#-reviewer-app-for-fleet-pr-reviews)),
+Configure the required `pr_reviewer_app` in `.config.json` (see
+[CONFIGURATION.md](../../../../docs/CONFIGURATION.md#-reviewer-app-for-fleet-pr-reviews)).
 `scripts/run.sh` reviews as that App's bot instead of the `gh` user.
 `scripts/app_token.ts` mints a fresh installation token for every pass, since
 one lasts an hour. When minting fails, the pass is skipped; it never falls back
@@ -226,7 +226,8 @@ Workflows write lets it merge Dependabot's GitHub Actions bumps, which change
 `.github/workflows/*`. Installation is needed on every monitored repo and on
 `stSoftwareAU/VibeCoder` (for improvement issues). Add `<app-slug>[bot]` to
 `authorized_commenters` (not `pr_reviewers`, which would make PR creation fail).
-An interactive `/review-fleet-prs` session still reviews as the `gh` user.
+An interactive `/review-fleet-prs` session is separate from this runner and
+still uses its invoking `gh` credentials.
 
 The token must carry Pull requests write, Issues write, Contents write,
 Workflows write, Checks read and Statuses read. `scripts/app_token.ts` checks
@@ -248,8 +249,9 @@ by name). `runner.log` then says `round failed (exit N)` or
 After 12 consecutive failed passes (about an hour at the 5-minute interval),
 `scripts/escalate.ts` opens one deduplicated issue in `stSoftwareAU/VibeCoder`,
 titled `review-fleet-prs runner failing on <host>:
-<error>`, using the host's
-own `gh` login rather than the App token. The issue is public, so the error has
+<error>`, using the reviewer App token. If the App token is unavailable,
+failure history is recorded locally and publishing fails closed without using
+a user account. The issue is public, so the error has
 secrets redacted and every repo reference other than `stSoftwareAU/VibeCoder`
 replaced with `<repo>`, and the log path is shown relative to the home
 directory; the host name is in the title, so give the host a name that discloses

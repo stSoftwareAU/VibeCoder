@@ -47,17 +47,29 @@ PRs continue. A persistence failure after an API request still fails loud.
 
 ## Version-only re-bumps
 
-The own-diff comparison skips a sent-back PR as `awaiting-fix` when its
-patches still match after hunk-position normalisation. It also accepts a
-differing modified-file patch when both versions of that patch are one
-complete hunk replacing one version line with a higher version. The line may
-be a bare version, a JSON `"version": "..."` key (with an optional trailing
-comma), or a TOML `version = "..."` key. The hunk may include unchanged context,
-but its declared line counts must match and it must contain exactly one removed
-line immediately followed by one added line. The two lines must be identical
-apart from the version token, including spacing and punctuation. This covers a
-workflow bump committed separately or in a base-merge resolution. Every other
-file must still match under the existing comparison rules.
+The own-diff comparison skips a sent-back PR as `awaiting-fix` when each
+file still matches. In a file no earlier finding names, the added and removed
+lines must match: the same number of hunks, in the same order. Hunk headers
+and unchanged context lines are ignored there, so a base merge that only moves
+the context around a CHANGELOG entry still awaits the fix. In a file an
+earlier finding names, or in any file when the findings for the exact
+sent-back head are missing, the context lines must match as well (only hunk
+headers are ignored), because the fix may be moving the PR's own line relative
+to its context, for example a CHANGELOG entry from under a released heading to
+above it. A base merge that moves context in such a file gets a fresh review.
+
+The version exception applies when the patches differ
+only by a strict version increment: both versions of that modified-file patch
+are one complete hunk replacing one version line with a higher version. The
+line may be a bare version, a JSON `"version": "..."` key (with an optional
+trailing comma), or a TOML `version = "..."` key. The hunk may include
+unchanged context, but its declared line counts must match and it must
+contain exactly one removed line immediately followed by one added line. The
+two lines must be identical apart from the version token, including spacing
+and punctuation. This covers a workflow bump committed separately or in a
+base-merge resolution. Every other file must still match under the rules
+above: on its added and removed lines, and also on its context lines in a file
+an earlier finding names (or any file when the findings are unknown).
 
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or

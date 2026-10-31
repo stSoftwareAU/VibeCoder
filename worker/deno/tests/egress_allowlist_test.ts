@@ -30,6 +30,7 @@ const REGISTRY_HOSTS = [
   "registry.npmjs.org",
   "jsr.io",
   "deno.land",
+  "dl.deno.land",
   "esm.sh",
   "crates.io",
   "index.crates.io",
@@ -47,7 +48,13 @@ const PROVIDER_HOSTS: Readonly<Record<string, string[]>> = {
     "console.anthropic.com",
     "platform.claude.com",
   ],
-  codex: ["api.openai.com", "auth.openai.com", "chatgpt.com"],
+  codex: [
+    "api.openai.com",
+    "auth.openai.com",
+    "chatgpt.com",
+    "ab.chatgpt.com",
+    "*.oaiusercontent.com",
+  ],
   gemini: [
     "generativelanguage.googleapis.com",
     "cloudcode-pa.googleapis.com",

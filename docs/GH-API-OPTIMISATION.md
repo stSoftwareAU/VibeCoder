@@ -477,6 +477,20 @@ limit already exceeded` failure without starting a process, while REST
 `gh api <path>` calls and the quota probe that learns the reset still
 run.
 
+A bare `Forbidden` from `Post "https://api.github.com/graphql"` is
+classified as a secondary-limit refusal. The worker latches GraphQL-backed
+calls for the short cool-down and writes the shared rate-limit signal. A
+standalone quota probe can discover and latch that refusal without probing
+again; a healthy REST quota fallback cannot clear the cool-down or let the
+merged-PR issue sweep proceed. Repository sweeps stop at the first primary
+or secondary refusal, leaving the current repository's unfinished watermark
+state for the next cycle. A call skipped by either latch is logged as INFO
+by lifecycle observation (per-PR snapshots and the closed-PR listing),
+including skips wrapped by `runGhOrThrow`, while actual observation faults
+remain ERROR. Cached stale-branch lookups propagate request failures to the
+cleanup sweep so it can stop at a rate-limit refusal; any other lookup failure
+skips that branch until the next sweep, as the uncached lookup does.
+
 ### How the two counters relate
 
 `graphql-calls: N total` and the `api-graphql=` bucket of the
@@ -570,11 +584,11 @@ buckets sum exactly to the total, and a unit test in
 any future path that counts a GraphQL call without choosing a bucket
 fails before merge.
 
-The primary-quota latch (Issue #42) is enforced at the same chokepoint:
-once the hourly GraphQL quota is exhausted, every GraphQL-backed spawn
-from any module returns a `gh command skipped: … API rate limit already
-exceeded` failure without starting a process, while REST `gh api <path>`
-calls and the quota probe that learns the reset still run.
+The primary-quota latch (Issue #42) and the secondary-limit cool-down are
+enforced at the same chokepoint: once either is active, every GraphQL-backed
+spawn from any module returns a `gh command skipped: …` failure without
+starting a process, while REST `gh api <path>` calls and the quota probe that
+learns the primary reset still run.
 
 ### The `gh-calls-by-priority:` line — which pass spent the calls
 

@@ -1,7 +1,7 @@
 /**
- * Each reviewer's latest review decides (Issue #2697) — the review
- * supersession half of lib/pr_feedback_supersede.ts that sits beside the
- * fleet-fix rule (Issue #2702).
+ * Each reviewer's latest review decides (Issue #2697). Since Issue #4510 no
+ * commit retires a CHANGES_REQUESTED review; only dismissal or the reviewer's
+ * later review does.
  */
 
 import { assertEquals, assertThrows } from "@std/assert";

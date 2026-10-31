@@ -30,6 +30,40 @@ Deno.test("secondary limit - recognises GitHub's content-creation refusals", () 
   }
 });
 
+Deno.test("secondary limit - recognises a bare Forbidden from the GitHub GraphQL endpoint only", () => {
+  const graphql = 'Post "https://api.github.com/graphql": Forbidden';
+  assertEquals(isSecondaryRateLimitMessage(graphql), true);
+  assertEquals(
+    isSecondaryOnlyRateLimitMessage(graphql, isPrimaryRateLimitMessage),
+    true,
+  );
+  assertEquals(
+    isSecondaryRateLimitMessage(
+      'Post "https://api.github.com/repos/o/r": Forbidden',
+    ),
+    false,
+  );
+  assertEquals(
+    isSecondaryRateLimitMessage(
+      'Post "https://example.com/graphql": Forbidden',
+    ),
+    false,
+  );
+  assertEquals(
+    isSecondaryRateLimitMessage(
+      "HTTP 403: Resource not accessible by integration",
+    ),
+    false,
+  );
+});
+
+Deno.test("secondary limit - rejects a long malformed GraphQL Forbidden path", () => {
+  const malformed = `Post ${
+    " ".repeat(100_000)
+  }https://api.github.com/graphql): Forbidden`;
+  assertEquals(isSecondaryRateLimitMessage(malformed), false);
+});
+
 Deno.test("secondary limit - the primary quota is NOT a secondary limit", () => {
   // The primary quota has a REST way round it; this one does not, so the two
   // must never be confused.

@@ -9,8 +9,8 @@
 # rather than after the full interval (Issue #4396). Learning from recurring
 # findings runs in its own round, at most hourly and only after new
 # send-backs (Issue #4397). An idle night still costs no tokens. With
-# `pr_reviewer_app` in .config.json, reviews post as that GitHub App (see
-# app_token.ts).
+# `pr_reviewer_app` in .config.json is required; reviews and escalation use
+# that App's identity and quota (see app_token.ts).
 #
 # Several hosts may run this at once (Issue #4398): each ready PR is claimed on
 # GitHub before its round starts, and the claim is released when the round is
@@ -517,20 +517,20 @@ stop_rounds() {
   done
 }
 
-# Mints the reviewer App token for this pass, when one is configured: sets
+# Mints the required reviewer App token for this pass: sets
 # GH_TOKEN and REVIEWER. Its token lasts an hour, so every gate pass mints a
 # fresh one, and each round keeps the token it started with (a round is cut
 # off at 50 minutes); a failure skips the pass rather than post as the gh
 # user instead.
 mint_token() {
-  local minted token_rc
+  local minted token_rc login
   REVIEWER=()
   unset GH_TOKEN
   # The minted token must never appear under `bash -x`: xtrace is suspended
   # from here until the App's login has been extracted from it.
   { local xtrace=$-; set +x; } 2>/dev/null
   minted=$(cd "$SCRIPTS_DIR" && deno run --allow-read \
-    --allow-net=api.github.com --allow-env app_token.ts 2>"$errfile")
+    --allow-net=api.github.com --allow-env app_token.ts --config="$CONFIG" 2>"$errfile")
   token_rc=$?
   # Replayed regardless of exit code: non-fatal diagnostics on the success
   # path must still reach the log and the terminal.
@@ -541,11 +541,22 @@ mint_token() {
     [[ $xtrace == *x* ]] && set -x
     return 1
   fi
-  if [[ -n "$minted" ]]; then
-    GH_TOKEN=$(jq -r .token <<<"$minted")
-    export GH_TOKEN
-    REVIEWER=("--reviewer=$(jq -r .login <<<"$minted")")
+  if [[ -z "$minted" ]]; then
+    LAST_ERROR="reviewer App is not configured; refusing to use the signed-in user's quota"
+    log "$LAST_ERROR"
+    [[ $xtrace == *x* ]] && set -x
+    return 1
   fi
+  if ! GH_TOKEN=$(jq -er '.token | select(type == "string" and length > 0)' <<<"$minted") ||
+    ! login=$(jq -er '.login | select(type == "string" and length > 0)' <<<"$minted"); then
+    unset GH_TOKEN
+    LAST_ERROR="reviewer App returned an invalid token response"
+    log "$LAST_ERROR"
+    [[ $xtrace == *x* ]] && set -x
+    return 1
+  fi
+  export GH_TOKEN
+  REVIEWER=("--reviewer=$login")
   [[ $xtrace == *x* ]] && set -x
   return 0
 }
@@ -564,7 +575,7 @@ gate_pass() {
   [[ -n $list ]] && in_flight_arg=("--in-flight=$list")
 
   ready=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh --allow-read \
-    --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --limit="$free" \
+    --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --config="$CONFIG" --limit="$free" \
     --host="$HOST_NAME" ${REVIEWER[@]+"${REVIEWER[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
     ${in_flight_arg[@]+"${in_flight_arg[@]}"} 2>"$errfile")
   gate_rc=$?
@@ -755,16 +766,22 @@ PROMPT
 
 # Reports one pass's outcome (ok, or fail with its reason) to escalate.ts, so
 # a persistent run of failures is noticed even with nobody watching the logs.
-# Runs as the gh user, not the reviewer App: the App has no issue-comment scope.
+# Never fall back to a user account if the reviewer App could not mint a token.
 escalate_result() {
   local rc=$1 err=$2 out erc host
   host=$(hostname -s 2>/dev/null || hostname)
+  if [[ ${GH_TOKEN+set} != set ]]; then
+    # Keep local failure history while ensuring any GitHub call fails closed.
+    GH_TOKEN=reviewer-app-auth-unavailable
+    export GH_TOKEN
+    log "reviewer App token unavailable; recording escalation locally"
+  fi
   if [[ $rc -eq 0 ]]; then
-    out=$(cd "$SCRIPTS_DIR" && env -u GH_TOKEN deno run --allow-run=gh \
+    out=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh \
       --allow-read --allow-write escalate.ts --state-dir="$STATE_DIR" \
       --host="$host" --result=ok 2>"$STATE_DIR/escalate-error")
   else
-    out=$(cd "$SCRIPTS_DIR" && env -u GH_TOKEN deno run --allow-run=gh \
+    out=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh \
       --allow-read --allow-write escalate.ts --state-dir="$STATE_DIR" \
       --host="$host" --result=fail --error="$err" \
       2>"$STATE_DIR/escalate-error")

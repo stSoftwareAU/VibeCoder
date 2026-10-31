@@ -1018,8 +1018,9 @@ fewer assessments than criteria, with a `met`/`partial` entry that names no
 evidence, or with a gap that carries no reason — an unexplained gap is a failure
 to surface, not a pass. The gate comments on the issue naming every rule broken
 and the required shape, so the next attempt is productive. Issues with **no**
-acceptance criteria (neither list) are unaffected: the gate does not apply and
-nothing changes.
+acceptance criteria (neither list) are outside the gate: it does not apply, so
+no closure block is required. A `missing` entry the run writes for a part it
+leaves undone still holds the issue open (see *At PR creation* below).
 
 **One shape, both gates.** The remediation comment prints
 [`REVIEW_BLOCK_TEMPLATE`](../../worker/deno/lib/review_block_template.ts) — the
@@ -1062,7 +1063,11 @@ reads that signal at both ends
   issue to `Part of #N`, adds a `## Not closing #N` section naming the missing
   criteria, and appends no `Closes #N`. The same assembly runs when the PR
   body is re-synced from the summary, so a later commit that finishes the
-  work (and marks the criteria `met`) restores the closing keyword.
+  work (and marks the criteria `met`) restores the closing keyword. The block is
+  read from the summary alone, so it also holds the issue open when the issue
+  lists its requirements under a heading the criteria parser does not read: the
+  prompt tells the run to record each part it leaves undone as a `missing` entry
+  quoting the issue, with no reviewer provenance marker (Issue #4477).
 - **At merge.** A fleet PR's title still names its issue (`(Issue #N)`), and
   the merged-PR closers read titles, so the PR body alone cannot hold the
   issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
@@ -1472,6 +1477,15 @@ The shape is fixed and machine-checked, so the worker owns it:
    over;
 4. a reply carrying no readable verdict leaves the summary exactly as the agent
    wrote it, and the block stands.
+5. after the blocks are swapped in, the worker aligns the summary's closing
+   keyword for the issue with the rendered block, by the same rule
+   `assemblePrBody` applies to the PR body (Issue #3177): when any rendered
+   entry is `missing`, every `Closes`/`Fixes`/`Resolves #N` for the issue
+   becomes `Part of #N`; when none is, a bare `Part of #N` becomes
+   `Closes #N`. Keywords for other issues are untouched. So the committed
+   `pr-summary-N.md` and the PR body say the same thing
+   (`alignIssueCloseWithClosure` in `missing_criterion_close_guard.ts`, Issue
+   #4472).
 
 The `reviewer:` field is the model's own status, so a rendered entry never
 departs from the reviewer's verdict. Nothing is invented at any step: an
@@ -1488,9 +1502,12 @@ forward instead of discarding it.
 [`closure_verdict.ts`](../../worker/deno/lib/closure_verdict.ts) (pure: parse,
 coverage, render),
 [`closure_verdict_recovery.ts`](../../worker/deno/lib/closure_verdict_recovery.ts)
-(the constrained question and the single re-ask) and `commitRecoveredSummary` in
+(the constrained question and the single re-ask),
+`commitRecoveredSummary` in
 [`summary_rule_gate_retry.ts`](../../worker/deno/lib/summary_rule_gate_retry.ts)
-(Issue #2242).
+(Issue #2242) and
+[`missing_criterion_close_guard.ts`](../../worker/deno/lib/missing_criterion_close_guard.ts)
+(`alignIssueCloseWithClosure`, Issue #4472).
 
 ## ⏳ A PR the content-creation throttle refused — deferred, never failed
 

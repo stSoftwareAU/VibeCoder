@@ -41,6 +41,8 @@ import type {
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
+import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
+import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -143,6 +145,51 @@ function makeFailingPrCommentGithub(captured: CapturedGh): Partial<GitHubDeps> {
   };
 }
 
+/** A logger whose `warn` lines are collected, so a test can read them back. */
+function makeWarnCapturingLogger(warns: string[]): Logger {
+  return {
+    ...makeSilentLogger(),
+    warn: (message: string) => {
+      warns.push(message);
+    },
+  };
+}
+
+/**
+ * A `gh` stub for the processed-mark path (Issue #4511). The acting login is
+ * `worker`, and the comment carries the worker's eyes reaction (id 99), so
+ * `removeProcessedMark` has a reaction to DELETE. With `deleteFails`, that
+ * DELETE rejects. Every other call falls through to {@link makeMockGithub}.
+ */
+function makeReactionGithub(
+  captured: CapturedGh,
+  deleteFails: boolean,
+): Partial<GitHubDeps> {
+  const inner = makeMockGithub(captured).runGhCommand as (
+    args: string[],
+  ) => Promise<string>;
+  return {
+    runGhCommand: (args: string[]) => {
+      if (isPrLiveStateRead(args)) return inner(args);
+      if (args[0] === "api" && args[1] === "user") {
+        captured.calls.push(args);
+        return Promise.resolve("worker\n");
+      }
+      if (args[0] === "api" && args.includes("DELETE")) {
+        captured.calls.push(args);
+        return deleteFails
+          ? Promise.reject(new Error("gh API error: 503"))
+          : Promise.resolve("");
+      }
+      if (args[0] === "api" && args.some((a) => a.includes("/reactions"))) {
+        captured.calls.push(args);
+        return Promise.resolve(JSON.stringify([{ id: 99, login: "worker" }]));
+      }
+      return inner(args);
+    },
+  };
+}
+
 function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
   return {
     repo: "org/repo",
@@ -207,7 +254,14 @@ interface RunOptions {
   events: string[];
   /** Per-call claude behaviour; index 0 is the first run, index 1 a retry. */
   runBehaviours?: Array<
-    "ok" | "nothing" | "rebuttal" | "handoff" | "fail" | "timeout" | "throw"
+    | "ok"
+    | "nothing"
+    | "rebuttal"
+    | "handoff"
+    | "fail"
+    | "park"
+    | "timeout"
+    | "throw"
   >;
   commitAndPushResult?: {
     committedNewChanges: boolean;
@@ -235,11 +289,13 @@ async function runScenario(options: RunOptions) {
   const workDir = await Deno.makeTempDir();
   try {
     let callCount = 0;
+    const prompts: string[] = [];
     const behaviours = options.runBehaviours ?? ["ok"];
     const mockClaude: Partial<ClaudeDeps> = {
-      runClaudeWithRetry: (async (_opts: { prompt: string }) => {
+      runClaudeWithRetry: (async (opts: { prompt: string }) => {
         const behaviour = behaviours[callCount] ?? "nothing";
         callCount++;
+        prompts.push(opts.prompt);
         if (behaviour === "rebuttal") {
           await Deno.writeTextFile(
             prResponseMessagePath(workDir),
@@ -259,6 +315,14 @@ async function runScenario(options: RunOptions) {
         }
         if (behaviour === "fail") {
           return { ok: false, error: new Error("boom") };
+        }
+        if (behaviour === "park") {
+          return {
+            ok: false,
+            error: new Error(
+              "Claude invocation failed. " + HOST_DISK_PARK_NOTE,
+            ),
+          };
         }
         if (behaviour === "timeout") {
           return {
@@ -332,7 +396,7 @@ async function runScenario(options: RunOptions) {
     };
 
     const result = await processPrFeedback(options.input, processorDeps);
-    return { captured, result };
+    return { captured, result, prompts };
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -752,6 +816,108 @@ Deno.test("pr_review dismissal: a throw before the review is settled charges it 
   );
 });
 
+Deno.test("Issue #4511: a pr_review parked for host disk is released, not charged, and posts nothing", async () => {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const warns: string[] = [];
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    captured,
+    logger: makeWarnCapturingLogger(warns),
+    runBehaviours: ["park"],
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(result.ok && result.value.processed, false);
+  // The fail-closed rule charges a pr_review that ends unsettled; a release
+  // must settle it, so no failed attempt is recorded.
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+  );
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    0,
+  );
+  assertEquals(captured.comments.length, 0);
+  assert(warns.some((w) => w.includes("Issue #4511")));
+});
+
+/**
+ * A parked comment's processed mark is taken back (Issue #4511): the eyes
+ * reaction is DELETEd at the endpoint for its comment type, the comment is
+ * not charged, and no PR comment is posted.
+ */
+async function assertParkReleasesMark(
+  commentType: "issue" | "review",
+  commentId: string,
+  endpointFragment: string,
+): Promise<void> {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const { result } = await runScenario({
+    input: makeInput({ commentType, commentId }),
+    events,
+    captured,
+    githubOverride: makeReactionGithub(captured, false),
+    runBehaviours: ["park"],
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(result.ok && result.value.processed, false);
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+  );
+  assertEquals(captured.comments.length, 0);
+  const deletes = captured.calls
+    .filter((args) => args[0] === "api" && args.includes("DELETE"))
+    .map((args) => args.join(" "));
+  assertEquals(deletes.length, 1);
+  assertStringIncludes(deletes[0] ?? "", endpointFragment);
+}
+
+Deno.test("Issue #4511: a parked 'issue' comment releases its processed mark, is not charged, and posts nothing", () =>
+  assertParkReleasesMark("issue", "ic-1", "issues/comments/ic-1/reactions/99"));
+
+Deno.test("Issue #4511: a parked 'review' comment releases its processed mark, is not charged, and posts nothing", () =>
+  assertParkReleasesMark("review", "rc-1", "pulls/comments/rc-1/reactions/99"));
+
+Deno.test("Issue #4511: a plain agent failure on an 'issue' comment is still charged once", async () => {
+  const events: string[] = [];
+  const { result } = await runScenario({
+    input: makeInput({ commentType: "issue", commentId: "ic-1" }),
+    events,
+    runBehaviours: ["fail"],
+  });
+
+  assertEquals(result.ok, false);
+  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
+  assertEquals(failures.length, 1);
+  assertStringIncludes(failures[0] ?? "", "boom");
+});
+
+Deno.test("Issue #4511: a parked 'issue' comment whose mark cannot be removed is charged, so it is not stranded", async () => {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const warns: string[] = [];
+  const { result } = await runScenario({
+    input: makeInput({ commentType: "issue", commentId: "ic-1" }),
+    events,
+    captured,
+    logger: makeWarnCapturingLogger(warns),
+    githubOverride: makeReactionGithub(captured, true),
+    runBehaviours: ["park"],
+  });
+
+  assertEquals(result.ok, false);
+  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
+  assertEquals(failures.length, 1);
+  assertStringIncludes(failures[0] ?? "", "Claude execution failed");
+  assert(warns.some((w) => w.includes("charging the attempt instead")));
+});
+
 Deno.test("pr_review dismissal: a throw after the review is retired is not charged as well", async () => {
   const events: string[] = [];
   await assertRejects(
@@ -1031,6 +1197,66 @@ Deno.test("review-fix verifier - recovery must clear before pushing", async () =
       e.startsWith("markCommentProcessed:pr_review:rv-555:addressed")
     ),
     true,
+  );
+});
+
+Deno.test("review-fix verifier - an unavailable verifier does not block: the fix is pushed and addressed, with no failure charged (Issue #4509)", async () => {
+  const events: string[] = [];
+  let checks = 0;
+  const { prompts, result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["ok"],
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 1,
+      finalUnpushedCount: 0,
+    },
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    feedbackVerifierFn: (input, deps) => {
+      checks++;
+      // Real verifyFeedbackFix; only the `pr view` metadata read and the
+      // verifier's own verdict are stubbed.
+      return verifyFeedbackFix(input, {
+        ...deps,
+        runGh: (args) =>
+          args.includes("baseRefName,headRefName,title,body,files")
+            ? Promise.resolve(JSON.stringify({
+              baseRefName: "main",
+              headRefName: "foreign-branch",
+              title: "Review fix",
+              body: "claims",
+              files: [],
+            }))
+            : deps.runGh(args),
+        verify: () =>
+          Promise.resolve({
+            status: "not_checked",
+            reason: "verifier reply was not usable",
+          }),
+      });
+    },
+  });
+
+  assertEquals(checks, 1);
+  // The verifier-recovery turn is identified by its prompt; the in-run
+  // no-change retry (Issue #3246) is a separate path and is not counted.
+  assertEquals(
+    prompts.some((p) => p.includes("review-fix verifier blocked this round")),
+    false,
+    "an unavailable verifier must not trigger a recovery turn",
+  );
+  assertEquals(result.ok && result.value.processed, true);
+  assertEquals(events.filter((e) => e === "commitAndPushPending").length, 1);
+  assertEquals(
+    events.some((e) =>
+      e.startsWith("markCommentProcessed:pr_review:rv-555:addressed")
+    ),
+    true,
+  );
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure:")).length,
+    0,
   );
 });
 

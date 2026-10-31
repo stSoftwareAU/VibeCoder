@@ -1,0 +1,13 @@
+{
+  "issue": 4546,
+  "chunk": "top-up-4546",
+  "title": "top-up: fleet babysitter supervision and App authentication",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4546",
+  "definition": "Fleet babysitter App authentication, token refresh, private bounded logs, interrupted-run recovery and optional health hook. Authentication fails closed instead of falling back to an ambient user account.",
+  "status": "claimed",
+  "sweptAt": "3f7927d4cd80f4563aa92ab01d0d99b6c0238ddf",
+  "paths": [
+    "worker/deno/commands/fleet_pr_babysitter_supervisor.ts",
+    "worker/deno/lib/fleet_babysitter_app.ts"
+  ]
+}

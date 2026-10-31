@@ -62,7 +62,7 @@ Deno.test("feedback verifier - full review and rebuttal reach the disposable ver
   }
 });
 
-Deno.test("feedback verifier - unavailable, malformed and blocking results fail closed", async () => {
+Deno.test("feedback verifier - malformed and blocking results fail closed", async () => {
   const dir = await Deno.makeTempDir();
   const input = {
     branchName: "issue-42-fix-body",
@@ -81,7 +81,6 @@ Deno.test("feedback verifier - unavailable, malformed and blocking results fail 
   try {
     for (
       const outcome of [
-        { status: "not_checked", reason: "timeout" },
         {
           status: "checked",
           review: {
@@ -107,13 +106,7 @@ Deno.test("feedback verifier - unavailable, malformed and blocking results fail 
         verify: () => Promise.resolve(outcome),
       });
       assertEquals(result.ok, false);
-      if (!result.ok) {
-        assert(
-          result.error.message.includes(
-            outcome.status === "not_checked" ? "timeout" : "partial",
-          ),
-        );
-      }
+      if (!result.ok) assertStringIncludes(result.error.message, "partial");
     }
     for (
       const metadata of ["not JSON", "{}", '{"baseRefName":"main","title":"x"}']
@@ -126,6 +119,50 @@ Deno.test("feedback verifier - unavailable, malformed and blocking results fail 
       });
       assertEquals(result.ok, false);
     }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("feedback verifier - an unavailable verifier is logged and does not block (Issue #4509)", async () => {
+  const dir = await Deno.makeTempDir();
+  const reason =
+    "verifier reply was not usable: Expected ',' or '}' after property value in JSON at position 2022";
+  const { logger, records } = makeRecordingLogger();
+  try {
+    const result = await verifyFeedbackFix({
+      branchName: "issue-42-fix-body",
+      workerName: "worker",
+      githubUser: "bot",
+      repo: "a/b",
+      prNumber: 42,
+      repoPath: dir,
+      commentBody: "fix both",
+      timeoutSeconds: 12,
+      logger,
+    }, {
+      runGh: () =>
+        Promise.resolve(
+          '{"baseRefName":"main","headRefName":"foreign-branch","title":"PR","body":"claims"}',
+        ),
+      ask: () => {
+        throw new Error("unused");
+      },
+      verify: () => Promise.resolve({ status: "not_checked", reason }),
+    });
+    assertEquals(result.ok, true);
+    const warnings = records.filter(([message]) =>
+      message.startsWith("Review-fix verifier not checked")
+    );
+    assertEquals(warnings.length, 1);
+    assertEquals(
+      (warnings[0]?.[1] as { reason?: string } | undefined)?.reason,
+      reason,
+    );
+    assertEquals(
+      records.some(([message]) => message === "Review-fix verifier verdicts"),
+      false,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

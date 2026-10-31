@@ -1333,6 +1333,277 @@ Deno.test("skipReason: an added binary whose blob sha changed is a fresh review 
   );
 });
 
+// One CHANGELOG.md hunk: `before` and `after` are unchanged context lines (each
+// gets its leading space), `changed` the -/+ lines between them.
+const changelogHunk = (
+  header: string,
+  before: string[],
+  changed: string[],
+  after: string[] = ["", "## 1.0.0"],
+) =>
+  [
+    header,
+    ...before.map((line) => ` ${line}`),
+    ...changed,
+    ...after.map((line) => ` ${line}`),
+  ].join("\n");
+
+// Issue #4476: the PR adds one entry. A base merge moves its header and adds
+// an upstream entry above it, so the context differs between the since and
+// head compares while the PR's own change does not.
+const OWN_ENTRY = "+- fix the widget";
+const SINCE_BEFORE = ["## Unreleased", "", "- older entry"];
+const MOVED_BEFORE = [...SINCE_BEFORE, "- upstream entry"];
+const sinceEntry = changelogHunk("@@ -10,5 +10,6 @@", SINCE_BEFORE, [
+  OWN_ENTRY,
+]);
+const headEntry = changelogHunk("@@ -12,6 +12,7 @@", MOVED_BEFORE, [OWN_ENTRY]);
+
+// CHANGELOG.md is the probed file. a.ts is unrelated, with identical patches on
+// both sides, so only the CHANGELOG.md patches decide the result.
+const ownDiffGh = (sincePatch: string, headPatch: string) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "merge",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([
+      { filename: "CHANGELOG.md", patch: sincePatch },
+      { filename: "a.ts", patch: "@@ -1 +1 @@\n-old\n+unfixed" },
+    ]),
+    "repos/o/r/compare/main...head": compareFiles([
+      { filename: "CHANGELOG.md", patch: headPatch },
+      { filename: "a.ts", patch: "@@ -1 +1 @@\n-old\n+unfixed" },
+    ]),
+  }).gh;
+
+const sameOwnDiff = (sincePatch: string, headPatch: string) =>
+  ownDiffUnchanged(
+    ownDiffGh(sincePatch, headPatch),
+    "o/r",
+    "main",
+    "X",
+    "head",
+    [{ file: "a.ts" }],
+  );
+
+Deno.test("skipReason: context a base merge moved under the PR's own entry is awaiting-fix (Issue #4476)", async () => {
+  const gh = ownDiffGh(sinceEntry, headEntry);
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+      }),
+      "nleck",
+      (since) =>
+        ownDiffUnchanged(gh, "o/r", "main", since, "head", [{ file: "a.ts" }]),
+    ),
+    "awaiting-fix",
+  );
+});
+
+Deno.test("ownDiffUnchanged: trailing context alone may change (Issue #4476)", async () => {
+  assertEquals(
+    await sameOwnDiff(
+      sinceEntry,
+      changelogHunk("@@ -10,5 +10,6 @@", SINCE_BEFORE, [OWN_ENTRY], [
+        "",
+        "## 1.1.0",
+      ]),
+    ),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: an added line that changed is a fresh review (Issue #4476)", async () => {
+  assertEquals(
+    await sameOwnDiff(
+      sinceEntry,
+      changelogHunk("@@ -12,6 +12,7 @@", MOVED_BEFORE, ["+- fix the widgets"]),
+    ),
+    false,
+  );
+  // Control: the same head with the added line unchanged.
+  assertEquals(await sameOwnDiff(sinceEntry, headEntry), true);
+});
+
+Deno.test("ownDiffUnchanged: an extra hunk at head is a fresh review (Issue #4476)", async () => {
+  const extraHunk = changelogHunk("@@ -40,2 +40,2 @@", [], [
+    "-old tag",
+    "+new tag",
+  ], []);
+  assertEquals(
+    await sameOwnDiff(sinceEntry, [headEntry, extraHunk].join("\n")),
+    false,
+  );
+  // Control: the extra hunk is on both sides.
+  assertEquals(
+    await sameOwnDiff(
+      [sinceEntry, extraHunk].join("\n"),
+      [headEntry, extraHunk].join("\n"),
+    ),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a changed removed line is a fresh review (Issue #4476)", async () => {
+  const since = changelogHunk("@@ -10,6 +10,6 @@", SINCE_BEFORE, [
+    "-- stale entry",
+    OWN_ENTRY,
+  ]);
+  assertEquals(
+    await sameOwnDiff(
+      since,
+      changelogHunk("@@ -12,7 +12,7 @@", MOVED_BEFORE, [
+        "-- stale entries",
+        OWN_ENTRY,
+      ]),
+    ),
+    false,
+  );
+  // Control: the removed line is the same on both sides.
+  assertEquals(
+    await sameOwnDiff(
+      since,
+      changelogHunk("@@ -12,7 +12,7 @@", MOVED_BEFORE, [
+        "-- stale entry",
+        OWN_ENTRY,
+      ]),
+    ),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: a no-newline marker added after a change is a fresh review (Issue #4476)", async () => {
+  const marker = "\\ No newline at end of file";
+  assertEquals(
+    await sameOwnDiff(
+      sinceEntry,
+      changelogHunk("@@ -12,4 +12,5 @@", MOVED_BEFORE, [OWN_ENTRY, marker], []),
+    ),
+    false,
+  );
+  // Control: the marker is on both sides.
+  assertEquals(
+    await sameOwnDiff(
+      changelogHunk("@@ -10,3 +10,4 @@", SINCE_BEFORE, [OWN_ENTRY, marker], []),
+      changelogHunk("@@ -12,4 +12,5 @@", MOVED_BEFORE, [OWN_ENTRY, marker], []),
+    ),
+    true,
+  );
+});
+
+Deno.test("ownDiffUnchanged: reordered added lines are a fresh review (Issue #4476)", async () => {
+  const since = changelogHunk("@@ -10,5 +10,7 @@", SINCE_BEFORE, [
+    OWN_ENTRY,
+    "+- second entry",
+  ]);
+  assertEquals(
+    await sameOwnDiff(
+      since,
+      changelogHunk("@@ -12,6 +12,8 @@", MOVED_BEFORE, [
+        "+- second entry",
+        OWN_ENTRY,
+      ]),
+    ),
+    false,
+  );
+  // Control: the same order on both sides.
+  assertEquals(
+    await sameOwnDiff(
+      since,
+      changelogHunk("@@ -12,6 +12,8 @@", MOVED_BEFORE, [
+        OWN_ENTRY,
+        "+- second entry",
+      ]),
+    ),
+    true,
+  );
+});
+
+// PR #4525 review: a fix that only moves the PR's own added line relative to its
+// context (the entry sat under the released heading, the fix puts it above) has
+// the same hunk count and the same changed lines on both sides.
+const releasedHeading = ["## 1.2.0", "", "- older entry"];
+const entryBelowHeading = changelogHunk("@@ -10,4 +10,5 @@", releasedHeading, [
+  OWN_ENTRY,
+]);
+const entryAboveHeading = changelogHunk("@@ -10,4 +10,5 @@", [], [OWN_ENTRY], [
+  ...releasedHeading,
+]);
+
+const relocatedWith = (findings?: { file: string }[]) =>
+  ownDiffUnchanged(
+    ownDiffGh(entryBelowHeading, entryAboveHeading),
+    "o/r",
+    "main",
+    "X",
+    "head",
+    findings,
+  );
+
+Deno.test("ownDiffUnchanged: moving the PR's own line in a file an earlier finding names is a fresh review (PR #4525 review)", async () => {
+  assertEquals(await relocatedWith([{ file: "CHANGELOG.md" }]), false);
+  // The qualified path of the finding counts the same way.
+  assertEquals(await relocatedWith([{ file: "docs/CHANGELOG.md" }]), false);
+  // Findings that are unknown cannot rule the move out as the fix.
+  assertEquals(await relocatedWith(undefined), false);
+  // Control: no finding names the file, so only the changed lines are compared.
+  assertEquals(await relocatedWith([{ file: "a.ts" }]), true);
+});
+
+Deno.test("skipReason: a base merge moving context in a file no finding names stays awaiting-fix, a relocated line in a named file does not (PR #4525 review)", async () => {
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+  });
+  const skipWith = (since: string, head: string, file: string) =>
+    skipReason(
+      pr,
+      "nleck",
+      (sent) =>
+        ownDiffUnchanged(ownDiffGh(since, head), "o/r", "main", sent, "head", [
+          { file },
+        ]),
+    );
+  assertEquals(
+    await skipWith(sinceEntry, headEntry, "a.ts"),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await skipWith(entryBelowHeading, entryAboveHeading, "CHANGELOG.md"),
+    null,
+  );
+});
+
+Deno.test("ownDiffUnchanged: 50000-line patches are still judged correctly (Issue #4476)", async () => {
+  const bigPatch = (context: string, last: string) => {
+    const lines = Array.from(
+      { length: 50_000 },
+      (_, i) => (i % 2 === 0 ? ` ${context}` : "+added"),
+    );
+    lines[lines.length - 1] = last;
+    return ["@@ -1,25000 +1,50000 @@", ...lines].join("\n");
+  };
+  assertEquals(
+    await sameOwnDiff(
+      bigPatch("before", "+added"),
+      bigPatch("moved", "+added"),
+    ),
+    true,
+  );
+  assertEquals(
+    await sameOwnDiff(
+      bigPatch("before", "+added"),
+      bigPatch("moved", "+changed"),
+    ),
+    false,
+  );
+});
+
 Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call cannot wedge the watch loop", async () => {
   const started = Date.now();
   await assertRejects(

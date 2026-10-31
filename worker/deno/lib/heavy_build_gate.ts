@@ -224,7 +224,9 @@ export function deferralSkipsCargoForMerge(
  * (its incremental cache) and any written to recently (another slot's build
  * in progress) are never pruned. With `creditOwnCache`, the bytes already in
  * the checkout's own directories count towards the headroom, capped at it, so
- * the floor itself is never relaxed (Issue #4423).
+ * the floor itself is never relaxed (Issue #4423). With `dryRun`, nothing is
+ * removed: the verdict is the one a real run would reach if every removal
+ * succeeded (Issue #4540, the claim scan's question).
  */
 export async function enforceEphemeralCargoBudget(
   input: {
@@ -234,6 +236,7 @@ export async function enforceEphemeralCargoBudget(
     headroomBytes?: number;
     root?: string;
     creditOwnCache?: boolean;
+    dryRun?: boolean;
   },
   deps: EphemeralRootDeps,
 ): Promise<CargoBudgetVerdict> {
@@ -298,7 +301,7 @@ export async function enforceEphemeralCargoBudget(
   for (const dir of candidates) {
     if (shortfall <= 0) break;
     try {
-      await deps.removeDir(dir.path);
+      if (!input.dryRun) await deps.removeDir(dir.path);
       pruned += dir.bytes;
       shortfall -= dir.bytes;
     } catch (err) {
@@ -513,6 +516,59 @@ export async function parkInFlightBuild(
   return inFlightParkReason(
     admission.mode === "build" ? null : admission.reason,
   );
+}
+
+/**
+ * Why a new claim in `checkoutPath` would be parked at once, or null to claim
+ * (Issue #4540).
+ *
+ * The claim gate opens at the host floor, but {@link parkInFlightBuild}
+ * refuses a cargo checkout's agent until the floor plus the cargo headroom is
+ * free. In between, every claim on a cargo repository was taken, parked and
+ * released, and taken again next cycle, while work that could run waited.
+ * This asks the in-flight park's own question as a dry run — the checkout's
+ * own cache is credited and idle siblings count as prunable, but nothing is
+ * removed at scan time. A host below its floor is left to the host-disk claim
+ * gate, which already stops every claim. A checkout with no cargo project,
+ * a disarmed gate or an unknown reading never defers.
+ */
+export async function cargoClaimDeferral(
+  checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<string | null> {
+  if (!inFlightGateEnabled || probe === undefined) return null;
+  const reading = await probe();
+  if (!reading.trimRefused || reading.status.level !== "ok") return null;
+  const free = reading.status.availableBytes;
+  if (free === undefined || reading.floorBytes === undefined) return null;
+  if (!(await holdsCargoProject(checkoutPath))) return null;
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath,
+    hostFreeBytes: free,
+    floorBytes: reading.floorBytes,
+    creditOwnCache: true,
+    dryRun: true,
+  }, deps);
+  return verdict.proceed ? null : verdict.detail;
+}
+
+/**
+ * The repositories whose existing clone {@link cargoClaimDeferral} defers,
+ * each with its reason (Issue #4540). A repository not cloned yet is left
+ * claimable: its cargo-ness is unknown, and the in-flight park stays the
+ * backstop.
+ */
+export async function cargoClaimDeferredRepos(
+  repos: readonly string[],
+  cloneDirFor: (repo: string) => string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<Map<string, string>> {
+  const deferred = new Map<string, string>();
+  for (const repo of repos) {
+    const reason = await cargoClaimDeferral(cloneDirFor(repo), deps);
+    if (reason !== null) deferred.set(repo, reason);
+  }
+  return deferred;
 }
 
 /** Whether a cargo project sits within the searched depth of `checkoutPath` (Issue #4413). */

@@ -522,6 +522,117 @@ Deno.test("sweepMergedPrIssues - a repo whose scan fails is reported and does no
   assertStringIncludes(result.message, "1 repo failure");
 });
 
+Deno.test("sweepMergedPrIssues - a GraphQL Forbidden stops the sweep without recording a repo failure", async () => {
+  const lines: string[] = [];
+  const scanned: string[] = [];
+  const forbidden = 'Post "https://api.github.com/graphql": Forbidden';
+  const result = await sweepMergedPrIssues(
+    baseOptions({ repos: ["org/first", "org/next"] }),
+    {
+      ghCommandFn: async () => "",
+      logger: makeLogger(lines),
+      fetchOpenIssuesFn: async (repo) => {
+        scanned.push(repo);
+        throw new Error(forbidden);
+      },
+      fetchClosedPRsFn: async () => [],
+      isQuotaLatchedFn: () => false,
+    },
+  );
+
+  assertEquals(scanned, ["org/first"]);
+  assertEquals(result.failures, []);
+  assertEquals(result.reposSkipped, 2);
+  assertStringIncludes(result.quotaExhausted ?? "", forbidden);
+  assertStringIncludes(
+    lines[0] ?? "",
+    "GraphQL secondary rate limit — sweep skipped",
+  );
+  assertStringIncludes(
+    result.message,
+    "secondary rate limit, sweep skipped",
+  );
+  assertEquals(lines.filter((line) => line.startsWith("error:")), []);
+  assertEquals(lines.filter((line) => line.startsWith("warn:")).length, 1);
+});
+
+for (const stage of ["timeline", "comments", "close"]) {
+  Deno.test(`sweepMergedPrIssues - a secondary refusal at ${stage} stops later issues and repos without advancing the watermark`, async () => {
+    const dir = await Deno.makeTempDir({ prefix: "sweep_later_limit_" });
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    await seedProcessed(watermarkPath, { "org/first": [7], "org/next": [8] });
+    const before = await Deno.readTextFile(watermarkPath);
+    const forbidden = stage === "close"
+      ? 'Post "https://api.github.com/graphql": Forbidden'
+      : "You have exceeded a secondary rate limit";
+    const calls: GhCalls = { closes: [], all: [] };
+    const afterRefusal: string[][] = [];
+    const lines: string[] = [];
+    const first = landedWorld();
+    const gh = makeGh(
+      landedWorld({
+        issues: [...first.issues, {
+          number: 50,
+          createdAt: "2026-08-26T00:00:00Z",
+        }],
+        prs: [...first.prs, {
+          ...first.prs[0]!,
+          number: 51,
+          title: "Fix (Issue #50)",
+        }],
+      }),
+      calls,
+    );
+    let refused = false;
+    try {
+      const result = await sweepMergedPrIssues(
+        baseOptions({ repos: ["org/first", "org/next"], watermarkPath }),
+        {
+          logger: makeLogger(lines),
+          isQuotaLatchedFn: () => false,
+          ghCommandFn: (args) => {
+            if (refused) afterRefusal.push([...args]);
+            const endpoint = args.find((arg) => arg.includes("/issues/48/"));
+            const atStage = stage === "close"
+              ? args[0] === "issue" && args[1] === "close" && args[2] === "48"
+              : endpoint?.split("?")[0]?.endsWith(`/${stage}`) === true;
+            if (!refused && atStage) {
+              refused = true;
+              calls.all?.push([...args]);
+              return Promise.reject(new Error(forbidden));
+            }
+            return gh(args);
+          },
+        },
+      );
+      assertEquals(
+        refused,
+        true,
+        "earlier requests must succeed up to the intended refusal",
+      );
+      assertEquals(
+        afterRefusal,
+        [],
+        "later issues and repositories must remain untouched",
+      );
+      assertEquals(calls.closes, []);
+      assertEquals(result.failures, []);
+      assertEquals(result.closed, 0);
+      assertEquals(result.reposSkipped, 2);
+      assertStringIncludes(result.quotaExhausted ?? "", forbidden);
+      assertStringIncludes(
+        result.message,
+        "secondary rate limit, sweep skipped",
+      );
+      assertEquals(lines.filter((line) => line.startsWith("error:")), []);
+      assertEquals(lines.filter((line) => line.startsWith("warn:")).length, 1);
+      assertEquals(await Deno.readTextFile(watermarkPath), before);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
+
 Deno.test("sweepMergedPrIssues - no repos is a clean no-op", async () => {
   const calls: GhCalls = { closes: [] };
   const result = await sweepMergedPrIssues(
