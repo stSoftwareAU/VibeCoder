@@ -93,6 +93,20 @@ Added in `worker/deno/tests/milestone_completion_test.ts`:
   `... false (fail safe) when the rollup list fails (Issue #4514)`.
 - `checkAndHandleMilestoneCompletions - closes a milestone whose rollup squash-merged with the head unchanged (Issue #4514)`.
 
+Added in `worker/deno/tests/milestone_head_merged_test.ts` (Mutation check
+follow-up: strict gh stubs that answer only the exact argument vectors, so a
+dropped argument, branch or `--json` field fails the call):
+
+- `isMilestoneHeadAlreadyMerged` pins the exact head-read and `pr list`
+  arguments, the repo/branch allowlist (each of repo, milestone branch and
+  default branch rejected with no gh call), the `ok: false` error results for an
+  unreadable head, a non-sha head and a failed list, reuse of supplied `prs`
+  without listing, and the match rules (MERGED only, case-insensitive state and
+  sha, same base, string `headRefOid`).
+- `hasNothingToMerge` reads the milestone branch's own head, and returns `false`
+  when the rollup list holds a malformed (`null`) entry that makes the helper
+  throw, which pins the fail-safe `catch` in `milestone_completion.ts`.
+
 Existing tests edited: three route-restore mocks (those behind "a protected
 not-ahead child opens a rollup on the scan after auto-merge lands", "a landed
 protected child whose rollup cannot be opened is not left closed", and
