@@ -29,6 +29,10 @@ import {
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { hasExistingMilestoneSummaryPr } from "../lib/milestone_completion.ts";
+import {
+  buildRestoredRollupBody,
+  restoreClosedMilestoneRoute,
+} from "../lib/milestone_route_restore.ts";
 import { closeIssuesForMergedPrs } from "../lib/pr_issue_linking.ts";
 import {
   _resetBaseProtectionMemo,
@@ -571,6 +575,9 @@ Deno.test("a protected not-ahead child opens a rollup on the scan after auto-mer
           : JSON.stringify([{ number: 3905, title: "Ship the widget" }]),
       );
     }
+    if (key.includes("/branches/") && key.includes(".commit.sha")) {
+      return Promise.resolve(`${HEAD_SHA}\n`);
+    }
     if (key.includes("/compare/") && key.includes("ahead_by")) {
       return Promise.resolve(JSON.stringify(
         landed
@@ -697,6 +704,9 @@ Deno.test("a landed protected child whose rollup cannot be opened is not left cl
     if (key.includes("/issues?milestone=")) {
       return Promise.resolve("[]");
     }
+    if (key.includes("/branches/") && key.includes(".commit.sha")) {
+      return Promise.resolve(`${HEAD_SHA}\n`);
+    }
     if (key.includes("/compare/") && key.includes("ahead_by")) {
       return Promise.resolve(JSON.stringify({
         ahead_by: 1,
@@ -784,6 +794,9 @@ function refusedRollupStdout(args: readonly string[]): string {
     ]);
   }
   if (key.includes("/issues?milestone=")) return "[]";
+  if (key.includes("/branches/") && key.includes(".commit.sha")) {
+    return `${HEAD_SHA}\n`;
+  }
   if (key.includes("/compare/") && key.includes("ahead_by")) {
     return JSON.stringify({
       ahead_by: 1,
@@ -963,6 +976,237 @@ Deno.test("a merged rollup does not count when the branch still has a file diff 
     "main",
   );
   assertEquals(existing, { ok: true, value: null });
+});
+
+// Issue #4514: a squash merge does not move the merge base, so the compare
+// still lists the files the rollup landed. The branch head decides instead.
+
+const MOVED_SHA = "1111111111111111111111111111111111111111";
+
+function squashedRouteGh(options: {
+  calls: string[][];
+  openChild: boolean;
+  branchHead: string | Error;
+  mergedBase?: string;
+  mergedHeadOid?: string;
+}): (args: string[]) => Promise<string> {
+  return (args) => {
+    options.calls.push(args);
+    const key = args.join(" ");
+    if (key.includes("pr list") && key.includes("--head")) {
+      return Promise.resolve(JSON.stringify([{
+        number: 4077,
+        state: "MERGED",
+        baseRefName: options.mergedBase ?? DEFAULT,
+        mergedAt: "2026-10-13T13:58:25Z",
+        ...(options.mergedHeadOid === undefined
+          ? {}
+          : { headRefOid: options.mergedHeadOid }),
+      }]));
+    }
+    if (key.includes("/milestones?state=all")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 7, title: "Clean up", state: "open" },
+      ]));
+    }
+    if (key.includes("issues?milestone=") && key.includes("state=open")) {
+      return Promise.resolve(JSON.stringify(
+        options.openChild ? [{ number: 3905, title: "Ship the widget" }] : [],
+      ));
+    }
+    if (key.includes("/branches/") && key.includes(".commit.sha")) {
+      return options.branchHead instanceof Error
+        ? Promise.reject(options.branchHead)
+        : Promise.resolve(`${options.branchHead}\n`);
+    }
+    if (key.includes("/compare/") && key.includes("ahead_by")) {
+      return Promise.resolve(JSON.stringify({
+        ahead_by: 20,
+        files: Array.from(
+          { length: 12 },
+          (_, index) => ({ filename: `file-${index}.txt` }),
+        ),
+      }));
+    }
+    if (args[0] === "pr" && args[1] === "create") {
+      return Promise.resolve("https://github.com/owner/repo/pull/4300\n");
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+function createdRollupBody(calls: string[][]): string {
+  const create = calls.find((args) => args[0] === "pr" && args[1] === "create");
+  assert(create, "a rollup was created");
+  return create[create.indexOf("--body") + 1]!;
+}
+
+Deno.test("a squash-merged rollup with an unchanged head is not re-opened (Issue #4514)", async () => {
+  const calls: string[][] = [];
+  const result = await restoreClosedMilestoneRoute({
+    repo: REPO,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghCommandFn: squashedRouteGh({
+      calls,
+      openChild: false,
+      branchHead: HEAD_SHA,
+      mergedHeadOid: HEAD_SHA,
+    }),
+  });
+  assertEquals(result.action, "left-closed");
+  if (result.action === "left-closed") {
+    assertStringIncludes(result.detail, "#4077");
+    assertStringIncludes(result.detail, "has not moved since");
+  }
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "create"),
+    "the squash-merged rollup is not re-opened",
+  );
+});
+
+Deno.test("a squash-merged rollup with an unchanged head still opens a rollup while a child is open (Issue #4514)", async () => {
+  const calls: string[][] = [];
+  const result = await restoreClosedMilestoneRoute({
+    repo: REPO,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghCommandFn: squashedRouteGh({
+      calls,
+      openChild: true,
+      branchHead: HEAD_SHA,
+      mergedHeadOid: HEAD_SHA,
+    }),
+  });
+  assertEquals(result.action, "created");
+  const body = createdRollupBody(calls);
+  assertStringIncludes(
+    body,
+    "has already merged, and the milestone still has open work.",
+  );
+});
+
+Deno.test("a head that moved after the squash-merged rollup opens a rollup without claiming open work (Issue #4514)", async () => {
+  const calls: string[][] = [];
+  const result = await restoreClosedMilestoneRoute({
+    repo: REPO,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghCommandFn: squashedRouteGh({
+      calls,
+      openChild: false,
+      branchHead: MOVED_SHA,
+      mergedHeadOid: HEAD_SHA,
+    }),
+  });
+  assertEquals(result.action, "created");
+  const body = createdRollupBody(calls);
+  assertStringIncludes(
+    body,
+    "has changes `Develop` does not have.",
+  );
+  assert(
+    !body.includes("still has open work"),
+    "the body does not claim open work",
+  );
+});
+
+Deno.test("a squash-merged rollup into another base does not match the head (Issue #4514)", async () => {
+  const calls: string[][] = [];
+  const result = await restoreClosedMilestoneRoute({
+    repo: REPO,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghCommandFn: squashedRouteGh({
+      calls,
+      openChild: false,
+      branchHead: HEAD_SHA,
+      mergedBase: "release/1.0",
+      mergedHeadOid: HEAD_SHA,
+    }),
+  });
+  assertEquals(result.action, "created");
+});
+
+Deno.test("a merged rollup without headRefOid does not match the head (Issue #4514)", async () => {
+  const calls: string[][] = [];
+  const result = await restoreClosedMilestoneRoute({
+    repo: REPO,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghCommandFn: squashedRouteGh({
+      calls,
+      openChild: false,
+      branchHead: HEAD_SHA,
+    }),
+  });
+  assertEquals(result.action, "created");
+});
+
+Deno.test("a branch head that cannot be read fails the route restore (Issue #4514)", async () => {
+  const calls: string[][] = [];
+  const result = await restoreClosedMilestoneRoute({
+    repo: REPO,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghCommandFn: squashedRouteGh({
+      calls,
+      openChild: false,
+      branchHead: new Error("branch read refused"),
+      mergedHeadOid: HEAD_SHA,
+    }),
+  });
+  assertEquals(result.action, "failed");
+  if (result.action === "failed") {
+    assertStringIncludes(result.reason, "branch read refused");
+  }
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "create"),
+    "no rollup is opened on an unreadable head",
+  );
+});
+
+Deno.test("a branch head that is not a commit sha fails the route restore (Issue #4514)", async () => {
+  const calls: string[][] = [];
+  const result = await restoreClosedMilestoneRoute({
+    repo: REPO,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghCommandFn: squashedRouteGh({
+      calls,
+      openChild: false,
+      branchHead: "not-a-sha",
+      mergedHeadOid: HEAD_SHA,
+    }),
+  });
+  assertEquals(result.action, "failed");
+  if (result.action === "failed") {
+    assertStringIncludes(result.reason, '"not-a-sha"');
+  }
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "create"),
+    "no rollup is opened on a bad head",
+  );
+});
+
+Deno.test("buildRestoredRollupBody - names open work only when the milestone has open children (Issue #4514)", () => {
+  const withWork = buildRestoredRollupBody(BRANCH, DEFAULT, 2, true);
+  assertStringIncludes(
+    withWork,
+    "has already merged, and the milestone still has open work.",
+  );
+  assertStringIncludes(withWork, "`milestone/clean-up` is 2 commit(s) ahead");
+
+  const withoutWork = buildRestoredRollupBody(BRANCH, DEFAULT, 2, false);
+  assertStringIncludes(
+    withoutWork,
+    "has already merged, and `milestone/clean-up` has changes `Develop` does not have.",
+  );
+  assertStringIncludes(
+    withoutWork,
+    "`milestone/clean-up` is 2 commit(s) ahead",
+  );
+  assert(!withoutWork.includes("open work"), "no open-work claim");
 });
 
 // ---------------------------------------------------------------------------
