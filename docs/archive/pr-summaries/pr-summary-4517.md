@@ -76,11 +76,11 @@ existing code and docs.
 ## Test Plan
 
 - New `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`, five
-  tests (5 at head). Three are for the original change: sweep with ceiling+3 deferrals (no roll-back,
-  `refusedCycles` 0, `conflictAttempts` 0, sync really ran each cycle); presync
-  twin likewise; mixed deferrals and gate refusals (deferrals do not advance the
-  streak; the gate refusal still climbs on the fourth). The other two came from PR #4581
-  review and are described below.
+  tests (5 at head). Three are for the original change: sweep with ceiling+3
+  deferrals (no roll-back, `refusedCycles` 0, `conflictAttempts` 0, sync really
+  ran each cycle); presync twin likewise; mixed deferrals and gate refusals
+  (deferrals do not advance the streak; the gate refusal still climbs on the
+  fourth). The other two came from PR #4581 review and are described below.
 - PR #4581 review: short-cycle operator logs distinguish an uncounted agent
   deferral from a counted merge-gate refusal. A fifth test captures both logs
   and checks that the gate refusal advances `refusedCycles`.
@@ -117,8 +117,8 @@ existing code and docs.
   directly and only calls `recordSyncFailure` when the reason is not
   `AGENT_DEFERRED_CYCLE_BUDGET`. Red checks on the head, each run against
   `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts` (5 tests
-  at head): `if (true)` in place of that reason test fails the file (4 passed,
-  1 failed); the old `if (!agentAllowed && conflictError)` log guard restored
+  at head): `if (true)` in place of that reason test fails the file (4 passed, 1
+  failed); the old `if (!agentAllowed && conflictError)` log guard restored
   fails the short-cycle log test (4 passed, 1 failed); the gate-refusal log
   branch disabled (`else if (false && …)`) fails the same test (4 passed, 1
   failed).
