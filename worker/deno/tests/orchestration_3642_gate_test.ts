@@ -551,6 +551,89 @@ Deno.test("orchestration gate - a runner exit 124 is a timeout that ends the run
   });
 });
 
+Deno.test("orchestration gate - a runner finish-deadline release returns the runner's timed-out result and the executor is not retried (Issue #4584)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner((options) =>
+      options.orchestrationRole === "executor"
+        ? runResult({
+          exitCode: 124,
+          timedOut: true,
+          finishDeadline: true,
+          output: "wip",
+        })
+        : answerByPhase(options)
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.timedOut, true);
+    assertEquals(outcome.value.finishDeadline, true);
+    assertEquals(outcome.value.output, "wip");
+    // One plan call and one executor call: the release is not retried.
+    assertEquals(
+      fake.calls.filter((o) => o.orchestrationRole === "executor").length,
+      1,
+    );
+    assertEquals(fake.calls.length, 2);
+  });
+});
+
+Deno.test("orchestration gate - a runner scheduled hard-cap release returns the runner's timed-out result and the executor is not retried (Issue #4584)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner((options) =>
+      options.orchestrationRole === "executor"
+        ? runResult({
+          exitCode: 124,
+          timedOut: true,
+          scheduledRelease: "hard-cap",
+          output: "wip",
+        })
+        : answerByPhase(options)
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.timedOut, true);
+    assertEquals(outcome.value.scheduledRelease, "hard-cap");
+    assertEquals(outcome.value.output, "wip");
+    assertEquals(
+      fake.calls.filter((o) => o.orchestrationRole === "executor").length,
+      1,
+    );
+    assertEquals(fake.calls.length, 2);
+  });
+});
+
+Deno.test("orchestration gate - a genuine runner hard timeout is retried, then returns the runner's timed-out result (Issue #4584)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner((options) =>
+      options.orchestrationRole === "executor"
+        ? runResult({ exitCode: 124, timedOut: true, output: "slow" })
+        : answerByPhase(options)
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.timedOut, true);
+    assertEquals(outcome.value.output, "slow");
+    // One plan call, then the executor's two attempts.
+    assertEquals(
+      fake.calls.filter((o) => o.orchestrationRole === "executor").length,
+      2,
+    );
+    assertEquals(fake.calls.length, 3);
+  });
+});
+
 Deno.test("orchestration gate - a non-zero runner exit is an error that exhausts its retries (Issue #3642)", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeRunner(() => runResult({ exitCode: 1 }));
