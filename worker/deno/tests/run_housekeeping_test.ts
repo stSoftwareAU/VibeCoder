@@ -68,6 +68,8 @@ function recordingDeps(
       order.push(step.id);
       return Promise.resolve({ success: true, message: `${step.id} ok` });
     },
+    // No-op: the shared "/tmp/work" fixture must never be read from disk.
+    configureDecisionStore: () => {},
     log: (msg) => logs.push(`log:${msg}`),
     logError: (msg) => logs.push(`err:${msg}`),
     ...overrides,
@@ -120,6 +122,9 @@ Deno.test("runStartupHousekeeping - configures persisted decisions before the me
   const warnings: boolean[] = [];
   const deps = recordingDeps([], [], {
     env: emptyEnv,
+    // The production default, so a broken default wiring turns this red.
+    configureDecisionStore:
+      createDefaultHousekeepingDeps().configureDecisionStore,
     runStep: (step) => {
       if (step.id === "merged-pr-issue-sweep") {
         warnings.push(shouldWarnDecision("issue-pr", "held-open"));

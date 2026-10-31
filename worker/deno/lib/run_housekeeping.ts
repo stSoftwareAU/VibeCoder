@@ -155,6 +155,12 @@ export interface HousekeepingDeps {
     step: HousekeepingStep,
     config: WorkerConfig,
   ): Promise<{ success: boolean; message: string }>;
+  /**
+   * Bind the persisted decision-warning store to the work volume (Issue
+   * #4495). A module-global side effect, so it is a seam: recording-deps
+   * tests inject a no-op and never touch the disk.
+   */
+  configureDecisionStore(workDir: string): void;
   /** Log an informational line. */
   log(message: string): void;
   /** Log an error line (used for failing steps — fail loud, Issue #3234). */
@@ -446,6 +452,7 @@ export function createDefaultHousekeepingDeps(
       const result = await command.execute(step.args, config);
       return { success: result.success, message: result.message };
     },
+    configureDecisionStore: (workDir) => configureDecisionWarnStore(workDir),
     log: (message) => log.info(message),
     logError: (message) => log.error(message),
   };
@@ -470,12 +477,12 @@ export async function runStartupHousekeeping(
   config: WorkerConfig,
   depsOverride: Partial<HousekeepingDeps> = {},
 ): Promise<HousekeepingResult> {
-  // Load decisions before the merged-PR sweep so hourly restarts stay quiet.
-  configureDecisionWarnStore(options.workDir);
   const deps: HousekeepingDeps = {
     ...createDefaultHousekeepingDeps(),
     ...depsOverride,
   };
+  // Load decisions before the merged-PR sweep so hourly restarts stay quiet.
+  deps.configureDecisionStore(options.workDir);
   // Volatile CLI runtime state first (Issue #4245): the registries must be
   // gone before anything can spawn the agent this cycle.
   const envFn = deps.env ?? processEnvLookup;
