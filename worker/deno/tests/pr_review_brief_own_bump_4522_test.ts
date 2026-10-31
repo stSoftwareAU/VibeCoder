@@ -19,7 +19,7 @@ Deno.test("Issue #4522 - review brief step 2 names the worker's own bump commit 
     const phrase of [
       BUMP_SUBJECT,
       '"Dependency Bumps and Supply Chain"',
-      "is not unrelated: it is part of the PR, so do not ask for it to be reverted",
+      "is not unrelated: it is part of the PR, so do not ask for it to be reverted as unrelated to the issue. Review it for correctness like any other change",
     ]
   ) {
     assertStringIncludes(text, phrase);

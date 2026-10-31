@@ -17,9 +17,9 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    `chore: bump dependencies via bump-deps.sh` commit;
    `prompts/coding_guidelines/prompt.md`, "Dependency Bumps and Supply
    Chain") is not unrelated: it is part of the PR, so do not ask for it to be
-   reverted. Review it for correctness like any other change. A
-   change that clears a dependency audit that is red on this PR is not
-   unrelated: every PR red on an advisory fixes it itself, even when another
+   reverted as unrelated to the issue. Review it for correctness like any
+   other change. A change that clears a dependency audit that is red on this PR
+   is not unrelated: every PR red on an advisory fixes it itself, even when another
    PR carries the same fix (`prompts/ci_fix/prompt.md`, "Dependency
    audit failures"). Review it for correctness like any other change.
 3. Look for correctness bugs, unhandled edge cases, security problems
