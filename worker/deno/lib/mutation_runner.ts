@@ -28,7 +28,10 @@
  *
  * Known limit: a Deno module counts as covered only by tests that import it
  * directly, so a module exercised solely through another module's tests is
- * reported as having no importing test.
+ * reported as having no importing test. A test imports a module through a
+ * relative specifier, or through a specifier the project's `imports` map
+ * resolves to a local path (Issue #4533); `importMap` files and `scopes` are
+ * not read.
  *
  * Australian English spelling used throughout.
  */
@@ -43,6 +46,13 @@ import {
   type MutationLanguage,
   parseAddedLines,
 } from "./mutation_gate.ts";
+import {
+  type DenoProjectConfig,
+  EMPTY_PROJECT_CONFIG,
+  isDenoTestPath,
+  parseDenoProjectConfig,
+  resolveImportSpecifier,
+} from "./deno_test_config.ts";
 import { hardenStateDir } from "./private_cache_dir.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 import {
@@ -82,7 +92,10 @@ export interface MutationRunnerSeams {
   realPath(path: string): Promise<string>;
   /** Recursively remove a directory; absent is not an error. */
   removeDir(path: string): Promise<void>;
-  /** Repo-relative `*_test.ts` / `*.test.ts` paths. */
+  /**
+   * Repo-relative Deno test files: the `*_test.ts` / `*.test.ts` suffix rule,
+   * or a project's `test.include` (Issue #4533).
+   */
   listTestFiles(repoPath: string): Promise<string[]>;
   /** Create an empty, writable temporary directory outside any repository; rejects when none can be created. */
   makeTempDir(): Promise<string>;
@@ -104,8 +117,12 @@ export interface MutationRunInput {
 }
 
 const DENO_MARKERS = ["deno.json", "deno.jsonc", "deno.lock"];
+/** Project config files, in the order Deno prefers them. */
+const DENO_CONFIG_FILES = ["deno.json", "deno.jsonc"];
 const SOURCE_FILE = /\.(?:ts|tsx|js|mjs)$/;
 const RELATIVE_SPECIFIER = /["'](\.{1,2}\/[^"']*)["']/g;
+/** Any quoted specifier; a bare one may be an `imports` alias (Issue #4533). */
+const QUOTED_SPECIFIER = /["']([^"'\s]+)["']/g;
 const CARGO_MUTANTS_MISSING =
   "cargo-mutants is not installed; install it or set skip_mutation_check";
 
@@ -134,6 +151,53 @@ export async function findDenoConfigDir(
   }
 }
 
+/** A Deno project: its directory relative to the repository root, and its config. */
+export interface DenoProject {
+  dir: string;
+  config: DenoProjectConfig;
+}
+
+/**
+ * The config of the Deno project in `configDir` (`deno.json`, else
+ * `deno.jsonc`), read once per directory into `cache`. A directory with neither
+ * (a lock-only project) has the empty config. Throws when the file is invalid.
+ */
+async function loadProjectConfig(
+  repoPath: string,
+  configDir: string,
+  seams: MutationRunnerSeams,
+  cache: Map<string, DenoProjectConfig>,
+): Promise<DenoProjectConfig> {
+  const cached = cache.get(configDir);
+  if (cached !== undefined) return cached;
+  let config = EMPTY_PROJECT_CONFIG;
+  for (const name of DENO_CONFIG_FILES) {
+    const rel = configDir === "" ? name : `${configDir}/${name}`;
+    const abs = await confinePath(repoPath, rel, seams);
+    if (abs !== null && await seams.exists(abs)) {
+      config = parseDenoProjectConfig(await seams.readTextFile(abs), rel);
+      break;
+    }
+  }
+  cache.set(configDir, config);
+  return config;
+}
+
+/** `file` (repo-relative) relative to the project directory `dir`. */
+function relativeToProject(dir: string, file: string): string {
+  return dir === "" ? file : file.slice(dir.length + 1);
+}
+
+/**
+ * The Deno test rule (Issue #4533), shared by the runner and the real listing:
+ * the suffix rule when there is no project, else the project's `test.include`
+ * rule for `file`, which the suffix rule also satisfies.
+ */
+function isDenoTestIn(file: string, project: DenoProject | null): boolean {
+  if (project === null) return isDenoTestFile(file);
+  return isDenoTestPath(relativeToProject(project.dir, file), project.config);
+}
+
 /**
  * Deno markers at the repo root win; then a changed non-test source file under
  * a nested Deno project (`worker/deno/deno.json`); otherwise a root
@@ -147,17 +211,38 @@ export async function detectMutationLanguage(
   for (const marker of DENO_MARKERS) {
     if (await seams.exists(`${repoPath}/${marker}`)) return "deno";
   }
+  const configCache = new Map<string, DenoProjectConfig>();
   for (const file of changedFiles) {
-    if (!isDenoSource(file)) continue;
+    if (!await isDenoSource(repoPath, file, seams, configCache)) continue;
     if (await findDenoConfigDir(repoPath, file, seams) !== null) return "deno";
   }
   if (await seams.exists(`${repoPath}/Cargo.toml`)) return "rust";
   return null;
 }
 
-function isDenoSource(file: string): boolean {
-  return SOURCE_FILE.test(file) && !file.endsWith(".d.ts") &&
-    !isDenoTestFile(file);
+/**
+ * Is the changed `file` a Deno source to mutate: a `.ts`/`.tsx`/`.js`/`.mjs`
+ * file that is neither a declaration nor a test? Where a Deno project holds
+ * it, the test rule is that project's (Issue #4533); with no project the
+ * suffix rule alone applies.
+ */
+async function isDenoSource(
+  repoPath: string,
+  file: string,
+  seams: MutationRunnerSeams,
+  configCache: Map<string, DenoProjectConfig>,
+): Promise<boolean> {
+  if (!SOURCE_FILE.test(file) || file.endsWith(".d.ts")) return false;
+  if (isDenoTestFile(file)) return false;
+  const configDir = await findDenoConfigDir(repoPath, file, seams);
+  if (configDir === null) return true;
+  const config = await loadProjectConfig(
+    repoPath,
+    configDir,
+    seams,
+    configCache,
+  );
+  return !isDenoTestIn(normalisePath(file), { dir: configDir, config });
 }
 
 export async function runMutationCheck(
@@ -256,25 +341,42 @@ async function findImportingTests(
   testFiles: readonly string[],
   seams: MutationRunnerSeams,
   repoPath: string,
+  project: DenoProject,
 ): Promise<string[]> {
   const found: string[] = [];
   for (const test of testFiles) {
     const text = await seams.readTextFile(`${repoPath}/${test}`);
-    if (importsModule(text, dirOf(test), module)) found.push(test);
+    if (importsModule(text, dirOf(test), module, project)) found.push(test);
   }
   return found;
 }
 
-/** Does `text` (in directory `dir`) import the repo-relative `module`? */
+/**
+ * Does `text` (in directory `dir`) import the repo-relative `module`? A relative
+ * specifier counts by its path. With `project` (the Deno project the test is
+ * in), a bare specifier counts when the project's `imports` map resolves it to
+ * `module` (Issue #4533).
+ */
 export function importsModule(
   text: string,
   dir: string,
   module: string,
+  project?: DenoProject,
 ): boolean {
   for (const m of text.matchAll(RELATIVE_SPECIFIER)) {
     const spec = m[1];
     if (spec === undefined) continue;
     if (normalisePath(`${dir}/${spec}`) === module) return true;
+  }
+  if (project === undefined) return false;
+  for (const m of text.matchAll(QUOTED_SPECIFIER)) {
+    const spec = m[1];
+    if (spec === undefined || spec.startsWith(".")) continue;
+    if (
+      resolveImportSpecifier(spec, project.config, project.dir) === module
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -339,6 +441,8 @@ async function runDeno(
   const remaining = () => budgetMs - (seams.now() - start);
 
   const added = parseAddedLines(input.diff);
+  const configCache = new Map<string, DenoProjectConfig>();
+  const projectFor = new Map<string, DenoProject>();
   const modules: Array<{
     file: string;
     lines: number[];
@@ -346,12 +450,20 @@ async function runDeno(
     configDir: string;
   }> = [];
   for (const [file, lines] of added) {
-    if (!isDenoSource(file)) continue;
+    if (!await isDenoSource(repoPath, file, seams, configCache)) continue;
     const abs = await confinePath(repoPath, file, seams);
     if (abs === null || !(await seams.exists(abs))) continue;
     const configDir = await findDenoConfigDir(repoPath, file, seams);
     if (configDir === null) continue;
-    modules.push({ file: normalisePath(file), lines, abs, configDir });
+    const rel = normalisePath(file);
+    const config = await loadProjectConfig(
+      repoPath,
+      configDir,
+      seams,
+      configCache,
+    );
+    modules.push({ file: rel, lines, abs, configDir });
+    projectFor.set(rel, { dir: configDir, config });
   }
   if (modules.length === 0) {
     return {
@@ -404,6 +516,7 @@ async function runDeno(
       inProject,
       seams,
       repoPath,
+      projectFor.get(file) ?? { dir: "", config: EMPTY_PROJECT_CONFIG },
     );
     testsFor.set(file, importing.map((t) => t.slice(prefix.length)));
   }
@@ -838,23 +951,98 @@ async function runCargoMutants(
 
 const DEFAULT_KILL_GRACE_MS = 5_000;
 const SKIP_DIRS = new Set(["node_modules", ".git", "target"]);
-const TEST_FILE = /(?:_test|\.test)\.(?:ts|tsx|js|mjs)$/;
 
-async function walkTests(
+/**
+ * Walk the repository collecting its source files and its Deno project
+ * directories: each directory holding a `deno.json` or `deno.jsonc` (mapped to
+ * that file's name) or only a `deno.lock` (mapped to null). Symlinks and
+ * {@link SKIP_DIRS} are skipped.
+ */
+async function walkSources(
   root: string,
   rel: string,
-  out: string[],
+  sources: string[],
+  projects: Map<string, string | null>,
 ): Promise<void> {
   const dir = rel === "" ? root : `${root}/${rel}`;
+  const names = new Set<string>();
   for await (const entry of Deno.readDir(dir)) {
     if (entry.isSymlink) continue;
     const childRel = rel === "" ? entry.name : `${rel}/${entry.name}`;
     if (entry.isDirectory) {
-      if (!SKIP_DIRS.has(entry.name)) await walkTests(root, childRel, out);
-    } else if (entry.isFile && TEST_FILE.test(entry.name)) {
-      out.push(childRel);
+      if (!SKIP_DIRS.has(entry.name)) {
+        await walkSources(root, childRel, sources, projects);
+      }
+    } else if (entry.isFile) {
+      names.add(entry.name);
+      if (SOURCE_FILE.test(entry.name)) sources.push(childRel);
     }
   }
+  const config = DENO_CONFIG_FILES.find((name) => names.has(name));
+  if (config !== undefined) projects.set(rel, config);
+  else if (names.has("deno.lock")) projects.set(rel, null);
+}
+
+/** The nearest directory of `file` (itself included) that a walk found to be a project. */
+function nearestProjectDir(
+  file: string,
+  projects: ReadonlyMap<string, string | null>,
+): string | null {
+  let dir = dirOf(file);
+  for (;;) {
+    if (projects.has(dir)) return dir;
+    if (dir === "") return null;
+    dir = dirOf(dir);
+  }
+}
+
+/** A walked project's config, read once per directory; a lock-only project has the empty config. */
+async function readWalkedConfig(
+  repoPath: string,
+  dir: string,
+  name: string | null,
+  cache: Map<string, DenoProjectConfig>,
+): Promise<DenoProjectConfig> {
+  const cached = cache.get(dir);
+  if (cached !== undefined) return cached;
+  let config: DenoProjectConfig = EMPTY_PROJECT_CONFIG;
+  if (name !== null) {
+    const rel = dir === "" ? name : `${dir}/${name}`;
+    config = parseDenoProjectConfig(
+      await Deno.readTextFile(`${repoPath}/${rel}`),
+      rel,
+    );
+  }
+  cache.set(dir, config);
+  return config;
+}
+
+/**
+ * Repo-relative Deno test files, sorted (Issue #4533). A source file is a test
+ * by the rule the runner applies to a module's tests, judged against its
+ * nearest project directory; a `.d.ts` declaration is never a test.
+ */
+async function listDenoTestFiles(repoPath: string): Promise<string[]> {
+  const sources: string[] = [];
+  const projects = new Map<string, string | null>();
+  await walkSources(repoPath, "", sources, projects);
+  const configs = new Map<string, DenoProjectConfig>();
+  const out: string[] = [];
+  for (const file of sources) {
+    if (file.endsWith(".d.ts")) continue;
+    const dir = nearestProjectDir(file, projects);
+    const project = dir === null ? null : {
+      dir,
+      config: await readWalkedConfig(
+        repoPath,
+        dir,
+        projects.get(dir) ?? null,
+        configs,
+      ),
+    };
+    if (isDenoTestIn(file, project)) out.push(file);
+  }
+  return out.sort();
 }
 
 /** Leaf directory on the work volume used when the system temp directory refuses a write (Issue #4127). */
@@ -1140,10 +1328,6 @@ export function defaultMutationRunnerSeams(
       }
     },
     makeTempDir: () => makeMutationTempDir(lookup),
-    async listTestFiles(repoPath) {
-      const out: string[] = [];
-      await walkTests(repoPath, "", out);
-      return out.sort();
-    },
+    listTestFiles: (repoPath) => listDenoTestFiles(repoPath),
   };
 }

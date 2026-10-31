@@ -25,6 +25,7 @@ import {
   resolveMutationScratchRoot,
   runMutationCheck,
 } from "../lib/mutation_runner.ts";
+import { parseDenoProjectConfig } from "../lib/deno_test_config.ts";
 import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 const REPO = "/repo";
@@ -504,6 +505,171 @@ Deno.test("runMutationCheck deno - added lines with nothing to mutate are not ap
   assert(r.kind === "not_applicable", JSON.stringify(r));
   assertStringIncludes(r.reason, "no mutable statements");
   assertEquals(f.calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// runMutationCheck - Deno tests found by project config (Issue #4533)
+// ---------------------------------------------------------------------------
+
+const NEAT_SRC = "src/NEAT/Neat.ts";
+const NEAT_CONFIG =
+  '{"test":{"include":["test/**/*.ts"]},"imports":{"@neat/":"./src/NEAT/"}}';
+/** A test with no `_test` suffix that imports the module through the `@neat/` alias. */
+const NEAT_TEST =
+  'import { f } from "@neat/Neat.ts";\nDeno.test("t", () => f(true));\n';
+
+function neatFiles(config: string = NEAT_CONFIG): Record<string, string> {
+  return {
+    [`${REPO}/deno.json`]: config,
+    [`${REPO}/${NEAT_SRC}`]: SOURCE,
+    [`${REPO}/test/Neat.ts`]: NEAT_TEST,
+    [`${REPO}/test/ci/Foo.ts`]: NEAT_TEST,
+  };
+}
+
+/** Use `tests` as the repository's test files, in place of the suffix-only fake listing. */
+function withTests(f: Fake, tests: string[]): Fake {
+  f.seams.listTestFiles = () => Promise.resolve(tests);
+  return f;
+}
+
+Deno.test("runMutationCheck deno - a test under test.include is not mutated, though it has no _test suffix", async () => {
+  const f = withTests(fake(neatFiles(), () => ok()), [
+    "test/Neat.ts",
+    "test/ci/Foo.ts",
+  ]);
+  const r = await runMutationCheck(
+    { ...input(), diff: diffFor("test/ci/Foo.ts") },
+    f.seams,
+  );
+  assertEquals(r.kind, "not_applicable", JSON.stringify(r));
+  assertEquals(f.calls.length, 0);
+});
+
+Deno.test("runMutationCheck deno - with a test and its source in the diff, only the source is mutated", async () => {
+  const f = withTests(
+    fake(neatFiles(), () => ok()),
+    ["test/Neat.ts", "test/ci/Foo.ts"],
+  );
+  const r = await runMutationCheck(
+    { ...input(), diff: diffFor("test/ci/Foo.ts") + diffFor(NEAT_SRC) },
+    f.seams,
+  );
+  assert(r.kind === "completed", JSON.stringify(r));
+  assert(r.survivors.length > 0);
+  assert(
+    r.survivors.every((s) => s.file === NEAT_SRC),
+    JSON.stringify(r.survivors),
+  );
+});
+
+Deno.test("runMutationCheck deno - a test importing through an imports-map alias is run, so no mutant is reported untested", async () => {
+  const f = withTests(
+    fake(
+      neatFiles(),
+      (_c, _a, fs) => ok(fs.get(`${REPO}/${NEAT_SRC}`) === SOURCE ? 0 : 1),
+    ),
+    ["test/Neat.ts"],
+  );
+  const r = await runMutationCheck(
+    { ...input(), diff: diffFor(NEAT_SRC) },
+    f.seams,
+  );
+  assert(r.kind === "completed", JSON.stringify(r));
+  assert(r.total > 0);
+  assertEquals(r.killed, r.total);
+  assertEquals(r.survivors, []);
+  assertEquals(f.calls[0]?.args, ["test", "--no-check", "-A", "test/Neat.ts"]);
+  assertEquals(f.calls[0]?.cwd, REPO);
+});
+
+Deno.test("runMutationCheck deno - without the imports-map entry the same alias import does not count", async () => {
+  const f = withTests(
+    fake(neatFiles(`{"test":{"include":["test/**/*.ts"]}}`), () => ok()),
+    ["test/Neat.ts"],
+  );
+  const r = await runMutationCheck(
+    { ...input(), diff: diffFor(NEAT_SRC) },
+    f.seams,
+  );
+  assert(r.kind === "completed", JSON.stringify(r));
+  assert(r.survivors.length > 0);
+  assert(
+    r.survivors.every((s) =>
+      s.description.endsWith("(no test imports this module)")
+    ),
+  );
+  assertEquals(f.calls.length, 0);
+});
+
+Deno.test("runMutationCheck deno - a nested deno.json decides its own tests, and the root include does not reach into it", async () => {
+  const files: Record<string, string> = {
+    [`${REPO}/deno.json`]: '{"test":{"include":["test/**/*.ts"]}}',
+    [`${REPO}/worker/deno/deno.json`]: '{"test":{"include":["tests/**"]}}',
+    [`${REPO}/worker/deno/lib/x.ts`]: SOURCE,
+    [`${REPO}/worker/deno/tests/x.ts`]:
+      'import { f } from "../lib/x.ts";\nDeno.test("t", () => f(true));\n',
+    [`${REPO}/worker/deno/test/y.ts`]: SOURCE,
+  };
+  const listed = ["worker/deno/tests/x.ts"];
+
+  // A file under the nested project's include is a test, so it is not mutated.
+  const t = withTests(fake(files, () => ok()), listed);
+  const tr = await runMutationCheck(
+    { ...input(), diff: diffFor("worker/deno/tests/x.ts") },
+    t.seams,
+  );
+  assertEquals(tr.kind, "not_applicable", JSON.stringify(tr));
+  assertEquals(t.calls.length, 0);
+
+  // The root's test/** does not reach worker/deno/test/y.ts, so it is source.
+  const y = withTests(fake(files, () => ok()), listed);
+  const yr = await runMutationCheck(
+    { ...input(), diff: diffFor("worker/deno/test/y.ts") },
+    y.seams,
+  );
+  assert(yr.kind === "completed", JSON.stringify(yr));
+  assert(yr.survivors.length > 0);
+  assert(
+    yr.survivors.every((s) => s.file === "worker/deno/test/y.ts"),
+    JSON.stringify(yr.survivors),
+  );
+
+  // The nested source is mutated and its test runs from the nested directory.
+  const x = withTests(
+    fake(
+      files,
+      (_c, _a, fs) =>
+        ok(fs.get(`${REPO}/worker/deno/lib/x.ts`) === SOURCE ? 0 : 1),
+    ),
+    listed,
+  );
+  const xr = await runMutationCheck(
+    { ...input(), diff: diffFor("worker/deno/lib/x.ts") },
+    x.seams,
+  );
+  assert(xr.kind === "completed", JSON.stringify(xr));
+  assert(xr.killed > 0);
+  assertEquals(x.calls[0]?.cwd, `${REPO}/worker/deno`);
+  assertEquals(x.calls[0]?.args, ["test", "--no-check", "-A", "tests/x.ts"]);
+});
+
+Deno.test("detectMutationLanguage - a changed file under a nested test.include is not a Deno source", async () => {
+  const f = fake(
+    {
+      [`${REPO}/worker/deno/deno.json`]:
+        '{"test":{"include":["test/**/*.ts"]}}',
+    },
+    () => ok(),
+  );
+  assertEquals(
+    await detectMutationLanguage(REPO, f.seams, ["worker/deno/test/a.ts"]),
+    null,
+  );
+  assertEquals(
+    await detectMutationLanguage(REPO, f.seams, ["worker/deno/lib/a.ts"]),
+    "deno",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -993,6 +1159,51 @@ Deno.test("confinement rust - a normal target directory receives the diff", asyn
   });
 });
 
+/** Write `files` (repo-relative path to text) under `repo`, creating directories. */
+async function writeRepoFiles(
+  repo: string,
+  files: Record<string, string>,
+): Promise<void> {
+  for (const [rel, text] of Object.entries(files)) {
+    const abs = `${repo}/${rel}`;
+    await Deno.mkdir(abs.slice(0, abs.lastIndexOf("/")), { recursive: true });
+    await Deno.writeTextFile(abs, text);
+  }
+}
+
+Deno.test("listTestFiles - the real seam lists suffix tests and include-matched files under their nearest project, sorted", async () => {
+  await realRepo(async (repo) => {
+    await writeRepoFiles(repo, {
+      "deno.json": JSON.stringify({
+        test: {
+          include: ["test/**/*.ts"],
+          exclude: ["test/fixtures/**"],
+        },
+        imports: { "@neat/": "./src/NEAT/" },
+      }),
+      "test/a.ts": "",
+      "test/ci/b.ts": "",
+      "test/fixtures/c.ts": "",
+      "test/types.d.ts": "",
+      "src/NEAT/Neat.ts": SOURCE,
+      "lib/m_test.ts": "",
+      "node_modules/x_test.ts": "",
+      "worker/deno/deno.json": '{"test":{"include":["tests/**"]}}',
+      "worker/deno/tests/w.ts": "",
+      "worker/deno/lib/v.ts": "",
+      // The root's test/** must not reach this: the nested project is nearest.
+      "worker/deno/test/u.ts": "",
+    });
+    const listed = await defaultMutationRunnerSeams().listTestFiles(repo);
+    assertEquals(listed, [
+      "lib/m_test.ts",
+      "test/a.ts",
+      "test/ci/b.ts",
+      "worker/deno/tests/w.ts",
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Hostile input to the specifier scan
 // ---------------------------------------------------------------------------
@@ -1014,6 +1225,61 @@ Deno.test("importsModule - hostile unclosed-specifier text scans in linear time"
   assertEquals(
     importsModule("import '../lib/m.ts'", "tests", "lib/m.ts"),
     true,
+  );
+});
+
+Deno.test("importsModule - a bare alias counts only with the project's imports map", () => {
+  const text = 'import { f } from "@neat/Neat.ts";\n';
+  const project = {
+    dir: "",
+    config: parseDenoProjectConfig(
+      '{"imports":{"@neat/":"./src/NEAT/"}}',
+      "deno.json",
+    ),
+  };
+  assertEquals(importsModule(text, "test", "src/NEAT/Neat.ts"), false);
+  assertEquals(importsModule(text, "test", "src/NEAT/Neat.ts", project), true);
+  assertEquals(
+    importsModule(text, "test", "src/NEAT/Other.ts", project),
+    false,
+  );
+  // Relative specifiers behave as before, with or without the project.
+  const rel = 'import "../lib/m.ts";';
+  assertEquals(importsModule(rel, "tests", "lib/m.ts"), true);
+  assertEquals(importsModule(rel, "tests", "lib/m.ts", project), true);
+});
+
+Deno.test("importsModule - a nested project's alias resolves against that project's directory", () => {
+  const project = {
+    dir: "worker/deno",
+    config: parseDenoProjectConfig(
+      '{"imports":{"@neat/":"./src/NEAT/"}}',
+      "worker/deno/deno.json",
+    ),
+  };
+  assertEquals(
+    importsModule(
+      'import "@neat/Neat.ts";',
+      "worker/deno/tests",
+      "worker/deno/src/NEAT/Neat.ts",
+      project,
+    ),
+    true,
+  );
+});
+
+Deno.test("importsModule - a run of quotes with a project matches nothing and returns", () => {
+  const project = {
+    dir: "",
+    config: parseDenoProjectConfig(
+      '{"imports":{"@neat/":"./src/NEAT/"}}',
+      "deno.json",
+    ),
+  };
+  const hostile = '"'.repeat(200_000) + " ";
+  assertEquals(
+    importsModule(hostile, "test", "src/NEAT/Neat.ts", project),
+    false,
   );
 });
 

@@ -195,6 +195,19 @@ be reported rather than passed. A file whose brackets the scan cannot balance ge
 three, only the kinds above. They count towards the same mutant cap, after the
 other kinds on each line.
 
+A test file is one named `*_test.*` or `*.test.*`, or one that the nearest
+`deno.json` or `deno.jsonc` above it matches under `test.include` and does not
+match under `test.exclude`. Test files are never mutated. Those two fields take
+paths relative to the config file's directory: a file path, a directory (which
+matches everything beneath it), or a glob with `*` (within one path segment),
+`?`, `**` (zero or more segments) and flat `{a,b}` braces. A `!` negation entry
+is refused with an error, not guessed at. A test imports a module when it names
+it by a relative specifier (`./`, `../`), or by a bare specifier that the same
+project's `imports` map resolves to a local path: with `"@neat/": "./src/NEAT/"`,
+`@neat/Neat.ts` is `src/NEAT/Neat.ts`. A `jsr:`, `npm:` or remote target names no
+local file, so it counts for nothing. The `importMap` files and `scopes` are not
+read, and only direct imports count.
+
 Each mutant runs only the test files that import the mutated module
 (`deno test --no-check -A <those files>`). `--no-check` is deliberate: a mutant
 such as `return undefined;` in a `: boolean` function fails type-checking, and
@@ -308,7 +321,10 @@ A Rust run killed at the budget before cargo-mutants finishes its baseline is
   `skip_mutation_check: true`.
 - **Survivor in an untested module.** No test imports the changed module, so
   every mutant survives. Add a test that imports it and asserts on the
-  behaviour.
+  behaviour. A test without a `_test` or `.test` suffix counts only when the
+  nearest `deno.json`'s `test.include` matches it, and an alias import counts
+  only when that project's `imports` map resolves it to a local path (see
+  [Built-in Deno mutations](#built-in-deno-mutations)).
 - **Budget exhausted too often.** Raise `mutation_check_budget_seconds` (up to
   3600), or narrow the PR.
 - **Diff unavailable.** Make sure the base branch is fetched so
