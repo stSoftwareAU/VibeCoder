@@ -61,7 +61,9 @@ New tests in `worker/deno/tests/egress_selfcheck_test.ts`:
 - `a 403 with no body is not denied, after EOF or when the body never arrives`
 - `a 200 is succeeded at its head, without a second read`
 - `an answer longer than the byte cap is cut at the cap`
-- `a Content-Length that is not plain digits announces no body, so a 200 stays complete at its head` (mutation check: kills the dropped all-digits test on `egress_selfcheck.ts:419`)
+- `a Content-Length that is not plain digits announces no body, so a 200 stays complete at its head`
+  (mutation check: kills the dropped all-digits test on
+  `egress_selfcheck.ts:419`)
 - `the real proxy's refusal of a host off the allowlist is denied over loopback`
 - `the real proxy's 200 to an allowlisted host is succeeded over loopback`
 
