@@ -21,7 +21,7 @@ type GitOut = { code: number; stdout: string; stderr: string };
 
 /** A fake git that answers by subcommand and records the argv it was given. */
 function fakeGit(
-  answers: Record<string, GitOut>,
+  answers: Record<string, GitOut | Error>,
   calls: string[][] = [],
 ): {
   run: (
@@ -35,6 +35,9 @@ function fakeGit(
       calls.push(args);
       const key = args[0] === "rev-list" ? "rev-list" : args[0] ?? "";
       const answer = answers[key] ?? { code: 0, stdout: "", stderr: "" };
+      if (answer instanceof Error) {
+        return Promise.resolve({ ok: false as const, error: answer });
+      }
       return Promise.resolve({ ok: true as const, value: answer });
     },
     calls,
@@ -172,6 +175,7 @@ Deno.test("rebuildBranchHistory - refuses a branch carrying someone else's commi
     ownedAuthorEmails: ["worker@example.com"],
   }, { runGitCommand: git.run });
 
+  assertEquals(result.ok, false);
   assert(!result.ok);
   assertStringIncludes(result.error.message, "nigel@stsoftware.com.au");
   // Nothing was reset, committed or pushed.
@@ -191,6 +195,7 @@ Deno.test("rebuildBranchHistory - refuses missing or unusable author ownership b
       ownedAuthorEmails,
     }, { runGitCommand: git.run });
 
+    assertEquals(result.ok, false);
     assert(!result.ok);
     assertStringIncludes(
       result.error.message,
@@ -201,27 +206,65 @@ Deno.test("rebuildBranchHistory - refuses missing or unusable author ownership b
 });
 
 Deno.test("rebuildBranchHistory - refuses when commit authors cannot be read", async () => {
-  const answers = happyAnswers();
-  answers["log"] = { code: 1, stdout: "", stderr: "fatal: log unavailable" };
-  const git = fakeGit(answers);
-  const result = await rebuildBranchHistory({
-    branchName: "fix/shared-branch",
-    baseBranch: "main",
-    commitMessage: "rebuilt",
-    ownedAuthorEmails: ["worker@example.com"],
-  }, { runGitCommand: git.run });
+  for (
+    const failure of [
+      { code: 1, stdout: "", stderr: "fatal: log unavailable" },
+      new Error("fatal: log unavailable"),
+    ]
+  ) {
+    const git = fakeGit({ ...happyAnswers(), log: failure });
+    const result = await rebuildBranchHistory({
+      branchName: "fix/shared-branch",
+      baseBranch: "main",
+      commitMessage: "rebuilt",
+      ownedAuthorEmails: ["worker@example.com"],
+    }, { runGitCommand: git.run });
 
-  assert(!result.ok);
-  assertStringIncludes(result.error.message, "could not read commit authors");
-  assertStringIncludes(result.error.message, "fatal: log unavailable");
-  assertEquals(
-    git.calls.some((c) => ["reset", "commit", "push"].includes(c[0] ?? "")),
-    false,
-  );
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "could not read commit authors");
+    assertStringIncludes(result.error.message, "fatal: log unavailable");
+    assertEquals(
+      git.calls.some((c) => ["reset", "commit", "push"].includes(c[0] ?? "")),
+      false,
+    );
+  }
+});
+
+Deno.test("rebuildBranchHistory - refuses blank author emails without discarding commit records", async () => {
+  for (
+    const stdout of [
+      "\n",
+      "\nworker@example.com\n",
+      "worker@example.com\n\n",
+      "worker@example.com\n\nworker@example.com\n",
+      "worker@example.com\n   \nworker@example.com\n",
+    ]
+  ) {
+    const git = fakeGit({
+      ...happyAnswers(),
+      log: { code: 0, stdout, stderr: "" },
+    });
+    const result = await rebuildBranchHistory({
+      branchName: "fix/shared-branch",
+      baseBranch: "main",
+      commitMessage: "rebuilt",
+      ownedAuthorEmails: ["worker@example.com"],
+    }, { runGitCommand: git.run });
+
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "blank author email");
+    assertEquals(
+      git.calls.some((c) => ["reset", "commit", "push"].includes(c[0] ?? "")),
+      false,
+    );
+  }
 });
 
 Deno.test("rebuildBranchHistory - a branch with no commits of its own means the finding is in the base", async () => {
   const answers = happyAnswers();
+  answers["log"] = { code: 0, stdout: "", stderr: "" };
   answers["rev-list"] = { code: 0, stdout: "0\n", stderr: "" };
   const git = fakeGit(answers);
   const result = await rebuildBranchHistory({

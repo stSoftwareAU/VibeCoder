@@ -5241,8 +5241,9 @@ with `--force-with-lease`. Guards, all required:
   resolved identity is trusted; commits are never treated as owned because
   they already appear on the branch.
 - Every commit being collapsed must use the resolved author email; a branch
-  carrying someone else's commit, or whose commit authors cannot be read, is
-  refused before reset, replacement commit or force-push.
+  carrying someone else's commit, a commit with a blank author email, or whose
+  commit authors cannot be read, is refused before reset, replacement commit or
+  force-push.
 - `--force-with-lease`, never `--force`, so a concurrent writer is detected
   rather than clobbered.
 - **One rebuild per underlying failure.** A finding that survives a rebuild is

@@ -226,11 +226,14 @@ export async function rebuildBranchHistory(
       ),
     };
   }
-  const foreign = authors.value.stdout
-    .split("\n")
+  // Remove only Git's final newline, never an empty-email commit record.
+  const authorEmails = authors.value.stdout === ""
+    ? []
+    : authors.value.stdout.replace(/\n$/, "").split("\n");
+  const foreign = authorEmails
     .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .filter((email) => !owned.includes(email));
+    .filter((email) => !owned.includes(email))
+    .map((email) => email || "(blank author email)");
   if (foreign.length > 0) {
     return {
       ok: false,
