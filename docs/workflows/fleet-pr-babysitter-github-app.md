@@ -50,6 +50,13 @@ needs to do the following:
 If permissions are changed later, an organisation owner may need to accept the
 new permission request for each installation before tokens receive them.
 
+## App logo
+
+Use the [purple babysitter logo](../images/fleet-pr-babysitter-logo-purple.png)
+for the App icon. The PNG is 512 × 512 pixels and under 1 MB. Its background
+is approximately **`#5F2C99`**; the generated image has slight pixel-level
+colour variation, so it is not a single flat colour.
+
 ## Coordinate with the fleet
 
 The App's comment author is `<app-slug>[bot]`. Every fleet host must recognise

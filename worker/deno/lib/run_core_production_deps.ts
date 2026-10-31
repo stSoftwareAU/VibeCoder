@@ -537,6 +537,7 @@ import {
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
+  cargoClaimDeferredRepos,
   heavyBuildAdmission,
   hostDiskLaunchStopReason,
   registerHeavyBuildDiskProbe,
@@ -1126,6 +1127,9 @@ export async function createProductionRunCoreDeps(
   // run, so the shared registry is exactly this run's history — the `gh`
   // chokepoint records closes into it and `findNextIssue` excludes them.
   const processedIssues = sharedProcessedIssues();
+  // Issue #4540: cargo repositories whose claim deferral has been logged, so
+  // the scan says so when it starts and when it ends, not every cycle.
+  const cargoClaimDeferralLogged = new Set<string>();
   // Issue #1673: dedicated TTL cache for issue-timeline label events.
   const timelineCache = new TimelineCache(
     config.timelineCacheTtlSeconds,
@@ -1728,6 +1732,7 @@ export async function createProductionRunCoreDeps(
     sleepInterval: config.sleepInterval ?? runCoreConfig.sleepInterval,
     maxConcurrentIssues: config.maxConcurrentIssues ??
       runCoreConfig.maxConcurrentIssues,
+    prScanningEnabled: config.prScanningEnabled ?? true,
     maxConsecutiveFailures: runCoreConfig.maxConsecutiveFailures,
     rateLimitBackoff: runCoreConfig.rateLimitBackoff,
     // (Issue #2055) The health gate consults the operator's ordered
@@ -4388,8 +4393,34 @@ export async function createProductionRunCoreDeps(
       // any open, fleet-authored diagnostic for the repository, so a
       // repository another host already backed off is excluded here too.
       const fastFailureBackOff = await backedOffRepos(fastFailureOptions);
-      const excludedRepos = fastFailureBackOff.size > 0
-        ? new Set([...(options?.excludeRepos ?? []), ...fastFailureBackOff])
+      // Issue #4540: a cargo repository the host cannot build yet — above
+      // the floor, short of the cargo headroom — is not claimed, so the slot
+      // goes to work that can run instead of a claim the in-flight park
+      // releases at once. Said once when it starts and once when it ends.
+      const cargoDeferred = await cargoClaimDeferredRepos(
+        config.repos ?? [],
+        (repo) => `${workDir}/${repo.split("/")[1]}`,
+      );
+      for (const [repo, reason] of cargoDeferred) {
+        if (cargoClaimDeferralLogged.has(repo)) continue;
+        cargoClaimDeferralLogged.add(repo);
+        logger.info(
+          `Not claiming ${repo} issues while the host is short of the cargo ` +
+            `build headroom; other repositories are claimed first ` +
+            `(Issue #4540): ${reason}`,
+        );
+      }
+      for (const repo of [...cargoClaimDeferralLogged]) {
+        if (cargoDeferred.has(repo)) continue;
+        cargoClaimDeferralLogged.delete(repo);
+        logger.info(
+          `${repo} is claimable again: the host has the cargo build ` +
+            `headroom (Issue #4540)`,
+        );
+      }
+      const scanExcluded = [...fastFailureBackOff, ...cargoDeferred.keys()];
+      const excludedRepos = scanExcluded.length > 0
+        ? new Set([...(options?.excludeRepos ?? []), ...scanExcluded])
         : options?.excludeRepos;
       const result = await findOldestIssue(config, {
         githubUser,

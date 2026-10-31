@@ -1862,6 +1862,7 @@ unless explicitly overridden.
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
 | Sleep interval                 | `sleep_interval`                 | `300`      | Seconds between scans. Raised from `120` to reduce the shared GraphQL quota consumed by fixed per-cycle work. Set it explicitly to scan more often.                                                                                                                                                             |
+| PR repair scans | `pr_scanning_enabled` | `true` | Set to `false` on a host using an external babysitter to disable periodic PR feedback, spelling, CI repair, branch update, conflict, CI nudge and blocking-PR stall scans. Auto-merge and issue processing remain enabled. Other hosts keep scanning unless configured separately. Restart the worker after changing the setting. |
 | Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
 | Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
 | Refinement timeout             | `refinement_timeout`             | `300`      | Timeout for issue refinement (5 minutes)                                                                                                                                                             |
@@ -3424,8 +3425,9 @@ heal at one floor and claim at another.
 
 ### Host build-cache reclaim (Issue #4498)
 
-A host below its claiming floor first reclaims regenerable build caches (stale
-`target/` directories and their kind), before any work volume is considered for
+A host short of its claiming floor plus the 25 GB cargo build headroom
+(Issue #4540) first reclaims regenerable build caches (stale `target/`
+directories and their kind), before any work volume is considered for
 recreation. The reclaim is on by default and is configured only in
 `.config.json`; there is no environment variable for it. See
 [Host build caches are reclaimed before a work volume is touched](CONTAINER.md#host-build-caches-are-reclaimed-before-a-work-volume-is-touched-issue-4498)
@@ -3435,7 +3437,7 @@ for what is removed and where.
 | --- | --- | --- |
 | `host_cache_reclaim_enabled` | `true` | `false` switches the reclaim off entirely. |
 | `host_cache_reclaim_min_age_hours` | `24` | A candidate cache must be at least this many hours old. |
-| `host_cache_reclaim_headroom_gb` | `10` | Free space, beyond the claiming floor, the reclaim aims for before it stops. |
+| `host_cache_reclaim_headroom_gb` | `10` | Free space, beyond the claiming floor, the reclaim aims for before it stops. The 25 GB cargo build headroom applies when it is larger (Issue #4540). |
 | `host_cache_reclaim_roots` | none | Extra absolute directories to search, in addition to the built-in locations. |
 
 ```json

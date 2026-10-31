@@ -6,7 +6,7 @@
  * downstream code can route the failure intelligently.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   type CiFailureCategory,
   classifyCiFailure,
@@ -271,6 +271,47 @@ Deno.test("ci_failure_classifier - outranks the code-fix signals in a gitleaks l
     ].join("\n"),
   );
   assertEquals(result.category, "history-rewrite-required");
+});
+
+Deno.test("ci_failure_classifier - a clean gitleaks 'no leaks found' line does not route to history-rewrite (Issue #4506)", () => {
+  // gitleaks prints "no leaks found" on a clean scan, so a failing lint job
+  // whose log carries it must still route to the code fix it actually needs.
+  const result = classifyCiFailure(
+    "lint",
+    [],
+    [
+      "AssertionError: expected 1 to equal 2",
+      "INF no leaks found",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+  assertEquals(result.category, "code-fix-required");
+});
+
+Deno.test("ci_failure_classifier - a passing --no-git 'leaks found: 1' proof does not route to history-rewrite (Issue #4506)", () => {
+  // A negative proof that passes can log "leaks found: 1"; that is not a
+  // finding in the commit range, so the failing lint job stays a code fix.
+  const result = classifyCiFailure(
+    "lint",
+    [],
+    [
+      "AssertionError: expected 1 to equal 2",
+      "WRN leaks found: 1",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+  assertEquals(result.category, "code-fix-required");
+});
+
+Deno.test("ci_failure_classifier - a bare 'leaks found: 1' under a security check is not history-rewrite (Issue #4506)", () => {
+  // With no range-scoped check name or fingerprint, the phrase alone is not
+  // evidence of a commit-range secret finding.
+  const result = classifyCiFailure(
+    "security",
+    [],
+    "WRN leaks found: 1",
+  );
+  assertNotEquals(result.category, "history-rewrite-required");
 });
 
 Deno.test("ci_failure_classifier - a genuinely broken scanner run stays infrastructure", () => {

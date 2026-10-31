@@ -1,10 +1,12 @@
 /**
  * reclaim-host-caches command (Issue #4498).
  *
- * Called by the launchers when the host is below its disk claiming floor. It
- * removes stale cargo `target` directories (CACHEDIR.TAG-tagged build caches)
- * from the host's scratch and source roots, oldest first, until the estimated
- * free space clears the floor plus the configured headroom.
+ * Called by the launchers when the host is short of its disk claiming floor
+ * plus the cargo build headroom (Issue #4540). It removes stale cargo
+ * `target` directories (CACHEDIR.TAG-tagged build caches) from the host's
+ * scratch and source roots, oldest first, until the estimated free space
+ * clears the floor plus the larger of the configured headroom and the cargo
+ * build headroom.
  *
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run \
@@ -46,6 +48,7 @@ import {
   readHostCacheReclaimConfig,
   reclaimHostCaches,
 } from "../lib/host_cache_reclaim.ts";
+import { EPHEMERAL_CARGO_HEADROOM_BYTES } from "../lib/heavy_build_gate.ts";
 
 /** Prefix on every line of the command's message (run.sh parses it). */
 export const HOST_CACHE_RECLAIM_TAG = "[HOST_CACHE_RECLAIM]";
@@ -225,12 +228,20 @@ export async function runReclaimHostCaches(
 
   const freeBytes = freeKb * KB;
   const floorBytes = floorKb * KB;
-  if (freeBytes >= floorBytes) {
+  const headroomBytes = headroomBytesFor(config.headroomGb);
+  // Issue #4540: short of the cargo build headroom, a cargo repository's
+  // issues are not claimed, so the reclaim acts there too, not only below
+  // the floor.
+  if (
+    freeBytes >=
+      floorBytes + Math.max(headroomBytes, EPHEMERAL_CARGO_HEADROOM_BYTES)
+  ) {
     return {
       success: true,
       message: tagged([
         `nothing to do: ${megabytes(freeBytes)} free is at or above the ` +
-        `floor of ${megabytes(floorBytes)}`,
+        `floor of ${megabytes(floorBytes)} plus the cargo build headroom of ` +
+        `${megabytes(EPHEMERAL_CARGO_HEADROOM_BYTES)}`,
       ]),
     };
   }
@@ -246,7 +257,8 @@ export async function runReclaimHostCaches(
   const result = await reclaimHostCaches({
     freeBytes,
     floorBytes,
-    headroomBytes: headroomBytesFor(config.headroomGb),
+    headroomBytes,
+    cargoHeadroomBytes: EPHEMERAL_CARGO_HEADROOM_BYTES,
     minAgeMs: minAgeMsFor(config.minAgeHours),
     roots,
     protect,
