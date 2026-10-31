@@ -48,12 +48,27 @@ Backend-only change. The tests call `classifyRunFailure` and
 - Guard mutation checks: removing the `internal_error` gate made the category
   controls fail; removing the `splitAgentNarration(...).worker` boundary made
   the formatted-agent-output checks fail.
-- `deno task test:unit tests/run_outcome_classifier_test.ts tests/run_failure_issue_test.ts tests/host_disk_inflight_4360_test.ts`
-  — passed, 83 passed and 0 failed.
+- Required item 1 mutation follow-up: added direct tests in
+  `worker/deno/tests/host_disk_protective_stop_test.ts` for park notes,
+  floor-only reasons and non-protective failures. Replacing the return at
+  `worker/deno/lib/host_disk_protective_stop.ts:7` with `undefined` made
+  `host disk protective stop - recognises park notes and floor-only reasons`
+  fail an assertion (`undefined` instead of `true`).
+- Required item 1 mutation follow-up: strengthened
+  `worker/deno/tests/host_fault_test.ts` to assert that ENOSPC, no-space and
+  read-only failures remain host-disk infrastructure failures without a
+  protective-stop phrase. Replacing `DISK_FULL_PATTERN.test(message)` at
+  `worker/deno/lib/host_fault.ts:63` with `false` made
+  `host fault - disk exhaustion without a protective stop remains an infrastructure failure`
+  fail an assertion (`false` instead of `true`). Both mutants were applied
+  separately and the production files restored; no exemptions were needed.
+- `deno task test:unit tests/host_disk_protective_stop_test.ts tests/host_fault_test.ts tests/run_outcome_classifier_test.ts tests/run_failure_issue_test.ts tests/host_disk_inflight_4360_test.ts`
+  — passed, 121 passed and 0 failed.
 - Targeted `deno fmt --check`, `deno lint`, and `deno check` on the changed
   TypeScript files — passed.
-- `deno task check:manifests` — passed, 846 passed, 0 failed, 1 ignored, after
-  adding the `top-up-4526` coverage entry for `host_disk_protective_stop.ts`.
+- `deno task check:manifests` — passed again after the mutation follow-up,
+  846 passed, 0 failed, 1 ignored; includes the `top-up-4526` coverage entry
+  for `host_disk_protective_stop.ts`.
 - The last `./quality.sh < /dev/null` run failed because the new helper lacked
   that library-sweep entry. The entry is now present and `check:manifests`
   passes. The full gate was not rerun after this correction because the three
