@@ -13,7 +13,16 @@ import { classifyLifecycleOutcome } from "../lib/lifecycle_outcomes.ts";
 import { buildAssignmentIdMarker } from "../lib/pr_body.ts";
 import type { PrRollup } from "../lib/check_runs_batch.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
-import { cleanupMergedPrBranches } from "../lib/branch_cleanup.ts";
+import {
+  cleanupMergedPrBranches,
+  defaultGhCommand,
+} from "../lib/branch_cleanup.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
+import {
+  clearPrimaryQuotaLatch,
+  latchPrimaryQuota,
+} from "../lib/primary_quota_latch.ts";
+import { defaultLogger } from "../lib/logger.ts";
 import {
   buildFailedCheckRunsLookup,
   findFailedCiChecks,
@@ -78,6 +87,146 @@ Deno.test("PR observations record gates before merge and replay without double c
     assertEquals(events.length, 5);
     assertEquals(classifyLifecycleOutcome(events).success, true);
   }));
+
+Deno.test("PR observations log quota-latch skips at info and genuine faults at error", async () => {
+  const lines: string[] = [];
+  const logger = {
+    info: (message: string) => lines.push(`info:${message}`),
+    error: (message: string) => lines.push(`error:${message}`),
+  };
+  const invoke = (message: string) =>
+    recordLifecyclePrFromGithub(
+      { workDir: "/unused", repo: "org/repo", prNumber: 10 },
+      () => Promise.reject(new Error(message)),
+      logger,
+    );
+
+  await invoke("gh command skipped: GraphQL primary quota exhausted");
+  await invoke(
+    "gh command skipped: GitHub secondary rate limit cool-down (API rate limit already exceeded)",
+  );
+  await invoke("GitHub returned an invalid PR snapshot");
+
+  assertEquals(lines[0]?.startsWith("info:"), true);
+  assertEquals(lines[1]?.startsWith("info:"), true);
+  assertEquals(lines[2]?.startsWith("error:"), true);
+  assertEquals(lines.length, 3);
+});
+
+for (const kind of ["primary", "secondary"] as const) {
+  Deno.test(`PR observations log ${kind} skips through defaultGhCommand at info`, async () => {
+    clearPrimaryQuotaLatch();
+    const info: string[] = [];
+    const errors: string[] = [];
+    let spawns = 0;
+    _setGhSpawnRunner(() => {
+      spawns++;
+      throw new Error("a latched observation must not spawn");
+    });
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      latchPrimaryQuota(now + 3600, now, kind);
+      await recordLifecyclePrFromGithub(
+        { workDir: "/unused", repo: "org/repo", prNumber: 10 },
+        defaultGhCommand,
+        {
+          info: (message) => info.push(message),
+          error: (message) => errors.push(message),
+        },
+      );
+      assertEquals(errors, []);
+      assertEquals(info.length, 1);
+      assertStringIncludes(
+        info[0]!,
+        "gh command failed (exit 1): gh command skipped:",
+      );
+      assertEquals(spawns, 0);
+    } finally {
+      _resetGhSpawnRunner();
+      clearPrimaryQuotaLatch();
+    }
+  });
+
+  Deno.test(`merge cleanup lifecycle caller logs a wrapped ${kind} skip at info`, () =>
+    withLedger(async (_path, dir) => {
+      clearPrimaryQuotaLatch();
+      const info: string[] = [];
+      const errors: string[] = [];
+      const originalInfo = defaultLogger.info;
+      const originalError = defaultLogger.error;
+      defaultLogger.info = (message) => {
+        info.push(message);
+      };
+      defaultLogger.error = (message) => {
+        errors.push(message);
+      };
+      const calls: string[][] = [];
+      _setGhSpawnRunner((args) => {
+        calls.push([...args]);
+        const now = Math.floor(Date.now() / 1000);
+        latchPrimaryQuota(now + 3600, now, kind);
+        return Promise.resolve({
+          success: true,
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify([{
+            number: 10,
+            title: "Fix",
+            headRefName: "",
+            body: snapshot.body,
+            mergedAt: terminal.mergedAt,
+          }]),
+        });
+      });
+      try {
+        const result = await cleanupMergedPrBranches(["org/repo"], "bot", {
+          workDir: dir,
+        });
+        assertEquals(result.ok, true);
+        assertEquals(errors, []);
+        assertEquals(info.length, 1);
+        assertStringIncludes(
+          info[0]!,
+          "Lifecycle PR observation skipped for org/repo#10",
+        );
+        assertEquals(calls.length, 1);
+        assertEquals(calls[0]?.slice(0, 2), ["pr", "list"]);
+      } finally {
+        defaultLogger.info = originalInfo;
+        defaultLogger.error = originalError;
+        _resetGhSpawnRunner();
+        clearPrimaryQuotaLatch();
+      }
+    }));
+}
+
+Deno.test("PR observations keep wrapped genuine faults at error even when they quote a skip", async () => {
+  const info: string[] = [];
+  const errors: string[] = [];
+  _setGhSpawnRunner(() =>
+    Promise.resolve({
+      success: false,
+      code: 1,
+      stdout: "",
+      stderr: "invalid snapshot containing gh command skipped: text",
+    })
+  );
+  try {
+    await recordLifecyclePrFromGithub(
+      { workDir: "/unused", repo: "org/repo", prNumber: 10 },
+      defaultGhCommand,
+      {
+        info: (message) => info.push(message),
+        error: (message) => errors.push(message),
+      },
+    );
+    assertEquals(info, []);
+    assertEquals(errors.length, 1);
+    assertStringIncludes(errors[0]!, "invalid snapshot");
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
 Deno.test("PR observations never infer pre-merge gates from a post-merge snapshot", () =>
   withLedger(async (path) => {
     await record(path, terminal, "2026-10-01T00:00:04.000Z");
@@ -779,3 +928,41 @@ Deno.test("quality uses its own observation time and cannot reopen an explicitly
       false,
     );
   }));
+
+Deno.test("closed-PR observation logs latch skips at info and genuine faults at error", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "closed_pr_observation_" });
+  try {
+    const run = async (message: string) => {
+      const lines: string[] = [];
+      await recordClosedLifecyclePrs(
+        { workDir: dir, repos: ["org/repo"], githubUser: "vibe-bot" },
+        () => Promise.reject(new Error(message)),
+        {
+          info: (line) => lines.push(`info:${line}`),
+          error: (line) => lines.push(`error:${line}`),
+        },
+      );
+      return lines;
+    };
+
+    for (
+      const skip of [
+        "gh command skipped: GraphQL primary quota exhausted",
+        "gh command failed (exit 1): gh command skipped: GitHub secondary rate limit cool-down (API rate limit already exceeded)",
+      ]
+    ) {
+      const lines = await run(skip);
+      assertEquals(lines.length, 1, skip);
+      assertEquals(lines[0]?.startsWith("info:"), true, skip);
+      assertStringIncludes(lines[0]!, "gh command skipped:");
+    }
+
+    // A quoted skip inside a genuine fault is still a fault.
+    const fault = await run("invalid response containing gh command skipped:");
+    assertEquals(fault.length, 1);
+    assertEquals(fault[0]?.startsWith("error:"), true);
+    assertStringIncludes(fault[0]!, "Lifecycle closed-PR observation failed");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

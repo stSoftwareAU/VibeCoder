@@ -95,9 +95,13 @@ escalation.
    `awaiting-fix` until the fleet pushes its fix. A strict one-line numeric
    version increment, bare or on a JSON/TOML `version` key, may differ between
    the old and current own diffs, including a separate workflow bump after a
-   base merge. Unchanged hunk context is allowed. Every other patch
-   must still match, and an earlier finding on that version file, or missing
-   findings for the exact sent-back head, requires a fresh review (see
+   base merge. In a file no earlier finding names, context lines a base merge
+   moved are ignored, and every added and removed line (same hunks, same
+   order) must still match. In a file an earlier finding names, or any file
+   when the findings for the exact sent-back head are missing, the context
+   must match too (hunk headers aside), since moving the PR's own line is a
+   possible fix. An earlier finding on a version file, or missing findings
+   for the exact sent-back head, requires a fresh review (see
    [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
    The skill runs on more than one host
    (a laptop as the `gh` user, an always-on host as the reviewer App), so a

@@ -804,6 +804,9 @@ ${credentialFailure}`);
     // host/DNS gaps separately (Issue #4051).
     const egress = await deps.checkEgress({ env });
     await appendRunCoreLogLine(logDir, egress.record, egress.requireRecord);
+    for (const line of egress.diagnostics ?? []) {
+      deps.log(`[run-worker] ${line}`);
+    }
     if (egress.warning) deps.logWarning(`[run-worker] ${egress.warning}`);
     if (egress.exitCode !== 0) {
       const reason = egress.marker ??

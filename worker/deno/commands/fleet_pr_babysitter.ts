@@ -2,6 +2,8 @@
 import { loadConfig } from "../lib/config.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand } from "../lib/github.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
+import { runGitArgv } from "../lib/git_timeout.ts";
 import {
   createWriteRepoAllowlistContext,
   seedWriteRepoAllowlist,
@@ -194,12 +196,14 @@ export async function recoverTemporaryClones(root: string): Promise<void> {
     if (!entry.isDirectory) continue;
     const match = /^fleet-pr-babysitter-([1-9]\d*)-[0-9a-f]+$/.exec(entry.name);
     if (!match) continue;
-    const probe = await new Deno.Command("/bin/kill", {
-      args: ["-0", match[1]!],
-      stdout: "null",
-      stderr: "null",
-    }).output();
-    if (probe.success) continue;
+    const probe = await runWithTimeout("/bin/kill", ["-0", match[1]!], {
+      timeoutMs: 10_000,
+    });
+    if (!probe.ok) throw probe.error;
+    if (probe.value.timedOut) {
+      throw new Error("Process liveness probe timed out");
+    }
+    if (probe.value.success) continue;
     try {
       await Deno.remove(`${root}/${entry.name}`, { recursive: true });
       console.log(`Removed interrupted babysitter clone ${entry.name}`);
@@ -213,7 +217,30 @@ async function run(
   args: string[],
   cwd?: string,
 ): Promise<string> {
+  // git goes through the timeout/audit chokepoint (Issue #1553).
+  if (command === "git") {
+    const git = await runGitArgv([command, ...args], { cwd });
+    if (!git.success) {
+      throw new Error(
+        `git failed: ${(git.stderr || git.stdout).trim()}`,
+      );
+    }
+    return git.stdout;
+  }
+  // gh goes through its chokepoint too (Issue #3703).
   if (command === "gh") return (await runGhCommand(args)).trim();
+  if (command === "git") {
+    const result = await runGitCommand(args, { cwd, timeoutSeconds: 30 * 60 });
+    if (!result.ok) throw result.error;
+    if (result.value.code !== 0) {
+      throw new Error(
+        `git failed (${result.value.code}): ${
+          (result.value.stderr || result.value.stdout).trim()
+        }`,
+      );
+    }
+    return result.value.stdout.trim();
+  }
   const outcome = await runWithTimeout(command, args, {
     cwd,
     timeoutMs: 30 * 60_000,
@@ -428,15 +455,15 @@ async function fix(
     await run("git", buildFetchTrackingRefArgs("origin", pr.baseRefName), dir);
     await run("git", ["checkout", "-b", "babysitter", pr.headRefOid], dir);
     if (pr.mergeable === "CONFLICTING") {
-      const merge = await runWithTimeout("git", [
+      const merge = await runGitCommand([
         "merge",
         "--no-commit",
         "--no-ff",
         `refs/remotes/origin/${pr.baseRefName}`,
-      ], { cwd: dir, timeoutMs: 30 * 60_000 });
+      ], { cwd: dir, timeoutSeconds: 30 * 60 });
       if (!merge.ok) throw merge.error;
       if (
-        !merge.value.success &&
+        merge.value.code !== 0 &&
         !(await run("git", ["diff", "--name-only", "--diff-filter=U"], dir))
       ) {
         throw new Error(

@@ -406,6 +406,47 @@ function normalisePatch(patch: string): string {
   return patch.replace(/^@@ [^@]* @@.*$/gm, "@@");
 }
 
+// A base merge can move the context lines around this PR's own edit and shift
+// its hunk headers, so only the changed lines are kept: the -/+ lines of each
+// hunk in order, and a `\ No newline` marker only when it follows a changed
+// line. An empty hunk still counts. Lines before the first header form an
+// implicit first hunk, created when the first -/+ line appears.
+function changedLinesByHunk(patch: string): string[][] {
+  const hunks: string[][] = [];
+  let hunk: string[] | null = null;
+  let afterChange = false;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) {
+      hunk = [];
+      hunks.push(hunk);
+      afterChange = false;
+    } else if (line.startsWith("-") || line.startsWith("+")) {
+      if (hunk === null) {
+        hunk = [];
+        hunks.push(hunk);
+      }
+      hunk.push(line);
+      afterChange = true;
+    } else {
+      if (line.startsWith("\\") && afterChange) hunk!.push(line);
+      afterChange = false;
+    }
+  }
+  return hunks;
+}
+
+// Whether two patches change the same lines: the same number of hunks, with
+// identical changed lines hunk by hunk in the same order.
+function sameChangedLines(a: string, b: string): boolean {
+  const hunksA = changedLinesByHunk(a);
+  const hunksB = changedLinesByHunk(b);
+  return hunksA.length === hunksB.length &&
+    hunksA.every((lines, i) =>
+      lines.length === hunksB[i]!.length &&
+      lines.every((line, j) => line === hunksB[i]![j])
+    );
+}
+
 // One complete hunk replacing only a bare version or a JSON/TOML version key.
 // Context counts towards both ranges; truncated or additional edits fail closed.
 // Compare two-to-four numeric components exactly, without Number rounding.
@@ -453,9 +494,15 @@ function isVersionIncrement(patch: string): boolean {
 
 // Whether commits since `since` leave this PR's own diff (its change against
 // the base) unchanged, apart from a strict version increment, so the review
-// it got at `since` still stands. Returns false (= give the PR a fresh
-// review) as soon as any check fails to confirm that. A version exception
-// requires known earlier findings, none of which names the changed file.
+// it got at `since` still stands. In a file no earlier finding names, context
+// lines that a base merge moved are ignored, while every added or removed
+// line, the hunk count and the hunk order must still match (Issue #4476). In a
+// file an earlier finding names, or any file when the findings are unknown,
+// the fix may be a move of the PR's own line relative to its context, so the
+// whole patch must match apart from hunk headers (PR #4525 review). Returns
+// false (= give the PR a fresh review) as soon as any check fails to confirm
+// that. A version exception requires known earlier findings, none of which
+// names the changed file.
 //
 // SIMPLE-ON-PURPOSE: the three compare calls below are repeated each pass
 // while the PR awaits its fix, fine for a handful of sent-back PRs — upgrade
@@ -509,12 +556,18 @@ export async function ownDiffUnchanged(
         continue;
       }
       if (fa.status !== fb.status) return false;
-      if (normalisePatch(fa.patch!) === normalisePatch(fb.patch!)) continue;
+      const findingNamesFile = findings === undefined ||
+        findings.some((f) =>
+          f.file === fa.filename || f.file.endsWith(`/${fa.filename}`)
+        );
+      if (
+        findingNamesFile
+          ? normalisePatch(fa.patch!) === normalisePatch(fb.patch!)
+          : sameChangedLines(fa.patch!, fb.patch!)
+      ) continue;
       if (
         fa.status !== "modified" ||
-        findings?.some((f) =>
-            f.file === fa.filename || f.file.endsWith(`/${fa.filename}`)
-          ) !== false ||
+        findingNamesFile ||
         !isVersionIncrement(fa.patch!) ||
         !isVersionIncrement(fb.patch!)
       ) {

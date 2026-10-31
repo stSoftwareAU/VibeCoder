@@ -1484,7 +1484,8 @@ export interface BranchPR {
  *
  * Returns an empty array on parse failure rather than throwing so
  * callers can apply fail-safe behaviour matching the existing inline
- * implementations.
+ * implementations. `throwOnError` lets a sweep handle request failures
+ * itself, including stopping immediately for a rate-limit cool-down.
  */
 export async function fetchPRsByBranch(
   repo: string,
@@ -1492,6 +1493,7 @@ export async function fetchPRsByBranch(
   state: PRStateFilter,
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  options: { throwOnError?: boolean } = {},
 ): Promise<OpenPR[]> {
   const cacheKey = `prs_branch_${state}_${branchName}`;
 
@@ -1520,7 +1522,8 @@ export async function fetchPRsByBranch(
       "--limit",
       "50",
     ]);
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   }
 

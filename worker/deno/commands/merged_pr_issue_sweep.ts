@@ -17,6 +17,12 @@
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { resolveFleetPrAuthorSet } from "../lib/fleet_authors.ts";
 import { runGhCommandRaw } from "../lib/github.ts";
+import { spawnGh } from "../lib/gh_spawn.ts";
+import {
+  isPrimaryQuotaLatched,
+  primaryQuotaLatchedUntil,
+  primaryQuotaSkipMessage,
+} from "../lib/primary_quota_latch.ts";
 import { preflightGitHubRateLimit } from "../lib/github_rate_limit_preflight.ts";
 import {
   probeGraphqlQuota,
@@ -73,10 +79,8 @@ export const mergedPrIssueSweepCommand: Command = {
         ? mergedIssueSweepWatermarkPath(workDir)
         : undefined,
     }, {
-      // `runGhCommandRaw`, not the bare spawn: its catch notes the first
-      // primary-quota refusal, which latches the process and writes the
-      // shared signal, so every later step this cycle skips instead of
-      // spending (Issue #42, #1477).
+      // Share the chokepoint's quota and secondary-limit latch and signal,
+      // so later steps skip once a refusal is observed (Issue #42, #1477).
       ghCommandFn: (ghArgs) => runGhCommandRaw(ghArgs),
       logger,
       // The same directories the run's discovery passes read and fill
@@ -90,12 +94,14 @@ export const mergedPrIssueSweepCommand: Command = {
       // Once per sweep, the same gate the main loop runs: the shared signal
       // first, then the cached quota reading, then one free probe.
       preflightFn: workDir
-        ? () =>
-          preflightGitHubRateLimit({
+        ? async () => {
+          const preflight = await preflightGitHubRateLimit({
             workDir,
             nowSeconds: () => Math.floor(Date.now() / 1000),
             runGhRateLimit: async () => {
-              const probe = await probeGraphqlQuota();
+              const probe = await probeGraphqlQuota((probeArgs) =>
+                spawnGh(probeArgs, { bypassQuotaLatch: true, workDir })
+              );
               if (probe.ok) return toRateLimitDocument(probe.value);
               logger.warn(
                 `GraphQL quota probe failed — falling back to gh api rate_limit: ${probe.error.message}`,
@@ -103,7 +109,21 @@ export const mergedPrIssueSweepCommand: Command = {
               return await runGhCommandRaw(["api", "rate_limit"]);
             },
             log: (m) => logger.info(m),
-          })
+          });
+          // A healthy REST fallback measures the hourly quota; it cannot
+          // clear a secondary cool-down discovered by the GraphQL probe.
+          return isPrimaryQuotaLatched()
+            ? {
+              rateLimited: true,
+              remainingSeconds: Math.max(
+                0,
+                (primaryQuotaLatchedUntil() ?? 0) -
+                  Math.floor(Date.now() / 1000),
+              ),
+              message: primaryQuotaSkipMessage(),
+            }
+            : preflight;
+        }
         : undefined,
     });
 

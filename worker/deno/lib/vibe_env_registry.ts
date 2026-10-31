@@ -467,6 +467,10 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the per-host state directory the launcher creates",
   },
+  VIBE_GITHUB_QUOTA_WORK_DIR: {
+    role: "launch_plumbing",
+    note: "the babysitter's private GitHub quota coordination directory",
+  },
   VIBE_SUPERVISOR_RECORDS_OUTCOME: {
     role: "launch_plumbing",
     note:

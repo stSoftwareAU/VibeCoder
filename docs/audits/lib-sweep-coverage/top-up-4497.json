@@ -1,0 +1,12 @@
+{
+  "issue": 4497,
+  "chunk": "top-up-4497",
+  "title": "top-up: fresh CI request after a refused workflow re-run",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/pull/4558",
+  "definition": "The empty-commit fallback introduced by PR #4558 for runs GitHub refuses as not re-runnable; review its Git Data API calls, fast-forward-only ref update, once-per-head marker and ruleset handling.",
+  "status": "claimed",
+  "sweptAt": "a19f390bd104ccb8fb8cd39937a6b64f3718f9e4",
+  "paths": [
+    "worker/deno/lib/ci_rerun_fresh_ci.ts"
+  ]
+}
