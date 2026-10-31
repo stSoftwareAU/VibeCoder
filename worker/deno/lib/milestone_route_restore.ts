@@ -178,11 +178,13 @@ export interface RouteRestoreOptions {
   landChildPrNumber?: number;
 }
 
-interface RawRollupPr {
+/** One pull request from `gh pr list --json`. Every field is unchecked. */
+export interface RawRollupPr {
   number?: unknown;
   state?: unknown;
   baseRefName?: unknown;
   mergedAt?: unknown;
+  headRefOid?: unknown;
 }
 
 function errorText(err: unknown): string {
@@ -205,7 +207,7 @@ async function listHeadPullRequests(
     "--state",
     "all",
     "--json",
-    "number,state,baseRefName,mergedAt",
+    "number,state,baseRefName,mergedAt,headRefOid",
     "--limit",
     "50",
   ]);
@@ -229,6 +231,89 @@ function mergedRollup(prs: readonly RawRollupPr[]): RawRollupPr | undefined {
     typeof pr.state === "string" && pr.state.toUpperCase() === "MERGED" &&
     typeof pr.number === "number"
   );
+}
+
+/**
+ * Whether a rollup from the milestone branch has already merged into the
+ * default branch while the branch head has not moved since (Issue #4514).
+ *
+ * A squash merge does not move the merge base, so the three-dot compare
+ * `compare/{default}...{milestone}` still lists everything the squash landed.
+ * It cannot say whether the rollup already carried the branch. An unchanged
+ * head since a merged rollup is proof nothing is left to carry.
+ *
+ * A merged pull request with a missing or non-string `headRefOid` never
+ * matches, so the net change is unknown and the caller falls back to the
+ * compare alone.
+ *
+ * Fails loud: a read or validation problem is an error Result, never a quiet
+ * `false`. Pass `prs` to reuse a list already fetched for the branch.
+ */
+export async function isMilestoneHeadAlreadyMerged(options: {
+  repo: string;
+  milestoneBranch: string;
+  defaultBranch: string;
+  ghCommandFn: GhCommandFn;
+  prs?: readonly RawRollupPr[];
+}): Promise<Result<boolean>> {
+  const { repo, milestoneBranch, defaultBranch, ghCommandFn } = options;
+  if (
+    !REPO_PATTERN.test(repo) || !BRANCH_PATTERN.test(milestoneBranch) ||
+    !BRANCH_PATTERN.test(defaultBranch)
+  ) {
+    return {
+      ok: false,
+      error: new Error("repo or branch name failed the argument allowlist"),
+    };
+  }
+  let head: string;
+  try {
+    head = (await ghCommandFn([
+      "api",
+      `repos/${repo}/branches/${milestoneBranch}`,
+      "--jq",
+      ".commit.sha",
+    ])).trim();
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `could not read the head of ${milestoneBranch}: ${errorText(err)}`,
+      ),
+    };
+  }
+  if (!/^[0-9a-f]{40}$/i.test(head)) {
+    return {
+      ok: false,
+      error: new Error(
+        `head of ${milestoneBranch} is not a 40-hex commit sha: ${
+          JSON.stringify(head)
+        }`,
+      ),
+    };
+  }
+  let prs: readonly RawRollupPr[];
+  if (options.prs) {
+    prs = options.prs;
+  } else {
+    try {
+      prs = await listHeadPullRequests(repo, milestoneBranch, ghCommandFn);
+    } catch (err) {
+      return {
+        ok: false,
+        error: new Error(
+          `could not list rollup PRs for ${milestoneBranch}: ${errorText(err)}`,
+        ),
+      };
+    }
+  }
+  const matched = prs.some((pr) =>
+    typeof pr.state === "string" && pr.state.toUpperCase() === "MERGED" &&
+    pr.baseRefName === defaultBranch &&
+    typeof pr.headRefOid === "string" &&
+    pr.headRefOid.toLowerCase() === head.toLowerCase()
+  );
+  return { ok: true, value: matched };
 }
 
 interface MilestoneMatch {
@@ -279,11 +364,15 @@ export function buildRestoredRollupBody(
   milestoneBranch: string,
   defaultBranch: string,
   aheadBy: number,
+  hasOpenWork: boolean,
 ): string {
+  const situation = hasOpenWork
+    ? `has already merged, and the milestone still has open work.`
+    : `has already merged, and \`${milestoneBranch}\` has changes \`${defaultBranch}\` does not have.`;
   return `${RESTORED_ROLLUP_MARKER}
 ## Fresh milestone rollup
 
-The previous rollup of \`${milestoneBranch}\` into \`${defaultBranch}\` has already merged, and the milestone still has open work. \`${milestoneBranch}\` is ${aheadBy} commit(s) ahead of \`${defaultBranch}\`. This pull request is that branch's route to \`${defaultBranch}\`.
+The previous rollup of \`${milestoneBranch}\` into \`${defaultBranch}\` ${situation} \`${milestoneBranch}\` is ${aheadBy} commit(s) ahead of \`${defaultBranch}\`. This pull request is that branch's route to \`${defaultBranch}\`.
 
 Child pull requests stay based on \`${milestoneBranch}\` and merge there. This pull request carries that work to \`${defaultBranch}\` once the milestone's review is done.
 
@@ -297,12 +386,14 @@ async function openFreshRollup(
   milestoneBranch: string,
   defaultBranch: string,
   aheadBy: number,
+  hasOpenWork: boolean,
   ghCommandFn: GhCommandFn,
 ): Promise<{ ok: true; prUrl: string } | { ok: false; reason: string }> {
   const body = buildRestoredRollupBody(
     milestoneBranch,
     defaultBranch,
     aheadBy,
+    hasOpenWork,
   );
   try {
     const prUrl = (await ghCommandFn([
@@ -420,6 +511,7 @@ export async function openRollupForLandedChild(
     milestoneBranch,
     defaultBranch,
     compare.value.aheadBy,
+    false,
     ghCommandFn,
   );
   if (!opened.ok) {
@@ -617,9 +709,32 @@ export async function restoreClosedMilestoneRoute(
     return { action: "failed", reason: compare.error.message };
   }
   const { aheadBy, fileCount } = compare.value;
+  if (children.value.length === 0 && aheadBy > 0) {
+    // Issue #4514: a squash-merged rollup leaves the three-dot compare
+    // non-empty, so ask whether the branch head is the one that merged.
+    const headMerged = await isMilestoneHeadAlreadyMerged({
+      repo,
+      milestoneBranch,
+      defaultBranch,
+      ghCommandFn,
+      prs,
+    });
+    if (!headMerged.ok) {
+      return { action: "failed", reason: headMerged.error.message };
+    }
+    if (headMerged.value) {
+      return {
+        action: "left-closed",
+        milestoneBranch,
+        detail:
+          `rollup PR #${merged.number} has merged and ${milestoneBranch} has not moved since, so there is nothing new to carry to ${defaultBranch}`,
+      };
+    }
+  }
   // No commits to carry. Open work waits; a milestone with nothing open
-  // stays closed. An empty file list with commits still ahead is a squash
-  // of work the default branch already has — not a new rollup.
+  // stays closed. An empty file list with commits still ahead is work the
+  // default branch already has, not a new rollup. A squash leaves the list
+  // non-empty, so the head check above is what catches that (Issue #4514).
   if (aheadBy <= 0 || (children.value.length === 0 && fileCount === 0)) {
     if (children.value.length === 0) {
       return {
@@ -653,6 +768,7 @@ export async function restoreClosedMilestoneRoute(
     milestoneBranch,
     defaultBranch,
     aheadBy,
+    children.value.length > 0,
     ghCommandFn,
   );
   if (!opened.ok) {
