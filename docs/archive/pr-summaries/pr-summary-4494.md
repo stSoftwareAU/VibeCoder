@@ -139,8 +139,8 @@ sequenceDiagram
 - All five reported condition-negation mutants were applied individually and
   killed by `worker/deno/tests/branch_cleanup_test.ts`: `branch_cleanup.ts:714`
   (cached merged prefetch), `:740` (safety query), `:777` (cached merged branch
-  lookup, now `:778`), `:809` (uncached merged branch lookup, now `:810`) and
-  `:834` (deletion, now `:835`). No exemptions. Nine stage-specific cases cover
+  lookup, now `:778`), `:809` (uncached merged branch lookup, now `:812`) and
+  `:834` (deletion, now `:837`). No exemptions. Nine stage-specific cases cover
   cached and uncached safety queries, merged lookups and deletion, plus cached
   prefetch; earlier requests succeed before the injected refusal. The initial
   REST branch-list test now uses a REST secondary-limit response instead of
