@@ -74,26 +74,29 @@ the other gate, which keeps the suffix rule, and is unchanged.
 
 ## Test Plan
 
-- New `worker/deno/tests/deno_test_config_test.ts` (26 tests): parsing (JSONC,
-  empty, invalid JSON, wrong types, `!` entries, non-local import targets),
+- New `worker/deno/tests/deno_test_config_test.ts` (29 tests): parsing (JSONC,
+  empty, invalid JSON with the parser's own message, null top level/`test`/`imports`, wrong types, `!` entries, non-local import targets),
   `isDenoTestPath` (suffix, `test/**/*.ts`, exclude wins, directory entry, `./`
-  prefix, braces, `?`, suffix not un-tested by exclude, a hostile `**` pattern),
+  prefix, braces, `?`, suffix not un-tested by exclude, a hostile `**` pattern, brace
+  alternatives beyond the expansion cap),
   and `resolveImportSpecifier` (prefix, exact, longest key, key without `/`,
   `jsr:` target, nested config directory, unmapped, above the root).
-- Added to `worker/deno/tests/mutation_runner_test.ts` (nine tests, with the
+- Added to `worker/deno/tests/mutation_runner_test.ts` (twelve tests, with the
   NEAT-AI-shaped fixture of unsuffixed tests under `test/` and `@neat/`
   aliases): a test under `test.include` is not mutated; with a test and its
   source in the diff only the source is mutated; an aliased import runs its test
   and leaves no untested survivor, with a control that omits the map entry; a
-  nested project decides its own tests; an invalid `deno.json` is an `error`;
+  nested project decides its own tests; an invalid `deno.json` in the changed module's project is an `error`;
   `detectMutationLanguage` ignores a changed included file; the real
-  `listTestFiles` seam on a temporary repository; `importsModule` with and
+  `listTestFiles` seam on a temporary repository, and with a valid project
+  beside an unrelated directory holding an invalid (and one holding a negated)
+  `deno.json`, which falls back to the suffix rule instead of throwing; `importsModule` with and
   without a project, including a nested one.
 - No assertion removed from any existing test; existing tests needed no fixture
   change.
 - Reproduction: with `mutation_runner.ts` restored to `origin/main` and the new
-  tests kept, 9 of the 78 tests in `mutation_runner_test.ts` fail, one per
-  behaviour above; with the fix all 78 pass.
+  tests kept, 10 of the 79 tests in `mutation_runner_test.ts` fail (run with `--no-check`,
+  as the base lacks the new exports); with the fix all 79 pass.
 - Red checks, each applied by hand and restored: skipping the config test in
   `isDenoSource` (4 red); deleting the bare-specifier loop in `importsModule` (3
   red); passing an empty project to `findImportingTests` (1 red); using the
@@ -106,6 +109,21 @@ the other gate, which keeps the suffix rule, and is unchanged.
   and swallowing a parse error in `loadProjectConfig`
   (`runMutationCheck deno - an invalid deno.json fails the check loud, not as an
   empty config`).
+- Verifier finding (the real `listTestFiles` threw on any invalid `deno.json` in
+  the repo, which would also have failed the coverage-carryover gate that
+  shares the seam): `listDenoTestFiles` now treats an unreadable or unparsable
+  config as the empty config (suffix rule) for that project. The changed
+  module's own project still fails loud through `loadProjectConfig`. Pinned by
+  the unrelated-broken-config `listTestFiles` test, which is red when the
+  fallback is replaced by a throw. `defaultMutationRunnerSeams` callers in
+  `issue_worker_wiring.ts` (mutation check and carryover gate) get the seam, so
+  they no longer error on an unrelated broken config.
+- Mutation-check survivors in `deno_test_config.ts`: line 48 (`value !== null`)
+  was a redundant operand, removed by returning `null` from the `typeof` guard;
+  line 54 (`causeOf`) is pinned by an exact-message test against the parser's
+  own error; line 159 (the expansion cap) had a redundant trailing `slice`,
+  removed, so the loop condition alone enforces the cap and the cap test
+  fails without it.
 - Callers of `importsModule` and `listTestFiles` checked: `findImportingTests`
   and `runDeno` pass the project; `coverage_carryover_runner.ts` calls
   `importsModule` with three arguments, so behaviour there is the relative-only

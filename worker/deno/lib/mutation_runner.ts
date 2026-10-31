@@ -996,7 +996,10 @@ function nearestProjectDir(
   }
 }
 
-/** A walked project's config, read once per directory; a lock-only project has the empty config. */
+/**
+ * A walked project's config, read once per directory. A lock-only project, or
+ * one whose config cannot be read or parsed, has the empty config (suffix rule).
+ */
 async function readWalkedConfig(
   repoPath: string,
   dir: string,
@@ -1008,10 +1011,17 @@ async function readWalkedConfig(
   let config: DenoProjectConfig = EMPTY_PROJECT_CONFIG;
   if (name !== null) {
     const rel = dir === "" ? name : `${dir}/${name}`;
-    config = parseDenoProjectConfig(
-      await Deno.readTextFile(`${repoPath}/${rel}`),
-      rel,
-    );
+    try {
+      config = parseDenoProjectConfig(
+        await Deno.readTextFile(`${repoPath}/${rel}`),
+        rel,
+      );
+    } catch {
+      // A broken config in a project the caller never asked about must not
+      // fail the whole listing; that project falls back to the suffix rule.
+      // The changed module's own project still fails loud in loadProjectConfig.
+      config = EMPTY_PROJECT_CONFIG;
+    }
   }
   cache.set(dir, config);
   return config;

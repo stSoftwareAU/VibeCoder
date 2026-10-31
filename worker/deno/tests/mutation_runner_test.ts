@@ -1217,6 +1217,28 @@ Deno.test("listTestFiles - the real seam lists suffix tests and include-matched 
   });
 });
 
+Deno.test("listTestFiles - an invalid deno.json in an unrelated project falls back to the suffix rule", async () => {
+  await realRepo(async (repo) => {
+    await writeRepoFiles(repo, {
+      "deno.json": '{"test":{"include":["test/**/*.ts"]}}',
+      "test/a.ts": "",
+      "lib/m_test.ts": "",
+      "fixtures/bad/deno.json": "{ not json",
+      "fixtures/bad/x_test.ts": "",
+      "fixtures/bad/y.ts": "",
+      "fixtures/neg/deno.json": '{"test":{"include":["!a.ts"]}}',
+      "fixtures/neg/z.test.ts": "",
+    });
+    const listed = await defaultMutationRunnerSeams().listTestFiles(repo);
+    assertEquals(listed, [
+      "fixtures/bad/x_test.ts",
+      "fixtures/neg/z.test.ts",
+      "lib/m_test.ts",
+      "test/a.ts",
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Hostile input to the specifier scan
 // ---------------------------------------------------------------------------

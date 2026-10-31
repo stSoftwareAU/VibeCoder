@@ -45,9 +45,8 @@ export const EMPTY_PROJECT_CONFIG: DenoProjectConfig = {
 const MAX_BRACE_EXPANSIONS = 64;
 
 function asObject(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown> | null;
 }
 
 function causeOf(err: unknown): string {
@@ -172,7 +171,7 @@ function expandBraces(pattern: string): string[] {
       pending.push(`${head}${alternatives[i] ?? ""}${tail}`);
     }
   }
-  return out.slice(0, MAX_BRACE_EXPANSIONS);
+  return out;
 }
 
 /**

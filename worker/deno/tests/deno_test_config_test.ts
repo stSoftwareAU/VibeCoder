@@ -50,6 +50,39 @@ Deno.test("parseDenoProjectConfig - invalid JSON throws naming the source", () =
   );
 });
 
+Deno.test("parseDenoProjectConfig - an invalid JSON error carries the parser's own message", () => {
+  let cause = "";
+  try {
+    JSON.parse("{");
+  } catch (err) {
+    cause = (err as Error).message;
+  }
+  assert(cause !== "");
+  const err = assertThrows(
+    () => parseDenoProjectConfig("{", "deno.json"),
+    Error,
+  );
+  assertEquals(err.message, `deno.json: not valid JSON or JSONC: ${cause}`);
+});
+
+Deno.test("parseDenoProjectConfig - a null top level, test or imports is rejected", () => {
+  assertThrows(
+    () => parseDenoProjectConfig("null", "deno.json"),
+    Error,
+    "the top level must be a JSON object",
+  );
+  assertThrows(
+    () => parseDenoProjectConfig('{"test":null}', "deno.json"),
+    Error,
+    "test must be an object",
+  );
+  assertThrows(
+    () => parseDenoProjectConfig('{"imports":null}', "deno.json"),
+    Error,
+    "imports must be an object",
+  );
+});
+
 Deno.test("parseDenoProjectConfig - a non-object top level throws naming the source", () => {
   for (const text of ["[]", '"x"', "null", "1"]) {
     assertThrows(() => parse(text), Error, "deno.json");
@@ -147,6 +180,17 @@ Deno.test("isDenoTestPath - braces expand, and each alternative matches", () => 
   assert(isDenoTestPath("test/a.ts", c));
   assert(isDenoTestPath("spec/ci/b.tsx", c));
   assertEquals(isDenoTestPath("lib/a.ts", c), false);
+});
+
+Deno.test("isDenoTestPath - brace alternatives beyond the expansion cap are ignored", () => {
+  // Seven {a,b} groups expand to 128 patterns; only the first 64 are kept, and
+  // they are the ones whose first group is "a".
+  const c = parse(
+    '{"test":{"include":["{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}.ts"]}}',
+  );
+  assert(isDenoTestPath("aaaaaaa.ts", c));
+  assert(isDenoTestPath("abbbbbb.ts", c));
+  assertEquals(isDenoTestPath("baaaaaa.ts", c), false);
 });
 
 Deno.test("isDenoTestPath - a ? matches one character within a segment", () => {
