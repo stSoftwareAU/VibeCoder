@@ -626,7 +626,8 @@ export async function runExternalOrchestration(
           ),
         };
       }
-      if (attempt + 1 < attempts) {
+      // A call marked non-retryable is ending the run, so a retry cannot help (Issue #4584).
+      if (attempt + 1 < attempts && result.retryable !== false) {
         if (phase === "execute") move("dispatched");
         continue;
       }
@@ -635,12 +636,13 @@ export async function runExternalOrchestration(
           ok: false,
           outcome: await finish(
             "timed_out",
-            `${role} call timed out after ${attempts} attempt(s): ${safe}`,
+            `${role} call timed out after ${attempt + 1} attempt(s): ${safe}`,
           ),
         };
       }
-      const message =
-        `${role} call failed after ${attempts} attempt(s): ${safe}`;
+      const message = `${role} call failed after ${
+        attempt + 1
+      } attempt(s): ${safe}`;
       return {
         ok: false,
         outcome: await finish("refused", message, {

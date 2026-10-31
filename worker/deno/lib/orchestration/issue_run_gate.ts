@@ -161,6 +161,13 @@ function toAgentCallResult(result: ClaudeRunResult): AgentCallResult {
   ) {
     return { ok: false, kind: "quota", message };
   }
+  // A scheduled release or the finish deadline ends the run, so a retry cannot help (Issue #4584).
+  if (
+    result.timedOut === true &&
+    (result.scheduledRelease !== undefined || result.finishDeadline === true)
+  ) {
+    return { ok: false, kind: "timeout", message, retryable: false };
+  }
   if (category === "timeout" || result.exitCode === 124) {
     return { ok: false, kind: "timeout", message };
   }
@@ -172,11 +179,14 @@ function toAgentCallResult(result: ClaudeRunResult): AgentCallResult {
 
 /**
  * Runs one issue through the external orchestrator and returns the manager's
- * final result when the run is done. Any other outcome is an error.
+ * final result when the run is done. A timed-out run whose last call the
+ * runner timed out returns that runner result, so the phase's timeout handling
+ * applies (Issue #4584). Any other outcome is an error.
  *
  * @param input - The issue, its brief, the Claude options and the settings.
  * @param deps - The runner and the optional state dir, env and clock.
- * @returns The last manager result on `done`, otherwise an error.
+ * @returns The last manager result on `done`, the runner's timed-out result on
+ *   a timed-out run, otherwise an error.
  */
 export async function runOrchestratedIssueRun(
   input: ExternalIssueRunInput,
@@ -245,7 +255,9 @@ export async function runOrchestratedIssueRun(
   };
 
   let lastManagerResult: ClaudeRunResult | undefined;
+  let lastTimedOut: ClaudeRunResult | undefined;
   const invoke: InvokeAgent = async (call) => {
+    lastTimedOut = undefined;
     // Codex cannot deny the editing tools, so a read-only Codex role is held
     // to it here: whatever the call changes in the checkout is put back
     // (Issue #4356). Unrecordable means unenforceable, so the call is refused.
@@ -287,6 +299,7 @@ export async function runOrchestratedIssueRun(
       return { ok: false, kind: "error", message: run.error.message };
     }
     const result = run.value;
+    if (result.timedOut === true) lastTimedOut = result;
     if (call.envelope.role !== "executor") lastManagerResult = result;
     return toAgentCallResult(result);
   };
@@ -321,6 +334,11 @@ export async function runOrchestratedIssueRun(
     log: deps.log,
   });
 
+  // The phase's timeout and scheduled-release handling must see the runner's
+  // own result (Issue #4584), not an internal_error built from the refusal.
+  if (outcome.state === "timed_out" && lastTimedOut) {
+    return { ok: true, value: lastTimedOut };
+  }
   if (outcome.state === "done" && lastManagerResult) {
     return { ok: true, value: lastManagerResult };
   }
