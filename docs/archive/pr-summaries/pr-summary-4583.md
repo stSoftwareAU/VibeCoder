@@ -45,6 +45,9 @@ Backend-only change; verified by tests, no UI.
   (`work-on` only) asserts the reproduction finding is absent. Passed.
 - Red check: removing both verdicts from `lateSummaryVerdicts` fails both tests;
   removing only `reproductionVerdict` fails the first test.
+- Follow-up coverage exercises a review-first bug summary and a reproduction-only
+  summary, checking each applicable finding appears once in the in-session note
+  and PR comment. The focused completion-phase suite passed: 4 tests, 0 failed.
 - Related completion-phase suites (`completion_phase_advisory_gates_4234`,
   `summary_rule_retry`, `pre_pr_verifier_3395`, closure, reproduction,
   placeholder, unmet criteria and others): 109 passed, 0 failed. No existing
