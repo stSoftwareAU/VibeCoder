@@ -552,7 +552,7 @@ export async function probeProxyConnectDetailed(
   }
 }
 
-/** Send one CONNECT and classify the status line. Wraps {@link probeProxyConnectDetailed}. */
+/** Send one CONNECT and classify the whole answer (head and body). Wraps {@link probeProxyConnectDetailed}. */
 export async function probeProxyConnect(
   proxyUrl: string,
   host: string,
