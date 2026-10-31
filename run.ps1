@@ -1370,9 +1370,11 @@ if ($initialised.ExitCode -ne 0) {
 # cache reclaim (Issue #4498) is the counterpart that does exist here, below.
 
 # Host build-cache reclaim (Issue #4498). Mirrors run.sh's reclaim_host_caches:
-# a host below its claiming floor - the larger of ClaimFloorGb and
-# ClaimFloorPercent of the drive - first asks reclaim-host-caches to remove the
-# regenerable build caches that are old, unused and tagged CACHEDIR.TAG. Its
+# a host short of its claiming floor - the larger of ClaimFloorGb and
+# ClaimFloorPercent of the drive - plus the cargo build headroom (Issue #4540,
+# EPHEMERAL_CARGO_HEADROOM_BYTES in worker/deno/lib/heavy_build_gate.ts) first
+# asks reclaim-host-caches to remove the regenerable build caches that are
+# old, unused and tagged CACHEDIR.TAG. Its
 # lines go to the console and run_core.log; a failed reclaim is said loudly and
 # the launch carries on, because a host that cannot reclaim must still run and
 # report. The hard floor below re-measures the drive, so it judges what the
@@ -1390,7 +1392,8 @@ try {
     $cacheTotalBytes = [int64]$cacheDrive.TotalSize
     $cacheByPercent = [int64][math]::Floor($cacheTotalBytes * $cacheFloorPercent / 100)
     $cacheFloorBytes = [math]::Max([int64]$cacheFloorGb * 1GB, $cacheByPercent)
-    if ($cacheFreeBytes -lt $cacheFloorBytes) {
+    $cacheCargoHeadroomBytes = [int64]26843545600
+    if ($cacheFreeBytes -lt ($cacheFloorBytes + $cacheCargoHeadroomBytes)) {
         $cacheFreeKb = [int64][math]::Floor($cacheFreeBytes / 1KB)
         $cacheFloorKb = [int64][math]::Floor($cacheFloorBytes / 1KB)
         $reclaim = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
