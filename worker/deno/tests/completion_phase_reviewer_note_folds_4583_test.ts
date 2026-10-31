@@ -57,6 +57,22 @@ Fixed the reviewer note. Closes #${ISSUE}.
 - the repository tests passed
 `;
 
+const SUMMARY_WITH_CLOSURE = `## Summary
+
+Fixed the reviewer note. Closes #${ISSUE}.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the reviewer note names every blocked gate — evidence: \`worker/deno/lib/phases/completion_phase.ts\` — reviewer: met
+- **met** — the pull request comment names every blocked gate — evidence: \`worker/deno/lib/phases/completion_phase.ts\` — reviewer: met
+
+## Test Plan
+
+- the repository tests passed
+`;
+
 /**
  * The first line of a gate's comment is its stable heading paragraph. The
  * builders produce it from one string with no newline, so the first line is
@@ -132,13 +148,17 @@ function stubClient(
  * a clean pre-PR verifier, and the GitHub, git and Claude stubs the other
  * completion tests use. Returns what the run did and said.
  */
-async function runCompletion(issueLabels: string[]) {
+async function runCompletion(
+  issueLabels: string[],
+  summary = SUMMARY,
+  issueBody = ISSUE_BODY,
+) {
   const repoPath = await Deno.makeTempDir();
   const workDir = await Deno.makeTempDir();
   await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
     recursive: true,
   });
-  await Deno.writeTextFile(`${repoPath}/${SUMMARY_REL}`, SUMMARY);
+  await Deno.writeTextFile(`${repoPath}/${SUMMARY_REL}`, summary);
 
   const posted: { number: number; body: string }[] = [];
   const prompts: string[] = [];
@@ -150,7 +170,7 @@ async function runCompletion(issueLabels: string[]) {
     repo: REPO,
     issueNumber: ISSUE,
     issueTitle: "Reviewer note folds every blocked gate",
-    issueBody: ISSUE_BODY,
+    issueBody,
     issueLabels,
     issueComments: "",
     githubUser: "testbot",
@@ -266,6 +286,42 @@ Deno.test(
     assertStringIncludes(run.onPr[0]!.body, closureHeadline);
     assertStringIncludes(run.onPr[0]!.body, reviewHeadline);
     assertStringIncludes(run.onPr[0]!.body, reproductionHeadline);
+  },
+);
+
+Deno.test(
+  "completion - review-first note includes review and reproduction once each (Issue #4583)",
+  async () => {
+    const run = await runCompletion(["bug", "work-on"], SUMMARY_WITH_CLOSURE);
+
+    assertEquals(run.result.status, "continue");
+    assertEquals(run.prCreateCalls, 1);
+    assertEquals(run.onPr.length, 1);
+    const prompt = run.prompts[0]!;
+    assertStringIncludes(prompt, "REQUIRED ITEM 1 of 2");
+    assertStringIncludes(prompt, "REQUIRED ITEM 2 of 2");
+    for (const text of [prompt, run.onPr[0]!.body]) {
+      assertEquals(text.split(reviewHeadline).length - 1, 1);
+      assertEquals(text.split(reproductionHeadline).length - 1, 1);
+    }
+  },
+);
+
+Deno.test(
+  "completion - reproduction-only note includes its finding once (Issue #4583)",
+  async () => {
+    const run = await runCompletion(
+      ["bug", "work-on"],
+      SUMMARY,
+      "## Problem\n\nThe reviewer note drops a finding.\n",
+    );
+
+    assertEquals(run.result.status, "continue");
+    assertEquals(run.prCreateCalls, 1);
+    assertEquals(run.onPr.length, 1);
+    for (const text of [run.prompts[0]!, run.onPr[0]!.body]) {
+      assertEquals(text.split(reproductionHeadline).length - 1, 1);
+    }
   },
 );
 
