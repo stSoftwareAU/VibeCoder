@@ -1305,7 +1305,7 @@ reclaim_host_caches() {
     host_cache_reclaim_failed "there is no Deno runtime to run reclaim-host-caches"
     return 0
   fi
-  log_run_core "host-cache-reclaim: $((avail_kb / 1024)) MB free on ${disk_gate_path} is below the claiming floor of $((floor_kb / 1024)) MB - reclaiming regenerable build caches before any work volume is touched (Issue #4498)"
+  log_run_core "host-cache-reclaim: $((avail_kb / 1024)) MB free on ${disk_gate_path} is short of the claiming floor of $((floor_kb / 1024)) MB plus the $((CARGO_BUILD_HEADROOM_KB / 1024)) MB cargo build headroom - reclaiming regenerable build caches before any work volume is touched (Issues #4498, #4540)"
   out="$(bounded 600 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-write --allow-run \
@@ -1329,16 +1329,24 @@ reclaim_host_caches() {
   return 0
 }
 
-# Runs the reclaim only when the host is below its claiming floor. Called
-# before the heal decides anything, so a launch whose pre-build reset was never
-# reached (the image already exists) still reclaims first. Always returns 0.
+# The free space a cargo build needs above the claiming floor, in kilobytes:
+# EPHEMERAL_CARGO_HEADROOM_BYTES (25 GiB) in worker/deno/lib/heavy_build_gate.ts.
+# Short of it, the worker claims nothing it can build in a cargo repository
+# (Issue #4540), so the reclaim starts there and not only below the floor.
+CARGO_BUILD_HEADROOM_KB=26214400
+
+# Runs the reclaim only when the host is short of its claiming floor plus the
+# cargo build headroom (Issue #4540). Called before the heal decides anything,
+# so a launch whose pre-build reset was never reached (the image already
+# exists) still reclaims first. Volume recreation keeps its own floor-only
+# test. Always returns 0.
 reclaim_host_caches_if_short() {
   local avail_kb total_kb floor_kb
   avail_kb="$(host_disk_field_kb 2)"
   total_kb="$(host_disk_field_kb 4)"
   [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[1-9][0-9]*$ ]] || return 0
   floor_kb="$(claim_floor_kb "${total_kb}")"
-  if ((avail_kb < floor_kb)); then
+  if ((avail_kb < floor_kb + CARGO_BUILD_HEADROOM_KB)); then
     reclaim_host_caches "${floor_kb}"
   fi
   return 0

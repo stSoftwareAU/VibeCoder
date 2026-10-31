@@ -406,6 +406,11 @@ Ownership journals are private host state in `~/.vibe-apple-egress`, outside
 all canonical worker bind mounts. Runtime I/O and shutdown have hard-kill
 deadlines, including inherited pipes held open after a CLI exits.
 
+The accepted host/LAN and DNS gaps are reported with
+`[EGRESS-NOT-ENFORCED]` at WARNING while the worker continues. A failed
+measured control uses `[EGRESS-SELFCHECK-FAILED]` at ERROR and exits 90 before
+claims.
+
 Measured on 26 October 2026, Apple CLI 1.2.2 and macOS 27.0.1: the allowlist
 proxy worked; direct public IPv4 was blocked with a successful negative
 control; the controlled host endpoint was reachable. IPv6 was initially
@@ -601,6 +606,8 @@ other Azure accounts remain outside the built-in allowlist.
 | `api.openai.com` | Agent provider | `codex` provider enabled | Responses API |
 | `auth.openai.com` | Agent provider | `codex` provider enabled | ChatGPT sign-in token refresh |
 | `chatgpt.com` | Agent provider | `codex` provider enabled | Codex backend for ChatGPT plans |
+| `ab.chatgpt.com` | Agent provider | `codex` provider enabled | Codex CLI experiment and feature flags |
+| `*.oaiusercontent.com` | Agent provider | `codex` provider enabled | ChatGPT file storage the Codex backend hands out signed URLs for |
 | `generativelanguage.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini API |
 | `cloudcode-pa.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini CLI Google sign-in backend |
 | `oauth2.googleapis.com` | Agent provider | `gemini` provider enabled | Google OAuth token refresh |
