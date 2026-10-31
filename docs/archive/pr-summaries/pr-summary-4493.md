@@ -98,18 +98,19 @@ Backend only; no UI files touched.
 - `worker/deno/tests/egress_selfcheck_test.ts`: marker with `observed`
   (`proxyAllowed=failed (refused ×3)`), unchanged marker without it (control),
   Apple marker, diagnostics carried, `describeProbeFailures` cases (including a
-  failed denied probe with no denied detail). `Deno.connect` is replaced in four
-  tests to pin the dialled host and port, the `observed` token (first line,
-  control characters stripped, 80-character cap, `closed without an answer`),
-  and that only a `TimeoutError` is a timeout (a thrown `null`, `undefined`,
-  string or other-named error is not). `waitForProxyListener` is pinned two
-  ways: with a deadline of 0 the last dial error is reported (and an unrelated
-  error ends the wait as `listening`), and with a positive budget and a clock
-  the injected sleep advances, a first dial that throws `TimeoutError` is
-  retried and the second dial's success gives `listening: true` after exactly
-  two dials and one 250 ms pause. The port check in `proxyEndpoint` is now
-  `port < 1` only: `new URL` rejects ports above 65535 and keeps digits only, so
-  the old `isInteger` and `> 65535` operands were dead.
+  failed denied probe with no denied detail). `Deno.connect` is replaced in five
+  tests (three for `probeProxyConnectDetailed`, two for `waitForProxyListener`)
+  to pin the dialled host and port, the `observed` token (first line, control
+  characters stripped, 80-character cap, `closed without an answer`), and that
+  only a `TimeoutError` is a timeout (a thrown `null`, `undefined`, string or
+  other-named error is not). `waitForProxyListener` is pinned two ways: with a
+  deadline of 0 the last dial error is reported (and an unrelated error ends the
+  wait as `listening`), and with a positive budget and a clock the injected
+  sleep advances, a first dial that throws `TimeoutError` is retried and the
+  second dial's success gives `listening: true` after exactly two dials and one
+  250 ms pause. The port check in `proxyEndpoint` is now `port < 1` only:
+  `new URL` rejects ports above 65535 and keeps digits only, so the old
+  `isInteger` and `> 65535` operands were dead.
 - `worker/deno/tests/run_worker_test.ts`: diagnostics reach `deps.log` before a
   failing exit; none are logged without them.
 - Red checks (one break at a time, then restored): marker drops `proxyAllowed` →
