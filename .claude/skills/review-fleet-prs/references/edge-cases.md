@@ -58,14 +58,15 @@ headers are ignored), because the fix may be moving the PR's own line relative
 to its context, for example a CHANGELOG entry from under a released heading to
 above it. A base merge that moves context in such a file gets a fresh review.
 
-The version exception applies when the patches differ
-only by a strict version increment: both versions of that modified-file patch
-are one complete hunk replacing one version line with a higher version. The
-line may be a bare version, a JSON `"version": "..."` key (with an optional
-trailing comma), or a TOML `version = "..."` key. The hunk may include
-unchanged context, but its declared line counts must match and it must
-contain exactly one removed line immediately followed by one added line. The
-two lines must be identical apart from the version token, including spacing
+The version exception applies when the patches differ only by a strict version
+increment. Both patches have the same number of hunks. In each patch, one hunk
+is a complete hunk replacing one version line with a higher version, every
+other hunk matches as the file's other-lines rules say, and exactly one hunk
+pair differs. The line may be a bare version, a JSON `"version": "..."` key
+(with an optional trailing comma), or a TOML `version = "..."` key. The hunk
+may include unchanged context, but its declared line counts must match and it
+must contain exactly one removed line immediately followed by one added line.
+The two lines must be identical apart from the version token, including spacing
 and punctuation. This covers a workflow bump committed separately or in a
 base-merge resolution. Every other file must still match under the rules
 above: on its added and removed lines, and also on its context lines in a file
@@ -74,10 +75,13 @@ an earlier finding names (or any file when the findings are unknown).
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or
 build suffix may accompany a numeric increase. Suffix-only changes, equal or
-decreasing versions, extra changed lines or hunks, newline markers, renames and
-missing or malformed patches get a fresh review. A dependency pin or a value on
-any key other than `version` is still reviewed. No prerelease precedence is
-inferred.
+decreasing versions, an extra hunk that differs, a second differing version
+hunk, a different hunk count, extra changed lines inside the version hunk,
+newline markers, renames and missing or malformed patches get a fresh review.
+An extra hunk identical at both heads does not force a fresh review. A
+dependency pin or a value on any key other than `version` that differs between
+the heads is still reviewed: only a version hunk may use the exception. No
+prerelease precedence is inferred.
 
 The exception also needs the logged findings from this PR's exact sent-back
 head. A finding naming the version file (including a qualified path) forces a
