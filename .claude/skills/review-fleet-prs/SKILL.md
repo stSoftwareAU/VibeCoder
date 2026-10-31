@@ -103,7 +103,8 @@ escalation.
    possible fix. An earlier finding on a version file, or missing findings
    for the exact sent-back head, requires a fresh review (see
    [Version-only re-bumps](references/edge-cases.md#version-only-re-bumps)).
-   The skill runs on more than one host
+   The version hunk may sit beside other hunks that are unchanged between the
+   two own diffs. The skill runs on more than one host
    (a laptop as the `gh` user, an always-on host as the reviewer App), so a
    review carrying the skill's marker counts as this skill's review whichever login
    posted it, and a PR anyone has approved at its head commit is skipped as
