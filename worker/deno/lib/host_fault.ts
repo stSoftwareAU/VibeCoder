@@ -47,16 +47,27 @@ export function isHostFaultKind(value: string): value is HostFaultKind {
  * The park note is the worker's own words when it stops a build at the floor.
  * The floor sentence itself (`host disk below its floor`) is the same stop
  * when a caller quotes `judgeHostDiskForBuild` without the park note
- * (Issue #4388). A worker-gate marker is still excluded by
- * {@link detectHostFault} before this pattern runs, so a gate that quotes
- * the same text stays an issue failure.
+ * (Issue #4388). These two protective-stop wordings share a narrow matcher
+ * with the run-failure classifier. A worker-gate marker is still excluded by
+ * {@link detectHostFault} before either disk matcher runs, so a gate that
+ * quotes the same text stays an issue failure.
  */
 const DISK_FULL_PATTERN =
-  /No space left on device|\bENOSPC\b|Read-only file system|\bos error 30\b|Parked as infrastructure \(Issue #4360\)|host disk below its floor/i;
+  /No space left on device|\bENOSPC\b|Read-only file system|\bos error 30\b/i;
+
+/** Worker wording for a deliberate host-disk stop, excluding disk errors. */
+const HOST_DISK_PROTECTIVE_STOP_PATTERN =
+  /Parked as infrastructure \(Issue #4360\)|host disk below its floor/i;
+
+/** Whether `message` contains a worker-authored protective host-disk stop. */
+export function isHostDiskProtectiveStopText(message: string): boolean {
+  return HOST_DISK_PROTECTIVE_STOP_PATTERN.test(message);
+}
 
 /** Whether `message` is the host running out of disk, including the read-only fallout. */
 export function isHostDiskFaultText(message: string): boolean {
-  return DISK_FULL_PATTERN.test(message);
+  return DISK_FULL_PATTERN.test(message) ||
+    isHostDiskProtectiveStopText(message);
 }
 
 /**
@@ -139,7 +150,9 @@ export function detectHostFault(
   ) {
     return "clone-corrupt";
   }
-  if (DISK_FULL_PATTERN.test(message)) {
+  if (
+    DISK_FULL_PATTERN.test(message) || isHostDiskProtectiveStopText(message)
+  ) {
     return "disk-full";
   }
   if (CONTAINER_BUILD_FAILED_PATTERN.test(message)) {
