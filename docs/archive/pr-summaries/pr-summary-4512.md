@@ -7,8 +7,8 @@ now describes the flow since Issue #4234: the verdict goes through
 whatever remains on the re-run is one pull-request comment. The PR is still
 raised and armed. The section's mermaid diagram now routes the failing branch
 through the in-session note to the PR. A docs guard in
-`worker/deno/tests/unmet_criteria_gate_test.ts` now covers the section.
-Closes #4512.
+`worker/deno/tests/unmet_criteria_gate_test.ts` now covers the section. Closes
+#4512.
 
 ```mermaid
 flowchart TD
@@ -44,8 +44,8 @@ module doc of `worker/deno/lib/summary_rule_gate_retry.ts`.
 Docs greps for `blocks PR creation`, `run fails` and `closure gate` in
 `issue-processing.md` were re-read. Remaining hits are history (a 2026-09 log
 count in "The in-run recovery…") or about the note's shape ("One shape, both
-gates"), not a stop. `docs/SPEC-KIT-COMPARISON.md:161` concerns the
-reproduction gate, which is unchanged.
+gates"), not a stop. `docs/SPEC-KIT-COMPARISON.md:161` concerns the reproduction
+gate, which is unchanged.
 
 ## Test Plan
 
