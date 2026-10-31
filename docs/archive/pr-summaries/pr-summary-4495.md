@@ -29,7 +29,7 @@ inputs change, and log an unchanged repeat at DEBUG. Closes #4495.
 - `ensureIssueClosedIfPrMerged` and `closeIssuesForMergedPrs` share the
   did-not-land key, so one pair warns once whichever path sees it first.
 - State survives a restart: `configureDecisionWarnStore(workDir)` (called from
-  the production `runHousekeeping` dep in `lib/run_worker.ts`, before the sweep)
+  `runStartupHousekeeping` in `lib/run_housekeeping.ts`, before the sweep)
   loads `<workDir>/decision_warn_signatures.json`; a signature change rewrites
   it tempfile-then-rename. The directory is passed in, never read from
   `WORK_DIR`, so a suite that does not configure it cannot touch the live file
@@ -115,10 +115,10 @@ context tests; each was re-applied by hand and the matching test went red.
 Persistence red checks (PR #4535 review), each reverted after: skipping
 `loadStore` → 5 tests red; skipping the write on a changed signature → 3 red;
 disabling `pruneStale` → the age-out test red; disabling the daily re-stamp →
-the age-out test red. Production wiring (`configureDecisionWarnStore` in
-`run_worker.ts`'s `runHousekeeping` dep): exempt (untestable): the dep runs the
-full startup housekeeping; the `run_worker*` tests (grep `runHousekeeping` in
-`worker/deno/tests`) stub it, so none reaches the real closure.
+the age-out test red. Production wiring is covered by
+`run_housekeeping_test.ts`: two startup sweeps with fresh in-memory state
+produce one warning. Before the call moved into housekeeping, the new test
+failed because the store file was absent.
 
 Red checks: `shouldWarnDecision` forced to return true (re-run on the head) →
 `decision_warn_dedup_test.ts` 8 of 9 tests red, `issue_lifecycle_test.ts` 4 red,
