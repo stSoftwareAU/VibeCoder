@@ -100,6 +100,7 @@ Deno.test("rebuildBranchHistory - collapses to one commit and force-pushes with 
     branchName: "fix/secret-scan",
     baseBranch: "main",
     commitMessage: "rebuilt",
+    ownedAuthorEmails: ["worker@example.com"],
   }, { runGitCommand: git.run });
 
   assert(result.ok);
@@ -134,6 +135,7 @@ Deno.test("rebuildBranchHistory - rebuilds onto the merge base, not the base tip
     branchName: "fix/secret-scan",
     baseBranch: "main",
     commitMessage: "rebuilt",
+    ownedAuthorEmails: ["worker@example.com"],
   }, { runGitCommand: git.run });
 
   const mergeBase = git.calls.find((c) => c[0] === "merge-base");
@@ -146,6 +148,7 @@ Deno.test("rebuildBranchHistory - refuses a branch it does not own, touching not
     branchName: "main",
     baseBranch: "main",
     commitMessage: "rebuilt",
+    ownedAuthorEmails: ["worker@example.com"],
   }, { runGitCommand: git.run });
 
   assert(!result.ok);
@@ -178,6 +181,45 @@ Deno.test("rebuildBranchHistory - refuses a branch carrying someone else's commi
   );
 });
 
+Deno.test("rebuildBranchHistory - refuses missing or unusable author ownership before git", async () => {
+  for (const ownedAuthorEmails of [[], ["not-an-email"]]) {
+    const git = fakeGit(happyAnswers());
+    const result = await rebuildBranchHistory({
+      branchName: "fix/shared-branch",
+      baseBranch: "main",
+      commitMessage: "rebuilt",
+      ownedAuthorEmails,
+    }, { runGitCommand: git.run });
+
+    assert(!result.ok);
+    assertStringIncludes(
+      result.error.message,
+      "identity is missing or unusable",
+    );
+    assertEquals(git.calls.length, 0);
+  }
+});
+
+Deno.test("rebuildBranchHistory - refuses when commit authors cannot be read", async () => {
+  const answers = happyAnswers();
+  answers["log"] = { code: 1, stdout: "", stderr: "fatal: log unavailable" };
+  const git = fakeGit(answers);
+  const result = await rebuildBranchHistory({
+    branchName: "fix/shared-branch",
+    baseBranch: "main",
+    commitMessage: "rebuilt",
+    ownedAuthorEmails: ["worker@example.com"],
+  }, { runGitCommand: git.run });
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "could not read commit authors");
+  assertStringIncludes(result.error.message, "fatal: log unavailable");
+  assertEquals(
+    git.calls.some((c) => ["reset", "commit", "push"].includes(c[0] ?? "")),
+    false,
+  );
+});
+
 Deno.test("rebuildBranchHistory - a branch with no commits of its own means the finding is in the base", async () => {
   const answers = happyAnswers();
   answers["rev-list"] = { code: 0, stdout: "0\n", stderr: "" };
@@ -186,6 +228,7 @@ Deno.test("rebuildBranchHistory - a branch with no commits of its own means the 
     branchName: "fix/nothing-here",
     baseBranch: "main",
     commitMessage: "rebuilt",
+    ownedAuthorEmails: ["worker@example.com"],
   }, { runGitCommand: git.run });
 
   assert(!result.ok);
@@ -206,6 +249,7 @@ Deno.test("rebuildBranchHistory - a refused lease is reported as another writer,
     branchName: "fix/secret-scan",
     baseBranch: "main",
     commitMessage: "rebuilt",
+    ownedAuthorEmails: ["worker@example.com"],
   }, { runGitCommand: git.run });
 
   assert(!result.ok);
@@ -221,6 +265,7 @@ Deno.test("rebuildBranchHistory - a merge base that is not a sha is refused", as
     branchName: "fix/secret-scan",
     baseBranch: "main",
     commitMessage: "rebuilt",
+    ownedAuthorEmails: ["worker@example.com"],
   }, { runGitCommand: git.run });
 
   assert(!result.ok);

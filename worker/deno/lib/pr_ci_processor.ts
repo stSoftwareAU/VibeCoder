@@ -2308,7 +2308,9 @@ async function _processCiWithHeartbeat(
   // Issue #630: a secret scanner judges the COMMIT RANGE, not the working
   // tree. The content is corrected and pushed by now, and the check would
   // still fail on the original commit's diff — so the branch is collapsed to
-  // a single commit and force-pushed with a lease. Without this the fix loop
+  // a single commit and force-pushed with a lease. `git var` resolves the
+  // author identity in this checkout; unresolved identity or another commit
+  // author refuses the rewrite. Without this the fix loop
   // re-commits the same correction until the attempt cap and ends at
   // `needs-human`, a wedge caused entirely by the wrong model of the check.
   let historyRewritten = false;
@@ -2345,60 +2347,93 @@ async function _processCiWithHeartbeat(
           error: defaultBranchResult.error.message,
         });
       } else {
-        const rebuild = await rebuildBranchHistory({
-          branchName: pushBranch,
-          baseBranch: defaultBranchResult.value,
-          commitMessage: buildRewriteCommitMessage(checkName, prNumber),
-          ...(processorDeps.workDir !== undefined
-            ? { cwd: processorDeps.workDir }
-            : {}),
-        }, {
-          runGitCommand: (args, options) =>
-            deps.git.runGitCommand(args, options ?? {}),
-          logger,
-        });
-        if (rebuild.ok) {
-          historyRewritten = true;
-          logger.info("Rebuilt branch history to clear a secret finding", {
-            repo,
-            prNumber,
-            checkName,
-            collapsedCommits: rebuild.value.collapsedCommits,
-          });
-          // The rebuild force-pushed a NEW commit, so the SHA verified above
-          // is now stale. Re-verify rather than report it: naming a commit
-          // that is no longer the branch head is precisely the false claim
-          // Issue #579 exists to prevent, and a rebuild is the one path that
-          // makes an honest verification go stale.
-          pushVerification = await verifyFn(pushBranch, {
+        const gitOptions = processorDeps.workDir !== undefined
+          ? { cwd: processorDeps.workDir }
+          : {};
+        // `git var` applies author environment overrides and repository/global
+        // config in the same checkout where the rebuilt commit will be made.
+        const authorIdentity = await deps.git.runGitCommand(
+          ["var", "GIT_AUTHOR_IDENT"],
+          gitOptions,
+        );
+        const identityOutput = authorIdentity.ok &&
+            authorIdentity.value.code === 0
+          ? authorIdentity.value.stdout.trim()
+          : "";
+        const authorEmail = identityOutput.match(
+          /<([^<>\s]+@[^<>\s]+)> \d+ [+-]\d{4}$/,
+        )?.[1];
+        if (!authorEmail) {
+          const detail = authorIdentity.ok
+            ? authorIdentity.value.stderr.trim() ||
+              "Git returned no usable author identity"
+            : authorIdentity.error.message;
+          logger.warn(
+            "History rebuild refused: worker author identity could not be resolved",
+            {
+              repo,
+              prNumber,
+              branchName: pushBranch,
+              error: detail,
+            },
+          );
+        } else {
+          const rebuild = await rebuildBranchHistory({
+            branchName: pushBranch,
+            baseBranch: defaultBranchResult.value,
+            commitMessage: buildRewriteCommitMessage(checkName, prNumber),
+            ownedAuthorEmails: [authorEmail],
             ...(processorDeps.workDir !== undefined
               ? { cwd: processorDeps.workDir }
               : {}),
+          }, {
+            runGitCommand: (args, options) =>
+              deps.git.runGitCommand(args, options ?? {}),
+            logger,
           });
-          pushSucceeded = pushVerification.landed;
-          if (!pushSucceeded) {
-            pushFailureDetail = pushVerification.reason;
-            logger.error(
-              "History was rebuilt but the remote does not show it — not claiming success",
-              {
-                repo,
-                prNumber,
-                branchName: pushBranch,
-                reason: pushVerification.reason,
-              },
-            );
+          if (rebuild.ok) {
+            historyRewritten = true;
+            logger.info("Rebuilt branch history to clear a secret finding", {
+              repo,
+              prNumber,
+              checkName,
+              collapsedCommits: rebuild.value.collapsedCommits,
+            });
+            // The rebuild force-pushed a NEW commit, so the SHA verified above
+            // is now stale. Re-verify rather than report it: naming a commit
+            // that is no longer the branch head is precisely the false claim
+            // Issue #579 exists to prevent, and a rebuild is the one path that
+            // makes an honest verification go stale.
+            pushVerification = await verifyFn(pushBranch, {
+              ...(processorDeps.workDir !== undefined
+                ? { cwd: processorDeps.workDir }
+                : {}),
+            });
+            pushSucceeded = pushVerification.landed;
+            if (!pushSucceeded) {
+              pushFailureDetail = pushVerification.reason;
+              logger.error(
+                "History was rebuilt but the remote does not show it — not claiming success",
+                {
+                  repo,
+                  prNumber,
+                  branchName: pushBranch,
+                  reason: pushVerification.reason,
+                },
+              );
+            }
+          } else {
+            // The corrected content is already pushed, so the PR is no worse
+            // than before — it will simply fail the same check again. Say why
+            // rather than letting the next cycle rediscover it.
+            logger.warn("History rebuild refused or failed", {
+              repo,
+              prNumber,
+              checkName,
+              branchName: pushBranch,
+              error: rebuild.error.message,
+            });
           }
-        } else {
-          // The corrected content is already pushed, so the PR is no worse
-          // than before — it will simply fail the same check again. Say why
-          // rather than letting the next cycle rediscover it.
-          logger.warn("History rebuild refused or failed", {
-            repo,
-            prNumber,
-            checkName,
-            branchName: pushBranch,
-            error: rebuild.error.message,
-          });
         }
       }
     }
