@@ -117,6 +117,17 @@ existing code and docs.
   (161 passed, 0 failed). `deno fmt`, `deno lint`, `deno check` on the edited
   files: clean. Full `./quality.sh` passed through markdownlint, semgrep and the
   release-tag ruleset checks, then timed out at 580 s in the unit-test stage.
+- Push after the `validate-scripts / validate` failure (Summary freshness,
+  #3768): the remote head held a worker "Fix PR #4581 quality issues" commit
+  (`3a4f9000`) that solved the ladder-count problem a second way (a separate
+  `resolverFailures` field) while this branch had already solved it by not
+  recording a deferral in `count`. The two were merged keeping this branch's
+  approach, so `milestone_branch_sync.ts`, `milestone_sync_streak.ts` and the
+  4517 test file are identical to the tree this summary already describes (no
+  `resolverFailures` field exists). Re-run:
+  `deno task test:unit tests/milestone_cycle_budget_not_counted_4517_test.ts`
+  (4 passed, 0 failed) and `deno task pr-summary-ci` (Summary freshness passes
+  once this summary is the newest change).
 - `deno fmt --check` fails on `docs/INTERNALS.md` and
   `docs/workflows/milestones.md` at HEAD for unrelated paragraphs; they were not
   reflowed.
