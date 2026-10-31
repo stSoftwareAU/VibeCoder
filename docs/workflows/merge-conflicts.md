@@ -212,7 +212,11 @@ progress and stopped on conflicts. Its contract is absolute:
   rebuilt only when this run's own push changed the summary file. Fix
   branches for a gated milestone head are skipped, and only a worker-authored
   PR is edited. A failed sync is logged once at warning and does not fail the
-  run (Issues #3089, #3315).
+  run (Issues #3089, #3315). A description written outside the worker (no
+  `vibe-worker-issue-N` marker, on a branch other than the run's own
+  `issue-<N>-…` branch) is never rebuilt; the prompt tells the agent to update
+  it with `gh pr edit <n> --body-file <file>` and name that in
+  `.pr_response_message` (Issue #4515).
 - **The agent runs no quality gate.** CI on the pushed merge is the gate on a
   PR — a conflicting PR has had none at all, so that run is usually the first
   time its tests meet current base code — and the worker's type-check gate,
