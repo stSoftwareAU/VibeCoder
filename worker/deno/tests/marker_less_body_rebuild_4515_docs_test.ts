@@ -66,6 +66,13 @@ for (const [type, heading] of TYPES_AND_SECTIONS) {
       );
     }
 
+    if (type === "pr_feedback") {
+      assertStringIncludes(
+        body,
+        `A worker-built description that has the \`${WORKER_PR_MARKER_PREFIX}N -->\` marker but no such digest marker (raised before #3315)`,
+      );
+    }
+
     assert(
       !body.toLowerCase().includes(OLD_UNCONDITIONAL_BAN),
       `${doc}: section "${heading}" still carries the old unconditional ban "${OLD_UNCONDITIONAL_BAN}"`,

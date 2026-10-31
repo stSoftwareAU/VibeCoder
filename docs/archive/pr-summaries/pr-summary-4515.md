@@ -57,7 +57,8 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
   clause built from `PR_RESPONSE_MESSAGE_FILE`. It rejects the old ban. The
   dependency-audit section also requires the marker-scoped rebuild and live
   body update for its tracking issue; it is excluded from the main ci_fix
-  section check so it cannot satisfy that check's pins.
+  section check so it cannot satisfy that check's pins. The pr_feedback test
+  also distinguishes the worker-built body without a digest marker.
 - The head test file passes (4 passed, 0 failed); with the three prompts
   restored from `main`, it fails (0 passed, 4 failed).
 - `deno task drift-pins-on-base` confirmed every required phrase is absent from
@@ -68,6 +69,8 @@ Changed: `prompts/pr_feedback/prompt.md` (Making Changes),
   on the missing marker; the source was restored afterwards.
 - Removing the `gh pr edit` clause from the main ci_fix guidance made its test
   fail (3 passed, 1 failed); the prompt was restored afterwards.
+- Restoring the base wording for the pre-#3315 digest case made the pr_feedback
+  test fail (3 passed, 1 failed); the prompt was restored afterwards.
 - No assertion removed or edited in an existing test.
 - Related rules checked: the "Keep the PR summary true to the head" paragraph in
   each of the three prompts, and `docs/workflows/` text on the digest marker and
