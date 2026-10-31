@@ -28,10 +28,10 @@ inputs change, and log an unchanged repeat at DEBUG. Closes #4495.
   the sorted `missing` set.
 - `ensureIssueClosedIfPrMerged` and `closeIssuesForMergedPrs` share the
   did-not-land key, so one pair warns once whichever path sees it first.
-- State survives a restart: `configureDecisionWarnStore(workDir)` (called through the
-  injectable `HousekeepingDeps.configureDecisionStore` seam, whose production
-  default wraps it, from `runStartupHousekeeping` in `lib/run_housekeeping.ts`,
-  before the sweep) loads
+- State survives a restart: `configureDecisionWarnStore(workDir)` (called
+  through the injectable `HousekeepingDeps.configureDecisionStore` seam, whose
+  production default wraps it, from `runStartupHousekeeping` in
+  `lib/run_housekeeping.ts`, before the sweep) loads
   `<workDir>/decision_warn_signatures.json`; a signature change rewrites it
   tempfile-then-rename. The directory is passed in, never read from `WORK_DIR`,
   so a suite that does not configure it cannot touch the live file (Issue
@@ -102,10 +102,10 @@ Added:
   `configureDecisionWarnStore` (defaults to `defaultLogger`).
 - `worker/deno/tests/run_housekeeping_test.ts`: production wiring (the real
   `createDefaultHousekeepingDeps().configureDecisionStore`), two startup sweeps
-  with fresh in-memory state produce one warning. The recording-deps tests inject
-  a no-op `configureDecisionStore`, so the shared `/tmp/work` fixture is never
-  read (PR #4535 review). Red check: making the production default a no-op turns
-  the wiring test red (`NotFound … decision_warn_signatures.json`).
+  with fresh in-memory state produce one warning. The recording-deps tests
+  inject a no-op `configureDecisionStore`, so the shared `/tmp/work` fixture is
+  never read (PR #4535 review). Red check: making the production default a no-op
+  turns the wiring test red (`NotFound … decision_warn_signatures.json`).
 - `worker/deno/tests/issue_lifecycle_test.ts`: unchanged did-not-land verdict
   warns once across two cycles; the same verdict warns once across a simulated
   worker restart (memory reset, store reloaded) and a changed reason after the
