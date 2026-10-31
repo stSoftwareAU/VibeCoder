@@ -56,6 +56,13 @@ and adds the bot to the local fleet-lock identities; it does not save an
 installation token. Repeat the trust setup on every fleet host before starting
 repairs.
 
+## App logo
+
+Use the [purple babysitter logo](../images/fleet-pr-babysitter-logo-purple.png)
+for the App icon. The PNG is 512 × 512 pixels and under 1 MB. Its background
+is approximately **`#5F2C99`**; the generated image has slight pixel-level
+colour variation, so it is not a single flat colour.
+
 ## Coordinate with the fleet
 
 The App's comment author is `<app-slug>[bot]`. Every fleet host must recognise
