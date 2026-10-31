@@ -84,9 +84,8 @@ Backend only; no UI files touched.
 ## Test Plan
 
 - `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts` (run under
-  `--allow-net=127.0.0.1` by
-  `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the eight
-  names): 502 every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3;
+  `--allow-net=127.0.0.1` by `egress_allowed_probe_retry_test.ts` in the same
+  tests directory, which lists the eight names): 502 every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3;
   `runEgressProbes` with a live proxy gives the enforced set; `runEgressProbes`
   with a proxy that never listens (`listenTimeoutMs` 1500 against `timeoutMs`
   1000, so the 1500 ms message only reads right when the listener budget is the
@@ -116,9 +115,7 @@ Backend only; no UI files touched.
   3 red; decision drops diagnostics → 1; `run_worker` skips the log loop → 1;
   `waitForProxyListener` never waits → 3; `observed` without counts → 2; refused
   labelled `timeout` → 1; Apple branch drops details → 1; `runEgressProbes`
-  skips the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2; the
-  `probeProxyAllowed` wrapper waiting for the listener → 2 (the original
-  scenarios).
+  skips the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2.
 - Second PR #4531 review: the `probeProxyAllowedDetailed` listener wait and its
   `listenTimeoutMs`, `now` and `waitForListener` options were removed, with the
   two scenario tests that only exercised them (and their names in
@@ -130,10 +127,13 @@ Backend only; no UI files touched.
   passed), then restored.
 - PR #4531 earlier review red checks (production broken one way at a time, then
   restored): `runEgressProbes` reading `timeoutMs` as the listener budget → 2
-  red (the 2 s late-listener test and the never-listens test);
-  `EGRESS_PROXY_LISTEN_TIMEOUT_MS` set to 1_000 → 2 red;
-  `probeProxyAllowedDetailed` reading `timeoutMs` as the listener budget → 2
-  red.
+  red (the 2 s late-listener test and the never-listens test).
+  `EGRESS_PROXY_LISTEN_TIMEOUT_MS` set to 1_000 and
+  `probeProxyAllowedDetailed` reading `timeoutMs` as the listener budget were
+  also red on that earlier head, with a `probeProxyAllowedDetailed` late-listener
+  test that the second review deleted; neither is restated here, because
+  `EGRESS_PROXY_LISTEN_TIMEOUT_MS` is now read only by `runEgressProbes` and
+  `probeProxyAllowedDetailed` no longer has a listener budget.
 - Mutation follow-up: each listed mutant on `egress_selfcheck.ts` lines 165,
   361, 366, 367, 384, 407 and 410 was applied by hand and turned a test red;
   `runEgressProbes` waiting with `timeoutMs: 0` now turns the late-listener
@@ -143,20 +143,22 @@ Backend only; no UI files touched.
   `lateBindingClock binds exactly once, when the clock
   reaches the bind time`,
   kills dropping `!bound` (line 175) and `bound = true` → `false` (line 176):
-  each turned the retry test red. The 2 s late-listener test now asserts
-  `time.nowReads() > 0`, which kills deleting `now: time.now` (line 201): red
-  when applied. Each mutant was applied by hand and restored.
+  each turned the retry test red; each mutant was applied by hand and restored.
+  Deleting `now: time.now` from the `runEgressProbes` call in the 2 s
+  late-listener test (scenarios file, line 313) was not re-checked on the final
+  head.
 - Not red-checked: the `egress-selfcheck` command's stderr printing.
 - No assertion was removed from an existing test; only the `@std/assert` import
   line in `egress_selfcheck_test.ts` gained a name.
-- `deno task test:unit` at the head:
+- `deno task test:unit` at the head, each file run on its own:
   `worker/deno/tests/egress_allowed_probe_retry_test.ts` (8 tests at head),
   `worker/deno/tests/egress_selfcheck_test.ts` (25 tests at head),
   `worker/deno/tests/run_worker_test.ts` (37 tests at head); all pass.
   `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
 - `./quality.sh` on an earlier head (before the review-fix pushes that rewrote
   the late-listener scenarios and added the `lateBindingClock` test; it was not
-  re-run on the final head, which changed tests and docs only): deno lint, type
+  re-run on the final head, which also removed the listener wait from
+  `probeProxyAllowedDetailed` in `egress_selfcheck.ts`): deno lint, type
   check and fmt passed; deno tests reported 31119 passed and 1 failed:
   `worker/deno/tests/pr_maintenance_command_test.ts` "update-open-pr-branches
   takes no action on a behind-only PR behind a merge queue (Issue #4424)". That
