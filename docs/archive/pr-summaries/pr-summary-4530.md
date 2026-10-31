@@ -61,9 +61,9 @@ plus clone from `worker/deno/tests/support/git_repo_fixture.ts`.
 - Mutation survivors pinned (each applied by hand, a test goes red):
   - `pr_branch_preparation.ts:124` (dropped `fetchResult.ok`): "a fetch that
     could not run at all falls back to checkout and pull…".
-  - `:218` (deleted `"--"`): "the rev-list ends its revisions with `--`…"
-    (a working-tree file named `FETCH_HEAD` makes the rev-list ambiguous
-    without it, hiding the dropped-commit warning).
+  - `:218` (deleted `"--"`): "the rev-list ends its revisions with `--`…" (a
+    working-tree file named `FETCH_HEAD` makes the rev-list ambiguous without
+    it, hiding the dropped-commit warning).
   - `:223` (dropped `!result.ok`): "a rev-list that could not run is
     tolerated…".
   - `:223` (dropped `result.value.code !== 0`): "a failing rev-list never
