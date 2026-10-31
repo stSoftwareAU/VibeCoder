@@ -30,6 +30,7 @@ import {
   selectDuplicateTrackersToClose,
 } from "../lib/milestone_completion.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
+import { redactGhBodyText } from "../lib/gh_body_redaction.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
 import { _resetBaseProtectionMemo } from "../lib/pr_auto_merge.ts";
@@ -2477,7 +2478,8 @@ function completedMilestoneWithRollupGhFn(
       });
     }
     if (key.includes("pr edit")) {
-      live.body = args[args.indexOf("--body") + 1]!;
+      // spawnGh masks every --body (gh_spawn.ts); store what GitHub receives.
+      live.body = redactGhBodyText(args[args.indexOf("--body") + 1]!);
       return "";
     }
     const authoritative = authoritativeStub(key);
