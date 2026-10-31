@@ -1359,6 +1359,16 @@ not retried in-process: repeating the agent invocation cannot replenish the
 budget. A later scheduled cycle reads the host again. This does not turn a
 disk failure into a successful run or a scheduled finish-deadline release.
 
+The PR-feedback lane follows the same rule (Issue #4511): when the agent
+invocation for a PR comment or review fails with a host-disk fault (including
+the park note), the lane logs a warning and releases the comment instead of
+charging it. It posts no "Automated Processing Failed" comment and counts no
+strike towards the two-strike close-and-redo (Issue #4304). The comment is
+retried on a later cycle once the host has room: a review's lease lapses, and
+for any other comment the processed mark is removed. If that mark cannot be
+removed, the failure is charged as before. Other agent failures are charged as
+before.
+
 Where the runtime refuses the trim **and** the host is below the floor, the
 launch ends with status 74. Deleting files in that volume does not return
 host blocks; leaving the container discards the ephemeral layer, and the next
