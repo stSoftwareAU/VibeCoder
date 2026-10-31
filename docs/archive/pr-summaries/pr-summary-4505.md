@@ -26,3 +26,4 @@ The milestone rollup fingerprint is now the full 64-hex SHA-256 instead of its f
 
 - `deno test -A tests/milestone_completion_test.ts` (from `worker/deno`): 148 passed, 0 failed.
 - Edited `worker/deno/tests/milestone_completion_test.ts` mock only; no assertions removed. Red check: the unchanged production code makes the two tests above fail.
+- `./quality.sh` on the final head: PASSED for lint, type check, fmt, semgrep and markdownlint. FAILED for the spawn-chokepoint scans (`worker/deno/commands/fleet_pr_babysitter.ts:32`), completeness checks (`lib-sweep-coverage.json`) and a full deno test run (formatter and chokepoint tests). None of these files is in this diff; I did not run the gate on the base branch to confirm they fail there too.
