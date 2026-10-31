@@ -94,9 +94,9 @@ existing code and docs.
   that used the agent-deferred error as the counted, climbing refusal now use
   the gate-refused resolution (`gateRefusedError()`), with every assertion kept
   (only the expected reason text `(agent deferred` became
-  `(the merge gate refused the resolution`); the agent-deferred conclusion test now asserts
-  `refusal === undefined` for the deferral. The two-kind loop became the gate
-  kind only. Removed from
+  `(the merge gate refused the resolution`); the agent-deferred conclusion test
+  now asserts `refusal === undefined` for the deferral. The two-kind loop became
+  the gate kind only. Removed from
   `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts`: the agent-kind
   run of the climbing test. Required by: "refused 4 cycles in a row (agent
   deferred: cycle budget) — climbing to the next rung" (the behaviour the issue
@@ -109,15 +109,14 @@ existing code and docs.
   `{ count: 0, escalated: false }` fallback is unreachable. Line 3161 sits
   inside `if (streakPath)`, and the same block has already stored an entry for
   the key at line 2619 (`?? { count: 0, escalated: false }`) and line 2760
-  (`openConflictAttempt`) before the sync runs, so `streaks[streakKey]` is
-  never undefined there; flipping `false` to `true` was run and no test can go
-  red. Not removed here because this round changes tests and docs only.
+  (`openConflictAttempt`) before the sync runs, so `streaks[streakKey]` is never
+  undefined there; flipping `false` to `true` was run and no test can go red.
+  Not removed here because this round changes tests and docs only.
 - Passed at the head: `deno task test:unit` over the new 4517 file, the 4328
   ladder, 4326 merge-only, `milestone_branch_sync` and `milestone_presync` tests
-  (161 passed, 0 failed). `deno fmt`,
-  `deno lint`, `deno check` on the edited files: clean. Full `./quality.sh`
-  passed through markdownlint, semgrep and the release-tag ruleset checks, then
-  timed out at 580 s in the unit-test stage.
+  (161 passed, 0 failed). `deno fmt`, `deno lint`, `deno check` on the edited
+  files: clean. Full `./quality.sh` passed through markdownlint, semgrep and the
+  release-tag ruleset checks, then timed out at 580 s in the unit-test stage.
 - `deno fmt --check` fails on `docs/INTERNALS.md` and
   `docs/workflows/milestones.md` at HEAD for unrelated paragraphs; they were not
   reflowed.
