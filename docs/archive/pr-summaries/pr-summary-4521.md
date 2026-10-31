@@ -82,6 +82,14 @@ edited.
 
 Results on the final head: `deno task test:unit tests/milestone_branch_sync_test.ts tests/milestone_fallback_flag_test.ts`: 90 passed, 0 failed.
 
+`./quality.sh`: every stage passed except `deno tests` (31306 passed, 3 failed),
+all three failing on the base branch too and not touching this change:
+`tests/completion_phase_repo_formatters_test.ts` lines 480 and 567 (no default
+rustup toolchain on this host) and `tests/pr_maintenance_command_test.ts` line
+344 (`expected a merge-queue rules read`; re-run on a clean `origin/main`
+checkout, same failure). The serial pass did not run. `config integration` and
+`checkov` were skipped (local prerequisites).
+
 Docs read and updated: `docs/workflows/milestones.md` (the spent-budget bullet).
 `docs/workflows/merge-conflicts.md` lines 900-910 already say the record carries
 how far behind and since when; they are true now for the roll-back rung.
