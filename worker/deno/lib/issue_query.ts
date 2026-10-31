@@ -1090,7 +1090,7 @@ export async function fetchOpenPRsByUser(
     // instead of failing to arm it every cycle.
     "number,title,baseRefName,headRefName,isDraft",
     "--limit",
-    "10",
+    String(OPEN_PR_BY_USER_LIMIT),
   ]);
 
   // Issue #4024: stamp the queried author onto each PR so a blocking
@@ -1287,8 +1287,13 @@ export const SETTLED_PR_LISTING_MAX_AGE_SECONDS = 3600;
 /** Inside this age a settled listing is served as it always was. */
 const SETTLED_PR_LISTING_FRESH_SECONDS = 600;
 
-/** `fetchOpenPRsByUser` lists at most this many; a full listing is truncated. */
-const OPEN_PR_BY_USER_LIMIT = 10;
+/**
+ * The `--limit` `fetchOpenPRsByUser` passes to `gh pr list`. A full listing is
+ * truncated, so `openPrNumbersByUser` treats one as unknown. The duplicate
+ * guard (the own-PR rule in `getBlockingPRForIssue`, Issue #2663) needs every
+ * open PR of the author, or an older own PR is missed (Issue #4518).
+ */
+const OPEN_PR_BY_USER_LIMIT = 100;
 
 /** A merged/closed listing, with the open PRs seen while it has been cached. */
 interface SettledListing<T> {
