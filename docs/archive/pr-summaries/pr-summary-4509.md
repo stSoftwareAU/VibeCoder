@@ -73,3 +73,10 @@ candidate build errors, which still hold.
 - Twinned rule: the new-PR path (`completion_phase.ts`, Issue #3395) already
   logs and does not block; the review-fix path now agrees.
 - `deno fmt --check`, `deno lint`, `deno check` on the touched files: clean.
+- `./quality.sh` on the final code head: lint, type check and fmt passed; the
+  gate reported FAILED on the gh/git spawn chokepoint, spawn timeout, git ref
+  chokepoint and completeness checks and on six deno tests (the same
+  chokepoint/sweep-coverage tests). Every violation line names
+  `worker/deno/commands/fleet_pr_babysitter.ts` (added by 806c02ed, #4543,
+  already on `origin/main`); this diff does not touch that file. The
+  completeness report was not read in full. Not verified on a clean base run.
