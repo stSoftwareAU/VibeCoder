@@ -103,7 +103,7 @@ export type OrchestrationState =
 
 /** The limits one run may not exceed. Retries and depth are per the contract. */
 export interface OrchestrationBounds {
-  /** Extra attempts after a failed `error` or `timeout` call. An abandoned call (no answer within the call timeout) is never retried. */
+  /** Extra attempts after a failed `error` or `timeout` call. An abandoned call (no answer within the call timeout), or a call marked `retryable: false`, is never retried. */
   maxRetries: number;
   /** How many delegation levels below the manager may run (contract section 6). */
   maxDelegationDepth: number;
@@ -136,7 +136,13 @@ export interface AgentCall {
 /** What the injected invoker reports back for one call. */
 export type AgentCallResult =
   | { ok: true; output: string; costUsd?: number }
-  | { ok: false; kind: AgentCallFailureKind; message: string };
+  | {
+    ok: false;
+    kind: AgentCallFailureKind;
+    message: string;
+    /** false when the run is ending, so a retry cannot help; the orchestrator does not retry the call. */
+    retryable?: false;
+  };
 
 /** Runs one role call against a real or fake provider. */
 export type InvokeAgent = (call: AgentCall) => Promise<AgentCallResult>;
