@@ -176,6 +176,10 @@ Deno.test("issue prompt - the summary-file list and skeleton restate the criteri
     summaryFile,
     "writing the marker would claim a review that never happened",
   );
+  assertStringIncludes(
+    summaryFile,
+    "CSS flexbox properties; the tablet breakpoint is still outstanding. Part of #{{ISSUE_NUMBER}}",
+  );
 });
 
 Deno.test("pr_feedback prompt - the criteria-less case is named in the close-guard rule (Issue #4477)", async () => {
