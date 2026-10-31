@@ -1,7 +1,7 @@
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
-import { runGhCommand } from "../lib/github.ts";
+import { runGhCommand, runGhCommandRaw } from "../lib/github.ts";
 import {
   createWriteRepoAllowlistContext,
   seedWriteRepoAllowlist,
@@ -46,6 +46,15 @@ interface Pr {
 }
 const fields =
   "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
+
+/** A clone may leave a partial destination, so it must not be retried in place. */
+export async function cloneForRepair(
+  repo: string,
+  dir: string,
+  clone: typeof runGhCommandRaw = runGhCommandRaw,
+): Promise<void> {
+  await clone(["repo", "clone", repo, dir, "--", "--no-checkout"]);
+}
 
 interface Review {
   id: number;
@@ -408,7 +417,7 @@ async function fix(
     scratch = await Deno.makeTempDir({
       prefix: `fleet-pr-babysitter-${Deno.pid}-`,
     });
-    await run("gh", ["repo", "clone", repo, dir, "--", "--no-checkout"]);
+    await cloneForRepair(repo, dir);
     await run("git", buildFetchTrackingRefArgs("origin", pr.headRefName), dir);
     await run("git", buildFetchTrackingRefArgs("origin", pr.baseRefName), dir);
     await run("git", ["checkout", "-b", "babysitter", pr.headRefOid], dir);

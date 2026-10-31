@@ -6,6 +6,7 @@ import {
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
 import {
+  cloneForRepair,
   eligibleAuthor,
   reason,
   recoverTemporaryClones,
@@ -15,6 +16,21 @@ import {
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+
+Deno.test("failed clone is attempted once and preserves its original error", async () => {
+  let attempts = 0;
+  const timeout = new Error("clone timed out");
+  await assertRejects(
+    () =>
+      cloneForRepair("owner/repo", "/tmp/clone", () => {
+        attempts++;
+        return Promise.reject(timeout);
+      }),
+    Error,
+    "clone timed out",
+  );
+  assertEquals(attempts, 1);
+});
 
 const pr = {
   state: "OPEN",
