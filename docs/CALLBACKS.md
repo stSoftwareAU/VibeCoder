@@ -508,12 +508,16 @@ flowchart TD
 ## What a hook receives
 
 The environment is **cleared** before it is populated: only `PATH`, `HOME`,
-`LANG`, `TZ`, `TMPDIR` and the proxy variables are inherited from the worker, so
-no credential crosses into a callback. The proxy variables (`HTTPS_PROXY`,
-`HTTP_PROXY`, `NO_PROXY` and their lower-case forms) name the egress proxy, the
-only way out of the container, so a hook can reach a remote through it. A proxy
-value containing `@` is dropped, since its userinfo could hold a credential.
-Prompt bodies and transcript contents are never exported.
+`LANG`, `TZ`, `TMPDIR` and the proxy variables are inherited from the process
+that spawns the hook (the worker for run and cycle hooks, the host launcher for
+the host-failure hook), so no credential crosses into a callback. For a run or
+cycle hook the proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and
+their lower-case forms) name the egress proxy, the only way out of the
+container, so the hook can reach a remote through it. The host-failure hook
+instead gets the host launcher's own proxy variables, usually none (see
+[the host-failure hook](#what-the-hook-receives)). A proxy value containing `@`
+is dropped, since its userinfo could hold a credential. Prompt bodies and
+transcript contents are never exported.
 
 Passing these variables is additive: it is not a schema bump, and
 `schemaVersion` stays where it is (see

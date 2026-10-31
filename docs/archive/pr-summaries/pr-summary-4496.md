@@ -92,8 +92,8 @@ Backend only; no UI files touched.
   `host_failure_hook_test.ts` each of the six names has its own value (different
   ports for the four URL names, different host lists for `NO_PROXY` and
   `no_proxy`). Red check: `inheritedEnv` reading `readEnv(name.toUpperCase())` →
-  3 tests fail (the run, cycle and host-failure pass-through tests); restored.
-- `deno task test:unit` over `run_callbacks_test.ts`,
-  `host_failure_hook_test.ts`, `run_callbacks_integration_test.ts` and
-  `run_callbacks_config_test.ts`: 92 passed, 0 failed. `deno fmt` on the touched
-  files: clean.
+  the run, cycle and host-failure pass-through tests fail; restored.
+- `deno task test:unit`, each file run on the head: `run_callbacks_test.ts` (35
+  tests at head), `host_failure_hook_test.ts` (23 tests at head) and
+  `run_callbacks_integration_test.ts` (10 tests at head): all passed, 0 failed.
+  `deno fmt` on the touched files: clean.
