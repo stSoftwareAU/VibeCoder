@@ -80,8 +80,8 @@ commit. The sandbox still applies; an unavailable
 permission or credential can stop a run and must be corrected by the operator.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
-An explicitly selected `--repo` and `--pr` can also target another author's
-PR, while retaining the same lock and validation. A failed
+An explicitly selected `--repo` scans that repository regardless of PR author;
+`--pr` narrows the scan to one PR. Both retain the same lock and validation. A failed
 or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and
 is not retried on that host for the same PR head. Removing the matching state

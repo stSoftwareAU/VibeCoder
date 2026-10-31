@@ -236,7 +236,7 @@ export function reason(pr: Pr): string | null {
   return null;
 }
 
-/** Explicitly selected PRs may be repaired even when their author is not a fleet account. */
+/** Explicitly scoped repositories may include PRs by any author. */
 export function eligibleAuthor(
   author: string,
   authors: string[],
@@ -562,7 +562,7 @@ async function pass(
         }
         if (
           !why ||
-          !eligibleAuthor(pr.author.login, authors, prFilter !== undefined)
+          !eligibleAuthor(pr.author.login, authors, repoFilter !== undefined)
         ) continue;
         console.log(`${repo}#${pr.number}: ${why}`);
         if (execute) {
