@@ -725,8 +725,7 @@ function mentionsCiFixMarker(body: string): boolean {
  * @param log - Sink for the unresolved-fleet and discard warnings. Defaults
  *   to `console.warn`, which every entry point has already patched through
  *   `installConsoleRedaction`; tests inject a recorder.
- * @returns Attempt and deferral records grouped by failure signature, and
- *   human-gate records grouped by check name.
+ * @returns Valid fleet-authored marker records, grouped by their key.
  */
 export function collectFleetCiFixMarkers(
   comments: readonly CiFixMarkerComment[],
