@@ -73,6 +73,9 @@ your organisation's fleet configuration) before starting repairs. Those workers 
 written by known fleet accounts. The MVP checks the local configuration; it
 cannot verify other hosts. Use a dedicated account with only the access it
 needs. The agent is asked to use RTK; configure Codex's RTK hook as well.
+Each repair activates the worker-side GitHub write allowlist for its target
+repository, including lock comments, branch updates and review dismissals.
+Concurrent repairs use separate scopes.
 Codex runs with approvals disabled and a workspace-write sandbox and is told
 not to ask questions. When a fix
 needs a human decision, it should report the blocker and stop without a
