@@ -89,14 +89,13 @@ existing `github_app_auth_test.ts` is unchanged and passes.
   helper is tested directly; `fix()` itself spawns a real `codex` and has no
   harness, so its two lines of wiring (mint, then spawn with the token) are not
   exercised by a test.
-- Mutation check: the spawn test now asserts the full codex argument list
-  (`-c`, `--output-last-message` and the rest, in order) and the `stdin`,
-  `stdout` and `stderr` options, so deleting any of those lines turns it red.
-  Two lines cannot be reached by a test:
-  `worker/deno/commands/fleet_pr_babysitter.ts:550` exempt (untestable):
-  the `fix()` call to `spawnBabysitterAgent` needs a real clone, a PR lock and a
-  `codex` binary, and `dir` is a required field of the options type, so dropping
-  it already fails `deno check`;
+- Mutation check: the spawn test now asserts the full codex argument list (`-c`,
+  `--output-last-message` and the rest, in order) and the `stdin`, `stdout` and
+  `stderr` options, so deleting any of those lines turns it red. Two lines
+  cannot be reached by a test: `worker/deno/commands/fleet_pr_babysitter.ts:550`
+  exempt (untestable): the `fix()` call to `spawnBabysitterAgent` needs a real
+  clone, a PR lock and a `codex` binary, and `dir` is a required field of the
+  options type, so dropping it already fails `deno check`;
   `worker/deno/commands/fleet_pr_babysitter.ts:770` exempt (untestable): the
   `pass(...)` call inside `main` needs live GitHub App credentials and a running
   watch loop, and `main` has no harness.
