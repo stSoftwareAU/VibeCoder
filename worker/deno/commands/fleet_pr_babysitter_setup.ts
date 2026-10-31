@@ -27,17 +27,14 @@ export function launchAgentPlist(
   input: { checkout: string; deno: string; home: string; ghConfigDir?: string },
 ): string {
   const e = escapeXml;
-  const runner =
-    `${input.checkout}/worker/deno/commands/fleet_pr_babysitter.ts`;
+  const runner = `${input.checkout}/fleet-pr-babysitter/run.sh`;
   const logDir = `${input.home}/.vibe-coder/fleet-pr-babysitter`;
   const path =
     `${input.home}/.deno/bin:${input.home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
   const ghConfig = input.ghConfigDir
     ? `<key>GH_CONFIG_DIR</key><string>${e(input.ghConfigDir)}</string>`
     : "";
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>${
-    e(input.deno)
-  }</string><string>run</string><string>--allow-all</string><string>${
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${LABEL}</string>\n<key>ProgramArguments</key><array><string>/bin/bash</string><string>${
     e(runner)
   }</string><string>--watch</string></array>\n<key>WorkingDirectory</key><string>${
     e(input.checkout)
@@ -45,6 +42,8 @@ export function launchAgentPlist(
     e(input.home)
   }</string><key>PATH</key><string>${
     e(path)
+  }</string><key>DENO_EXECUTABLE</key><string>${
+    e(input.deno)
   }</string>${ghConfig}</dict>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>60</integer>\n<key>StandardOutPath</key><string>${
     e(logDir)
   }/service.log</string>\n<key>StandardErrorPath</key><string>${

@@ -11,19 +11,19 @@ From the VibeCoder checkout:
 ```sh
 # Interactive setup and preflight. It asks whether to install a launch agent;
 # answer no until you have manually tested a fix.
-deno run --allow-all worker/deno/commands/fleet_pr_babysitter_setup.ts
+./fleet-pr-babysitter/setup.sh
 
 # Report candidates only; no model calls or PR changes.
-deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --dry-run
+./fleet-pr-babysitter/run.sh --dry-run
 
 # Fix candidates in one pass.
-deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts
+./fleet-pr-babysitter/run.sh
 
 # Limit a first execution to one monitored PR.
-deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --repo=owner/name --pr=123
+./fleet-pr-babysitter/run.sh --repo=owner/name --pr=123
 
 # Repeat every five minutes, after each pass finishes.
-deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --watch
+./fleet-pr-babysitter/run.sh --watch
 ```
 
 Setup prompts for the GitHub App ID and private-key path, discovers the App
