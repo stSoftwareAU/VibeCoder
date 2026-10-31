@@ -84,18 +84,18 @@ existing test or assertion edited or removed). The added ones cover:
 - Reordered added lines → fresh review (with control).
 - 50,000-line patch pair: identical changed lines → unchanged, one changed line
   → fresh review.
-- PR #4525 review: a CHANGELOG entry moved from below a released heading to above
-  it → fresh review when a finding names `CHANGELOG.md` (bare or qualified path)
-  or findings are unknown; unchanged when only an unrelated file is named.
+- PR #4525 review: a CHANGELOG entry moved from below a released heading to
+  above it → fresh review when a finding names `CHANGELOG.md` (bare or qualified
+  path) or findings are unknown; unchanged when only an unrelated file is named.
 - PR #4525 review, through `skipReason`: the issue's moved-context case in an
-  unnamed file stays `awaiting-fix`; the relocated line in a named file is `null`
-  (fresh review).
+  unnamed file stays `awaiting-fix`; the relocated line in a named file is
+  `null` (fresh review).
 
 Red checks (each break applied alone, then restored):
 
 - Old `normalisePatch` equality restored → 8 failed (context-moved test red).
-- Findings gate removed (changed lines compared for every file) → the two
-  PR #4525 review tests red (2 failed, 33 passed).
+- Findings gate removed (changed lines compared for every file) → the two PR
+  #4525 review tests red (2 failed, 33 passed).
 - Hunk-count check dropped → extra-hunk test red.
 - `-` lines dropped from the reduction → removed-line test red.
 - `\` marker handling dropped → marker test red.
