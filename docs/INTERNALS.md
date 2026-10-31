@@ -2197,23 +2197,25 @@ keeps `reviewDecision` at `CHANGES_REQUESTED` after a Comment review. Each chang
 reason; see `selectOutstandingReviews` in
 [pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts).
 
-**Staleness check** (Issue #2702) — a `CHANGES_REQUESTED` review is skipped
-only when a **fleet fix commit** landed after its `submitted_at`: a commit
-authored or committed by a fleet login that is neither a merge (the base branch
-merged in by update-branch) nor a bot's commit (`github-actions[bot]` formatting
-or version bumps). The head merely moving is not enough — on GRQ#5032 a base
-merge and a version bump moved the head after the owner's review, and the old
-`commit_id !== head` rule hid a review nobody had answered. A review on the
-current head costs no extra call; otherwise the PR's commits are read once
-(`pulls/{pr}/commits`, 100 a page), and an unreadable history keeps the review
-actionable. The skip is logged at info. The rule is the one fleet-push
-supersession uses (`isFleetAnswerAfter` in
-[pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts)),
-without the cool-off window; a handled review is dismissed, which is what stops
-it being processed twice. A review still in flight is guarded instead by its
-claim comment's live lease (Issue #3383): the scan skips a review a live,
-fleet-authored lease covers, and only a lapsed lease — the run timed out,
-crashed or went silent — makes it actionable again.
+**Staleness check** (Issues #2702 and #4510) — a `CHANGES_REQUESTED` review is
+no longer superseded by any commit (Issue #4510). The head moving, a base merge,
+a bot's formatting or version bump, and any fleet or CI-fix commit all leave it
+outstanding. Only two things retire it: its dismissal (the processed marker,
+which is what stops a handled review being processed twice), and the same
+reviewer's later `APPROVED`, `DISMISSED` or `CHANGES_REQUESTED` review (Issue
+#2697). A live, fleet-authored claim lease holds a review rather than retiring
+it (Issue #3383): the scan skips a review a live lease covers, and only a lapsed
+lease — the run timed out, crashed or went silent — makes it actionable again.
+The history explains the rule. Under the old `commit_id !== head` rule, a base
+merge and a version bump on GRQ#5032 moved the head after the owner's review and
+hid it. Issue #2702 then skipped a review once a fleet fix commit landed after
+its `submitted_at`, but on NEAT-AI-Discovery#2443 a CI-fix commit counted as
+answering the review when nothing had answered it. CI-fix pushes are
+single-parent fleet commits that never reply to a review, so no commit can
+retire one. No commit history is read for reviews any more: the scan makes no
+`pulls/{pr}/commits` call for them. `isFleetAnswerAfter` in
+[pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts) is now
+used only by the comment fleet-push supersession below.
 
 **Superseded by a fleet push** — a trusted comment is also deferred when the PR
 head was pushed by a **fleet login** _after_ the comment was written and within
