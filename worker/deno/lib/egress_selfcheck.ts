@@ -588,15 +588,13 @@ function summariseObserved(counts: Map<string, number>): string {
  * will not change its allowlist. Every attempt that did not succeed is logged
  * with what it saw, and the failed result's `observed` counts those answers.
  *
- * Unless `waitForListener` is false, the probe first waits for the proxy to
- * accept connections (see {@link waitForProxyListener}). A proxy that never
- * starts ends the probe with no attempts spent and an `observed` that says
- * `no listener`.
+ * The probe does not wait for the proxy's listener: {@link runEgressProbes}
+ * does that once, before it calls this.
  *
  * @param proxyUrl - The proxy URL from the environment
  * @param host - An allowlisted host
- * @param options - Attempts, per-attempt budget, pause, log sink, and listener
- *   wait (budget, sleep, clock, on/off); the sleep and clock are for tests
+ * @param options - Attempts, per-attempt budget, pause, log sink, and the sleep
+ *   seam (tests)
  * @returns `succeeded`, `denied` or `not_checked` as soon as one attempt gives
  *   it; otherwise `failed` with the counts of what the attempts saw
  */
@@ -608,32 +606,14 @@ export async function probeProxyAllowedDetailed(
     timeoutMs?: number;
     delayMs?: number;
     log?: (line: string) => void;
-    listenTimeoutMs?: number;
     sleep?: (ms: number) => Promise<void>;
-    now?: () => number;
-    waitForListener?: boolean;
   } = {},
 ): Promise<ConnectOutcome> {
   const attempts = options.attempts ?? EGRESS_ALLOWED_PROBE_ATTEMPTS;
   const timeoutMs = options.timeoutMs ?? EGRESS_ALLOWED_PROBE_TIMEOUT_MS;
   const delayMs = options.delayMs ?? EGRESS_ALLOWED_PROBE_DELAY_MS;
-  const listenMs = options.listenTimeoutMs ?? EGRESS_PROXY_LISTEN_TIMEOUT_MS;
   const sleep = options.sleep ?? pause;
   const log = options.log ?? ((line: string) => console.warn(line));
-  if (options.waitForListener ?? true) {
-    const listener = await waitForProxyListener(proxyUrl, {
-      timeoutMs: listenMs,
-      sleep,
-      now: options.now,
-    });
-    if (!listener.listening) {
-      log(noListenerLogLine(host, listenMs, listener.observed));
-      return {
-        result: "failed",
-        observed: noListenerObserved(listenMs, listener.observed),
-      };
-    }
-  }
   const counts = new Map<string, number>();
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const outcome = await probeProxyConnectDetailed(proxyUrl, host, timeoutMs);
@@ -653,8 +633,8 @@ export async function probeProxyAllowedDetailed(
 }
 
 /**
- * {@link probeProxyAllowedDetailed} without the listener wait and without the
- * detail: the attempts, the budget and the result only. The result is
+ * {@link probeProxyAllowedDetailed} without the detail: the attempts, the
+ * budget and the result only. The result is
  * `failed` when no attempt connected, whatever the proxy answered.
  *
  * @param proxyUrl - The proxy URL from the environment
@@ -672,10 +652,7 @@ export async function probeProxyAllowed(
     log?: (line: string) => void;
   } = {},
 ): Promise<ConnectRaw> {
-  const outcome = await probeProxyAllowedDetailed(proxyUrl, host, {
-    ...options,
-    waitForListener: false,
-  });
+  const outcome = await probeProxyAllowedDetailed(proxyUrl, host, options);
   return outcome.result;
 }
 
@@ -755,7 +732,6 @@ export async function runEgressProbes(
   const allowed = await probeProxyAllowedDetailed(proxy, ALLOWED_HOST, {
     timeoutMs: allowedTimeoutMs,
     sleep: options.sleep,
-    waitForListener: false,
     log: (line) => diagnostics.push(line),
   });
   const proxyDenied: ConnectDenyResult = denied.result === "denied"

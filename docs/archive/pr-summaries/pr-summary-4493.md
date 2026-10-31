@@ -31,7 +31,9 @@ final version.
 - `runEgressProbes` waits once, before the denied probe, because the denied
   probe is not retried. If nothing listens it returns
   `proxyDenied: not_checked`, `proxyAllowed: failed` and spends no attempts.
-- `probeProxyAllowed` keeps its signature and does not wait; it now returns
+- The listener wait lives only in `runEgressProbes`. `probeProxyAllowedDetailed`
+  and `probeProxyAllowed` never wait (PR #4531 review: a second wait there had
+  no production caller). `probeProxyAllowed` keeps its signature and now returns
   `failed` (not `through`) when no attempt connected, which `runEgressProbes`
   already treated the same way.
 - Markers for probes without `observed` detail are byte-for-byte unchanged.
@@ -77,24 +79,22 @@ Backend only; no UI files touched.
   fails at load (no `probeProxyAllowedDetailed` export), so the new tests are
   red on base.
 - **regression test** —
-  `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts::an allowlisted CONNECT waits for a listener 2 s late and spends no attempts (Issue #4493)`
+  `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts::runEgressProbes with a proxy that starts listening 2 s late still passes (Issue #4493)`
 
 ## Test Plan
 
 - `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts` (run under
   `--allow-net=127.0.0.1` by
   `worker/deno/tests/egress_allowed_probe_retry_test.ts`, which lists the eight
-  new names): listener 2 s late (a fake clock that each injected sleep advances
-  binds the stub once it reaches 2000 ms, with `listenTimeoutMs` left at its
-  default; no attempt lines); nothing ever listens (failed, no attempts, log
-  line); 502 every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3;
+  names): 502 every time (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3;
   `runEgressProbes` with a live proxy gives the enforced set; `runEgressProbes`
   with a proxy that never listens (`listenTimeoutMs` 1500 against `timeoutMs`
   1000, so the 1500 ms message only reads right when the listener budget is the
-  one used); `runEgressProbes` with a proxy that binds 2 s late (same fake
-  clock, default listener budget, `timeoutMs` 1000; `proxyAllowed` is
+  one used); `runEgressProbes` with a proxy that binds 2 s late (a fake clock that
+  each injected sleep advances binds the stub once it reaches 2000 ms, default
+  listener budget, `timeoutMs` 1000; `proxyAllowed` is
   `succeeded`, the verdict is `enforced`, and `diagnostics` is absent), which
-  covers the wait production actually runs.
+  covers the wait production actually runs and is the regression test.
 - `worker/deno/tests/egress_selfcheck_test.ts`: marker with `observed`
   (`proxyAllowed=failed (refused ×3)`), unchanged marker without it (control),
   Apple marker, diagnostics carried, `describeProbeFailures` cases (including a
@@ -102,7 +102,12 @@ Backend only; no UI files touched.
   tests to pin the dialled host and port, the `observed` token (first line,
   control characters stripped, 80-character cap, `closed without an answer`),
   and that only a `TimeoutError` is a timeout (a thrown `null`, `undefined`,
-  string or other-named error is not). The port check in `proxyEndpoint` is now
+  string or other-named error is not). `waitForProxyListener` is pinned two
+  ways: with a deadline of 0 the last dial error is reported (and an unrelated
+  error ends the wait as `listening`), and with a positive budget and a clock
+  the injected sleep advances, a first dial that throws `TimeoutError` is
+  retried and the second dial's success gives `listening: true` after exactly
+  two dials and one 250 ms pause. The port check in `proxyEndpoint` is now
   `port < 1` only: `new URL` rejects ports above 65535 and keeps digits only, so
   the old `isInteger` and `> 65535` operands were dead.
 - `worker/deno/tests/run_worker_test.ts`: diagnostics reach `deps.log` before a
@@ -114,7 +119,16 @@ Backend only; no UI files touched.
   skips the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2; the
   `probeProxyAllowed` wrapper waiting for the listener → 2 (the original
   scenarios).
-- PR #4531 review red checks (production broken one way at a time, then
+- Second PR #4531 review: the `probeProxyAllowedDetailed` listener wait and its
+  `listenTimeoutMs`, `now` and `waitForListener` options were removed, with the
+  two scenario tests that only exercised them (and their names in
+  `egress_allowed_probe_retry_test.ts`); the earlier `probeProxyAllowedDetailed`
+  listener-budget red check and the "wrapper waiting for the listener" red check
+  no longer apply. Red check for the retry test: `waitForProxyListener` returning
+  `listening: false` on a timeout instead of retrying turns
+  `a timed-out dial is retried until the proxy accepts` red (1 failed, 24
+  passed), then restored.
+- PR #4531 earlier review red checks (production broken one way at a time, then
   restored): `runEgressProbes` reading `timeoutMs` as the listener budget → 2
   red (the 2 s late-listener test and the never-listens test);
   `EGRESS_PROXY_LISTEN_TIMEOUT_MS` set to 1_000 → 2 red;
@@ -136,8 +150,8 @@ Backend only; no UI files touched.
 - No assertion was removed from an existing test; only the `@std/assert` import
   line in `egress_selfcheck_test.ts` gained a name.
 - `deno task test:unit` at the head:
-  `worker/deno/tests/egress_allowed_probe_retry_test.ts` (10 tests at head),
-  `worker/deno/tests/egress_selfcheck_test.ts` (23 tests at head),
+  `worker/deno/tests/egress_allowed_probe_retry_test.ts` (8 tests at head),
+  `worker/deno/tests/egress_selfcheck_test.ts` (25 tests at head),
   `worker/deno/tests/run_worker_test.ts` (37 tests at head); all pass.
   `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
 - `./quality.sh` on an earlier head (before the review-fix pushes that rewrote

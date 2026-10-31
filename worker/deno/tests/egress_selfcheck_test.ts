@@ -558,7 +558,7 @@ Deno.test("probeProxyConnectDetailed - a dial error is a timeout only when it is
   });
 });
 
-Deno.test("waitForProxyListener - a dial error named TimeoutError is retried, others end the wait (Issue #4493)", async () => {
+Deno.test("waitForProxyListener - the last dial error is reported at the deadline, and an unrelated error ends the wait (Issue #4493)", async () => {
   const wait = (thrown: unknown) =>
     withConnect(
       () => Promise.reject(thrown),
@@ -582,4 +582,30 @@ Deno.test("waitForProxyListener - a dial error named TimeoutError is retried, ot
   });
   assertEquals(await wait(null), { listening: true });
   assertEquals(await wait(undefined), { listening: true });
+});
+
+Deno.test("waitForProxyListener - a timed-out dial is retried until the proxy accepts (Issue #4493)", async () => {
+  let clock = 0;
+  let calls = 0;
+  const result = await withConnect(
+    () => {
+      calls++;
+      return calls === 1
+        ? Promise.reject(new DOMException("slow", "TimeoutError"))
+        : Promise.resolve(fakeConn(null));
+    },
+    () =>
+      waitForProxyListener("http://proxy.test:3128", {
+        timeoutMs: 5000,
+        intervalMs: 250,
+        now: () => clock,
+        sleep: (ms) => {
+          clock += ms;
+          return Promise.resolve();
+        },
+      }),
+  );
+  assertEquals(result, { listening: true });
+  assertEquals(calls, 2);
+  assertEquals(clock, 250);
 });

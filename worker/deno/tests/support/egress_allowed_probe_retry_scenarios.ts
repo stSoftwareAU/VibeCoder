@@ -201,70 +201,6 @@ Deno.test("lateBindingClock binds exactly once, when the clock reaches the bind 
   assertEquals(time.nowReads(), 1);
 });
 
-Deno.test("an allowlisted CONNECT waits for a listener 2 s late and spends no attempts (Issue #4493)", async () => {
-  const port = freePort();
-  let stub: ReturnType<typeof startProxyStub> | undefined;
-  const log: string[] = [];
-  const time = lateBindingClock(PROXY_BINDS_LATE_MS, () => {
-    stub = startProxyStub({ port, answer: () => CONNECTED });
-  });
-  try {
-    // `listenTimeoutMs` is left at its default: the production budget.
-    const outcome = await probeProxyAllowedDetailed(
-      `http://127.0.0.1:${port}`,
-      "api.github.com",
-      {
-        timeoutMs: 1000,
-        delayMs: 0,
-        log: (line) => log.push(line),
-        now: time.now,
-        sleep: time.sleep,
-      },
-    );
-    assertEquals(outcome.result, "succeeded");
-    assertEquals(outcome.observed, "connected");
-    assert(time.nowReads() > 0, "the injected clock was never read");
-    assert(
-      time.elapsed() >= PROXY_BINDS_LATE_MS,
-      `the proxy was not waited for: ${time.elapsed()}ms elapsed`,
-    );
-    assertEquals(log.filter((line) => line.includes("attempt")).length, 0);
-    assertEquals(stub?.connects(), 1);
-  } finally {
-    await stub?.close();
-  }
-});
-
-Deno.test("an allowlisted CONNECT with no listener ever is failed and spends no attempts (Issue #4493)", async () => {
-  const port = freePort();
-  let clock = 0;
-  const log: string[] = [];
-  const outcome = await probeProxyAllowedDetailed(
-    `http://127.0.0.1:${port}`,
-    "api.github.com",
-    {
-      listenTimeoutMs: 1000,
-      delayMs: 0,
-      log: (line) => log.push(line),
-      now: () => clock,
-      sleep: (ms) => {
-        clock += ms;
-        return Promise.resolve();
-      },
-    },
-  );
-  assertEquals(outcome.result, "failed");
-  assert(
-    outcome.observed.startsWith("no listener after 1000ms"),
-    outcome.observed,
-  );
-  assertStringIncludes(
-    log.join("\n"),
-    "is not accepting connections after 1000ms",
-  );
-  assertEquals(log.some((line) => line.includes("attempt")), false);
-});
-
 Deno.test("an allowlisted CONNECT answered 502 every time fails and counts what it saw (Issue #4493)", async () => {
   const stub = startProxyStub({
     answer: () => "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n",
@@ -292,7 +228,6 @@ Deno.test("an allowlisted CONNECT refused three times says so (Issue #4493)", as
       timeoutMs: 1000,
       attempts: 3,
       delayMs: 0,
-      waitForListener: false,
       log: () => {},
     },
   );
