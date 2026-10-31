@@ -23,6 +23,7 @@ import {
 } from "../lib/milestone_branch_sync.ts";
 import type { AgentAttemptAnnouncement } from "../lib/milestone_sync_announcement.ts";
 import type { RollbackOutcome } from "../lib/milestone_rollback.ts";
+import type { MergeFallbackFiling } from "../lib/merge_fallback_issue.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import { conflictEscalationKey } from "../lib/milestone_conflict_dedup.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
@@ -1212,6 +1213,7 @@ const FLAG_ISSUE = 4242;
 /** How the injected sync ends, for the ledger tests. */
 type LedgerFailure =
   | "conflict"
+  | "undecided-conflict"
   /** The agent ran out its own ceiling — a judged attempt (Issue #2305). */
   | "agent-timeout"
   /** The worker killed the run at the cycle deadline (Issues #1693, #2305). */
@@ -1264,6 +1266,16 @@ function ledgerOutcome(
         ok: false,
         error: new MilestoneConflictEscalation(
           "every rung left it undecided",
+          [analysis],
+          [],
+          LEDGER_SHA,
+        ),
+      };
+    case "undecided-conflict":
+      return {
+        ok: false,
+        error: new MilestoneConflictEscalation(
+          "every rung of the ladder left them undecided",
           [analysis],
           [],
           LEDGER_SHA,
@@ -3062,6 +3074,184 @@ Deno.test("syncMilestoneBranches - a resolver refusal reaches the next ladder ru
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+/** Where in the pass the roll-back is taken (Issues #4328, #4521). */
+type FilingScenario =
+  | "ladder"
+  | "ladder-in-cycle"
+  | "spent-at-cycle-start"
+  | "spent-in-cycle";
+
+/**
+ * One roll-back for a lone branch; returns the filing, the compares and the
+ * log. The mocks answer as a real roll-back leaves the repository: the branch
+ * is 7 commits behind (compare lists one) until the roll-back has merged, and
+ * level with the base after it, so a record read after the roll-back shows.
+ */
+async function rollbackFiling(
+  scenario: FilingScenario,
+  options: {
+    lastSyncedDefaultSha?: string;
+    behindCountThrows?: boolean;
+  } = {},
+): Promise<
+  { filing: MergeFallbackFiling; compares: string[]; logs: string[] }
+> {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4521-behind-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const lastSynced = options.lastSyncedDefaultSha
+      ? { lastSyncedDefaultSha: options.lastSyncedDefaultSha }
+      : {};
+    const entries: Record<string, SyncStreakEntry> = {
+      ladder: {
+        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+        escalated: false,
+        ...lastSynced,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: CONFLICT_RESOLVER_DECLINED,
+        },
+      },
+      "ladder-in-cycle": {
+        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+        escalated: false,
+        ...lastSynced,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "not-charged",
+          reason: "agent deferred: cycle budget",
+        },
+      },
+      "spent-at-cycle-start": {
+        count: 3,
+        escalated: false,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+        ...lastSynced,
+      },
+      "spent-in-cycle": {
+        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+        escalated: false,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+        ...lastSynced,
+      },
+    };
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: entries[scenario]!,
+    });
+    const logs: string[] = [];
+    const deps = ledgerDeps([], {
+      // A lone milestone: the pass never measures how far behind it is.
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: scenario === "spent-in-cycle"
+          ? "conflict"
+          : scenario === "ladder-in-cycle"
+          ? "undecided-conflict"
+          : "resolver-refusal",
+        behindBy: 7,
+      }],
+      streakPath,
+      nowMs: 10_000,
+      rollbackOutcome: { merged: true, reverted: [] },
+      log: (m) => logs.push(m),
+    });
+    let rolledBack = false;
+    const rollback = deps.rollbackFn!;
+    deps.rollbackFn = async (request) => {
+      const outcome = await rollback(request);
+      rolledBack = true;
+      return outcome;
+    };
+    deps.behindCountFn = () => {
+      if (options.behindCountThrows) return Promise.reject(new Error("boom"));
+      return Promise.resolve({ ok: true as const, value: rolledBack ? 0 : 7 });
+    };
+    const compares: string[] = [];
+    const inner = deps.ghCommandFn;
+    deps.ghCommandFn = (args) => {
+      const compare = args.find((arg) => arg.includes("/compare/"));
+      if (compare === undefined) return inner(args);
+      compares.push(compare);
+      return Promise.resolve(rolledBack ? "null\n" : "2026-10-29T01:02:03Z\n");
+    };
+    const filings: MergeFallbackFiling[] = [];
+    deps.fileMergeFallbackFn = (filing) => {
+      filings.push(filing);
+      return Promise.resolve({
+        ok: true as const,
+        value: { issueNumber: FLAG_ISSUE, url: "u", appended: false },
+      });
+    };
+    const result = await syncMilestoneBranches(deps);
+    assert(result.ok);
+    assertEquals(filings.length, 1, "the roll-back files one record");
+    return { filing: filings[0]!, compares, logs };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("syncMilestoneBranches - the ladder's roll-back of a lone branch files how far behind the base it was and since when (Issue #4521)", async () => {
+  const { filing, compares } = await rollbackFiling("ladder", {
+    lastSyncedDefaultSha: "b".repeat(40),
+  });
+  assertEquals(filing.behindBy, 7, "commits behind is recorded");
+  assertEquals(filing.behindSince, "2026-10-29T01:02:03Z");
+  assertEquals(compares, [`repos/owner/repo/compare/${"b".repeat(40)}...main`]);
+});
+
+Deno.test("syncMilestoneBranches - a branch that never synced bounds the behind-since compare with the branch itself (Issue #4521)", async () => {
+  const { filing, compares } = await rollbackFiling("ladder");
+  assertEquals(filing.behindBy, 7);
+  assertEquals(filing.behindSince, "2026-10-29T01:02:03Z");
+  assertEquals(compares, [`repos/owner/repo/compare/${LEDGER_BRANCH}...main`]);
+});
+
+Deno.test("syncMilestoneBranches - a spent budget found at the start of a cycle files the gap read before the roll-back (Issue #4521)", async () => {
+  const { filing, compares } = await rollbackFiling("spent-at-cycle-start", {
+    lastSyncedDefaultSha: "c".repeat(40),
+  });
+  assertEquals(filing.behindBy, 7);
+  assertEquals(filing.behindSince, "2026-10-29T01:02:03Z");
+  assertEquals(compares, [`repos/owner/repo/compare/${"c".repeat(40)}...main`]);
+  assertEquals(filing.conflictedFiles, undefined, "no error is in hand");
+});
+
+Deno.test("syncMilestoneBranches - the same-cycle ladder roll-back files the conflict and the gap before roll-back (Issue #4521)", async () => {
+  const { filing, compares, logs } = await rollbackFiling("ladder-in-cycle");
+  assertEquals(filing.conflictedFiles, ["worker/deno/lib/scan_content.ts"]);
+  assertEquals(filing.behindBy, 7);
+  assertEquals(filing.behindSince, "2026-10-29T01:02:03Z");
+  assertEquals(compares, [`repos/owner/repo/compare/${LEDGER_BRANCH}...main`]);
+  assert(
+    logs.some((line) => line.includes("rolls the branch back (Issue #4328)")),
+    `the ladder roll-back was not taken: ${JSON.stringify(logs)}`,
+  );
+});
+
+Deno.test("syncMilestoneBranches - a budget spent in this cycle files the conflicted files and the gap read before the roll-back (Issue #4521)", async () => {
+  const { filing, compares } = await rollbackFiling("spent-in-cycle");
+  assertEquals(filing.conflictedFiles, ["worker/deno/lib/scan_content.ts"]);
+  assertEquals(filing.behindBy, 7);
+  assertEquals(filing.behindSince, "2026-10-29T01:02:03Z");
+  assertEquals(compares, [`repos/owner/repo/compare/${LEDGER_BRANCH}...main`]);
+});
+
+Deno.test("syncMilestoneBranches - a behind-by that cannot be measured is logged with its reason and filed as not recorded (Issue #4521)", async () => {
+  const { filing, logs } = await rollbackFiling("ladder", {
+    behindCountThrows: true,
+  });
+  assertEquals(filing.behindBy, undefined);
+  assert(
+    logs.some((l) =>
+      l.includes(`is behind 'main': boom — the merge-fallback record says`)
+    ),
+    `no measurement line in: ${JSON.stringify(logs)}`,
+  );
 });
 
 Deno.test("syncMilestoneBranches - a resolver refusal already repeated for several budgets is retired in one cycle (Issue #4328)", async () => {
