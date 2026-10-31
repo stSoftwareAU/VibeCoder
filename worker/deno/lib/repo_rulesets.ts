@@ -462,17 +462,144 @@ export function mergeQueueParametersFromDetail(
 }
 
 /**
+ * Required checks the live ruleset already enforces, across every
+ * `required_status_checks` rule it carries (Issue #4487).
+ *
+ * A missing or malformed rules array, or a malformed
+ * `required_status_checks` rule, throws rather than being dropped or stripped, so a
+ * reconcile never writes back a body that silently forgets a live check. That
+ * covers a non-object entry, a `context` that is not a non-empty string, an
+ * `integration_id` that is present (not `undefined` or `null`) but not an
+ * integer, and a `required_status_checks` value that is not an array. Every
+ * entry is validated before de-duplication. Exact duplicate checks keep the
+ * first entry; checks with distinct `integration_id`s remain distinct.
+ *
+ * @throws Error naming the malformed live check.
+ */
+function liveRequiredChecks(
+  existing: RulesetDetail,
+): RequiredStatusCheckBody[] {
+  if (!Array.isArray(existing.rules)) {
+    throw new Error(
+      "Refusing to rewrite required checks: live rules is not an array",
+    );
+  }
+  const checks = new Map<string, RequiredStatusCheckBody>();
+  const keyFor = (check: RequiredStatusCheckBody) =>
+    JSON.stringify([check.context, check.integration_id ?? null]);
+  const rules: unknown[] = existing.rules;
+  for (const [ruleIndex, rule] of rules.entries()) {
+    if (rule === null || typeof rule !== "object") continue;
+    if ((rule as { type?: unknown }).type !== "required_status_checks") {
+      continue;
+    }
+    const parameters: unknown = (rule as { parameters?: unknown }).parameters;
+    if (parameters === null || typeof parameters !== "object") {
+      throw new Error(
+        `Refusing to rewrite required checks: live rule ${ruleIndex} has no parameters object`,
+      );
+    }
+    const entries: unknown =
+      (parameters as Record<string, unknown>).required_status_checks;
+    if (entries === undefined) {
+      throw new Error(
+        `Refusing to rewrite required checks: live rule ${ruleIndex} has no required_status_checks array`,
+      );
+    }
+    if (!Array.isArray(entries)) {
+      throw new Error(
+        `Refusing to rewrite required checks: required_status_checks of live ` +
+          `rule ${ruleIndex} is not an array`,
+      );
+    }
+    for (const [checkIndex, entry] of (entries as unknown[]).entries()) {
+      const where = `live required check ${checkIndex} of rule ${ruleIndex}`;
+      if (entry === null || typeof entry !== "object") {
+        throw new Error(
+          `Refusing to rewrite required checks: ${where} is not an object`,
+        );
+      }
+      const { context, integration_id: integrationId } = entry as Record<
+        string,
+        unknown
+      >;
+      if (typeof context !== "string" || context.length === 0) {
+        throw new Error(
+          `Refusing to rewrite required checks: ${where} has no usable context`,
+        );
+      }
+      if (
+        integrationId !== undefined && integrationId !== null &&
+        !(typeof integrationId === "number" && Number.isInteger(integrationId))
+      ) {
+        throw new Error(
+          `Refusing to rewrite required checks: ${where} has a non-integer ` +
+            `integration_id for context "${context}"`,
+        );
+      }
+      const check = typeof integrationId === "number"
+        ? { context, integration_id: integrationId }
+        : { context };
+      const key = keyFor(check);
+      if (!checks.has(key)) checks.set(key, check);
+    }
+  }
+  return [...checks.values()];
+}
+
+/**
+ * The checks the status-checks rule writes: the worker's `contexts` in order,
+ * each omitted when that context is already live, followed by the live checks
+ * in live order. Distinct live `integration_id`s for one context are retained;
+ * exact duplicate context/app pairs keep the first entry (Issue #4487).
+ */
+function unionRequiredChecks(
+  contexts: string[],
+  live: RequiredStatusCheckBody[],
+): RequiredStatusCheckBody[] {
+  const written = new Map<string, RequiredStatusCheckBody>();
+  const liveByContext = new Map<string, RequiredStatusCheckBody[]>();
+  for (const check of live) {
+    const checks = liveByContext.get(check.context) ?? [];
+    checks.push(check);
+    liveByContext.set(check.context, checks);
+  }
+  const keyFor = (check: RequiredStatusCheckBody) =>
+    JSON.stringify([check.context, check.integration_id ?? null]);
+  for (const context of contexts) {
+    const liveChecks = liveByContext.get(context);
+    for (const check of liveChecks ?? [{ context }]) {
+      const key = keyFor(check);
+      if (!written.has(key)) written.set(key, check);
+    }
+  }
+  for (const check of live) {
+    const key = keyFor(check);
+    if (!written.has(key)) written.set(key, check);
+  }
+  return [...written.values()];
+}
+
+/**
  * Build the **update** body for the worker's default-branch ruleset.
  *
  * The update is a full-document PUT, so a body rebuilt from status checks
  * alone silently discards every other rule an admin added — required reviews,
  * force-push protection, deletion protection, bypass actors (Issue #1290).
- * This replaces only the `required_status_checks` rule and carries every other
- * rule and the bypass actors of the live ruleset through unchanged.
+ * This rewrites only the `required_status_checks` rule, as the union of
+ * `contexts` and the checks the live ruleset already requires, each live check
+ * keeping its `integration_id`. The update PUT therefore never drops a check the
+ * live ruleset requires; it never removes a check, so pruning one is a
+ * deliberate human action. Every other rule and the bypass actors of the live
+ * ruleset are carried through unchanged.
  *
  * The live `merge_queue` rule, if any, is never carried through: it is
  * replaced by a rule built from `mergeQueue` when one is given, and dropped
  * otherwise. So a re-run never duplicates the rule.
+ *
+ * @throws Error when the live rules array or required-check rule is malformed
+ *   (see {@link liveRequiredChecks}), so nothing is built and nothing is
+ *   written.
  */
 export function buildDefaultBranchRulesetUpdateBody(
   name: string,
@@ -481,12 +608,24 @@ export function buildDefaultBranchRulesetUpdateBody(
   mergeQueue?: MergeQueueParameters,
 ): RulesetBody {
   const base = buildDefaultBranchRulesetBody(name, contexts, mergeQueue);
+  const live = liveRequiredChecks(existing);
+  const rules: RulesetBody["rules"] = base.rules.map((rule) =>
+    isRequiredStatusChecksRule(rule)
+      ? {
+        ...rule,
+        parameters: {
+          ...rule.parameters,
+          required_status_checks: unionRequiredChecks(contexts, live),
+        },
+      }
+      : rule
+  );
   const bypassActors = Array.isArray(existing.bypass_actors)
     ? existing.bypass_actors
     : [];
   return {
     ...base,
-    rules: [...preservedRulesFromDetail(existing), ...base.rules],
+    rules: [...preservedRulesFromDetail(existing), ...rules],
     ...(bypassActors.length > 0 ? { bypass_actors: bypassActors } : {}),
   };
 }

@@ -2,7 +2,7 @@
  * Tests for lib/repo_rulesets.ts — repository ruleset primitives (Issue #4163).
  */
 
-import { assert, assertEquals, assertFalse } from "@std/assert";
+import { assert, assertEquals, assertFalse, assertThrows } from "@std/assert";
 import {
   buildDefaultBranchRulesetBody,
   buildDefaultBranchRulesetUpdateBody,
@@ -23,6 +23,7 @@ import {
   mergeQueueParametersFromDetail,
   type OpaqueRulesetRule,
   requiredContextsFromRules,
+  type RequiredStatusCheckBody,
   type RulesetDetail,
   updateRuleset,
 } from "../lib/repo_rulesets.ts";
@@ -546,6 +547,385 @@ Deno.test("repo_rulesets - mergeQueueParametersFromDetail rejects a malformed me
       undefined,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Live required checks an owner added (Issue #4487)
+// ---------------------------------------------------------------------------
+
+/** A live ruleset whose required checks include checks the worker does not name. */
+const LIVE_OWNER_CHECKS: RulesetDetail = {
+  id: 44,
+  name: "Vibe Coder default branch",
+  rules: [
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: true,
+        required_status_checks: [
+          { context: "gate", integration_id: 15368 },
+          { context: "secret-scan", integration_id: 111 },
+          { context: "static-analysis", integration_id: 222 },
+        ],
+      },
+    },
+  ],
+};
+
+Deno.test("repo_rulesets - the update body keeps the live checks the worker does not name (Issue #4487)", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    { ...LIVE_OWNER_CHECKS, bypass_actors: [] },
+  );
+
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
+  assertFalse("bypass_actors" in body);
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "gate", integration_id: 15368 },
+    { context: "secret-scan", integration_id: 111 },
+    { context: "static-analysis", integration_id: 222 },
+  ]);
+});
+
+Deno.test("repo_rulesets - an unpinned live check stays unpinned", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    detailWithChecks([{ context: "owner-unpinned" }]),
+  );
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  const unpinned = checks.parameters.required_status_checks.find((check) =>
+    check.context === "owner-unpinned"
+  );
+  assert(unpinned);
+  assertFalse("integration_id" in unpinned);
+});
+
+Deno.test("repo_rulesets - a null live integration_id stays unpinned (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(
+      ["gate"],
+      detailWithChecks([{ context: "gate", integration_id: null }]),
+    ),
+    [{ context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - a new worker context is written without an integration_id beside the live checks (Issue #4487)", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate", "markdownlint"],
+    LIVE_OWNER_CHECKS,
+  );
+
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  // Worker contexts first, in order; live-only checks follow in live order.
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "gate", integration_id: 15368 },
+    { context: "markdownlint" },
+    { context: "secret-scan", integration_id: 111 },
+    { context: "static-analysis", integration_id: 222 },
+  ]);
+});
+
+Deno.test("repo_rulesets - a queue turns strict off and still keeps every live check (Issue #4487)", () => {
+  const body = buildDefaultBranchRulesetUpdateBody(
+    "Vibe",
+    ["gate"],
+    LIVE_OWNER_CHECKS,
+    QUEUE,
+  );
+
+  assertEquals(body.rules.map((rule) => rule.type), [
+    "required_status_checks",
+    "merge_queue",
+  ]);
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, false);
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "gate", integration_id: 15368 },
+    { context: "secret-scan", integration_id: 111 },
+    { context: "static-analysis", integration_id: 222 },
+  ]);
+});
+
+/** A live ruleset whose one status-checks rule lists the given entries. */
+function detailWithChecks(entries: unknown): RulesetDetail {
+  return {
+    id: 46,
+    name: "Vibe",
+    rules: [
+      {
+        type: "required_status_checks",
+        parameters: {
+          strict_required_status_checks_policy: true,
+          required_status_checks: entries,
+        },
+      },
+    ],
+  };
+}
+
+/** The checks the status-checks rule writes for `contexts` over `live`. */
+function unionChecksOf(
+  contexts: string[],
+  live: RulesetDetail,
+): RequiredStatusCheckBody[] {
+  const body = buildDefaultBranchRulesetUpdateBody("Vibe", contexts, live);
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  return checks.parameters.required_status_checks;
+}
+
+Deno.test("repo_rulesets - a live check with a non-string context throws rather than being dropped (Issue #4487)", () => {
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detailWithChecks([{ context: 7 }])),
+    Error,
+    "live required check 0 of rule 0 has no usable context",
+  );
+  // Positive control: the same entry with a usable context builds.
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "legal" }])),
+    [{ context: "worker-check" }, { context: "legal" }],
+  );
+});
+
+Deno.test("repo_rulesets - a live check with an empty context throws rather than being dropped (Issue #4487)", () => {
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detailWithChecks([{ context: "" }])),
+    Error,
+    "live required check 0 of rule 0 has no usable context",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "legal" }])),
+    [{ context: "worker-check" }, { context: "legal" }],
+  );
+});
+
+Deno.test("repo_rulesets - a non-integer float integration_id throws, naming the context (Issue #4487)", () => {
+  assertThrows(
+    () =>
+      unionChecksOf(
+        ["worker-check"],
+        detailWithChecks([{ context: "float-id", integration_id: 2.5 }]),
+      ),
+    Error,
+    'has a non-integer integration_id for context "float-id"',
+  );
+  // Positive control: the same check with an integer id builds.
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([{ context: "float-id", integration_id: 2 }]),
+    ),
+    [{ context: "worker-check" }, { context: "float-id", integration_id: 2 }],
+  );
+});
+
+Deno.test("repo_rulesets - a non-integer string integration_id throws, naming the context (Issue #4487)", () => {
+  assertThrows(
+    () =>
+      unionChecksOf(
+        ["worker-check"],
+        detailWithChecks([{ context: "string-id", integration_id: "15368" }]),
+      ),
+    Error,
+    'has a non-integer integration_id for context "string-id"',
+  );
+  // Positive control: the same check with a numeric id builds.
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([{ context: "string-id", integration_id: 15368 }]),
+    ),
+    [
+      { context: "worker-check" },
+      { context: "string-id", integration_id: 15368 },
+    ],
+  );
+});
+
+Deno.test("repo_rulesets - a required_status_checks value that is not an array throws (Issue #4487)", () => {
+  assertThrows(
+    () =>
+      unionChecksOf(
+        ["worker-check"],
+        detailWithChecks({ context: "gate" }),
+      ),
+    Error,
+    "required_status_checks of live rule 0 is not an array",
+  );
+  // Positive control: the same check inside an array builds.
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "gate" }])),
+    [{ context: "worker-check" }, { context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - a live check entry that is not an object throws (Issue #4487)", () => {
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detailWithChecks([null])),
+    Error,
+    "live required check 0 of rule 0 is not an object",
+  );
+  // Positive control: the same slot holding an object builds.
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "gate" }])),
+    [{ context: "worker-check" }, { context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - primitive live check entries refuse the update as non-objects (Issue #4487)", () => {
+  for (const entry of ["gate", 7, false]) {
+    assertThrows(
+      () => unionChecksOf(["worker-check"], detailWithChecks([entry])),
+      Error,
+      "live required check 0 of rule 0 is not an object",
+    );
+  }
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([{ context: "gate" }])),
+    [{ context: "worker-check" }, { context: "gate" }],
+  );
+});
+
+Deno.test("repo_rulesets - non-object live rules are ignored while valid checks and other rules survive (Issue #4487)", () => {
+  const detail = detailWithChecks([{ context: "gate", integration_id: 111 }]);
+  const body = buildDefaultBranchRulesetUpdateBody("Vibe", ["worker-check"], {
+    ...detail,
+    rules: [
+      undefined,
+      null,
+      "ignored",
+      7,
+      false,
+      { type: "deletion" },
+      ...detail.rules!,
+    ] as never,
+  });
+  assertEquals(body.rules, [
+    { type: "deletion" },
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: true,
+        required_status_checks: [
+          { context: "worker-check" },
+          { context: "gate", integration_id: 111 },
+        ],
+      },
+    },
+  ]);
+});
+
+Deno.test("repo_rulesets - null required-check parameters refuse the update with the cause (Issue #4487)", () => {
+  const detail: RulesetDetail = {
+    id: 47,
+    name: "Vibe",
+    rules: [{ type: "required_status_checks", parameters: null }] as never,
+  };
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rule 0 has no parameters object",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([])),
+    [{ context: "worker-check" }],
+  );
+});
+
+Deno.test("repo_rulesets - a malformed status-checks rule without parameters refuses the update (Issue #4487)", () => {
+  const detail: RulesetDetail = {
+    id: 47,
+    name: "Vibe",
+    rules: [{ type: "required_status_checks" }] as never,
+  };
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rule 0 has no parameters object",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], { ...detail, rules: [] }),
+    [{ context: "worker-check" }],
+  );
+});
+
+Deno.test("repo_rulesets - missing live rules refuse the update instead of clearing checks (Issue #4487)", () => {
+  const detail: RulesetDetail = { id: 48, name: "Vibe" };
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rules is not an array",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], { ...detail, rules: [] }),
+    [{ context: "worker-check" }],
+  );
+});
+
+Deno.test("repo_rulesets - missing required checks refuse the update instead of clearing them (Issue #4487)", () => {
+  const detail: RulesetDetail = {
+    id: 49,
+    name: "Vibe",
+    rules: [{ type: "required_status_checks", parameters: {} }] as never,
+  };
+  assertThrows(
+    () => unionChecksOf(["worker-check"], detail),
+    Error,
+    "live rule 0 has no required_status_checks array",
+  );
+  assertEquals(
+    unionChecksOf(["worker-check"], detailWithChecks([])),
+    [{ context: "worker-check" }],
+  );
+});
+
+Deno.test("repo_rulesets - distinct live apps for one context are both retained (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([
+        { context: "gate", integration_id: 1 },
+        { context: "gate", integration_id: 2 },
+      ]),
+    ),
+    [
+      { context: "worker-check" },
+      { context: "gate", integration_id: 1 },
+      { context: "gate", integration_id: 2 },
+    ],
+  );
+});
+
+Deno.test("repo_rulesets - an exact live context and app duplicate keeps the first entry (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(
+      ["worker-check"],
+      detailWithChecks([
+        { context: "gate", integration_id: 1 },
+        { context: "gate", integration_id: 1 },
+      ]),
+    ),
+    [
+      { context: "worker-check" },
+      { context: "gate", integration_id: 1 },
+    ],
+  );
+});
+
+Deno.test("repo_rulesets - a worker context repeated in the contexts is written once (Issue #4487)", () => {
+  assertEquals(
+    unionChecksOf(["gate", "gate"], detailWithChecks([])),
+    [{ context: "gate" }],
+  );
 });
 
 Deno.test("repo_rulesets - createRulesetReturningId returns the id GitHub assigned", async () => {
