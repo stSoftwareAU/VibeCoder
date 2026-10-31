@@ -554,7 +554,7 @@ Deno.test("runMutationCheck deno - an invalid deno.json fails the check loud, no
     { ...input(), diff: diffFor(NEAT_SRC) },
     f.seams,
   );
-  assertEquals(r.kind, "error", JSON.stringify(r));
+  assert(r.kind === "error", JSON.stringify(r));
   assertStringIncludes(r.reason, "deno.json");
   assertEquals(f.calls.length, 0);
 });
