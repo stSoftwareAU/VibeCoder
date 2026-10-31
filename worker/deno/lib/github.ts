@@ -340,7 +340,8 @@ async function notePrimaryQuotaExhaustion(
   quotaExhaustionNoteInFlight = true;
   try {
     const now = Math.floor(Date.now() / 1000);
-    const workDir = workDirOverride ?? Deno.env.get("WORK_DIR");
+    const workDir = workDirOverride ??
+      Deno.env.get("VIBE_GITHUB_QUOTA_WORK_DIR") ?? Deno.env.get("WORK_DIR");
     // A bare Forbidden from GraphQL has no quota headers to distinguish a
     // burst refusal from the hourly budget. Park for the short cool-down and
     // publish the same shared pause signal used by the primary path.
