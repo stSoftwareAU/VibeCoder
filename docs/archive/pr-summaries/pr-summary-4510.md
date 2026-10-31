@@ -41,7 +41,10 @@ commit shapes: base merge, `github-actions[bot]` bump and a single-parent
 Docs updated: `docs/INTERNALS.md` ("Staleness check" paragraph) and
 `docs/workflows/pr-feedback.md` (review-skip sentence and flowchart node).
 `docs/MERGE.md` was grepped; its hits describe branch-update withholding, which
-is unchanged.
+is unchanged. Source and test doc comments were grepped for `fleet-fix`,
+`isReviewSupersededByFleetFix` and `fetchPrCommitProvenance`; the header of
+`worker/deno/tests/review_supersession_latest_review_2697_test.ts` named the
+removed rule and was reworded.
 
 ## Test Plan
 
@@ -49,7 +52,7 @@ is unchanged.
   "a single-parent fleet CI-fix commit after the review leaves it actionable and
   the history unread (Issue #4510)" asserts the review is returned and no
   `pulls/{pr}/commits` call is made. Run with `pr_feedback_supersede_test.ts`
-  and `review_supersession_latest_review_2697_test.ts`: 28 passed.
+  and `review_supersession_latest_review_2697_test.ts`: 29 passed (3 + 9 + 17).
 - Red check: with the base `pr_maintenance.ts` and `pr_feedback_supersede.ts`
   restored, the CI-fix case failed (`Actual undefined, Expected "pr_review"`).
   The base-merge/bot-bump case also failed there, because the mocked history no
@@ -67,7 +70,7 @@ is unchanged.
 - Added to `worker/deno/tests/pr_feedback_supersede_test.ts`: "a bot's later
   commit does not supersede, even with a fleet author" reaches the `[bot]` early
   return in `isFleetAnswerAfter`
-  (`worker/deno/lib/pr_feedback_supersede.ts:123`), which the removed review
+  (`worker/deno/lib/pr_feedback_supersede.ts:124`), which the removed review
   tests used to cover; the coverage-carry-over line is now reached by a head
   test. 9 passed in that file.
 - Quality gate (`./quality.sh`): all chokepoint, completeness, lint, type check,
