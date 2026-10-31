@@ -2202,8 +2202,8 @@ no longer superseded by any commit (Issue #4510). The head moving, a base merge,
 a bot's formatting or version bump, and any fleet or CI-fix commit all leave it
 outstanding. Only two things retire it: its dismissal (the processed marker,
 which is what stops a handled review being processed twice), and the same
-reviewer's later `APPROVED`, `DISMISSED` or `CHANGES_REQUESTED` review (Issue
-#2697). A live, fleet-authored claim lease holds a review rather than retiring
+reviewer's later `APPROVED`, `DISMISSED` or `CHANGES_REQUESTED` review
+(Issue #2697). A live, fleet-authored claim lease holds a review rather than retiring
 it (Issue #3383): the scan skips a review a live lease covers, and only a lapsed
 lease — the run timed out, crashed or went silent — makes it actionable again.
 The history explains the rule. Under the old `commit_id !== head` rule, a base
