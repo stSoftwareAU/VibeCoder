@@ -13,6 +13,7 @@ import {
   recoverTemporaryClones,
   requestedReviews,
   runRepairs,
+  spawnBabysitterAgent,
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
@@ -297,4 +298,41 @@ Deno.test("parallel babysitter repairs restrict writes to their own repository",
     ),
   );
   assertEquals(results, ["org/one", "org/two"]);
+});
+
+Deno.test("codex agent gets its own read-only token instead of the runner's GH_TOKEN", () => {
+  const runnerToken = "runner-write-token";
+  const agentToken = "agent-read-only-token";
+  const scratch = "/tmp/babysitter-scratch";
+  const dir = "/tmp/babysitter-clone";
+  const prompt = "Fix conflicts on PR #1";
+  const calls: {
+    executable: string;
+    options: Deno.CommandOptions & { timeoutMs: number };
+  }[] = [];
+  spawnBabysitterAgent(
+    { dir, scratch, prompt, agentToken },
+    (executable, options) => {
+      calls.push({ executable, options });
+      return {} as unknown as Deno.ChildProcess;
+    },
+  );
+  const [call] = calls;
+  assert(call);
+  assertEquals(call.executable, "codex");
+  const env = call.options.env as Record<string, string>;
+  assertEquals(env.GH_TOKEN, agentToken);
+  assert(env.GH_TOKEN !== runnerToken);
+  assertEquals(env, {
+    TMPDIR: scratch,
+    XDG_CACHE_HOME: scratch,
+    GH_TOKEN: agentToken,
+  });
+  assertEquals(call.options.timeoutMs, 90 * 60_000);
+  const args = call.options.args as string[];
+  assert(args.includes("exec"));
+  assertEquals(args[args.indexOf("--sandbox") + 1], "workspace-write");
+  assert(args.includes('approval_policy="never"'));
+  assertEquals(args[args.indexOf("--cd") + 1], dir);
+  assert(args.includes(prompt));
 });
