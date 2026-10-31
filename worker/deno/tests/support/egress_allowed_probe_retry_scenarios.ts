@@ -16,7 +16,6 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   classifyEgressProbes,
   type DirectTcpResult,
-  probeProxyAllowed,
   probeProxyAllowedDetailed,
   runEgressProbes,
 } from "../../lib/egress_selfcheck.ts";
@@ -65,12 +64,13 @@ Deno.test("an allowlisted CONNECT that times out once and then connects is enfor
   const proxy = fakeProxy(1);
   const log: string[] = [];
   try {
-    const result = await probeProxyAllowed(proxy.url, "api.github.com", {
-      timeoutMs: 200,
-      attempts: 3,
-      delayMs: 0,
-      log: (line) => log.push(line),
-    });
+    const result =
+      (await probeProxyAllowedDetailed(proxy.url, "api.github.com", {
+        timeoutMs: 200,
+        attempts: 3,
+        delayMs: 0,
+        log: (line) => log.push(line),
+      })).result;
     assertEquals(result, "succeeded");
     assertEquals(proxy.connections(), 2);
     // The slow attempt is said out loud.
@@ -83,14 +83,39 @@ Deno.test("an allowlisted CONNECT that times out once and then connects is enfor
 Deno.test("an allowlisted CONNECT the proxy never answers still fails after every attempt", async () => {
   const proxy = fakeProxy(Number.POSITIVE_INFINITY);
   try {
-    const result = await probeProxyAllowed(proxy.url, "api.github.com", {
-      timeoutMs: 100,
-      attempts: 3,
-      delayMs: 0,
-      log: () => {},
-    });
+    const result =
+      (await probeProxyAllowedDetailed(proxy.url, "api.github.com", {
+        timeoutMs: 100,
+        attempts: 3,
+        delayMs: 0,
+        log: () => {},
+      })).result;
     assertEquals(result, "failed");
     assertEquals(proxy.connections(), 3);
+  } finally {
+    await proxy.close();
+  }
+});
+
+Deno.test("a silent proxy reports a timeout for every allowlisted CONNECT (Issue #4493)", async () => {
+  const proxy = fakeProxy(Number.POSITIVE_INFINITY);
+  const log: string[] = [];
+  try {
+    const outcome = await probeProxyAllowedDetailed(
+      proxy.url,
+      "api.github.com",
+      {
+        timeoutMs: 100,
+        attempts: 3,
+        delayMs: 0,
+        log: (line) => log.push(line),
+      },
+    );
+    assertEquals(outcome, { result: "failed", observed: "timeout ×3" });
+    assertEquals(log.length, 3);
+    for (let i = 0; i < 3; i++) {
+      assertStringIncludes(log[i] ?? "", `timeout (attempt ${i + 1} of 3)`);
+    }
   } finally {
     await proxy.close();
   }

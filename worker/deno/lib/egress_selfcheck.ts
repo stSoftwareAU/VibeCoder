@@ -497,14 +497,13 @@ function pause(ms: number): Promise<void> {
  * returns `listening: true`, so the CONNECT probe reports it as `not_checked`.
  *
  * @param proxyUrl - The proxy URL from the environment
- * @param options - Budget, interval, and the sleep and clock seams (tests)
+ * @param options - Budget and the sleep and clock seams (tests)
  * @returns `listening: true`, or `listening: false` with what the last dial saw
  */
 export async function waitForProxyListener(
   proxyUrl: string,
   options: {
     timeoutMs?: number;
-    intervalMs?: number;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
   } = {},
@@ -512,7 +511,6 @@ export async function waitForProxyListener(
   const endpoint = proxyEndpoint(proxyUrl);
   if (endpoint === undefined) return { listening: true };
   const timeoutMs = options.timeoutMs ?? EGRESS_PROXY_LISTEN_TIMEOUT_MS;
-  const intervalMs = options.intervalMs ?? EGRESS_PROXY_LISTEN_INTERVAL_MS;
   const sleep = options.sleep ?? pause;
   const now = options.now ?? (() => Date.now());
   const deadline = now() + timeoutMs;
@@ -543,7 +541,7 @@ export async function waitForProxyListener(
       }
     }
     if (now() >= deadline) return { listening: false, observed };
-    await sleep(intervalMs);
+    await sleep(EGRESS_PROXY_LISTEN_INTERVAL_MS);
   }
 }
 
@@ -630,30 +628,6 @@ export async function probeProxyAllowedDetailed(
     if (attempt < attempts && delayMs > 0) await sleep(delayMs);
   }
   return { result: "failed", observed: summariseObserved(counts) };
-}
-
-/**
- * {@link probeProxyAllowedDetailed} without the detail: the attempts, the
- * budget and the result only. The result is
- * `failed` when no attempt connected, whatever the proxy answered.
- *
- * @param proxyUrl - The proxy URL from the environment
- * @param host - An allowlisted host
- * @param options - Attempts, per-attempt budget, pause and log sink (tests)
- * @returns The probe's result
- */
-export async function probeProxyAllowed(
-  proxyUrl: string,
-  host: string,
-  options: {
-    attempts?: number;
-    timeoutMs?: number;
-    delayMs?: number;
-    log?: (line: string) => void;
-  } = {},
-): Promise<ConnectRaw> {
-  const outcome = await probeProxyAllowedDetailed(proxyUrl, host, options);
-  return outcome.result;
 }
 
 function proxyUrlFrom(

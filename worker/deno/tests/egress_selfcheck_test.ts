@@ -597,7 +597,6 @@ Deno.test("waitForProxyListener - a timed-out dial is retried until the proxy ac
     () =>
       waitForProxyListener("http://proxy.test:3128", {
         timeoutMs: 5000,
-        intervalMs: 250,
         now: () => clock,
         sleep: (ms) => {
           clock += ms;

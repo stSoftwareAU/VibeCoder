@@ -14,6 +14,7 @@ for (
   const name of [
     "an allowlisted CONNECT that times out once and then connects is enforced, not failed",
     "an allowlisted CONNECT the proxy never answers still fails after every attempt",
+    "a silent proxy reports a timeout for every allowlisted CONNECT (Issue #4493)",
     "lateBindingClock binds exactly once, when the clock reaches the bind time (Issue #4493)",
     "an allowlisted CONNECT answered 502 every time fails and counts what it saw (Issue #4493)",
     "an allowlisted CONNECT refused three times says so (Issue #4493)",

@@ -32,10 +32,9 @@ final version.
   probe is not retried. If nothing listens it returns
   `proxyDenied: not_checked`, `proxyAllowed: failed` and spends no attempts.
 - The listener wait lives only in `runEgressProbes`. `probeProxyAllowedDetailed`
-  and `probeProxyAllowed` never wait (PR #4531 review: a second wait there had
-  no production caller). `probeProxyAllowed` keeps its signature and now returns
-  `failed` (not `through`) when no attempt connected, which `runEgressProbes`
-  already treated the same way.
+  never waits (PR #4531 review: a second wait there had no production caller).
+  The unused `probeProxyAllowed` wrapper was removed; its scenarios call the
+  detailed production helper directly.
 - Markers for probes without `observed` detail are byte-for-byte unchanged.
   `run.sh` and `run.ps1` key on exit status 90 and echo the marker constant
   only, so the appended text is safe.
@@ -60,7 +59,7 @@ Backend only; no UI files touched.
   whole self-check passage; line 392 `proxyAllowlist=enforced` is still true).
 - Callers of the changed helpers: `probeProxyConnect` (also used by
   `apple_egress_controls.ts` `appleAllowedPaths`, unchanged behaviour: it is a
-  wrapper), `probeProxyAllowed` (only `runEgressProbes` before; now only tests),
+  wrapper), `probeProxyAllowedDetailed` (`runEgressProbes`),
   `checkEgressPolicy` (`run_worker.ts`, `commands/egress_selfcheck.ts`; both
   pass `diagnostics` through).
 - Fakes: the stub proxy in the scenarios file stands in for
@@ -85,7 +84,8 @@ Backend only; no UI files touched.
 
 - `worker/deno/tests/support/egress_allowed_probe_retry_scenarios.ts` (run under
   `--allow-net=127.0.0.1` by `egress_allowed_probe_retry_test.ts` in the same
-  tests directory, which lists the eight names): 502 every time
+  tests directory, which lists the nine names): a silent proxy reports
+  `timeout ×3` and logs each timeout; 502 every time
   (`HTTP/1.1 502 Bad Gateway ×3`); refused ×3; `runEgressProbes` with a live
   proxy gives the enforced set; `runEgressProbes` with a proxy that never
   listens (`listenTimeoutMs` 1500 against `timeoutMs` 1000, so the 1500 ms
@@ -118,6 +118,9 @@ Backend only; no UI files touched.
   `waitForProxyListener` never waits → 3; `observed` without counts → 2; refused
   labelled `timeout` → 1; Apple branch drops details → 1; `runEgressProbes`
   skips the wait → 1; `runEgressProbes` ignores the `directTcp` seam → 2.
+- Latest PR #4531 review: removed the unused `probeProxyAllowed` wrapper and
+  listener interval option. Removing `timedOut = true` made the silent-proxy
+  scenario fail with `error: operation canceled ×3`; restored afterwards.
 - Second PR #4531 review: the `probeProxyAllowedDetailed` listener wait and its
   `listenTimeoutMs`, `now` and `waitForListener` options were removed, with the
   two scenario tests that only exercised them (and their names in
