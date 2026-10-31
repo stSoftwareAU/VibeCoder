@@ -129,7 +129,12 @@ export interface GateRefusalRecord {
 
 /** One branch's streak state. */
 export interface SyncStreakEntry {
-  /** Consecutive failed sync cycles for this branch. */
+  /**
+   * Consecutive failed sync cycles for this branch, a cycle-budget deferral
+   * excepted (Issue #4517). The resolver recovery ladder reads it as the
+   * number of prior declines, so a deferral that added to it would carry the
+   * first real decline to a later rung.
+   */
   count: number;
   /** True once the needs-human comment has been posted for this streak. */
   escalated: boolean;

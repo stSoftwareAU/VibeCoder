@@ -919,7 +919,9 @@ export const CARGO_BUDGET_AGENT_WITHHELD = "cargo budget withheld the agent";
 /**
  * Ledger reason when a conflict is deferred because too little of the cycle
  * was left to offer the agent (Issue #4517). It waits for a cycle with the
- * runway. It is not a refusal, so it is never counted toward the roll-back.
+ * runway. It is not a refusal, so it is never counted toward the roll-back,
+ * and it adds nothing to {@link SyncStreakEntry.count}, which the recovery
+ * ladder reads as prior declines.
  */
 export const AGENT_DEFERRED_CYCLE_BUDGET = "agent deferred: cycle budget";
 
@@ -3149,9 +3151,15 @@ export async function syncMilestoneBranches(
             // Streak escalation (Issue #4260, proposal 2): count consecutive
             // failures and, at the threshold, post one needs-human comment on
             // the milestone's tracking issue.
+            // A cycle-budget deferral is not a failed attempt, so it adds
+            // nothing to `count`, the figure the resolver recovery ladder
+            // reads as prior declines (Issue #4517, PR #4581 review).
+            const judged = judgeSyncFailure(syncResult.error, agentAllowed);
             let entry: SyncStreakEntry | undefined;
             if (streakPath) {
-              entry = recordSyncFailure(streaks[streakKey]);
+              entry = judged.reason === AGENT_DEFERRED_CYCLE_BUDGET
+                ? streaks[streakKey] ?? { count: 0, escalated: false }
+                : recordSyncFailure(streaks[streakKey]);
               streaks[streakKey] = entry;
               streaksDirty = true;
             }
@@ -3182,7 +3190,7 @@ export async function syncMilestoneBranches(
             // A refusal that has repeated to the ceiling climbs to the
             // roll-back (Issue #4328), before anything reads the verdict.
             const verdict = escalateRepeatedRefusal(
-              judgeSyncFailure(syncResult.error, agentAllowed),
+              judged,
               entry?.refusedCycles ?? 0,
             );
             if (headPr && conflictError && verdict.outcome === "failed") {

@@ -49,6 +49,8 @@ const NOW = Date.parse("2026-10-31T12:00:00.000Z");
  * false`, which is what produces the deferral.
  */
 const SHORT_CYCLE_MS = 5 * 60 * 1000;
+/** A cycle with the runway to offer the agent rung. */
+const LONG_CYCLE_MS = 6 * 60 * 60 * 1000;
 const MILESTONE_SHA = "c".repeat(40);
 const FLAG_ISSUE = 4517;
 /** Cycles a branch is deferred for: past the ceiling, so a climb would show. */
@@ -74,6 +76,18 @@ function fileAnalysis(reason: string) {
 function agentDeferredError(): MilestoneConflictEscalation {
   return new MilestoneConflictEscalation(
     "every rung left it undecided",
+    [fileAnalysis("agent: it left 1 path(s) unmerged: lib/scan.ts")],
+    [],
+    tip(0),
+    undefined,
+    MILESTONE_SHA,
+  );
+}
+
+/** The conflict the agent ran on and left undecided (Issue #4328). */
+function agentDeclinedError(): MilestoneConflictEscalation {
+  return new MilestoneConflictEscalation(
+    "every rung of the ladder left them undecided",
     [fileAnalysis("agent: it left 1 path(s) unmerged: lib/scan.ts")],
     [],
     tip(0),
@@ -123,6 +137,12 @@ interface SweepOptions {
   syncCalls: string[];
   /** Wires the injected roll-back and records each request's key. */
   rollbacks: string[];
+  /** Every rebuild requested, when the test watches for one. */
+  rebuilds?: string[];
+  /** Every milestone close requested, when the test watches for one. */
+  closes?: string[];
+  /** Overrides the cycle's deadline: a long one offers the agent rung. */
+  deadlineMs?: number;
 }
 
 /** A one-milestone sweep whose sync fails with `syncError`. */
@@ -142,7 +162,7 @@ function sweepDeps(options: SweepOptions): MilestoneBranchSyncDeps {
     defaultTipShaFn: () =>
       Promise.resolve({ ok: true as const, value: options.defaultSha }),
     now: () => NOW,
-    deadlineEpochMs: NOW + SHORT_CYCLE_MS,
+    deadlineEpochMs: NOW + (options.deadlineMs ?? SHORT_CYCLE_MS),
     streakPath: options.streakPath,
     log: () => undefined,
     rollbackFn: (request) => {
@@ -150,6 +170,14 @@ function sweepDeps(options: SweepOptions): MilestoneBranchSyncDeps {
         `${request.repo}|${request.milestoneBranch}|${request.attempts}`,
       );
       return Promise.resolve(undefined);
+    },
+    rebuildFn: () => {
+      options.rebuilds?.push(BRANCH);
+      return Promise.resolve(undefined);
+    },
+    closeMilestoneFn: () => {
+      options.closes?.push(BRANCH);
+      return Promise.resolve(true);
     },
   };
 }
@@ -309,5 +337,54 @@ Deno.test("syncMilestoneBranches - a gate refusal still climbs at the ceiling af
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a deferral streak then one agent decline is attempt 1 of 3, never a roll-back, rebuild or close (PR #4581 review)", async () => {
+  // Nine deferrals would, if counted, carry the first decline to the close rung.
+  for (const deferrals of [3, 6, 9]) {
+    const { dir, streakPath } = await workDir();
+    try {
+      const syncCalls: string[] = [];
+      const rollbacks: string[] = [];
+      const rebuilds: string[] = [];
+      const closes: string[] = [];
+      let cycle = 0;
+      const runCycle = (syncError: () => Error, deadlineMs?: number) => {
+        cycle++;
+        return syncMilestoneBranches(sweepDeps({
+          streakPath,
+          defaultSha: tip(cycle),
+          syncError,
+          syncCalls,
+          rollbacks,
+          rebuilds,
+          closes,
+          ...(deadlineMs !== undefined ? { deadlineMs } : {}),
+        }));
+      };
+      for (let i = 0; i < deferrals; i++) await runCycle(agentDeferredError);
+      const deferred = await readEntry(streakPath);
+      assertEquals(
+        deferred?.count,
+        0,
+        `${deferrals} deferrals add nothing to the figure the ladder reads`,
+      );
+
+      // The cycle with the runway: the agent runs and declines once.
+      await runCycle(agentDeclinedError, LONG_CYCLE_MS);
+      const entry = await readEntry(streakPath);
+      assert(entry);
+      // Positive control: the decline was a charged resolver decline.
+      assertEquals(entry.lastAttempt?.outcome, "failed");
+      assertEquals(entry.lastAttempt?.reason, "the conflict resolver declined");
+      assertEquals(entry.conflictAttempts, 1, `after ${deferrals} deferrals`);
+      assertEquals(rollbacks, [], `after ${deferrals} deferrals`);
+      assertEquals(rebuilds, [], `after ${deferrals} deferrals`);
+      assertEquals(closes, [], `after ${deferrals} deferrals`);
+      assertEquals(syncCalls.length, deferrals + 1);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });

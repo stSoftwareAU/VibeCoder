@@ -73,13 +73,22 @@ existing code and docs.
 
 ## Test Plan
 
-- New `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`, three
+- New `worker/deno/tests/milestone_cycle_budget_not_counted_4517_test.ts`, four
   tests: sweep with ceiling+3 deferrals (no roll-back, `refusedCycles` 0,
   `conflictAttempts` 0, sync really ran each cycle); presync twin likewise;
   mixed deferrals and gate refusals (deferrals do not advance the streak; the
   gate refusal still climbs on the fourth).
-- Red check: restoring `refusal: true` in the `!agentAllowed` verdict fails all
-  three (cycle 4 rolled back / deferral 1 counted / streak advanced).
+- Red check: restoring `refusal: true` in the `!agentAllowed` verdict fails the
+  first three (cycle 4 rolled back / deferral 1 counted / streak advanced).
+- PR #4581 review: a deferral cycle still added one to `SyncStreakEntry.count`,
+  which the resolver ladder reads as prior declines (`resolverRungDue`,
+  `priorRefusals = entry.count - 1`). The sweep now skips `recordSyncFailure`
+  when the verdict is `AGENT_DEFERRED_CYCLE_BUDGET`. A fourth test runs 3, 6 and
+  9 deferrals then one agent decline and asserts `count` 0 after the deferrals,
+  then attempt 1 of 3 with no roll-back, rebuild or close. Red check: restoring
+  the unconditional `recordSyncFailure` fails it (`count` 3, then
+  `recovery rung: rollback` with the count assertion loosened). The general
+  outage-streak case is #4587, outside this PR.
 - Edited `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts`: tests
   that used the agent-deferred error as the counted, climbing refusal now use
   the gate-refused resolution (`gateRefusedError()`), with every assertion kept
@@ -95,9 +104,9 @@ existing code and docs.
 - Edited `worker/deno/tests/milestone_merge_only_4326_test.ts:223`:
   `conclusion.refusal` for an agent-deferred conclusion is now `undefined` (was
   `true`); red check: with `refusal: true` restored it fails.
-- Passed: `deno task test:unit` over the ladder, new, `milestone_branch_sync`,
-  merge-only, env-fault and presync tests (166 passed, 0 failed), plus 61 passed
-  in the related streak, cadence, gate-wedge and presync tests. `deno fmt`,
+- Passed at the head: `deno task test:unit` over the new 4517 file, the 4328
+  ladder, 4326 merge-only, `milestone_branch_sync` and `milestone_presync` tests
+  (161 passed, 0 failed). `deno fmt`,
   `deno lint`, `deno check` on the edited files: clean. Full `./quality.sh`
   passed through markdownlint, semgrep and the release-tag ruleset checks, then
   timed out at 580 s in the unit-test stage.
