@@ -108,10 +108,14 @@ this issue has no criteria heading and nothing in it is left undone, so
   `worker/deno/tests/issue_prompt_criteria_less_closure_4477_test.ts` is among
   the `issue_prompt_*` files (7 tests at head). Combined run at head: 160
   passed, 0 failed.
-- Push 193bfbce (skeleton example Summary changed from `Closes` to `Part of`):
-  prose only; no pinned phrase sits in the edited lines, so
-  `issue_prompt_criteria_less_closure_4477_test.ts` is unaffected. Re-run on the
-  head: see the `deno test` result below.
+- Push 193bfbce (skeleton example Summary changed from `Closes` to `Part of`)
+  is now pinned by an eighth assertion in the "summary-file list and skeleton"
+  test, added in commit 9b97645b: the skeleton's `PR Summary File` section must
+  contain `CSS flexbox properties; the tablet breakpoint is still outstanding.
+  Part of #{{ISSUE_NUMBER}}`. Red check: changing that skeleton Summary line in
+  `prompts/issue/prompt.md` back to `Closes #{{ISSUE_NUMBER}}` turned the file
+  from 7 passed to 6 passed, 1 failed; restored, 7 passed, 0 failed. The test
+  count stays 7 (the pin is an extra assertion inside an existing test).
 - No existing assertion was removed or edited.
 - Docs: `deno fmt --check` already fails on `DESIGN-PRINCIPLES.md` and
   `docs/workflows/issue-processing.md` on base; not reformatted.
