@@ -161,7 +161,11 @@ export function parseAddedLines(diff: string): Map<string, number[]> {
 // Deno mutant generation
 // ---------------------------------------------------------------------------
 
-/** True for `*_test.ts`, `*.test.ts` and friends. */
+/**
+ * The file-name rule only: true for `*_test.ts`, `*.test.ts` and friends. A
+ * project's `test.include` in its deno.json also makes a file a test; that
+ * config-aware rule is `isDenoTestPath` in deno_test_config.ts (Issue #4533).
+ */
 export function isDenoTestFile(file: string): boolean {
   const base = file.slice(file.lastIndexOf("/") + 1);
   return /(?:_test|\.test)\.[a-z]+$/.test(base);
