@@ -116,7 +116,11 @@ import {
   autoMergeOutcomeNeedsComment,
   buildArmingReasonComment,
 } from "../pr_auto_merge.ts";
-import { buildBumpRejectionComment, buildBumpSkipNote } from "../bump_deps.ts";
+import {
+  buildBumpAppliedNote,
+  buildBumpRejectionComment,
+  buildBumpSkipNote,
+} from "../bump_deps.ts";
 import {
   formatBuildStamp,
   resolveWorkerBuildInfo,
@@ -2237,6 +2241,10 @@ async function completionBody(
   // says so rather than leaving a reviewer to wonder why the lockfile is
   // untouched. Empty for every other bump outcome.
   extraSections += buildBumpSkipNote(state.bumpInfo);
+  // Issue #4570: an applied bump is committed after the summary is written,
+  // so the PR says the bump commit is not the agent's own change. Empty for
+  // every other bump outcome.
+  extraSections += buildBumpAppliedNote(state.bumpInfo);
 
   // Worker footer for multi-worker visibility (Issue #1190)
   const footer = buildWorkerFooter({

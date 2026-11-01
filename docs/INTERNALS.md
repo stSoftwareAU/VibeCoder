@@ -5750,7 +5750,10 @@ links to its issue for the full rationale.
   `state.bumpInfo.status` is `skipped_milestone_child`, and the PR body carries
   the reason — the default branch's own PRs bump and the every-cycle sync
   carries those bumps down, so bumping again in a child would rewrite the same
-  lockfile lines and conflict with the sync.
+  lockfile lines and conflict with the sync. When the bump is `applied`, the PR
+  body carries a `Dependency bump: applied by the worker's bump-deps.sh after
+  the summary was written (<short sha>; <files>)` note; a resync carries it
+  over, and an audit revert (`rejected_by_audit`) leaves it out (Issue #4570).
 - **Quality gate additions:** `markdownlint-cli2`,
   `mermaid_validator` integration , and the `tail -f | head` foot-gun detector.
 - **Standard workflow templates:** `workflow_setup` v2/v3 provisions Gitleaks,
