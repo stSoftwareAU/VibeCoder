@@ -75,6 +75,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // Issue #873: runs loop.sh in a sandbox to prove the operator's log-directory
   // override reaches the resolver and is written to.
   "tests/log_dir_launcher_test.ts",
+  // Issue #4632: drives loop.sh's wedged-container recovery with unrelated
+  // Virtualization VM processes, validating that the host process sweep is gone.
+  "tests/loop_force_stop_container_test.ts",
   "tests/loop_supervisor_test.ts",
   // Issue #2855: spawns .claude/skills/review-fleet-prs/scripts/run.sh under
   // a stubbed PATH, the same shape as run_sh_launcher_test.ts below. It also

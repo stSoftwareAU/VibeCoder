@@ -411,10 +411,9 @@ reap_orphaned_probes() {
 #
 # So probe, do not infer: a trivial `exec` against the live container, and N
 # consecutive failures means the control plane is gone whatever `container ls`
-# says. Recovery skips `stop`/`kill` — they are already known not to work in
-# this state — and terminates the host-side client, then the VM, verifying
-# each. Killing the client alone leaves the VM running: on 2026-08-22 it sat
-# at 705% CPU with nothing supervising it.
+# says. Recovery attempts the runtime kill, then terminates the host-side
+# client and the runtime helper identified by the container name. Unrelated
+# Virtualization VMs stay untouched; PPID 1 is not ownership evidence.
 ################################################################################
 VIBE_PROBE_INTERVAL_SECONDS="${VIBE_PROBE_INTERVAL_SECONDS:-120}"
 VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
@@ -432,7 +431,7 @@ running_vibe_container() {
             }'
 }
 
-# Terminate a container whose control plane is dead, and the VM behind it.
+# Terminate a wedged container and its matching runtime helper.
 force_stop_container() {
     local name="$1"
     [[ -z "${name}" ]] && return 0
@@ -457,17 +456,21 @@ force_stop_container() {
         kill -KILL "${client}" 2>/dev/null || true
     fi
 
-    # The VM outlives its client (Issue #323): killing the client alone left a
-    # VM at 705% CPU on 2026-08-22, which makes the next cycle fail the same
-    # way. Only VMs with no live client are touched.
-    local vm ppid
-    while read -r vm; do
-        [[ -z "${vm}" ]] && continue
-        ppid="$(ps -o ppid= -p "${vm}" 2>/dev/null | tr -d ' ')"
-        [[ "${ppid}" == "1" ]] || continue
-        echo "loop.sh: reaping orphaned VM PID ${vm}"
-        kill -TERM "${vm}" 2>/dev/null || true
-    done < <(pgrep -f "Virtualization.VirtualMachine" 2>/dev/null || true)
+    # Reuse the watchdog's process selector: only runtime executables whose
+    # argv identifies this container can be signalled.
+    if [[ -z "${DENO_CMD}" || ! -f "${WORKER_MOD}" ]]; then
+        echo "loop.sh: cannot reap ${name}: Deno or worker module unavailable" >&2
+        return 1
+    fi
+    if ! bounded 120 "${DENO_CMD}" run \
+        --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
+        --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
+        "${WORKER_MOD}" container-reap --runtime container --name "${name}" \
+        --grace-seconds 0 --reason "control-plane probe failed" </dev/null; then
+        echo "loop.sh: container reaper did not clear ${name}" >&2
+    fi
+    echo "loop.sh: container reaper finished for ${name}"
+
 }
 
 # Whether the supervisor that started a probe is gone, or is no longer the
