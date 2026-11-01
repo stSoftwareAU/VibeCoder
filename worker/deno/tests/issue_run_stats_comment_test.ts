@@ -28,6 +28,10 @@ import {
   tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
+import {
+  decideRefusalAction,
+  refusalsRecordedSince,
+} from "../lib/haiku_refusal_retry.ts";
 import { estimateCost } from "../lib/token_usage.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
 import type { QualityGateAttemptOutcome } from "../lib/issue_run_stats_comment.ts";
@@ -50,6 +54,41 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+Deno.test("recordClaudeRunStats - orchestrated executor refusals do not change refusal action", () => {
+  const state = {} as PhaseState;
+  const refusal = { model: "claude-haiku-4-5", category: "cyber" };
+  const executor = claudeResult([refusal.model], { refusals: [refusal] });
+  recordClaudeRunStats(state, {
+    ...claudeResult(["claude-opus-4-8"]),
+    orchestrationCalls: [executor],
+  });
+  for (const tier of ["haiku", "sonnet"] as const) {
+    assertEquals(
+      decideRefusalAction({
+        tier,
+        refusals: refusalsRecordedSince(state.claudeRunStats, 0),
+        alreadyRetried: false,
+      }),
+      "none",
+    );
+  }
+  assertEquals(
+    state.claudeRunStats?.[0]?.runStats?.tokenUsage,
+    executor.runStats?.tokenUsage,
+  );
+  assertEquals(executor.runStats?.refusals, [refusal]);
+  const before = state.claudeRunStats!.length;
+  recordClaudeRunStats(state, executor);
+  assertEquals(
+    decideRefusalAction({
+      tier: "haiku",
+      refusals: refusalsRecordedSince(state.claudeRunStats, before),
+      alreadyRetried: false,
+    }),
+    "retry-on-sonnet",
+  );
+});
 
 function makeLogger(): Logger {
   return {

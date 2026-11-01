@@ -5427,6 +5427,11 @@ alone. A run that is not orchestrated has no `orchestrationCalls`, so its
 records are unchanged. The CodeGraph and Graft query tallies are not extended:
 they still read the returned call only.
 
+Earlier calls' recorded stats omit `refusals`: the safety-refusal policy still
+reads only the returned call, preserving the existing execute-phase outcome.
+Their original results are unchanged, and their tokens, models and durations
+remain included in the cost/model comment and fleet figures.
+
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
 The completion phase's pre-push gate (`gateBeforePush()` in

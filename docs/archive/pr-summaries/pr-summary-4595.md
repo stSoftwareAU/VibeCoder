@@ -65,7 +65,7 @@ provenance is #4595, this issue.
 
 ## Test Plan
 
-- `worker/deno/tests/orchestration_3642_gate_test.ts` (new):
+- `worker/deno/tests/orchestration_3642_gate_test.ts`:
   - "the result carries the plan and executor calls' stats beside the review's"
     - distinct tokens and models per call; asserts the returned result is still
       the review's and the other two ride in call order.
@@ -74,12 +74,6 @@ provenance is #4595, this issue.
     attempts and no double count of the final one.
   - "a timed-out run still carries the earlier calls' stats" - the timed-out
     branch returns the plan call and every earlier executor attempt.
-- `worker/deno/tests/issue_run_stats_comment_test.ts` (new):
-  - "recordClaudeRunStats - records an orchestrated run's earlier calls beside
-    its returned result" - order, per-call fields kept, nothing nested.
-  - "measureIssuePhaseRun - an orchestrated run's spend and duration include its
-    executor call" - duration 6 s against 3 s for the review alone, and a higher
-    USD figure.
   - "a call that billed nothing and degraded nothing adds no stats entry"
     - plan and executor results with no `runStats`; asserts `orchestrationCalls`
       stays absent (kills the `callStatsOf` operand drop).
@@ -89,6 +83,12 @@ provenance is #4595, this issue.
     last attempt carrying every field, plan bare).
   - "a degraded call without a reason or run stats still gets an entry" -
     asserts exactly `[{ preflightDegraded: true }]`.
+- `worker/deno/tests/issue_run_stats_comment_test.ts`:
+  - "recordClaudeRunStats - records an orchestrated run's earlier calls beside
+    its returned result" - order, per-call fields kept, nothing nested.
+  - "measureIssuePhaseRun - an orchestrated run's spend and duration include its
+    executor call" - duration 6 s against 3 s for the review alone, and a higher
+    USD figure.
 - Red check: before the change the five new tests failed (128 passed, 5 failed);
   after it, 183 passed across the gate, stats-comment, execute-phase-assignment,
   completion run-stats and fleet run-cost test files.
@@ -100,4 +100,16 @@ provenance is #4595, this issue.
 - `deno fmt`, `deno lint` and `deno check` on the touched `.ts` files: clean.
 - No existing assertion was removed or edited.
 
-<!-- vibe-quality-gate-skipped reason="`./quality.sh` takes about 15 minutes; the targeted checks above passed and CI runs the full gate." -->
+The review-fix run executed `./quality.sh`: formatting, lint, type checking,
+Markdown and completeness checks passed. The full unit stage failed on this
+host: Deno 2.9.5 panicked in testing.rs with "pledge test permissions called
+before restoring previous pledge"; a separate unit-suite run reproduced it.
+PowerShell, Semgrep and Checkov were unavailable. Targeted suites passed as below.
+
+Review fixes: earlier-call stats omit refusals so only the returned call drives
+the existing refusal policy. The regression covers both haiku and sonnet tiers,
+retains executor spend and checks that a returned refusal still retries. It
+failed with retry-on-sonnet before the fix. A returned review retry now has a
+test asserting its earlier attempt occurs exactly once and its final attempt
+is excluded; replacing the returned-call slice with an empty array made it fail.
+The gate, stats-comment and refusal-policy suites pass: 154 tests.

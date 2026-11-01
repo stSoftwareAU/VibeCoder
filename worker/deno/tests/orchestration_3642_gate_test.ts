@@ -873,6 +873,39 @@ function statsFor(model: string, outputTokens: number): RunStats {
   };
 }
 
+Deno.test("orchestration gate - a retried returned review contributes only its earlier attempt", async () => {
+  await withWorkDir(async (dir) => {
+    const earlierAttempt = statsFor("claude-opus-4-8", 4000);
+    const finalAttempt = statsFor("claude-opus-4-8", 5000);
+    const fake = fakeRunner((options) =>
+      runResult({
+        output: options.prompt.startsWith(REVIEW_PREFIX)
+          ? "manager review"
+          : "step output",
+        runStats: options.prompt.startsWith(REVIEW_PREFIX)
+          ? finalAttempt
+          : statsFor("claude-haiku-4-5", 100),
+        ...(options.prompt.startsWith(REVIEW_PREFIX)
+          ? { invocationStats: [earlierAttempt, finalAttempt] }
+          : {}),
+      })
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.runStats, finalAttempt);
+    assertEquals(
+      outcome.value.orchestrationCalls?.filter((call) =>
+        call.runStats?.servedModels[0] === "claude-opus-4-8"
+      ),
+      [{ runStats: earlierAttempt }],
+    );
+  });
+});
+
 Deno.test("orchestration gate - the result carries the plan and executor calls' stats beside the review's (Issue #4595)", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeRunner((options) =>

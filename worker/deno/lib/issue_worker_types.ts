@@ -463,7 +463,16 @@ export function recordClaudeRunStats(
 ): void {
   state.claudeRunStats = [
     ...(state.claudeRunStats ?? []),
-    ...(result.orchestrationCalls ?? []).map(statsEntryOf),
+    ...(result.orchestrationCalls ?? []).map((call) => {
+      const entry = statsEntryOf(call);
+      // Earlier calls contribute spend only. The returned call continues to
+      // drive executeWithRefusalRetry, as it did before orchestration stats.
+      if (entry.runStats) {
+        entry.runStats = { ...entry.runStats };
+        delete entry.runStats.refusals;
+      }
+      return entry;
+    }),
     statsEntryOf(result),
   ];
 }
