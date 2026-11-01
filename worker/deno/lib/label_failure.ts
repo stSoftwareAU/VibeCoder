@@ -175,7 +175,7 @@ ${diagnosisOneliner}${diagSection}
 ### What happens next?
 - This issue carries the \`${labels.failedOnceLabel}\` label as the record of its failures
 - The worker will **automatically retry** this issue once its cooldown ends (2 h, rising to 24 h after repeated failures)
-- The issue is never parked: an assigned issue is completed, and a failure to finish it is the Vibe Coder's to fix (Issue #4158)
+- The issue is never parked: an assigned issue is completed, and a failure to finish it is the Vibe Coder's to fix
 
 ### To prevent automatic retry
 If you want to work on this manually, remove the \`${labels.failedOnceLabel}\` label and assign yourself.`;

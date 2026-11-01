@@ -396,7 +396,7 @@ Deno.test("runPrFeedbackDriftCheck - recovery that does nothing reports, writing
     assertEquals(outcome.status, "reported");
     const message = await Deno.readTextFile(prResponseMessagePath(dir));
     assertStringIncludes(message, SENTENCE);
-    assertStringIncludes(message, "Drift check (Issue #3143)");
+    assertStringIncludes(message, "### Drift check");
     assertStringIncludes(message, "tests/rule_test.ts");
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -443,7 +443,7 @@ Deno.test("runPrFeedbackDriftCheck - an existing .pr_response_message is appende
     assertEquals(outcome.status, "reported");
     const message = await Deno.readTextFile(prResponseMessagePath(dir));
     assert(message.startsWith("Original agent reply text."));
-    assertStringIncludes(message, "Drift check (Issue #3143)");
+    assertStringIncludes(message, "### Drift check");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -914,7 +914,36 @@ Deno.test("formatDriftResidual - carries no HTML comment", () => {
     modelPassUnavailable: "no block",
   });
   assert(!text.includes("<!--"));
-  assertStringIncludes(text, "Drift check (Issue #3143)");
+  assertStringIncludes(text, "### Drift check");
+});
+
+Deno.test("formatDriftResidual - carries no issue number in its output (Issue #4585)", () => {
+  const text = formatDriftResidual({
+    findings: [{ file: "a.md", sentence: "Foo.", reason: "bar" }],
+    mismatches: ["a mismatch"],
+    docsSweepProblems: ["a problem"],
+    modelPassUnavailable: "no block",
+  });
+  assertEquals(text.match(/#\d+/g) ?? [], [], text);
+});
+
+Deno.test("formatDriftResidual - the mutation check section carries no issue number (Issue #4585)", () => {
+  for (
+    const residual of [
+      { mutationSurvivors: ["lib/rule.ts:2: flipped `>` to `<`"] },
+      { mutationNote: "a mutation note" },
+      { mutationCheckUnavailable: "mutation check failed to run" },
+    ]
+  ) {
+    const text = formatDriftResidual({
+      findings: [],
+      mismatches: [],
+      docsSweepProblems: [],
+      ...residual,
+    });
+    assertStringIncludes(text, "#### Mutation check");
+    assertEquals(text.match(/#\d+/g) ?? [], [], text);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -971,7 +1000,7 @@ Deno.test("formatDriftResidual - a modelPassUnavailable-only residual prints onl
     modelPassUnavailable: "no block at all",
   });
   assert(!text.includes("found text this push leaves"));
-  assertStringIncludes(text, "Drift check (Issue #3143)");
+  assertStringIncludes(text, "### Drift check");
   assertStringIncludes(text, "no block at all");
 });
 
