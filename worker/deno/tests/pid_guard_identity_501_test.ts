@@ -291,6 +291,26 @@ Deno.test("pid_guard - terminateDescendants skips a descendant whose pid was reu
   assertEquals(result.skippedPids, [202]);
 });
 
+Deno.test("pid_guard - terminateDescendants skips a descendant that cannot be fingerprinted and signals the rest (PR #4609 review)", async () => {
+  const { deps, sent } = makeDescendantDeps({
+    descendants: [201, 202],
+    startTimes: {
+      100: ["Mon Aug 24 09:00:00 2026"],
+      // 201 has already gone: its start time reads back empty at capture.
+      202: ["Mon Aug 24 09:00:02 2026"],
+    },
+    running: { 202: [false] },
+  });
+
+  const result = await terminateDescendants(100, 5, deps, {
+    identity: { pid: 100, startedAt: "Mon Aug 24 09:00:00 2026" },
+  });
+
+  assertEquals(sent, [{ target: 202, signal: "TERM" }]);
+  assertEquals(result.targetedPids, [202]);
+  assertEquals(result.skippedPids, [201]);
+});
+
 Deno.test("pid_guard - terminateDescendants escalation re-checks identity: a descendant reused after SIGTERM is never SIGKILLed (Issue #501)", async () => {
   const { deps, sent } = makeDescendantDeps({
     descendants: [201],

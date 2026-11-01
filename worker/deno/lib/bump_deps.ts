@@ -307,6 +307,51 @@ export function buildBumpSkipNote(info: BumpInfo | undefined): string {
   return `\n${MILESTONE_CHILD_BUMP_NOTE}\n`;
 }
 
+/**
+ * The PR-body line that opens the note for an `applied` bump (Issue #4570).
+ * The PR-body sync matches this prefix to carry the note over on resync.
+ */
+export const APPLIED_BUMP_NOTE_PREFIX =
+  "Dependency bump: applied by the worker's bump-deps.sh after the summary " +
+  "was written";
+
+/** Most files named in the applied-bump note before the rest are counted. */
+const APPLIED_BUMP_NOTE_MAX_FILES = 8;
+
+/**
+ * Build the PR-body note for an `applied` bump (Issue #4570).
+ *
+ * The worker commits the bump after the agent's summary is written, so the
+ * PR body must say the commit is not the agent's own change. The note
+ * follows the final status: a bump the audit reverted is `rejected_by_audit`
+ * and gets no note. Paths are sanitised so the note is always one line.
+ *
+ * @param info - The bump outcome, or `undefined` when the phase never ran.
+ * @returns The note as its own paragraph for `applied`, otherwise `""`.
+ */
+export function buildBumpAppliedNote(info: BumpInfo | undefined): string {
+  if (info?.status !== "applied") {
+    return "";
+  }
+  const shortSha = info.sha === undefined ? undefined : info.sha.slice(0, 7);
+  const paths = info.files
+    .map((path) => path.replace(/[\p{Cc}`]/gu, ""))
+    .filter((path) => path.length > 0);
+  const shown = paths
+    .slice(0, APPLIED_BUMP_NOTE_MAX_FILES)
+    .map((path) => `\`${path}\``)
+    .join(", ");
+  const hidden = paths.length - APPLIED_BUMP_NOTE_MAX_FILES;
+  const filesPart = paths.length === 0
+    ? ""
+    : hidden > 0
+    ? `${shown} and ${hidden} more`
+    : shown;
+  const details = [shortSha, filesPart].filter((part) => part).join("; ");
+  const suffix = details === "" ? "" : ` (${details})`;
+  return `\n${APPLIED_BUMP_NOTE_PREFIX}${suffix}\n`;
+}
+
 // =============================================================================
 // Main entry point
 // =============================================================================

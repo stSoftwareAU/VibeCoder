@@ -22,6 +22,11 @@ import {
 import { selectBabysitterRepositories } from "../lib/fleet_babysitter_repositories.ts";
 import type { FetchFn } from "../lib/github_app_auth.ts";
 import {
+  babysitterProtectedPaths,
+  buildBabysitterSandboxArgs,
+  checkBabysitterCodexVersion,
+} from "../lib/fleet_babysitter_sandbox.ts";
+import {
   buildFetchTrackingRefArgs,
   buildPushCreateBranchArgs,
 } from "../lib/git_ref_args.ts";
@@ -398,7 +403,8 @@ export function withBabysitterWriteScope<T>(
 
 /**
  * Spawn the Codex repair session with its own read-only, target-repo token
- * rather than the runner's write token inherited from GH_TOKEN.
+ * rather than the runner's write token inherited from GH_TOKEN. It also runs
+ * under a permissions profile denying the babysitter's credential paths.
  */
 export function spawnBabysitterAgent(
   options: {
@@ -406,6 +412,7 @@ export function spawnBabysitterAgent(
     scratch: string;
     prompt: string;
     agentToken: string;
+    protectedPaths: string[];
   },
   spawn: typeof spawnCommandWithTimeout = spawnCommandWithTimeout,
 ): Deno.ChildProcess {
@@ -415,8 +422,11 @@ export function spawnBabysitterAgent(
       "exec",
       "-c",
       'approval_policy="never"',
-      "--sandbox",
-      "workspace-write",
+      ...buildBabysitterSandboxArgs({
+        dir: options.dir,
+        scratch: options.scratch,
+        protectedPaths: options.protectedPaths,
+      }),
       "--cd",
       options.dir,
       "--output-last-message",
@@ -434,14 +444,29 @@ export function spawnBabysitterAgent(
 export async function startBabysitterAgent(
   app: BabysitterAppConfig,
   repo: string,
-  options: { dir: string; scratch: string; prompt: string },
+  options: { dir: string; scratch: string; prompt: string; home: string },
   beforeSpawn: () => Promise<boolean>,
   fetchFn: FetchFn = globalThis.fetch,
   spawn: typeof spawnCommandWithTimeout = spawnCommandWithTimeout,
+  readVersion?: () => Promise<string>,
 ): Promise<Deno.ChildProcess | undefined> {
+  await checkBabysitterCodexVersion(readVersion);
+  const protectedPaths = await babysitterProtectedPaths(
+    options.home,
+    app.privateKeyPath,
+  );
   const agentToken = await mintBabysitterAgentToken(app, repo, fetchFn);
   if (!await beforeSpawn()) return undefined;
-  return spawnBabysitterAgent({ ...options, agentToken }, spawn);
+  return spawnBabysitterAgent(
+    {
+      dir: options.dir,
+      scratch: options.scratch,
+      prompt: options.prompt,
+      protectedPaths,
+      agentToken,
+    },
+    spawn,
+  );
 }
 
 /**
@@ -571,10 +596,12 @@ async function fix(
       repo,
       rtkInstruction,
     );
+    const home = Deno.env.get("HOME");
+    if (!home) throw new Error("HOME is not set");
     child = await startBabysitterAgent(
       app,
       repo,
-      { dir, scratch, prompt },
+      { dir, scratch, prompt, home },
       async () => {
         const stateDir = babysitterStateDir();
         await Deno.mkdir(stateDir, { recursive: true });

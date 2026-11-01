@@ -78,7 +78,11 @@ import {
   findScreenshotReferences,
 } from "./pr_evidence.ts";
 import { resolveImagePaths } from "./image_path_resolver.ts";
-import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
+import {
+  APPLIED_BUMP_NOTE_PREFIX,
+  MILESTONE_CHILD_BUMP_NOTE,
+} from "./bump_deps.ts";
+import { escapeRegExp } from "./regexp_escape.ts";
 import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
@@ -349,11 +353,27 @@ function extractMilestoneSection(body: string): string {
   return match ? match[0] : "";
 }
 
-/** The bump-skip note from an existing PR body, carried over verbatim. */
-function extractBumpSkipNote(body: string): string {
-  return body.includes(MILESTONE_CHILD_BUMP_NOTE)
-    ? `\n${MILESTONE_CHILD_BUMP_NOTE}\n`
-    : "";
+/**
+ * The bump note from an existing PR body, carried over verbatim: the
+ * bump-skip note (Issue #1775) or the applied-bump note (Issue #4570).
+ *
+ * The applied note is read only at the position the worker writes it: a line
+ * opening with `APPLIED_BUMP_NOTE_PREFIX`, preceded by a newline and followed
+ * by a newline and the footer rule. A summary that quotes the prefix
+ * mid-line, or at a line start without the footer rule after it, is not
+ * carried over. The last such match wins.
+ */
+function extractBumpNotes(body: string): string {
+  if (body.includes(MILESTONE_CHILD_BUMP_NOTE)) {
+    return `\n${MILESTONE_CHILD_BUMP_NOTE}\n`;
+  }
+  const appliedNote = new RegExp(
+    `\n${escapeRegExp(APPLIED_BUMP_NOTE_PREFIX)}[^\n]*\n(?=\n---\n)`,
+    "g",
+  );
+  let last = "";
+  for (const match of body.matchAll(appliedNote)) last = match[0];
+  return last;
 }
 
 /** Metadata shared by candidate verification and publication. */
@@ -494,7 +514,7 @@ export async function buildSyncedPrBodyCandidate(
     extraSections += formatBranchEvidenceSection(branchEvidence);
   }
   extraSections += extractMilestoneSection(view.body ?? "");
-  extraSections += extractBumpSkipNote(view.body ?? "");
+  extraSections += extractBumpNotes(view.body ?? "");
 
   const footer = buildWorkerFooter({
     workerName: input.workerName,
