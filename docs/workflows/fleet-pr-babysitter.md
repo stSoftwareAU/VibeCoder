@@ -13,6 +13,16 @@ the babysitter dismisses the addressed review if it is still the current review
 and the PR head has not changed. GitHub CI then
 runs the repository's quality and regression checks on the updated branch.
 
+The shared repository list stays unchanged. The babysitter monitors only the
+configured repositories accessible to its selected GitHub App installation and
+logs each skipped repository. For example, an App installed only on
+`stSoftwareAU` skips private `TitlePage` repositories in the same configuration.
+Access is rediscovered at the start of each pass, including in `--watch` mode;
+write tokens are scoped to the accessible configured subset. An explicitly
+requested inaccessible `--repo` fails, as do discovery errors or an empty
+accessible subset. Access changes during a pass remain API errors and are
+re-evaluated on the next pass.
+
 From the VibeCoder checkout:
 
 ```sh
@@ -91,6 +101,8 @@ about an hour and is not refreshed, so reads late in a longer repair can fail.
 PR description fixes reach GitHub only via the archived summary.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
+A PR labelled `needs-human` is never a candidate: it waits on a person, for
+example a check that declared a human gate.
 An explicitly selected `--repo` scans that repository regardless of PR author;
 `--pr` narrows the scan to one PR. Both retain the same lock and validation. A failed
 or unproductive agent attempt is recorded under
@@ -98,6 +110,49 @@ or unproductive agent attempt is recorded under
 is not retried on that host for the same PR head. Removing the matching state
 file permits a retry. The shared lock prevents simultaneous work; this local
 attempt record does not prevent a different host from retrying later.
+
+## Shift-left detection
+
+A fleet PR that fails CI costs a CI run and a second agent session to repair
+it. Each pass, before it starts repairs, the babysitter looks for CI failures
+that keep recurring on fleet PRs and that a check on the Mac could have caught
+before the PR was raised (Issue #4610). It does not weaken any check; it moves
+the same check earlier.
+
+- It reads the PR workflow runs that failed since its last scan and records one
+  observation per failed job of a fleet PR. A job counts only when its failed
+  step runs a recognised local tool (`cargo clippy`, `cargo fmt`,
+  `cargo mutants`, `cargo llvm-cov`, `deno test`, `markdownlint` and so on) and
+  the CI failure classifier calls it a code fault. Infrastructure, timing,
+  aggregator and deployment-state failures never count.
+- When the same check and step fail on 3 or more distinct fleet PRs within 7
+  days, it files one issue in the repository that owns the fix:
+
+  | Situation | Filed in |
+  | --- | --- |
+  | Most failing heads were pushed by the babysitter itself | VibeCoder |
+  | The repository's `quality.sh` already runs the tool, so the fleet raised or pushed without a passing local gate | VibeCoder |
+  | CI runs the tool but no local gate does, in 2 or more repositories | VibeCoder, once (a fleet-wide gap) |
+  | CI runs the tool but this repository's local gate does not | That repository |
+
+- A repository's VibeCoder-routed checks are filed as one issue that lists
+  every tool, because they share one cause.
+- Issues carry the `idle-task` label, so the fleet picks them up without a
+  human label. A recurrence adds at most one comment a day to the open issue; a
+  recurrence after the issue was closed files a new issue that links the old
+  one. A VibeCoder issue about a private repository names neither the
+  repository nor its PRs.
+- Each pass inspects at most 40 failed runs per repository and remembers the
+  runs it has scanned, so a busy repository's backlog does not delay repairs;
+  later passes pick up the rest.
+- The ledger is `shift-left-ledger.json` in the babysitter state directory. A
+  dry run records observations and reports what it would file, but writes
+  nothing to GitHub. A run limited with `--pr` skips detection.
+
+Each repair also re-runs its checks locally before it reports ready: a CI
+repair reproduces the failing step with the command the workflow runs and
+confirms it passes, and review and conflict repairs run the formatter, linter
+and type or compile check for the code they touched.
 
 This MVP uses the configured GitHub App and Codex; it does not yet select
 providers by remaining quota, handle

@@ -830,6 +830,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "marker",
     note: "run-failure follow-up comment marker prefix",
   },
+  VIBE_SHIFT_LEFT: {
+    role: "marker",
+    note:
+      "shift-left repeated CI failure issue-body marker prefix (Issue #4610)",
+  },
   VIBE_SELF_SCHEDULED: {
     role: "marker",
     note: "self-schedule announcement marker prefix",
