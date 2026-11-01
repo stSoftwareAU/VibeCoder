@@ -354,10 +354,10 @@ async function writeSummary(
  * itself is still the happy path, and this is the floor beneath it.
  *
  * The issue's closing keyword is aligned with the rendered block (Issue
- * #4472): a `missing` entry turns it into `Part of #N`, as assemblePrBody does
+ * #4472): a `partial` or `missing` entry turns it into `Part of #N`, as assemblePrBody does
  * for the PR body, and an all-met verdict restores `Closes #N`. An absent
  * summary starts from `Closes #N.`, which the alignment turns into
- * `Part of #N.` when the verdict has a missing entry.
+ * `Part of #N.` when the verdict has an unmet entry.
  *
  * @returns What happened, for the caller's log. Never throws on a missing or
  *   unreadable verdict: the summary is left exactly as the agent wrote it and

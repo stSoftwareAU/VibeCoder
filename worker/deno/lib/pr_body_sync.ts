@@ -160,8 +160,8 @@ export function summaryDigestFromBody(body: string): string | undefined {
  * creation runs it through `ensurePrReferencesIssue`.
  *
  * Issue #3177: a summary whose `## Acceptance Criteria` block marks any
- * criterion `missing` does not close the issue. Its closing keywords for the
- * issue become `Part of #N`, a `## Not closing #N` section names the missing
+ * criterion `partial` or `missing` does not close the issue. Its closing keywords for the
+ * issue become `Part of #N`, a `## Not closing #N` section names the unmet
  * criteria, and `ensureReferences` is skipped so no `Closes #N` is appended.
  */
 export function assemblePrBody(input: {

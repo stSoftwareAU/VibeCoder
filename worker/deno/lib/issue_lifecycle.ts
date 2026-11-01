@@ -402,14 +402,14 @@ export async function ensureIssueClosedIfPrMerged(
     }
 
     // Issue #3177: the merged PR's own closure block marks a criterion
-    // missing, so the merge does not complete the issue. Keep its existing
+    // partial or missing, so the merge does not complete the issue. Keep its existing
     // labels so another run can finish the original assignment.
     const missing = findMissingCriteria(prState.body ?? "");
     if (missing.length > 0) {
       // Issue #4495: warn once per missing set; an unchanged repeat is DEBUG.
       const missingMessage =
         "Not closing the issue: the merged PR marks acceptance criteria " +
-        "missing (Issue #3177)";
+        "partial or missing (Issue #3177)";
       const missingContext = { repo, issueNumber, prNumber, missing };
       if (
         shouldWarnDecision(
@@ -426,7 +426,7 @@ export async function ensureIssueClosedIfPrMerged(
         value: {
           closed: false,
           reason: `PR #${prNumber} merged, but its own summary marks ` +
-            `${missing.length} acceptance criteria missing — issue left ` +
+            `${missing.length} acceptance criteria partial or missing — issue left ` +
             `queued for completion (Issue #3177): ${missing.join("; ")}`,
         },
       };

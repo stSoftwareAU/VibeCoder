@@ -890,7 +890,7 @@ export async function recoverAndFinaliseExistingPr(
     if (prNumber > 0) {
       // Issue #4146: a timed-out run's draft continuation. Unmet criteria
       // are advice since Issue #4234, so a partial run reaches here too; its
-      // body says `Part of #N` when a criterion is `missing`, otherwise
+      // body says `Part of #N` when a criterion is `partial` or `missing`, otherwise
       // `Closes #N`. Mark it ready so it takes the normal review and
       // auto-merge path. Auto-merge waits for
       // the ready-for-review CI to start: the draft's checks were skipped,
@@ -2275,13 +2275,13 @@ async function completionBody(
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the
-  // summary marks a criterion `missing`. Say so, since the PR then leaves
+  // summary marks a criterion `partial` or `missing`. Say so, since the PR then leaves
   // the issue open, and the merged-PR closers leave it queued for a later
   // run to finish (Issue #4304).
   const missingCriteria = findMissingCriteria(summaryContent);
   if (missingCriteria.length > 0) {
     logger.warn(
-      "PR summary marks acceptance criteria missing — the PR is raised as " +
+      "PR summary marks acceptance criteria partial or missing — the PR is raised as " +
         "`Part of #N` and does not close the issue (Issue #3177)",
       { issueNumber, missing: missingCriteria.length },
     );

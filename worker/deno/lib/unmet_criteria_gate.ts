@@ -15,7 +15,7 @@
  *     U -- yes --> N["The agent is told once, in the session,<br/>with the unmet criteria named"]
  *     N --> G{"Still unmet on the next pass?"}
  *     G -- no --> P
- *     G -- yes --> A["PR raised and armed anyway.<br/>The unmet criteria are named in one<br/>'Notes for the reviewer' comment.<br/>A `missing` entry makes the body `Part of #N`"]
+ *     G -- yes --> A["PR raised and armed anyway.<br/>The unmet criteria are named in one<br/>'Notes for the reviewer' comment.<br/>A `partial` or `missing` entry makes the body `Part of #N`"]
  * ```
  *
  * No follow-up issue is filed and nothing is labelled `needs-human`.

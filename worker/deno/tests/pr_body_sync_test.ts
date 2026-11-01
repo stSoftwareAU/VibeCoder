@@ -392,6 +392,39 @@ Deno.test("sync - summary changed: edits the PR once with the refreshed body", a
   }
 });
 
+Deno.test("sync repair keeps a partial criterion from closing the issue (Issue #4644)", async () => {
+  const summary =
+    `## Summary\n\nCloses #${ISSUE_NUMBER}\n\n## Acceptance Criteria\n\n` +
+    "- **partial** — Deliver the CLI — evidence: one path — reason: another remains";
+  const repoPath = await makeRepo({ summary });
+  try {
+    const calls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary({
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    }, {
+      runGhCommand: (args) =>
+        args[0] === "pr" && args[1] === "view"
+          ? Promise.resolve(viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]))
+          : stubGh(calls)(args),
+      runGitCommand: stubGit([], { diffChanged: true }),
+      logger,
+    });
+    assert(result.ok);
+    const body = calls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(body, `Part of #${ISSUE_NUMBER}`);
+    assertStringIncludes(body, "Deliver the CLI");
+    assertEquals(/(?:closes|fixes|resolves)\s+#42\b/i.test(body), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
 Deno.test("sync - a legacy body with no tier marker gets none added (Issue #3403)", async () => {
   const repoPath = await makeRepo();
   try {

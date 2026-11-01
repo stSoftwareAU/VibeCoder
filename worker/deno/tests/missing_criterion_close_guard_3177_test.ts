@@ -322,7 +322,7 @@ Deno.test("summary alignment and PR-body assembly agree on the close decision (I
       );
       assertEquals(
         hasClosingKeyword(summary, ISSUE),
-        status !== "missing" && keyword !== "",
+        status === "met" && keyword !== "",
         label,
       );
     }
@@ -555,7 +555,8 @@ function captureLogger() {
 }
 
 const countMissingWarns = (warns: string[]) =>
-  warns.filter((w) => w.includes("acceptance criteria missing")).length;
+  warns.filter((w) => w.includes("acceptance criteria partial or missing"))
+    .length;
 
 Deno.test("ensureIssueClosedIfPrMerged - an unchanged missing-criteria verdict warns once across two cycles (Issue #4495)", async () => {
   resetDecisionWarnings();
@@ -579,7 +580,8 @@ Deno.test("ensureIssueClosedIfPrMerged - an unchanged missing-criteria verdict w
   }
   assertEquals(countMissingWarns(warns), 1, JSON.stringify(warns));
   assertEquals(
-    debugs.filter((d) => d.includes("acceptance criteria missing")).length,
+    debugs.filter((d) => d.includes("acceptance criteria partial or missing"))
+      .length,
     1,
     JSON.stringify(debugs),
   );
@@ -617,4 +619,48 @@ Deno.test("ensureIssueClosedIfPrMerged - a changed missing set or PR number warn
     3,
     "a different PR number warns again",
   );
+});
+
+Deno.test("partial criteria withhold closing on assembly and rebuild (Issue #4644)", () => {
+  const summary =
+    `## Summary\n\nCloses #${ISSUE}\n\n## Acceptance Criteria\n\n` +
+    "- **partial** — CLI behaviour — evidence: one path — reason: another remains";
+  const aligned = alignIssueCloseWithClosure(summary, ISSUE);
+  assertEquals(hasClosingKeyword(aligned, ISSUE), false);
+  const build = (content: string) =>
+    assemblePrBody({
+      summaryContent: content,
+      issueNumber: ISSUE,
+      extraSections: "",
+      footer: "",
+      summaryDigest: "deadbeef",
+      subAgentTier: undefined,
+    });
+  for (const body of [build(aligned), build(summary)]) {
+    assertEquals(hasClosingKeyword(body, ISSUE), false);
+    assertStringIncludes(body, `Part of #${ISSUE}`);
+    assertStringIncludes(body, "CLI behaviour");
+    assertStringIncludes(body, "`partial` or `missing`");
+  }
+});
+
+Deno.test("merged partial PR leaves its issue queued in both closers (Issue #4644)", async () => {
+  const partial = MET_SUMMARY.replace("**met**", "**partial**");
+  const w = world(partial, ["work-on"]);
+  assertEquals(await runCloser(w), 0);
+  const result = await ensureIssueClosedIfPrMerged(
+    "owner/repo",
+    ISSUE,
+    2459,
+    "bot-user",
+    {
+      ghCommandFn: w.fn,
+      logger: makeLogger(),
+      verifyMergeLandedFn: milestoneLanded,
+    },
+  );
+  assert(result.ok);
+  assertEquals(result.value.closed, false);
+  assertEquals(w.closed, []);
+  assertEquals(w.labelled, []);
 });

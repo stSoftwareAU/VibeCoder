@@ -1,5 +1,5 @@
 /**
- * A PR whose own closure block marks a criterion `missing` does not close its
+ * A PR whose own closure block marks a criterion `partial` or `missing` does not close its
  * issue (Issue #3177).
  *
  * "A missing core deliverable is not a PR" was a prose rule that only a
@@ -14,12 +14,12 @@
  *
  * ```mermaid
  * flowchart TD
- *     S["PR summary closure block"] --> M{"Any entry<br/>marked missing?"}
+ *     S["PR summary closure block"] --> M{"Any entry<br/>marked partial or missing?"}
  *     M -- no --> C["PR body closes the issue<br/>(Closes #N)"]
- *     M -- yes --> P["PR body says Part of #N<br/>and names the missing criteria"]
+ *     M -- yes --> P["PR body says Part of #N<br/>and names the unmet criteria"]
  *     C --> X["Merge: closer closes the issue"]
  *     P --> H{"Merge: closer reads<br/>the merged PR body"}
- *     H --> O["Issue left open and queued<br/>to finish the missing criteria"]
+ *     H --> O["Issue left open and queued<br/>to finish the unmet criteria"]
  * ```
  *
  * The closer check is the belt and braces: a fleet PR title names its issue
@@ -53,18 +53,18 @@ const CLOSING_KEYWORD_RE =
 const PART_OF_RE = /(^|[^\w/])part\s+of\s+#(\d+)\b/gi;
 
 /**
- * The closure entries a PR summary (or PR body) marks `missing`, as written.
+ * The closure entries a PR summary (or PR body) marks `partial` or `missing`, as written.
  *
  * Reads the same `## Acceptance Criteria` block the closure gate parses, so
  * the two cannot disagree about what the run said. A body with no block has
- * no missing entries.
+ * no unmet entries.
  *
  * @param prBody - The PR summary or assembled PR body.
- * @returns The text of each `missing` entry, in summary order.
+ * @returns The text of each unmet entry, in summary order.
  */
 export function findMissingCriteria(prBody: string): string[] {
   return parseClosureEntries(prBody)
-    .filter((entry) => entry.status === "missing")
+    .filter((entry) => entry.status === "missing" || entry.status === "partial")
     .map((entry) => entry.text);
 }
 
@@ -93,7 +93,7 @@ export function withholdIssueClose(body: string, issueNumber: number): string {
  * `Closes #N`, leaving `Part of` for other issues untouched.
  *
  * @param body - The PR summary or PR body.
- * @param issueNumber - The issue the PR closes when nothing is missing.
+ * @param issueNumber - The issue the PR closes when nothing is unmet.
  */
 export function restoreIssueClose(body: string, issueNumber: number): string {
   return body.replace(
@@ -105,7 +105,7 @@ export function restoreIssueClose(body: string, issueNumber: number): string {
 
 /**
  * Align the issue's closing keyword with the summary's own closure block: a
- * `missing` entry withholds the close (`Part of #N`), and no `missing` entry
+ * `partial` or `missing` entry withholds the close (`Part of #N`), and no unmet entry
  * restores it (`Closes #N`). Same rule assemblePrBody applies to the PR body
  * (Issue #3177), so the committed summary and PR body agree (Issue #4472).
  *
@@ -133,7 +133,7 @@ function quote(criterion: string): string {
  * The PR-body section that says why the PR does not close its issue.
  *
  * @param issueNumber - The issue the PR is part of.
- * @param missing - The `missing` entries, from {@link findMissingCriteria}.
+ * @param missing - The unmet entries, from {@link findMissingCriteria}.
  */
 export function buildMissingCriteriaPrNote(
   issueNumber: number,
@@ -145,12 +145,12 @@ export function buildMissingCriteriaPrNote(
     `This PR leaves #${issueNumber} open: its own \`## Acceptance ` +
     `Criteria\` block marks ${missing.length} criteri${
       missing.length === 1 ? "on" : "a"
-    } \`missing\`:`,
+    } \`partial\` or \`missing\`:`,
     "",
     ...missing.map(quote),
     "",
     `When it merges, the worker leaves #${issueNumber} open with its existing ` +
-    "labels so it remains queued to finish the missing criteria (Issue #3177).",
+    "labels so it remains queued to finish the unmet criteria (Issue #3177).",
     "",
   ].join("\n");
 }

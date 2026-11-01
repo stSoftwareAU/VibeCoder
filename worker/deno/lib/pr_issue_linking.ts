@@ -1085,14 +1085,14 @@ export async function closeIssuesForMergedPrs(
           }
 
           // Issue #3177: the merged PR's own closure block says a criterion
-          // is missing, so the merge does not complete the issue. A milestone
+          // is partial or missing, so the merge does not complete the issue. A milestone
           // PR merges unreviewed on green CI, so this is the only check.
           // Leave its discovery labels intact so the next run finishes it.
           const missing = pr.missingCriteria ?? [];
           if (missing.length > 0) {
             options?.logFn?.(
               `[close-merged-pr] ${repo}#${issueNumber}: PR #${pr.number} ` +
-                `marks ${missing.length} criteria missing — left queued ` +
+                `marks ${missing.length} criteria partial or missing — left queued ` +
                 `for completion (Issue #3177): ${missing.join("; ")}`,
             );
             continue;
