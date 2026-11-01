@@ -289,6 +289,17 @@ Deno.test("completion - an uncovered carried line blocks the PR and names file:l
     "## Coverage carry-over: lines the edited or removed tests reached are untested",
   );
   assertStringIncludes(outcome.comments[0]!, `${CHANGED_FILE}:42`);
+  // The gate is advisory, so its log line must not say it blocked the PR (Issue #4579).
+  assertEquals(
+    outcome.warnings.includes("Coverage carry-over gate reported findings"),
+    true,
+    `warnings: ${JSON.stringify(outcome.warnings)}`,
+  );
+  assertEquals(
+    outcome.warnings.some((w) => w.includes("blocked PR creation")),
+    false,
+    `warnings: ${JSON.stringify(outcome.warnings)}`,
+  );
 });
 
 Deno.test("completion - the runner is given the --no-renames PR diff, the base and the default budget", async () => {
