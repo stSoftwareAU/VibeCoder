@@ -35,7 +35,10 @@ import {
   isInfrastructureFailure,
 } from "../failure_diagnosis.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
-import { parkInFlightBuild } from "../heavy_build_gate.ts";
+import {
+  deferralSkipsCargoForMerge,
+  parkInFlightBuild,
+} from "../heavy_build_gate.ts";
 import { isBaselineAwareQualityGateEnabled } from "../baseline_aware_gate.ts";
 import {
   decideGateBypass,
@@ -475,8 +478,8 @@ async function resolveFormatBase(
  * the outer wrapper's responsibility (Issue #1550).
  *
  * Every exit records `state.qualityGateOutcome` (Issue #2345) — the attempt the
- * gate passed on, or `failed` — so the completion phase can report it on the
- * run-stats comment instead of leaving it in the host's private worker log.
+ * gate passed on, `failed`, or `deferred` when host headroom leaves Cargo to
+ * CI — so the completion phase can report it on the run-stats comment.
  */
 async function runQualityGateBody(
   ctx: IssueContext,
@@ -490,9 +493,20 @@ async function runQualityGateBody(
   // The gate runs the repository's own cargo or deno. Below the floor that
   // build is the host's fault, and it is not recorded as a failed gate
   // (Issue #4360).
-  const park = await parkInFlightBuild(state.repoPath);
+  const park = await (deps.parkBuildForQualityGate ?? parkInFlightBuild)(
+    state.repoPath,
+  );
   if (park) {
     logger.warn(park, { repo });
+    if (deferralSkipsCargoForMerge(park)) {
+      state.qualityGateOutcome = { status: "deferred" };
+      state.qualityGateStages = [{
+        name: "quality gate",
+        status: "SKIPPED",
+        reason: park,
+      }];
+      return { phaseResult: { status: "continue" } };
+    }
     return {
       phaseResult: {
         category: "internal_error",

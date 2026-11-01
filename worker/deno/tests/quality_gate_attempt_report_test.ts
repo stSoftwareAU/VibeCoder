@@ -12,13 +12,14 @@
  * Australian English used throughout (behaviour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { workOnIssueQualityGate } from "../lib/phases/quality_gate_remediation_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { mermaidFinding } from "../lib/baseline_gate.ts";
+import { inFlightParkReason } from "../lib/heavy_build_gate.ts";
 import type { CheckResult } from "../lib/quality_helpers.ts";
 import type { LogContext, Logger } from "../types.ts";
 
@@ -209,6 +210,38 @@ Deno.test("quality gate - a gate that could not run at all records failed", asyn
   // Absence of a pass is never read as a pass: the gate did not go green, so
   // the report says `failed` rather than staying silent.
   assertEquals(state.qualityGateOutcome, { status: "failed" });
+});
+
+Deno.test("quality gate - Cargo headroom short defers verification to CI", async () => {
+  const park = inFlightParkReason(
+    "ephemeral cargo root over budget (58.2 GB free, floor 46.0 GB + headroom 25.0 GB) — pruned 0.0 GB of idle target dirs and 12.9 GB is still short, so cargo builds wait for CI (Issue #3178 budget; Issue #4326 skip)",
+  );
+  assert(park !== null);
+  let qualityRuns = 0;
+  const state = makeState();
+  const deps = createMockDeps({
+    quality: {
+      runQualityGate: () => {
+        qualityRuns++;
+        return passedGate();
+      },
+    },
+    parkBuildForQualityGate: () => Promise.resolve(park),
+  });
+  const result = await workOnIssueQualityGate(makeContext(), state, deps);
+
+  assertEquals(result.status, "continue");
+  assertEquals(qualityRuns, 0);
+  assertEquals(state.qualityGateOutcome, { status: "deferred" });
+  assertEquals(state.qualityGateStages?.[0]?.status, "SKIPPED");
+  assertStringIncludes(
+    state.qualityGateStages?.[0]?.reason ?? "",
+    "58.2 GB free, floor 46.0 GB + headroom 25.0 GB",
+  );
+  assertStringIncludes(
+    state.qualityGateStages?.[0]?.reason ?? "",
+    "cargo builds wait for CI",
+  );
 });
 
 Deno.test("quality gate - records the stage outcomes of the last gate run (Issue #3726)", async () => {

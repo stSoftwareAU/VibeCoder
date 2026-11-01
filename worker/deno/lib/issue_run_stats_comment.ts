@@ -90,14 +90,15 @@ import {
  * The gate is bounded to two attempts — the initial `./quality.sh` run plus one
  * `quality_fix` remediation and re-run — so `attempt` is its own loop counter:
  * `1` for a gate that passed outright, `2` for one that passed after
- * remediation. A gate that never went green carries no attempt; `failed` is the
- * whole report, which covers a gate bypassed as pre-existing breakage and one
- * that only passed once the bump audit reverted the dependency bump. Recorded
- * by `workOnIssueQualityGate` on the phase state and rendered here.
+ * remediation. A gate that never went green carries no attempt; `failed` is
+ * the whole report, while `deferred` says host disk headroom left local Cargo
+ * verification to CI. Recorded by `workOnIssueQualityGate` on the phase state
+ * and rendered here.
  */
 export type QualityGateAttemptOutcome =
   | { readonly status: "passed"; readonly attempt: number }
-  | { readonly status: "failed" };
+  | { readonly status: "failed" }
+  | { readonly status: "deferred" };
 
 /**
  * Hidden HTML marker prefix every run-stats comment carries.
@@ -364,7 +365,8 @@ function formatGraftSeconds(seconds: number): string {
  * **Stable and greppable by contract.** The advisor/executor pilot's
  * first-attempt quality-gate pass rate is counted by grepping these exact
  * strings off the issue — `quality gate: passed on attempt 1`,
- * `quality gate: passed on attempt 2`, `quality gate: failed` — so the wording,
+ * `quality gate: passed on attempt 2`, `quality gate: failed`, and
+ * `quality gate: deferred to CI` — so the wording,
  * the lower case and the ordering must not be re-styled. Bolding the prefix or
  * renaming the verb empties the metric silently, with nothing failing to say
  * so.
@@ -378,7 +380,8 @@ const QUALITY_GATE_STATS_PREFIX = "- quality gate:";
  * Render the run's quality-gate line for the stats block (Issue #2345).
  *
  * One line on every run that reached the gate: which of the gate's two bounded
- * attempts it passed on, or `failed` when it never passed. A caller with no
+ * attempts it passed on, `failed` when it did not pass, or `deferred to CI`
+ * when host headroom left Cargo verification to CI. A caller with no
  * outcome — every phase that runs no quality gate — renders nothing, so those
  * comments are byte-for-byte what they were before this line existed.
  *
@@ -391,6 +394,9 @@ export function buildQualityGateStatsLine(
   if (!outcome) return "";
   if (outcome.status === "failed") {
     return `${QUALITY_GATE_STATS_PREFIX} failed`;
+  }
+  if (outcome.status === "deferred") {
+    return `${QUALITY_GATE_STATS_PREFIX} deferred to CI`;
   }
   return `${QUALITY_GATE_STATS_PREFIX} passed on attempt ${outcome.attempt}`;
 }

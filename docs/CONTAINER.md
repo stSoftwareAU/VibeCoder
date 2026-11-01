@@ -1328,12 +1328,14 @@ drain the pool until after the filesystem had gone read-only.
 
 Before an agent invocation in a checkout, a quality-gate run, a mutation
 check or a discrimination `cargo`/`deno`, the worker reads the same monitor
-with the cache skipped (`check({ force: true })`) and parks the step when the
-host is below the floor or, where the trim is refused, short of the floor
-plus the 25 GB headroom. The headroom park applies only to a checkout that
-holds a cargo project, because only cargo writes to the ephemeral cargo root;
-a Deno-only checkout is parked only below the floor (Issue #4413). The park is
-infrastructure: the reason carries
+with the cache skipped (`check({ force: true })`). Below the floor, the agent
+is parked. When the host is above the floor but short of the floor plus 25 GB
+headroom, the agent can do issue work with a worker instruction to leave Cargo
+checks to CI; the local quality gate is deferred to CI without retrying the
+manager. Other worker-managed build steps are parked. The headroom decision
+applies only to a checkout that holds a cargo project, because only cargo
+writes to the ephemeral cargo root; a Deno-only checkout is parked only below
+the floor (Issue #4413). The park is infrastructure: the reason carries
 `Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
 gate verdict, and it does not earn `failed-once`. It keeps the `disk-full`
 diagnostic class but is not code-fixable, so the worker does not auto-file a
@@ -1725,17 +1727,24 @@ build artefacts.
   released at every relaunch, but **within** a launch every byte written there
   is real host disk. Before a maintenance build, the host must have its floor
   **plus 25 GB of headroom** free where the trim is refused. Before each new
-  agent, quality, mutation or discrimination step, the same holds in a
-  checkout that holds a cargo project; a checkout with no cargo project is
-  held to the floor only, and nothing is pruned for its step (Issue #4413).
-  The cargo checkout's own target directories count towards the headroom for
-  such a step, up to the 25 GB (Issue #4423); a maintenance build gets no
-  such credit.
+  quality, mutation or discrimination build step, the same holds in a checkout
+  that holds a cargo project. An agent invocation below the floor is parked;
+  above the floor but short of headroom, it receives an instruction to leave
+  Cargo checks to CI. A checkout with no cargo project is held to the floor
+  only, and nothing is pruned for its step (Issue #4413). The cargo checkout's
+  own target directories count towards the headroom for a build step, up to the
+  25 GB (Issue #4423); a maintenance build gets no such credit.
   Short of the headroom, other checkouts' target directories are pruned,
   largest first, skipping any written to in the last 20 minutes and the
-  building checkout's own incremental cache. If the build is still not covered,
-  the new step is parked. The issue scan asks the same question as a dry
-  run before it claims (Issue #4540): a repository whose existing clone holds
+  building checkout's own incremental cache. If a worker-managed build step
+  is still not covered, that step is parked. When the host remains above the
+  floor but cannot cover Cargo headroom, the issue manager still starts with a
+  worker instruction to skip Cargo commands and leave those checks to CI;
+  the local quality gate is recorded as deferred to CI without retrying the
+  manager. Other worker-managed Cargo steps remain parked. Below the floor,
+  manager startup
+  is still parked. The issue scan asks the same question as a dry run before
+  it claims (Issue #4540): a repository whose existing clone holds
   a cargo project the host could not build is left out of that cycle's scan,
   so the slot goes to other work instead of a claim parked and released at
   once. Nothing is pruned at scan time, a repository not yet cloned is

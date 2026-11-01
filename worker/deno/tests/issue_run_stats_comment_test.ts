@@ -1361,6 +1361,13 @@ Deno.test("quality-gate line - a gate that never passed reads failed", () => {
   assertEquals(body.includes("passed on attempt"), false);
 });
 
+Deno.test("quality-gate line - deferred Cargo verification is reported as CI work", () => {
+  const body = commentWithQualityGate({ status: "deferred" });
+
+  assertEquals(qualityGateLineOf(body), "- quality gate: deferred to CI");
+  assertEquals(body.includes("quality gate: passed"), false);
+});
+
 Deno.test("buildQualityGateStatsLine - renders no line without an outcome", () => {
   assertEquals(buildQualityGateStatsLine(undefined), "");
 });

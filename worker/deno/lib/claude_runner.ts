@@ -27,8 +27,9 @@ import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
+  agentStartBuildAdmission,
+  type EphemeralRootDeps,
   inFlightHostDiskGateEnabled,
-  parkInFlightBuild,
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
@@ -575,6 +576,11 @@ export interface RunClaudeOptions {
   phase?: string;
   /** Working directory. */
   cwd?: string;
+  /**
+   * Ephemeral target-directory operations for the in-flight disk gate.
+   * Tests inject an isolated root; production leaves this unset.
+   */
+  heavyBuildGateDeps?: EphemeralRootDeps;
   /** Logger instance. */
   logger?: Logger;
   /** Disallowed tools (default: ["EnterPlanMode", "ExitPlanMode"]). */
@@ -1221,6 +1227,7 @@ async function runClaudeWithTimeoutBody(
   let userPrompt = finishClamp
     ? appendFinishDeadlinePrompt(prompt, finishClamp)
     : prompt;
+  let agentSystemPrompt = systemPrompt;
   let sessionTimeoutSeconds = finishClamp?.timeoutSeconds ?? timeoutSeconds;
   const finishRefusal = () => {
     logger?.info(
@@ -1243,12 +1250,27 @@ async function runClaudeWithTimeoutBody(
   };
   if (finishClamp?.belowFloor) return finishRefusal();
 
-  // An agent in a checkout runs cargo and deno. Below the floor it does not
-  // start (Issue #4360). No checkout means there is no build to bound, and
-  // the gate is a no-op until production arms it.
+  // Below the floor, do not start the manager (Issue #4360). Above the floor
+  // but short of Cargo headroom, let it do the issue work and leave Cargo
+  // checks to CI; worker-managed build steps still use the in-flight gate.
   if (cwd) {
-    const park = await parkInFlightBuild(cwd);
-    if (park) return { ok: false, error: new Error(park) };
+    const admission = await agentStartBuildAdmission(
+      cwd,
+      options.heavyBuildGateDeps,
+    );
+    if (admission.mode === "park") {
+      return { ok: false, error: new Error(admission.reason) };
+    }
+    if (admission.mode === "run-without-cargo") {
+      const instruction =
+        "Host disk headroom is insufficient for Cargo compilation. Because " +
+        "cargo builds wait for CI under this budget, continue " +
+        "the requested code and documentation work, but do not run Cargo " +
+        "build, test, check, clippy or doc commands; CI will compile and " +
+        "verify the change. The worker will skip its local Cargo gates too.";
+      agentSystemPrompt = `${systemPrompt ?? ""}\n\n${instruction}`;
+      logger?.info(`${admission.reason}; manager work continues without Cargo`);
+    }
   }
 
   // The provider seam (Issue #4067) owns the binary, the argument list and
@@ -1292,7 +1314,7 @@ async function runClaudeWithTimeoutBody(
   const invocationRequest = {
     orchestrationRole: options.orchestrationRole,
     prompt: userPrompt,
-    systemPrompt,
+    systemPrompt: agentSystemPrompt,
     model,
     phase,
     ...(options.env ? { env: options.env } : {}),

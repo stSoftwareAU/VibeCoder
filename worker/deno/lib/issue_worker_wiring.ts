@@ -602,6 +602,8 @@ export interface WorkerDeps {
   crashHandling: CrashHandlingDeps;
   infrastructure: InfrastructureDeps;
   quality: QualityDeps;
+  /** Override quality-gate build admission in phase-level tests. */
+  parkBuildForQualityGate?: (checkoutPath: string) => Promise<string | null>;
 }
 
 async function setupRepoFn(
@@ -903,6 +905,7 @@ export interface MockDepsOverrides {
   crashHandling?: Partial<CrashHandlingDeps>;
   infrastructure?: Partial<InfrastructureDeps>;
   quality?: Partial<QualityDeps>;
+  parkBuildForQualityGate?: WorkerDeps["parkBuildForQualityGate"];
 }
 
 /** No-op function for mock stubs. */
@@ -1603,5 +1606,8 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     crashHandling: mockCrashHandling,
     infrastructure: mockInfrastructure,
     quality: mockQuality,
+    ...(overrides?.parkBuildForQualityGate
+      ? { parkBuildForQualityGate: overrides.parkBuildForQualityGate }
+      : {}),
   };
 }

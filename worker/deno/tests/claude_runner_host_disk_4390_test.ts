@@ -1,8 +1,14 @@
 /** A running build may consume its admission headroom (Issue #4390). */
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import {
   enableInFlightHostDiskGate,
+  type EphemeralRootDeps,
   type HeavyBuildDiskReading,
   registerHeavyBuildDiskProbe,
 } from "../lib/heavy_build_gate.ts";
@@ -16,6 +22,12 @@ import {
 import { fakeClock } from "./support/fake_clock.ts";
 
 const GIB = 1_073_741_824;
+const emptyCargoRoot: EphemeralRootDeps = {
+  listTargetDirs: () => Promise.resolve([]),
+  removeDir: () => Promise.resolve(),
+  nowMs: () => 0,
+};
+
 function reading(freeGb: number): HeavyBuildDiskReading {
   return {
     status: {
@@ -29,6 +41,185 @@ function reading(freeGb: number): HeavyBuildDiskReading {
     trimRefused: true,
   };
 }
+
+Deno.test({
+  name: "agent setup - a headroom shortfall lets manager work start",
+  ignore: Deno.build.os === "windows",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const clock = fakeClock();
+    const checkout = await Deno.makeTempDir({
+      prefix: "manager-cargo-budget-",
+    });
+    await Deno.writeTextFile(
+      `${checkout}/Cargo.toml`,
+      '[package]\nname="fixture"\n',
+    );
+    const stub = await createAgentStub(
+      `printf '%s\\n' "$@" > "$0.argv"\n` +
+        `printf '%s\\n' '{"type":"result","result":"working"}'\n`,
+    );
+    let freeGb = 58.2;
+    const messages: string[] = [];
+    registerHeavyBuildDiskProbe(() => Promise.resolve(reading(freeGb)));
+    enableInFlightHostDiskGate(true);
+    try {
+      const run = () =>
+        runClaudeWithTimeout({
+          prompt: "test",
+          systemPrompt: "base worker instructions",
+          cwd: checkout,
+          clock,
+          logger: {
+            info: (message: string) => messages.push(message),
+            warn: () => {},
+            error: () => {},
+            debug: () => {},
+            security: () => {},
+            skipReason: () => {},
+            timing: () => {},
+            scanSummary: () => {},
+            workerSummary: () => {},
+          } as Logger,
+          heavyBuildGateDeps: emptyCargoRoot,
+          agentBinaryPath: stub.path,
+          timeoutSeconds: 30,
+          killAfterSeconds: 1,
+          hostDiskPollMs: 30_000,
+          progressIntervalMs: 86_400_000,
+          descendantSnapshotIntervalMs: 86_400_000,
+        });
+      const constrained = await run();
+      assert(constrained.ok, constrained.ok ? "" : constrained.error.message);
+      const constrainedArgs = await Deno.readTextFile(`${stub.path}.argv`);
+      assertStringIncludes(constrainedArgs, "base worker instructions");
+      assertStringIncludes(constrainedArgs, "do not run Cargo");
+      assertStringIncludes(constrainedArgs, "cargo builds wait for CI");
+      assertEquals(
+        messages.some((message) =>
+          message.includes(
+            "ephemeral cargo root over budget (58.2 GB free, floor 46.0 GB + headroom 25.0 GB)",
+          )
+        ),
+        true,
+      );
+
+      freeGb = 71;
+      const recovered = await run();
+      assert(recovered.ok, recovered.ok ? "" : recovered.error.message);
+      const recoveredArgs = await Deno.readTextFile(`${stub.path}.argv`);
+      assertStringIncludes(recoveredArgs, "base worker instructions");
+      assert(!recoveredArgs.includes("do not run Cargo"));
+
+      await Deno.remove(`${checkout}/Cargo.toml`);
+      freeGb = 46.1;
+      const noCargo = await run();
+      assert(noCargo.ok, noCargo.ok ? "" : noCargo.error.message);
+      const noCargoArgs = await Deno.readTextFile(`${stub.path}.argv`);
+      assert(!noCargoArgs.includes("do not run Cargo"));
+    } finally {
+      enableInFlightHostDiskGate(false);
+      registerHeavyBuildDiskProbe(undefined);
+      await stub.dispose();
+      await Deno.remove(checkout, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "agent setup - a disk probe error still refuses manager startup",
+  ignore: Deno.build.os === "windows",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const clock = fakeClock();
+    const checkout = await Deno.makeTempDir({
+      prefix: "manager-cargo-probe-error-",
+    });
+    await Deno.writeTextFile(
+      `${checkout}/Cargo.toml`,
+      '[package]\nname="fixture"\n',
+    );
+    const stub = await createAgentStub(
+      `touch "$0.started"\nprintf '%s\\n' '{"type":"result","result":"working"}'\n`,
+    );
+    registerHeavyBuildDiskProbe(() => {
+      throw new Error("disk probe failed");
+    });
+    enableInFlightHostDiskGate(true);
+    try {
+      await assertRejects(
+        () =>
+          runClaudeWithTimeout({
+            prompt: "test",
+            cwd: checkout,
+            clock,
+            heavyBuildGateDeps: emptyCargoRoot,
+            agentBinaryPath: stub.path,
+            timeoutSeconds: 30,
+            killAfterSeconds: 1,
+            hostDiskPollMs: 30_000,
+            progressIntervalMs: 86_400_000,
+            descendantSnapshotIntervalMs: 86_400_000,
+          }),
+        Error,
+        "disk probe failed",
+      );
+      await assertRejects(
+        () => Deno.stat(`${stub.path}.started`),
+        Deno.errors.NotFound,
+      );
+    } finally {
+      enableInFlightHostDiskGate(false);
+      registerHeavyBuildDiskProbe(undefined);
+      await stub.dispose();
+      await Deno.remove(checkout, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "agent setup - a host below its floor still parks the manager",
+  ignore: Deno.build.os === "windows",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const clock = fakeClock();
+    const checkout = await Deno.makeTempDir({ prefix: "manager-cargo-floor-" });
+    await Deno.writeTextFile(
+      `${checkout}/Cargo.toml`,
+      '[package]\nname="fixture"\n',
+    );
+    const stub = await createAgentStub(
+      `touch "$0.started"\nprintf '%s\\n' '{"type":"result","result":"working"}'\n`,
+    );
+    registerHeavyBuildDiskProbe(() => Promise.resolve(reading(45)));
+    enableInFlightHostDiskGate(true);
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        cwd: checkout,
+        clock,
+        heavyBuildGateDeps: emptyCargoRoot,
+        agentBinaryPath: stub.path,
+        timeoutSeconds: 30,
+        killAfterSeconds: 1,
+        hostDiskPollMs: 30_000,
+        progressIntervalMs: 86_400_000,
+        descendantSnapshotIntervalMs: 86_400_000,
+      });
+      assert(!result.ok);
+      assertStringIncludes(result.error.message, "host disk below its floor");
+      await assertRejects(
+        () => Deno.stat(`${stub.path}.started`),
+        Deno.errors.NotFound,
+      );
+    } finally {
+      enableInFlightHostDiskGate(false);
+      registerHeavyBuildDiskProbe(undefined);
+      await stub.dispose();
+      await Deno.remove(checkout, { recursive: true });
+    }
+  },
+});
 
 for (const crossFloor of [false, true]) {
   Deno.test({

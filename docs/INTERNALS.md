@@ -3096,10 +3096,13 @@ pass, lane or serial, keeps running because those passes land the PRs already
 open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
-An agent, quality, mutation or discrimination build already in flight is held
-to the same floor (and to the cargo headroom where its checkout holds a cargo
-project, Issue #4413), and a trim-refused host that is below the floor ends the
-launch so the ephemeral layer is discarded (Issue #4360, see
+An agent invocation below the floor is parked. Above the floor but short of
+cargo headroom, the manager is instructed to leave Cargo checks to CI, and the
+local quality gate is recorded as deferred to CI without retrying the manager.
+Mutation and discrimination build steps remain held to the
+cargo headroom where their checkout holds a cargo project (Issue #4413). A
+trim-refused host that is below the floor ends the launch so the ephemeral
+layer is discarded (Issue #4360, see
 [In-flight builds stop at the same floor](CONTAINER.md#in-flight-builds-stop-at-the-same-floor-issue-4360)).
 
 A build refused by the ephemeral cargo root's budget is a different case: with
@@ -4561,6 +4564,11 @@ branch waits for the host's disk, as every other disk stop does. A Deno check
 that cannot reach its module host is left to CI by both the merge gate and the
 resolution gate (Issues #4422 and #4451), never charged as a refused tree. See
 [HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
+
+Issue manager startup uses a separate admission: below the host floor it stays
+parked, while a Cargo headroom shortfall above the floor lets the manager do
+issue work with instructions to leave Cargo checks to CI. Worker-managed Cargo
+steps still use the in-flight build gate.
 
 #### 🪦 The sync never resurrects a deleted file
 

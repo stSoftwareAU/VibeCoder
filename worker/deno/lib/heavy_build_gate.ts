@@ -65,12 +65,14 @@
  * probe registered (tests, ad hoc callers) nothing is gated, which is the
  * documented `unknown` default of Issue #226.
  *
- * Issue #4360: a build already running is held to the same floor. The claim
+ * Issue #4360: a build already running is held to the host floor. The claim
  * gate only stops new claims, so {@link parkInFlightBuild} checks admission
- * before an agent, mutation or discrimination build. A checkout with no cargo
- * project is held to the floor only, and its idle sibling target directories
- * are not pruned for it, because only cargo writes to the ephemeral cargo root
- * (Issue #4413). {@link parkRunningBuild}
+ * before worker-managed Cargo steps. {@link agentStartBuildAdmission} parks
+ * manager startup below the floor, but lets it work above the floor while
+ * deferring Cargo checks to CI when the headroom is short. A checkout with no
+ * cargo project is held to the floor only, and its idle sibling target
+ * directories are not pruned for it, because only cargo writes to the
+ * ephemeral cargo root (Issue #4413). {@link parkRunningBuild}
  * stops an active process at the host floor, letting it consume the headroom
  * admission required (Issue #4390). {@link hostDiskLaunchStopReason} ends the
  * launch when the trim was refused and the host is below the floor — exiting the container
@@ -591,6 +593,43 @@ async function holdsCargoProject(checkoutPath: string): Promise<boolean> {
 export async function parkRunningBuild(): Promise<string | null> {
   if (!inFlightGateEnabled || probe === undefined) return null;
   return inFlightParkReason(judgeHostDiskForBuild(await probe()));
+}
+
+/** Admission decision for starting manager work in a cargo checkout. */
+export type AgentStartBuildAdmission =
+  | { mode: "run" }
+  | { mode: "run-without-cargo"; reason: string }
+  | { mode: "park"; reason: string };
+
+/**
+ * Decide whether the agent process itself may start in `checkoutPath`.
+ *
+ * Below the host floor, park the run. When the host is above its floor but
+ * below the ephemeral cargo headroom, allow the manager to work and leave
+ * Cargo checks to CI; worker-managed build steps remain guarded by
+ * {@link parkInFlightBuild}.
+ */
+export async function agentStartBuildAdmission(
+  checkoutPath: string,
+  deps: EphemeralRootDeps = productionEphemeralRootDeps,
+): Promise<AgentStartBuildAdmission> {
+  if (!inFlightGateEnabled) return { mode: "run" };
+  if (!(await holdsCargoProject(checkoutPath))) {
+    const reason = await parkRunningBuild();
+    return reason === null ? { mode: "run" } : { mode: "park", reason };
+  }
+
+  const admission = await heavyBuildAdmission(checkoutPath, deps, {
+    creditOwnCache: true,
+  });
+  if (admission.mode === "defer") {
+    const reason = inFlightParkReason(admission.reason);
+    return reason === null ? { mode: "run" } : { mode: "park", reason };
+  }
+  if (admission.mode === "merge-only") {
+    return { mode: "run-without-cargo", reason: admission.reason };
+  }
+  return { mode: "run" };
 }
 
 /**
