@@ -69,9 +69,12 @@ New tests in `worker/deno/tests/egress_selfcheck_test.ts`:
 - `the real proxy's refusal of a host off the allowlist is denied over loopback`
 - `the real proxy's 200 to an allowlisted host is succeeded over loopback`
 
-Red check: with the original `lib/egress_selfcheck.ts` restored and the new
-tests kept, 3 of the 33 tests in the file failed (the two split-read tests and
-the byte-cap test); with the fix, all pass. The two real-proxy tests and the
+Red check: with the original `worker/deno/lib/egress_selfcheck.ts` restored and
+the new tests kept, 4 of the 34 tests in the file failed: `a 403 whose head and
+body arrive in separate reads is denied`, `a head split inside its blank line
+or inside the marker is still denied`, `a non-timer read error after a partial
+answer fails`, and `an answer longer than the byte cap is cut at the cap`.
+With the fix, all pass. The two real-proxy tests and the
 `200` test pass on the original code too: over loopback the head and body
 usually arrive together, so they pin the contract against the production proxy
 but do not reproduce the split. The split is reproduced by the chunked fake.
