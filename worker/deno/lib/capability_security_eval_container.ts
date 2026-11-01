@@ -21,7 +21,8 @@ export const CAPSEC_CONTAINER_TIMEOUT_MS = 60_000;
 export const CAPSEC_CONTAINER_MEMORY_MB = 512;
 export const CAPSEC_CONTAINER_CPUS = 1;
 const OUTPUT_LIMIT = 1024 * 1024;
-const MARKER = "CAPSEC_ISOLATION_OK\n";
+export const OFFLINE_ISOLATION_MARKER = "CAPSEC_ISOLATION_OK\n";
+const MARKER = OFFLINE_ISOLATION_MARKER;
 const PARENT_MARKER = "CAPSEC_PARENT_PROTECTED\n";
 const PATH = "/usr/local/bin:/usr/bin:/bin";
 
@@ -44,7 +45,7 @@ export interface EvalContainerResult {
     detail: string;
   };
 }
-interface CommandResult {
+export interface CommandResult {
   code: number | null;
   stdout: string;
   stderr: string;
@@ -73,7 +74,7 @@ export interface EvalContainerDependencies {
 
 // Runs as uid/gid 1000 after privilege dropping, in the final network namespace.
 // Every check precedes the marker and the first generated-code invocation.
-const SUPERVISOR = `#!/bin/sh
+export const OFFLINE_ISOLATION_SUPERVISOR = `#!/bin/sh
 set -eu
 fail() { printf '%s\\n' "isolation refused: $*" >&2; exit 125; }
 [ "$(id -u)" = 1000 ] && [ "$(id -g)" = 1000 ] || fail identity
@@ -91,8 +92,9 @@ mkdir -p /tmp/home /tmp/cargo /tmp/target /tmp/deno
 printf '${MARKER.replaceAll("\n", "\\n")}'
 exec "$@"
 `;
+const SUPERVISOR = OFFLINE_ISOLATION_SUPERVISOR;
 
-async function resolveRuntime(
+export async function resolveRuntime(
   requested?: EvalContainerOptions["runtime"],
 ): Promise<ContainerRuntimeDescriptor> {
   const kind = requested === "apple" ? "apple-container" : requested;
@@ -111,13 +113,13 @@ async function resolveRuntime(
   });
 }
 
-async function resolveImage(root: string): Promise<string> {
+export async function resolveImage(root: string): Promise<string> {
   const selection = await readDeploymentImageSelection({ repoRoot: root });
   return await resolveContainerImageReference(root, selection.options);
 }
 
 /** Host memory is bounded even when generated code floods either output pipe. */
-async function runBounded(
+export async function runBounded(
   executable: string,
   args: string[],
   timeoutMs: number,
@@ -302,12 +304,14 @@ async function createFixture(options: EvalContainerOptions): Promise<string> {
   }
 }
 
-function runArgs(
+/** Shared offline container boundary; the trusted supervisor checks it before exec. */
+export function offlineIsolationArgs(
   descriptor: ContainerRuntimeDescriptor,
   image: string,
   dir: string,
   name: string,
-  language: EvalContainerOptions["language"],
+  command: string[],
+  extraEnv: string[] = [],
 ): string[] {
   const apple = descriptor.kind === "apple-container";
   const args = [
@@ -352,7 +356,7 @@ function runArgs(
     "CARGO_HOME=/tmp/cargo",
     "CARGO_TARGET_DIR=/tmp/target",
     "CARGO_BUILD_JOBS=1",
-    `CAPSEC_LANGUAGE=${language}`,
+    ...extraEnv,
   );
   if (apple) {
     args.push(
@@ -371,6 +375,17 @@ function runArgs(
     );
   }
   args.push("/bin/sh", "/fixture/supervisor.sh");
+  args.push(...command);
+  return args;
+}
+
+function runArgs(
+  descriptor: ContainerRuntimeDescriptor,
+  image: string,
+  dir: string,
+  name: string,
+  language: EvalContainerOptions["language"],
+): string[] {
   const test = [
     "deno",
     "test",
@@ -387,18 +402,19 @@ function runArgs(
     "--v8-flags=--max-old-space-size=384",
     "/fixture/accept_test.ts",
   ];
-  if (language === "typescript") args.push(...test);
-  else {args.push(
-      "/bin/sh",
-      "-c",
-      'set -eu; mkdir -p /tmp/build; rustc --edition=2021 --crate-name capsec_fixture --crate-type lib /fixture/lib.rs --out-dir /tmp/build; rustc --edition=2021 /fixture/adapter.rs --extern capsec_fixture=/tmp/build/libcapsec_fixture.rlib -o /tmp/build/adapter; exec "$@"',
-      "capsec-rust",
-      ...test,
-    );}
-  return args;
+  const command = language === "typescript" ? test : [
+    "/bin/sh",
+    "-c",
+    'set -eu; mkdir -p /tmp/build; rustc --edition=2021 --crate-name capsec_fixture --crate-type lib /fixture/lib.rs --out-dir /tmp/build; rustc --edition=2021 /fixture/adapter.rs --extern capsec_fixture=/tmp/build/libcapsec_fixture.rlib -o /tmp/build/adapter; exec "$@"',
+    "capsec-rust",
+    ...test,
+  ];
+  return offlineIsolationArgs(descriptor, image, dir, name, command, [
+    `CAPSEC_LANGUAGE=${language}`,
+  ]);
 }
 
-function inspectedDigest(
+export function inspectedDigest(
   output: string,
   descriptor: ContainerRuntimeDescriptor,
 ): string {
