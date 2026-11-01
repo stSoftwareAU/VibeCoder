@@ -35,7 +35,8 @@ Backend log-text change. Tests run from `worker/deno`:
   passed, 0 failed.
 - `deno task test:unit tests/completion_phase_summary_rule_retry_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts`
   — 33 passed, 0 failed.
-- `deno fmt --check` and `deno lint` on the two touched files — clean.
+- `deno fmt --check` and `deno lint` on the four touched source files
+  (`lib/phases/completion_phase.ts` and the three test files below) — clean.
 - `grep "blocked PR creation" worker/deno/lib/phases/completion_phase.ts` now
   matches only the security-fix (line 2469) and changed-workflow (line 2585)
   gates.
@@ -55,10 +56,14 @@ Backend log-text change. Tests run from `worker/deno`:
 - Extended `worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts`
   ("an uncovered carried line blocks the PR and names file:line") the same way
   for "Coverage carry-over gate reported findings".
-  - Red check: with the five lines in `completion_phase.ts` temporarily put back
-    to "blocked PR creation", the three test files ran 30 passed, 3 failed (the
-    4234 test and the mutation and coverage tests above, each at the new
-    assertion); with the reworded messages they pass (33 passed, 0 failed).
+  - Red check: with `completion_phase.ts` temporarily restored to the base
+    branch's version ("blocked PR creation" in the five lines), each test file
+    fails at its new assertion and passes on the head:
+    `worker/deno/tests/completion_phase_advisory_gates_4234_test.ts` (2 tests
+    at head; 1 failed on base), `worker/deno/tests/completion_phase_mutation_gate_test.ts`
+    (21 tests at head; 1 failed on base),
+    `worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts`
+    (10 tests at head; 1 failed on base).
 - No existing assertion was removed or edited.
 - Docs: grepped `README.md`, `docs/` (excluding archive) and `prompts/` for
   "blocked PR creation"; the only hit is the historical audit record named
