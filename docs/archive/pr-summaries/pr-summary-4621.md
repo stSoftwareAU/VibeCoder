@@ -138,10 +138,12 @@ sequenceDiagram
 - Earlier validation:
   `deno task pr-summary-check --base main --issue-body-file /tmp/vibe-issue-4621-body.md --labels work-on,idle-task ../../docs/archive/pr-summaries/pr-summary-4621.md`
   from `worker/deno` — passed; 0 blocked and 0 not checked.
-- `deno task check:manifests` — failed on the existing
+- Earlier `deno task check:manifests` — failed on the then-existing
   `worker/deno/lib/fleet_babysitter_codex.ts` entry missing from
-  `docs/audits/lib-sweep-coverage.json`; the same failure is present on
-  `origin/main` at commit `82b1e121`.
+  `docs/audits/lib-sweep-coverage.json` at base commit `82b1e121`.
+  Main has since resolved that omission in PR #4667. The conflict resolution
+  retains main's completed sweep record and security-audit ledger link.
+  Manifest checks were not rerun during conflict resolution.
 - Earlier full gate, before these retry fixes: `./quality.sh < /dev/null` —
   failed because its completeness check and Deno test pass report that same
   base-branch sweep-ledger omission; Deno lint, type check, formatting, Mermaid,
