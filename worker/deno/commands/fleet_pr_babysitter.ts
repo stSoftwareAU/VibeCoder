@@ -99,6 +99,22 @@ interface Review {
   user: { login: string };
 }
 
+/**
+ * Attempt marker name: one attempt per head, and for a review repair one per
+ * head and newest change request, so a new review on an attempted head is
+ * acted on rather than skipped for ever (Issue #4671).
+ */
+export function attemptKey(
+  repo: string,
+  number: number,
+  head: string,
+  reviews: Review[],
+): string {
+  const key = `${repo.replace("/", "--")}--${number}--${head}`;
+  if (reviews.length === 0) return key;
+  return `${key}--review-${Math.max(...reviews.map((review) => review.id))}`;
+}
+
 /** Latest decision for each reviewer; comments do not supersede a decision. */
 export function requestedReviews(reviews: Review[]): Review[] {
   const latest = new Map<string, Review>();
@@ -609,8 +625,8 @@ async function fix(
         const stateDir = babysitterStateDir();
         await Deno.mkdir(stateDir, { recursive: true });
         const attemptFile = `${stateDir}/${
-          repo.replace("/", "--")
-        }--${pr.number}--${pr.headRefOid}`;
+          attemptKey(repo, pr.number, pr.headRefOid, reviews)
+        }`;
         try {
           await Deno.writeTextFile(attemptFile, `${reason(pr)}\n`, {
             createNew: true,
