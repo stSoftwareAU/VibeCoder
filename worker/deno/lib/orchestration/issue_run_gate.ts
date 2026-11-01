@@ -15,8 +15,10 @@ import {
   DEFAULT_CLAUDE_TIMEOUT_SECONDS,
   DEFAULT_RETRY_MAX_RETRIES,
   DEFAULT_RETRY_MAX_WAIT_SECONDS,
+  type OrchestratedCallStats,
   type RetryOptions,
   type RunClaudeOptions,
+  type RunStats,
 } from "../claude_runner.ts";
 import type { ExternalIssueRunInput } from "../execute_claude_phase.ts";
 import { idempotencyKey } from "./checkpoint.ts";
@@ -178,10 +180,42 @@ function toAgentCallResult(result: ClaudeRunResult): AgentCallResult {
 }
 
 /**
+ * The stats entries of one runner result, one per attempt that billed, in
+ * order (Issue #4595). The last entry is the result's own final attempt, the
+ * one the phase records when it records the result itself; it alone carries
+ * the result's fallback, degradation and extension fields.
+ */
+function callStatsOf(result: ClaudeRunResult): OrchestratedCallStats[] {
+  const attempts = (result.invocationStats ?? []).filter((
+    stats,
+  ): stats is RunStats => stats !== undefined);
+  if (attempts.length === 0 && result.runStats) attempts.push(result.runStats);
+  const own: OrchestratedCallStats = {
+    ...(result.fallbackModel ? { fallbackModel: result.fallbackModel } : {}),
+    ...(result.preflightDegraded
+      ? {
+        preflightDegraded: true,
+        ...(result.preflightDegradedReason
+          ? { preflightDegradedReason: result.preflightDegradedReason }
+          : {}),
+      }
+      : {}),
+    ...(result.extensions ? { extensions: result.extensions } : {}),
+  };
+  if (attempts.length === 0) return Object.keys(own).length > 0 ? [own] : [];
+  return attempts.map((runStats, index) => ({
+    runStats,
+    ...(index === attempts.length - 1 ? own : {}),
+  }));
+}
+
+/**
  * Runs one issue through the external orchestrator and returns the manager's
- * final result when the run is done. A timed-out run whose last call the
- * runner timed out returns that runner result, so the phase's timeout handling
- * applies (Issue #4584). Any other outcome is an error.
+ * final result when the run is done, carrying the stats of every other
+ * provider call the run made in `orchestrationCalls` (Issue #4595). A
+ * timed-out run whose last call the runner timed out returns that runner
+ * result, so the phase's timeout handling applies (Issue #4584). Any other
+ * outcome is an error.
  *
  * @param input - The issue, its brief, the Claude options and the settings.
  * @param deps - The runner and the optional state dir, env and clock.
@@ -256,6 +290,9 @@ export async function runOrchestratedIssueRun(
 
   let lastManagerResult: ClaudeRunResult | undefined;
   let lastTimedOut: ClaudeRunResult | undefined;
+  // Every provider call's result and its stats entries, in call order (Issue #4595).
+  const calls: { result: ClaudeRunResult; stats: OrchestratedCallStats[] }[] =
+    [];
   const invoke: InvokeAgent = async (call) => {
     lastTimedOut = undefined;
     // Codex cannot deny the editing tools, so a read-only Codex role is held
@@ -299,9 +336,22 @@ export async function runOrchestratedIssueRun(
       return { ok: false, kind: "error", message: run.error.message };
     }
     const result = run.value;
+    calls.push({ result, stats: callStatsOf(result) });
     if (result.timedOut === true) lastTimedOut = result;
     if (call.envelope.role !== "executor") lastManagerResult = result;
     return toAgentCallResult(result);
+  };
+
+  // The phase records the returned result itself; everything else the run
+  // billed rides beside it so the cost and model figures cover every call
+  // (Issue #4595).
+  const withOtherCalls = (returned: ClaudeRunResult): ClaudeRunResult => {
+    const others = calls.flatMap((call) =>
+      call.result === returned ? call.stats.slice(0, -1) : call.stats
+    );
+    return others.length > 0
+      ? { ...returned, orchestrationCalls: others }
+      : returned;
   };
 
   const outcome: OrchestrationOutcome = await runExternalOrchestration({
@@ -337,10 +387,10 @@ export async function runOrchestratedIssueRun(
   // The phase's timeout and scheduled-release handling must see the runner's
   // own result (Issue #4584), not an internal_error built from the refusal.
   if (outcome.state === "timed_out" && lastTimedOut) {
-    return { ok: true, value: lastTimedOut };
+    return { ok: true, value: withOtherCalls(lastTimedOut) };
   }
   if (outcome.state === "done" && lastManagerResult) {
-    return { ok: true, value: lastManagerResult };
+    return { ok: true, value: withOtherCalls(lastManagerResult) };
   }
   return {
     ok: false,

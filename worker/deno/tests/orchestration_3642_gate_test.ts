@@ -856,3 +856,121 @@ Deno.test("orchestration gate - a Codex manager or reviewer cannot change the ch
     assertStringIncludes(warnings.join("\n"), "reverted");
   });
 });
+
+/** Run stats for one call, named by the model it was served and the tokens it spent. */
+function statsFor(model: string, outputTokens: number): RunStats {
+  return {
+    servedModels: [model],
+    requestedModel: model,
+    wallClockMs: outputTokens,
+    durationMs: outputTokens,
+    tokenUsage: {
+      inputTokens: 1,
+      outputTokens,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    },
+  };
+}
+
+Deno.test("orchestration gate - the result carries the plan and executor calls' stats beside the review's (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner((options) =>
+      runResult({
+        output: options.prompt.startsWith(REVIEW_PREFIX)
+          ? "manager review"
+          : "step output",
+        // Distinct figures per call: plan 100 (sonnet), executor 7000 (haiku), review 300 (opus).
+        runStats: options.model === "haiku"
+          ? statsFor("claude-haiku-4-5", 7000)
+          : options.model === "opus"
+          ? statsFor("claude-opus-4-8", 300)
+          : statsFor("claude-sonnet-4-6", 100),
+      })
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    // The returned result is still the review, so the phase's own handling is unchanged.
+    assertEquals(outcome.value.runStats?.servedModels, ["claude-opus-4-8"]);
+    // The calls the review does not cover ride beside it, in call order.
+    assertEquals(
+      outcome.value.orchestrationCalls?.map((call) =>
+        call.runStats?.tokenUsage?.outputTokens
+      ),
+      [100, 7000],
+    );
+    assertEquals(
+      outcome.value.orchestrationCalls?.map((call) =>
+        call.runStats?.servedModels[0]
+      ),
+      ["claude-sonnet-4-6", "claude-haiku-4-5"],
+    );
+  });
+});
+
+Deno.test("orchestration gate - a retried executor call contributes every attempt it billed (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const failedAttempt = statsFor("claude-haiku-4-5", 4000);
+    const finalAttempt = statsFor("claude-haiku-4-5", 5000);
+    const fake = fakeRunner((options) =>
+      runResult({
+        output: options.prompt.startsWith(REVIEW_PREFIX)
+          ? "manager review"
+          : "step output",
+        runStats: options.model === "haiku"
+          ? finalAttempt
+          : statsFor("claude-opus-4-8", 300),
+        ...(options.model === "haiku"
+          ? { invocationStats: [failedAttempt, undefined, finalAttempt] }
+          : {}),
+      })
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    const haikuTokens = outcome.value.orchestrationCalls
+      ?.filter((call) => call.runStats?.servedModels[0] === "claude-haiku-4-5")
+      .map((call) => call.runStats?.tokenUsage?.outputTokens);
+    assertEquals(haikuTokens, [4000, 5000]);
+  });
+});
+
+Deno.test("orchestration gate - a timed-out run still carries the earlier calls' stats (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    let call = 0;
+    const fake = fakeRunner(() => {
+      call++;
+      // The plan finishes; the executor then times out.
+      return call === 1
+        ? runResult({ runStats: statsFor("claude-sonnet-4-6", 100) })
+        : runResult({
+          exitCode: 124,
+          timedOut: true,
+          runStats: statsFor("claude-haiku-4-5", 7000),
+        });
+    });
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.timedOut, true);
+    // Every call but the one returned: the plan, then any earlier executor attempt.
+    assertEquals(
+      outcome.value.orchestrationCalls?.length,
+      fake.calls.length - 1,
+    );
+    assertEquals(
+      outcome.value.orchestrationCalls?.[0]?.runStats?.servedModels[0],
+      "claude-sonnet-4-6",
+    );
+  });
+});

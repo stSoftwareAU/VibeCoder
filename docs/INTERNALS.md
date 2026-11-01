@@ -5407,6 +5407,21 @@ flat transient decision and the issue takes no `failed-once` mark. The other
 preflight refusals (CLI not runnable, fixed-price subscription, metered
 credentials) are not covered and stay `worker-crash`.
 
+#### An orchestrated issue run records every provider call's stats (Issue #4595)
+
+`runOrchestratedIssueRun` (`worker/deno/lib/orchestration/issue_run_gate.ts`)
+still returns one result: the last manager (review) call on `done`, or the
+runner's timed-out call on a timed-out run. It now carries the stats of every
+other provider call in `orchestrationCalls`: the plan and executor calls, in
+call order, plus any earlier attempt of a retried call (from its
+`invocationStats`). `recordClaudeRunStats` records each as its own
+`state.claudeRunStats` entry before the returned result's, so the issue's
+cost/model comment and the fleet figures from `measureIssuePhaseRun` (USD,
+duration, models, degradation) cover the whole run rather than the review
+alone. A run that is not orchestrated has no `orchestrationCalls`, so its
+records are unchanged. The CodeGraph and Graft query tallies are not extended:
+they still read the returned call only.
+
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
 The completion phase's pre-push gate (`gateBeforePush()` in
