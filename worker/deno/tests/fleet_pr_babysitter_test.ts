@@ -1,4 +1,10 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   enforceGhWriteAllowlist,
   isWriteRepoAllowed,
@@ -12,6 +18,7 @@ import {
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
   babysitterRtkInstruction,
+  buildRepairPrompt,
   cloneForRepair,
   eligibleAuthor,
   reason,
@@ -420,6 +427,35 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
     Error,
   );
   assertEquals(spawned, false);
+});
+
+// Shift left (Issue #4610): a babysitter push that CI then rejects costs a CI
+// run and another repair. Every repair re-runs the relevant local checks
+// before it reports ready.
+Deno.test("a CI repair must reproduce the failing step locally and see it pass before reporting ready", () => {
+  const prompt = buildRepairPrompt("failed CI", 5016, "owner/repo", "");
+  assertStringIncludes(prompt, "same command the workflow runs");
+  assertStringIncludes(prompt, "confirm it passes before");
+  assertStringIncludes(prompt, "quality.sh");
+  assert(!prompt.includes("GitHub CI runs those checks"));
+});
+
+Deno.test("a review repair runs the local checks covering the changed files", () => {
+  const prompt = buildRepairPrompt(
+    "requested review changes",
+    1,
+    "owner/repo",
+    "",
+  );
+  assertStringIncludes(prompt, "formatter, linter, type or compile check");
+  assertStringIncludes(prompt, "confirm they pass before");
+});
+
+Deno.test("a conflict repair still checks the packages it touched, not the whole suite", () => {
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  assertStringIncludes(prompt, "formatter, linter, type or compile check");
+  assertStringIncludes(prompt, "full regression suite");
+  assertStringIncludes(prompt, "BABYSITTER_READY");
 });
 
 // Owner rule 2026-11-01: the babysitter honours needs-human.

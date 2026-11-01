@@ -13,6 +13,11 @@ import {
 import { checkBabysitterCodexVersion } from "../lib/fleet_babysitter_sandbox.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
 import { escapeXml } from "../lib/xml_escape.ts";
+import {
+  listBabysitterRepositories,
+  selectBabysitterInstallation,
+  selectBabysitterRepositories,
+} from "../lib/fleet_babysitter_repositories.ts";
 
 const REQUIRED_PERMISSIONS: Readonly<Record<string, string>> = {
   actions: "read",
@@ -157,14 +162,6 @@ async function main(): Promise<number> {
   if (String(app.id) !== appId || typeof app.slug !== "string") {
     throw new Error("GitHub returned an unexpected App identity");
   }
-  const owners = new Set(
-    config.repos.map((repo) => repo.split("/")[0]?.toLowerCase()),
-  );
-  if (owners.size !== 1 || owners.has(undefined)) {
-    throw new Error(
-      "Setup currently requires monitored repositories under one GitHub owner",
-    );
-  }
   const installations: { id: number; account?: { login?: string } }[] = [];
   let complete = false;
   for (let page = 1; page <= 100; page++) {
@@ -194,21 +191,15 @@ async function main(): Promise<number> {
     }
   }
   if (!complete) throw new Error("App installation list is incomplete");
-  const matching = installations.filter((item) =>
-    Number.isSafeInteger(item.id) && typeof item.account?.login === "string" &&
-    owners.has(item.account.login.toLowerCase()) &&
-    (requestedInstallation === undefined ||
-      String(item.id) === requestedInstallation)
+  const installation = selectBabysitterInstallation(
+    installations,
+    config.repos,
+    requestedInstallation,
   );
-  if (matching.length !== 1) {
-    throw new Error(
-      "Could not find exactly one App installation for the monitored repository owner; install the App or specify --installation-id",
-    );
-  }
-  const installationId = String(matching[0]!.id);
+  const installationId = String(installation.id);
   console.log(
     `Found App installation ${installationId} for ${
-      matching[0]!.account!.login
+      installation.account!.login
     }.`,
   );
   const minted = await getInstallationToken(jwt, installationId);
@@ -218,61 +209,11 @@ async function main(): Promise<number> {
       `App installation lacks permissions: ${missing.join(", ")}`,
     );
   }
-  const accessible = new Set<string>();
-  let expectedTotal: number | undefined;
-  for (let page = 1; page <= 100; page++) {
-    const response = await fetchWithTimeout(
-      `https://api.github.com/installation/repositories?per_page=100&page=${page}`,
-      {
-        headers: {
-          Authorization: `Bearer ${minted.token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "fleet-pr-babysitter-setup",
-        },
-      },
-    );
-    if (!response.ok) {
-      throw new Error(
-        `App repository access check failed: HTTP ${response.status}`,
-      );
-    }
-    const body = await response.json();
-    if (
-      !Array.isArray(body.repositories) ||
-      !Number.isSafeInteger(body.total_count) || body.total_count < 0
-    ) throw new Error("App repository access response was malformed");
-    expectedTotal ??= body.total_count;
-    if (expectedTotal !== body.total_count) {
-      throw new Error(
-        "App repository access changed during pagination; retry setup",
-      );
-    }
-    for (const repo of body.repositories) {
-      if (typeof repo.full_name !== "string") {
-        throw new Error("App repository access response omitted full_name");
-      }
-      accessible.add(repo.full_name.toLowerCase());
-    }
-    if (
-      body.repositories.length === 0 ||
-      (expectedTotal !== undefined && accessible.size >= expectedTotal)
-    ) {
-      break;
-    }
-  }
-  if (expectedTotal === undefined || accessible.size < expectedTotal) {
-    throw new Error("App repository access list was incomplete");
-  }
-  const inaccessible = config.repos.filter((repo) =>
-    !accessible.has(repo.toLowerCase())
+  const accessible = await listBabysitterRepositories(minted.token);
+  const monitored = selectBabysitterRepositories(config.repos, accessible);
+  console.log(
+    `Babysitter will monitor ${monitored.length} of ${config.repos.length} configured repositories.`,
   );
-  if (inaccessible.length) {
-    throw new Error(
-      `App installation cannot access monitored repositories: ${
-        inaccessible.join(", ")
-      }`,
-    );
-  }
   const check = await fetchWithTimeout("https://api.github.com/graphql", {
     method: "POST",
     headers: {
