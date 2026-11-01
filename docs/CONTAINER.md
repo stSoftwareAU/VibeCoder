@@ -1332,11 +1332,7 @@ with the cache skipped (`check({ force: true })`) and parks the step when the
 host is below the floor or, where the trim is refused, short of the floor
 plus the 25 GB headroom. The headroom park applies only to a checkout that
 holds a cargo project, because only cargo writes to the ephemeral cargo root;
-a Deno-only checkout is parked only below the floor (Issue #4413). An external
-orchestrated issue run (manager, executor, reviewer) makes the same check once
-before its first provider call, because its executor would be parked at the
-same reading after the manager's plan call had been paid for; a run that would
-park ends there with the park reason and makes no provider call. The park is
+a Deno-only checkout is parked only below the floor (Issue #4413). The park is
 infrastructure: the reason carries
 `Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
 gate verdict, and it does not earn `failed-once`. It keeps the `disk-full`

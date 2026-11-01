@@ -20,10 +20,6 @@ import {
 } from "../claude_runner.ts";
 import type { ExternalIssueRunInput } from "../execute_claude_phase.ts";
 import { idempotencyKey } from "./checkpoint.ts";
-import {
-  type EphemeralRootDeps,
-  parkInFlightBuild,
-} from "../heavy_build_gate.ts";
 import { preflightRole } from "./preflight.ts";
 import { restoreCheckout, snapshotCheckout } from "./read_only_guard.ts";
 import { resolveAgentStateDir } from "../agent_state_dir.ts";
@@ -96,8 +92,6 @@ export interface IssueRunGateDeps {
   warn?: (msg: string) => void;
   /** Clock in epoch milliseconds. */
   now?: () => number;
-  /** Ephemeral cargo root operations for the build admission; tests inject a fake root. */
-  ephemeralRootDeps?: EphemeralRootDeps;
 }
 
 /** Builds the Claude options for one role call, with the gate's pins applied. */
@@ -209,14 +203,6 @@ export async function runOrchestratedIssueRun(
       ),
     };
   }
-
-  // The executor is admitted to build under the same reading, so a run that
-  // would park it ends here, before the manager's paid plan call is made.
-  const park = await parkInFlightBuild(
-    input.workspaceDir,
-    deps.ephemeralRootDeps,
-  );
-  if (park) return { ok: false, error: new Error(park) };
 
   const selected = effectiveRoleSelections(settings);
   const manager = { value: selected.manager };
