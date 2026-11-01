@@ -415,7 +415,7 @@ Deno.test("processPrFeedback - mutation check (Issue #3750): a survivor on the r
 
     // The survivor still stands after recovery, so the comment reports it.
     assertEquals(recordedComments.length, 1);
-    assertStringIncludes(recordedComments[0]!, "Mutation check (Issue #3750)");
+    assertStringIncludes(recordedComments[0]!, "#### Mutation check");
     assertStringIncludes(recordedComments[0]!, "lib/rule.ts:1");
 
     // The commit happens after the agent calls.

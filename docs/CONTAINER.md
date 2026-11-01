@@ -1409,10 +1409,11 @@ gate marks only a cargo-only tree `landUnverified`. For a cargo-only tree:
   a resolution nothing verified (Issue #1559). The merge commit still records
   which rung settled each file, and the milestone PR's CI builds it.
 - **A conflict that needs the agent is not landed in that cycle.** The agent can
-  run the very cargo build the host cannot afford, so it is not offered. Every
-  such cycle is a refusal that is never charged and never climbs the recovery
-  ladder: a full disk is the host's fault, rolling the branch back frees no
-  disk, and the branch waits for the host like every other disk stop.
+  run the very cargo build the host cannot afford, so it is not offered. Each
+  withhold is not a refusal, is not counted in `refusedCycles`, is never charged
+  and never climbs the recovery ladder (Issue #4588): a full disk is the host's
+  fault, rolling the branch back frees no disk, and the branch waits for the
+  host like every other disk stop.
 
 The log names the reason:
 

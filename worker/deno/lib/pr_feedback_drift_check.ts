@@ -520,7 +520,8 @@ export function buildDriftRecoveryPrompt(opts: {
   /**
    * The mutation gate's feedback comment, present only when it has survivors
    * (Issue #3750). Its presence switches the closing "Change no code" step to
-   * the test-only wording.
+   * the tests-first wording that still lets a dead or wrong line be removed or
+   * fixed (Issue #4594).
    */
   mutationGateComment?: string;
   boundaryId?: string;
@@ -676,12 +677,16 @@ export function buildDriftRecoveryPrompt(opts: {
   }
   if (mutationGateComment) {
     steps.push(
-      "Add a test that kills each listed mutation — or, where a line " +
-        "genuinely cannot be tested, record `file:line` exempt (untestable): " +
-        "<reason> in the PR summary — and re-run those tests on the head.",
+      "Add a test that kills each listed mutation (it fails when the " +
+        "mutation is applied), and re-run those tests on the head. Where the " +
+        "mutation shows the line is dead (no input can reach it) or wrong, " +
+        "remove or fix that line instead of testing it. Record `file:line` " +
+        "exempt (untestable): <reason> in the PR summary only for a line " +
+        "production can reach but a test cannot stage.",
     );
     steps.push(
-      "Change no production code — add or change tests, and documentation, " +
+      "Change production code only where a listed mutation shows the line " +
+        "is dead or wrong; otherwise add or change tests, and documentation, " +
         `only. Commit the change, referencing PR #${opts.prNumber}.`,
     );
   } else {
@@ -796,7 +801,7 @@ export function formatDriftResidual(residual: DriftResidual): string {
   const hasHits = residualHasTextHits(residual);
 
   const lines: string[] = [];
-  lines.push("### Drift check (Issue #3143)");
+  lines.push("### Drift check");
   lines.push("");
   // When there is nothing but an unavailable model pass or an unchecked
   // change-request quote, the "found text…" intro would claim a hit that
@@ -861,7 +866,8 @@ export function formatDriftResidual(residual: DriftResidual): string {
     survivors.length > 0 || residual.mutationNote !== undefined ||
     residual.mutationCheckUnavailable !== undefined
   ) {
-    lines.push("#### Mutation check (Issue #3750)");
+    // Mutation check section (Issue #3750); the heading carries no issue number.
+    lines.push("#### Mutation check");
     lines.push("");
     if (survivors.length > 0) {
       lines.push(

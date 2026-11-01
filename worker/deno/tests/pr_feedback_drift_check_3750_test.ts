@@ -271,7 +271,10 @@ Deno.test("runPrFeedbackDriftCheck - a survivor that outlives the recovery turn 
       calls[1]!.prompt,
       "No test went red when each of these mutations was applied",
     );
-    assertStringIncludes(calls[1]!.prompt, "Change no production code");
+    assertStringIncludes(
+      calls[1]!.prompt,
+      "Change production code only where a listed mutation shows the line is dead or wrong",
+    );
 
     assertEquals(seamCalls, [beforeSha, beforeSha]);
 
@@ -290,7 +293,7 @@ Deno.test("runPrFeedbackDriftCheck - a survivor that outlives the recovery turn 
           "check found lines this push added that no test pins — see below.",
       ),
     );
-    assertStringIncludes(message, "#### Mutation check (Issue #3750)");
+    assertStringIncludes(message, "#### Mutation check");
     assertStringIncludes(message, "lib/rule.ts:2");
     assert(!message.includes("found text this push leaves"));
   } finally {
@@ -528,7 +531,7 @@ Deno.test("formatDriftResidual - a survivors-only residual has no 'found text' i
     mutationSurvivors: ["`lib/rule.ts:2` — negated if condition"],
   });
   assert(!text.includes("found text this push leaves"));
-  assertStringIncludes(text, "#### Mutation check (Issue #3750)");
+  assertStringIncludes(text, "#### Mutation check");
   assertStringIncludes(
     text,
     "No test went red when each of these mutations was applied to a line this push added",
@@ -544,11 +547,11 @@ Deno.test("formatDriftResidual - a mutationNote-only residual prints the note un
     mutationNote: "mutation budget exhausted after 1 of 2 mutants (300 s)",
   });
   assert(!text.includes("found text this push leaves"));
-  assertStringIncludes(text, "#### Mutation check (Issue #3750)");
+  assertStringIncludes(text, "#### Mutation check");
   assertStringIncludes(text, "mutation budget exhausted after 1 of 2 mutants");
 });
 
-Deno.test("buildDriftRecoveryPrompt - survivors switch the closing step to the test-only wording and fence the survivors", () => {
+Deno.test("buildDriftRecoveryPrompt - survivors switch the closing step to the tests-first wording and fence the survivors", () => {
   const prompt = buildDriftRecoveryPrompt({
     repo: "org/repo",
     prNumber: 7,
@@ -564,7 +567,17 @@ Deno.test("buildDriftRecoveryPrompt - survivors switch the closing step to the t
   );
   assertStringIncludes(prompt, "lib/rule.ts:2");
   assertStringIncludes(prompt, "Add a test that kills each listed mutation");
-  assertStringIncludes(prompt, "Change no production code");
+  assertStringIncludes(prompt, "no input can reach it");
+  assertStringIncludes(prompt, "remove or fix that line");
+  assertStringIncludes(
+    prompt,
+    "only for a line production can reach but a test cannot stage",
+  );
+  assertStringIncludes(
+    prompt,
+    "Change production code only where a listed mutation shows the line is dead or wrong",
+  );
+  assert(!prompt.includes("Change no production code"));
   assert(!prompt.includes("Change no code —"));
 });
 
@@ -580,6 +593,6 @@ Deno.test("buildDriftRecoveryPrompt - with no survivors the documentation-only c
     prompt,
     "Change no code — this is a documentation fix only. Commit the change, referencing PR #7.",
   );
-  assert(!prompt.includes("Change no production code"));
+  assert(!prompt.includes("Change production code only"));
   assert(!prompt.includes("Add a test that kills each listed mutation"));
 });
