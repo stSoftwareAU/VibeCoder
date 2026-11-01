@@ -547,6 +547,9 @@ export async function listActionablePrs(
 ): Promise<PrEntry[]> {
   const { githubUser, ghCommandFn, logger, prAuthors, allowedAuthors } =
     options;
+  // Owner rule 2026-11-01: a needs-human PR waits on a person, so no lane
+  // that lists through here works it. The label is read with every listing.
+  if (!fields.split(",").includes("labels")) fields = `${fields},labels`;
   const prs = await listOpenPrs(
     repo,
     scanAuthors,
@@ -579,7 +582,20 @@ export async function listActionablePrs(
     prs.push(pr);
   }
   const only = options.onlyPrNumber;
-  return only === undefined ? prs : prs.filter((pr) => pr.number === only);
+  const held = prs.filter((pr) =>
+    pr.labels?.some((l) => l.name?.toLowerCase() === "needs-human")
+  );
+  for (const pr of held) {
+    logger.skipReason(
+      "needs-human",
+      `${repo}#${pr.number}: labelled needs-human — it waits on a person, so ` +
+        "no lane works it until the label is removed",
+    );
+  }
+  const actionable = prs.filter((pr) => !held.includes(pr));
+  return only === undefined
+    ? actionable
+    : actionable.filter((pr) => pr.number === only);
 }
 
 /**

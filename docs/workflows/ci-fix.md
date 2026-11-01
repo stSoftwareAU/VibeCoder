@@ -487,9 +487,16 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   and the step (rendered in a code span sized so the step cannot break out, open
   Markdown structure or `@`-mention anyone), carrying a
   `<!-- vibe-ci-human-gate check="…" head="…" -->` marker (Issue #2727). It
-  spends **no attempt**, writes no `vibe-ci-fix-attempt` marker, runs **no
-  agent** and adds **no `needs-human`**, so the merge-conflict scan keeps
-  maintaining the PR. The marker is keyed by **check name**, not failure
+  spends **no attempt**, writes no `vibe-ci-fix-attempt` marker and runs **no
+  agent**. It **labels the PR `needs-human`** (owner rule, 2026-11-01): a PR
+  that waits on a person cannot merge, so every base merge or repair on it
+  would only rerun CI. Every lane reads the label as hands off. That covers
+  the merge-conflict scan, the CI-fix, review-feedback and auto-merge scans
+  (`listActionablePrs`), the auto-merge sweep's branch updates and the fleet
+  PR babysitter. Stall repair never lifts this label. The label is
+  re-applied on every pass while the gate still fails. After taking the
+  step, the person re-runs the check and removes the label, and the lanes
+  resume. The marker is keyed by **check name**, not failure
   signature or head, so a later pass on any host — after a new push, or with a
   changed log — finds a fleet-authored gate marker and posts nothing. Its `head`
   names the commit the gate was last confirmed on (PR #2762): a pass that
