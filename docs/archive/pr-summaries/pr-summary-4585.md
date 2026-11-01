@@ -53,7 +53,11 @@ Backend only, no UI. Tests assert on real builder output:
 `worker/deno/tests/draft_continuation_4146_test.ts`,
 `worker/deno/tests/pr_feedback_drift_check_3143_test.ts`,
 `worker/deno/tests/failure_comment_no_vibecoder_numbers_4585_test.ts`. Issue
-numbers cited as provenance: #4585 only (this issue).
+numbers cited as provenance: #4585 only (this issue). The mutation-check
+manual (`docs/mutation-check.md`, Review-fix runs and Outcomes)
+and PR-feedback manual (`docs/workflows/pr-feedback.md`, drift check) were read
+and updated to name the emitted `### Drift check` and `#### Mutation check`
+headings.
 
 ## Test Plan
 
@@ -84,8 +88,9 @@ numbers cited as provenance: #4585 only (this issue).
   head (e.g. `failure_comment_no_vibecoder_numbers_4585_test.ts`,
   `host_fault_test.ts`, `semgrep_check_test.ts`, `never_hand_back_4227_test.ts`,
   `run_outcome_test.ts`: 86 passed, 0 failed), so the failure comes from the
-  mutation runner's baseline environment, not from a changed line. This diff
-  changes only string literals and their pins; each is asserted by a test above.
+  mutation runner's baseline environment, not from a changed line. The changed
+  output strings are asserted by the tests above; the operator manuals also
+  document the updated headings.
 - Edited pins (no assertion removed): the heading pins in
   `unmet_criteria_gate_test.ts` (`startsWith`),
   `pr_feedback_drift_check_3143_test.ts` and
