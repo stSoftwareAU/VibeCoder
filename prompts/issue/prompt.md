@@ -870,9 +870,10 @@ carries no marker.)
   the self-assessment this whole section exists to remove.
 - **`reviewer:` is a verdict, not a quotation.** It carries exactly one of
   `met`, `partial`, `missing` or `unrequested` — the gate parses it, and any
-  other text fails the run with the work already done. When the reviewer's own
-  words do not land on one of the four ("not assessed", "traceable, not creep",
-  a hedge, a question), put the **nearest** of the four in `reviewer:` and
+  other text is reported to you once in this session, then on the pull request.
+  When the reviewer's own words do not land on one of the four ("not assessed",
+  "traceable, not creep", a hedge, a question), put the **nearest** of the four
+  in `reviewer:` and
   quote what it actually said in `reason:`. Quoting it there loses nothing: the
   `reason:` line is the record, and it is what a human reads. Reaching for
   `unrequested` because the reviewer was unclear is the one wrong answer — say
