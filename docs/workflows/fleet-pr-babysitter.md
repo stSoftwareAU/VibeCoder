@@ -7,12 +7,28 @@ and conflict workers, rechecks the head, and runs one Codex session in a
 temporary clone. Up to two independent PR repairs run at once, each with a
 90-minute Codex limit and its own branch lock. While repairs run, it rescans
 every five minutes and queues newly actionable PRs without starting two repairs
-for the same PR. After Codex reports a completed fix, the babysitter commits it
-locally, checks for whitespace errors and conflict markers, and rechecks the PR.
-It pushes only if the PR still matches the original head. Once a review fix is
-pushed, the babysitter dismisses the addressed review if it is still the current
-review and the PR head has not changed. GitHub CI then runs the repository's
-quality and regression checks on the updated branch.
+for the same PR. After Codex reports a completed fix, the babysitter validates
+and commits the working tree, checks for whitespace errors and conflict
+markers, and rechecks the PR. It pushes only if the PR still matches the
+original head. After a push, it synchronises the PR description from the
+archived summary, then dismisses an addressed review only if it is still current
+and the PR head has not changed. A retry with no working-tree changes also
+synchronises the body before dismissal, so a prior failed publication can be
+repaired. A failed body publication or a stale repair checkout leaves the
+review open. Harmless skips, such as an unrelated marker-less PR or an
+already-current description, do not block dismissal. GitHub CI then runs the
+repository's quality and regression checks on the updated branch.
+
+```mermaid
+sequenceDiagram
+    participant B as Babysitter
+    participant G as GitHub
+    B->>B: Validate and commit repair
+    B->>G: Push updated branch
+    B->>G: Rebuild and publish PR description
+    B->>G: Confirm current head and review
+    B->>G: Dismiss addressed review
+```
 
 The shared repository list stays unchanged. The babysitter monitors only the
 configured repositories accessible to its selected GitHub App installation and

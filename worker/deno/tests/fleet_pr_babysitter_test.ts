@@ -11,6 +11,10 @@ import {
   isWriteRepoAllowlistActive,
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
+import { createLogger } from "../lib/logger.ts";
+import { type SyncPrBodyDeps } from "../lib/pr_body_sync.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
+import { buildIdempotencyMarker } from "../lib/pr_body.ts";
 import {
   BABYSITTER_FILESYSTEM_KEY,
   BABYSITTER_PERMISSIONS_PROFILE,
@@ -21,15 +25,398 @@ import {
   buildRepairPrompt,
   cloneForRepair,
   eligibleAuthor,
+  finishBabysitterRepair,
   reason,
   recoverTemporaryClones,
   requestedReviews,
   runRepairs,
   spawnBabysitterAgent,
+  syncBabysitterPrBodyBeforeDismissal,
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+
+const syncLogger = createLogger({
+  host: "fleet-pr-babysitter-test",
+  write: () => {},
+});
+
+async function runGit(cwd: string, ...args: string[]): Promise<string> {
+  const result = await runGitCommand(args, { cwd, timeoutSeconds: 10 });
+  if (!result.ok) throw result.error;
+  if (result.value.code !== 0) {
+    throw new Error(result.value.stderr || result.value.stdout);
+  }
+  return result.value.stdout.trim();
+}
+
+async function makeBabysitterSyncFixture(): Promise<{
+  path: string;
+  beforeSha: string;
+  headSha: string;
+}> {
+  const path = await Deno.makeTempDir({ prefix: "babysitter-pr-body-" });
+  await runGit(path, "init", "-q");
+  await runGit(path, "config", "user.name", "test");
+  await runGit(path, "config", "user.email", "test@example.invalid");
+  await Deno.mkdir(`${path}/docs/archive/pr-summaries`, { recursive: true });
+  const summaryPath = `${path}/docs/archive/pr-summaries/pr-summary-4637.md`;
+  await Deno.writeTextFile(
+    summaryPath,
+    "## Summary\n\nOld summary. Part of #4637.\n",
+  );
+  await runGit(path, "add", ".");
+  await runGit(path, "commit", "-m", "old summary");
+  const beforeSha = await runGit(path, "rev-parse", "HEAD");
+  await Deno.writeTextFile(
+    summaryPath,
+    "## Summary\n\nRepaired summary. Closes #4637.\n",
+  );
+  await runGit(path, "add", ".");
+  await runGit(path, "commit", "-m", "repair summary");
+  const headSha = await runGit(path, "rev-parse", "HEAD");
+  return { path, beforeSha, headSha };
+}
+
+function fakePrBodyService(
+  options: {
+    headSha: string;
+    branch?: string;
+    body: string;
+    failEdit?: boolean;
+    onEdit?: () => void;
+  },
+): { deps: SyncPrBodyDeps; getBody: () => string; edits: () => number } {
+  let body = options.body;
+  let editCount = 0;
+  const deps: SyncPrBodyDeps = {
+    runGhCommand: async (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify({
+          body,
+          files: [
+            { path: "docs/archive/pr-summaries/pr-summary-4637.md" },
+          ],
+          headRefOid: options.headSha,
+          headRefName: options.branch ?? "issue-4637-review-fix",
+        });
+      }
+      if (args[0] === "pr" && args[1] === "edit") {
+        editCount++;
+        if (options.failEdit) {
+          throw new Error("simulated body publication failure");
+        }
+        const bodyFile = args[args.indexOf("--body-file") + 1];
+        if (!bodyFile) throw new Error("missing --body-file");
+        body = await Deno.readTextFile(bodyFile);
+        options.onEdit?.();
+        return "";
+      }
+      throw new Error(`unexpected gh command: ${args.join(" ")}`);
+    },
+    runGitCommand,
+    logger: syncLogger,
+  };
+  return { deps, getBody: () => body, edits: () => editCount };
+}
+
+function babysitterBodySyncInput(
+  path: string,
+  beforeSha: string,
+  branchName = "issue-4637-review-fix",
+) {
+  return {
+    repo: "owner/repo",
+    prNumber: 7,
+    repoPath: path,
+    beforeSha,
+    workerName: "babysitter[bot]",
+    githubUser: "babysitter[bot]",
+    runId: "test-run",
+    branchName,
+  };
+}
+
+function cleanTreeFinishDeps(
+  headSha: string,
+  service: ReturnType<typeof fakePrBodyService>,
+  dismiss: () => Promise<void>,
+) {
+  return {
+    renewalFailed: () => false,
+    runCommand: async (command: string, args: string[]) => {
+      if (command === "git" && args[0] === "status") return "";
+      if (command === "git" && args[0] === "rev-parse") return headSha;
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    },
+    syncBodyDeps: service.deps,
+    dismiss,
+  };
+}
+
+const staleMarkerlessBody = "## Summary\n\nOld summary. Part of #4637.\n";
+
+async function cleanupFixture(path: string): Promise<void> {
+  await Deno.remove(path, { recursive: true });
+}
+
+Deno.test("a clean-tree babysitter retry repairs a marker-less stale body before dismissal", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+    });
+    let dismissed = false;
+    await syncBabysitterPrBodyBeforeDismissal(
+      babysitterBodySyncInput(fixture.path, fixture.beforeSha),
+      service.deps,
+      () => {
+        dismissed = true;
+        return Promise.resolve();
+      },
+    );
+    assertEquals(service.edits(), 1);
+    assertStringIncludes(service.getBody(), "Repaired summary.");
+    assertStringIncludes(service.getBody(), "Closes #4637");
+    assertEquals(service.getBody().includes("Part of #4637"), false);
+    assertEquals(dismissed, true);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("the production clean-tree completion path syncs before review dismissal", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const events: string[] = [];
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+      onEdit: () => events.push("publish"),
+    });
+    await finishBabysitterRepair(
+      "owner/repo",
+      {
+        ...pr,
+        number: 7,
+        headRefName: "issue-4637-review-fix",
+        headRefOid: fixture.headSha,
+      },
+      fixture.path,
+      "babysitter[bot]",
+      [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+      cleanTreeFinishDeps(fixture.headSha, service, () => {
+        events.push("dismiss");
+        return Promise.resolve();
+      }),
+    );
+    assertEquals(service.edits(), 1);
+    assertEquals(events, ["publish", "dismiss"]);
+    assertStringIncludes(service.getBody(), "Closes #4637");
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a pushed fix syncs the legacy body from its original head before dismissal", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const events: string[] = [];
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      branch: "issue-4637-review-fix",
+      body: `${staleMarkerlessBody}\n${buildIdempotencyMarker(4637)}`,
+      onEdit: () => events.push("publish"),
+    });
+    const repairPr = {
+      ...pr,
+      number: 7,
+      headRefName: "issue-4637-review-fix",
+      headRefOid: fixture.beforeSha,
+      reviewDecision: "CHANGES_REQUESTED",
+    };
+    const pushArgs: string[][] = [];
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+      {
+        renewalFailed: () => false,
+        runCommand: async (command, args) => {
+          if (command === "git" && args[0] === "status") return " M summary";
+          if (command === "git" && args[0] === "diff") return "";
+          if (command === "gh" && args[0] === "api") return "12345";
+          if (command === "git" && args[0] === "push") {
+            pushArgs.push(args);
+            events.push("push");
+            return "";
+          }
+          if (command === "git" && args[0] === "rev-parse") {
+            return fixture.headSha;
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+        },
+        readPr: async () => repairPr,
+        validateAndCommit: async () => {
+          events.push("commit");
+        },
+        syncBodyDeps: service.deps,
+        dismiss: async () => {
+          events.push("dismiss");
+        },
+      },
+    );
+    assertEquals(events, ["commit", "push", "publish", "dismiss"]);
+    assert(pushArgs[0]?.some((arg) => arg.includes("issue-4637-review-fix")));
+    assertStringIncludes(service.getBody(), "Closes #4637");
+    assertEquals(service.getBody().includes("Part of #4637"), false);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a failed body publication keeps reviews open and a retry publishes before dismissal", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const serviceOptions = {
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+      failEdit: true,
+    };
+    const service = fakePrBodyService(serviceOptions);
+    let dismissed = false;
+    const repairPr = {
+      ...pr,
+      number: 7,
+      headRefName: "issue-4637-review-fix",
+      headRefOid: fixture.headSha,
+    };
+    await assertRejects(
+      () =>
+        finishBabysitterRepair(
+          "owner/repo",
+          repairPr,
+          fixture.path,
+          "babysitter[bot]",
+          [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+          cleanTreeFinishDeps(fixture.headSha, service, () => {
+            dismissed = true;
+            return Promise.resolve();
+          }),
+        ),
+      Error,
+      "simulated body publication failure",
+    );
+    assertEquals(dismissed, false);
+    assertEquals(service.getBody(), staleMarkerlessBody);
+
+    serviceOptions.failEdit = false;
+    await finishBabysitterRepair(
+      "owner/repo",
+      repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
+      cleanTreeFinishDeps(fixture.headSha, service, () => {
+        dismissed = true;
+        return Promise.resolve();
+      }),
+    );
+    assertEquals(service.edits(), 2);
+    assertStringIncludes(service.getBody(), "Closes #4637");
+    assertEquals(dismissed, true);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("an already-current PR body is harmless and does not need a second edit", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      body: staleMarkerlessBody,
+    });
+    const input = babysitterBodySyncInput(fixture.path, fixture.beforeSha);
+    await syncBabysitterPrBodyBeforeDismissal(
+      input,
+      service.deps,
+      async () => {},
+    );
+    const currentBody = service.getBody();
+    await syncBabysitterPrBodyBeforeDismissal(
+      input,
+      service.deps,
+      async () => {},
+    );
+    assertEquals(service.edits(), 1);
+    assertEquals(service.getBody(), currentBody);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("an unrelated marker-less PR is not adopted and can still dismiss its review", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const unrelatedBody = "Human-authored description. Part of #4637.";
+    const service = fakePrBodyService({
+      headSha: fixture.headSha,
+      branch: "feature/unrelated",
+      body: unrelatedBody,
+    });
+    let dismissed = false;
+    await syncBabysitterPrBodyBeforeDismissal(
+      babysitterBodySyncInput(
+        fixture.path,
+        fixture.beforeSha,
+        "feature/unrelated",
+      ),
+      service.deps,
+      () => {
+        dismissed = true;
+        return Promise.resolve();
+      },
+    );
+    assertEquals(service.edits(), 0);
+    assertEquals(service.getBody(), unrelatedBody);
+    assertEquals(dismissed, true);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a stale repair checkout cannot dismiss reviews after body sync skips", async () => {
+  const fixture = await makeBabysitterSyncFixture();
+  try {
+    const service = fakePrBodyService({
+      headSha: "0000000000000000000000000000000000000000",
+      body: staleMarkerlessBody,
+    });
+    let dismissed = false;
+    await assertRejects(
+      () =>
+        syncBabysitterPrBodyBeforeDismissal(
+          babysitterBodySyncInput(fixture.path, fixture.beforeSha),
+          service.deps,
+          () => {
+            dismissed = true;
+            return Promise.resolve();
+          },
+        ),
+      Error,
+      "checkout is not the PR head",
+    );
+    assertEquals(service.edits(), 0);
+    assertEquals(dismissed, false);
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
 
 Deno.test("failed clone is attempted once and preserves its original error", async () => {
   let attempts = 0;

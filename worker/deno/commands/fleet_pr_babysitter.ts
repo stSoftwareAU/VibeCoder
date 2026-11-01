@@ -10,6 +10,13 @@ import {
   withWriteRepoAllowlistContext,
 } from "../lib/write_repo_allowlist.ts";
 import { markCommentProcessed } from "../lib/pr_comments.ts";
+import { createLogger } from "../lib/logger.ts";
+import {
+  type SyncPrBodyDeps,
+  syncPrBodyFromSummary,
+  type SyncPrBodyInput,
+} from "../lib/pr_body_sync.ts";
+import { getRunId } from "../lib/run_id.ts";
 import {
   accessibleBabysitterRepositories,
   babysitterAgentEnv,
@@ -384,6 +391,146 @@ async function dismissAddressedReviews(
   }
 }
 
+/** Refresh the PR description before dismissing reviews addressed by a repair. */
+export async function syncBabysitterPrBodyBeforeDismissal(
+  input: SyncPrBodyInput,
+  deps: SyncPrBodyDeps,
+  dismiss: () => Promise<void>,
+  syncFn: typeof syncPrBodyFromSummary = syncPrBodyFromSummary,
+): Promise<void> {
+  const result = await syncFn(input, deps);
+  if (!result.ok) throw result.error;
+  if (result.value.status === "skipped") {
+    const harmlessSkips = new Set([
+      "no worker marker",
+      "summary unchanged",
+      "summary file deleted",
+      "body already current",
+    ]);
+    if (!harmlessSkips.has(result.value.reason)) {
+      throw new Error(
+        `PR #${input.prNumber} body sync could not publish the required update: ${result.value.reason}`,
+      );
+    }
+  }
+  await dismiss();
+}
+
+async function syncBabysitterRepairBody(
+  repo: string,
+  pr: Pr,
+  repoPath: string,
+  login: string,
+  expectedHead: string,
+  reviews: Review[],
+  deps?: SyncPrBodyDeps,
+  syncFn: typeof syncPrBodyFromSummary = syncPrBodyFromSummary,
+  dismiss: () => Promise<void> = () =>
+    dismissAddressedReviews(repo, pr.number, reviews, expectedHead),
+): Promise<void> {
+  const input: SyncPrBodyInput = {
+    repo,
+    prNumber: pr.number,
+    repoPath,
+    beforeSha: pr.headRefOid,
+    workerName: login,
+    githubUser: login,
+    runId: getRunId(),
+    branchName: pr.headRefName,
+  };
+  const syncDeps = deps ?? {
+    runGhCommand: (args) => run("gh", args),
+    runGitCommand,
+    logger: createLogger(),
+  };
+  await syncBabysitterPrBodyBeforeDismissal(
+    input,
+    syncDeps,
+    dismiss,
+    syncFn,
+  );
+}
+
+/** Collaborators for the post-agent repair completion path. */
+export interface BabysitterRepairFinishDeps {
+  runCommand?: typeof run;
+  readPr?: typeof readPr;
+  validateAndCommit?: typeof validateAndCommit;
+  syncBodyDeps?: SyncPrBodyDeps;
+  syncBodyFn?: typeof syncPrBodyFromSummary;
+  dismiss?: (reviews: Review[], expectedHead: string) => Promise<void>;
+  renewalFailed: () => boolean;
+}
+
+/** Validate, commit and push a repair, then sync its body before dismissal. */
+export async function finishBabysitterRepair(
+  repo: string,
+  pr: Pr,
+  repoPath: string,
+  login: string,
+  reviews: Review[],
+  deps: BabysitterRepairFinishDeps,
+): Promise<void> {
+  const runCommand = deps.runCommand ?? run;
+  let expectedHead: string;
+  if (!(await runCommand("git", ["status", "--porcelain"], repoPath))) {
+    console.log(`${repo}#${pr.number}: agent made no changes`);
+    if (deps.renewalFailed()) {
+      throw new Error("PR lock renewal failed; leaving reviews untouched");
+    }
+    expectedHead = pr.headRefOid;
+  } else {
+    await runCommand("git", ["diff", "--check"], repoPath);
+    await runCommand("git", ["diff", "--cached", "--check"], repoPath);
+    const botId = await runCommand("gh", [
+      "api",
+      `users/${encodeURIComponent(login)}`,
+      "--jq",
+      ".id",
+    ]);
+    if (!/^[1-9]\d*$/.test(botId)) {
+      throw new Error("Invalid GitHub App bot user ID");
+    }
+    await (deps.validateAndCommit ?? validateAndCommit)(repoPath, pr.number, {
+      login,
+      id: botId,
+    });
+    if (deps.renewalFailed()) {
+      throw new Error("PR lock renewal failed; refusing to push");
+    }
+    const current = await (deps.readPr ?? readPr)(repo, pr.number);
+    if (
+      current.headRefOid !== pr.headRefOid ||
+      current.headRefName !== pr.headRefName ||
+      current.baseRefName !== pr.baseRefName || !reason(current)
+    ) {
+      throw new Error("PR changed during the fix; refusing to push");
+    }
+    await runCommand(
+      "git",
+      buildPushCreateBranchArgs("origin", "HEAD", pr.headRefName),
+      repoPath,
+    );
+    console.log(`${repo}#${pr.number}: pushed fix as ${login}`);
+    expectedHead = await runCommand("git", ["rev-parse", "HEAD"], repoPath);
+  }
+
+  await syncBabysitterRepairBody(
+    repo,
+    pr,
+    repoPath,
+    login,
+    expectedHead,
+    reviews,
+    deps.syncBodyDeps,
+    deps.syncBodyFn,
+    () =>
+      deps.dismiss
+        ? deps.dismiss(reviews, expectedHead)
+        : dismissAddressedReviews(repo, pr.number, reviews, expectedHead),
+  );
+}
+
 /** Isolate GitHub writes for each concurrent repair to its target repository. */
 export function withBabysitterWriteScope<T>(
   repo: string,
@@ -651,47 +798,14 @@ async function fix(
     if ((await run("git", ["rev-parse", "HEAD"], dir)) !== pr.headRefOid) {
       throw new Error("agent changed HEAD; refusing to push");
     }
-    if (!(await run("git", ["status", "--porcelain"], dir))) {
-      console.log(`${repo}#${pr.number}: agent made no changes`);
-      if (renewalFailed) {
-        throw new Error("PR lock renewal failed; leaving reviews untouched");
-      }
-      await dismissAddressedReviews(repo, pr.number, reviews, pr.headRefOid);
-      return;
-    }
-    await run("git", ["diff", "--check"], dir);
-    await run("git", ["diff", "--cached", "--check"], dir);
-    const botId = await run("gh", [
-      "api",
-      `users/${encodeURIComponent(login)}`,
-      "--jq",
-      ".id",
-    ]);
-    if (!/^[1-9]\d*$/.test(botId)) {
-      throw new Error("Invalid GitHub App bot user ID");
-    }
-    await validateAndCommit(dir, pr.number, { login, id: botId });
-    if (renewalFailed) {
-      throw new Error("PR lock renewal failed; refusing to push");
-    }
-    const current = await readPr(repo, pr.number);
-    if (
-      current.headRefOid !== pr.headRefOid ||
-      current.headRefName !== pr.headRefName ||
-      current.baseRefName !== pr.baseRefName || !reason(current)
-    ) {
-      throw new Error("PR changed during the fix; refusing to push");
-    }
-    await run(
-      "git",
-      buildPushCreateBranchArgs("origin", "HEAD", pr.headRefName),
+    await finishBabysitterRepair(
+      repo,
+      pr,
       dir,
+      login,
+      reviews,
+      { renewalFailed: () => renewalFailed },
     );
-    console.log(`${repo}#${pr.number}: pushed fix as ${login}`);
-    if (reviews.length > 0) {
-      const pushedHead = await run("git", ["rev-parse", "HEAD"], dir);
-      await dismissAddressedReviews(repo, pr.number, reviews, pushedHead);
-    }
   } finally {
     renewal.stop();
     try {

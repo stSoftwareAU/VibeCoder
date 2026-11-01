@@ -404,7 +404,8 @@ export async function reconcilePrBodyDigests(
     const issueNumber = issueNumberFromMarker(body);
     if (issueNumber === undefined) return;
     const recordedDigest = summaryDigestFromBody(body);
-    // Legacy body: the post-push before-SHA rule still covers it.
+    // Legacy bodies have no digest to compare here. A repair path with a
+    // before-SHA can still detect a summary change made by that push.
     if (recordedDigest === undefined) return;
     // Interpolated into an API URL and git argv: validate at the boundary.
     if (!FULL_SHA_PATTERN.test(headRefOid)) return;

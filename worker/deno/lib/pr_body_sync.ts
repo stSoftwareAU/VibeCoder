@@ -13,10 +13,10 @@
  * again, so a reviewer reading the description kept seeing the original summary
  * while the diff underneath it changed.
  *
- * This module gives the completion phase's body-assembly logic a second
- * caller: a fix run that pushed only new commits (no PR yet created on this
- * invocation) rebuilds the body from the summary file and pushes the update
- * with `gh pr edit`, but only when the summary actually changed. Staleness
+ * The shared assembler is used by completion and by refresh callers. Most
+ * fix-run processors rebuild the body from the summary file and publish with
+ * `gh pr edit` after a push, but only when the summary actually changed. The
+ * babysitter also adopts a marker-less PR on its own worker branch. Staleness
  * is decided by a digest of the summary content the live body was built
  * from, recorded inside the body itself (see {@link PR_SUMMARY_DIGEST_PREFIX}).
  * Comparing that recorded digest against the summary at HEAD survives any
@@ -35,12 +35,14 @@
  * The digest is of the summary alone (Issue #4234). A facts file beside the
  * summary is not part of the digest and is not rendered into the body.
  *
- * Issue #3760: the digest-reconcile pass in `pr_body_reconcile.ts` is a further
- * caller, whoever pushed the PR head. It compares the digest the live body
- * records against the summary at that head and calls
- * {@link syncPrBodyFromSummary} only when they differ, so a push made outside
- * the worker (which never reaches the post-push sync above) still refreshes
- * the body.
+ * The feedback, CI and merge-conflict processors call {@link runPrBodySync},
+ * which logs failures without failing their repair. Agent-PR adoption and the
+ * fleet PR babysitter call {@link syncPrBodyFromSummary} directly; the
+ * babysitter propagates a publication failure so it cannot dismiss a review
+ * while the description remains stale. The Issue #3760 digest-reconcile pass
+ * compares the live digest with the summary at the PR head and invokes this
+ * function only when they differ, covering pushes that did not use those
+ * repair paths.
  *
  * The rebuilt body also carries over the hidden sub-agent tier marker (Issue
  * #3403) the live body carries, so a review-fix refresh keeps attributing
@@ -822,11 +824,12 @@ export async function syncPrBodyFromSummary(
  * Call {@link syncPrBodyFromSummary} (or an injected stand-in) and log the
  * outcome, without ever failing the caller's run (Issue #3089).
  *
- * Shared by the three fix-run processors (feedback, CI, merge-conflict) and by
- * the Issue #3760 digest-reconcile pass in `pr_body_reconcile.ts`, which calls
- * the sync for a PR whose body digest differs from the summary at the PR head,
- * whoever pushed it, so none of them duplicates the "call, then log success or
- * failure" boilerplate.
+ * Shared by the feedback, CI and merge-conflict processors and by the Issue
+ * #3760 digest-reconcile pass in `pr_body_reconcile.ts`, which calls the sync
+ * for a PR whose body digest differs from the summary at the PR head, whoever
+ * pushed it, so none of them duplicates the "call, then log success or failure"
+ * boilerplate. Agent-PR adoption and the fleet PR babysitter call the sync
+ * directly because they have different skip and failure handling.
  */
 export async function runPrBodySync(
   input: SyncPrBodyInput,
