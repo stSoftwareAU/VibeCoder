@@ -1,10 +1,14 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   enforceGhWriteAllowlist,
   isWriteRepoAllowed,
   isWriteRepoAllowlistActive,
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
+import {
+  BABYSITTER_PERMISSIONS_PROFILE,
+  buildBabysitterSandboxArgs,
+} from "../lib/fleet_babysitter_sandbox.ts";
 import {
   babysitterRtkInstruction,
   cloneForRepair,
@@ -306,12 +310,16 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   const scratch = "/tmp/babysitter-scratch";
   const dir = "/tmp/babysitter-clone";
   const prompt = "Fix conflicts on PR #1";
+  const protectedPaths = [
+    "/home/u/.vibe-coder/fleet-pr-babysitter",
+    "/home/u/.vibe-coder/fleet-pr-babysitter.private-key.pem",
+  ];
   const calls: {
     executable: string;
     options: Deno.CommandOptions & { timeoutMs: number };
   }[] = [];
   spawnBabysitterAgent(
-    { dir, scratch, prompt, agentToken },
+    { dir, scratch, prompt, agentToken, protectedPaths },
     (executable, options) => {
       calls.push({ executable, options });
       return {} as unknown as Deno.ChildProcess;
@@ -333,8 +341,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     "exec",
     "-c",
     'approval_policy="never"',
-    "--sandbox",
-    "workspace-write",
+    ...buildBabysitterSandboxArgs({ dir, scratch, protectedPaths }),
     "--cd",
     dir,
     "--output-last-message",
@@ -344,4 +351,70 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   assertEquals(call.options.stdin, "null");
   assertEquals(call.options.stdout, "inherit");
   assertEquals(call.options.stderr, "inherit");
+});
+
+Deno.test("codex agent is not given the workspace-write sandbox and cannot read the credential paths", () => {
+  const keyPath = "/home/u/.vibe-coder/fleet-pr-babysitter.private-key.pem";
+  const protectedPaths = [
+    "/home/u/.vibe-coder/fleet-pr-babysitter",
+    keyPath,
+  ];
+  const calls: string[][] = [];
+  spawnBabysitterAgent(
+    {
+      dir: "/tmp/babysitter-clone",
+      scratch: "/tmp/babysitter-scratch",
+      prompt: "Fix conflicts on PR #1",
+      agentToken: "agent-read-only-token",
+      protectedPaths,
+    },
+    (_executable, options) => {
+      calls.push(options.args as string[]);
+      return {} as unknown as Deno.ChildProcess;
+    },
+  );
+  const [args] = calls;
+  assert(args);
+  assert(!args.includes("--sandbox"));
+  assert(!args.includes("workspace-write"));
+  assert(
+    args.includes(`default_permissions="${BABYSITTER_PERMISSIONS_PROFILE}"`),
+  );
+  for (const path of protectedPaths) {
+    assert(
+      args.includes(
+        `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.filesystem."${path}"="none"`,
+      ),
+      `missing none override for ${path}`,
+    );
+    assert(
+      !args.some((arg) =>
+        arg.endsWith(`."${path}"="read"`) || arg.endsWith(`."${path}"="write"`)
+      ),
+      `credential path ${path} is readable or writable`,
+    );
+  }
+  assert(protectedPaths.includes(keyPath));
+});
+
+Deno.test("codex agent refuses to start without protected credential paths", () => {
+  let spawned = false;
+  assertThrows(
+    () =>
+      spawnBabysitterAgent(
+        {
+          dir: "/tmp/babysitter-clone",
+          scratch: "/tmp/babysitter-scratch",
+          prompt: "Fix conflicts on PR #1",
+          agentToken: "agent-read-only-token",
+          protectedPaths: [],
+        },
+        () => {
+          spawned = true;
+          return {} as unknown as Deno.ChildProcess;
+        },
+      ),
+    Error,
+  );
+  assertEquals(spawned, false);
 });
