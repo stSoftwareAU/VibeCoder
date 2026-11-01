@@ -4,9 +4,9 @@ When the pre-PR verifier gate still reported on the re-run, the PR's
 `## Notes for the reviewer` comment named only the verifier findings and dropped
 any unmet acceptance criterion. The verifier gate in `completionBody`
 (`worker/deno/lib/phases/completion_phase.ts`) now builds its block with
-`foldInLateSummaryVerdicts`, like every other summary gate, so the unmet-criteria
-verdict, the one late verdict after it, is folded into the note and the PR
-comment. Closes #4591.
+`foldInLateSummaryVerdicts`, like every other summary gate, so the
+unmet-criteria verdict, the one late verdict after it, is folded into the note
+and the PR comment. Closes #4591.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -18,8 +18,9 @@ final version.
 - The verifier gate hand-built its `SummaryRuleBlock` (`comment` = verifier
   comment, `sections: [comment]`). `reportSummaryRuleBlock` keeps only the first
   reporting gate's comment, so the later unmet-criteria comment was discarded.
-  Calling the existing fold fixes it at the source and keeps `DESIGN-PRINCIPLES.md`
-  ("the unmet criteria are named in one `## Notes for the reviewer` comment") true.
+  Calling the existing fold fixes it at the source and keeps
+  `DESIGN-PRINCIPLES.md` ("the unmet criteria are named in one
+  `## Notes for the reviewer` comment") true.
 
 ### Essential Design Decisions
 
@@ -28,8 +29,8 @@ final version.
   placeholder, mutation and coverage verdicts carry none, so listing them adds
   `summary_incomplete` and breaks the existing verifier-only expectation
   `["quality_check"]` (`completion_phase_pre_pr_verifier_3395_test.ts`). Those
-  three gates run earlier and report first, so folding them here changes
-  nothing a reader sees.
+  three gates run earlier and report first, so folding them here changes nothing
+  a reader sees.
 - The block's categories are still the verifier's own; `criteria_unmet` is added
   only when an unmet criterion exists. `verifierHoldComment` is unchanged (the
   fold sets it from the same verdict).
@@ -40,14 +41,15 @@ final version.
 
 ## Evidence
 
-Backend only, no UI. `worker/deno/tests/completion_phase_verifier_unmet_fold_4591_test.ts`
-runs the real completion phase with a verifier that reports a finding on every
-call and one `partial` criterion: the in-session note and the single PR comment
-each name the verifier heading, the unmet-criteria heading and the criterion
-once. A second test (all criteria met) asserts the comment names the verifier
-finding and no unmet heading. Issue numbers cited as provenance: #4583 (reviewer
-note drops independent-review and reproduction findings), #4146 (unmet criteria
-block the PR), #4234 (completion gates made advisory), #4591 (this issue).
+Backend only, no UI.
+`worker/deno/tests/completion_phase_verifier_unmet_fold_4591_test.ts` runs the
+real completion phase with a verifier that reports a finding on every call and
+one `partial` criterion: the in-session note and the single PR comment each name
+the verifier heading, the unmet-criteria heading and the criterion once. A
+second test (all criteria met) asserts the comment names the verifier finding
+and no unmet heading. Issue numbers cited as provenance: #4583 (reviewer note
+drops independent-review and reproduction findings), #4146 (unmet criteria block
+the PR), #4234 (completion gates made advisory), #4591 (this issue).
 
 ## Test Plan
 
@@ -67,8 +69,9 @@ block the PR), #4234 (completion gates made advisory), #4591 (this issue).
   coverage, unmet) is untouched; the verifier gate is the only block that was
   hand-built.
 - `./quality.sh`: every stage passed except `deno tests`, parallel pass 31552
-  passed, 2 failed, both in `completion_phase_repo_formatters_test.ts` (lines 480
-  and 567: the cargo fmt commit tests; this host has no rustup/cargo, and the code
-  they cover is not touched by this diff). The serial pass did not run because
-  the parallel pass failed; `config integration` and `checkov` were skipped for
-  local prerequisites. `deno task pr-summary-check`: 0 blocked, 0 not checked.
+  passed, 2 failed, both in `completion_phase_repo_formatters_test.ts` (lines
+  480 and 567: the cargo fmt commit tests; this host has no rustup/cargo, and
+  the code they cover is not touched by this diff). The serial pass did not run
+  because the parallel pass failed; `config integration` and `checkov` were
+  skipped for local prerequisites. `deno task pr-summary-check`: 0 blocked, 0
+  not checked.
