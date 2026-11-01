@@ -393,7 +393,12 @@ listens after 30 s, the proxy check fails with
 `proxyAllowed=failed (no listener after 30000ms (refused))`. Otherwise the
 allowlisted CONNECT to `api.github.com` is tried three times, with 5 s per
 attempt and 1 s between attempts. A refusal (`403 EGRESS_DENIED`) is final and
-is not retried. Each attempt is written to the run log through the worker's
+is not retried. Each CONNECT probe reads the whole answer, not one chunk: it
+reads until the response head ends and the body the head's `Content-Length`
+announces has arrived (at most 2048 bytes, or until the socket closes or the
+probe's time budget ends), so a refusal whose head and `[EGRESS_DENIED]` body
+arrive in separate TCP segments still reads as `denied`. Each attempt is
+written to the run log through the worker's
 logger as a `[run-worker]` line of the form `[egress-selfcheck] allowlisted
 CONNECT to api.github.com <what it saw> (attempt n of 3)`, not to a stray
 stderr stream. A failed check emits an `[EGRESS-SELFCHECK-FAILED]` marker that
