@@ -35,14 +35,13 @@
  * The digest is of the summary alone (Issue #4234). A facts file beside the
  * summary is not part of the digest and is not rendered into the body.
  *
- * The feedback, CI and merge-conflict processors call {@link runPrBodySync},
- * which logs failures without failing their repair. Agent-PR adoption and the
- * fleet PR babysitter call {@link syncPrBodyFromSummary} directly; the
- * babysitter propagates a publication failure so it cannot dismiss a review
- * while the description remains stale. The Issue #3760 digest-reconcile pass
- * compares the live digest with the summary at the PR head and invokes this
- * function only when they differ, covering pushes that did not use those
- * repair paths.
+ * The feedback, CI, merge-conflict and agent-PR adoption paths call
+ * {@link runPrBodySync}, which logs failures without failing their repair. The
+ * fleet PR babysitter calls {@link syncPrBodyFromSummary} directly and
+ * propagates a publication failure so it cannot dismiss a review while the
+ * description remains stale. The Issue #3760 digest-reconcile pass compares
+ * the live digest with the summary at the PR head and invokes this function
+ * only when they differ, covering pushes that did not use those repair paths.
  *
  * The rebuilt body also carries over the hidden sub-agent tier marker (Issue
  * #3403) the live body carries, so a review-fix refresh keeps attributing
@@ -824,12 +823,12 @@ export async function syncPrBodyFromSummary(
  * Call {@link syncPrBodyFromSummary} (or an injected stand-in) and log the
  * outcome, without ever failing the caller's run (Issue #3089).
  *
- * Shared by the feedback, CI and merge-conflict processors and by the Issue
- * #3760 digest-reconcile pass in `pr_body_reconcile.ts`, which calls the sync
- * for a PR whose body digest differs from the summary at the PR head, whoever
- * pushed it, so none of them duplicates the "call, then log success or failure"
- * boilerplate. Agent-PR adoption and the fleet PR babysitter call the sync
- * directly because they have different skip and failure handling.
+ * Shared by the feedback, CI, merge-conflict and agent-PR adoption paths and by
+ * the Issue #3760 digest-reconcile pass in `pr_body_reconcile.ts`, which calls
+ * the sync for a PR whose body digest differs from the summary at the PR head,
+ * whoever pushed it, so none duplicates the "call, then log success or failure"
+ * boilerplate. The fleet PR babysitter calls the sync directly because a
+ * publication failure must block its review dismissal.
  */
 export async function runPrBodySync(
   input: SyncPrBodyInput,

@@ -2,12 +2,12 @@
  * PR body digest reconcile, run on each PR scan for the repos due in that
  * cycle's polling selection (Issue #3760).
  *
- * The post-push body sync in `pr_body_sync.ts` runs only on the worker's own
- * runs: after a PR-feedback, CI-fix or merge-conflict push, or when a
- * PR-feedback run finds nothing left to push (`nothingLeftToPush`, Issue
- * #3315). So a push made outside the worker
- * (by a human, or another tool) never reaches it, and the body keeps describing
- * the old summary. This pass covers that case. For every worker-authored PR
+ * The post-push body sync in `pr_body_sync.ts` runs on the worker's repair
+ * paths: after a PR-feedback, CI-fix, merge-conflict or babysitter push, and
+ * when a PR-feedback run finds nothing left to push (`nothingLeftToPush`, Issue
+ * #3315). A push made outside those paths (by a human or another tool) never
+ * reaches it, and the body keeps describing the old summary. This pass covers
+ * that case. For every worker-authored PR
  * whose body records a summary digest, it reads the summary at
  * the PR head through the contents API (no checkout) and compares the digest.
  * Only a mismatch rebuilds the body: a disposable shallow clone is checked out
@@ -23,8 +23,9 @@
  * head SHA plus recorded digest. An entry is reused only while both are
  * unchanged, and is pruned when the PR is no longer listed. A PR whose recorded
  * digest matches the head logs nothing and makes no edit. A body with no digest
- * marker is a legacy body, still covered by the post-push before-SHA rule. A
- * failed read never rewrites the body; it is logged and counted.
+ * marker is a legacy body; a repair that has a before-SHA can detect a summary
+ * change made by that push. A failed read never rewrites the body; it is logged
+ * and counted.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
