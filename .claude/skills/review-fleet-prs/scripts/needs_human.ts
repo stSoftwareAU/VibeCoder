@@ -14,6 +14,41 @@ export interface LabelError {
 
 export type RunGh = (args: string[]) => Promise<string>;
 
+/** A current change request from anyone else preserves the shared label. */
+export async function hasIndependentReviewHold(
+  pr: { repo: string; number: number },
+  reviewer: string,
+  runGh: RunGh,
+): Promise<boolean> {
+  const pages = JSON.parse(
+    await runGh([
+      "api",
+      `repos/${pr.repo}/pulls/${pr.number}/reviews`,
+      "--paginate",
+      "--slurp",
+    ]),
+  );
+  if (!Array.isArray(pages) || !pages.every(Array.isArray)) {
+    throw new Error("malformed review history");
+  }
+  const latest = new Map<string, string>();
+  for (const review of pages.flat()) {
+    if (
+      typeof review?.user?.login !== "string" ||
+      typeof review.state !== "string"
+    ) {
+      throw new Error("malformed review in history");
+    }
+    if (
+      !sameLogin(review.user.login, reviewer) &&
+      ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)
+    ) {
+      latest.set(review.user.login.toLowerCase(), review.state);
+    }
+  }
+  return [...latest.values()].includes("CHANGES_REQUESTED");
+}
+
 /** Recover an old host's ownership only from complete GitHub history. */
 export async function reviewerOwnedLabelFromHistory(
   pr: { repo: string; number: number; headSha: string },

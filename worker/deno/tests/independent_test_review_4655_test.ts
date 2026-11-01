@@ -5,7 +5,10 @@ import {
   independentTestReview,
 } from "../../../.claude/skills/review-fleet-prs/scripts/independent_test_review.ts";
 import { postReviewArgs } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
-import { reviewerOwnedLabelFromHistory } from "../../../.claude/skills/review-fleet-prs/scripts/needs_human.ts";
+import {
+  hasIndependentReviewHold,
+  reviewerOwnedLabelFromHistory,
+} from "../../../.claude/skills/review-fleet-prs/scripts/needs_human.ts";
 import type {
   FableReview,
   TestChangeNote,
@@ -190,6 +193,29 @@ Deno.test("label history recovers the reviewer's hold but preserves a human re-a
       { ...pr, headSha: "other" },
       "reviewer",
       gh([label("reviewer[bot]", "labeled")]),
+    ),
+    false,
+  );
+});
+
+Deno.test("a human change request survives a later comment until dismissed", async () => {
+  const pr = { repo: "acme/widgets", number: 99 };
+  const review = (state: string) => ({ user: { login: "human" }, state });
+  const gh = (entries: unknown[]) => () =>
+    Promise.resolve(JSON.stringify([entries]));
+  assertEquals(
+    await hasIndependentReviewHold(
+      pr,
+      "reviewer",
+      gh([review("CHANGES_REQUESTED"), review("COMMENTED")]),
+    ),
+    true,
+  );
+  assertEquals(
+    await hasIndependentReviewHold(
+      pr,
+      "reviewer",
+      gh([review("CHANGES_REQUESTED"), review("DISMISSED")]),
     ),
     false,
   );

@@ -64,6 +64,7 @@ import {
 } from "./review_log.ts";
 import type { ChecklistState } from "../../../../worker/deno/lib/review_checklists.ts";
 import {
+  hasIndependentReviewHold,
   type LabelError,
   reviewerOwnedLabelFromHistory,
   type RunGh,
@@ -588,6 +589,26 @@ export async function main() {
   let labelPrevious = previous;
   if (previous?.addedNeedsHuman && outcome !== "held") {
     try {
+      if (policyVersion !== "legacy") {
+        const posted = JSON.parse(postedReview);
+        if (
+          typeof posted.user?.login !== "string" ||
+          posted.commit_id !== pr.headSha
+        ) {
+          throw new Error(
+            "posted review response lacks author or reviewed commit",
+          );
+        }
+        if (
+          await hasIndependentReviewHold(
+            pr,
+            posted.user.login,
+            (args) => run("gh", args),
+          )
+        ) {
+          labelPrevious = undefined;
+        }
+      }
       const current = JSON.parse(
         await run("gh", [
           "pr",
