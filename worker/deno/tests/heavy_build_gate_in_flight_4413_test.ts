@@ -4,16 +4,17 @@
  * A checkout with no cargo project is held to the host floor only: only cargo
  * writes to the ephemeral cargo root, so the headroom budget is not consulted
  * for it and its idle sibling target directories are not pruned. A checkout
- * holding a cargo project keeps the full budget, and the floor applies to
+ * explicit cargo build steps keep the full budget, and the floor applies to
  * every checkout.
  *
  * The unit tests inject an empty or fake ephemeral root, so no real target
  * directory is read or pruned, and every checkout is a temp directory removed
  * afterwards. The call-site tests cover a Deno-only checkout under a merge-only
- * reading, which never reads the real root, and a cargo checkout below the
- * floor, which stops at the defer admission before any root is read. No
- * call-site test uses a merge-only cargo checkout, because that path would read
- * the real `/var/tmp/vibe-cargo-target`.
+ * reading, which never reads the real root, a cargo checkout below the floor,
+ * which stops at the defer admission before any root is read, and cargo agent
+ * startup in the reported headroom window, which checks only the floor. No
+ * call-site test uses a merge-only cargo build admission, because that path
+ * would read the real `/var/tmp/vibe-cargo-target`.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -91,11 +92,13 @@ const IDLE_SIBLING: EphemeralTargetDir = {
 
 /** Run `fn` with the in-flight gate armed and host reading `r` registered. */
 async function armed<T>(
-  r: HeavyBuildDiskReading,
+  r: HeavyBuildDiskReading | (() => Promise<HeavyBuildDiskReading>),
   fn: () => Promise<T>,
 ): Promise<T> {
   enableInFlightHostDiskGate(true);
-  registerHeavyBuildDiskProbe(() => Promise.resolve(r));
+  registerHeavyBuildDiskProbe(
+    typeof r === "function" ? r : () => Promise.resolve(r),
+  );
   try {
     return await fn();
   } finally {
@@ -243,7 +246,7 @@ type AgentRun = Awaited<ReturnType<typeof runClaudeWithTimeout>>;
  */
 async function runAgentIn(
   dir: string,
-  r: HeavyBuildDiskReading,
+  r: HeavyBuildDiskReading | (() => Promise<HeavyBuildDiskReading>),
 ): Promise<AgentRun> {
   const clock = fakeClock();
   const logger = {
@@ -292,6 +295,47 @@ Deno.test({
     assert(run.ok, "a Deno-only checkout must not be parked at 67.6 GB free");
     assertEquals(run.value.exitCode, 0);
     assertEquals(run.value.timedOut, false);
+  },
+});
+
+Deno.test({
+  name:
+    "agent start - a cargo checkout starts at the reported 58.2 and 64.3 GB readings",
+  ignore: Deno.build.os === "windows",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    for (const freeGb of [58.2, 64.3, 72]) {
+      const run = await withCheckout(
+        { "Cargo.toml": CARGO_TOML },
+        (dir) => runAgentIn(dir, reading(freeGb)),
+      );
+      assert(
+        run.ok,
+        `manager startup must not require build headroom at ${freeGb} GB`,
+      );
+      assertEquals(run.value.exitCode, 0);
+      assertEquals(run.value.timedOut, false);
+    }
+  },
+});
+
+Deno.test({
+  name: "agent start - a failed disk measurement remains a failure",
+  ignore: Deno.build.os === "windows",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    let errorMessage = "";
+    await withCheckout({ "Cargo.toml": CARGO_TOML }, async (dir) => {
+      try {
+        await runAgentIn(
+          dir,
+          () => Promise.reject(new Error("disk probe failed")),
+        );
+      } catch (error) {
+        errorMessage = error instanceof Error ? error.message : String(error);
+      }
+    });
+    assertStringIncludes(errorMessage, "disk probe failed");
   },
 });
 

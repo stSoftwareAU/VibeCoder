@@ -28,7 +28,6 @@ import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
   inFlightHostDiskGateEnabled,
-  parkInFlightBuild,
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
@@ -1243,11 +1242,10 @@ async function runClaudeWithTimeoutBody(
   };
   if (finishClamp?.belowFloor) return finishRefusal();
 
-  // An agent in a checkout runs cargo and deno. Below the floor it does not
-  // start (Issue #4360). No checkout means there is no build to bound, and
-  // the gate is a no-op until production arms it.
+  // Starting an agent is not itself a build: preserve the host floor here,
+  // while build-specific steps apply the cargo headroom admission (Issue #4360).
   if (cwd) {
-    const park = await parkInFlightBuild(cwd);
+    const park = await parkRunningBuild();
     if (park) return { ok: false, error: new Error(park) };
   }
 

@@ -65,14 +65,15 @@
  * probe registered (tests, ad hoc callers) nothing is gated, which is the
  * documented `unknown` default of Issue #226.
  *
- * Issue #4360: a build already running is held to the same floor. The claim
- * gate only stops new claims, so {@link parkInFlightBuild} checks admission
- * before an agent, mutation or discrimination build. A checkout with no cargo
+ * Issue #4360: starting a generic agent checks only the host floor through
+ * {@link parkRunningBuild}; manager startup does not itself start a build.
+ * Explicit mutation, remediation and discrimination build steps use
+ * {@link parkInFlightBuild} to check build admission. A checkout with no cargo
  * project is held to the floor only, and its idle sibling target directories
  * are not pruned for it, because only cargo writes to the ephemeral cargo root
- * (Issue #4413). {@link parkRunningBuild}
- * stops an active process at the host floor, letting it consume the headroom
- * admission required (Issue #4390). {@link hostDiskLaunchStopReason} ends the
+ * (Issue #4413). {@link parkRunningBuild} also stops an active process at the
+ * host floor, letting it consume the headroom admission required (Issue #4390).
+ * {@link hostDiskLaunchStopReason} ends the
  * launch when the trim was refused and the host is below the floor — exiting the container
  * is what discards the ephemeral layer and lets the next launch recreate the
  * volume. The in-flight gate stays off until production enables it, so a test

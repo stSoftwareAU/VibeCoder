@@ -1326,13 +1326,13 @@ reading of `host-disk.json` can be minutes old (the launcher refreshes it on
 `HOST_DISK_REFRESH_SECONDS`, default five minutes), so the claim gate did not
 drain the pool until after the filesystem had gone read-only.
 
-Before an agent invocation in a checkout, a quality-gate run, a mutation
-check or a discrimination `cargo`/`deno`, the worker reads the same monitor
-with the cache skipped (`check({ force: true })`) and parks the step when the
-host is below the floor or, where the trim is refused, short of the floor
-plus the 25 GB headroom. The headroom park applies only to a checkout that
-holds a cargo project, because only cargo writes to the ephemeral cargo root;
-a Deno-only checkout is parked only below the floor (Issue #4413). The park is
+Before a generic agent invocation in a checkout, the worker reads the same
+monitor with the cache skipped (`check({ force: true })`) and parks startup only
+when the host is below the floor. Starting the manager does not itself start a
+repository build. Before a quality-gate run, mutation check or discrimination
+`cargo`/`deno`, build admission also applies: where trim is refused, a checkout
+with a cargo project needs the floor plus 25 GB headroom; a Deno-only checkout
+needs the floor only (Issue #4413). The park is
 infrastructure: the reason carries
 `Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
 gate verdict, and it does not earn `failed-once`. It keeps the `disk-full`
