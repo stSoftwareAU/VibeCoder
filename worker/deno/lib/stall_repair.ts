@@ -53,7 +53,10 @@ import {
   type AbandonRestartRequest,
 } from "./conflict_abandon_restart.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
-import { parseCiFixAttemptMarkers } from "./ci_fix_attempt_markers.ts";
+import {
+  CI_HUMAN_GATE_MARKER_NAME,
+  parseCiFixAttemptMarkers,
+} from "./ci_fix_attempt_markers.ts";
 import { buildDedupMarker } from "./needs_human_escalation.ts";
 import { sweepEscalatedLeftovers } from "./escalated_cleanup.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
@@ -232,6 +235,8 @@ interface RepairHistory {
    * branch's history — the one hand-off kept (Issue #4304).
    */
   credentialRotation: boolean;
+  /** A fleet comment announced a declared human gate (owner rule 2026-11-01). */
+  humanGate: boolean;
   /**
    * True when a fleet lane's own escalation is on the thread — a
    * `needs-human-escalation` marker or a CI-fix attempt marker — so the
@@ -247,6 +252,7 @@ function readRepairHistory(
   const history: RepairHistory = {
     capped: false,
     credentialRotation: false,
+    humanGate: false,
     fleetEscalated: false,
   };
   for (const raw of comments) {
@@ -260,6 +266,9 @@ function readRepairHistory(
     if (body.includes(AUTO_FIX_CAP_MARKER_PREFIX)) history.capped = true;
     if (body.includes(HISTORY_REWRITE_ESCALATION_MARKER_PREFIX)) {
       history.credentialRotation = true;
+    }
+    if (body.includes(`<!-- ${CI_HUMAN_GATE_MARKER_NAME} `)) {
+      history.humanGate = true;
     }
     if (
       body.includes(NEEDS_HUMAN_ESCALATION_MARKER_PREFIX) ||
@@ -357,6 +366,15 @@ export async function repairStalledPr(
       // secret already in the base branch's history — a credential must be
       // rotated, which no repair performs. Every other `needs-human`, legacy
       // or hand-applied, is lifted and the PR repaired like any other.
+      // Owner rule 2026-11-01: a check that declared a human gate waits on a
+      // person, so its needs-human is never lifted either.
+      if (history.humanGate) {
+        logger.info(
+          "Stall repair: PR is held for a declared human gate — left alone",
+          where,
+        );
+        return "skipped-needs-human";
+      }
       if (history.credentialRotation) {
         logger.info(
           "Stall repair: PR is held for a credential rotation (secret in " +

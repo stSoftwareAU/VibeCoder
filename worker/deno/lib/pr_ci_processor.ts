@@ -1772,8 +1772,10 @@ async function _processCiWithHeartbeat(
   }
 
   // Issue #2727: a check that declared a human step is parked with one
-  // comment — no attempt, no agent, no `needs-human` — before the cap reads
-  // the tally, so a gate can never exhaust it.
+  // comment — no attempt, no agent — before the cap reads the tally, so a
+  // gate can never exhaust it. Owner rule 2026-11-01: the PR is also
+  // labelled `needs-human`, and every lane stops working it until a person
+  // removes the label.
   if (failureClassification.category === "human-gate") {
     const gate = await _parkHumanGate({
       repo,
@@ -1786,6 +1788,9 @@ async function _processCiWithHeartbeat(
       deps,
       logger,
     });
+    if (gate.processed) {
+      await _holdHumanGatedPr(repo, prNumber, checkName, deps, logger);
+    }
     return {
       ok: true,
       value: {
@@ -3570,6 +3575,49 @@ interface HumanGateOptions {
   markerState: PrCiFixMarkerState;
   deps: WorkerDeps;
   logger: Logger;
+}
+
+/** Label a human-gated PR `needs-human`, the hands-off label (owner rule 2026-11-01). */
+const HUMAN_GATE_HOLD_LABEL = "needs-human";
+
+/**
+ * Hold a human-gated PR for a person: label it `needs-human`, which every
+ * lane (conflict, CI fix, review feedback, branch updates, the babysitter)
+ * reads as hands off. Re-asserted on every pass, so a label removed while the
+ * gate still fails comes back. A failure is logged loudly; the gate comment
+ * is still the record, and the next pass retries the label.
+ */
+async function _holdHumanGatedPr(
+  repo: string,
+  prNumber: number,
+  checkName: string,
+  deps: WorkerDeps,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await deps.github.ensureLabelExists(
+      repo,
+      HUMAN_GATE_HOLD_LABEL,
+      "d4c5f9",
+      "Waiting on a person; the fleet leaves this alone",
+    );
+    await deps.github.createClient(logger).addLabel(
+      repo,
+      prNumber,
+      HUMAN_GATE_HOLD_LABEL,
+    );
+  } catch (error: unknown) {
+    logger.error(
+      "Could not label the human-gated PR needs-human, so other lanes may " +
+        "still work it until the next pass retries",
+      {
+        repo,
+        prNumber,
+        checkName,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
 }
 
 /**
