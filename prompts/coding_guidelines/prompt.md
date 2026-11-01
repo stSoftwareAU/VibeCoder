@@ -1818,7 +1818,10 @@ supply-chain attacks have historically landed.
 
 **The bump and the substantive change land in the same PR.** Reviewers see the
 fully-built state. If a per-repo `bump-deps.sh` exists, the worker invokes it
-before `./quality.sh`; see.
+after your turn, before `./quality.sh`, and commits the result to this PR as
+`chore: bump dependencies via bump-deps.sh`. You never see that commit: the PR
+body notes it, and your summary describes your own change, so do not state that
+no dependency, lockfile or version changed beyond what you changed yourself.
 
 **Do not bump on a milestone child run.** When your PR targets a
 `milestone/**` branch the worker skips the bump: the default branch's own PRs

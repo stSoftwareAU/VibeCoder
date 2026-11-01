@@ -15,6 +15,8 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  APPLIED_BUMP_NOTE_PREFIX,
+  buildBumpAppliedNote,
   buildBumpCommitMessage,
   buildBumpRejectionComment,
   buildBumpSkipNote,
@@ -636,6 +638,90 @@ Deno.test("buildBumpRejectionComment - a milestone skip is not a rejection", () 
       status: "skipped_milestone_child",
       files: [],
       output: "",
+    }),
+    "",
+  );
+});
+
+// =============================================================================
+// Applied-bump note (Issue #4570)
+// =============================================================================
+
+Deno.test("buildBumpAppliedNote - names the sha and files of an applied bump", () => {
+  const note = buildBumpAppliedNote({
+    status: "applied",
+    files: ["deno.lock", "package.json"],
+    output: "",
+    sha: "deadbeefcafe",
+    beforeBumpSha: "cafebabe",
+  });
+  assertStringIncludes(note, APPLIED_BUMP_NOTE_PREFIX);
+  assertStringIncludes(note, "(deadbee; `deno.lock`, `package.json`)");
+  assertEquals(note.startsWith("\n"), true);
+  assertEquals(note.endsWith("\n"), true);
+});
+
+Deno.test("buildBumpAppliedNote - omits the sha when none is recorded", () => {
+  const note = buildBumpAppliedNote({
+    status: "applied",
+    files: ["deno.lock"],
+    output: "",
+  });
+  assertStringIncludes(note, APPLIED_BUMP_NOTE_PREFIX);
+  assertStringIncludes(note, "(`deno.lock`)");
+  assertEquals(note.includes(";"), false);
+});
+
+Deno.test("buildBumpAppliedNote - truncates more than eight files", () => {
+  const files = Array.from({ length: 11 }, (_, i) => `pkg-${i}.lock`);
+  const note = buildBumpAppliedNote({
+    status: "applied",
+    files,
+    output: "",
+    sha: "deadbeef",
+  });
+  assertStringIncludes(note, "`pkg-7.lock`");
+  assertEquals(note.includes("`pkg-8.lock`"), false);
+  assertStringIncludes(note, "and 3 more");
+});
+
+Deno.test("buildBumpAppliedNote - keeps a hostile path on one line", () => {
+  const note = buildBumpAppliedNote({
+    status: "applied",
+    files: ["evil\n`name`\u0007.lock"],
+    output: "",
+    sha: "deadbeef",
+  });
+  assertEquals(note.split("\n").length, 3);
+  assertStringIncludes(note, "(deadbee; `evilname.lock`)");
+});
+
+Deno.test("buildBumpAppliedNote - empty for every other outcome", () => {
+  const statuses: BumpInfo["status"][] = [
+    "absent",
+    "noop",
+    "rejected_by_script",
+    "rejected_by_quarantine",
+    "rejected_by_audit",
+    "skipped_milestone_child",
+  ];
+  for (const status of statuses) {
+    assertEquals(
+      buildBumpAppliedNote({ status, files: ["deno.lock"], output: "" }),
+      "",
+      `${status} must not carry the applied-bump note`,
+    );
+  }
+  assertEquals(buildBumpAppliedNote(undefined), "");
+});
+
+Deno.test("buildBumpSkipNote - stays empty for an applied bump", () => {
+  assertEquals(
+    buildBumpSkipNote({
+      status: "applied",
+      files: ["deno.lock"],
+      output: "",
+      sha: "deadbeef",
     }),
     "",
   );

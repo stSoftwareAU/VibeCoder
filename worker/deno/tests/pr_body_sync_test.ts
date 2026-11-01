@@ -22,7 +22,10 @@ import {
   buildSubAgentTierMarker,
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
-import { MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
+import {
+  APPLIED_BUMP_NOTE_PREFIX,
+  MILESTONE_CHILD_BUMP_NOTE,
+} from "../lib/bump_deps.ts";
 import type {
   GitCommandOptions,
   GitCommandOutput,
@@ -1223,6 +1226,105 @@ Deno.test("sync - carries over the milestone section and bump-skip note from the
     const newBody = editCall.bodyFileContent ?? "";
     assertStringIncludes(newBody, "Great Milestone");
     assertStringIncludes(newBody, MILESTONE_CHILD_BUMP_NOTE);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - carries over the applied-bump note from the existing body", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const appliedLine = `${APPLIED_BUMP_NOTE_PREFIX} (deadbee; \`deno.lock\`)`;
+    const existingBody =
+      `## Summary\n\nOriginal summary. Closes #${ISSUE_NUMBER}.\n` +
+      `\n${appliedLine}\n\n---\n\n🤖 Processed by: old-worker\n${
+        marker(ISSUE_NUMBER)
+      }`;
+
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(existingBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok);
+    const editCall = ghCalls[0];
+    assert(editCall, "expected one gh call to have been recorded");
+    const newBody = editCall.bodyFileContent ?? "";
+    assertStringIncludes(newBody, `\n${appliedLine}\n\n---\n`);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a summary quoting the applied-bump prefix is not carried over as a note", async () => {
+  // Neither quote sits in the worker's note position: one is mid-sentence,
+  // the other opens a line but is not followed by the footer rule.
+  const quoted =
+    `The log says "${APPLIED_BUMP_NOTE_PREFIX} (deadbee)" before the summary.\n` +
+    `${APPLIED_BUMP_NOTE_PREFIX} (deadbee)\nfollowed by more prose.\n`;
+  const repoPath = await makeRepo({
+    summary: `## Summary\n\n${quoted}\nCloses #${ISSUE_NUMBER}.\n`,
+  });
+  try {
+    const existingBody = `## Summary\n\n${quoted}\nCloses #${ISSUE_NUMBER}.\n` +
+      `\n---\n\n🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`;
+
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(existingBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok);
+    const editCall = ghCalls[0];
+    assert(editCall, "expected one gh call to have been recorded");
+    const newBody = editCall.bodyFileContent ?? "";
+    assertEquals(
+      newBody.includes(`\n${APPLIED_BUMP_NOTE_PREFIX} (deadbee)\n\n---\n`),
+      false,
+      "a quoted prefix must not be carried over as a second note",
+    );
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
