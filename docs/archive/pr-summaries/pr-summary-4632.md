@@ -65,7 +65,10 @@ flowchart TD
   outcome. A positive owned-VM case is not implemented: Apple `container`
   exposes no supported host VM identity to confirm, and diagnostic launchd
   output is not a production-safe substitute.
-- Full quality gate: not yet run.
+- `timeout 900 ./quality.sh < /dev/null`: timed out at 900 seconds while
+  `cargo test --lib --tests --all-features -- --test-threads=2` was still
+  running. The last emitted gate result before timeout was `release-tag
+  ruleset: PASSED`; the full gate did not complete.
 
 ## Deno regression avoided
 
