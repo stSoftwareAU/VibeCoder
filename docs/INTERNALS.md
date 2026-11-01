@@ -4389,9 +4389,9 @@ refusal is charged as a failure and climbs to the hand-off. The wedge holds the
 milestone's claims back; the ceiling is what ends the ladder on a cycle that
 does run the sync. A cycle-budget deferral (`agent deferred: cycle budget`) is
 not a refusal (Issue #4517): it is not counted in `refusedCycles` and never
-climbs, and the branch waits for a cycle with the runway. It advances the
-ledger's `count` (the escalation streak) but adds nothing to
-`resolverDeclines`, which the resolver recovery ladder reads as prior declines,
+climbs, and the branch waits for a cycle with the runway. It adds nothing to
+either the ledger's `count` (the escalation streak) or `resolverDeclines`,
+which only the resolver recovery ladder reads as prior declines,
 so the first agent decline after any number of deferrals is attempt 1 of 3. A
 ledger written before this change has no `resolverDeclines` and reads it as 0,
 so the decline count restarts there.
