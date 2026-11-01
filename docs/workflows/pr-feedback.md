@@ -829,11 +829,14 @@ intervene.
 - **Armed and behind** (Issues #2462, #4613) — before asking GitHub to update
   an armed, behind PR, the sweep re-reads its base, head, review and merge
   state. It compares the required contexts in the effective rules and classic
-  branch protection with the current head's results. Pending, failed, missing
-  or unreadable required checks hold that PR; optional checks do not affect
-  this evaluation. App-pinned commit statuses are held when their publisher
-  cannot be verified from GitHub's status response. The request pins the head SHA so GitHub rejects it if that
-  head moved. Not for a PR that is only behind
+  branch protection with the current head's results, or its verified test-merge
+  results when GitHub reports checks on that merge. Pending, failed, missing
+  or unreadable required checks hold that PR; optional check results are not
+  required to pass. App-pinned commit statuses are held when their publisher
+  cannot be verified from GitHub's status response. The sweep verifies the
+  event of a required Actions check. It re-reads the base and head before the
+  request, which pins the head SHA; GitHub provides no base-ref precondition,
+  so a last-moment retarget remains possible. Not for a PR that is only behind
   when its base is behind a merge queue (Issue #4424): the queue tests the PR
   against its future head, and an update would only move that head. A
   conflicting PR on such a base still gets the update. Not when a reviewer has

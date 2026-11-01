@@ -13,7 +13,7 @@ const passed = {
   name: "gate",
   status: "completed",
   conclusion: "success",
-  app: { id: 1 },
+  app: { id: 1, slug: "external-ci" },
 };
 
 Deno.test("required branch checks use the contract, not optional jobs", () => {
@@ -53,9 +53,12 @@ Deno.test("required branch checks use the contract, not optional jobs", () => {
 
 Deno.test("ready updater checks the live head and sends its SHA", async () => {
   const head = "a".repeat(40);
+  const mergeHead = "b".repeat(40);
+  const baseHead = "c".repeat(40);
   let conclusion = "success";
   let decision = "APPROVED";
   let retarget = false;
+  let wrongParent = false;
   let views = 0;
   const writes: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
@@ -78,6 +81,26 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       writes.push(args);
       return Promise.resolve("");
     }
+    if (endpoint.endsWith("/pulls/12")) {
+      return Promise.resolve(
+        JSON.stringify({
+          state: "open",
+          mergeable: true,
+          merge_commit_sha: mergeHead,
+          head: { sha: head },
+          base: { ref: "main", sha: baseHead },
+        }),
+      );
+    }
+    if (endpoint.includes("/git/commits/")) {
+      return Promise.resolve(
+        JSON.stringify({
+          parents: [{ sha: wrongParent ? "d".repeat(40) : baseHead }, {
+            sha: head,
+          }],
+        }),
+      );
+    }
     if (endpoint.includes("/rules/branches/")) {
       return Promise.resolve(JSON.stringify([rules]));
     }
@@ -93,7 +116,11 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     }
     if (endpoint.includes("/check-runs?")) {
       return Promise.resolve(
-        JSON.stringify([{ check_runs: [{ ...passed, conclusion }] }]),
+        JSON.stringify([{
+          check_runs: endpoint.includes(mergeHead)
+            ? []
+            : [{ ...passed, conclusion }],
+        }]),
       );
     }
     if (endpoint.includes("/status?")) {
@@ -111,6 +138,12 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     false,
   );
   retarget = false;
+  wrongParent = true;
+  assertEquals(
+    (await requestReadyBranchUpdate("owner/repo", 12, gh, "main")).ok,
+    false,
+  );
+  wrongParent = false;
   assertEquals(
     (await requestReadyBranchUpdate("owner/repo", 12, gh, "other-base")).ok,
     false,
@@ -269,5 +302,86 @@ Deno.test("required-check reader refuses a missing classic protection summary", 
     () => readRequiredChecksPassed("owner/repo", "main", "a".repeat(40), gh),
     Error,
     "branch protection summary",
+  );
+});
+
+Deno.test("reader checks Actions event eligibility and test-merge status", async () => {
+  const head = "a".repeat(40);
+  const merge = "b".repeat(40);
+  let event: string | null = "pull_request";
+  let mergeConclusion: string | null = null;
+  let headChecks = true;
+  const actions = {
+    ...passed,
+    app: { id: 15368, slug: "github-actions" },
+    check_suite: { id: 99 },
+  };
+  const gh = (args: string[]): Promise<string> => {
+    const endpoint = args[1] ?? "";
+    if (endpoint.includes("/rules/branches/")) {
+      return Promise.resolve(JSON.stringify([rules]));
+    }
+    if (endpoint.includes("/branches/")) {
+      return Promise.resolve(
+        JSON.stringify({
+          protection: {
+            enabled: false,
+            required_status_checks: { contexts: [], checks: [] },
+          },
+        }),
+      );
+    }
+    if (endpoint.includes("/check-runs?")) {
+      return Promise.resolve(
+        JSON.stringify([{
+          check_runs: endpoint.includes(merge)
+            ? (mergeConclusion === null
+              ? []
+              : [{ ...actions, conclusion: mergeConclusion }])
+            : headChecks
+            ? [actions]
+            : [],
+        }]),
+      );
+    }
+    if (endpoint.includes("/status?")) {
+      return Promise.resolve(JSON.stringify([{ statuses: [] }]));
+    }
+    if (endpoint.includes("/actions/runs?")) {
+      return Promise.resolve(
+        JSON.stringify({
+          total_count: 1,
+          workflow_runs: [{ check_suite_id: 99, event }],
+        }),
+      );
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+  assertEquals(
+    await readRequiredChecksPassed("owner/repo", "main", head, gh, merge),
+    true,
+  );
+  event = "workflow_dispatch";
+  assertEquals(
+    await readRequiredChecksPassed("owner/repo", "main", head, gh, merge),
+    false,
+  );
+  event = null;
+  await assertRejects(
+    () => readRequiredChecksPassed("owner/repo", "main", head, gh, merge),
+    Error,
+    "invalid event metadata",
+  );
+  event = "pull_request";
+  mergeConclusion = "failure";
+  assertEquals(
+    await readRequiredChecksPassed("owner/repo", "main", head, gh, merge),
+    false,
+  );
+  mergeConclusion = "success";
+  headChecks = false;
+  assertEquals(
+    await readRequiredChecksPassed("owner/repo", "main", head, gh, merge),
+    true,
   );
 });

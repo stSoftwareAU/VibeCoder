@@ -75,6 +75,24 @@ async function sweepOnePr(
         },
       }));
     }
+    if (args[0] === "api" && args[1]?.endsWith(`/pulls/${PR_NUMBER}`)) {
+      return Promise.resolve(
+        JSON.stringify({
+          state: "open",
+          mergeable: true,
+          merge_commit_sha: "b".repeat(40),
+          head: { sha: "a".repeat(40) },
+          base: { ref: "main", sha: "c".repeat(40) },
+        }),
+      );
+    }
+    if (args[0] === "api" && args[1]?.includes("/git/commits/")) {
+      return Promise.resolve(
+        JSON.stringify({
+          parents: [{ sha: "c".repeat(40) }, { sha: "a".repeat(40) }],
+        }),
+      );
+    }
     if (args[0] === "api" && args[1]?.includes("/rules/branches/")) {
       return Promise.resolve(
         JSON.stringify([[{
@@ -96,10 +114,11 @@ async function sweepOnePr(
     if (args[0] === "api" && args[1]?.includes("/check-runs?")) {
       return Promise.resolve(
         JSON.stringify([{
-          check_runs: [{
+          check_runs: args[1].includes("b".repeat(40)) ? [] : [{
             name: "gate",
             status: "completed",
             conclusion: "success",
+            app: { id: 1, slug: "external-ci" },
           }],
         }]),
       );
