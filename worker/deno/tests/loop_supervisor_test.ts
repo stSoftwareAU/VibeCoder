@@ -18,7 +18,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { getDescendants, isRunning } from "../lib/pid_guard.ts";
+import { getCommand, getDescendants, isRunning } from "../lib/pid_guard.ts";
 import { killProcessTree } from "./fixtures/process_tree.ts";
 import {
   resolveWatchdogSeconds,
@@ -895,6 +895,456 @@ Deno.test({
       );
     } finally {
       await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+// ===========================================================================
+// Issue #4568 — the control-plane probe must not outlive its supervisor
+//
+// SIGKILL to loop.sh left its background probe running, re-parented to PID 1.
+// With no container to watch, the probe never ended: it looped on `container
+// ls` for ever, its failure count held at zero. The probe now stops when its
+// loop.sh is gone and, once it has seen a container, when that container goes
+// away. A fresh loop.sh also reaps a probe that an earlier supervisor orphaned
+// from this checkout.
+// ===========================================================================
+
+/** A run.sh stub that never exits on its own, as a real cycle mid-run does. */
+const LONG_RUN_STUB = [
+  "#!/bin/bash",
+  'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+  "sleep 300",
+].join("\n");
+
+/** A `container` stub with nothing running, and never a container to watch. */
+const NO_CONTAINER_STUB = [
+  "#!/bin/bash",
+  'case "$1" in',
+  "  ls) exit 0;;",
+  "  *) exit 0;;",
+  "esac",
+].join("\n");
+
+/**
+ * The control-plane probe under loop.sh: the loop.sh-named descendant of
+ * `loopPid` that is sleeping for the probe interval.
+ *
+ * loop.sh's pipeline subshell carries the same command line, but it sleeps on
+ * run.sh's own `sleep`, never on the probe interval, so the interval is what
+ * tells the two apart. Polled, because the probe may be between sleeps.
+ */
+async function findProbe(
+  loopPid: number,
+  intervalSeconds: number,
+): Promise<number | undefined> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    for (const candidate of await getDescendants(loopPid)) {
+      if (!(await getCommand(candidate)).includes("loop.sh")) continue;
+      for (const grandchild of await getDescendants(candidate)) {
+        if (await getCommand(grandchild) === `sleep ${intervalSeconds}`) {
+          return candidate;
+        }
+      }
+    }
+    await delay(100);
+  }
+  return undefined;
+}
+
+/** SIGKILL each PID, ignoring any that is already gone. */
+function killQuietly(pids: number[]): void {
+  for (const pid of pids) {
+    try {
+      Deno.kill(pid, "SIGKILL");
+    } catch { /* already gone */ }
+  }
+}
+
+/** PIDs whose command line matches `pattern`, as `pgrep -f` reports them. */
+async function pgrepFull(pattern: string): Promise<number[]> {
+  const out = await new Deno.Command("pgrep", {
+    args: ["-f", pattern],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  return new TextDecoder().decode(out.stdout)
+    .split("\n")
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+/** The parent PID `ps` reports for `pid`, or undefined once it is gone. */
+async function parentPidOf(pid: number): Promise<number | undefined> {
+  const out = await new Deno.Command("ps", {
+    args: ["-o", "ppid=", "-p", String(pid)],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  const text = new TextDecoder().decode(out.stdout).trim();
+  return text === "" ? undefined : Number(text);
+}
+
+/**
+ * Register a probe the way loop.sh does: `<state dir>/probes/<pid>` holds the
+ * checkout directory the probe runs from.
+ */
+async function registerProbe(
+  stateDir: string,
+  pid: number,
+  checkout: string,
+): Promise<void> {
+  const probesDir = join(stateDir, "probes");
+  await Deno.mkdir(probesDir, { recursive: true });
+  await Deno.writeTextFile(join(probesDir, String(pid)), checkout);
+}
+
+/**
+ * Write `<tmp>/fake/loop.sh`, a stand-in supervisor that only sleeps. The
+ * reaper matches on the command line, so the name is what it must look like.
+ */
+async function writeFakeSupervisor(tmpDir: string): Promise<string> {
+  const dir = join(tmpDir, "fake");
+  await Deno.mkdir(dir, { recursive: true });
+  const path = join(dir, "loop.sh");
+  await Deno.writeTextFile(path, "#!/bin/bash\nsleep 300\n");
+  await Deno.chmod(path, 0o755);
+  return path;
+}
+
+/**
+ * Start `fakePath` as an orphan: the intermediate shell exits at once, so the
+ * fake is re-parented to init, exactly as an orphaned probe would be.
+ */
+async function startOrphanFake(fakePath: string): Promise<number[]> {
+  await new Deno.Command("bash", {
+    args: ["-c", `nohup bash ${fakePath} >/dev/null 2>&1 &`],
+    stdout: "null",
+    stderr: "null",
+  }).output();
+  return await pgrepFull(fakePath);
+}
+
+Deno.test({
+  name:
+    "loop.sh #4568 - SIGKILL to the supervisor alone takes its control-plane probe down too",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    // No container has ever been up, so only the supervisor's own death can
+    // end the probe.
+    const harness = await setupHarness({
+      runStub: LONG_RUN_STUB,
+      containerStub: NO_CONTAINER_STUB,
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "1",
+    });
+    let tree: number[] = [];
+    try {
+      const probe = await findProbe(child.pid, 1);
+      assert(
+        probe !== undefined,
+        "the control-plane probe never started — the test proves nothing",
+      );
+      tree = await getDescendants(child.pid);
+
+      // The supervisor alone, not killTree: that would stop the probe too.
+      child.kill("SIGKILL");
+      await child.status;
+
+      let alive = true;
+      for (let i = 0; i < 80 && alive; i++) {
+        await delay(100);
+        alive = await isRunning(probe);
+      }
+      assertEquals(
+        alive,
+        false,
+        `the control-plane probe (PID ${probe}) outlived its SIGKILLed supervisor`,
+      );
+    } finally {
+      await killTree(child);
+      killQuietly(tree);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #4568 - the probe stops once the container it watched is gone, and loop.sh keeps supervising",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    // The container is up for the probe's first look and gone from the second.
+    const harness = await setupHarness({
+      runStub: LONG_RUN_STUB,
+      containerStub: [
+        "#!/bin/bash",
+        'seen="$(dirname "$0")/../seen"',
+        'case "$1" in',
+        '  ls) if [[ ! -e "${seen}" ]]; then',
+        '         touch "${seen}"',
+        '         echo "vibe-coder-999  img  linux  arm64  running  ip  6  16384"',
+        "       fi;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "1",
+    });
+    let tree: number[] = [];
+    try {
+      const probe = await findProbe(child.pid, 1);
+      assert(
+        probe !== undefined,
+        "the control-plane probe never started — the test proves nothing",
+      );
+      tree = await getDescendants(child.pid);
+
+      // Bounded at about ten seconds: the probe should end within a few of
+      // its one-second intervals once the container is gone.
+      let alive = true;
+      for (let i = 0; i < 100 && alive; i++) {
+        await delay(100);
+        alive = await isRunning(probe);
+      }
+      assertEquals(
+        alive,
+        false,
+        `the probe (PID ${probe}) kept running after its container was gone`,
+      );
+      assert(
+        await isRunning(child.pid),
+        "loop.sh must keep supervising after its probe has stopped",
+      );
+    } finally {
+      await killTree(child);
+      killQuietly(tree);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #4568 - the probe keeps waiting while no container has been seen yet",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    // An image build can run for minutes before any container exists, so an
+    // empty `container ls` at start-up is not the end of the probe's watch.
+    const harness = await setupHarness({
+      runStub: LONG_RUN_STUB,
+      containerStub: NO_CONTAINER_STUB,
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "1",
+    });
+    let tree: number[] = [];
+    try {
+      const probe = await findProbe(child.pid, 1);
+      assert(
+        probe !== undefined,
+        "the control-plane probe never started — the test proves nothing",
+      );
+      tree = await getDescendants(child.pid);
+
+      await delay(4000);
+      assert(
+        await isRunning(probe),
+        "the probe must keep waiting while no container has been seen — run.sh may still be building the image",
+      );
+      assert(
+        await isRunning(child.pid),
+        "loop.sh must still be running",
+      );
+    } finally {
+      await killTree(child);
+      killQuietly(tree);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #4568 - a fresh supervisor reaps a probe orphaned from its checkout",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: LONG_RUN_STUB });
+    const stateDir = join(harness.tmpDir, ".vibe-coder");
+    const fakePath = await writeFakeSupervisor(harness.tmpDir);
+    let fakes: number[] = [];
+    let leftovers: number[] = [];
+    let child: Deno.ChildProcess | undefined;
+    try {
+      fakes = await startOrphanFake(fakePath);
+      const fake = fakes[0];
+      assert(
+        fakes.length === 1 && fake !== undefined,
+        `expected exactly one fake supervisor, found ${fakes.length}`,
+      );
+      assertEquals(
+        await parentPidOf(fake),
+        1,
+        "the fake must be an orphan re-parented to init, or the test proves nothing",
+      );
+      leftovers = await getDescendants(fake);
+      await registerProbe(stateDir, fake, await Deno.realPath(harness.tmpDir));
+
+      child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
+      let alive = true;
+      for (let i = 0; i < 80 && alive; i++) {
+        await delay(100);
+        alive = await isRunning(fake);
+      }
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"))
+        .catch(() => "");
+      assertEquals(
+        alive,
+        false,
+        `the orphaned probe (PID ${fake}) survived a fresh supervisor; log:\n${log}`,
+      );
+      assert(
+        log.includes(
+          `reaping orphaned control-plane probe PID ${fake} (supervisor gone)`,
+        ),
+        `the reaping must be logged; got:\n${log}`,
+      );
+    } finally {
+      killQuietly([...fakes, ...leftovers]);
+      if (child !== undefined) await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #4568 - the reaper leaves a probe registered to another checkout alone",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: LONG_RUN_STUB });
+    const stateDir = join(harness.tmpDir, ".vibe-coder");
+    const fakePath = await writeFakeSupervisor(harness.tmpDir);
+    let fakes: number[] = [];
+    let leftovers: number[] = [];
+    let child: Deno.ChildProcess | undefined;
+    try {
+      fakes = await startOrphanFake(fakePath);
+      const fake = fakes[0];
+      assert(
+        fakes.length === 1 && fake !== undefined,
+        `expected exactly one fake supervisor, found ${fakes.length}`,
+      );
+      assertEquals(
+        await parentPidOf(fake),
+        1,
+        "the fake must be an orphan re-parented to init, or the test proves nothing",
+      );
+      leftovers = await getDescendants(fake);
+      // Registered to a checkout that is not this one.
+      await registerProbe(
+        stateDir,
+        fake,
+        `${await Deno.realPath(harness.tmpDir)}-elsewhere`,
+      );
+
+      child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
+      await delay(3000);
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"))
+        .catch(() => "");
+      assert(
+        await isRunning(child.pid),
+        `loop.sh must still be running; log:\n${log}`,
+      );
+      assert(
+        await isRunning(fake),
+        "a probe registered to another checkout must not be reaped",
+      );
+      assertEquals(
+        log.includes("reaping orphaned"),
+        false,
+        `nothing must be reaped; log:\n${log}`,
+      );
+    } finally {
+      killQuietly([...fakes, ...leftovers]);
+      if (child !== undefined) await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "loop.sh #4568 - the reaper leaves a probe that is not an orphan alone",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: LONG_RUN_STUB });
+    const stateDir = join(harness.tmpDir, ".vibe-coder");
+    const fakePath = await writeFakeSupervisor(harness.tmpDir);
+    let fakeChild: Deno.ChildProcess | undefined;
+    let leftovers: number[] = [];
+    let child: Deno.ChildProcess | undefined;
+    try {
+      // A child of this test, so its parent is alive and it is not re-parented.
+      fakeChild = new Deno.Command("bash", {
+        args: [fakePath],
+        stdout: "null",
+        stderr: "null",
+      }).spawn();
+      const fake = fakeChild.pid;
+      assertEquals(
+        await parentPidOf(fake),
+        Deno.pid,
+        "the fake must be a live child of this test, not an orphan, or the test proves nothing",
+      );
+      leftovers = await getDescendants(fake);
+      await registerProbe(stateDir, fake, await Deno.realPath(harness.tmpDir));
+
+      child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
+      await delay(3000);
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"))
+        .catch(() => "");
+      assert(
+        await isRunning(child.pid),
+        `loop.sh must still be running; log:\n${log}`,
+      );
+      assert(
+        await isRunning(fake),
+        "a probe still owned by a live parent must not be reaped",
+      );
+      assertEquals(
+        log.includes("reaping orphaned"),
+        false,
+        `nothing must be reaped; log:\n${log}`,
+      );
+    } finally {
+      if (fakeChild !== undefined) {
+        try {
+          fakeChild.kill("SIGKILL");
+        } catch { /* already gone */ }
+        try {
+          await fakeChild.status;
+        } catch { /* already reaped */ }
+      }
+      killQuietly(leftovers);
+      if (child !== undefined) await killTree(child);
       await harness.cleanup();
     }
   },
