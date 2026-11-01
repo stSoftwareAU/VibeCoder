@@ -527,7 +527,7 @@ probe_control_plane() {
             failures=0
             if (( seen )); then
                 echo "loop.sh: control-plane probe stopping — the container it watched is gone"
-                return 0
+                continue
             fi
             continue
         fi
