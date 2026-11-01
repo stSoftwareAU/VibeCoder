@@ -16,7 +16,12 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { type BumpInfo, MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
+import {
+  APPLIED_BUMP_NOTE_PREFIX,
+  buildBumpAppliedNote,
+  type BumpInfo,
+  MILESTONE_CHILD_BUMP_NOTE,
+} from "../lib/bump_deps.ts";
 
 interface RecordedComment {
   repo: string;
@@ -303,6 +308,79 @@ Deno.test(
       body!.includes(MILESTONE_CHILD_BUMP_NOTE),
       false,
       "an applied bump must not claim it was skipped",
+    );
+  },
+);
+
+Deno.test(
+  "completion - PR body carries the applied-bump note for an applied bump",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState({
+      bumpInfo: {
+        status: "applied",
+        files: ["deno.lock"],
+        output: "",
+        sha: "deadbeef",
+        beforeBumpSha: "cafebabe",
+      },
+    });
+    const ghCalls: string[][] = [];
+
+    const result = await workOnIssueCompletion(
+      ctx,
+      state,
+      makeArgvRecordingDeps(ghCalls),
+    );
+
+    assertEquals(result.status, "continue");
+    const body = createdPrBody(ghCalls);
+    assertEquals(
+      body !== undefined,
+      true,
+      "gh pr create must have been called",
+    );
+    assertStringIncludes(body!, APPLIED_BUMP_NOTE_PREFIX);
+    assertStringIncludes(body!, "deadbee");
+    assertStringIncludes(body!, "deno.lock");
+    assertStringIncludes(
+      body!,
+      buildBumpAppliedNote(state.bumpInfo) + "\n---\n",
+    );
+  },
+);
+
+Deno.test(
+  "completion - PR body carries no applied-bump note after an audit revert",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState({
+      bumpInfo: {
+        status: "rejected_by_audit",
+        files: ["deno.lock"],
+        output: "",
+        rejectionReason: "Quality gate passed only without the bump.",
+      },
+    });
+    const ghCalls: string[][] = [];
+
+    const result = await workOnIssueCompletion(
+      ctx,
+      state,
+      makeArgvRecordingDeps(ghCalls),
+    );
+
+    assertEquals(result.status, "continue");
+    const body = createdPrBody(ghCalls);
+    assertEquals(
+      body !== undefined,
+      true,
+      "gh pr create must have been called",
+    );
+    assertEquals(
+      body!.includes(APPLIED_BUMP_NOTE_PREFIX),
+      false,
+      "a reverted bump must not carry the applied-bump note",
     );
   },
 );
