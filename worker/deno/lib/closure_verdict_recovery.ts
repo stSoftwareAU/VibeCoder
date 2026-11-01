@@ -495,6 +495,7 @@ export async function renderClosureBlocksFromVerdict(
   const updated = alignIssueCloseWithClosure(
     applyClosureBlocks(base, blocks),
     issueNumber,
+    { prRepo: repo, issueRepo: repo },
   );
   await writeSummary(state.repoPath, relativePath, updated);
 

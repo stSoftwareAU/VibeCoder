@@ -26,6 +26,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   alignIssueCloseWithClosure,
   findMissingCriteria,
+  MissingIssueIdentityError,
   restoreIssueClose,
   withholdIssueClose,
 } from "../lib/missing_criterion_close_guard.ts";
@@ -663,4 +664,71 @@ Deno.test("merged partial PR leaves its issue queued in both closers (Issue #464
   assertEquals(result.value.closed, false);
   assertEquals(w.closed, []);
   assertEquals(w.labelled, []);
+});
+
+Deno.test("qualified governing identity withholds only its own issue (Issue #4644)", () => {
+  const identity = {
+    prRepo: "stSoftwareAU/VibeCoder",
+    issueRepo: "stSoftwareAU/NEAT-AI-Discovery",
+  };
+  const input =
+    "Closes stSoftwareAU/NEAT-AI-Discovery#2422. Fixes #2422. Resolves other/repo#2422.";
+  const output = withholdIssueClose(input, 2422, identity);
+  assertEquals(
+    output,
+    "Part of stSoftwareAU/NEAT-AI-Discovery#2422. Fixes #2422. Resolves other/repo#2422.",
+  );
+  assertEquals(restoreIssueClose(output, 2422, identity), input);
+});
+
+Deno.test("qualified references require trusted identity (Issue #4644)", () => {
+  let failed = false;
+  try {
+    withholdIssueClose("Closes stSoftwareAU/NEAT-AI-Discovery#2422", 2422);
+  } catch (error) {
+    failed = error instanceof MissingIssueIdentityError;
+  }
+  assertEquals(failed, true);
+});
+
+Deno.test("cross-repository partial body preserves unrelated issue links (Issue #4644)", () => {
+  const summary =
+    "## Summary\n\nCloses stSoftwareAU/NEAT-AI-Discovery#2422. Fixes #2422.\n\n## Acceptance Criteria\n\n" +
+    "- **partial** — Deliver behaviour — evidence: one path — reason: another remains";
+  const body = assemblePrBody({
+    summaryContent: summary,
+    issueNumber: 2422,
+    issueIdentity: {
+      prRepo: "stSoftwareAU/VibeCoder",
+      issueRepo: "stSoftwareAU/NEAT-AI-Discovery",
+    },
+    extraSections: "\nResolves stSoftwareAU/NEAT-AI-Discovery#2422\n",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertStringIncludes(body, "Part of stSoftwareAU/NEAT-AI-Discovery#2422");
+  assertStringIncludes(body, "Fixes #2422");
+  assertEquals(
+    /(?:closes|fixes|resolves)\s+stSoftwareAU\/NEAT-AI-Discovery#2422/i.test(
+      body,
+    ),
+    false,
+  );
+  assertStringIncludes(
+    body,
+    "## Not closing stSoftwareAU/NEAT-AI-Discovery#2422",
+  );
+});
+
+Deno.test("same-repo qualified and bare references are withheld (Issue #4644)", () => {
+  const identity = { prRepo: "Owner/Repo", issueRepo: "owner/repo" };
+  assertEquals(
+    withholdIssueClose(
+      "Closes owner/repo#42, fixes #42, resolves other/repo#42",
+      42,
+      identity,
+    ),
+    "Part of owner/repo#42, Part of #42, resolves other/repo#42",
+  );
 });

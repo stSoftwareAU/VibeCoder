@@ -21,7 +21,9 @@ remaining work. No new gate or follow-up issue is introduced.
 
 The existing closure-block parser detects both partial and missing entries.
 The existing body and merged-PR paths consume that signal, preserving the
-current continuation mechanism and labels.
+current continuation mechanism and labels. Qualified references are reconciled
+only against a trusted governing repository; the PR repository may differ.
+The existing issue-repository lookup does not discover foreign PRs.
 
 ### Undiscoverable Facts
 
@@ -32,9 +34,12 @@ remains open, and that body repair must preserve this behaviour.
 
 The focused tests exercise summary alignment, initial body assembly and a
 subsequent body synchronisation with a partial criterion and a closing keyword.
+Qualified-reference tests cover cross-repository identities, same-number
+unrelated references, and missing identity.
 
 ## Test Plan
 
-- `deno test -A tests/pr_body_sync_test.ts tests/missing_criterion_close_guard_3177_test.ts`: 73 passed.
+- `deno test -A tests/pr_body_sync_test.ts tests/missing_criterion_close_guard_3177_test.ts`: 74 passed on the original head; the closure, body-sync and recovery
+  suite passes 88 tests with the qualified-reference fix.
 - Full quality gate: see PR checks.
 

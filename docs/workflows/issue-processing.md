@@ -1086,6 +1086,10 @@ reads that signal at both ends
   also skips such merged PRs, including when a cached title lookup finds
   them, so the original issue can resume and raise its completion PR. The
   cached path reads the merged PR body live; no persisted cache shape changes.
+  This lookup searches the issue repository; a PR in another repository needs
+  separately established governing-issue and PR identities and is not
+  discovered by this lookup. A cross-repository body must not claim the local
+  issue with the same number.
 
 - **What counts as unmet.** Every `partial` or `missing` closure entry, matched
   to the issue's criteria by its words (Issue #3128). A scope item the closure

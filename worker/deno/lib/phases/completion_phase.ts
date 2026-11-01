@@ -2265,6 +2265,7 @@ async function completionBody(
   prBody = assemblePrBody({
     summaryContent,
     issueNumber,
+    issueIdentity: { prRepo: repo, issueRepo: repo },
     extraSections,
     footer,
     summaryDigest: await prSummaryDigest(
