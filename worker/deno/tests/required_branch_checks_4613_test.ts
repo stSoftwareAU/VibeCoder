@@ -130,8 +130,11 @@ Deno.test("ready updater rejects an invalid PR number before invoking gh", async
 
 Deno.test("ready updater redacts secrets from failed gh diagnostics", async () => {
   const secret = `ghp_${"a".repeat(36)}`;
-  const result = await requestReadyBranchUpdate("owner/repo", 12, () =>
-    Promise.reject(new Error(`failed ${secret}`)));
+  const result = await requestReadyBranchUpdate(
+    "owner/repo",
+    12,
+    () => Promise.reject(new Error(`failed ${secret}`)),
+  );
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.error.message.includes(secret), false);
 });
