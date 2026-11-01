@@ -997,7 +997,15 @@ Deno.test("runMutationCheck rust - no package manifest means no --package argume
 });
 
 Deno.test("runMutationCheck rust - unparseable outcomes.json fails closed", async () => {
-  for (const garbage of ["not json {", "{}", '{"outcomes": [42]}']) {
+  for (
+    const garbage of [
+      "not json {",
+      "{}",
+      '{"outcomes": [42]}',
+      outcomesJson([["UnknownOutcome", 2]]),
+      '{"outcomes": [{"scenario": "Unknown", "summary": "Success"}]}',
+    ]
+  ) {
     const r = await runMutationCheck(rsInput, rustFake(garbage, ok(0)).seams);
     assert(r.kind === "error", garbage);
   }
