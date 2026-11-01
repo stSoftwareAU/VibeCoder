@@ -30,12 +30,17 @@ final version.
   path, so no caller can turn the boundary off by omission.
   `startBabysitterAgent` computes the list before minting the token, so a
   failure leaves no attempt recorded.
-- The profile is passed as two `-c` overrides: `default_permissions` and one
-  inline-table value for `permissions.babysitter-agent.filesystem` whose keys
-  are the JSON-escaped paths. Codex splits a `-c` key on every `.`, and every
-  protected path contains dots (`.vibe-coder`, `.git`, `.pem`); a TOML value is
-  parsed as TOML, so quoted keys inside it survive intact and the `-c` key stays
-  dot-free. JSON escaping means a path containing a quote cannot add a key.
+- The filesystem profile is passed as two `-c` overrides: `default_permissions`
+  and one inline-table value for `permissions.babysitter-agent.filesystem` whose
+  keys are the JSON-escaped paths. Codex splits a `-c` key on every `.`, and
+  every protected path contains dots (`.vibe-coder`, `.git`, `.pem`); a TOML
+  value is parsed as TOML, so quoted keys inside it survive intact and the `-c`
+  key stays dot-free. JSON escaping means a path containing a quote cannot add a
+  key.
+- A third override explicitly enables network access for the agent's read-only
+  GitHub requests. The profile does not inherit host `sandbox_workspace_write`
+  settings, including network access, writable roots or the default `/tmp`
+  grant.
 
 ### Undiscoverable Facts
 
@@ -45,10 +50,10 @@ final version.
   come from memory of Codex's configuration, not from an installed CLI or its
   docs. The dotted-key splitting risk is avoided by construction (see above),
   but the table semantics are still unrun here. If Codex rejects them the agent
-  fails loudly; if it accepts them with different semantics (for example the
-  network default, which `workspace-write` governed before) the operator must
-  adjust. `docs/workflows/fleet-pr-babysitter.md` now tells the operator how to
-  confirm a denied read on the host.
+  fails loudly; if it accepts them with different semantics the operator must
+  adjust. Network access is explicitly enabled rather than relying on a default.
+  `docs/workflows/fleet-pr-babysitter.md` now tells the operator how to confirm
+  a denied read on the host.
 - The agent's own `gh` login (its credential store, if any) is outside this
   boundary. This PR does not change it.
 
@@ -97,6 +102,11 @@ Mutation follow-up: the three surviving mutants (the NUL-byte operand and the
 two deleted `assertAbsolute` calls for the scratch directory and protected
 paths) each now fail a test (checked by applying each). The `-c` keys were
 restructured into one inline table to avoid dotted-key splitting.
+
+Network follow-up: the exact-arguments test pins the explicit network override;
+`deno test --allow-read --allow-write --allow-env --allow-run
+--allow-sys=hostname tests/fleet_babysitter_sandbox_test.ts`
+passed (13 tests).
 
 Results: `deno test` over the sandbox, `fleet_pr_babysitter` and
 `fleet_babysitter_app` tests: 41 passed, 0 failed; `deno task check:manifests`
