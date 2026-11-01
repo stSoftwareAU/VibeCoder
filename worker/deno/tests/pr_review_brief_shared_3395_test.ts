@@ -139,3 +139,19 @@ Deno.test("renderReviewBrief fills {{CLOSURE_ENTRIES}} and the reply shape carri
   assert(!rendered.includes("{{CLOSURE_ENTRIES}}"));
   assert(rendered.includes('"closure":'));
 });
+
+Deno.test("SKILL.md resolves the brief's partial-or-missing closure rule for the re-review, and the brief keeps that rule", () => {
+  // SKILL.md's {{PREVIOUS_FINDINGS}} value says a closure gap is not repeated
+  // as a finding; the brief's step 8 still makes each one a finding. Pin both
+  // so the conflict stays resolved by the wording below.
+  assert(
+    flatWholeFile(SKILL).includes(
+      "even where step 8 would make a `partial` or `missing` closure entry a finding",
+    ),
+    "SKILL.md no longer carries the closure wording",
+  );
+  assert(
+    flatWholeFile(TEMPLATE).includes("Every `partial` or `missing` entry"),
+    "the brief no longer carries the partial-or-missing closure rule",
+  );
+});
