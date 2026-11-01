@@ -90,10 +90,10 @@ flowchart LR
 - Red check: deleting the `if (park) return ...` line in
   `runOrchestratedIssueRun` makes the 58.2 GB and 30 GB tests fail with
   `the run must end parked`; restored, 3 passed.
-- `deno task test:unit` on that file plus
-  `tests/orchestration_3642_gate_test.ts` and
-  `tests/heavy_build_gate_in_flight_4413_test.ts` (the latter two unchanged from
-  `main`) — 43 passed, 0 failed.
+- `deno task test:unit` (run from `worker/deno`) on that file plus two files
+  unchanged from `main`, 43 passed, 0 failed in total:
+  `worker/deno/tests/orchestration_3642_gate_test.ts` (31 tests at head) and
+  `worker/deno/tests/heavy_build_gate_in_flight_4413_test.ts` (9 tests at head).
 - Branch outcomes: park `headroom` → `orchestration_gate_host_disk_2422_test.ts`
   (58.2 GB); park below floor → same file (30 GB); admitted cargo → same file
   (72 GB); non-cargo checkout → same file (Deno-only at 58.2 GB).
