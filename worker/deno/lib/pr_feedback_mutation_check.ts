@@ -52,12 +52,12 @@ function failure(
 }
 
 /**
- * The unified=0 diff of only the lines this run added since `beforeSha`, with
+ * The baseline for this run’s own changes since `beforeSha`, with
  * lines brought in by a merge excluded (Issue #3750). Each error names its
  * cause; a run that merged two unrelated histories is refused, because its own
  * lines cannot then be told apart from the merged ones.
  */
-export async function collectRunOwnDiff(
+export async function collectRunOwnBaseline(
   runGit: RunGit,
   beforeSha: string,
 ): Promise<Result<string>> {
@@ -152,6 +152,18 @@ export async function collectRunOwnDiff(
     }
     oldSide = treeId;
   }
+
+  return { ok: true, value: oldSide };
+}
+
+/** Collect the run’s own tracked and untracked changes. */
+export async function collectRunOwnDiff(
+  runGit: RunGit,
+  beforeSha: string,
+): Promise<Result<string>> {
+  const baseline = await collectRunOwnBaseline(runGit, beforeSha);
+  if (!baseline.ok) return baseline;
+  const oldSide = baseline.value;
 
   // 2. The tracked lines: the old side against the working tree.
   const tracked = await runGit([
