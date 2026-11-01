@@ -10,15 +10,15 @@ prompt says when the bump runs. Closes #4570.
 
 ### Intent and Rationale
 
-- The agent cannot see the bump commit, so the fix is a worker-written PR-body
-  note beside the existing milestone skip note, not a new summary obligation or
-  gate.
+- The turn that writes the initial summary cannot see the later bump commit, so
+  the fix is a worker-written PR-body note beside the existing milestone skip
+  note, not a new summary obligation or gate. Later turns can see the commit.
 - The coding-guidelines paragraph (`prompts/coding_guidelines/prompt.md`, "The
   bump and the substantive change land in the same PR") now states that the bump
-  runs after the agent's turn and before `./quality.sh`, that its commit is part
-  of the PR, and that the agent never sees it: the PR body notes it, so the
-  summary must not claim no dependency, lockfile or version changed beyond the
-  agent's own change.
+  runs after the initial summary-writing turn and before `./quality.sh`, and
+  that its commit is part of the PR. The PR body notes it, so the summary must
+  not claim no dependency, lockfile or version changed beyond the agent's own
+  change.
 
 ### Essential Design Decisions
 
@@ -64,11 +64,15 @@ Issue numbers cited: #4570 (this issue), #1775 (milestone skip note, existing),
   including `rejected_by_audit` and `undefined`), plus `buildBumpSkipNote` stays
   empty for `applied`.
 - `worker/deno/tests/completion_phase_bump_comment_test.ts`: PR body carries the
-  note for an `applied` bump; carries none after `rejected_by_audit`.
+  note directly before the footer for an `applied` bump; carries none after
+  `rejected_by_audit`.
 - `worker/deno/tests/pr_body_sync_test.ts`: resync keeps the applied note; a
   summary quoting the prefix (mid-sentence, and at a line start without the
   footer rule) is not carried over.
 - Result: `deno task test:unit` on those three files: 86 passed, 0 failed.
+- Review fix: the completion and guidelines drift test files passed (10 tests).
+  The full local gate's parallel Deno test pass panicked while restoring test
+  permissions; the focused tests passed, and CI remains authoritative.
 - Red checks (each break made alone, then restored): drop the footer-rule
   lookahead in `extractBumpNotes` → `pr_body_sync_test.ts` red (1 failed); drop
   the match loop so nothing is carried over → red (1 failed); remove the
@@ -76,12 +80,7 @@ Issue numbers cited: #4570 (this issue), #1775 (milestone skip note, existing),
   `completion_phase_bump_comment_test.ts` red (1 failed).
 - Entry points checked: completion-phase PR creation (`completionBody`) and
   PR-body resync (`buildSyncedPrBodyCandidate`); both covered by a test above.
-  No existing test edited; no assertion removed.
-- Latest push (`fa06857f`) only re-wrapped and reordered that guidelines
-  paragraph (the commit-is-part-of-the-PR sentence now precedes the
-  "you never see that commit" sentence); the wording and meaning match the
-  Intent bullet above, and no code or test changed, so the test results above
-  still hold at the head.
+  The completion test now also checks the note's position; no assertion removed.
 - Existing text re-read: the milestone skip note and `rejected_*` comments are
   unchanged and still true. `worker/deno/tests/pr_review_brief_own_bump_4522_test.ts`
   pins the reworded guidelines sentence and passes at the head (2 tests passed).

@@ -1817,12 +1817,13 @@ vulnerability introduced by the bump, revert the bump and continue without it.
 supply-chain attacks have historically landed.
 
 **The bump and the substantive change land in the same PR.** Reviewers see the
-fully-built state. If a per-repo `bump-deps.sh` exists, the worker invokes it
-after your turn, before `./quality.sh`; its `chore: bump dependencies via bump-deps.sh`
-commit is part of the PR: do not revert it as unrelated to the issue. You never
-see that commit: the PR body notes it, and your summary describes your own
-change, so do not state that no dependency, lockfile or version changed beyond
-what you changed yourself.
+fully-built state. In an issue run, if a per-repo `bump-deps.sh` exists, the
+worker invokes it after the initial agent turn, before `./quality.sh`; its `chore: bump dependencies via bump-deps.sh`
+commit is part of the PR: do not revert it as unrelated to the issue. The bump
+runs after the turn that writes the initial summary, so that summary cannot
+describe it. The PR body notes the bump commit, and your summary describes your
+own change, so do not state that no dependency, lockfile or version changed
+beyond what you changed yourself.
 
 **Do not bump on a milestone child run.** When your PR targets a
 `milestone/**` branch the worker skips the bump: the default branch's own PRs

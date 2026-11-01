@@ -18,6 +18,7 @@ import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   APPLIED_BUMP_NOTE_PREFIX,
+  buildBumpAppliedNote,
   type BumpInfo,
   MILESTONE_CHILD_BUMP_NOTE,
 } from "../lib/bump_deps.ts";
@@ -342,6 +343,10 @@ Deno.test(
     assertStringIncludes(body!, APPLIED_BUMP_NOTE_PREFIX);
     assertStringIncludes(body!, "deadbee");
     assertStringIncludes(body!, "deno.lock");
+    assertStringIncludes(
+      body!,
+      buildBumpAppliedNote(state.bumpInfo) + "\n---\n",
+    );
   },
 );
 
