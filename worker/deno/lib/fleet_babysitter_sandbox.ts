@@ -123,30 +123,38 @@ export function buildBabysitterSandboxArgs(options: {
   ];
 }
 
-/** Refuse versions that can silently ignore the agent permissions profile. */
-export async function checkBabysitterCodexVersion(
-  readVersion: () => Promise<string> = async () => {
-    const result = await runWithTimeout("codex", ["--version"], {
-      timeoutMs: 30_000,
-    });
-    if (!result.ok) throw result.error;
-    if (!result.value.success) {
-      throw new Error(`codex --version failed: ${result.value.stderr.trim()}`);
-    }
-    return result.value.stdout.trim();
-  },
-): Promise<void> {
-  const version = await readVersion();
-  const match = /^codex-cli (\d+)\.(\d+)\.(\d+)$/.exec(version);
-  const parts = match?.slice(1).map(Number);
-  if (
-    !parts || parts.some((part) => !Number.isSafeInteger(part)) ||
-    (parts[0] === 0 && (parts[1]! < 164))
-  ) {
+/** Oldest Codex CLI that enforces the agent permissions profile. */
+export const BABYSITTER_CODEX_FLOOR = "0.164.0";
+
+/**
+ * Whether `codex --version` output is at or above the floor. A pre-release
+ * counts only when its base version is above the floor, since under semver
+ * `0.164.0-beta.1` precedes `0.164.0` but `0.166.0-alpha.5.1` follows it.
+ */
+export function codexVersionMeetsFloor(version: string): boolean {
+  const match = /^codex-cli (\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$/.exec(
+    version,
+  );
+  if (!match) return false;
+  const parts = match.slice(1, 4).map(Number);
+  if (parts.some((part) => !Number.isSafeInteger(part))) return false;
+  const floor = BABYSITTER_CODEX_FLOOR.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (parts[i]! !== floor[i]!) return parts[i]! > floor[i]!;
+  }
+  return match[4] === undefined;
+}
+
+/** Read `<binary> --version`, failing on a spawn error or non-zero exit. */
+export async function readCodexVersion(binary = "codex"): Promise<string> {
+  const result = await runWithTimeout(binary, ["--version"], {
+    timeoutMs: 30_000,
+  });
+  if (!result.ok) throw result.error;
+  if (!result.value.success) {
     throw new Error(
-      `Babysitter requires Codex CLI 0.164.0 or newer; got ${
-        JSON.stringify(version)
-      }`,
+      `${binary} --version failed: ${result.value.stderr.trim()}`,
     );
   }
+  return result.value.stdout.trim();
 }

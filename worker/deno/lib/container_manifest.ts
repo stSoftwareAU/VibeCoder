@@ -70,11 +70,20 @@ export interface ContainerProviderPin {
   /** Architecture (`amd64`, `arm64`) to SHA-256 of the release asset. */
   sha256: Record<string, string>;
   /**
+   * `<os>-<arch>` (e.g. `darwin-arm64`) to SHA-256 of the same release's
+   * asset for a non-container host. The fleet PR babysitter installs Codex
+   * from these on a host whose own CLI is missing or too old.
+   */
+  hostSha256?: Record<string, string>;
+  /**
    * A companion executable the CLI spawns, shipped as its own release asset
    * on the same tag — Codex's `codex-code-mode-host` since 0.163.0, without
    * which every session runs with no tools (Issue #4323).
    */
-  codeModeHost?: { sha256: Record<string, string> };
+  codeModeHost?: {
+    sha256: Record<string, string>;
+    hostSha256?: Record<string, string>;
+  };
 }
 
 /**
@@ -666,11 +675,20 @@ function parseProvider(value: unknown, index: number): ContainerProviderPin {
     version,
     sha256: parseSha256(raw.sha256, `${field}.sha256`),
   };
+  if (raw.hostSha256 !== undefined) {
+    pin.hostSha256 = parseSha256(raw.hostSha256, `${field}.hostSha256`);
+  }
   if (raw.codeModeHost !== undefined) {
     const host = asRecord(raw.codeModeHost, `${field}.codeModeHost`);
     pin.codeModeHost = {
       sha256: parseSha256(host.sha256, `${field}.codeModeHost.sha256`),
     };
+    if (host.hostSha256 !== undefined) {
+      pin.codeModeHost.hostSha256 = parseSha256(
+        host.hostSha256,
+        `${field}.codeModeHost.hostSha256`,
+      );
+    }
   }
   return pin;
 }

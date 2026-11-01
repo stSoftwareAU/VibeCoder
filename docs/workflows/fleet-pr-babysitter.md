@@ -77,10 +77,15 @@ failure is logged and the next pass retries. Organisation-specific extensions
 can use this to publish a separate babysitter heartbeat and failure record. Dry
 runs and runs limited to a repository or PR do not report service health.
 
-The host needs `gh`, `git`, `deno` and Codex CLI 0.164.0 or newer. Setup and
-each repair check the Codex version before minting an agent token; older or
-unrecognised versions are refused because they may silently ignore the
-permissions profile. When RTK is available, each
+The host needs `gh`, `git` and `deno`. Codex CLI must be 0.164.0 or newer,
+because older versions may silently ignore the permissions profile; a
+pre-release counts when its base version is newer (0.166.0-alpha passes,
+0.164.0-beta does not). Setup and each repair check the `codex` on PATH before
+minting an agent token. When it is missing, too old or unrecognised, they
+install the Codex version pinned in `container/tools.json` (CLI and code-mode
+host, macOS or Linux, each archive verified against its pinned SHA-256) under
+`~/.vibe-coder/codex/<version>-<target>/` and run that instead, so an
+unattended host needs no manual upgrade. When RTK is available, each
 repair receives instructions to use it; otherwise the babysitter logs a warning
 and continues without it. Before execution, put the App's `<slug>[bot]` login in
 `service_accounts` or `fleet_pr_authors` **on every fleet host**. Run setup on

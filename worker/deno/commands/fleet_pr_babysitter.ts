@@ -24,8 +24,8 @@ import type { FetchFn } from "../lib/github_app_auth.ts";
 import {
   babysitterProtectedPaths,
   buildBabysitterSandboxArgs,
-  checkBabysitterCodexVersion,
 } from "../lib/fleet_babysitter_sandbox.ts";
+import { ensureBabysitterCodex } from "../lib/fleet_babysitter_codex.ts";
 import {
   buildFetchTrackingRefArgs,
   buildPushCreateBranchArgs,
@@ -413,10 +413,11 @@ export function spawnBabysitterAgent(
     prompt: string;
     agentToken: string;
     protectedPaths: string[];
+    codex: string;
   },
   spawn: typeof spawnCommandWithTimeout = spawnCommandWithTimeout,
 ): Deno.ChildProcess {
-  return spawn("codex", {
+  return spawn(options.codex, {
     timeoutMs: 90 * 60_000,
     args: [
       "exec",
@@ -448,13 +449,14 @@ export async function startBabysitterAgent(
   beforeSpawn: () => Promise<boolean>,
   fetchFn: FetchFn = globalThis.fetch,
   spawn: typeof spawnCommandWithTimeout = spawnCommandWithTimeout,
-  readVersion?: () => Promise<string>,
+  resolveCodex: () => Promise<string> = () =>
+    ensureBabysitterCodex(options.home),
 ): Promise<Deno.ChildProcess | undefined> {
-  await checkBabysitterCodexVersion(readVersion);
   const protectedPaths = await babysitterProtectedPaths(
     options.home,
     app.privateKeyPath,
   );
+  const codex = await resolveCodex();
   const agentToken = await mintBabysitterAgentToken(app, repo, fetchFn);
   if (!await beforeSpawn()) return undefined;
   return spawnBabysitterAgent(
@@ -464,6 +466,7 @@ export async function startBabysitterAgent(
       prompt: options.prompt,
       protectedPaths,
       agentToken,
+      codex,
     },
     spawn,
   );
