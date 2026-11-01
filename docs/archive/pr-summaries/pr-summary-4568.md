@@ -48,6 +48,7 @@ the registration and legacy-orphan limitation. No visual evidence is relevant.
 - `loop.sh #4568 - a failed listing and side containers do not end the worker watch`.
 - `loop.sh #4568 - a registered orphan with a different command survives`.
 - `loop.sh #4568 - the probe stops when its living supervisor changes parent`.
+- `loop.sh #4568 - a fresh supervisor reaps the real registered probe`.
 - `pid_guard - terminateDescendants skips a descendant that cannot be fingerprinted and signals the rest (PR #4609 review)`.
 
 The focused listing and side-container test and the fingerprint carry-over

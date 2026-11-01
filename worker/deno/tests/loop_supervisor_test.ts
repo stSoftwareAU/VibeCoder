@@ -1027,6 +1027,64 @@ async function startOrphanFake(fakePath: string): Promise<number[]> {
 }
 
 Deno.test({
+  name: "loop.sh #4568 - a fresh supervisor reaps the real registered probe",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: LONG_RUN_STUB,
+      containerStub: NO_CONTAINER_STUB,
+    });
+    const stateDir = join(harness.tmpDir, "state");
+    const child = spawnLoopLogging(harness.tmpDir, {
+      VIBE_STATE_DIR: stateDir,
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "60",
+    });
+    let fresh: Deno.ChildProcess | undefined;
+    let tree: number[] = [];
+    try {
+      const probe = await findProbe(child.pid, 60);
+      assert(probe !== undefined, "the control-plane probe never started");
+      tree = await getDescendants(child.pid);
+      const entry = join(stateDir, "probes", String(probe));
+      assertEquals(
+        (await Deno.readTextFile(entry)).trim(),
+        await Deno.realPath(harness.tmpDir),
+      );
+
+      child.kill("SIGKILL");
+      await child.status;
+      for (let i = 0; i < 50 && await parentPidOf(probe) !== 1; i++) {
+        await delay(100);
+      }
+      assertEquals(await parentPidOf(probe), 1);
+      assert(await isRunning(probe), "the orphan must be alive before reaping");
+
+      fresh = spawnLoopLogging(harness.tmpDir, {
+        VIBE_STATE_DIR: stateDir,
+        VIBE_RUN_MAX_SECONDS: "0",
+        VIBE_PROBE_INTERVAL_SECONDS: "60",
+      });
+      let alive = true;
+      for (let i = 0; i < 80 && alive; i++) {
+        await delay(100);
+        alive = await isRunning(probe);
+      }
+      assertEquals(alive, false, `registered probe ${probe} survived`);
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"));
+      assert(log.includes(`reaping orphaned control-plane probe PID ${probe}`));
+    } finally {
+      if (fresh) await killTree(fresh);
+      await killTree(child);
+      killQuietly(tree);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
   name:
     "loop.sh #4568 - SIGKILL to the supervisor alone takes its control-plane probe down too",
   ignore: Deno.build.os === "windows",

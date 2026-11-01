@@ -45,8 +45,10 @@ set -uo pipefail
 #           consecutive failures, records the recovery as a self-heal event and
 #           escalates a repeatedly failing host through the host's own
 #           `callbacks.host_failure` hook (Issue #2108) - never GitHub.
-#   #4568 — the control-plane probe stops with its loop.sh, or with the container
-#           it watched; a fresh loop.sh reaps registered orphans from this checkout.
+#   #4568 — the control-plane probe stops when its loop.sh is gone or changes
+#           parent, or when its watched container is gone. A live loop.sh
+#           re-parented mid-cycle loses its probe until the next cycle records
+#           its new parent; a fresh loop.sh reaps registered checkout orphans.
 ################################################################################
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
