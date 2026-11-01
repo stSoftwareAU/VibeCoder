@@ -3351,12 +3351,24 @@ Deno.test("classifyClosedIssues - an issue with no merged PR is flagged without 
 
 Deno.test("classifyClosedIssues - unreadable branch PR search retries instead of claiming no delivery", async () => {
   await withTempCache(async (cache) => {
-    let healthy = false;
-    const counter = { timelineReads: 0 };
-    const inner = claimableGhFn(counter);
+    let branchReads = 0;
+    let titleReads = 0;
     const ghFn = async (args: string[]): Promise<string> => {
-      if (!healthy && args[0] === "pr") throw new Error("HTTP 502");
-      return await inner(args);
+      if (args[0] === "pr" && args[1] === "list") {
+        if (args.includes("head:issue-1")) {
+          branchReads++;
+          if (branchReads === 1) throw new Error("HTTP 502: Bad Gateway");
+          return JSON.stringify([{
+            number: 5,
+            title: "Custom title",
+            headRefName: "issue-1-delivery",
+            mergedAt: "2026-10-05T00:00:00Z",
+            isCrossRepository: false,
+          }]);
+        }
+        titleReads++;
+      }
+      return "[]";
     };
     const issues = [{
       number: 1,
@@ -3365,11 +3377,120 @@ Deno.test("classifyClosedIssues - unreadable branch PR search retries instead of
     }];
     const bad = await classifyClosedIssues("org/repo", issues, ghFn, cache);
     assertEquals(bad[0]?.claimProblem, "merged-pr-search-unreadable");
-    healthy = true;
     const good = await classifyClosedIssues("org/repo", issues, ghFn, cache);
     assertEquals(good[0]?.claimProblem, undefined);
+    assertEquals(branchReads, 2);
+    assertEquals(
+      titleReads,
+      1,
+      "the empty title search is cached throughout recovery",
+    );
   });
 });
+
+for (const failedSearch of ["title", "branch"] as const) {
+  for (const failure of ["command failure", "malformed JSON", "wrong shape"]) {
+    Deno.test(`classifyClosedIssues - retries a partial ${failedSearch} search failure with unchanged updatedAt (${failure})`, async () => {
+      await withTempCache(async (cache) => {
+        let failedReads = 0;
+        const issues = [{
+          number: 1,
+          title: "T",
+          updatedAt: "2026-10-07T00:00:00Z",
+        }];
+        const ghFn = async (args: string[]): Promise<string> => {
+          if (args.join(" ").includes("/timeline")) {
+            return JSON.stringify([{
+              event: "reopened",
+              actor: { login: "owner" },
+              created_at: "2026-10-06T00:00:00Z",
+            }]);
+          }
+          const search = args.includes("head:issue-1") ? "branch" : "title";
+          const recovering = search === failedSearch;
+          if (recovering && ++failedReads === 1) {
+            if (failure === "command failure") {
+              throw new Error("HTTP 502: Bad Gateway");
+            }
+            return failure === "malformed JSON" ? "invalid JSON" : "{}";
+          }
+          return JSON.stringify([{
+            number: recovering ? 6 : 5,
+            title: "Fix (#1)",
+            headRefName: "issue-1-delivery",
+            mergedAt: recovering
+              ? "2026-10-07T00:00:00Z"
+              : "2026-10-05T00:00:00Z",
+            isCrossRepository: false,
+          }]);
+        };
+        const first = await classifyClosedIssues(
+          "org/repo",
+          issues,
+          ghFn,
+          cache,
+        );
+        assertEquals(first[0]?.claimProblem, "predates-reopen");
+        const second = await classifyClosedIssues(
+          "org/repo",
+          issues,
+          ghFn,
+          cache,
+        );
+        assertEquals(second[0]?.claimProblem, undefined);
+        assertEquals(failedReads, 2);
+      });
+    });
+  }
+
+  Deno.test(`checkAndHandleMilestoneCompletions - recovers the rollup after a partial ${failedSearch} search failure`, async () => {
+    await withTempCache(async (cache) => {
+      const live = { state: "OPEN", body: "stale body" };
+      const calls: string[] = [];
+      let healthy = false;
+      let failedReads = 0;
+      const inner = completedMilestoneWithRollupGhFn(live, calls);
+      const ghFn = async (args: string[]): Promise<string> => {
+        if (args.join(" ").includes("/timeline")) {
+          return JSON.stringify([{
+            event: "reopened",
+            actor: { login: "owner" },
+            created_at: "2026-10-06T00:00:00Z",
+          }]);
+        }
+        if (args[0] === "pr" && args[1] === "list" && args.includes("merged")) {
+          const search = args.includes("head:issue-20") ? "branch" : "title";
+          const recovering = search === failedSearch;
+          if (recovering) {
+            failedReads++;
+            if (!healthy) throw new Error("HTTP 502: Bad Gateway");
+          }
+          return JSON.stringify([{
+            number: recovering ? 6 : 5,
+            title: "Fix (#20)",
+            headRefName: "issue-20-delivery",
+            mergedAt: recovering
+              ? "2026-10-07T00:00:00Z"
+              : "2026-10-05T00:00:00Z",
+            isCrossRepository: false,
+          }]);
+        }
+        return await inner(args);
+      };
+      const deps = createMockDeps({ ghCommandFn: ghFn, cache });
+      assertEquals((await checkAndHandleMilestoneCompletions(deps)).ok, true);
+      assertStringIncludes(live.body, "predates a later reopen");
+      healthy = true;
+      assertEquals((await checkAndHandleMilestoneCompletions(deps)).ok, true);
+      assertStringIncludes(live.body, "### Issues addressed\n- #20:");
+      assertEquals(live.body.includes("predates a later reopen"), false);
+      assert(
+        failedReads >= 2,
+        "the rollup caller must retry the failed search",
+      );
+    });
+  });
+}
 
 Deno.test("classifyClosedIssues - never caches an unreadable timeline (PR #3640 review)", async () => {
   await withTempCache(async (cache) => {

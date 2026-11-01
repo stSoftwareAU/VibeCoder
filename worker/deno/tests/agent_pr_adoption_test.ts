@@ -312,13 +312,59 @@ Deno.test("adoptAgentRaisedPrBody - reports title edit failures and still syncs 
   );
 
   assertEquals(syncCalls.length, 1);
-  assert(
-    captured.entries.some((entry) =>
-      entry.level === "warn" && entry.message.includes("title") &&
-      JSON.stringify(entry.context).includes("title edit denied")
-    ),
-  );
+  assertEquals(captured.entries.filter((entry) => entry.level === "warn"), [{
+    level: "warn",
+    message: "Could not repair the agent-raised PR title (Issue #4621)",
+    context: {
+      repo: REPO,
+      branch: BRANCH,
+      prNumber: 7,
+      error: "title edit denied",
+    },
+  }]);
 });
+
+for (const response of ["42", "null", '{"title":42}', "{}", '"title"']) {
+  Deno.test(`adoptAgentRaisedPrBody - rejects malformed title response ${response} and still adopts the body`, async () => {
+    const captured = capturingLogger();
+    const ghCalls: string[][] = [];
+    const syncCalls: SyncPrBodyInput[] = [];
+    await adoptAgentRaisedPrBody(
+      input(),
+      deps(
+        { head: SHA, remote: SHA, prUrl: PR_URL, gitCalls: [] },
+        {
+          logger: captured.logger,
+          runGhCommand: (args) => {
+            ghCalls.push(args);
+            return Promise.resolve(response);
+          },
+        },
+      ),
+      recordingSync(syncCalls),
+    );
+    assertEquals(ghCalls, [[
+      "pr",
+      "view",
+      "7",
+      "--repo",
+      REPO,
+      "--json",
+      "title",
+    ]]);
+    assertEquals(syncCalls.length, 1);
+    assertEquals(captured.entries.filter((entry) => entry.level === "warn"), [{
+      level: "warn",
+      message: "Could not repair the agent-raised PR title (Issue #4621)",
+      context: {
+        repo: REPO,
+        branch: BRANCH,
+        prNumber: 7,
+        error: "gh pr view returned no string title",
+      },
+    }]);
+  });
+}
 
 Deno.test("adoptAgentRaisedPrBody - Issue #3804: does not adopt when HEAD differs from the pushed head", async () => {
   const syncCalls: SyncPrBodyInput[] = [];

@@ -193,9 +193,10 @@ branch named `issue-N` (with an optional slug). The branch lookup recovers
 agent-raised PRs whose original title omitted the issue reference. Fork heads,
 other issue numbers, sync branches and unmerged PRs do not count; a merge before
 the issue's latest reopen remains flagged.
-If the branch-based merged-PR search fails and no canonical title match was
-found, the issue is flagged as an unreadable PR search and retried on a later
-scan; it is not reported as having no delivery.
+If either merged-PR search fails and the other finds no delivery, the issue is
+flagged as an unreadable PR search. Verdicts based on partial results are not
+cached, including when the available delivery predates a reopen; the next scan
+retries the failed lookup even if the issue update timestamp has not changed.
 
 ## 📊 Diagram: milestone branch flow
 

@@ -1856,25 +1856,31 @@ export async function classifyClosedIssues(
     // says, so the timeline is not paged. The branch lookup recovers adopted
     // PRs whose title did not carry the issue reference; its results are
     // independently constrained to same-repository `issue-N` heads.
-    let mergedPrs: Awaited<ReturnType<typeof fetchPRsForIssueByTitle>> = [];
+    let titleSearchReadable = true;
+    let mergedTitlePrs: Awaited<ReturnType<typeof fetchPRsForIssueByTitle>> =
+      [];
     try {
-      mergedPrs = await fetchPRsForIssueByTitle(
+      mergedTitlePrs = await fetchPRsForIssueByTitle(
         repo,
         issue.number,
         "merged",
         cache,
         ghCommandFn,
+        undefined,
+        () => {
+          titleSearchReadable = false;
+        },
       );
     } catch {
-      mergedPrs = [];
+      titleSearchReadable = false;
     }
     const branchPrs = await fetchMergedPRsByIssueBranch(
       repo,
       issue.number,
       ghCommandFn,
     );
-    if (branchPrs === null) {
-      if (mergedPrs.length === 0) {
+    if (!titleSearchReadable || branchPrs === null) {
+      if (mergedTitlePrs.length === 0 && !branchPrs?.length) {
         classified.push({
           ...issue,
           claimProblem: "merged-pr-search-unreadable",
@@ -1882,7 +1888,7 @@ export async function classifyClosedIssues(
         continue;
       }
     }
-    if (branchPrs !== null) mergedPrs = [...mergedPrs, ...branchPrs];
+    const mergedPrs = [...mergedTitlePrs, ...(branchPrs ?? [])];
     if (mergedPrs.length === 0) {
       classified.push({ ...issue, claimProblem: "sync-pr-only" });
       continue;
@@ -1905,7 +1911,10 @@ export async function classifyClosedIssues(
         mergedPrs.every((pr) => !pr.mergedAt || pr.mergedAt < reopenedAt)
       ? "predates-reopen"
       : null;
-    if (cache && issue.updatedAt !== undefined) {
+    if (
+      cache && issue.updatedAt !== undefined && titleSearchReadable &&
+      branchPrs !== null
+    ) {
       await cache.write(
         repo,
         key,

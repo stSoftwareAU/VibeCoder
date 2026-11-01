@@ -1639,6 +1639,8 @@ export async function invalidatePRsByBranch(
  * this all-author cache.
  *
  * Returns an empty array on parse failure rather than throwing.
+ * `onUnreadable` distinguishes read/parse failures from a successful empty
+ * search for callers that must not cache a verdict from incomplete evidence.
  *
  * **Fork-headed PRs are dropped (Issue #1124).** The search matches an
  * attacker-writable title on a public repository, and every consumer reads
@@ -1662,6 +1664,7 @@ export async function fetchPRsForIssueByTitle(
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   log: (message: string) => void = console.error,
+  onUnreadable?: () => void,
 ): Promise<TitleSearchPR[]> {
   const cacheKey = `prs_title_${state}_${issueNumber}`;
 
@@ -1690,6 +1693,7 @@ export async function fetchPRsForIssueByTitle(
       "50",
     ]);
   } catch {
+    onUnreadable?.();
     return [];
   }
 
@@ -1697,9 +1701,13 @@ export async function fetchPRsForIssueByTitle(
   try {
     parsed = JSON.parse(output.trim() || "[]");
   } catch {
+    onUnreadable?.();
     return [];
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) {
+    onUnreadable?.();
+    return [];
+  }
 
   const prs: TitleSearchPR[] = [];
   for (const item of parsed) {

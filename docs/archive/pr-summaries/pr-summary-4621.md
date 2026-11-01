@@ -26,8 +26,12 @@ Version bump: none for this change.
   number parsed by `issueNumberFromBranch`; sync branches, forks, prefix matches
   and unmerged PRs do not qualify.
 - Bump the claim-verdict cache prefix from v1 to v2 and test that an old
-  `sync-pr-only` verdict is ignored. Unreadable branch searches are flagged and
-  not cached, so later scans retry them.
+  `sync-pr-only` verdict is ignored. Preserve whether each PR search succeeded;
+  never cache a verdict from partial results, including a `predates-reopen`
+  verdict based on an older delivery. A recovered search is retried even when
+  the issue's `updatedAt` is unchanged. The shared title helper still returns
+  an empty list on failure; its optional failure callback supplies the status
+  needed by milestone classification.
 - The issue's private-repository examples did not include repository or PR
   identifiers. The public examples were verified; the private examples were not
   independently inspectable.
@@ -69,6 +73,22 @@ sequenceDiagram
   query, reopen comparison, or v1-to-v2 cache prefix made the corresponding
   milestone tests fail. The title-edit failure test also confirms the error is
   logged while body adoption continues.
+- **Required item 1:** reapplied all 24 listed mutations individually and ran
+  the relevant adoption or issue-query tests. Each mutation made a test fail;
+  all 24 were killed, with no untestable exemptions. Tests pin malformed title
+  responses, the complete warning context and cause, the exact branch-search
+  command, unreadable-result sentinels, and row validation.
+- **Required item 2:** reproduced both partial-failure directions in
+  `classifyClosedIssues` and in the rollup caller
+  `checkAndHandleMilestoneCompletions`: four tests failed on the incoming head
+  because the second scan retained `predates-reopen`. All pass after retaining
+  search status and withholding the verdict cache write for incomplete searches.
+  Additional cases cover malformed JSON and non-array search responses.
+- The branch retry test now keeps title results empty, fails only the first
+  branch lookup, then returns a merged same-repository `issue-1` head. It
+  asserts two branch lookups and a claimed delivery on the second scan.
+  Making the branch helper remember its first failure and never retry made
+  this test fail.
 - This change is backend and documentation only; no screenshot applies.
 
 ## Test Plan
@@ -78,17 +98,25 @@ sequenceDiagram
   `preserves a canonical title`,
   `repairs title when the marked body is skipped`,
   `repeats safely after repairing the title`, and
-  `reports title edit failures and still syncs the body`.
+  `reports title edit failures and still syncs the body`, plus five malformed
+  title-response cases that assert the diagnostic cause and continued body sync.
+- `worker/deno/tests/issue_query_test.ts`:
+  `fetchMergedPRsByIssueBranch - requests merged issue heads and returns validated delivery metadata`,
+  `fetchMergedPRsByIssueBranch - distinguishes unreadable searches from empty results`, and
+  `fetchMergedPRsByIssueBranch - rejects malformed rows without claiming a delivery`.
 - `worker/deno/tests/milestone_completion_test.ts`:
   `recovers merged same-repo issue-branch PRs and preserves reopen checks`,
-  `ignores the persisted v1 verdict after branch recovery changes`, and
-  `unreadable branch PR search retries instead of claiming no delivery`.
+  `ignores the persisted v1 verdict after branch recovery changes`,
+  `unreadable branch PR search retries instead of claiming no delivery`, six
+  partial-search recovery cases with unchanged `updatedAt`, and two rollup
+  recovery cases exercising the existing `getClosedIssues` caller through
+  `checkAndHandleMilestoneCompletions`.
 - `worker/deno/tests/completion_phase_acceptance_closure_test.ts`:
   `passes the issue title to agent-raised PR adoption`.
-- `deno task test:unit tests/agent_pr_adoption_test.ts tests/milestone_completion_test.ts tests/completion_phase_acceptance_closure_test.ts`
-  — passed, 176 tests.
-- `deno fmt` on the seven changed TypeScript files — passed.
-- `deno lint` on the seven changed TypeScript files — passed.
+- `deno task test:unit tests/agent_pr_adoption_test.ts tests/issue_query_test.ts tests/milestone_completion_test.ts tests/completion_phase_acceptance_closure_test.ts`
+  from `worker/deno` — passed, 317 tests after the retry fixes.
+- `deno fmt --check` on the eight changed TypeScript files — passed.
+- `deno lint` on the eight changed TypeScript files — passed.
 - `deno check --frozen --lock=deno.lock` on the four changed production modules
   — passed.
 - **Docs sweep** — searched root and nested READMEs, active docs, and source for
@@ -98,18 +126,22 @@ sequenceDiagram
   plus the adoption passage in `docs/USAGE.md`; updated all three docs.
   Remaining hits: `docs/INTERNALS.md:5876` still describes the body-sync
   helper's adoption role, and `docs/USAGE.md:118` correctly leaves marker-less
-  PRs on other branches alone.
-- `markdownlint-cli2` on the active docs set after the `docs/USAGE.md` edit —
-  passed; 0 reported issues.
-- `runMermaidCheck` across the repository after writing the summary diagram —
+  PRs on other branches alone. For the retry fixes, updated both milestone
+  classification passages to describe partial-search cache suppression.
+- `markdownlint-cli2` on `docs/INTERNALS.md`, `docs/USAGE.md`,
+  `docs/workflows/milestones.md` and this summary after the retry fixes — passed;
+  0 reported issues.
+- Earlier validation: `runMermaidCheck` across the repository after writing
+  the unchanged summary diagram —
   passed; 1,601 Markdown files and 1,367 Mermaid blocks checked.
-- `deno task pr-summary-check --base main --issue-body-file /tmp/vibe-issue-4621-body.md --labels work-on,idle-task ../../docs/archive/pr-summaries/pr-summary-4621.md`
+- Earlier validation: `deno task pr-summary-check --base main --issue-body-file /tmp/vibe-issue-4621-body.md --labels work-on,idle-task ../../docs/archive/pr-summaries/pr-summary-4621.md`
   from `worker/deno` — passed; 0 blocked and 0 not checked.
 - `deno task check:manifests` — failed on the existing
   `worker/deno/lib/fleet_babysitter_codex.ts` entry missing from
   `docs/audits/lib-sweep-coverage.json`; the same failure is present on
   `origin/main` at commit `82b1e121`.
-- `./quality.sh < /dev/null` — failed because its completeness check and Deno
+- Earlier full gate, before these retry fixes: `./quality.sh < /dev/null` —
+  failed because its completeness check and Deno
   test pass report that same base-branch sweep-ledger omission; Deno lint, type
   check, formatting, Mermaid, markdownlint and Semgrep passed. Config
   integration and Checkov were skipped by the environment.
@@ -121,8 +153,10 @@ sequenceDiagram
     `assertEquals(bad[0]?.claimProblem, "merged-pr-search-unreadable");` — an
     unsuccessful PR read is no longer described as proof that no delivery
     exists.
-- No other existing-test assertions were removed. No `deno.lock` change was
-  made.
+- The title-edit warning assertion was strengthened to compare the full
+  diagnostic context and cause; its body-sync assertion remains. The rebuilt
+  branch retry test retains both classification assertions and adds lookup
+  counts. No assertions were weakened. No `deno.lock` change was made.
 - **Not checked:** the private-repository PR examples could not be queried
   because the issue omitted their repository and PR identifiers. No other known
   risk remains.
