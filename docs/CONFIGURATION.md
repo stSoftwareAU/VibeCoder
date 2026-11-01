@@ -437,36 +437,29 @@ and the default is used. It is read by `run.sh` only, never by the worker.
 }
 ```
 
-## 🔓 Auto-release of issue-required test changes
+## 🔓 Reviewer test-change policy
 
-`pr_reviewer_auto_release` lets the `review-fleet-prs` skill approve, rather
-than hold for the owner, a PR whose only meaningful test change is one its
-linked issue requires. It is off by default: absent or empty, and for any repo
-not listed, the outcome is as before. It is read by the skill's `post.ts` (via
-`auto_release.ts`), never by the worker. A value that is not an array of
-`owner/repo` strings makes `post.ts` fail loud.
+The reviewer defaults to policy `2026-11-02` for monitored fleet repositories.
+Independent review checks the governing requirements and surviving coverage for
+substantive test changes. Missing evidence needs repair or retry; an uncertain
+product contract can require the owner. The gate reports `reviewPolicy` in its
+JSON output, including this host's default version and repository overrides.
+
+The former `pr_reviewer_auto_release` list remains accepted and validated for
+migration, but no longer limits the new policy to listed repositories. Remove it
+after upgrading each reviewer host. To retain the earlier policy for a specific
+repository, set an explicit override on each host:
 
 ```json
 {
-  "pr_reviewer_auto_release": ["stSoftwareAU/VibeCoder"]
+  "pr_reviewer_test_policy": {"stSoftwareAU/VibeCoder": "legacy"}
 }
 ```
 
-For a listed repo, a review that would be held is approved ("Auto-released: …")
-only when all of these hold:
-
-- there are no findings and no test file was removed;
-- the PR has a linked issue (`closingIssuesReferences`) whose title or body
-  could be read;
-- every test change note is kind `expected-value`, quotes an acceptance
-  criterion of at least 5 words verbatim from a linked issue's title or body
-  (comments never count), and states that the edited test still fails without
-  the code it guards.
-
-Anything else keeps the hold, including any fetch failure. The `log.jsonl`
-record carries `autoReleased: true`, and `summary.md` prefixes the approval with
-`(auto-released: issue-required test change)`. When the hold is kept, the
-reasons are logged as `autoReleaseHeld`.
+Overrides accept `legacy` or `2026-11-02`; repository names are
+case-insensitive. Invalid settings fail loudly. A reviewer-owned old test hold
+at the same head is reconsidered once when the new policy applies; other
+reviews and independently owned labels remain in place.
 
 ## 📊 Configuration Defaults
 

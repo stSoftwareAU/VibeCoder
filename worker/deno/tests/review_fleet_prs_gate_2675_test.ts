@@ -1934,3 +1934,62 @@ Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call canno
   assertEquals(Date.now() - started < 5000, true);
   assertEquals(await runWithTimeout("echo", ["ok"], 5000), "ok\n");
 });
+
+Deno.test("old reviewer-owned test hold is reconsidered once under the new policy", async () => {
+  const old = {
+    state: "COMMENTED",
+    author: { login: "reviewer[bot]" },
+    commit: { oid: "head" },
+    body:
+      `Held for owner review: this PR changes existing tests.\n\n${REVIEW_MARKER}`,
+  };
+  const pr = searchPr({ reviews: { nodes: [old] } });
+  const check = (value: SearchPr, policy: string) =>
+    skipReason(value, "nleck", undefined, undefined, policy);
+  assertEquals(await check(pr, "2026-11-02"), null);
+  assertEquals(await check(pr, "legacy"), "already-reviewed");
+  assertEquals(
+    await check(
+      searchPr({
+        reviews: {
+          nodes: [{
+            ...old,
+            body: `${old.body}\nTest review policy: 2026-11-02`,
+          }],
+        },
+      }),
+      "2026-11-02",
+    ),
+    "already-reviewed",
+  );
+  assertEquals(
+    await check(
+      searchPr({
+        reviews: {
+          nodes: [{
+            ...old,
+            body: `Held for security review.\n${REVIEW_MARKER}`,
+          }],
+        },
+      }),
+      "2026-11-02",
+    ),
+    "already-reviewed",
+  );
+  assertEquals(
+    await check(
+      searchPr({
+        reviews: {
+          nodes: [old, {
+            ...old,
+            state: "APPROVED",
+            body: "Human approval",
+            author: { login: "owner" },
+          }],
+        },
+      }),
+      "2026-11-02",
+    ),
+    "approved",
+  );
+});

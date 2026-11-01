@@ -76,6 +76,13 @@ import {
 } from "./review_log.ts";
 import { dependabotAction } from "./dependabot.ts";
 import {
+  CURRENT_REVIEW_POLICY,
+  policyForRepo,
+  policyMarker,
+  type ReviewerPolicy,
+  reviewerPolicy,
+} from "./reviewer_policy.ts";
+import {
   approvedAtHead,
   needsBranchUpdate,
   updateBranchOnce,
@@ -659,6 +666,7 @@ export async function skipReason(
   ownDiffUnchangedSince: (since: string) => Promise<boolean> = () =>
     Promise.resolve(false),
   wasChangeRequestSince: (oid: string) => boolean = () => false,
+  policy: string = "legacy",
 ): Promise<Skip | null> {
   // Only a merge into the default branch needs an approval; PRs into
   // milestone branches are reviewed when the milestone merges.
@@ -695,9 +703,17 @@ export async function skipReason(
   // since such a commit may have no rollup at all.
   if (redSuites.length > 0) return "ci-failed";
   if (rollup?.state !== "SUCCESS") return "waiting-ci";
-  if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
-    return "already-reviewed";
-  }
+  const latest = pr.reviews.nodes.filter((r) =>
+    r.commit?.oid === pr.headRefOid && countsAsReview(r, reviewer)
+  ).at(-1);
+  const oldTestHold = policy === CURRENT_REVIEW_POLICY &&
+    latest?.state === "COMMENTED" &&
+    (latest.body ?? "").startsWith(
+      "Held for owner review: this PR changes existing tests.",
+    ) &&
+    (latest.body ?? "").includes(REVIEW_MARKER) &&
+    !(latest.body ?? "").includes(policyMarker(CURRENT_REVIEW_POLICY));
+  if (latest && !oldTestHold) return "already-reviewed";
   // The owner, or another reviewer, approved this head by hand: a second
   // approval adds nothing, and the PR merges once it is up to date.
   if (approvedAtHead(pr.reviews.nodes, pr.headRefOid)) return "approved";
@@ -1041,6 +1057,7 @@ export async function pass(
     inFlight?: ReadonlySet<string>;
     /** This host's name (--host). Its own live claims do not count as elsewhere (Issue #4398). "" counts every live claim as elsewhere. */
     host?: string;
+    policy?: ReviewerPolicy;
     /** Clock for claim expiry (Issue #4398). Defaults to Date.now. */
     now?: () => number;
     /**
@@ -1056,6 +1073,7 @@ export async function pass(
   const dir = deps.dir ?? stateDir();
   const limit = deps.limit ?? DEFAULT_LIMIT;
   const host = deps.host ?? "";
+  const policy = deps.policy ?? reviewerPolicy({});
   const now = deps.now ?? Date.now;
   const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
   const logins = ["app/dependabot", ...fleet];
@@ -1143,6 +1161,7 @@ export async function pass(
           )?.findings,
         ),
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
+      policyForRepo(policy, repo),
     );
     // Review first, then up to date (Issues #3225, #3663): an approved fleet
     // or Dependabot PR behind its base cannot merge,
@@ -1358,7 +1377,7 @@ export async function pass(
   // A single --repo run sees only part of the fleet, so it leaves the
   // summary's open set alone.
   if (repos.size > 1) await writeSummary(dir, open);
-  return { ready, auditBlocked, skipped, upkeep };
+  return { ready, auditBlocked, skipped, upkeep, reviewPolicy: policy };
 }
 
 /** The pull request diff, for import and sink selection (Issue #4366). */
@@ -1555,6 +1574,7 @@ export async function main() {
         limit,
         inFlight,
         host: arg("host"),
+        policy: reviewerPolicy(config),
       });
       failures = 0;
       if (
