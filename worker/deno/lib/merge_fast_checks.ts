@@ -38,6 +38,7 @@ import {
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import {
   carryEnvThroughSudo,
+  untrustedAccountOf,
   untrustedQualityCommandEnv,
   untrustedSpawn,
 } from "./quality_gate_phase.ts";
@@ -375,6 +376,11 @@ export async function spawnFastCheck(
     check.kind === "cargo" ? "cargo" : Deno.execPath(),
     ...check.args,
   ]);
+  if (untrustedAccountOf(dropped) !== "agent") {
+    throw new Error(
+      "Cannot run merge checks: untrusted account is unavailable",
+    );
+  }
   const env = untrustedQualityCommandEnv({
     spawnable: dropped,
     cwd: check.dir,

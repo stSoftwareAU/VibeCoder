@@ -51,8 +51,9 @@ flowchart LR
 - Unavailable tools, timeout, disk pressure, unreachable remote modules and
   an older `rustc` defer verification and withdraw the attempt without a push
   or a charged failure. Repository commands use the quality gate's untrusted
-  spawn and allowlisted environment. Repair replies are retained alongside the
-  original conflict-resolution reply.
+  spawn and allowlisted environment; if the untrusted account is unavailable,
+  the check defers instead of executing as the worker. Repair replies are
+  retained alongside the original conflict-resolution reply.
 - On refusal or cut-short the local branch is reset to the attempt's starting
   tip (`discardLocalMerge`); only commits made after that tip in this attempt
   are destroyed and none was pushed.
@@ -85,6 +86,11 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
 
 ## Test Plan
 
+- The untrusted-account fallback fix passed 144 tests across
+  `tests/merge_fast_checks_test.ts` and
+  `tests/pr_merge_conflict_processor_test.ts`. The new refusal test verifies
+  that no command starts when the account is unavailable; the real-child
+  environment test still checks that a parent credential does not reach it.
 - On repair commit `4649d8f`, `deno test --frozen --allow-all
   tests/merge_fast_checks_test.ts tests/pr_merge_conflict_processor_test.ts`
   passed 143 tests. These cover the deferred outcomes, disk check, spawn

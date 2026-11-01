@@ -10,7 +10,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import type { Logger, Result } from "../types.ts";
 import type { MergeConflictAgentOutcome } from "../lib/merge_conflict_agent.ts";
 import type { MergeConflictRepairContext } from "../lib/prompt_builder.ts";
@@ -887,6 +892,31 @@ Deno.test("spawnFastCheck isolates credentials and uses the untrusted spawn", as
   }
 });
 
+Deno.test("spawnFastCheck refuses to run when the untrusted account is unavailable", async () => {
+  let spawned = false;
+  await assertRejects(
+    () =>
+      spawnFastCheck(
+        {
+          dir: Deno.cwd(),
+          kind: "deno",
+          label: "deno lint",
+          args: ["lint"],
+          timeoutMs: 123,
+        },
+        {},
+        () => {
+          spawned = true;
+          throw new Error("must not run");
+        },
+        (cmd) => Promise.resolve([...cmd]),
+      ),
+    Error,
+    "untrusted account",
+  );
+  assertEquals(spawned, false);
+});
+
 Deno.test("verifyMergeBeforePush parks before initial checks and after repair", async () => {
   for (const parkOn of [1, 2]) {
     const h = harness({ outcomes: [LINT_FAILURE] });
@@ -940,11 +970,17 @@ Deno.test("spawnFastCheck parent credentials do not reach a real child", async (
     new URL("../lib/merge_fast_checks.ts", import.meta.url).href;
   const script = `
     import { spawnFastCheck } from ${JSON.stringify(moduleUrl)};
+    import { runWithTimeout } from ${
+    JSON.stringify(
+      new URL("../lib/subprocess_timeout.ts", import.meta.url).href,
+    )
+  };
     const result = await spawnFastCheck({
       dir: Deno.cwd(), kind: "deno", label: "credential isolation probe",
       args: ["eval", "--no-config", 'console.log(Deno.env.get("REVIEW_SECRET_TOKEN") ?? "absent")'],
       timeoutMs: 10000,
-    }, {}, undefined, (cmd) => Promise.resolve([...cmd]));
+    }, {}, (_binary, args, options) => runWithTimeout(args[4], args.slice(5), options),
+       (cmd) => Promise.resolve(["sudo", "-n", "-u", "agent", "--", ...cmd]));
     if (result.code !== 0) throw new Error(result.output);
     console.log(result.output);
   `;
