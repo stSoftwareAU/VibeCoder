@@ -41,19 +41,17 @@ final version.
   GitHub requests. The profile does not inherit host `sandbox_workspace_write`
   settings, including network access, writable roots or the default `/tmp`
   grant.
+- Setup and each repair require Codex CLI 0.164.0 or newer before token minting
+  or recording an attempt. Older and unrecognised versions are refused because
+  they may silently ignore the profile.
 
 ### Undiscoverable Facts
 
-- **Not verified against a real Codex.** This host has no `codex` binary and no
-  network, so the profile keys (`default_permissions`,
-  `permissions.<name>.filesystem` as a table of path to `read`/`write`/`none`)
-  come from memory of Codex's configuration, not from an installed CLI or its
-  docs. The dotted-key splitting risk is avoided by construction (see above),
-  but the table semantics are still unrun here. If Codex rejects them the agent
-  fails loudly; if it accepts them with different semantics the operator must
-  adjust. Network access is explicitly enabled rather than relying on a default.
-  `docs/workflows/fleet-pr-babysitter.md` now tells the operator how to confirm
-  a denied read on the host.
+- **Not verified against a real Codex.** The profile has not been exercised
+  against a running CLI here. Review checked its filesystem and network
+  semantics against the source of Codex 0.164.0; the version preflight refuses
+  older or unrecognised releases. `docs/workflows/fleet-pr-babysitter.md` tells
+  the operator how to confirm a denied read on the host.
 - The agent's own `gh` login (its credential store, if any) is outside this
   boundary. This PR does not change it.
 
@@ -107,6 +105,11 @@ Network follow-up: the exact-arguments test pins the explicit network override;
 `deno test --allow-read --allow-write --allow-env --allow-run
 --allow-sys=hostname tests/fleet_babysitter_sandbox_test.ts`
 passed (13 tests).
+
+Version preflight follow-up: the sandbox tests cover accepted, old and
+unrecognised versions; the agent launch test verifies an old version is refused
+before token minting, attempt recording or spawning. The sandbox, app and
+babysitter test files passed together (43 passed, 0 failed).
 
 Results: `deno test` over the sandbox, `fleet_pr_babysitter` and
 `fleet_babysitter_app` tests: 41 passed, 0 failed; `deno task check:manifests`
