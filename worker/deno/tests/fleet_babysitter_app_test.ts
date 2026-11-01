@@ -17,7 +17,7 @@ import {
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
 import type { FetchFn } from "../lib/github_app_auth.ts";
-import { BABYSITTER_PERMISSIONS_PROFILE } from "../lib/fleet_babysitter_sandbox.ts";
+import { BABYSITTER_FILESYSTEM_KEY } from "../lib/fleet_babysitter_sandbox.ts";
 import { startBabysitterAgent } from "../commands/fleet_pr_babysitter.ts";
 
 Deno.test("agent launch mints a scoped token and passes it to Codex", async () => {
@@ -76,8 +76,9 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
       assertEquals(Deno.env.get("GH_TOKEN"), "runner-write-token");
       assertEquals(env?.GH_TOKEN === Deno.env.get("GH_TOKEN"), false);
       assert(
-        args.includes(
-          `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.filesystem."${privateKeyPath}"="none"`,
+        args.some((arg) =>
+          arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={ `) &&
+          arg.includes(`${JSON.stringify(privateKeyPath)} = "none"`)
         ),
       );
     } finally {

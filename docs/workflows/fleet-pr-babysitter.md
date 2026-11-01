@@ -78,7 +78,7 @@ needs. An operator may also configure a trusted Codex RTK hook on each host.
 Each repair activates the worker-side GitHub write allowlist for its target
 repository, including lock comments, branch updates and review dismissals.
 Concurrent repairs use separate scopes.
-Codex runs with approvals disabled, under a per-spawn Codex permissions profile (`default_permissions` and `permissions.<profile>.filesystem`) that reads the filesystem, writes only the temporary clone (its `.git` read-only) and scratch directory, and has no access (`none`) to the App private key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and their symlink targets, because the agent shares the runner's OS user and file modes alone do not protect them; and it is told not to ask questions. When a fix
+Codex runs with approvals disabled, under a per-spawn Codex permissions profile (`default_permissions` and a `permissions.<profile>.filesystem` inline table passed as one `-c` value) that reads the filesystem, writes only the temporary clone (its `.git` read-only) and scratch directory, and has no access (`none`) to the App private key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and their symlink targets, because the agent shares the runner's OS user and file modes alone do not protect them; and it is told not to ask questions. When a fix
 needs a human decision, it should report the blocker and stop without a
 commit. The sandbox still applies; an unavailable
 permission or credential can stop a run and must be corrected by the operator.
@@ -90,7 +90,9 @@ about an hour and is not refreshed, so reads late in a longer repair can fail.
 PR description fixes reach GitHub only via the archived summary.
 
 **Verifying the credential boundary.** The permissions-profile keys were
-written without an installed Codex to test against. After upgrading Codex or
+written without an installed Codex to test against. The paths are passed as the
+keys of one inline-table value, not as dotted `-c` keys, because Codex splits a
+`-c` key on every dot and every protected path contains dots. After upgrading Codex or
 changing the key path, confirm on the host that the agent cannot read the key:
 run a one-off `codex exec` with the same `-c` overrides the babysitter passes
 (built by `buildBabysitterSandboxArgs` in

@@ -30,15 +30,21 @@ final version.
   path, so no caller can turn the boundary off by omission.
   `startBabysitterAgent` computes the list before minting the token, so a
   failure leaves no attempt recorded.
-- The profile writes the `-c` overrides as TOML with JSON-escaped path keys, so
-  a path containing a quote cannot add a key.
+- The profile is passed as two `-c` overrides: `default_permissions` and one
+  inline-table value for `permissions.babysitter-agent.filesystem` whose keys are
+  the JSON-escaped paths. Codex splits a `-c` key on every `.`, and every
+  protected path contains dots (`.vibe-coder`, `.git`, `.pem`); a TOML value is
+  parsed as TOML, so quoted keys inside it survive intact and the `-c` key stays
+  dot-free. JSON escaping means a path containing a quote cannot add a key.
 
 ### Undiscoverable Facts
 
 - **Not verified against a real Codex.** This host has no `codex` binary and no
   network, so the profile keys (`default_permissions`,
-  `permissions.<name>.filesystem."<path>"` with `read`/`write`/`none`) come from
-  memory of Codex's configuration, not from an installed CLI or its docs. If
+  `permissions.<name>.filesystem` as a table of path to `read`/`write`/`none`)
+  come from memory of Codex's configuration, not from an installed CLI or its
+  docs. The dotted-key splitting risk is avoided by construction (see above), but
+  the table semantics are still unrun here. If
   Codex rejects them the agent fails loudly; if it accepts them with different
   semantics (for example the network default, which `workspace-write` governed
   before) the operator must adjust. `docs/workflows/fleet-pr-babysitter.md` now
@@ -62,7 +68,7 @@ Callers of the changed functions: `spawnBabysitterAgent` is called only by
 
 ## Test Plan
 
-New: `worker/deno/tests/fleet_babysitter_sandbox_test.ts` (10 tests: protected
+New: `worker/deno/tests/fleet_babysitter_sandbox_test.ts` (13 tests: protected
 paths from the babysitter entries, the configured key and symlink targets, a
 missing `.vibe-coder`, non-absolute inputs, the exact argument list, refusal of
 empty lists and of a clone or scratch directory inside a protected path each
@@ -86,8 +92,13 @@ fails four tests (the argv test, the new no-`--sandbox` test, the empty-list
 test and the app test's launch). Making the ancestor guard
 (`writable.startsWith(`${path}/`)`) always false fails the two refusal tests.
 
-Results: `deno task test:unit` over the sandbox, `fleet_pr_babysitter` and
-`fleet_babysitter_app` tests: 38 passed, 0 failed; `deno task check:manifests`
+Mutation follow-up: the three surviving mutants (the NUL-byte operand and the
+two deleted `assertAbsolute` calls for the scratch directory and protected
+paths) each now fail a test (checked by applying each). The `-c` keys were
+restructured into one inline table to avoid dotted-key splitting.
+
+Results: `deno test` over the sandbox, `fleet_pr_babysitter` and
+`fleet_babysitter_app` tests: 41 passed, 0 failed; `deno task check:manifests`
 passed after adding the ledger slice. `./quality.sh < /dev/null`: every stage
 passed except `deno tests` (31427 passed, 3 failed). Two failures are the
 Rust-formatter tests ("formatter should commit the Rust fix") and one was the

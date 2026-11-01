@@ -6,6 +6,7 @@ import {
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
 import {
+  BABYSITTER_FILESYSTEM_KEY,
   BABYSITTER_PERMISSIONS_PROFILE,
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
@@ -382,14 +383,16 @@ Deno.test("codex agent is not given the workspace-write sandbox and cannot read 
   );
   for (const path of protectedPaths) {
     assert(
-      args.includes(
-        `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.filesystem."${path}"="none"`,
+      args.some((arg) =>
+        arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={ `) &&
+        arg.includes(`${JSON.stringify(path)} = "none"`)
       ),
       `missing none override for ${path}`,
     );
     assert(
       !args.some((arg) =>
-        arg.endsWith(`."${path}"="read"`) || arg.endsWith(`."${path}"="write"`)
+        arg.includes(`${JSON.stringify(path)} = "read"`) ||
+        arg.includes(`${JSON.stringify(path)} = "write"`)
       ),
       `credential path ${path} is readable or writable`,
     );

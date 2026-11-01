@@ -1,11 +1,14 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  BABYSITTER_FILESYSTEM_KEY,
   BABYSITTER_PERMISSIONS_PROFILE,
   babysitterProtectedPaths,
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 
-const PREFIX = `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.filesystem`;
+/** The grant entry as it appears inside the inline table. */
+const grant = (path: string, access: string) =>
+  `${JSON.stringify(path)} = ${JSON.stringify(access)}`;
 
 /** Creates three fresh temp directories and removes them afterwards. */
 async function withTempDirs(
@@ -118,23 +121,34 @@ Deno.test("buildBabysitterSandboxArgs emits the exact profile overrides", async 
       "-c",
       `default_permissions="${BABYSITTER_PERMISSIONS_PROFILE}"`,
       "-c",
-      `${PREFIX}."/"="read"`,
-      "-c",
-      `${PREFIX}."${dir}"="write"`,
-      "-c",
-      `${PREFIX}."${dir}/.git"="read"`,
-      "-c",
-      `${PREFIX}."${scratch}"="write"`,
-      "-c",
-      `${PREFIX}."${protectedPaths[0]}"="none"`,
-      "-c",
-      `${PREFIX}."${protectedPaths[1]}"="none"`,
+      `${BABYSITTER_FILESYSTEM_KEY}={ ${
+        [
+          grant("/", "read"),
+          grant(dir, "write"),
+          grant(`${dir}/.git`, "read"),
+          grant(scratch, "write"),
+          grant(protectedPaths[0]!, "none"),
+          grant(protectedPaths[1]!, "none"),
+        ].join(", ")
+      } }`,
     ]);
+    // Codex splits a `-c` key on every dot, so no path may sit in a key.
+    assertEquals(
+      BABYSITTER_FILESYSTEM_KEY,
+      "permissions.babysitter-agent.filesystem",
+    );
     for (const path of protectedPaths) {
-      assert(args.includes(`${PREFIX}."${path}"="none"`));
-      assert(!args.includes(`${PREFIX}."${path}"="read"`));
-      assert(!args.includes(`${PREFIX}."${path}"="write"`));
+      assert(args[3]!.includes(grant(path, "none")));
+      assert(!args[3]!.includes(grant(path, "read")));
+      assert(!args[3]!.includes(grant(path, "write")));
     }
+    assertEquals(
+      args.filter((arg) => arg.includes(protectedPaths[0]!)).length,
+      1,
+    );
+    assertEquals(args[2], "-c");
+    assert(!args[2]!.includes("."));
+    assert(args[3]!.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={ `));
   });
 });
 
@@ -260,10 +274,69 @@ Deno.test("buildBabysitterSandboxArgs escapes double quotes in protected paths",
       protectedPaths: [protectedPath],
     });
 
-    assertEquals(args.length, 12);
+    assertEquals(args.length, 4);
+    assert(
+      args[3]!.endsWith(`, "${root}/a/b\\"c" = "none" }`),
+      args[3],
+    );
+  });
+});
+
+Deno.test("buildBabysitterSandboxArgs refuses a non-absolute scratch directory", async () => {
+  await withTempDirs(([root]) => {
+    assertThrows(
+      () =>
+        buildBabysitterSandboxArgs({
+          dir: `${root}/clone`,
+          scratch: "scratch",
+          protectedPaths: [`${root}/keys`],
+        }),
+      Error,
+      "The scratch directory must be an absolute path",
+    );
+    // Positive control: the same call with an absolute scratch directory succeeds.
+    const args = buildBabysitterSandboxArgs({
+      dir: `${root}/clone`,
+      scratch: `${root}/scratch`,
+      protectedPaths: [`${root}/keys`],
+    });
+    assertEquals(args[0], "-c");
+  });
+});
+
+Deno.test("buildBabysitterSandboxArgs refuses a non-absolute protected path", async () => {
+  await withTempDirs(([root]) => {
+    assertThrows(
+      () =>
+        buildBabysitterSandboxArgs({
+          dir: `${root}/clone`,
+          scratch: `${root}/scratch`,
+          protectedPaths: ["keys/app.pem"],
+        }),
+      Error,
+      "A protected path must be an absolute path",
+    );
+    // Positive control: the same call with an absolute protected path succeeds.
+    const args = buildBabysitterSandboxArgs({
+      dir: `${root}/clone`,
+      scratch: `${root}/scratch`,
+      protectedPaths: [`${root}/keys/app.pem`],
+    });
+    assertEquals(args[0], "-c");
+  });
+});
+
+Deno.test("path validation rejects an absolute path containing a NUL byte", async () => {
+  await withTempDirs(async ([home, elsewhere]) => {
+    await assertRejects(
+      () => babysitterProtectedPaths(home, `${elsewhere}/key\0.pem`),
+      Error,
+      "must be an absolute path",
+    );
+    // Positive control: the same path without the NUL byte is accepted.
     assertEquals(
-      args[args.length - 1],
-      `${PREFIX}."${root}/a/b\\"c"="none"`,
+      await babysitterProtectedPaths(home, `${elsewhere}/key.pem`),
+      [`${elsewhere}/key.pem`],
     );
   });
 });

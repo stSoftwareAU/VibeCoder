@@ -11,6 +11,10 @@
 /** Name of the Codex permissions profile the babysitter defines per spawn. */
 export const BABYSITTER_PERMISSIONS_PROFILE = "babysitter-agent";
 
+/** Dot-free `-c` key of the profile's filesystem table. */
+export const BABYSITTER_FILESYSTEM_KEY =
+  `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.filesystem`;
+
 /** Entries under `~/.vibe-coder` that belong to the babysitter, by name prefix. */
 const BABYSITTER_ENTRY_PREFIX = "fleet-pr-babysitter";
 
@@ -92,7 +96,10 @@ export function buildBabysitterSandboxArgs(options: {
       }
     }
   }
-  const prefix = `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.filesystem`;
+  // One inline-table value rather than one `-c` per path: Codex splits a `-c`
+  // key on every `.`, even inside quotes, and every protected path has dots
+  // (`.vibe-coder`, `.git`, `.pem`). The value is parsed as TOML, so quoted
+  // keys survive intact and the key path stays dot-free.
   const grants: [string, "read" | "write" | "none"][] = [
     ["/", "read"],
     [options.dir, "write"],
@@ -100,12 +107,13 @@ export function buildBabysitterSandboxArgs(options: {
     [options.scratch, "write"],
     ...options.protectedPaths.map((path): [string, "none"] => [path, "none"]),
   ];
+  const table = grants
+    .map(([path, access]) => `${tomlString(path)} = ${tomlString(access)}`)
+    .join(", ");
   return [
     "-c",
     `default_permissions=${tomlString(BABYSITTER_PERMISSIONS_PROFILE)}`,
-    ...grants.flatMap(([path, access]) => [
-      "-c",
-      `${prefix}.${tomlString(path)}=${tomlString(access)}`,
-    ]),
+    "-c",
+    `${BABYSITTER_FILESYSTEM_KEY}={ ${table} }`,
   ];
 }
