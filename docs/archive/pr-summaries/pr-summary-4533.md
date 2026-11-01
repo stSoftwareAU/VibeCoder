@@ -43,10 +43,11 @@ flowchart LR
   holds.
 - Globs are matched by a segment matcher with a memoised table, not by building
   a regular expression, so a hostile `include` cannot backtrack. A directory
-  include does not classify unsuffixed files as tests; a directory exclude covers
-  its descendants. If either list contains `!` negation, both lists fall back
-  to the suffix rule with a warning, while imports remain available. A malformed
-  `deno.json` fails the check as an `error` naming the file and field.
+  include does not classify unsuffixed files as tests; include globs match the
+  whole file path, while excludes also cover descendants. If either list
+  contains `!` negation, both lists fall back to the suffix rule with a warning,
+  while imports remain available. A malformed `deno.json` fails the check as an
+  `error` naming the file and field.
 - Only direct imports count, as before. `importMap` files and `scopes` are not
   read; the docs and the module header say so.
 
@@ -76,11 +77,20 @@ the other gate, which keeps the suffix rule, and is unchanged.
 
 ## Test Plan
 
-- After commit `ef023ad5`, ran `deno test --allow-read --allow-write --allow-env
+- After commit `b9d2a9a4`, ran
+  `deno test --allow-read --allow-env --allow-run
+  --allow-write --allow-sys=hostname tests/deno_test_config_test.ts
+  tests/mutation_runner_test.ts`
+  from `worker/deno`: 112 passed. The added cases check that include globs do
+  not match descendants beyond their full path and that exclude patterns still
+  cover descendants.
+- After commit `ef023ad5`, ran
+  `deno test --allow-read --allow-write --allow-env
   --allow-run --allow-sys tests/deno_test_config_test.ts
-  tests/mutation_runner_test.ts` from `worker/deno`: 110 passed. These tests
-  cover directory includes retaining source mutation and listing suffix tests,
-  and negated patterns falling back without blocking mutation.
+  tests/mutation_runner_test.ts`
+  from `worker/deno`: 110 passed. These tests cover directory includes retaining
+  source mutation and listing suffix tests, and negated patterns falling back
+  without blocking mutation.
 - New `worker/deno/tests/deno_test_config_test.ts` (29 tests): parsing (JSONC,
   empty, invalid JSON with the parser's own message, null top
   level/`test`/`imports`, wrong types, `!` entries, non-local import targets),
