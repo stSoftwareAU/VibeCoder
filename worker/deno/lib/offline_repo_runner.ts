@@ -49,6 +49,17 @@ const READY = "REPO_SNAPSHOT_READY\n";
 const WRAPPER = `#!/bin/sh
 set -eu
 mkdir -p /tmp/work
+# The seed is part of the trusted image; cap the scratch copy independently of
+# the snapshot. A missing or oversized seed leaves the cache cold and checks
+# requiring uncached dependencies defer.
+if [ "$2" = deno ] && [ -d /opt/deno-seed ]; then
+  seed_kb="$(du -sk /opt/deno-seed | cut -f1)"
+  case "$seed_kb" in ''|*[!0-9]*) exit 125 ;; esac
+  if [ "$seed_kb" -le 65536 ]; then
+    mkdir -p /tmp/deno
+    cp -R /opt/deno-seed/. /tmp/deno/
+  fi
+fi
 cp -R /fixture/repo/. /tmp/work/
 target="$(realpath "/tmp/work/$1")"
 case "$target" in /tmp/work|/tmp/work/*) ;; *) exit 125 ;; esac
