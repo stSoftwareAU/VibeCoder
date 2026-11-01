@@ -22,8 +22,12 @@ final version.
 - Reworded the five passages the issue names (`prompts/issue/prompt.md`
   Standards Review, Reproduction Status and Test Plan item 7, plus
   `docs/SPEC-KIT-COMPARISON.md`) and two same-section siblings with the same
-  claim: "an own-line breach left standing blocks the PR" and "a mutation the
-  tests do not catch blocks the PR".
+  claim: "an own-line breach left standing blocks the PR", "a mutation the
+  tests do not catch blocks the PR" and, in Independent Review, a missing
+  `reviewer:` field being "the single most common way this gate stops a finished
+  run" (now "the single most common finding this gate reports on a finished
+  run"). The guard regex also matches "gate stops a finished run", with the
+  wording added to the positive control.
 - Left "A violation this diff introduced blocks the PR — you enforce this one,
   not the gate": it is the agent's own rule and
   `pr_claims_verified_3058_test.ts` pins it.
@@ -58,7 +62,7 @@ advisory), #3761 (existing citation, kept).
 - Red check: restoring "a gate blocks PR creation" into the Reproduction Status
   passage turned the guard red
   (`prompts/issue/prompt.md § Reproduction
-  Status`); restored afterwards.
+  Status`); restored afterwards. Restoring "the single most common way this gate stops a finished run" in Independent Review also turned it red.
 - Ran `deno task test:unit` over `unmet_criteria_gate_test.ts`,
   `pr_claims_verified_3058_test.ts` and
   `issue_prompt_v39_independent_review_test.ts`: 19 passed, 0 failed.

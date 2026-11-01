@@ -110,7 +110,7 @@ Deno.test("prompt and docs - no section says an unmet criterion blocks the PR", 
  * matched.
  */
 const SUMMARY_RULE_GATE_STOPS_PR =
-  /blocks PR creation|gate blocks|(left standing|do not catch) blocks the PR|commenting on the issue with every rule/i;
+  /blocks PR creation|gate blocks|gate stops a finished run|(left standing|do not catch) blocks the PR|commenting on the issue with every rule/i;
 
 Deno.test("prompt and docs - no section says a summary-rule gate stops PR creation (Issue #4574)", async () => {
   const sections: { doc: string; title: string }[] = [
@@ -140,6 +140,7 @@ Deno.test("summary-rule stop pattern - matches the old wordings and not the carv
     const oldWording of [
       "and the gate blocks PR creation on any reason that neither records a fix",
       "an own-line breach left standing blocks the PR",
+      "the single most common way this gate stops a finished run",
     ]
   ) {
     assertEquals(SUMMARY_RULE_GATE_STOPS_PR.test(oldWording), true, oldWording);

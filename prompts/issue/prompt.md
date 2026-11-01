@@ -862,7 +862,7 @@ carries no marker.)
   entry, `unrequested` included**: an `unrequested` line is the Spec reviewer's
   own finding, so it carries `reviewer: unrequested` exactly like the other
   three. Leaving that field off an `unrequested` entry is the single most
-  common way this gate stops a finished run.
+  common finding this gate reports on a finished run.
 - **The reviewer's verdict challenges yours; it does not silently lose.** A
   reviewer that saw only the diff is sometimes wrong about a criterion satisfied
   by code it could not see. You may depart from its verdict, but only out loud:
