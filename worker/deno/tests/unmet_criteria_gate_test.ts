@@ -110,3 +110,54 @@ Deno.test("prompt and docs - no section says an unmet criterion blocks the PR", 
     assertEquals(STOPS_THE_PR.test(text), false, `${doc} § ${title}`);
   }
 });
+
+/**
+ * Claims that a summary-rule gate stops the PR (Issue #4574, after #4234 made
+ * the summary-rule gates advisory). The wordings the docs used before #4234:
+ * "blocks PR creation" and "gate blocks" (the summary-rule and reproduction
+ * gates), "left standing blocks the PR" (an own-line breach) and "do not catch
+ * blocks the PR" (a mutation the tests miss), and "commenting on the issue with
+ * every rule" (the gate's comment). The carve-out "A violation this diff
+ * introduced blocks the PR" is the agent's own rule, so it is deliberately not
+ * matched.
+ */
+const SUMMARY_RULE_GATE_STOPS_PR =
+  /blocks PR creation|gate blocks|gate stops a finished run|fails the run|run fails|(left standing|do not catch) blocks the PR|commenting on the issue with every rule/i;
+
+Deno.test("prompt and docs - no section says a summary-rule gate stops PR creation (Issue #4574)", async () => {
+  const sections: { doc: string; title: string }[] = [
+    {
+      doc: "prompts/issue/prompt.md",
+      title: "Independent Review Before the PR",
+    },
+    { doc: "prompts/issue/prompt.md", title: "Reproduction Status" },
+    { doc: "prompts/issue/prompt.md", title: "PR Summary File" },
+    {
+      doc: "docs/SPEC-KIT-COMPARISON.md",
+      title: "Honest reproduction status for bug fixes",
+    },
+  ];
+  for (const { doc, title } of sections) {
+    const text = flat(section(await readRepoDoc(doc), title));
+    assertEquals(
+      SUMMARY_RULE_GATE_STOPS_PR.test(text),
+      false,
+      `${doc} § ${title}`,
+    );
+  }
+});
+
+Deno.test("summary-rule stop pattern - matches the old wordings and not the carve-out (Issue #4574)", () => {
+  for (
+    const oldWording of [
+      "and the gate blocks PR creation on any reason that neither records a fix",
+      "an own-line breach left standing blocks the PR",
+      "the single most common way this gate stops a finished run",
+      "other text fails the run with the work already done",
+    ]
+  ) {
+    assertEquals(SUMMARY_RULE_GATE_STOPS_PR.test(oldWording), true, oldWording);
+  }
+  const carveOut = "A violation this diff introduced blocks the PR";
+  assertEquals(SUMMARY_RULE_GATE_STOPS_PR.test(carveOut), false, carveOut);
+});
