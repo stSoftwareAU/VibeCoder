@@ -66,8 +66,10 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    behaviour is obsolete or intentionally changed, which contract remains,
    and the existing or replacement coverage that protects it. If functionality
    is removed, evidence that its behaviour and callers are gone can explain
-   why no replacement is needed. Where applicable, run a reproducible
-   regression or mutation check and record the command, break and result;
+   why no replacement is needed. Where applicable, independently run a
+   reproducible regression or mutation check, or request a runner-owned
+   result when your environment cannot execute it. Record the command, break
+   and observed result; if neither is available, report the evidence missing.
    inspect the surviving assertion and its fixture yourself, including whether
    a widened range accepts every possible result. Neither a boolean claim nor
    a vacuous assertion proves protection. Do not treat the author's evidence or
@@ -82,7 +84,9 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    `other`); `criterionQuote`, a relevant passage from the governing issue's
    title or body (not comments); `oldBehaviour`, `requiredBehaviour`,
    `coverage`, and `regressionCheck` with the evidence you independently
-   inspected. For a mutation check supply `{ "method": "mutation", "command":
+   inspected. In `coverageTests`, name each repository-relative test file
+   protecting the remaining behaviour; leave it empty for genuinely removed
+   functionality. For a mutation check supply `{ "method": "mutation", "command":
    "...", "break": "...", "result": "..." }`; for removed functionality use
    `{ "method": "removed-functionality", "evidence": "..." }`; otherwise
    use `{ "method": "not-applicable", "reason": "..." }` only when a

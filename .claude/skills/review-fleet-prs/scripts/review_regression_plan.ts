@@ -1,6 +1,7 @@
 /** A path is data; the runner owns the executable and all flags. */
 export interface RegressionCheckPlan {
   testFile: string;
+  cwd: string;
   argv: string[];
 }
 
@@ -20,15 +21,31 @@ export function planRegressionChecks(
       ) ||
       !headFiles.has(testFile)
     ) throw new Error(`Unsupported or untracked test path: ${testFile}`);
+    const segments = testFile.split("/");
+    segments.pop();
+    let cwd = ".";
+    for (let n = segments.length; n > 0; n--) {
+      const dir = segments.slice(0, n).join("/");
+      if (
+        headFiles.has(`${dir}/deno.json`) || headFiles.has(`${dir}/deno.jsonc`)
+      ) {
+        cwd = dir;
+        break;
+      }
+    }
+    const relativeTest = cwd === "."
+      ? testFile
+      : testFile.slice(cwd.length + 1);
     return {
       testFile,
+      cwd,
       argv: [
         "deno",
         "test",
         "--cached-only",
         "--no-prompt",
         "--allow-all",
-        testFile,
+        `./${relativeTest}`,
       ],
     };
   });

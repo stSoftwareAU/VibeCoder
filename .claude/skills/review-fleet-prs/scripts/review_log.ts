@@ -55,6 +55,7 @@ export interface TestChangeNote {
   oldBehaviour?: string;
   requiredBehaviour?: string;
   coverage?: string;
+  coverageTests?: string[];
   regressionCheck?: {
     method: string;
     command?: string;

@@ -9,16 +9,30 @@ Deno.test("regression planner uses paths as data in a fixed offline Deno command
     ),
     [{
       testFile: "tests/guard_test.ts",
+      cwd: ".",
       argv: [
         "deno",
         "test",
         "--cached-only",
         "--no-prompt",
         "--allow-all",
-        "tests/guard_test.ts",
+        "./tests/guard_test.ts",
       ],
     }],
   );
+});
+
+Deno.test("regression planner uses the nearest Deno project in the verified tree", () => {
+  const files = new Set([
+    "worker/deno/deno.json",
+    "worker/deno/tests/guard_test.ts",
+  ]);
+  const [plan] = planRegressionChecks(
+    ["worker/deno/tests/guard_test.ts"],
+    files,
+  );
+  assertEquals(plan?.cwd, "worker/deno");
+  assertEquals(plan?.argv.at(-1), "./tests/guard_test.ts");
 });
 
 Deno.test("regression planner rejects non-tree, unsafe, unsupported and excessive paths", () => {
