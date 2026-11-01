@@ -48,8 +48,9 @@ PRs continue. A persistence failure after an API request still fails loud.
 ## Version-only re-bumps
 
 The own-diff comparison skips a sent-back PR as `awaiting-fix` when each
-file still matches. In a file no earlier finding names, the added and removed
-lines must match: the same number of hunks, in the same order. Hunk headers
+file still matches, apart from files that left the own diff (see below). In a
+file no earlier finding names, the added and removed lines must match: the same
+number of hunks, in the same order. Hunk headers
 and unchanged context lines are ignored there, so a base merge that only moves
 the context around a CHANGELOG entry still awaits the fix. In a file an
 earlier finding names, or in any file when the findings for the exact
@@ -69,8 +70,9 @@ must contain exactly one removed line immediately followed by one added line.
 The two lines must be identical apart from the version token, including spacing
 and punctuation. This covers a workflow bump committed separately or in a
 base-merge resolution. Every other file must still match under the rules
-above: on its added and removed lines, and also on its context lines in a file
-an earlier finding names (or any file when the findings are unknown).
+above (a file that left the own diff follows the drop rule at the end of this
+section): on its added and removed lines, and also on its context lines in a
+file an earlier finding names (or any file when the findings are unknown).
 
 The numeric core has two to four components; each replacement keeps the same
 component count and increases the first differing component. A prerelease or
@@ -89,3 +91,15 @@ fresh review, since the version change could address it. If those findings
 are unavailable, including a review from another host absent from the local
 log, the version exception does not apply. Exact unchanged patches retain
 their existing skip behaviour.
+
+A file that leaves the own diff, present in the sent-back head's own diff but
+absent from the new head's because a base merge absorbed an equivalent edit,
+does not force a fresh review when the findings for the exact sent-back head
+are known, number at least one, and none names that file (a qualified path
+counts, as in the version exception). A dropped file that an earlier finding
+names gets a fresh review, since the drop could be its fix. A file present only
+at the new head always gets a fresh review, and so does a sent-back listing
+that reaches the 300-file cap, since a truncated sent-back listing could hide or
+invent a drop. A new-head listing at the cap needs no rule of its own: it
+necessarily has a file the sent-back listing lacks, which gets a fresh review.
+Files present at both heads are compared as before.

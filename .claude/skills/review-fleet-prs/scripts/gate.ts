@@ -527,6 +527,20 @@ function isVersionIncrement(patch: string): boolean {
   return false;
 }
 
+// Whether an earlier finding names `filename`: its path is the file itself or
+// ends with `/${filename}`, a qualified path, including in an earlier-finding
+// gap. Unknown findings (undefined) name every file.
+function findingNamesFile(
+  findings: readonly Pick<Finding, "file" | "earlier">[] | undefined,
+  filename: string,
+): boolean {
+  return findings === undefined ||
+    findings.some((f) =>
+      f.file === filename || f.file.endsWith(`/${filename}`) ||
+      (f.earlier !== undefined && findingNamesFile([f.earlier], filename))
+    );
+}
+
 // Whether commits since `since` leave this PR's own diff (its change against
 // the base) unchanged, apart from a strict version increment in one hunk of a
 // patch while every other hunk matches (Issue #4516), so the review it got at
@@ -538,7 +552,13 @@ function isVersionIncrement(patch: string): boolean {
 // whole patch must match apart from hunk headers (PR #4525 review). Returns
 // false (= give the PR a fresh review) as soon as any check fails to confirm
 // that. A version exception requires known earlier findings, none of which
-// names the changed file.
+// names the changed file. A file the sent-back commit changed that the head no
+// longer lists (a base merge absorbed it, Issue #4542) may drop out of the own
+// diff, but only when the earlier findings are known, there is at least one,
+// and none names that file. A file only the head lists is a new change, which
+// also refuses a truncated head listing. The sent-back listing must be under
+// GitHub's 300-file cap, since a truncated one could hide a drop. A repeated
+// filename in either listing is not confirmed.
 //
 // SIMPLE-ON-PURPOSE: the three compare calls below are repeated each pass
 // while the PR awaits its fix, fine for a handful of sent-back PRs — upgrade
@@ -550,7 +570,7 @@ export async function ownDiffUnchanged(
   base: string,
   since: string,
   head: string,
-  findings?: readonly Pick<Finding, "file">[],
+  findings?: readonly Pick<Finding, "file" | "earlier">[],
 ): Promise<boolean> {
   try {
     const sinceToHead: ComparePr = JSON.parse(
@@ -570,21 +590,31 @@ export async function ownDiffUnchanged(
     ];
     const a = baseToSince.files ?? [];
     const b = baseToHead.files ?? [];
-    if (a.length !== b.length) return false;
+    // GitHub lists at most 300 files, so a full sent-back listing may hide files
+    // beyond it. A truncated head listing is refused as head-only files below.
     if (a.length >= 300) return false;
-    const sortByName = (x: CompareFile, y: CompareFile) =>
-      x.filename < y.filename ? -1 : x.filename > y.filename ? 1 : 0;
-    const sortedA = [...a].sort(sortByName);
-    const sortedB = [...b].sort(sortByName);
-    for (let i = 0; i < sortedA.length; i++) {
-      const fa = sortedA[i]!;
-      const fb = sortedB[i]!;
-      if (
-        fa.filename !== fb.filename ||
-        fa.previous_filename !== fb.previous_filename
-      ) {
-        return false;
+    const sinceByName = new Map(a.map((f) => [f.filename, f]));
+    const headByName = new Map(b.map((f) => [f.filename, f]));
+    // A repeated filename cannot be paired by name, so it is not confirmed.
+    if (sinceByName.size !== a.length || headByName.size !== b.length) {
+      return false;
+    }
+    // A file only the head lists is a new change.
+    if (b.some((fb) => !sinceByName.has(fb.filename))) return false;
+    for (const fa of a) {
+      const fb = headByName.get(fa.filename);
+      if (fb === undefined) {
+        // Dropped from the own diff (Issue #4542): allowed only when the
+        // earlier findings are known, there is at least one, and none names it.
+        if (
+          findings === undefined || findings.length === 0 ||
+          findingNamesFile(findings, fa.filename)
+        ) {
+          return false;
+        }
+        continue;
       }
+      if (fa.previous_filename !== fb.previous_filename) return false;
       const aPatch = typeof fa.patch === "string";
       const bPatch = typeof fb.patch === "string";
       if (!aPatch || !bPatch) {
@@ -592,18 +622,15 @@ export async function ownDiffUnchanged(
         continue;
       }
       if (fa.status !== fb.status) return false;
-      const findingNamesFile = findings === undefined ||
-        findings.some((f) =>
-          f.file === fa.filename || f.file.endsWith(`/${fa.filename}`)
-        );
+      const named = findingNamesFile(findings, fa.filename);
       if (
-        findingNamesFile
+        named
           ? normalisePatch(fa.patch!) === normalisePatch(fb.patch!)
           : sameChangedLines(fa.patch!, fb.patch!)
       ) continue;
       if (
         fa.status !== "modified" ||
-        findingNamesFile ||
+        named ||
         !onlyVersionHunkDiffers(fa.patch!, fb.patch!)
       ) {
         return false;
