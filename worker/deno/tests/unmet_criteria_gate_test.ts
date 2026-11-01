@@ -85,7 +85,7 @@ const STATED_ELSEWHERE: readonly { doc: string; title: string }[] = [
   },
   {
     doc: "docs/workflows/issue-processing.md",
-    title: "A `missing` criterion does not close the issue",
+    title: "An unmet criterion does not close the issue",
   },
   {
     doc: "docs/workflows/issue-processing.md",
