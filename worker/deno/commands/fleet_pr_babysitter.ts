@@ -749,7 +749,8 @@ async function pass(
   }
   if (prFilter === undefined) {
     await shiftLeftPass(
-      config.repos.filter((repo) => !repoFilter || repo === repoFilter),
+      // Only the repositories the App installation can reach (Issue #4622).
+      repositories.filter((repo) => !repoFilter || repo === repoFilter),
       authors,
       login,
       execute,
