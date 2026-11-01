@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4613",
   "definition": "Read effective required-check rules and current-head results before an armed branch refresh; validate repository, PR number and head SHA, fail closed on unreadable rules, and pin the update to the checked head.",
   "status": "claimed",
-  "sweptAt": "0c0c25649fa02d0535bcc8dda367fd6057163a5f",
+  "sweptAt": "882e9468ec0887f8fe5f09dd7171fdcd5dfa6b9f",
   "paths": [
     "worker/deno/lib/required_branch_checks_4613.ts"
   ]
