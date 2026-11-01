@@ -55,14 +55,17 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   const head = "a".repeat(40);
   let conclusion = "success";
   let decision = "APPROVED";
+  let retarget = false;
+  let views = 0;
   const writes: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     const endpoint = args[1] ?? "";
     if (args[0] === "pr") {
+      views++;
       return Promise.resolve(
         JSON.stringify({
           state: "OPEN",
-          baseRefName: "main",
+          baseRefName: retarget && views === 2 ? "other-base" : "main",
           headRefOid: head,
           autoMergeRequest: {},
           reviewDecision: decision,
@@ -101,6 +104,13 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   assertEquals((await requestReadyBranchUpdate("owner/repo", 12, gh)).ok, true);
   assertEquals(writes.length, 1);
   assertEquals(writes[0]?.slice(-2), ["-f", `expected_head_sha=${head}`]);
+  views = 0;
+  retarget = true;
+  assertEquals(
+    (await requestReadyBranchUpdate("owner/repo", 12, gh, "main")).ok,
+    false,
+  );
+  retarget = false;
   assertEquals(
     (await requestReadyBranchUpdate("owner/repo", 12, gh, "other-base")).ok,
     false,
@@ -159,6 +169,40 @@ Deno.test("required branch checks combine classic protection and source app", ()
       app: { id: 43 },
     }], [{ context: "legacy", state: "success" }]),
     false,
+  );
+});
+
+Deno.test("an app-pinned check cannot hide a failing same-name status", () => {
+  const appRules = [{
+    type: "required_status_checks",
+    parameters: {
+      required_status_checks: [{ context: "gate", integration_id: 1 }],
+    },
+  }];
+  assertEquals(
+    requiredChecksPassed(appRules, null, [passed], [{
+      context: "gate",
+      state: "failure",
+    }]),
+    false,
+  );
+  assertThrows(
+    () =>
+      requiredChecksPassed(appRules, null, [passed], [{
+        context: "gate",
+        state: "success",
+      }]),
+    Error,
+    "cannot verify publisher",
+  );
+  assertThrows(
+    () =>
+      requiredChecksPassed(appRules, null, [], [{
+        context: "gate",
+        state: "success",
+      }]),
+    Error,
+    "cannot verify publisher",
   );
 });
 

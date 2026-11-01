@@ -89,18 +89,23 @@ export function requiredChecksPassed(
       r.name === context &&
       (appId === undefined || object(r.app, "check run app").id === appId)
     );
-    const matchingStatuses = appId === undefined
-      ? statuses.map((s) => object(s, "commit status")).filter((s) =>
-        s.context === context
-      )
-      : [];
+    const matchingStatuses = statuses.map((s) => object(s, "commit status"))
+      .filter((s) => s.context === context);
+    if (matchingStatuses.some((s) => s.state !== "success")) return false;
+    // REST commit statuses do not identify the GitHub App integration. A
+    // status with this name must pass even when a same-named check run exists,
+    // but its creator cannot safely be matched to the pinned app here.
+    if (appId !== undefined && matchingStatuses.length > 0) {
+      throw new Error(
+        `cannot verify publisher of app-pinned status ${context}`,
+      );
+    }
     return matchingRuns.length + matchingStatuses.length > 0 &&
       matchingRuns.every((r) =>
         r.status === "completed" &&
         (r.conclusion === "success" || r.conclusion === "neutral" ||
           r.conclusion === "skipped")
-      ) &&
-      matchingStatuses.every((s) => s.state === "success");
+      );
   });
 }
 
@@ -202,28 +207,32 @@ export async function requestReadyBranchUpdate(
     };
   }
   try {
-    const current = object(
-      JSON.parse(
-        await gh([
-          "pr",
-          "view",
-          String(prNumber),
-          "--repo",
-          repo,
-          "--json",
-          "state,baseRefName,headRefOid,autoMergeRequest,reviewDecision,mergeable,mergeStateStatus",
-        ]),
-      ),
-      "live PR",
-    );
+    const readLivePr = async () =>
+      object(
+        JSON.parse(
+          await gh([
+            "pr",
+            "view",
+            String(prNumber),
+            "--repo",
+            repo,
+            "--json",
+            "state,baseRefName,headRefOid,autoMergeRequest,reviewDecision,mergeable,mergeStateStatus",
+          ]),
+        ),
+        "live PR",
+      );
+    const ready = (pr: ObjectValue) =>
+      pr.state === "OPEN" && !!pr.autoMergeRequest &&
+      pr.mergeable === "MERGEABLE" && pr.mergeStateStatus === "BEHIND" &&
+      (pr.reviewDecision === "APPROVED" || pr.reviewDecision === "" ||
+        pr.reviewDecision === null) &&
+      typeof pr.baseRefName === "string" &&
+      (expectedBase === undefined || pr.baseRefName === expectedBase) &&
+      typeof pr.headRefOid === "string";
+    const current = await readLivePr();
     if (
-      current.state !== "OPEN" || !current.autoMergeRequest ||
-      current.mergeable !== "MERGEABLE" ||
-      current.mergeStateStatus !== "BEHIND" ||
-      !(current.reviewDecision === "APPROVED" ||
-        current.reviewDecision === "" || current.reviewDecision === null) ||
-      typeof current.baseRefName !== "string" ||
-      (expectedBase !== undefined && current.baseRefName !== expectedBase) ||
+      !ready(current) || typeof current.baseRefName !== "string" ||
       typeof current.headRefOid !== "string"
     ) {
       return {
@@ -242,6 +251,16 @@ export async function requestReadyBranchUpdate(
       return {
         ok: false,
         error: new Error("required current-head checks have not passed"),
+      };
+    }
+    const fresh = await readLivePr();
+    if (
+      !ready(fresh) || fresh.baseRefName !== current.baseRefName ||
+      fresh.headRefOid !== current.headRefOid
+    ) {
+      return {
+        ok: false,
+        error: new Error("PR changed while its required checks were read"),
       };
     }
     return await requestBranchUpdate(repo, prNumber, gh, current.headRefOid);

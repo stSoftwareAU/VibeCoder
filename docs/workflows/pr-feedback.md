@@ -831,7 +831,8 @@ intervene.
   state. It compares the required contexts in the effective rules and classic
   branch protection with the current head's results. Pending, failed, missing
   or unreadable required checks hold that PR; optional checks do not affect
-  this evaluation. The request pins the head SHA so GitHub rejects it if that
+  this evaluation. App-pinned commit statuses are held when their publisher
+  cannot be verified from GitHub's status response. The request pins the head SHA so GitHub rejects it if that
   head moved. Not for a PR that is only behind
   when its base is behind a merge queue (Issue #4424): the queue tests the PR
   against its future head, and an update would only move that head. A
