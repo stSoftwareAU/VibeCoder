@@ -317,7 +317,7 @@ Deno.test("post approves a Dependabot PR before the leased update and refuses st
       assertEquals(calls.some((c) => c.includes("@dependabot")), false);
       if (shouldUpdate) {
         assertStringIncludes(calls[update]!, "expected_head_sha=head");
-        const approval = calls.findIndex((c) => c.includes("--approve"));
+        const approval = calls.findIndex((c) => c.includes("event=APPROVE"));
         assert(approval >= 0 && approval < update);
       }
     } finally {
