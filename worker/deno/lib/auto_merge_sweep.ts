@@ -57,6 +57,8 @@ export interface SweepablePr {
    * unknown is attempted as before.
    */
   isDraft?: boolean;
+  /** Labels from the listing; `needs-human` means a person owns the PR. */
+  labels?: Array<{ name?: string }>;
 }
 
 /**
@@ -261,6 +263,17 @@ export async function sweepAutoMerge(
 
       let mutated = false;
       for (const pr of prs) {
+        // Owner rule 2026-11-01: a needs-human PR waits on a person. Updating
+        // its branch only reruns CI, so the sweep leaves it alone.
+        if (
+          pr.labels?.some((l) => l.name?.toLowerCase() === "needs-human")
+        ) {
+          logger.info(
+            "Auto-merge sweep: skipping needs-human PR — it waits on a person",
+            { repo, prNumber: pr.number },
+          );
+          continue;
+        }
         // Issue #1800: `gh pr merge --auto` on a draft is refused with
         // "Pull Request is still a draft", and every cycle used to log that
         // refusal as a failure. A draft is the author asking for eyes, not

@@ -101,6 +101,8 @@ about an hour and is not refreshed, so reads late in a longer repair can fail.
 PR description fixes reach GitHub only via the archived summary.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
+A PR labelled `needs-human` is never a candidate: it waits on a person, for
+example a check that declared a human gate.
 An explicitly selected `--repo` scans that repository regardless of PR author;
 `--pr` narrows the scan to one PR. Both retain the same lock and validation. A failed
 or unproductive agent attempt is recorded under
