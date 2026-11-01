@@ -33,8 +33,8 @@ prompt says when the bump runs. Closes #4570.
   carried over.
 - Paths in the note are stripped of control characters and backticks and capped
   at 8 (then "and N more"), so the note is always one line.
-- Assumption: PR #4596 (#4522) edits the same guidelines sentence; whichever
-  lands second resolves a small textual conflict there.
+- PR #4596 (#4522) merged first. This PR resolved the guidelines conflict in
+  `7b720f1` and `fa06857f`, retaining the #4522 bump-commit wording.
 
 ### Undiscoverable Facts
 
@@ -83,8 +83,8 @@ Issue numbers cited: #4570 (this issue), #1775 (milestone skip note, existing),
   Intent bullet above, and no code or test changed, so the test results above
   still hold at the head.
 - Existing text re-read: the milestone skip note and `rejected_*` comments are
-  unchanged and still true; no guideline-pinning test exists for the old
-  sentence.
+  unchanged and still true. `worker/deno/tests/pr_review_brief_own_bump_4522_test.ts`
+  pins the reworded guidelines sentence and passes at the head (2 tests passed).
 - `deno fmt --check` on `docs/INTERNALS.md`, `docs/TROUBLESHOOTING.md` and
   `prompts/coding_guidelines/prompt.md` already fails on the base copies; not
   reformatted.
