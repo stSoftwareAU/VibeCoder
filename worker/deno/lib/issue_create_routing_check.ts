@@ -182,6 +182,10 @@ export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
       "#4193 whole-tree security sweep finding issue, filed in the swept repository (slug); not yet routed",
     ],
     [
+      "worker/deno/lib/shift_left_failures.ts",
+      "#4610 shift-left issue, filed in the repo routeShiftLeftFix picks (VibeCoder or the repo whose local gate lacks the tool) with guarded labels; not yet routed",
+    ],
+    [
       "worker/deno/lib/workflow_scan_common.ts",
       "#2500 shared workflow-scan scaffolding for github-actions-audit pre-filers; files into the scanned repo; not yet routed",
     ],
