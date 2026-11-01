@@ -81,12 +81,12 @@ provenance is #4595, this issue.
     executor call" - duration 6 s against 3 s for the review alone, and a higher
     USD figure.
   - "a call that billed nothing and degraded nothing adds no stats entry"
-    - plan and executor results with no `runStats`; asserts
-      `orchestrationCalls` stays absent (kills the `callStatsOf` operand drop).
-  - "only a call's final attempt carries its fallback, degradation and
-    extension fields" - a two-attempt executor with `fallbackModel`,
-    `preflightDegraded`, its reason and `extensions`; asserts the exact entries
-    (first attempt bare, last attempt carrying every field, plan bare).
+    - plan and executor results with no `runStats`; asserts `orchestrationCalls`
+      stays absent (kills the `callStatsOf` operand drop).
+  - "only a call's final attempt carries its fallback, degradation and extension
+    fields" - a two-attempt executor with `fallbackModel`, `preflightDegraded`,
+    its reason and `extensions`; asserts the exact entries (first attempt bare,
+    last attempt carrying every field, plan bare).
   - "a degraded call without a reason or run stats still gets an entry" -
     asserts exactly `[{ preflightDegraded: true }]`.
 - Red check: before the change the five new tests failed (128 passed, 5 failed);
