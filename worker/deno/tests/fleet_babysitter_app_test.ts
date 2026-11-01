@@ -1,4 +1,5 @@
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -17,6 +18,7 @@ import {
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
 import type { FetchFn } from "../lib/github_app_auth.ts";
+import { BABYSITTER_FILESYSTEM_KEY } from "../lib/fleet_babysitter_sandbox.ts";
 import { startBabysitterAgent } from "../commands/fleet_pr_babysitter.ts";
 
 Deno.test("agent launch mints a scoped token and passes it to Codex", async () => {
@@ -47,52 +49,112 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
     return;
   }
   await withTestKey(async (privateKeyPath) => {
-    const requests: Array<{ url: string; body: unknown }> = [];
-    let env: Record<string, string> | undefined;
-    await startBabysitterAgent(
-      { appId: "123", installationId: "456", privateKeyPath },
-      "owner/repo",
-      { dir: "/clone", scratch: "/scratch", prompt: "repair" },
-      () => Promise.resolve(true),
-      fakeTokenExchange(
-        { permissions: BABYSITTER_AGENT_PERMISSIONS },
-        requests,
-      ),
-      (_executable, options) => {
-        env = options.env as Record<string, string>;
-        return {} as Deno.ChildProcess;
-      },
-    );
-    assertEquals(requests[0]!.body, {
-      repositories: ["repo"],
-      permissions: BABYSITTER_AGENT_PERMISSIONS,
-    });
-    assertEquals(env?.GH_TOKEN, "ghs_agent_token");
-    assertEquals(Deno.env.get("GH_TOKEN"), "runner-write-token");
-    assertEquals(env?.GH_TOKEN === Deno.env.get("GH_TOKEN"), false);
+    const home = await Deno.makeTempDir();
+    try {
+      const requests: Array<{ url: string; body: unknown }> = [];
+      let env: Record<string, string> | undefined;
+      let args: string[] = [];
+      await startBabysitterAgent(
+        { appId: "123", installationId: "456", privateKeyPath },
+        "owner/repo",
+        { dir: "/clone", scratch: "/scratch", prompt: "repair", home },
+        () => Promise.resolve(true),
+        fakeTokenExchange(
+          { permissions: BABYSITTER_AGENT_PERMISSIONS },
+          requests,
+        ),
+        (_executable, options) => {
+          env = options.env as Record<string, string>;
+          args = options.args as string[];
+          return {} as Deno.ChildProcess;
+        },
+        () => Promise.resolve("codex-cli 0.164.0"),
+      );
+      assertEquals(requests[0]!.body, {
+        repositories: ["repo"],
+        permissions: BABYSITTER_AGENT_PERMISSIONS,
+      });
+      assertEquals(env?.GH_TOKEN, "ghs_agent_token");
+      assertEquals(Deno.env.get("GH_TOKEN"), "runner-write-token");
+      assertEquals(env?.GH_TOKEN === Deno.env.get("GH_TOKEN"), false);
+      assert(
+        args.some((arg) =>
+          arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={ `) &&
+          arg.includes(`${JSON.stringify(privateKeyPath)} = "none"`)
+        ),
+      );
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
   });
 });
 
 Deno.test("agent launch does not record an attempt when token minting fails", async () => {
   await withTestKey(async (privateKeyPath) => {
+    const home = await Deno.makeTempDir();
+    try {
+      let guarded = false;
+      let spawned = false;
+      await assertRejects(() =>
+        startBabysitterAgent(
+          { appId: "123", installationId: "456", privateKeyPath },
+          "owner/repo",
+          { dir: "/clone", scratch: "/scratch", prompt: "repair", home },
+          () => {
+            guarded = true;
+            return Promise.resolve(true);
+          },
+          () =>
+            Promise.resolve(new Response("exchange failed", { status: 500 })),
+          () => {
+            spawned = true;
+            return {} as Deno.ChildProcess;
+          },
+          () => Promise.resolve("codex-cli 0.164.0"),
+        )
+      );
+      assertEquals(guarded, false);
+      assertEquals(spawned, false);
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  });
+});
+
+Deno.test("agent launch refuses a relative HOME before minting a token or spawning", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    let fetched = false;
     let guarded = false;
     let spawned = false;
-    await assertRejects(() =>
-      startBabysitterAgent(
-        { appId: "123", installationId: "456", privateKeyPath },
-        "owner/repo",
-        { dir: "/clone", scratch: "/scratch", prompt: "repair" },
-        () => {
-          guarded = true;
-          return Promise.resolve(true);
-        },
-        () => Promise.resolve(new Response("exchange failed", { status: 500 })),
-        () => {
-          spawned = true;
-          return {} as Deno.ChildProcess;
-        },
-      )
+    await assertRejects(
+      () =>
+        startBabysitterAgent(
+          { appId: "123", installationId: "456", privateKeyPath },
+          "owner/repo",
+          {
+            dir: "/clone",
+            scratch: "/scratch",
+            prompt: "repair",
+            home: "relative",
+          },
+          () => {
+            guarded = true;
+            return Promise.resolve(true);
+          },
+          () => {
+            fetched = true;
+            return Promise.resolve(new Response("", { status: 500 }));
+          },
+          () => {
+            spawned = true;
+            return {} as Deno.ChildProcess;
+          },
+          () => Promise.resolve("codex-cli 0.164.0"),
+        ),
+      Error,
+      "must be an absolute path",
     );
+    assertEquals(fetched, false);
     assertEquals(guarded, false);
     assertEquals(spawned, false);
   });
@@ -100,25 +162,31 @@ Deno.test("agent launch does not record an attempt when token minting fails", as
 
 Deno.test("agent launch does not spawn an already attempted head", async () => {
   await withTestKey(async (privateKeyPath) => {
-    const requests: Array<{ url: string; body: unknown }> = [];
-    let spawned = false;
-    const result = await startBabysitterAgent(
-      { appId: "123", installationId: "456", privateKeyPath },
-      "owner/repo",
-      { dir: "/clone", scratch: "/scratch", prompt: "repair" },
-      () => Promise.resolve(false),
-      fakeTokenExchange(
-        { permissions: BABYSITTER_AGENT_PERMISSIONS },
-        requests,
-      ),
-      () => {
-        spawned = true;
-        return {} as Deno.ChildProcess;
-      },
-    );
-    assertEquals(requests.length, 1);
-    assertEquals(result, undefined);
-    assertEquals(spawned, false);
+    const home = await Deno.makeTempDir();
+    try {
+      const requests: Array<{ url: string; body: unknown }> = [];
+      let spawned = false;
+      const result = await startBabysitterAgent(
+        { appId: "123", installationId: "456", privateKeyPath },
+        "owner/repo",
+        { dir: "/clone", scratch: "/scratch", prompt: "repair", home },
+        () => Promise.resolve(false),
+        fakeTokenExchange(
+          { permissions: BABYSITTER_AGENT_PERMISSIONS },
+          requests,
+        ),
+        () => {
+          spawned = true;
+          return {} as Deno.ChildProcess;
+        },
+        () => Promise.resolve("codex-cli 0.164.0"),
+      );
+      assertEquals(requests.length, 1);
+      assertEquals(result, undefined);
+      assertEquals(spawned, false);
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
   });
 });
 
@@ -434,6 +502,36 @@ Deno.test("babysitter agent env - gives the agent its token and scratch director
 
 Deno.test("babysitter agent env - rejects an empty token", () => {
   assertThrows(() => babysitterAgentEnv("/scratch/agent", ""), Error, "token");
+});
+
+Deno.test("agent launch rejects old Codex before mint, attempt or spawn", async () => {
+  let fetched = false;
+  let attempted = false;
+  let spawned = false;
+  await assertRejects(
+    () =>
+      startBabysitterAgent(
+        { appId: "123", installationId: "456", privateKeyPath: "/key" },
+        "owner/repo",
+        { dir: "/clone", scratch: "/scratch", prompt: "repair", home: "/home" },
+        () => {
+          attempted = true;
+          return Promise.resolve(true);
+        },
+        () => {
+          fetched = true;
+          return Promise.resolve(new Response());
+        },
+        () => {
+          spawned = true;
+          return {} as Deno.ChildProcess;
+        },
+        () => Promise.resolve("codex-cli 0.110.0"),
+      ),
+    Error,
+    "requires Codex CLI 0.164.0 or newer",
+  );
+  assertEquals([fetched, attempted, spawned], [false, false, false]);
 });
 
 Deno.test("access discovery uses metadata-only credentials and rechecks changed access", async () => {
