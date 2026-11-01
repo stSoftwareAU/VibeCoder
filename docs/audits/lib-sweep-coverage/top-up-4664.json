@@ -1,0 +1,12 @@
+{
+  "issue": 4664,
+  "chunk": "top-up-4664",
+  "title": "top-up: babysitter Codex version check and pinned Codex install",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4664",
+  "definition": "Fleet PR babysitter Codex CLI version check (pre-release handling against the floor) and the checksum-verified download and install of the Codex version pinned in container/tools.json under the user's home, run in place of a missing or too-old host binary.",
+  "status": "claimed",
+  "sweptAt": "82b1e121eb7cec130423d0033e209d2e617d11f3",
+  "paths": [
+    "worker/deno/lib/fleet_babysitter_codex.ts"
+  ]
+}
