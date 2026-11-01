@@ -180,7 +180,11 @@ interface ClosedIssue {
 }
 
 /** Why a closed issue is flagged rather than claimed (Issue #3476). */
-type ClaimProblem = "sync-pr-only" | "predates-reopen" | "timeline-unreadable";
+type ClaimProblem =
+  | "sync-pr-only"
+  | "predates-reopen"
+  | "timeline-unreadable"
+  | "merged-pr-search-unreadable";
 
 /**
  * Build a {@link DefaultBranchFn} that resolves via the injected
@@ -901,6 +905,8 @@ const CLAIM_PROBLEM_REASONS: Record<ClaimProblem, string> = {
   "sync-pr-only": "no fleet-titled merged PR — possibly a milestone sync PR",
   "timeline-unreadable":
     "issue timeline could not be read, so a later reopen cannot be ruled out",
+  "merged-pr-search-unreadable":
+    "merged PR search could not be read, so delivery is unconfirmed",
 };
 
 /**
@@ -1820,10 +1826,10 @@ function isCachedClaimVerdict(value: unknown): value is CachedClaimVerdict {
  * before issue-branch recovery. The cache's own TTL bounds how long a verdict
  * survives a change that leaves `updatedAt` alone (a PR merged against the
  * issue by title or branch). Only a verdict
- * reached from a merged PR and a readable timeline is cached; a "sync-pr-only"
- * flag is not (its merged-PR read has its own cache) and neither is an
- * unreadable timeline, so the next scan retries both. An issue without an
- * `updatedAt` (an older closed-batch cache entry) is classified live.
+ * reached from a merged PR and a readable timeline is cached. A "sync-pr-only"
+ * flag is not (the title PR list has its own cache), and unreadable PR searches
+ * or timelines are not cached, so the next scan retries those reads. An issue
+ * without an `updatedAt` (an older closed-batch cache entry) is classified live.
  */
 export async function classifyClosedIssues(
   repo: string,
@@ -1867,7 +1873,16 @@ export async function classifyClosedIssues(
       issue.number,
       ghCommandFn,
     );
-    mergedPrs = [...mergedPrs, ...branchPrs];
+    if (branchPrs === null) {
+      if (mergedPrs.length === 0) {
+        classified.push({
+          ...issue,
+          claimProblem: "merged-pr-search-unreadable",
+        });
+        continue;
+      }
+    }
+    if (branchPrs !== null) mergedPrs = [...mergedPrs, ...branchPrs];
     if (mergedPrs.length === 0) {
       classified.push({ ...issue, claimProblem: "sync-pr-only" });
       continue;

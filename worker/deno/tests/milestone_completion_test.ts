@@ -3349,7 +3349,7 @@ Deno.test("classifyClosedIssues - an issue with no merged PR is flagged without 
   });
 });
 
-Deno.test("classifyClosedIssues - a failed merged-PR read is retried, not pinned as sync-pr-only (PR #3640 review)", async () => {
+Deno.test("classifyClosedIssues - unreadable branch PR search retries instead of claiming no delivery", async () => {
   await withTempCache(async (cache) => {
     let healthy = false;
     const counter = { timelineReads: 0 };
@@ -3364,7 +3364,7 @@ Deno.test("classifyClosedIssues - a failed merged-PR read is retried, not pinned
       updatedAt: "2026-10-05T00:00:00Z",
     }];
     const bad = await classifyClosedIssues("org/repo", issues, ghFn, cache);
-    assertEquals(bad[0]?.claimProblem, "sync-pr-only");
+    assertEquals(bad[0]?.claimProblem, "merged-pr-search-unreadable");
     healthy = true;
     const good = await classifyClosedIssues("org/repo", issues, ghFn, cache);
     assertEquals(good[0]?.claimProblem, undefined);

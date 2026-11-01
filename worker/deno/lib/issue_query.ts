@@ -1773,7 +1773,7 @@ export async function fetchMergedPRsByIssueBranch(
   repo: string,
   issueNumber: number,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
-): Promise<TitleSearchPR[]> {
+): Promise<TitleSearchPR[] | null> {
   let output: string;
   try {
     output = await ghCommandFn([
@@ -1791,16 +1791,16 @@ export async function fetchMergedPRsByIssueBranch(
       "1000",
     ]);
   } catch {
-    return [];
+    return null;
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(output.trim());
   } catch {
-    return [];
+    return null;
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) return null;
 
   const prs: TitleSearchPR[] = [];
   for (const item of parsed) {

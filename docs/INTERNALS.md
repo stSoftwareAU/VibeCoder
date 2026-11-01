@@ -3228,6 +3228,8 @@ adopted agent PRs whose titles predate canonical title repair; fork heads,
 other issue numbers and milestone sync branches do not claim the issue. The
 merged PR must also postdate the issue's latest reopen, and an unreadable issue
 timeline remains flagged for review.
+A failed branch search with no title match is reported as an unreadable PR
+search and is not cached, so a later scan retries it.
 
 **Idempotency** — `has_existing_milestone_summary_pr()` prevents duplicate final
 PRs by checking for PRs with the milestone branch as head ref across all states
