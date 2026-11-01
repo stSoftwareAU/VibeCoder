@@ -19,14 +19,14 @@ final version.
 
 ### Essential Design Decisions
 
-- Reworded the five passages the issue names (`prompts/issue/prompt.md` Standards
-  Review, Reproduction Status and Test Plan item 7, plus
+- Reworded the five passages the issue names (`prompts/issue/prompt.md`
+  Standards Review, Reproduction Status and Test Plan item 7, plus
   `docs/SPEC-KIT-COMPARISON.md`) and two same-section siblings with the same
   claim: "an own-line breach left standing blocks the PR" and "a mutation the
   tests do not catch blocks the PR".
-- Left "A violation this diff introduced blocks the PR — you enforce this one, not
-  the gate": it is the agent's own rule and `pr_claims_verified_3058_test.ts`
-  pins it.
+- Left "A violation this diff introduced blocks the PR — you enforce this one,
+  not the gate": it is the agent's own rule and
+  `pr_claims_verified_3058_test.ts` pins it.
 - Added a section-scoped guard beside the existing one in
   `unmet_criteria_gate_test.ts`, as the issue suggested.
 
@@ -53,10 +53,11 @@ advisory), #3761 (existing citation, kept).
 
 - Added to `worker/deno/tests/unmet_criteria_gate_test.ts`: the section-scoped
   guard "no section says a summary-rule gate stops PR creation (Issue #4574)"
-  and the positive control "summary-rule stop pattern - matches the old
-  wordings and not the carve-out (Issue #4574)".
+  and the positive control "summary-rule stop pattern - matches the old wordings
+  and not the carve-out (Issue #4574)".
 - Red check: restoring "a gate blocks PR creation" into the Reproduction Status
-  passage turned the guard red (`prompts/issue/prompt.md § Reproduction
+  passage turned the guard red
+  (`prompts/issue/prompt.md § Reproduction
   Status`); restored afterwards.
 - Ran `deno task test:unit` over `unmet_criteria_gate_test.ts`,
   `pr_claims_verified_3058_test.ts` and
