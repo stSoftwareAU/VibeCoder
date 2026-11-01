@@ -16,7 +16,7 @@ flowchart LR
     C -->|passed| P[commit and push]
     C -->|failed, rounds left| R[repair round: agent] --> C
     C -->|failed, rounds spent| X[refuse: attempt fails, nothing pushed]
-    C -->|unverified| X
+    C -->|unverified| D[defer: withdraw attempt, nothing pushed]
 ```
 
 ## Spec
@@ -44,16 +44,15 @@ flowchart LR
   --all-targets [--locked] -- -D warnings`, and `cargo test --workspace`
   (`--locked` with a committed `Cargo.lock`). The clippy arguments are read from
   the repository's CI: the tokens after `cargo clippy` on the first
-  reproducible invocation in `.github/workflows/*.yml|yaml` (comments, `${{ }}`
-  and quoted words skipped) replace the default, and `--locked` is added before
+  reproducible `run` invocation in `.github/workflows/*.yml|yaml` replace the
+  default when they deny warnings, and `--locked` is added before
   the `--` separator when a `Cargo.lock` is committed and CI does not already
-  pass it. `-D warnings` applies only where CI declares no clippy invocation.
-- Fail closed: a tool that is not installed, a check that times out, or the 900
-  s budget being spent refuses the push as `unverified` with no repair round
-  (the agent cannot fix those). Only the two environment faults the milestone
-  gate already recognises (unreachable remote modules, Issue #4422; `rustc`
-  older than `rust-version`, Issue #3255) are left to CI and named on the
-  resolved comment.
+  pass it. The default includes `-D warnings` when CI's invocation does not.
+- Unavailable tools, timeout, disk pressure, unreachable remote modules and
+  an older `rustc` defer verification and withdraw the attempt without a push
+  or a charged failure. Repository commands use the quality gate's untrusted
+  spawn and allowlisted environment. Repair replies are retained alongside the
+  original conflict-resolution reply.
 - On refusal or cut-short the local branch is reset to the attempt's starting
   tip (`discardLocalMerge`); only commits made after that tip in this attempt
   are destroyed and none was pushed.
@@ -61,9 +60,9 @@ flowchart LR
 
 ### Undiscoverable Facts
 
-- Not run against a live PR with a real conflict: the processor tests inject the
-  verifier, and the module tests inject the runner. The default runner was not
-  exercised in a unit test (it spawns the real toolchain).
+- Not run against a live PR with a real conflict; processor tests inject the
+  verifier, and the default runner's environment is checked through an injected
+  spawn.
 - The pre-push time is recorded under the existing `gate` stage of the stage
   timer; no new stage was added.
 
@@ -86,6 +85,10 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
 
 ## Test Plan
 
+- On repair commit `4649d8f`, `deno test --frozen --allow-all
+  tests/merge_fast_checks_test.ts tests/pr_merge_conflict_processor_test.ts`
+  passed 143 tests. These cover the deferred outcomes, disk check, spawn
+  environment and retained replies as well as the prior merge-check cases.
 - `deno task test:unit` on `tests/merge_fast_checks_test.ts`,
   `tests/pr_merge_conflict_processor_test.ts`,
   `tests/pr_merge_conflict_milestone_takeover_test.ts`,
@@ -133,7 +136,8 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
   only; `takeOverMilestoneConflict` and the stale-verdict and nudge rungs push
   no base merge and are unchanged. Five other test files that import the
   processor pass without changes.
-- `./quality.sh`: every stage passed except `deno tests`, where the parallel
+- On the original implementation, `./quality.sh` passed every stage except
+  `deno tests`, where the parallel
   pass ended with 31604 passed and 2 failed, both in
   `tests/completion_phase_repo_formatters_test.ts` (lines 480 and 567, the cargo
   fmt commit tests; this host has no rustup/cargo and this diff does not touch
@@ -160,6 +164,5 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
   `readCiClippyArgs: skips comments
   ...`) change the declared flags and see
   the planned command change.
-- Not done: no live run against a real conflicting PR; the default spawn runner
-  is not unit-tested; the prompt still says "clippy with `-D warnings`" as the
-  usual case.
+- Not done: no live run against a real conflicting PR; the prompt still says
+  "clippy with `-D warnings`" as the usual case.
