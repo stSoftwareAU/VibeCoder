@@ -319,12 +319,33 @@ function silentLogger(): Logger {
   } as unknown as Logger;
 }
 
+/** Logger that keeps every info line, so a test can assert what the scan said. */
+function recordingLogger(infos: string[]): Logger {
+  const noop = () => {};
+  return {
+    info: (message: string) => {
+      infos.push(message);
+    },
+    warn: noop,
+    error: noop,
+    debug: noop,
+    security: noop,
+    skipReason: noop,
+    timing: noop,
+    scanSummary: noop,
+    workerSummary: noop,
+  } as unknown as Logger;
+}
+
 /**
  * Run the real branch-update scan over one PR, wired to the real batch
  * fetcher and the topology-driven fake GitHub — the same path priority 1.6
  * takes in production.
  */
-async function scanFor(topology: Topology) {
+async function scanFor(
+  topology: Topology,
+  logger: Logger = silentLogger(),
+) {
   const recorder: Recorder = { mergeCalls: [] };
   const gh = fakeGitHub(topology, recorder);
   const pr: PrBranchEntry = {
@@ -335,7 +356,7 @@ async function scanFor(topology: Topology) {
 
   return await scanPrBranchUpdates({
     repos: [REPO],
-    logger: silentLogger(),
+    logger,
     isRepoAllowed: () => true,
     getDefaultBranch: () => Promise.resolve(DEFAULT_BRANCH),
     listPrs: () => Promise.resolve([pr]),
@@ -369,7 +390,8 @@ async function scanFor(topology: Topology) {
 }
 
 Deno.test("branch update - a PR already current with its base is left alone", async () => {
-  const result = await scanFor(CURRENT_TOPOLOGY);
+  const infos: string[] = [];
+  const result = await scanFor(CURRENT_TOPOLOGY, recordingLogger(infos));
 
   assert(result.ok);
   if (!result.ok) return;
@@ -379,10 +401,17 @@ Deno.test("branch update - a PR already current with its base is left alone", as
     "a PR that is ahead of its base and not behind needs no update — proposing one every cycle is the oscillation (Issue #470)",
   );
   assertEquals(result.value.skippedCount, 1);
+  // Issue #4613: the behind-count log line is only written for a PR behind its base.
+  assertEquals(
+    infos.filter((line) => line.includes("commit(s) behind")),
+    [],
+    "an already-current PR must not log a behind count",
+  );
 });
 
 Deno.test("branch update - a PR merely behind its milestone base is not updated (Issue #4613)", async () => {
-  const result = await scanFor(STALE_TOPOLOGY);
+  const infos: string[] = [];
+  const result = await scanFor(STALE_TOPOLOGY, recordingLogger(infos));
 
   assert(result.ok);
   if (!result.ok) return;
@@ -392,4 +421,20 @@ Deno.test("branch update - a PR merely behind its milestone base is not updated 
     "a stale branch is not updated merely to be current — the auto-merge sweep owns that update (Issue #4613)",
   );
   assertEquals(result.value.skippedCount, 1);
+  // The fixture is four behind and two ahead, so the log must report 4, not 2.
+  const behindLines = infos.filter((line) => line.includes("commit(s) behind"));
+  assertEquals(
+    behindLines.length,
+    1,
+    `expected one behind log line, got: ${JSON.stringify(infos)}`,
+  );
+  const behindLine = behindLines[0] ?? "";
+  assert(
+    behindLine.includes("4 commit(s) behind"),
+    `expected the behind count 4 in: ${behindLine}`,
+  );
+  assert(
+    behindLine.includes(MILESTONE_BASE),
+    `expected the milestone base ${MILESTONE_BASE} in: ${behindLine}`,
+  );
 });

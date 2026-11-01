@@ -18,6 +18,7 @@ import {
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
   babysitterRtkInstruction,
+  behindUpdateHeld,
   buildRepairPrompt,
   cloneForRepair,
   eligibleAuthor,
@@ -80,7 +81,7 @@ const pr = {
   mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN",
   reviewDecision: null,
-  statusCheckRollup: [{ conclusion: "SUCCESS" }],
+  statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
 };
 Deno.test("author filter permits an explicit PR without widening fleet scans", () => {
   assert(eligibleAuthor("VibeCoderST", ["vibecoderst"], false));
@@ -99,7 +100,12 @@ Deno.test("babysitter selects only conflicts and failed CI", () => {
     null,
   );
   assertEquals(
-    reason({ ...pr, mergeStateStatus: "BEHIND" }),
+    reason({
+      ...pr,
+      mergeStateStatus: "BEHIND",
+      autoMergeRequest: {},
+      reviewDecision: "APPROVED",
+    }),
     "branch behind base",
   );
   assertEquals(
@@ -129,6 +135,129 @@ Deno.test("babysitter selects only conflicts and failed CI", () => {
   );
   assertEquals(
     reason({ ...pr, statusCheckRollup: null, mergeable: "CONFLICTING" }),
+    null,
+  );
+});
+
+// Issue #4613: a behind PR is refreshed only when it is otherwise ready to merge.
+Deno.test("a behind PR is refreshed only when armed, review-satisfied and checks passed", () => {
+  const behind = { ...pr, mergeStateStatus: "BEHIND" };
+  const armed = { ...behind, autoMergeRequest: {} };
+  // Not armed yet: left alone until it is.
+  assertEquals(reason({ ...behind, reviewDecision: "APPROVED" }), null);
+  // Armed but a review is still required.
+  assertEquals(
+    reason({ ...armed, reviewDecision: "REVIEW_REQUIRED" }),
+    null,
+  );
+  // Armed and approved, but a check is still running.
+  assertEquals(
+    reason({
+      ...armed,
+      reviewDecision: "APPROVED",
+      statusCheckRollup: [{ status: "IN_PROGRESS" }],
+    }),
+    null,
+  );
+  // Armed, no review required, and every check passed.
+  assertEquals(reason({ ...armed, reviewDecision: "" }), "branch behind base");
+});
+
+const readyInFlight = {
+  ...pr,
+  number: 2,
+  mergeStateStatus: "CLEAN",
+  autoMergeRequest: {},
+  reviewDecision: "APPROVED",
+};
+const behindCandidate = {
+  ...pr,
+  number: 1,
+  mergeStateStatus: "BEHIND",
+  autoMergeRequest: {},
+  reviewDecision: "APPROVED",
+};
+
+Deno.test("behind PR waits for an armed, up-to-date PR on its base that is in flight", () => {
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [behindCandidate, readyInFlight]),
+    2,
+  );
+  // A check still running, or no review required, keeps it in flight.
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, statusCheckRollup: [{ status: "IN_PROGRESS" }] },
+    ]),
+    2,
+  );
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, reviewDecision: "" },
+    ]),
+    2,
+  );
+});
+
+Deno.test("behindUpdateHeld ignores PRs on other bases", () => {
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, baseRefName: "release" },
+    ]),
+    null,
+  );
+});
+
+Deno.test("behindUpdateHeld ignores drafts, needs-human PRs and the PR itself", () => {
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, isDraft: true },
+    ]),
+    null,
+  );
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, labels: [{ name: "needs-human" }] },
+    ]),
+    null,
+  );
+  assertEquals(behindUpdateHeld(behindCandidate, [behindCandidate]), null);
+});
+
+Deno.test("behindUpdateHeld ignores PRs awaiting review or arming", () => {
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, reviewDecision: "REVIEW_REQUIRED" },
+    ]),
+    null,
+  );
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, autoMergeRequest: undefined },
+    ]),
+    null,
+  );
+});
+
+Deno.test("behindUpdateHeld ignores PRs with failed checks or that are themselves behind", () => {
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, statusCheckRollup: [{ conclusion: "FAILURE" }] },
+    ]),
+    null,
+  );
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, mergeStateStatus: "BEHIND" },
+    ]),
     null,
   );
 });

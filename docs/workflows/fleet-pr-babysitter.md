@@ -1,8 +1,10 @@
 # Fleet PR babysitter MVP
 
 The babysitter scans the repositories in `.config.json` for open fleet PRs with
-merge conflicts, outdated branches, failed CI or requested review changes. By
-default it fixes candidates. It takes the same PR branch lock as the fleet's CI
+merge conflicts, failed CI or requested review changes. A PR that is only behind
+its base is refreshed only when it is armed, review-satisfied and passing, and
+only one such refresh per base runs at a time (Issue #4613). By default it fixes
+candidates. It takes the same PR branch lock as the fleet's CI
 and conflict workers, rechecks the head, and runs one Codex session in a
 temporary clone. Up to two independent PR repairs run at once, each with a
 90-minute Codex limit and its own branch lock. While repairs run, it rescans

@@ -45,6 +45,7 @@ import {
   releaseBranchUpdateLock,
   startBranchUpdateLockRenewal,
 } from "../lib/pr_branch_lock.ts";
+import { classifyCheckRollup } from "../lib/pr_branch_update.ts";
 
 interface Pr {
   state: string;
@@ -58,6 +59,8 @@ interface Pr {
   isDraft: boolean;
   mergeable: string;
   mergeStateStatus: string;
+  /** Absent or null means auto-merge is not armed (Issue #4613). */
+  autoMergeRequest?: unknown;
   reviewDecision: string | null;
   statusCheckRollup:
     | { state?: string; status?: string; conclusion?: string }[]
@@ -65,7 +68,7 @@ interface Pr {
   labels?: { name: string }[];
 }
 const fields =
-  "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,labels";
+  "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,mergeStateStatus,autoMergeRequest,reviewDecision,statusCheckRollup,labels";
 /** A PR waiting on a person: the babysitter leaves it alone (owner rule 2026-11-01). */
 const NEEDS_HUMAN_LABEL = "needs-human";
 
@@ -319,14 +322,46 @@ export function reason(pr: Pr): string | null {
   if (pr.reviewDecision === "CHANGES_REQUESTED") {
     return "requested review changes";
   }
+  // Issue #4613: a behind PR is refreshed only when it is otherwise ready.
   if (
-    pr.mergeStateStatus === "BEHIND" &&
-    !pr.statusCheckRollup.some((check) =>
-      (check.status !== undefined && check.status !== "COMPLETED") ||
-      check.state === "PENDING"
-    )
+    pr.mergeStateStatus === "BEHIND" && isArmed(pr) &&
+    reviewSatisfied(pr.reviewDecision) &&
+    classifyCheckRollup(pr.statusCheckRollup) === "passed"
   ) return "branch behind base";
   return null;
+}
+
+/** Auto-merge is armed when GitHub reports a request (Issue #4613). */
+function isArmed(pr: Pr): boolean {
+  return pr.autoMergeRequest !== undefined && pr.autoMergeRequest !== null;
+}
+
+/** Review is satisfied when approved or when no review is required (Issue #4613). */
+function reviewSatisfied(decision: string | null): boolean {
+  return decision === "APPROVED" || decision === "" || decision === null;
+}
+
+/**
+ * One PR per base (Issue #4613): the number of another open, non-draft,
+ * needs-human-free PR on the same base that is armed, up to date,
+ * review-satisfied, conflict-free and still passing or running, or null.
+ */
+export function behindUpdateHeld(pr: Pr, prs: Pr[]): number | null {
+  const held = prs.find((other) => {
+    if (
+      other.number === pr.number || other.state !== "OPEN" || other.isDraft ||
+      other.baseRefName !== pr.baseRefName ||
+      other.labels?.some((l) => l.name.toLowerCase() === NEEDS_HUMAN_LABEL)
+    ) return false;
+    if (
+      !isArmed(other) || other.mergeStateStatus === "BEHIND" ||
+      other.mergeable === "CONFLICTING" ||
+      !reviewSatisfied(other.reviewDecision)
+    ) return false;
+    const checks = classifyCheckRollup(other.statusCheckRollup);
+    return checks === "passed" || checks === "pending";
+  });
+  return held?.number ?? null;
 }
 
 /** Explicitly scoped repositories may include PRs by any author. */
@@ -785,6 +820,8 @@ async function pass(
   }
   const discover = async (): Promise<RepairTask[]> => {
     const repairs: RepairTask[] = [];
+    // `${repo}#${base}` pairs already queued for a branch update this pass.
+    const behindQueued = new Set<string>();
     for (const repo of repositories) {
       if (repoFilter && repo !== repoFilter) continue;
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
@@ -811,13 +848,31 @@ async function pass(
         const why = reason(pr);
         if (!why && prFilter !== undefined) {
           console.log(
-            `${repo}#${pr.number}: no actionable conflict, outdated branch, failed CI or requested review changes, or PR is not eligible`,
+            `${repo}#${pr.number}: no actionable conflict, failed CI, requested review changes, or outdated branch on a PR that is ready to merge, or PR is not eligible`,
           );
         }
         if (
           !why ||
           !eligibleAuthor(pr.author.login, authors, repoFilter !== undefined)
         ) continue;
+        if (why === "branch behind base") {
+          // Issue #4613: refresh a behind PR only when it is ready, one per base.
+          const held = behindUpdateHeld(pr, prs);
+          if (held !== null) {
+            console.log(
+              `${repo}#${pr.number}: branch behind base, but #${held} on ${pr.baseRefName} is ready and already up to date — waiting for it to merge or fail (Issue #4613)`,
+            );
+            continue;
+          }
+          const baseKey = `${repo}#${pr.baseRefName}`;
+          if (behindQueued.has(baseKey)) {
+            console.log(
+              `${repo}#${pr.number}: branch behind base, but an earlier PR on ${pr.baseRefName} already has a branch update queued this pass (Issue #4613)`,
+            );
+            continue;
+          }
+          behindQueued.add(baseKey);
+        }
         console.log(`${repo}#${pr.number}: ${why}`);
         if (execute) {
           repairs.push({

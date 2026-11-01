@@ -43,7 +43,7 @@ flowchart TD
     F -- pending/failed --> G[Blocked: leave PR open]
     F -- "no checks at all" --> N[Blocked: unverified —<br/>branch update, retry next cycle]
     F -- passed --> H{behindBy > 0?}
-    H -- yes --> I["Defer: PR left open and logged<br/>the branch-update scan no longer merges<br/>the target in for being behind (Issue #4613)"]
+    H -- yes --> I["Defer: PR left open and logged<br/>the branch-update scan never merges the target in for being behind;<br/>the sweep and the fleet PR babysitter do so only once the PR is ready (Issue #4613)"]
     H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync, or a milestone-fix PR<br/>whose head merges the default branch)<br/>--match-head-commit &lt;checked SHA&gt;"]
     J -- head moved --> L[Defer: re-read checks<br/>for the new head next cycle]
     D --> K[Default branch updated by verified merge only]
@@ -341,7 +341,7 @@ decision keeps a human-tuned queue, and then only its parameters are kept
 `strict_required_status_checks_policy` is `mergeQueue === undefined`).
 
 **Falling back** leaves the worker on the behaviour it has without a queue: a
-behind PR is refreshed only when it is otherwise ready to merge
+behind PR is refreshed only when it is armed and otherwise ready to merge
 ([Branch updates without a merge queue](#branch-updates-without-a-merge-queue)),
 and the direct-merge gate refuses while it is behind. The
 setup run prints one line per repository with the reason for the fallback. The
@@ -405,11 +405,20 @@ shipped behaviour:
    failing (that is, it is merging or its checks are running). That PR must merge
    or fail first. At most one update per base is sent in each sweep pass. Only
    fleet PRs the sweep lists are counted; PRs by other authors are not.
-3. **The branch-update scan no longer refreshes for being behind.**
+3. **The branch-update scan never refreshes a PR for being behind.**
    `scanPrBranchUpdates` in
    [`pr_branch_update.ts`](../worker/deno/lib/pr_branch_update.ts) merges the base
-   into a PR branch only to resolve a conflict, on any base. The sweep's
-   `update-branch` is the only behind-only refresh.
+   into a PR branch only to resolve a conflict, on any base. The behind-only
+   refreshes are the sweep's `update-branch` and the fleet PR babysitter's
+   ([`fleet_pr_babysitter.ts`](../worker/deno/commands/fleet_pr_babysitter.ts)),
+   and each applies rules 1 and 2. The babysitter repairs a behind PR only when
+   it is armed, review-satisfied and all its checks have passed. It holds that
+   PR while another open PR on its base is armed and up to date (the babysitter
+   counts every open PR it lists, not only fleet PRs), and it queues at most one
+   branch update per base in each pass. The merge ladder's `behind_target` retry
+   ([`merge_block_escalation.ts`](../worker/deno/lib/merge_block_escalation.ts),
+   reached for unarmed PRs at merge time) is a separate path this policy does
+   not gate.
 4. **Every skipped update is logged with its reason.** The sweep logs at info,
    `Auto-merge sweep: …(Issue #4613)`. The scan logs
    `no branch update merely to be current … (Issue #4613)`.
@@ -420,13 +429,15 @@ shipped behaviour:
 
 **Assumptions.** Readiness is read from the same `gh pr view --json` round trip as
 the sweep's existing live-state read, whose field list now ends
-`…reviewDecision,statusCheckRollup`; no extra call is made. A PR whose check state
+`…reviewDecision,statusCheckRollup`; no extra call is made. The babysitter reads the same fields from its own
+`gh pr list --json` and `gh pr view --json` calls, which now include
+`autoMergeRequest`. A PR whose check state
 cannot be read is not updated. Every check in the rollup counts, not only the
 required ones, so a non-required failing or pending check also holds the update.
 
 ```mermaid
 flowchart TD
-    A["Armed PR behind its base<br/>(listed by the auto-merge sweep)"] --> Q{Base has a<br/>merge queue?}
+    A["Armed PR behind its base<br/>(listed by the auto-merge sweep or the fleet PR babysitter)"] --> Q{Base has a<br/>merge queue?}
     Q -- yes --> QN["No update for being behind (Issue #4424)<br/>a conflict is still updated"]
     Q -- no --> C{Conflicting?}
     C -- yes --> CN["No update: GitHub would refuse it;<br/>the merge-conflict ladder owns it"]
@@ -661,8 +672,8 @@ When the gate blocks because the branch is behind its target, the PR is **left
 open** and a deferral is logged. The branch-update scan (`pr_branch_update.ts`,
 Priority 1.27) no longer merges the target into a branch merely because it is
 behind (Issue #4613): it does so only to resolve a conflict. The behind-only
-refresh is the auto-merge sweep's `update-branch`, sent once the PR is otherwise
-ready to merge ([Branch updates without a merge queue](#branch-updates-without-a-merge-queue)).
+refreshes are the auto-merge sweep's `update-branch` and the fleet PR
+babysitter's, each sent once the PR is armed and otherwise ready to merge ([Branch updates without a merge queue](#branch-updates-without-a-merge-queue)).
 Whatever merges the target in, the worker never rebases or force-pushes, so a PR
 under review keeps its commits and review comments (#2807). CI re-runs on the new
 head, and the next cycle re-evaluates the gate: an **update → re-check →

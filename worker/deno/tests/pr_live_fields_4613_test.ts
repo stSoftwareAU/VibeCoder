@@ -148,6 +148,14 @@ Deno.test("classifyCheckRollup - a StatusContext in PENDING or EXPECTED is pendi
   assertEquals(classifyCheckRollup([statusContext("EXPECTED")]), "pending");
 });
 
+Deno.test("classifyCheckRollup - a StatusContext with an unrecognised state is pending, never passed (Issue #4613)", () => {
+  assertEquals(classifyCheckRollup([{ state: "FOO" }]), "pending");
+});
+
+Deno.test("classifyCheckRollup - a non-object rollup entry is pending, never passed (Issue #4613)", () => {
+  assertEquals(classifyCheckRollup(["SUCCESS"]), "pending");
+});
+
 Deno.test("classifyCheckRollup - each failing CheckRun conclusion fails the rollup (Issue #4613)", () => {
   for (
     const conclusion of [

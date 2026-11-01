@@ -78,17 +78,14 @@ function makePr(overrides?: Partial<PrBranchEntry>): PrBranchEntry {
 // decidePrUpdateAction
 // =============================================================================
 
-Deno.test("decidePrUpdateAction - returns behind action when PR is behind base", () => {
+// Issue #4613: the scan never updates a merely-behind PR, so a behind-only PR
+// yields no action. Replaces the former "returns behind action" assertions
+// (reason "behind", behindBy 3, prNumber, branchName, baseBranch, repo).
+Deno.test("decidePrUpdateAction - returns null when PR is merely behind base (Issue #4613)", () => {
   const pr = makePr();
-  const action = decidePrUpdateAction("org/repo", pr, "main", 3, "", false);
+  const action = decidePrUpdateAction("org/repo", pr, "main", 3, "");
 
-  assertEquals(action !== null, true);
-  assertEquals(action!.reason, "behind");
-  assertEquals(action!.behindBy, 3);
-  assertEquals(action!.prNumber, 42);
-  assertEquals(action!.branchName, "issue-42-fix-bug");
-  assertEquals(action!.baseBranch, "main");
-  assertEquals(action!.repo, "org/repo");
+  assertEquals(action, null);
 });
 
 Deno.test("decidePrUpdateAction - returns conflicting action when PR has merge conflicts", () => {
@@ -99,7 +96,6 @@ Deno.test("decidePrUpdateAction - returns conflicting action when PR has merge c
     "main",
     0,
     "CONFLICTING",
-    false,
   );
 
   assertEquals(action !== null, true);
@@ -115,7 +111,6 @@ Deno.test("decidePrUpdateAction - returns null when PR is current and mergeable"
     "main",
     0,
     "MERGEABLE",
-    false,
   );
 
   assertEquals(action, null);
@@ -129,7 +124,6 @@ Deno.test("decidePrUpdateAction - returns null when PR is current with unknown s
     "main",
     0,
     "UNKNOWN",
-    false,
   );
 
   assertEquals(action, null);
@@ -137,28 +131,30 @@ Deno.test("decidePrUpdateAction - returns null when PR is current with unknown s
 
 Deno.test("decidePrUpdateAction - returns null when PR is current and status is empty", () => {
   const pr = makePr();
-  const action = decidePrUpdateAction("org/repo", pr, "main", 0, "", false);
+  const action = decidePrUpdateAction("org/repo", pr, "main", 0, "");
 
   assertEquals(action, null);
 });
 
-Deno.test("decidePrUpdateAction - behind takes priority over any mergeable status", () => {
+// Issue #4613: replaces "behind takes priority" — behind no longer produces an
+// action, so a conflict on a behind PR is the one that carries the behind count.
+Deno.test("decidePrUpdateAction - conflicting PR that is also behind yields the conflicting action with the real behind count", () => {
   const pr = makePr();
-  // Even if mergeable status is CONFLICTING, behind_by > 0 means reason is "behind"
   const action = decidePrUpdateAction(
     "org/repo",
     pr,
     "main",
     5,
     "CONFLICTING",
-    false,
   );
 
   assertEquals(action !== null, true);
-  assertEquals(action!.reason, "behind");
+  assertEquals(action!.reason, "conflicting");
   assertEquals(action!.behindBy, 5);
 });
 
+// Issue #4613: mergeableStatus changed from "" to "CONFLICTING" so the call
+// yields an action under the new contract (a behind-only PR yields null).
 Deno.test("decidePrUpdateAction - preserves custom base branch", () => {
   const pr = makePr({ baseRefName: "milestone/v2" });
   const action = decidePrUpdateAction(
@@ -166,8 +162,7 @@ Deno.test("decidePrUpdateAction - preserves custom base branch", () => {
     pr,
     "milestone/v2",
     1,
-    "",
-    false,
+    "CONFLICTING",
   );
 
   assertEquals(action !== null, true);

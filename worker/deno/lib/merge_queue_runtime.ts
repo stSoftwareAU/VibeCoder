@@ -5,8 +5,9 @@
  * that queue, which tests each PR against the real future head of the branch.
  * Three worker paths must therefore treat such a base differently:
  *
- * - the branch-update maintenance loop does not update a PR merely because it
- *   is behind (it still merges the base in for conflicts);
+ * - the branch-update maintenance loop treats a queued base the same as any
+ *   other: it never updates a PR merely because it is behind, and only its log
+ *   wording differs (it still merges the base in for conflicts) (Issue #4613);
  * - the direct-merge fallback never lands a PR on a queued base;
  * - the auto-merge sweep does not ask GitHub to update an armed, behind PR.
  *

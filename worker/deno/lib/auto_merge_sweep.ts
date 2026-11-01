@@ -389,9 +389,11 @@ export async function sweepAutoMerge(
         // an update, then leave the merge attempt to the next pass (no retry
         // loop here — `handleMergeAttempt`'s ladder owns the rest).
         // This deliberately overlaps the git-based `decidePrUpdateAction`
-        // in pr_branch_update.ts: that pass owns unarmed branch upkeep for
-        // its own candidates, while this one only unblocks an already-armed
-        // merge. A conflicting PR is never updated — GitHub would refuse it.
+        // in pr_branch_update.ts, which since Issue #4613 merges the base in
+        // only to resolve a conflict and never refreshes a merely-behind PR.
+        // This pass refreshes a behind PR, but only to unblock an already-armed
+        // merge, and only once it is ready to merge (Issue #4613). A
+        // conflicting PR is never updated — GitHub would refuse it.
         //
         // Issue #4613: nor is one that could not merge yet. The update is for
         // a PR that is ready to merge — review satisfied and checks passed —

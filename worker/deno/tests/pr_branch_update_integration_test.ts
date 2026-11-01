@@ -350,7 +350,7 @@ Deno.test("integration: updateOpenPrBranches - mixed scenario across multiple re
   assertEquals(result.ok, true, "Multi-repo update should succeed");
 
   // Issue #4613: PR #100 and #201 are merely behind, so they are not updated.
-  // PR #200 (conflicting) should be updated; PR #101 (current, mergeable) too.
+  // PR #200 (conflicting) should be updated; PR #101 (current, mergeable) is not updated either.
   assertEquals(updatedPrs.length, 1, "One PR should have been updated");
   assert(!updatedPrs.includes(100), "PR #100 (behind) must not be updated");
   assert(updatedPrs.includes(200), "PR #200 (conflicting) should be updated");

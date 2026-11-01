@@ -6,7 +6,9 @@
  * - findPrCommentsToFix — scan for actionable PR comments
  * - findFailedPrChecks — scan for spelling check failures
  * - findFailedCiChecks — scan for CI failures (with retry limits)
- * - updateOpenPrBranches — keep PR branches current with base
+ * - updateOpenPrBranches — merge the base into a PR branch only to resolve a
+ *   conflict; a merely-behind PR is refreshed by the auto-merge sweep once ready
+ *   (Issue #4613)
  * - ensureAutoMergeOnOpenPrs — enable auto-merge where missing
  * - closeIssuesForMergedPrs — close issues for merged PRs
  *

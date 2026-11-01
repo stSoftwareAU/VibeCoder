@@ -1068,8 +1068,10 @@ export async function enforcePreMergeRequirements(
  * enforcePreMergeRequirements} re-fetches CI status and branch freshness and
  * refuses to merge unless CI is green and the branch is current. A blocked
  * outcome returns `{ ok: true, value: { merged: false, blocked } }` (a typed,
- * non-throwing deferral); a behind branch leaves the PR open for the
- * branch-update maintenance cycle to rebase and re-evaluate. Because the gate
+ * non-throwing deferral); a behind branch leaves the PR open to be rebased and
+ * re-evaluated by the auto-merge sweep's update-branch (ready PRs only) or the
+ * merge ladder's `behind_target` retry. The branch-update maintenance scan no
+ * longer refreshes a merely-behind branch (Issue #4613). Because the gate
  * lives inside `directMergePr`, every direct-merge caller is protected by
  * construction.
  *

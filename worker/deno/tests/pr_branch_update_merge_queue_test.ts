@@ -129,19 +129,19 @@ async function runScan(f: ScanFixture): Promise<ScanRun> {
 // decidePrUpdateAction — the pure decision
 // ---------------------------------------------------------------------------
 
-Deno.test("decidePrUpdateAction - a PR behind an unqueued base yields a behind action", () => {
-  const action = decidePrUpdateAction(REPO, PR, "main", 3, "MERGEABLE", false);
-  assertEquals(action?.reason, "behind");
-  assertEquals(action?.behindBy, 3);
-});
-
-Deno.test("decidePrUpdateAction - the same PR behind a queued base yields no action", () => {
-  const action = decidePrUpdateAction(REPO, PR, "main", 3, "MERGEABLE", true);
+// Issue #4613: the scan never updates a merely-behind PR, on any base. This
+// replaces the former "behind action" assertion (reason "behind", behindBy 3).
+Deno.test("decidePrUpdateAction - a PR merely behind an unqueued base yields no action (Issue #4613)", () => {
+  const action = decidePrUpdateAction(REPO, PR, "main", 3, "MERGEABLE");
   assertEquals(action, null);
 });
 
-Deno.test("decidePrUpdateAction - a conflicting PR behind a queued base yields a conflicting action with the real behind count", () => {
-  const action = decidePrUpdateAction(REPO, PR, "main", 3, "CONFLICTING", true);
+// Issue #4613: the decision takes no queue input any more, so the former
+// "same PR behind a queued base" case is the same call as the test above and
+// is removed rather than duplicated.
+
+Deno.test("decidePrUpdateAction - a conflicting PR behind a base yields a conflicting action with the real behind count", () => {
+  const action = decidePrUpdateAction(REPO, PR, "main", 3, "CONFLICTING");
   assertEquals(action?.reason, "conflicting");
   assertEquals(action?.behindBy, 3);
   assertEquals(action?.baseBranch, "main");

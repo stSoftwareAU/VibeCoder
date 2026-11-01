@@ -454,3 +454,94 @@ Deno.test("Issue #4613: in-flight checks read each PR exactly once in a pass", a
   assertEquals(pass.reads, [1, 2, 3], "each PR is read exactly once");
   assertEquals(pass.updated, []);
 });
+
+// ---------------------------------------------------------------------------
+// (x) Only an in-flight PR on the same base holds a ready PR back
+// ---------------------------------------------------------------------------
+
+/**
+ * Armed, up to date, approved, mergeable and green: in flight on its base
+ * unless something else about it rules that out.
+ */
+const IN_FLIGHT = {
+  mergeable: "MERGEABLE",
+  armed: true,
+  behind: false,
+  reviewSatisfied: true,
+  checks: "passed",
+} as const;
+
+/**
+ * A closed or merged reading that also carries the in-flight fields. A real
+ * closed reading has none of them, so this fixture leaves `open` as the only
+ * thing that keeps it out of the in-flight rule.
+ */
+function closedButInFlight(state: "CLOSED" | "MERGED"): PrLiveStateReading {
+  return { open: false, state, ...IN_FLIGHT } as PrLiveStateReading;
+}
+
+Deno.test("Issue #4613: a PR that is not in flight does not hold back a ready PR on its base", async () => {
+  // Each #2 would be in flight but for the one thing named in its reason, so
+  // flipping that single operand in findInFlightOnBase makes #1 wait.
+  const cases: [string, SweepablePr, PrLiveStateReading][] = [
+    [
+      "a draft",
+      { number: 2, baseRefName: "main", isDraft: true },
+      openReading({ ...IN_FLIGHT }),
+    ],
+    [
+      "labelled needs-human",
+      { number: 2, baseRefName: "main", labels: [{ name: "needs-human" }] },
+      openReading({ ...IN_FLIGHT }),
+    ],
+    [
+      "closed",
+      { number: 2, baseRefName: "main" },
+      closedButInFlight("CLOSED"),
+    ],
+    [
+      "merged",
+      { number: 2, baseRefName: "main" },
+      closedButInFlight("MERGED"),
+    ],
+    [
+      "not armed",
+      { number: 2, baseRefName: "main" },
+      openReading({ ...IN_FLIGHT, armed: false }),
+    ],
+    [
+      "in conflict",
+      { number: 2, baseRefName: "main" },
+      openReading({ ...IN_FLIGHT, mergeable: "CONFLICTING" }),
+    ],
+  ];
+  for (const [reason, other, reading] of cases) {
+    const pass = await runPass(makeFake(
+      [{ number: 1, baseRefName: "main" }, other],
+      { 1: openReading({ ...READY }), 2: reading },
+    ));
+
+    assertEquals(pass.updated, [1], `${reason}: #1 must be updated`);
+    assert(
+      !hasLine(pass, "on the same base is ready", 1),
+      `${reason}: no in-flight line may name #2 for #1, got: ${
+        JSON.stringify(pass.infos)
+      }`,
+    );
+  }
+});
+
+Deno.test("Issue #4613: an in-flight PR on the same base holds back a ready PR, and the log names it", async () => {
+  // The control: #2 is armed, up to date, approved and its checks have passed,
+  // so it is in flight and #1 must wait.
+  const pass = await runPass(makeFake(
+    [{ number: 1, baseRefName: "main" }, { number: 2, baseRefName: "main" }],
+    { 1: openReading({ ...READY }), 2: openReading({ ...IN_FLIGHT }) },
+  ));
+
+  assertEquals(pass.updated, [], "#1 must wait while #2 is in flight");
+  assert(
+    hasLine(pass, "#2 on the same base is ready", 1),
+    `expected the in-flight line naming #2, got: ${JSON.stringify(pass.infos)}`,
+  );
+});

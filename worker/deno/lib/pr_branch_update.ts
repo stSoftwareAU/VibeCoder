@@ -836,17 +836,13 @@ export async function selectBranchUpdatePrs(
  * Returns an action if the PR needs updating, or null if it can be skipped.
  *
  * Decision rules:
- * 1. If behind_by > 0 and behind-only updates are not deferred → needs update
- *    (reason: "behind")
- * 2. If mergeable == "CONFLICTING" → needs update (reason: "conflicting"),
- *    carrying the real behind_by. A conflict is updated even when a behind-only
- *    update is deferred (Issue #4424, Issue #4613), because a conflict must be
- *    resolved before the PR can land.
- * 3. Otherwise → skip (already current and no conflicts, or behind and deferred)
- *
- * `deferBehind` is true when a behind-only update is deferred: either the base
- * is behind a merge queue (Issue #4424), or the ready-only branch-update policy
- * applies (Issue #4613), under which the auto-merge sweep owns that update.
+ * 1. If mergeable == "CONFLICTING" → needs update (reason: "conflicting"),
+ *    carrying the real behind_by. A conflict must be resolved before the PR can
+ *    land, so it is updated whatever the base or its merge-queue status
+ *    (Issue #4424, Issue #4613).
+ * 2. Otherwise → skip. A merely-behind PR is never updated by this scan
+ *    (Issue #4613): the auto-merge sweep refreshes a ready PR's branch, and a
+ *    queued base's queue tests the PR against its future head (Issue #4424).
  */
 export function decidePrUpdateAction(
   repo: string,
@@ -854,19 +850,7 @@ export function decidePrUpdateAction(
   baseBranch: string,
   behindBy: number,
   mergeableStatus: string,
-  deferBehind: boolean,
 ): PrBranchUpdateAction | null {
-  if (behindBy > 0 && !deferBehind) {
-    return {
-      repo,
-      prNumber: pr.number,
-      branchName: pr.headRefName,
-      baseBranch,
-      behindBy,
-      reason: "behind",
-    };
-  }
-
   if (mergeableStatus === "CONFLICTING") {
     return {
       repo,
@@ -1034,14 +1018,14 @@ export async function scanPrBranchUpdates(
         }
       }
 
-      // Issue #4613: a behind-only PR is always deferred, so `true` here.
+      // Issue #4613: a behind-only PR is never updated here, so only a conflict
+      // yields an action.
       const action = decidePrUpdateAction(
         repo,
         pr,
         baseBranch,
         behindBy,
         mergeableStatus,
-        true,
       );
 
       if (action) {
