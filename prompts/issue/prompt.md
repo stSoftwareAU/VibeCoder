@@ -862,7 +862,7 @@ carries no marker.)
   entry, `unrequested` included**: an `unrequested` line is the Spec reviewer's
   own finding, so it carries `reviewer: unrequested` exactly like the other
   three. Leaving that field off an `unrequested` entry is the single most
-  common way this gate stops a finished run.
+  common finding this gate reports on a finished run.
 - **The reviewer's verdict challenges yours; it does not silently lose.** A
   reviewer that saw only the diff is sometimes wrong about a criterion satisfied
   by code it could not see. You may depart from its verdict, but only out loud:
@@ -870,9 +870,10 @@ carries no marker.)
   the self-assessment this whole section exists to remove.
 - **`reviewer:` is a verdict, not a quotation.** It carries exactly one of
   `met`, `partial`, `missing` or `unrequested` — the gate parses it, and any
-  other text fails the run with the work already done. When the reviewer's own
-  words do not land on one of the four ("not assessed", "traceable, not creep",
-  a hedge, a question), put the **nearest** of the four in `reviewer:` and
+  other text is reported to you once in this session, then on the pull request.
+  When the reviewer's own words do not land on one of the four ("not assessed",
+  "traceable, not creep", a hedge, a question), put the **nearest** of the four
+  in `reviewer:` and
   quote what it actually said in `reason:`. Quoting it there loses nothing: the
   `reason:` line is the record, and it is what a human reads. Reaching for
   `unrequested` because the reviewer was unclear is the one wrong answer — say
@@ -889,9 +890,10 @@ carries no marker.)
   (Issue #3613).
   A breach in a line this diff adds or changes may not be deferred: "stands",
   "left for a follow-up" and "out of scope" are not reasons, and the gate
-  blocks PR creation on any reason that neither records a fix nor links an
-  issue. Fleet review reads your Standards Review, and an admitted breach in
-  your own lines sends the PR straight back.
+  reports any reason that neither records a fix nor links an issue (to you
+  once in this session, then on the pull request). Fleet review reads your
+  Standards Review, and an admitted breach in your own lines sends the PR
+  straight back.
 - **Never fabricate a verdict.** If a reviewer sub-agent genuinely cannot be
   dispatched, quote the exact error in your final message and stop. Writing the
   marker for a review you did not run is the over-claim this gate exists to
@@ -900,12 +902,14 @@ carries no marker.)
   block is required (a part of the issue you leave undone is still recorded as a
   `missing` entry; see "Acceptance-Criteria Closure"). A `## Standards Review`
   the summary carries anyway is still read: each `violation` in it is held to
-  the reason rules above, so an own-line breach left standing blocks the PR
-  (Issue #3761).
+  the reason rules above, so an own-line breach left standing is reported by
+  the gate (Issue #3761).
 
-A gate reads both blocks before the PR is raised and blocks PR creation when one
-of these rules is broken, commenting on the issue with every rule it found
-broken.
+A gate reads both blocks before the PR is raised and reports every rule it found
+broken. The first report is given to you once, in this session
+(`summary_rule_gate_retry.ts`); whatever remains is posted as one comment on the
+pull request, which is still raised and armed (Issue #4234). The rules stay
+requirements the run must meet.
 
 **A violation this diff introduced blocks the PR — you enforce this one, not
 the gate.** A doc comment the change made wrong, a test the summary cites that
@@ -1045,8 +1049,10 @@ actually reproduced, and the regression test that covers it:
 - **regression test** — `worker/deno/tests/foo_test.ts::reproduces the fault`
 ```
 
-The status is one of exactly three words, and a gate blocks PR creation when the
-block is missing or the rules below are broken:
+The status is one of exactly three words, and a gate checks the block before the
+PR is raised and reports it when it is missing or the rules below are broken
+(advisory at completion, Issue #4234: reported to you once, then on the pull
+request, which is still raised):
 
 - **`verified`** — you actually watched the regression test **fail against the
   unfixed code and pass after the fix**. Claim it only when that happened, and
@@ -1390,8 +1396,9 @@ The file MUST contain:
    blocks — for example SOMETHING_PLACEHOLDER in prose — or a bare ALL-CAPS
    identifier with an underscore left as the result after a colon, dash or
    `=` on a line that cites a gate command — for example
-   GATE_OUTCOME_PENDING in prose. It blocks PR creation, or records the
-   shortfall against a PR the run already raised. A token inside backticks
+   GATE_OUTCOME_PENDING in prose. The gate reports it to you once in this
+   session; what remains is one comment on the pull request (Issue #4234).
+   A token inside backticks
    or a code block is not caught, and it is still never acceptable in
    place of a result. If a gate
    was not run, say so plainly with the
@@ -1522,8 +1529,9 @@ The file MUST contain:
    reason. An outcome the linked issue asks a test for, in its acceptance
    criteria or Definition of done, cannot be `exempt (untestable)`. Before the
    PR is raised the worker also mutates the lines the diff adds and re-runs
-   the covering tests; a mutation the tests do not catch blocks the PR unless
-   the summary names it as `` `path:line` `` with
+   the covering tests; a mutation the tests do not catch is reported (to you
+   once, then on the pull request) unless the summary names it as
+   `` `path:line` `` with
    `exempt (untestable): <reason>` (a non-empty reason), the same convention.
    A named test that does not exist at the head is the same finding as
    above. Likewise, a path the diff adds to an outcome

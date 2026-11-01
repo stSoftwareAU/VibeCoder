@@ -158,8 +158,10 @@ in the PR summary recording the symptom, the status as `verified` / `partial` /
 `not-run`, and the covering regression test —
 `prompts/issue/` requires it and
 [`reproduction_status_gate.ts`](../worker/deno/lib/reproduction_status_gate.ts)
-blocks PR creation at the same chokepoint as the acceptance-criteria gate when
-the block is missing or a `verified` claim is unsupported. See [the reproduction
+reports at the same chokepoint as the acceptance-criteria gate when the block is
+missing or a `verified` claim is unsupported; the finding goes to the agent once
+in the same session and what remains is one comment on the pull request, which
+is still raised and armed (Issue #4234). See [the reproduction
 section of the issue-processing
 manual](workflows/issue-processing.md#-reproduction-status-on-a-bug-fix). No new
 label, no new tier, no separate lane.
