@@ -26,8 +26,11 @@ final version.
   do not catch blocks the PR" and, in Independent Review, a missing `reviewer:`
   field being "the single most common way this gate stops a finished run" (now
   "the single most common finding this gate reports on a finished run"). The
-  guard regex also matches "gate stops a finished run", with the wording added
-  to the positive control.
+  `reviewer:` bullet in the same section said any other text "fails the run with
+  the work already done"; it now says the text "is reported to you once in this
+  session, then on the pull request". The guard regex also matches "gate stops a
+  finished run", "fails the run" and "run fails", with the wording added to the
+  positive control.
 - Left "A violation this diff introduced blocks the PR — you enforce this one,
   not the gate": it is the agent's own rule and
   `pr_claims_verified_3058_test.ts` pins it.
@@ -76,3 +79,12 @@ advisory), #3761 (existing citation, kept).
   integration suite (#907) that `deno task test:unit` skips; it does not touch
   the prompt or doc wording above and was not run here. It is carried only to
   keep the PR summary true to the head.
+- Head commit `b16dd71c` rewords the `reviewer:` bullet in
+  `prompts/issue/prompt.md` (§ Independent Review Before the PR) and widens
+  `SUMMARY_RULE_GATE_STOPS_PR` in `unmet_criteria_gate_test.ts` with
+  `fails the run|run fails`, plus the old wording "other text fails the run with
+  the work already done" in the positive control. Red check: restoring that old
+  sentence in the prompt turned the section guard red
+  (`prompts/issue/prompt.md § Independent Review Before the PR`); restored
+  afterwards. `deno task test:unit tests/unmet_criteria_gate_test.ts` on the
+  head: 5 passed, 0 failed.
