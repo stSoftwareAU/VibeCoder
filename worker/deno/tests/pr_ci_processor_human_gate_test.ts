@@ -247,6 +247,13 @@ async function runPass(
   }
 }
 
+/** Every label call is the needs-human hold: ensure it exists, then add it. */
+function onlyNeedsHumanAdds(state: PrState): boolean {
+  return state.labelCalls.every((call) =>
+    call === "ensure needs-human" || call === "add needs-human"
+  );
+}
+
 function assertNoAttemptMarker(state: PrState): void {
   for (const body of state.posted) {
     assertEquals(body.includes("vibe-ci-fix-attempt"), false, body);
@@ -271,7 +278,9 @@ Deno.test("human gate - the first pass posts exactly one comment naming the step
       "a".repeat(40)
     }" -->`,
   );
-  assertEquals(state.labelCalls, []);
+  // Owner rule 2026-11-01: a human gate parks the whole PR as needs-human.
+  assertEquals(state.labelCalls.includes("add needs-human"), true);
+  assertEquals(onlyNeedsHumanAdds(state), true);
   assertEquals(state.agentRuns, 0);
   assertNoAttemptMarker(state);
   assertEquals(result.processed, true);
@@ -289,7 +298,8 @@ Deno.test("human gate - second and third passes, one on a new head, stay silent"
   );
 
   assertEquals(state.posted.length, 1);
-  assertEquals(state.labelCalls, []);
+  // The label is re-asserted on every pass and never removed.
+  assertEquals(onlyNeedsHumanAdds(state), true);
   assertEquals(state.agentRuns, 0);
   assertNoAttemptMarker(state);
   assertEquals(second.processed, true);
@@ -443,19 +453,21 @@ Deno.test("human gate - a non-gate failure on the same PR still takes the cap-an
   );
 
   assertEquals(state.agentRuns, 1);
-  // Issue #4304: the ordinary code-fix path no longer labels the PR either.
-  assertEquals(state.labelCalls, []);
+  // Issue #4304: the ordinary code-fix path no longer labels the PR either;
+  // the only label calls are the gate's needs-human hold.
+  assertEquals(onlyNeedsHumanAdds(state), true);
   assertEquals(state.posted.length >= 2, true);
   assertStringIncludes(state.posted.at(-1)!, "<!-- vibe-ci-fix-attempt ");
 
   // The harness does see a label call when one is made: a secret already in
   // the base branch's history still escalates (a kept hard stop).
+  const before = state.labelCalls.length;
   await runPass(
     state,
     makeInput("gitleaks", "gitleaks: aws-access-key detected", "555"),
   );
   assert(
-    state.labelCalls.length > 0,
+    state.labelCalls.length > before,
     "expected the history-rewrite escalation",
   );
 });

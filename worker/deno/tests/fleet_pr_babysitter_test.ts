@@ -380,3 +380,25 @@ Deno.test("a conflict repair still checks the packages it touched, not the whole
   assertStringIncludes(prompt, "full regression suite");
   assertStringIncludes(prompt, "BABYSITTER_READY");
 });
+
+// Owner rule 2026-11-01: the babysitter honours needs-human.
+Deno.test("a PR labelled needs-human is never a babysitter candidate", () => {
+  const pr = {
+    state: "OPEN",
+    number: 1,
+    title: "t",
+    author: { login: "fleet" },
+    headRefName: "h",
+    headRefOid: "a",
+    baseRefName: "main",
+    isCrossRepository: false,
+    isDraft: false,
+    mergeable: "CONFLICTING",
+    mergeStateStatus: "DIRTY",
+    reviewDecision: null,
+    statusCheckRollup: [{ conclusion: "FAILURE" }],
+    labels: [{ name: "needs-human" }],
+  };
+  assertEquals(reason(pr), null);
+  assertEquals(reason({ ...pr, labels: [] }), "merge conflict");
+});
