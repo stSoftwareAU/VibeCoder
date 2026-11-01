@@ -671,10 +671,11 @@ function parseOutcomes(text: string): ParsedOutcomes | null {
   for (const o of root.outcomes) {
     const outcome = asRecord(o);
     if (!outcome) return null;
+    if (outcome.scenario === "Baseline") continue;
     const scenario = asRecord(outcome.scenario);
-    if (!scenario) continue; // "Baseline"
+    if (!scenario) return null;
     const mutant = asRecord(scenario.Mutant);
-    if (!mutant) continue;
+    if (!mutant) return null;
     count++;
     const summary = outcome.summary;
     if (summary === "Unviable") {
@@ -686,7 +687,7 @@ function parseOutcomes(text: string): ParsedOutcomes | null {
       tested++;
       continue;
     }
-    if (summary !== "MissedMutant") continue;
+    if (summary !== "MissedMutant") return null;
     tested++;
     const line = Number(asRecord(asRecord(mutant.span)?.start)?.line);
     const file = typeof mutant.file === "string" ? mutant.file : null;
