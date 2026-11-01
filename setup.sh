@@ -1028,14 +1028,14 @@ prompt_interactive_config() {
 
     # Load existing config values for display
     local existing_repos=""
-    local existing_allowed_author=""
+    local existing_pr_reviewers=""
     local existing_service_accounts=""
     local existing_ssh_key_path=""
     local existing_gh_config_dir=""
     local existing_imgbb_api_key=""
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         existing_repos=$(jq -r '(.repos // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
-        existing_allowed_author=$(jq -r '(.allowed_authors // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
+        existing_pr_reviewers=$(jq -r '(.pr_reviewers // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
         existing_service_accounts=$(jq -r '(.service_accounts // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
         existing_ssh_key_path=$(jq -r '.ssh_key_path // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_gh_config_dir=$(jq -r '.gh_config_dir // empty' "$CONFIG_FILE" 2>/dev/null)
@@ -1057,18 +1057,19 @@ prompt_interactive_config() {
     fi
     echo ""
 
-    # Prompt for allowed author(s)
-    local author_display=""
-    if [[ -n "$existing_allowed_author" ]]; then
-        author_display=" [${existing_allowed_author}]"
+    # Prompt for optional PR reviewers, never an issue-author trust list.
+    local reviewers_display=""
+    if [[ -n "$existing_pr_reviewers" ]]; then
+        reviewers_display=" [${existing_pr_reviewers}]"
     fi
-    echo -e "  GitHub username(s) to process issues from (comma-separated)${author_display}"
-    echo -n "  Allowed authors: "
-    read -r input_allowed_author
-    if [[ -n "$input_allowed_author" ]]; then
-        INTERACTIVE_ALLOWED_AUTHORS="$input_allowed_author"
-    elif [[ -n "$existing_allowed_author" ]]; then
-        INTERACTIVE_ALLOWED_AUTHORS="$existing_allowed_author"
+    echo -e "  PR reviewer username(s) (optional, comma-separated)${reviewers_display}"
+    echo "  Who may direct the worker is derived from repository collaborators."
+    echo -n "  PR reviewers: "
+    read -r input_pr_reviewers
+    if [[ -n "$input_pr_reviewers" ]]; then
+        INTERACTIVE_PR_REVIEWERS="$input_pr_reviewers"
+    elif [[ -n "$existing_pr_reviewers" ]]; then
+        INTERACTIVE_PR_REVIEWERS="$existing_pr_reviewers"
     fi
     echo ""
 
@@ -1193,7 +1194,7 @@ prompt_interactive_config() {
 write_interactive_config() {
     # INTERACTIVE_REPOS is deliberately absent: it reaches .config.json through
     # VIBE_REPOS and the TypeScript writer, never through this merge (#1546).
-    if [[ -z "${INTERACTIVE_ALLOWED_AUTHORS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" ]]; then
+    if [[ -z "${INTERACTIVE_PR_REVIEWERS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" ]]; then
         return 0
     fi
 
@@ -1209,8 +1210,8 @@ write_interactive_config() {
     local config
     config=$(cat "$CONFIG_FILE")
 
-    if [[ -n "${INTERACTIVE_ALLOWED_AUTHORS:-}" ]]; then
-        config=$(echo "$config" | jq --arg v "$INTERACTIVE_ALLOWED_AUTHORS" '. + {allowed_authors: ($v | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))}')
+    if [[ -n "${INTERACTIVE_PR_REVIEWERS:-}" ]]; then
+        config=$(echo "$config" | jq --arg v "$INTERACTIVE_PR_REVIEWERS" '. + {pr_reviewers: ($v | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))}')
     fi
 
     if [[ -n "${INTERACTIVE_SERVICE_ACCOUNTS:-}" ]]; then

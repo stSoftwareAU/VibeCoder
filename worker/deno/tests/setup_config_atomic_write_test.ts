@@ -197,3 +197,25 @@ Deno.test("write_interactive_config - leaves repos to the TypeScript writer (Iss
     assertEquals(await entriesOf(tmp), [".config.json"]);
   });
 });
+
+Deno.test("write_interactive_config - saves reviewers without restoring deprecated authors", async () => {
+  await withTempDir(async (tmp) => {
+    const configFile = `${tmp}/.config.json`;
+    await Deno.writeTextFile(
+      configFile,
+      JSON.stringify({
+        repos: ["TitlePage/private", "stSoftwareAU/VibeCoder"],
+        service_accounts: ["worker"],
+      }),
+    );
+    const { code, output } = await writeInteractiveConfig(configFile, {
+      INTERACTIVE_PR_REVIEWERS: " reviewer1, reviewer2 , ,",
+    });
+    assertEquals(code, 0, output);
+    const config = JSON.parse(await Deno.readTextFile(configFile));
+    assertEquals(config.pr_reviewers, ["reviewer1", "reviewer2"]);
+    assertEquals(config.allowed_authors, undefined);
+    assertEquals(config.repos, ["TitlePage/private", "stSoftwareAU/VibeCoder"]);
+    assertEquals(config.service_accounts, ["worker"]);
+  });
+});
