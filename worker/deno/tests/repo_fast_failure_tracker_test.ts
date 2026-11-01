@@ -32,6 +32,7 @@ import {
 } from "../lib/failure_diagnosis.ts";
 import { isSetupFault } from "../lib/coding_failure_ladder.ts";
 import { detectHostFault } from "../lib/host_fault.ts";
+import { inFlightParkReason } from "../lib/heavy_build_gate.ts";
 
 const HOST = "test-host";
 const REPO = "stSoftwareAU/example";
@@ -203,6 +204,32 @@ Deno.test("isFastFailure - a host-disk stop is not a repository fast failure (Is
     ),
     false,
   );
+});
+
+Deno.test("isFastFailure - the cargo-budget parks in Discovery #2422 do not back off the repository", () => {
+  const policy = resolveRepoFastFailurePolicy();
+  for (
+    const [elapsedSeconds, free, shortfall] of [
+      [79, "58.2", "12.9"],
+      [522, "64.3", "6.8"],
+    ] as const
+  ) {
+    const deferral = `ephemeral cargo root over budget (${free} GB free, ` +
+      `floor 46.0 GB + headroom 25.0 GB) — pruned 0.0 GB of idle target ` +
+      `dirs and ${shortfall} GB is still short, so cargo builds wait for CI ` +
+      `(Issue #3178 budget; Issue #4326 skip)`;
+    const message = "Claude execution failed: manager call failed after 2 " +
+      `attempt(s): ${inFlightParkReason(deferral)}`;
+    assertEquals(
+      isFastFailure({
+        category: "internal_error",
+        elapsedSeconds,
+        message,
+        setupFault: true,
+      }, policy),
+      false,
+    );
+  }
 });
 
 Deno.test("isFastFailure - a security-fix gate that quotes the disk floor stays the issue's failure (Issue #4388)", () => {
