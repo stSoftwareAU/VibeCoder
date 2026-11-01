@@ -59,11 +59,12 @@ esac
 `,
     );
     await writeExecutable("sleep", "#!/bin/bash\nexit 0\n");
+    // Intercept every fabricated PID before it can reach the real kill builtin.
     await writeExecutable(
       "bash_env",
       `kill() {
   case " $* " in
-    *' 6661 '*|*' 6662 '*) printf '%s\\n' "$*" >>"${tmpDir}/signals.log"; return 0 ;;
+    *' 5555 '*|*' 6661 '*|*' 6662 '*) printf '%s\\n' "$*" >>"${tmpDir}/signals.log"; return 0 ;;
     *) builtin kill "$@" ;;
   esac
 }
@@ -106,8 +107,8 @@ esac
         .catch(() => "");
       assertEquals(
         signals,
-        "",
-        `unrelated Virtualization VM PIDs 6661 and 6662 must not receive signals: ${signals}`,
+        "-TERM 5555\n-KILL 5555\n",
+        `only the fake client PID 5555 may receive signals; unrelated Virtualization VM PIDs 6661 and 6662 must not: ${signals}`,
       );
     } finally {
       await killProcessTree(child);

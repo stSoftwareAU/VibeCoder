@@ -36,6 +36,10 @@ Version bump: none; no version file changed for this fix.
 
 Backend supervisor change; no UI surface changed.
 
+- `worker/deno/tests/loop_force_stop_container_test.ts` intercepts all fabricated
+  PIDs (client 5555 and VMs 6661/6662), recording signals instead of forwarding
+  them to the real kill builtin. Its signal log must contain exactly TERM and
+  KILL for the fake client, so signalling either unrelated VM fails the test.
 - Apple source:
   [`ContainerInspect.swift`](https://github.com/apple/container/blob/af7c4391c238dbe0a1fa45cfebec386b97d71eeb/Sources/ContainerCommands/Container/ContainerInspect.swift#L37-L53),
   [`ContainerSnapshot.swift`](https://github.com/apple/container/blob/af7c4391c238dbe0a1fa45cfebec386b97d71eeb/Sources/ContainerResource/Container/ContainerSnapshot.swift#L20-L42),
@@ -58,14 +62,21 @@ flowchart TD
 
 ## Test Plan
 
-- `worker/deno/tests/loop_force_stop_container_test.ts`: red against the unfixed
-  `loop.sh` because it recorded `-TERM 6661` and `-TERM 6662` for two unrelated
-  VMs with PPID 1; passed after the global VM sweep was removed. Final command
+- Safely reproduced the verifier finding at the previous head: instrumenting
+  the kill wrapper's fallback recorded `UNINTERCEPTED -TERM 5555` and
+  `UNINTERCEPTED -KILL 5555` without delivering either signal. The wrapper now
+  intercepts client PID 5555 as well as both fake VM PIDs.
+- `worker/deno/tests/loop_force_stop_container_test.ts`: the updated exact signal
+  assertion failed when the original global VM sweep was temporarily restored
+  alongside the skip log, because the log additionally contained `-TERM 6661`
+  and `-TERM 6662`. All three fake PIDs were safely intercepted. Restored the
+  production script before the final passing run. Final command from
+  `worker/deno`:
   `deno test --frozen --lock=deno.lock --allow-read --allow-env
   --allow-run --allow-write --allow-sys=hostname
-  tests/loop_force_stop_container_test.ts`
-  passed (1 test).
-- `worker/deno/tests/integration_test_manifest_test.ts`: passed (10 tests),
+  tests/loop_force_stop_container_test.ts tests/integration_test_manifest_test.ts`
+  passed (11 tests).
+- `worker/deno/tests/integration_test_manifest_test.ts`: included above (10 tests),
   confirming the shell-driving regression is classified as an integration test.
 - `deno lint` and `deno fmt --check` on the changed TypeScript files passed.
 - `bash -n loop.sh`, `shellcheck loop.sh` and `git diff --check` passed.
