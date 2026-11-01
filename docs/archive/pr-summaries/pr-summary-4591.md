@@ -61,11 +61,15 @@ the PR), #4234 (completion gates made advisory), #4591 (this issue).
   `completion - the verifier block folds in the unmet criteria ...` fail (the
   note lacked the unmet heading; with that assertion skipped, the PR comment
   also lacked it); the all-met test stayed green, as expected.
-- `deno task test:unit` over the new file plus
-  `completion_phase_pre_pr_verifier_3395_test.ts`,
-  `completion_phase_reviewer_note_folds_4583_test.ts`,
-  `completion_phase_summary_rule_retry_test.ts`, `unmet_criteria_gate_test.ts`:
-  44 passed, 0 failed.
+- `deno task test:unit`, run per file at head: the new file
+  `worker/deno/tests/completion_phase_verifier_unmet_fold_4591_test.ts` (2 tests
+  at head, passing); the four existing files below are not in this PR's diff and
+  were run only as neighbours of the changed fold:
+  `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts` (18 tests at
+  head), `worker/deno/tests/completion_phase_reviewer_note_folds_4583_test.ts`
+  (4 tests at head), `worker/deno/tests/completion_phase_summary_rule_retry_test.ts`
+  (15 tests at head), `worker/deno/tests/unmet_criteria_gate_test.ts` (5 tests at
+  head). 0 failed in each.
 - Callers checked: every other `foldInLateSummaryVerdicts` call in
   `completionBody` (closure, review, reproduction, scrub, placeholder, mutation,
   coverage, unmet) is untouched; the verifier gate is the only block that was
