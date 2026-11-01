@@ -1,10 +1,10 @@
 ## Summary
 
-Allow an independent reviewer to approve justified changes to existing tests after checking the governing requirements and surviving coverage. Historical reviewer-owned holds are reconsidered under the new policy, and reviews are bound to the commit inspected. Closes #4655.
+Work in progress for #4655: add policy, discovery and hold-provenance scaffolding. The current gate deliberately retries substantive test changes because a credential-free independent execution runner is not yet available. This does not complete the issue.
 
 ## Evidence
 
-The shared review brief asks for the old and remaining contract, actual coverage and a reproducible regression check where applicable. Posting fetches governing issue contents, checks the evidence record and retries incomplete assessments. Removed functionality can be justified without inventing a replacement test. The previous opt-in policy remains available as a per-repository override.
+The shared review brief asks for the old and remaining contract, actual coverage and a reproducible regression check where applicable. Posting fetches governing issue contents and retries substantive test changes until execution evidence can be supplied by an isolated runner. Removed functionality can be justified without inventing a replacement test. The previous opt-in policy remains available as a per-repository override.
 
 The replay uses the public #4645 hold through discovery and posting, with reviewer-owned and pre-existing human labels, an unjustified tautological assertion and a moved head. GitHub review and label events provide conservative cross-host label provenance; missing history or an independent change request keeps the label. An idempotent human label add to an already-labelled PR does not create a GitHub event and cannot be identified from that history.
 
@@ -18,4 +18,4 @@ The replay uses the public #4645 hold through discovery and posting, with review
 
 ## Limitations
 
-The tests exercise recorded independent-review verdicts, not a live model’s semantic judgement. The no-op human label-add limitation above remains.
+The positive replay cases currently fail by design: the trusted isolated runner and its integration are not implemented. The tests do not establish a live model’s semantic judgement. The no-op human label-add limitation above remains. No PR has been opened.
