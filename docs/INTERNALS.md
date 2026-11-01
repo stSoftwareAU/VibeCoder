@@ -3221,6 +3221,14 @@ existing issues with the same title (across all states — open + closed). The
 summary PR body includes a `Closes #N` reference so the tracking issue is
 automatically closed when the PR merges.
 
+**Closed-issue rollup classification** — each closed milestone issue is claimed
+when a merged PR either has the canonical `(Issue #N)` / `(#N)` title reference
+or has a same-repository `issue-N` head branch. The branch lookup recovers
+adopted agent PRs whose titles predate canonical title repair; fork heads,
+other issue numbers and milestone sync branches do not claim the issue. The
+merged PR must also postdate the issue's latest reopen, and an unreadable issue
+timeline remains flagged for review.
+
 **Idempotency** — `has_existing_milestone_summary_pr()` prevents duplicate final
 PRs by checking for PRs with the milestone branch as head ref across all states
 (open, merged, closed —).
@@ -5864,7 +5872,7 @@ All business logic lives here. Shell tooling invokes them directly with
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                                                            |
 |                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315; Issue #3678: files the follow-up when a fix run newly reports a gap); also adopts a marker-less agent-raised PR on the run's own `issue-<N>` branch (Issue #3804), and is called by the Priority 1.64 reconcile pass (Issue #3760) |
-|                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) |
+|                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) and repairing a noncanonical title reference (Issue #4621) |
 |                             | [pr_body_reconcile.ts](../worker/deno/lib/pr_body_reconcile.ts)                                                   | Priority 1.64 sweep: re-syncs an open fleet-authored PR body whose recorded `vibe-pr-summary` digest differs from the summary at its head after a push the worker did not make, rebuilding in a disposable shallow clone (Issue #3760) |
 |                             | [pr_body_sync_follow_up.ts](../worker/deno/lib/pr_body_sync_follow_up.ts)                                         | Files or reuses the parent's `idle-task` follow-up when a PR-body re-sync finds that a fix run newly reports a `partial` or `missing` criterion, after re-verifying the issue's content (Issue #3678)                           |
 |                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts) | Post-agent drift check on review-fix runs: model pass, change-request quotes, Test Plan recount and a mutation check, one recovery turn (Issues #3143, #3244, #3750). Docs-sweep and branch-outcome citation checks were removed (Issue #4234). |

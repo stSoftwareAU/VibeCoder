@@ -57,6 +57,7 @@ import {
   fetchAllStateIssuesByMilestone,
   fetchAllStatePRsByBranch,
   fetchClosedIssuesByMilestoneNumber,
+  fetchMergedPRsByIssueBranch,
   fetchOpenIssuesByMilestone,
   fetchPRsForIssueByTitle,
   fetchTimelineWithCache,
@@ -1786,7 +1787,7 @@ async function closeMilestoneTrackingIssue(
 // ---------------------------------------------------------------------------
 
 /** Cache-entry name prefix for a closed issue's claim verdict (PR #3640 review). */
-const CLAIM_VERDICT_ENTRY_PREFIX = "milestone_claim_verdict_v1_";
+const CLAIM_VERDICT_ENTRY_PREFIX = "milestone_claim_verdict_v2_";
 
 /** A cached claim verdict: valid only for the `updatedAt` it was read at. */
 interface CachedClaimVerdict {
@@ -1807,15 +1808,18 @@ function isCachedClaimVerdict(value: unknown): value is CachedClaimVerdict {
  * Classify each closed issue as claimable or flaggable (Issue #3476).
  *
  * A closed issue is only claimed when it has at least one genuine merged PR
- * (a fleet-titled PR that `fetchPRsForIssueByTitle` keeps) whose merge is not
- * predated by the issue's latest reopen. Anything else is flagged so the
- * rollup lists it for review instead of claiming its work is on the branch.
+ * found by the canonical title lookup or the same-repository issue-branch
+ * fallback, whose merge is not predated by the issue's latest reopen.
+ * Anything else is flagged so the rollup lists it for review instead of
+ * claiming its work is on the branch.
  *
  * With a `cache`, the verdict for an issue is kept under its number and
  * `updatedAt` (PR #3640 review), so a scan that finds the issue unchanged does
  * not re-page its timeline. A reopen or re-close bumps `updatedAt` and misses.
- * The cache's own TTL bounds how long a verdict survives a change that leaves
- * `updatedAt` alone (a PR merged against the issue by title). Only a verdict
+ * The v2 cache key avoids carrying forward a v1 `sync-pr-only` verdict from
+ * before issue-branch recovery. The cache's own TTL bounds how long a verdict
+ * survives a change that leaves `updatedAt` alone (a PR merged against the
+ * issue by title or branch). Only a verdict
  * reached from a merged PR and a readable timeline is cached; a "sync-pr-only"
  * flag is not (its merged-PR read has its own cache) and neither is an
  * unreadable timeline, so the next scan retries both. An issue without an
@@ -1843,9 +1847,9 @@ export async function classifyClosedIssues(
     }
 
     // Merged PRs first: with none, the issue is flagged whatever its timeline
-    // says, so the timeline is not paged. `fetchPRsForIssueByTitle` caches an
-    // empty answer only when the read succeeded, so a failed read is retried
-    // next scan rather than pinned here as "sync-pr-only".
+    // says, so the timeline is not paged. The branch lookup recovers adopted
+    // PRs whose title did not carry the issue reference; its results are
+    // independently constrained to same-repository `issue-N` heads.
     let mergedPrs: Awaited<ReturnType<typeof fetchPRsForIssueByTitle>> = [];
     try {
       mergedPrs = await fetchPRsForIssueByTitle(
@@ -1858,6 +1862,12 @@ export async function classifyClosedIssues(
     } catch {
       mergedPrs = [];
     }
+    const branchPrs = await fetchMergedPRsByIssueBranch(
+      repo,
+      issue.number,
+      ghCommandFn,
+    );
+    mergedPrs = [...mergedPrs, ...branchPrs];
     if (mergedPrs.length === 0) {
       classified.push({ ...issue, claimProblem: "sync-pr-only" });
       continue;

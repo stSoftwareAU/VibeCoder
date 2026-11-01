@@ -21,6 +21,7 @@ import {
   prTitleReferencesIssue,
 } from "./pr_title_issue_ref.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_branch.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
 // git_branch.ts so PR-blocking uses the same branch name the feature PR
 // actually targets (50-char slug cap + trailing-hyphen strip).
@@ -1756,6 +1757,75 @@ export async function fetchPRsForIssueByTitle(
   }
 
   if (cache) await cache.write(repo, cacheKey, prs);
+  return prs;
+}
+
+/**
+ * Find merged PRs whose same-repository issue branch names `issueNumber`.
+ *
+ * This is a separate recovery lookup for adopted PRs whose title predates
+ * canonical issue-title repair. GitHub's `head:issue-N` search matches the
+ * issue branch prefix; the returned head is parsed again so `issue-42` never
+ * claims issue 420. Fork heads and rows without a merge timestamp are ignored.
+ * The title-search contract remains limited to canonical title references.
+ */
+export async function fetchMergedPRsByIssueBranch(
+  repo: string,
+  issueNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<TitleSearchPR[]> {
+  let output: string;
+  try {
+    output = await ghCommandFn([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "merged",
+      "--search",
+      `head:issue-${issueNumber}`,
+      "--json",
+      "number,title,baseRefName,headRefName,mergedAt,closedAt,author,isCrossRepository",
+      "--limit",
+      "1000",
+    ]);
+  } catch {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.trim());
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const prs: TitleSearchPR[] = [];
+  for (const item of parsed) {
+    if (
+      !isRecord(item) || typeof item.number !== "number" ||
+      item.isCrossRepository !== false ||
+      typeof item.headRefName !== "string" ||
+      issueNumberFromBranch(item.headRefName) !== issueNumber ||
+      typeof item.mergedAt !== "string" || item.mergedAt.length === 0
+    ) {
+      continue;
+    }
+    prs.push({
+      number: item.number,
+      title: typeof item.title === "string" ? item.title : "",
+      baseRefName: typeof item.baseRefName === "string" ? item.baseRefName : "",
+      headRefName: item.headRefName,
+      mergedAt: item.mergedAt,
+      closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
+      author: isRecord(item.author) && typeof item.author.login === "string"
+        ? item.author.login
+        : "",
+      isCrossRepository: false,
+    });
+  }
   return prs;
 }
 

@@ -38,10 +38,12 @@ const REPO = "owner/repo";
 const BRANCH = "issue-42-fix-thing";
 const SHA = "abc1234def5678abc1234def5678abc1234def56";
 const PR_URL = "https://github.com/owner/repo/pull/7";
+const ISSUE_TITLE = "Add [#999] a safe feature";
 
 function input(overrides: Partial<AdoptAgentPrInput> = {}): AdoptAgentPrInput {
   return {
     repo: REPO,
+    issueTitle: ISSUE_TITLE,
     branchName: BRANCH,
     repoPath: "/nonexistent/checkout",
     workerName: "worker-a",
@@ -129,7 +131,12 @@ function deps(
 ): AdoptAgentPrDeps {
   return {
     findExistingPrForBranch: prLookup(opts.prUrl),
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: (args) =>
+      Promise.resolve(
+        args[1] === "view"
+          ? JSON.stringify({ title: "Add a safe feature (Issue #42)" })
+          : "",
+      ),
     runGitCommand: gitFake(opts.gitCalls, {
       head: opts.head,
       remote: opts.remote,
@@ -160,6 +167,157 @@ Deno.test("adoptAgentRaisedPrBody - Issue #3804: syncs the PR on the run's own b
   assertEquals(call.branchName, BRANCH);
   assertEquals(call.adoptOnly, true);
   assertEquals(call.beforeSha, undefined);
+});
+
+Deno.test("adoptAgentRaisedPrBody - repairs a noncanonical title before adopting the body", async () => {
+  const ghCalls: string[][] = [];
+  const syncCalls: SyncPrBodyInput[] = [];
+  await adoptAgentRaisedPrBody(
+    input(),
+    deps(
+      { head: SHA, remote: SHA, prUrl: PR_URL, gitCalls: [] },
+      {
+        runGhCommand: (args) => {
+          ghCalls.push(args);
+          return Promise.resolve(
+            args[0] === "pr" && args[1] === "view"
+              ? JSON.stringify({ title: "Agent's custom title (#43)" })
+              : "",
+          );
+        },
+      },
+    ),
+    recordingSync(syncCalls),
+  );
+
+  assertEquals(ghCalls, [
+    ["pr", "view", "7", "--repo", REPO, "--json", "title"],
+    [
+      "pr",
+      "edit",
+      "7",
+      "--repo",
+      REPO,
+      "--title",
+      "Add a safe feature (Issue #42)",
+    ],
+  ]);
+  assertEquals(syncCalls.length, 1);
+});
+
+Deno.test("adoptAgentRaisedPrBody - preserves a canonical title", async () => {
+  const ghCalls: string[][] = [];
+  const syncCalls: SyncPrBodyInput[] = [];
+  await adoptAgentRaisedPrBody(
+    input(),
+    deps(
+      { head: SHA, remote: SHA, prUrl: PR_URL, gitCalls: [] },
+      {
+        runGhCommand: (args) => {
+          ghCalls.push(args);
+          return Promise.resolve(
+            args[0] === "pr" && args[1] === "view"
+              ? JSON.stringify({ title: "Add a safe feature (#42)" })
+              : "",
+          );
+        },
+      },
+    ),
+    recordingSync(syncCalls),
+  );
+
+  assertEquals(ghCalls.length, 1);
+  assertEquals(syncCalls.length, 1);
+});
+
+Deno.test("adoptAgentRaisedPrBody - repairs title when the marked body is skipped", async () => {
+  const ghCalls: string[][] = [];
+  await adoptAgentRaisedPrBody(
+    input(),
+    deps(
+      { head: SHA, remote: SHA, prUrl: PR_URL, gitCalls: [] },
+      {
+        runGhCommand: (args) => {
+          ghCalls.push(args);
+          return Promise.resolve(
+            args.includes("title")
+              ? JSON.stringify({ title: "Agent's custom title" })
+              : JSON.stringify({
+                body: "<!-- vibe-worker-issue-42 -->",
+                files: [],
+                headRefOid: SHA,
+                headRefName: BRANCH,
+              }),
+          );
+        },
+      },
+    ),
+  );
+
+  assertEquals(ghCalls.filter((args) => args[1] === "edit").length, 1);
+  assertEquals(
+    ghCalls.filter((args) => args[1] === "edit" && args.includes("--body"))
+      .length,
+    0,
+  );
+});
+
+Deno.test("adoptAgentRaisedPrBody - repeats safely after repairing the title", async () => {
+  const ghCalls: string[][] = [];
+  const syncCalls: SyncPrBodyInput[] = [];
+  let title = "Custom title (#43)";
+  const depsForRun = deps(
+    { head: SHA, remote: SHA, prUrl: PR_URL, gitCalls: [] },
+    {
+      runGhCommand: (args) => {
+        ghCalls.push(args);
+        if (args[1] === "view") {
+          return Promise.resolve(JSON.stringify({ title }));
+        }
+        title = args[args.indexOf("--title") + 1]!;
+        return Promise.resolve("");
+      },
+    },
+  );
+  const sync = recordingSync(syncCalls);
+
+  await adoptAgentRaisedPrBody(input(), depsForRun, sync);
+  await adoptAgentRaisedPrBody(input(), depsForRun, sync);
+
+  assertEquals(ghCalls.filter((args) => args[1] === "edit").length, 1);
+  assertEquals(title, "Add a safe feature (Issue #42)");
+  assertEquals(syncCalls.length, 2);
+});
+
+Deno.test("adoptAgentRaisedPrBody - reports title edit failures and still syncs the body", async () => {
+  const ghCalls: string[][] = [];
+  const syncCalls: SyncPrBodyInput[] = [];
+  const captured = capturingLogger();
+  await adoptAgentRaisedPrBody(
+    input(),
+    deps(
+      { head: SHA, remote: SHA, prUrl: PR_URL, gitCalls: [] },
+      {
+        logger: captured.logger,
+        runGhCommand: (args) => {
+          ghCalls.push(args);
+          if (args[1] === "view") {
+            return Promise.resolve(JSON.stringify({ title: "Custom" }));
+          }
+          return Promise.reject(new Error("title edit denied"));
+        },
+      },
+    ),
+    recordingSync(syncCalls),
+  );
+
+  assertEquals(syncCalls.length, 1);
+  assert(
+    captured.entries.some((entry) =>
+      entry.level === "warn" && entry.message.includes("title") &&
+      JSON.stringify(entry.context).includes("title edit denied")
+    ),
+  );
 });
 
 Deno.test("adoptAgentRaisedPrBody - Issue #3804: does not adopt when HEAD differs from the pushed head", async () => {

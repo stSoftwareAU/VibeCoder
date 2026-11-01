@@ -652,6 +652,211 @@ Deno.test("classifyClosedIssues - flags an issue whose timeline cannot be read r
   assertEquals(body.includes("### Issues addressed\n- #1"), false);
 });
 
+Deno.test("classifyClosedIssues - recovers merged same-repo issue-branch PRs and preserves reopen checks", async () => {
+  const prCalls: string[][] = [];
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args[0] === "api" && args[1]?.includes("/timeline")) {
+      return JSON.stringify([{
+        event: "reopened",
+        actor: { login: "owner" },
+        created_at: "2026-10-20T00:00:00Z",
+      }]);
+    }
+    if (args[0] === "pr" && args[1] === "list") {
+      prCalls.push(args);
+      const search = args[args.indexOf("--search") + 1];
+      if (search?.startsWith("in:title")) return "[]";
+      assert(
+        [42, 43, 44, 45, 46, 47, 48].includes(
+          Number(search?.match(/issue-(\d+)/)?.[1]),
+        ),
+        `unexpected branch search: ${search}`,
+      );
+      assertEquals(args[args.indexOf("--state") + 1], "merged");
+      assertEquals(args[args.indexOf("--limit") + 1], "1000");
+      const issueNumber = Number(search?.match(/issue-(\d+)/)?.[1]);
+      const rows = [
+        {
+          number: 10,
+          title: "Delivered without issue reference",
+          headRefName: "issue-42-fix",
+          mergedAt: "2026-10-21T00:00:00Z",
+          isCrossRepository: false,
+        },
+        {
+          number: 11,
+          title: "Fork impostor",
+          headRefName: "issue-42-fork",
+          mergedAt: "2026-10-22T00:00:00Z",
+          isCrossRepository: true,
+        },
+        {
+          number: 12,
+          title: "Number prefix impostor",
+          headRefName: "issue-420-fix",
+          mergedAt: "2026-10-22T00:00:00Z",
+          isCrossRepository: false,
+        },
+        {
+          number: 13,
+          title: "Milestone sync",
+          headRefName: "sync/milestone/main",
+          mergedAt: "2026-10-22T00:00:00Z",
+          isCrossRepository: false,
+        },
+        {
+          number: 14,
+          title: "Not merged",
+          headRefName: "issue-42-unmerged",
+          mergedAt: null,
+          isCrossRepository: false,
+        },
+      ];
+      if (issueNumber === 43) {
+        return JSON.stringify([{
+          number: 15,
+          title: "Old delivery",
+          headRefName: "issue-43-fix",
+          mergedAt: "2026-10-01T00:00:00Z",
+          isCrossRepository: false,
+        }]);
+      }
+      if (issueNumber === 44) {
+        return JSON.stringify([{
+          number: 16,
+          title: "Fork only",
+          headRefName: "issue-44-fork",
+          mergedAt: "2026-10-21T00:00:00Z",
+          isCrossRepository: true,
+        }]);
+      }
+      if (issueNumber === 45) {
+        return JSON.stringify([{
+          number: 17,
+          title: "Sync only",
+          headRefName: "sync/milestone/main",
+          mergedAt: "2026-10-21T00:00:00Z",
+          isCrossRepository: false,
+        }]);
+      }
+      if (issueNumber === 46) {
+        return JSON.stringify([{
+          number: 18,
+          title: "Unmerged only",
+          headRefName: "issue-46-fix",
+          mergedAt: null,
+          isCrossRepository: false,
+        }]);
+      }
+      if (issueNumber === 47) {
+        return JSON.stringify([{
+          number: 19,
+          title: "Prefix only",
+          headRefName: "issue-470-fix",
+          mergedAt: "2026-10-21T00:00:00Z",
+          isCrossRepository: false,
+        }]);
+      }
+      if (issueNumber === 48) {
+        return JSON.stringify([
+          null,
+          {},
+          {
+            number: "48",
+            title: "Invalid number",
+            headRefName: "issue-48-number",
+            mergedAt: "2026-10-21T00:00:00Z",
+            isCrossRepository: false,
+          },
+          {
+            number: 20,
+            title: "Missing head",
+            mergedAt: "2026-10-21T00:00:00Z",
+            isCrossRepository: false,
+          },
+          {
+            number: 21,
+            title: "Missing merge time",
+            headRefName: "issue-48-fix",
+            isCrossRepository: false,
+          },
+        ]);
+      }
+      return JSON.stringify(rows);
+    }
+    return "[]";
+  };
+
+  const result = await classifyClosedIssues(
+    "org/repo",
+    [
+      { number: 42, title: "Recovered delivery" },
+      { number: 43, title: "Reopened after delivery" },
+      { number: 44, title: "Fork is not delivery" },
+      { number: 45, title: "Sync is not delivery" },
+      { number: 46, title: "Unmerged is not delivery" },
+      { number: 47, title: "Prefix is not delivery" },
+      { number: 48, title: "Malformed search rows are not delivery" },
+    ],
+    ghFn,
+  );
+
+  assertEquals(prCalls.length, 14);
+  assertEquals(result[0]?.claimProblem, undefined);
+  assertEquals(result[1]?.claimProblem, "predates-reopen");
+  assertEquals(result[2]?.claimProblem, "sync-pr-only");
+  assertEquals(result[3]?.claimProblem, "sync-pr-only");
+  assertEquals(result[4]?.claimProblem, "sync-pr-only");
+  assertEquals(result[5]?.claimProblem, "sync-pr-only");
+  assertEquals(result[6]?.claimProblem, "sync-pr-only");
+});
+
+Deno.test("classifyClosedIssues - ignores the persisted v1 verdict after branch recovery changes", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const cache = new IssueCache(`${root}/cache`);
+    await cache.write("org/repo", "milestone_claim_verdict_v1_42", {
+      updatedAt: "2026-10-01T00:00:00Z",
+      claimProblem: "sync-pr-only",
+    });
+    let prReads = 0;
+    const ghFn = async (args: string[]): Promise<string> => {
+      if (args[0] === "api" && args[1]?.includes("/timeline")) return "[]";
+      if (args[0] === "pr" && args[1] === "list") {
+        prReads++;
+        if (args[args.indexOf("--search") + 1]?.startsWith("in:title")) {
+          return "[]";
+        }
+        return JSON.stringify([{
+          number: 7,
+          title: "Adopted title without reference",
+          baseRefName: "milestone/recovery",
+          headRefName: "issue-42-fix",
+          mergedAt: "2026-10-02T00:00:00Z",
+          isCrossRepository: false,
+        }]);
+      }
+      return "[]";
+    };
+
+    const result = await classifyClosedIssues(
+      "org/repo",
+      [{
+        number: 42,
+        title: "Recovered delivery",
+        updatedAt: "2026-10-01T00:00:00Z",
+      }],
+      ghFn,
+      cache,
+    );
+
+    assertEquals(prReads, 2);
+    assertEquals(result[0]?.claimProblem, undefined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 // ============================================================================
 // checkAndHandleMilestoneCompletions (main orchestration)
 // ============================================================================
