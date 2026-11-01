@@ -69,3 +69,10 @@ advisory), #3761 (existing citation, kept).
   `pr_claims_verified_3058_test.ts` and
   `issue_prompt_v39_independent_review_test.ts`: 19 passed, 0 failed.
 - No existing assertion was removed.
+- Head commit `a3e0612e` also changes `worker/deno/tests/loop_supervisor_test.ts`
+  (`startOrphanFake`): it now polls `pgrepFull(fakePath)` up to 50 times at 100
+  ms until the backgrounded child has exec'd, instead of one read straight
+  after the intermediate shell exits. This is a test-helper race fix in an
+  integration suite (#907) that `deno task test:unit` skips; it does not touch
+  the prompt or doc wording above and was not run here. It is carried only to
+  keep the PR summary true to the head.
