@@ -53,7 +53,15 @@ Backend only, no UI. Tests assert on real builder output:
 `worker/deno/tests/draft_continuation_4146_test.ts`,
 `worker/deno/tests/pr_feedback_drift_check_3143_test.ts`,
 `worker/deno/tests/failure_comment_no_vibecoder_numbers_4585_test.ts`. Issue
-numbers cited as provenance: #4585 only (this issue). The mutation-check
+numbers cited as provenance:
+
+- #4585: Unmet-criteria note, draft-continuation PR bodies, drift-check reply
+  and failure comment still cite VibeCoder issue numbers in target repos
+  (NEAT-AI#4131).
+- #3750: Diff-scoped mutation gate (#3393) runs only at PR raise: review-fix
+  rounds still add branches no test pins (VibeCoder#3160, #3312, #3716).
+
+The mutation-check
 manual (`docs/mutation-check.md`, Review-fix runs and Outcomes)
 and PR-feedback manual (`docs/workflows/pr-feedback.md`, drift check) were read
 and updated to name the emitted `### Drift check` and `#### Mutation check`
