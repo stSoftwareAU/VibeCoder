@@ -290,7 +290,7 @@ Deno.test("runPrFeedbackDriftCheck - a survivor that outlives the recovery turn 
           "check found lines this push added that no test pins — see below.",
       ),
     );
-    assertStringIncludes(message, "#### Mutation check (Issue #3750)");
+    assertStringIncludes(message, "#### Mutation check");
     assertStringIncludes(message, "lib/rule.ts:2");
     assert(!message.includes("found text this push leaves"));
   } finally {
@@ -528,7 +528,7 @@ Deno.test("formatDriftResidual - a survivors-only residual has no 'found text' i
     mutationSurvivors: ["`lib/rule.ts:2` — negated if condition"],
   });
   assert(!text.includes("found text this push leaves"));
-  assertStringIncludes(text, "#### Mutation check (Issue #3750)");
+  assertStringIncludes(text, "#### Mutation check");
   assertStringIncludes(
     text,
     "No test went red when each of these mutations was applied to a line this push added",
@@ -544,7 +544,7 @@ Deno.test("formatDriftResidual - a mutationNote-only residual prints the note un
     mutationNote: "mutation budget exhausted after 1 of 2 mutants (300 s)",
   });
   assert(!text.includes("found text this push leaves"));
-  assertStringIncludes(text, "#### Mutation check (Issue #3750)");
+  assertStringIncludes(text, "#### Mutation check");
   assertStringIncludes(text, "mutation budget exhausted after 1 of 2 mutants");
 });
 

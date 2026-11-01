@@ -796,7 +796,7 @@ export function formatDriftResidual(residual: DriftResidual): string {
   const hasHits = residualHasTextHits(residual);
 
   const lines: string[] = [];
-  lines.push("### Drift check (Issue #3143)");
+  lines.push("### Drift check");
   lines.push("");
   // When there is nothing but an unavailable model pass or an unchecked
   // change-request quote, the "found text…" intro would claim a hit that
@@ -861,7 +861,8 @@ export function formatDriftResidual(residual: DriftResidual): string {
     survivors.length > 0 || residual.mutationNote !== undefined ||
     residual.mutationCheckUnavailable !== undefined
   ) {
-    lines.push("#### Mutation check (Issue #3750)");
+    // Mutation check section (Issue #3750); the heading carries no issue number.
+    lines.push("#### Mutation check");
     lines.push("");
     if (survivors.length > 0) {
       lines.push(

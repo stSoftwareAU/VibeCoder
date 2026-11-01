@@ -90,7 +90,7 @@ export function unmetCriteriaReason(
   const n = unmet.length;
   return `${n} acceptance criteri${
     n === 1 ? "on is" : "a are"
-  } not met — named on the pull request, which is raised anyway (Issue #4146)`;
+  } not met — named on the pull request, which is raised anyway`;
 }
 
 function quoted(text: string): string {
@@ -110,7 +110,7 @@ export function buildUnmetCriteriaGateComment(
 ): string {
   const lines = unmet.map((s) => `- **${s.status}** — ${quoted(s.criterion)}`);
   return [
-    "### Acceptance criteria not met (Issue #4146)",
+    "### Acceptance criteria not met",
     "",
     "The PR summary does not show every acceptance criterion as `met`:",
     "",

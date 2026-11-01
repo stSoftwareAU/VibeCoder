@@ -172,8 +172,7 @@ export function buildUnmetDraftBody(issueNumber: number, body: string): string {
     `> **Draft — not every acceptance criterion is met yet.** Part of #${issueNumber}. ` +
     "The next run continues this branch; when it completes, the PR is " +
     "marked ready and auto-merge armed, even with a criterion still unmet, " +
-    "and it says `Closes #N` unless an entry is `missing` " +
-    "(Issues #4146, #4234).",
+    "and it says `Closes #N` unless an entry is `missing`.",
     "",
     withholdIssueClose(body, issueNumber),
   ].join("\n");
@@ -271,6 +270,6 @@ export function buildDraftContinuationBody(issueNumber: number): string {
     "The issue stays under `work-on`: the next run resumes this branch; " +
     "when it completes, this PR is marked ready and auto-merge armed, even " +
     "with a criterion still unmet, and it says `Closes #N` unless an entry " +
-    "is `missing` (Issues #4146, #4234).",
+    "is `missing`.",
   ].join("\n");
 }

@@ -184,3 +184,25 @@ for (
     assert(body.includes("Part of #4146"), body);
   });
 }
+
+// Issue #4585: the draft bodies are posted in the target repo, where a bare
+// `#N` links to an unrelated issue. The only number allowed is that repo's own
+// issue (`Part of #42`).
+const TARGET_ISSUE = 42;
+
+for (
+  const [name, text] of [
+    ["timed-out draft", buildDraftContinuationBody(TARGET_ISSUE)],
+    [
+      "unmet-criteria draft",
+      buildUnmetDraftBody(TARGET_ISSUE, "Closes #42\n\nWork done.\n"),
+    ],
+  ] as const
+) {
+  Deno.test(`draft continuation - the ${name} carries no issue number but the target's own (Issue #4585)`, () => {
+    const stray = (text.match(/#\d+/g) ?? []).filter((n) =>
+      n !== `#${TARGET_ISSUE}`
+    );
+    assertEquals(stray, [], text);
+  });
+}
