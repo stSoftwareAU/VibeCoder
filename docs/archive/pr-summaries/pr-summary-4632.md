@@ -1,10 +1,12 @@
 ## Summary
 
 Stopped `loop.sh` from signalling every launchd Virtualization VM after a
-wedged-container recovery. The supervisor still tries the runtime kill and
-terminates the matching host-side run client, then logs and skips VM termination
-because the current runtime interface cannot tie a VM PID to the target
-container. Closes #4632.
+wedged-container recovery. After the runtime kill and the matching `container
+run` client termination, `force_stop_container` now calls the watchdog's
+`container-reap` command for the container name. That command SIGKILLs only
+runtime helpers whose executable and argv identify the container, and
+`reapWedgedContainer` logs when no helper matches. No Virtualization VM is
+signalled by name or PPID. Closes #4632.
 
 Version bump: none; no version file changed for this fix.
 
@@ -20,8 +22,11 @@ Version bump: none; no version file changed for this fix.
 ### Essential Design Decisions
 
 - Runtime kill and container-specific client termination remain in place.
-- VM termination is skipped while no supported ownership mapping is available; a
-  wedged VM may remain until the runtime or host recovers it.
+- The VM-sweep is replaced by the watchdog's existing process selector
+  (`container-reap --grace-seconds 0`), so the signalled set is bounded by
+  container-name ownership rather than a global process-name match.
+- `force_stop_container` returns 1 if Deno or the worker module is unavailable,
+  and logs when the reaper fails or finds no helper.
 
 ### Undiscoverable Facts
 
@@ -36,11 +41,13 @@ Version bump: none; no version file changed for this fix.
 
 Backend supervisor change; no UI surface changed.
 
-- `worker/deno/tests/loop_force_stop_container_test.ts` intercepts all
-  fabricated PIDs (client 5555 and VMs 6661/6662), recording signals instead of
-  forwarding them to the real kill builtin. Its signal log must contain exactly
-  TERM and KILL for the fake client, so signalling either unrelated VM fails the
-  test.
+- `worker/deno/tests/loop_force_stop_container_test.ts` drives the real
+  `loop.sh` path with three real `sleep` helpers listed by a fake `ps`: one
+  `container-runtime-linux vibe-coder-worker` (target), one for
+  `vibe-coder-other`, and one `Virtualization.VirtualMachine`. After
+  "container reaper finished", the target helper must have been killed
+  (unsuccessful exit status) while the other two stay alive, and the fake client
+  and fake VM PIDs receive only the expected signals.
 - Apple source:
   [`ContainerInspect.swift`](https://github.com/apple/container/blob/af7c4391c238dbe0a1fa45cfebec386b97d71eeb/Sources/ContainerCommands/Container/ContainerInspect.swift#L37-L53),
   [`ContainerSnapshot.swift`](https://github.com/apple/container/blob/af7c4391c238dbe0a1fa45cfebec386b97d71eeb/Sources/ContainerResource/Container/ContainerSnapshot.swift#L20-L42),
@@ -57,35 +64,32 @@ flowchart TD
   RuntimeKill --> StillRunning{"Container still running?"}
   StillRunning -->|No| Done["Recovery complete"]
   StillRunning -->|Yes| Client["Terminate matching run client"]
-  Client --> Skip["Log skipped VM termination"]
-  Skip --> Done
+  Client --> Reaper["container-reap: SIGKILL matching runtime helper"]
+  Reaper --> Done
 ```
 
 ## Test Plan
 
-- Safely reproduced the verifier finding at the previous head: instrumenting the
-  kill wrapper's fallback recorded `UNINTERCEPTED -TERM 5555` and
-  `UNINTERCEPTED -KILL 5555` without delivering either signal. The wrapper now
-  intercepts client PID 5555 as well as both fake VM PIDs.
-- `worker/deno/tests/loop_force_stop_container_test.ts`: the updated exact
-  signal assertion failed when the original global VM sweep was temporarily
-  restored alongside the skip log, because the log additionally contained
-  `-TERM 6661` and `-TERM 6662`. All three fake PIDs were safely intercepted.
-  Restored the production script before the final passing run. Final command
-  from `worker/deno`:
-  `deno test --frozen --lock=deno.lock --allow-read --allow-env
-  --allow-run --allow-write --allow-sys=hostname
-  tests/loop_force_stop_container_test.ts tests/integration_test_manifest_test.ts`
-  passed (11 tests).
+- Head `a1830c00` replaced the earlier "log and skip" recovery with the
+  `container-reap` call; this summary was rewritten for that head.
+- `worker/deno/tests/loop_force_stop_container_test.ts`: from `worker/deno`,
+  `deno test --frozen --lock=deno.lock --allow-read --allow-env --allow-run
+  --allow-write --allow-sys=hostname tests/loop_force_stop_container_test.ts
+  tests/integration_test_manifest_test.ts` passed (11 tests) on this head.
+  The test waits (15 s deadline) for "container reaper finished", asserts the
+  name-matched helper was killed and the unrelated runtime helper and
+  Virtualization VM survived. Earlier iterations showed that restoring the
+  global VM sweep made the signal log contain `-TERM 6661` and `-TERM 6662`.
 - `worker/deno/tests/integration_test_manifest_test.ts`: included above (10
   tests), confirming the shell-driving regression is classified as an
   integration test.
+- `worker/deno/lib/container_watchdog.ts`: the new "no runtime helper found"
+  log line is on the path the test's reaper run reaches only when no helper
+  matches; it is a log-only branch with no behavioural outcome to assert.
+- Summary freshness (#3768): the CI failure was this file being older than the
+  code commit; fixed by this rewrite.
 - `deno lint` and `deno fmt --check` on the changed TypeScript files passed.
 - `bash -n loop.sh`, `shellcheck loop.sh` and `git diff --check` passed.
-- The test proves the runtime-kill-failed path and the unavailable-ownership
-  outcome. A positive owned-VM case is not implemented: Apple `container`
-  exposes no supported host VM identity to confirm, and diagnostic launchd
-  output is not a production-safe substitute.
 - `timeout 900 ./quality.sh < /dev/null`: timed out at 900 seconds while
   `cargo test --lib --tests --all-features -- --test-threads=2` was still
   running. The last emitted gate result before timeout was
