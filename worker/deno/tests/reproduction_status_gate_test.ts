@@ -247,3 +247,19 @@ Deno.test("buildReproductionGateComment - names each problem and the shape", () 
   assertStringIncludes(comment, "not-run");
   assertStringIncludes(comment, result.problems[0]!);
 });
+
+Deno.test("buildReproductionGateComment - does not claim the PR is withheld or that a gate blocks", () => {
+  const result = validateReproductionStatus({
+    issueLabels: BUG_LABELS,
+    prSummaryContent: summaryWith(""),
+  });
+  const comment = buildReproductionGateComment(result);
+
+  assertStringIncludes(comment, "raised anyway");
+  assertEquals(
+    comment.match(
+      /\bblocks?\b (a|the|PR)|blocked PR|before the PR is raised|no PR (is )?raised|PR is raised only|withheld/i,
+    ),
+    null,
+  );
+});

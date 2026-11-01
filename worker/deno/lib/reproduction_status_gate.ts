@@ -315,7 +315,9 @@ export function validateReproductionStatus(opts: {
 }
 
 /**
- * Build the issue comment posted when the reproduction gate blocks PR creation.
+ * Build the issue comment reported when the reproduction block is missing or
+ * malformed (Issue #4234): it is reported once in the session, whatever
+ * remains is named in the PR's reviewer note, and the PR is raised anyway.
  *
  * Names every rule broken and restates the required shape, so the next attempt
  * can fix the summary without re-deriving the format.
@@ -326,8 +328,9 @@ export function buildReproductionGateComment(
   const problems = result.problems.map((problem) => `- ${problem}`).join("\n");
   return [
     "⚠️ **Reproduction status missing.** This issue is labelled `bug`, so the " +
-    "PR summary must record how far the original symptom was actually " +
-    "reproduced before the PR is raised:",
+    "PR summary should record how far the original symptom was actually " +
+    "reproduced; anything still missing is named on the pull request, which is " +
+    "raised anyway:",
     "",
     problems,
     "",
