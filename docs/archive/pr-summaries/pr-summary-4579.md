@@ -59,11 +59,12 @@ Backend log-text change. Tests run from `worker/deno`:
   - Red check: with `completion_phase.ts` temporarily restored to the base
     branch's version ("blocked PR creation" in the five lines), each test file
     fails at its new assertion and passes on the head:
-    `worker/deno/tests/completion_phase_advisory_gates_4234_test.ts` (2 tests
-    at head; 1 failed on base), `worker/deno/tests/completion_phase_mutation_gate_test.ts`
-    (21 tests at head; 1 failed on base),
-    `worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts`
-    (10 tests at head; 1 failed on base).
+    `worker/deno/tests/completion_phase_advisory_gates_4234_test.ts` (2 tests at
+    head; 1 failed on base),
+    `worker/deno/tests/completion_phase_mutation_gate_test.ts` (21 tests at
+    head; 1 failed on base),
+    `worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts` (10
+    tests at head; 1 failed on base).
 - No existing assertion was removed or edited.
 - Docs: grepped `README.md`, `docs/` (excluding archive) and `prompts/` for
   "blocked PR creation"; the only hit is the historical audit record named
