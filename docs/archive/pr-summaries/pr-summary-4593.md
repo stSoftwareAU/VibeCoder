@@ -31,8 +31,8 @@ final version.
   `startBabysitterAgent` computes the list before minting the token, so a
   failure leaves no attempt recorded.
 - The profile is passed as two `-c` overrides: `default_permissions` and one
-  inline-table value for `permissions.babysitter-agent.filesystem` whose keys are
-  the JSON-escaped paths. Codex splits a `-c` key on every `.`, and every
+  inline-table value for `permissions.babysitter-agent.filesystem` whose keys
+  are the JSON-escaped paths. Codex splits a `-c` key on every `.`, and every
   protected path contains dots (`.vibe-coder`, `.git`, `.pem`); a TOML value is
   parsed as TOML, so quoted keys inside it survive intact and the `-c` key stays
   dot-free. JSON escaping means a path containing a quote cannot add a key.
@@ -43,12 +43,12 @@ final version.
   network, so the profile keys (`default_permissions`,
   `permissions.<name>.filesystem` as a table of path to `read`/`write`/`none`)
   come from memory of Codex's configuration, not from an installed CLI or its
-  docs. The dotted-key splitting risk is avoided by construction (see above), but
-  the table semantics are still unrun here. If
-  Codex rejects them the agent fails loudly; if it accepts them with different
-  semantics (for example the network default, which `workspace-write` governed
-  before) the operator must adjust. `docs/workflows/fleet-pr-babysitter.md` now
-  tells the operator how to confirm a denied read on the host.
+  docs. The dotted-key splitting risk is avoided by construction (see above),
+  but the table semantics are still unrun here. If Codex rejects them the agent
+  fails loudly; if it accepts them with different semantics (for example the
+  network default, which `workspace-write` governed before) the operator must
+  adjust. `docs/workflows/fleet-pr-babysitter.md` now tells the operator how to
+  confirm a denied read on the host.
 - The agent's own `gh` login (its credential store, if any) is outside this
   boundary. This PR does not change it.
 
@@ -71,8 +71,9 @@ Callers of the changed functions: `spawnBabysitterAgent` is called only by
 New: `worker/deno/tests/fleet_babysitter_sandbox_test.ts` (13 tests: protected
 paths from the babysitter entries, the configured key and symlink targets, a
 missing `.vibe-coder`, non-absolute inputs, the exact argument list, refusal of
-empty lists and of a clone or scratch directory inside a protected path each
-with a positive control, and quote escaping).
+empty lists, of a clone or scratch directory inside a protected path, of a
+non-absolute scratch directory or protected path, and of a NUL byte, each with a
+positive control, and quote escaping).
 
 Changed: `worker/deno/tests/fleet_pr_babysitter_test.ts` (the argv test expects
 the profile arguments in place of `--sandbox workspace-write`; new tests for no
