@@ -407,7 +407,7 @@ mounted into the container. Use a different App from the worker's own
 When the fleet PR babysitter runs under the same host user, its Codex filesystem
 profile denies this configured key along with the worker credential directory,
 the worker App and SSH keys, and the host `gh` store; see the
-[babysitter credential boundary](workflows/fleet-pr-babysitter.md#verifying-the-credential-boundary).
+[babysitter credential boundary](workflows/fleet-pr-babysitter.md).
 
 The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
 read and write, plus **Checks** and **Commit statuses** read. Contents write
