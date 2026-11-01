@@ -54,9 +54,12 @@ interface Pr {
   statusCheckRollup:
     | { state?: string; status?: string; conclusion?: string }[]
     | null;
+  labels?: { name: string }[];
 }
 const fields =
-  "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
+  "number,state,title,author,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,labels";
+/** A PR waiting on a person: the babysitter leaves it alone (owner rule 2026-11-01). */
+const NEEDS_HUMAN_LABEL = "needs-human";
 
 /** A clone may leave a partial destination, so it must not be retried in place. */
 export async function cloneForRepair(
@@ -296,7 +299,8 @@ export async function validateAndCommit(
 export function reason(pr: Pr): string | null {
   if (
     pr.state !== "OPEN" || pr.isDraft || pr.isCrossRepository ||
-    !Array.isArray(pr.statusCheckRollup)
+    !Array.isArray(pr.statusCheckRollup) ||
+    pr.labels?.some((l) => l.name.toLowerCase() === NEEDS_HUMAN_LABEL)
   ) return null;
   if (pr.mergeable === "CONFLICTING") return "merge conflict";
   if (

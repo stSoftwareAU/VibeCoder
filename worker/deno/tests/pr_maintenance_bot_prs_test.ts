@@ -55,6 +55,8 @@ interface FixturePr {
   failedChecks?: Array<{ id: number; name: string }>;
   /** The Actions step that failed, per check id. */
   failedStep?: Record<number, string>;
+  /** Labels on the PR. */
+  labels?: string[];
   /** Top-level issue comments the feedback scan can action. */
   issueComments?: Array<{ login: string; id: number; body: string }>;
 }
@@ -135,7 +137,7 @@ function makeGh(
         isCrossRepository: pr.isCrossRepository ?? false,
         autoMergeRequest: pr.autoMergeRequest ?? null,
         mergeable: "MERGEABLE",
-        labels: [],
+        labels: (pr.labels ?? []).map((name) => ({ name })),
         comments: [],
         reviews: [],
       })));
@@ -548,4 +550,25 @@ Deno.test("findPrCommentsToFix - onlyPrNumber skips the other commented PR in th
   if (!scoped.ok) return;
   assertEquals(scoped.value?.prNumber, BOT_PR_2);
   assertEquals(scoped.value?.commentId, "982");
+});
+
+// Owner rule 2026-11-01: a PR labelled `needs-human` waits on a person, so
+// every lane that lists through `listActionablePrs` stops working it.
+Deno.test("listActionablePrs - a PR labelled needs-human is admitted by no lane", async () => {
+  const prs = [
+    { number: BOT_PR, author: BOT, headRefName: "dependabot/deno/std" },
+    {
+      number: BOT_PR_2,
+      author: BOT2,
+      headRefName: "renovate/deno-std",
+      labels: ["needs-human"],
+    },
+  ];
+  const admitted = await listActionablePrs(
+    REPO,
+    [BOT],
+    "number,headRefName",
+    baseOptions({ githubUser: HOST, ghCommandFn: makeGh(prs) }),
+  );
+  assertEquals(admitted.map((pr) => pr.number), [BOT_PR]);
 });
