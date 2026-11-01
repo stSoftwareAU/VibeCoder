@@ -920,8 +920,8 @@ export const CARGO_BUDGET_AGENT_WITHHELD = "cargo budget withheld the agent";
  * Ledger reason when a conflict is deferred because too little of the cycle
  * was left to offer the agent (Issue #4517). It waits for a cycle with the
  * runway. It is not a refusal, so it is never counted toward the roll-back,
- * and it adds nothing to {@link SyncStreakEntry.count}, which the recovery
- * ladder reads as prior declines.
+ * and it adds nothing to {@link SyncStreakEntry.resolverDeclines}, which the
+ * recovery ladder reads as prior declines (Issue #4587).
  */
 export const AGENT_DEFERRED_CYCLE_BUDGET = "agent deferred: cycle budget";
 
@@ -989,7 +989,7 @@ export function resolverRungDue(
   if (reason === RECOVERY_REBUILD) return "close";
   if (reason === RECOVERY_ROLLBACK) return "rebuild";
   if (!climbsRecoveryLadder(reason)) return null;
-  const rung = nextResolverRecoveryRung(entry.count);
+  const rung = nextResolverRecoveryRung(entry.resolverDeclines ?? 0);
   // A roll-back already spent on the branch hands off to the rebuild-first
   // path instead (Issue #4328, PR #4344).
   if (rung === "rollback" && isRollbackSpent(entry)) return null;
@@ -1168,8 +1168,13 @@ async function applyRollbackOutcome(opts: {
 
   if (outcome.merged) {
     const nextRollbacks = (entry.rollbacks ?? 0) + 1;
+    // Issue #4587: a landed roll-back is not a landed sync, and it never
+    // touched the decline count, so the declines carry over the reset. The
+    // rebuild rung after a spent roll-back depends on them.
+    const declines = entry.resolverDeclines;
     entry = resetConflictLedgerOnSuccess(entry);
     entry.rollbacks = nextRollbacks;
+    if (declines !== undefined) entry.resolverDeclines = declines;
     const prs = new Set(entry.revertedPrs ?? []);
     const shas = new Set(entry.revertedShas ?? []);
     for (const child of outcome.reverted) {
@@ -2739,7 +2744,13 @@ export async function syncMilestoneBranches(
                 `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} runs again ` +
                 `(Issue #2311)`,
             );
+            // Issue #4587: a re-arm is not a landed sync, and it never touched
+            // the decline count, so the declines carry over the reset.
+            const declines = entry.resolverDeclines;
             entry = resetConflictLedgerOnSuccess(entry);
+            if (declines !== undefined) {
+              entry = { ...entry, resolverDeclines: declines };
+            }
             streaks[streakKey] = entry;
             streaksDirty = true;
           }
@@ -3230,8 +3241,9 @@ export async function syncMilestoneBranches(
             // failures and, at the threshold, post one needs-human comment on
             // the milestone's tracking issue.
             // A cycle-budget deferral is not a failed attempt, so it adds
-            // nothing to `count`, the figure the resolver recovery ladder
-            // reads as prior declines (Issue #4517, PR #4581 review).
+            // nothing to `count`, and nothing to `resolverDeclines`, the figure
+            // the resolver recovery ladder reads as prior declines (Issue #4517,
+            // PR #4581 review; Issue #4587).
             const judged = judgeSyncFailure(syncResult.error, agentAllowed);
             let entry: SyncStreakEntry | undefined;
             if (streakPath) {
@@ -3314,8 +3326,20 @@ export async function syncMilestoneBranches(
               streaks[streakKey] = entry;
               streaksDirty = true;
               if (verdict.outcome === "failed") {
-                const priorRefusals = entry.count - 1;
-                const recoveryNow = climbsRecoveryLadder(verdict.reason)
+                // Issue #4587: only a verdict that climbs the ladder is a
+                // resolver decline. It is counted before the rung is read, so
+                // `priorRefusals` is the declines that came before this one.
+                const climbs = climbsRecoveryLadder(verdict.reason);
+                if (climbs) {
+                  entry = {
+                    ...entry,
+                    resolverDeclines: (entry.resolverDeclines ?? 0) + 1,
+                  };
+                  streaks[streakKey] = entry;
+                  streaksDirty = true;
+                }
+                const priorRefusals = (entry.resolverDeclines ?? 1) - 1;
+                const recoveryNow = climbs
                   ? nextResolverRecoveryRung(priorRefusals)
                   : "resolve";
                 // A roll-back already spent on the branch is followed by the
