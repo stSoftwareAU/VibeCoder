@@ -39,7 +39,9 @@ export const MILESTONE_CONFLICT_ATTEMPT_BUDGET = CONFLICT_RESOLUTION_BUDGET;
  * resolution — a not-charged verdict such as the merge gate refusing the
  * resolution — before the ladder climbs to the roll-back anyway (Issue #4328).
  * A cycle-budget deferral ("agent deferred: cycle budget") is not a refusal
- * and is never counted here (Issue #4517).
+ * and is never counted here (Issue #4517). Nor is a cargo-budget withhold
+ * ("cargo budget withheld the agent"), which waits for the host's disk and
+ * is never counted here either (Issue #4588).
  *
  * A refusal never spends the conflict budget, so without this ceiling a branch
  * refused every cycle would be retried for ever and never reach the roll-back.
@@ -235,7 +237,8 @@ export interface SyncStreakEntry {
   /**
    * Consecutive cycles refused a conflict resolution with a refusal verdict
    * (Issue #4328). A cycle-budget deferral is not a refusal and does not
-   * count (Issue #4517). A charged conclusion zeroes it. Absent reads as 0.
+   * count (Issue #4517), and neither does a cargo-budget withhold (Issue
+   * #4588). A charged conclusion zeroes it. Absent reads as 0.
    */
   refusedCycles?: number;
   /**
