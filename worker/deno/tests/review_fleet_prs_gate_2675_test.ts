@@ -1814,6 +1814,19 @@ Deno.test("ownDiffUnchanged: a dropped file with unknown or empty findings is a 
   );
 });
 
+Deno.test("ownDiffUnchanged: a dropped file named by an earlier finding gap is a fresh review (Issue #4542)", async () => {
+  const gap = {
+    file: "(earlier review)",
+    line: 0,
+    problem: "The earlier finding is not verified as fixed",
+    earlier: { file: "pkg/docs.md", line: 1, problem: "Restore this file" },
+  };
+  assertEquals(
+    await ownDiffUnchanged(droppedGh(), "o/r", "main", "X", "head", [gap]),
+    false,
+  );
+});
+
 Deno.test("ownDiffUnchanged: a file only the head lists is a fresh review (Issue #4542)", async () => {
   const { gh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{

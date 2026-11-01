@@ -528,15 +528,16 @@ function isVersionIncrement(patch: string): boolean {
 }
 
 // Whether an earlier finding names `filename`: its path is the file itself or
-// ends with `/${filename}`, a qualified path. Unknown findings (undefined) name
-// every file, so nothing is confirmed unchanged without them.
+// ends with `/${filename}`, a qualified path, including in an earlier-finding
+// gap. Unknown findings (undefined) name every file.
 function findingNamesFile(
-  findings: readonly Pick<Finding, "file">[] | undefined,
+  findings: readonly Pick<Finding, "file" | "earlier">[] | undefined,
   filename: string,
 ): boolean {
   return findings === undefined ||
     findings.some((f) =>
-      f.file === filename || f.file.endsWith(`/${filename}`)
+      f.file === filename || f.file.endsWith(`/${filename}`) ||
+      (f.earlier !== undefined && findingNamesFile([f.earlier], filename))
     );
 }
 
@@ -569,7 +570,7 @@ export async function ownDiffUnchanged(
   base: string,
   since: string,
   head: string,
-  findings?: readonly Pick<Finding, "file">[],
+  findings?: readonly Pick<Finding, "file" | "earlier">[],
 ): Promise<boolean> {
   try {
     const sinceToHead: ComparePr = JSON.parse(
