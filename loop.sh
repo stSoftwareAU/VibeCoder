@@ -45,6 +45,10 @@ set -uo pipefail
 #           consecutive failures, records the recovery as a self-heal event and
 #           escalates a repeatedly failing host through the host's own
 #           `callbacks.host_failure` hook (Issue #2108) - never GitHub.
+#   #4568 — the control-plane probe stops when its loop.sh is gone or changes
+#           parent, or when its watched container is gone. A live loop.sh
+#           re-parented mid-cycle loses its probe until the next cycle records
+#           its new parent; a fresh loop.sh reaps registered checkout orphans.
 ################################################################################
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -359,6 +363,41 @@ reap_orphaned_containers() {
     done < <(pgrep -f "container run .*--name vibe-coder-" 2>/dev/null || true)
 }
 
+# Reap the control-plane probes that an earlier supervisor orphaned (Issue #4568).
+#
+# A probe registers itself as ${VIBE_PROBES_DIR}/<its PID>, holding the checkout
+# it runs from. A supervisor SIGKILLed mid-cycle cannot stop its probe: the
+# kernel re-parents the probe to init. At start-up an entry is acted on only
+# when all of these hold, so a PID the kernel has since re-issued is never
+# signalled:
+#   - the entry names this checkout;
+#   - the process is alive, re-parented to init (PPID 1); and
+#   - its command line is loop.sh.
+# An entry whose process has gone is removed; anything else is left alone.
+# Best-effort, and always returns 0.
+reap_orphaned_probes() {
+    [[ -d "${VIBE_PROBES_DIR}" ]] || return 0
+    local entry pid recorded ppid command
+    for entry in "${VIBE_PROBES_DIR}"/*; do
+        [[ -f "${entry}" ]] || continue
+        pid="${entry##*/}"
+        if [[ ! "${pid}" =~ ^[0-9]+$ ]] || ! kill -0 "${pid}" 2>/dev/null; then
+            rm -f "${entry}" 2>/dev/null || true
+            continue
+        fi
+        recorded="$(cat "${entry}" 2>/dev/null || true)"
+        ppid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d ' ')"
+        command="$(ps -o command= -p "${pid}" 2>/dev/null || true)"
+        [[ "${recorded}" == "${SCRIPT_DIR}" ]] || continue
+        [[ "${ppid}" == "1" ]] || continue
+        [[ "${command}" == *loop.sh* ]] || continue
+        echo "loop.sh: reaping orphaned control-plane probe PID ${pid} (supervisor gone)"
+        kill -TERM "${pid}" 2>/dev/null || true
+        rm -f "${entry}" 2>/dev/null || true
+    done
+    return 0
+}
+
 ################################################################################
 # Container control-plane liveness (Issue #323)
 #
@@ -379,12 +418,18 @@ reap_orphaned_containers() {
 ################################################################################
 VIBE_PROBE_INTERVAL_SECONDS="${VIBE_PROBE_INTERVAL_SECONDS:-120}"
 VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
+# One file per live probe, named by its PID (Issue #4568): see reap_orphaned_probes.
+VIBE_PROBES_DIR="${VIBE_STATE_DIR}/probes"
 
-# Echo the name of the running vibe-coder container, or nothing.
+# Echo the running worker container, excluding launch-time side containers.
+# When given a name, look only for that worker; propagate listing failures.
 running_vibe_container() {
-    command -v container >/dev/null 2>&1 || return 0
+    command -v container >/dev/null 2>&1 || return 1
     bounded 30 container ls 2>/dev/null |
-        awk '$1 ~ /^vibe-coder-/ && $0 ~ /running/ { print $1; exit }'
+        awk -v watched="${1:-}" '$1 ~ /^vibe-coder-/ && $1 !~ /-(egress|init)$/ &&
+            $0 ~ /running/ && (watched == "" || $1 == watched) && !found {
+                print $1; found = 1
+            }'
 }
 
 # Terminate a container whose control plane is dead, and the VM behind it.
@@ -425,18 +470,77 @@ force_stop_container() {
     done < <(pgrep -f "Virtualization.VirtualMachine" 2>/dev/null || true)
 }
 
+# Whether the supervisor that started a probe is gone, or is no longer the
+# process that started it (Issue #4568). `owner_ppid` is the owner's parent as
+# it was when the probe started: a PID the kernel has re-issued to something
+# else shows a different parent, so it cannot keep the probe alive. Returns 0
+# when the probe should stop, and says why.
+#
+# Usage: probe_owner_gone <owner-pid> <owner-ppid-at-start>
+probe_owner_gone() {
+    local owner="$1" owner_ppid="$2" owner_now
+    if ! kill -0 "${owner}" 2>/dev/null; then
+        echo "loop.sh: control-plane probe stopping — supervisor PID ${owner} is gone"
+        return 0
+    fi
+    # An unknown parent at start is no evidence of PID reuse.
+    [[ -n "${owner_ppid}" ]] || return 1
+    owner_now="$(ps -o ppid= -p "${owner}" 2>/dev/null | tr -d ' ')"
+    if [[ "${owner_now}" != "${owner_ppid}" ]]; then
+        echo "loop.sh: control-plane probe stopping — supervisor PID ${owner} changed parent"
+        return 0
+    fi
+    return 1
+}
+
+# Register a probe so a later supervisor can reap it if this one is SIGKILLed
+# (Issue #4568). The file is named by the probe's PID and holds the checkout it
+# runs from. Best-effort: bookkeeping never fails a cycle, and says nothing
+# when it works.
+register_probe() {
+    local pid="$1"
+    mkdir -p "${VIBE_PROBES_DIR}" 2>/dev/null || return 0
+    printf '%s\n' "${SCRIPT_DIR}" >"${VIBE_PROBES_DIR}/${pid}" 2>/dev/null || true
+    return 0
+}
+
+# Remove a probe's registration once the probe has been stopped (Issue #4568).
+unregister_probe() {
+    rm -f "${VIBE_PROBES_DIR}/$1" 2>/dev/null || true
+    return 0
+}
+
 # Probe the control plane until it fails N times in a row, then recover.
-# Runs in the background beside run.sh and exits when the container goes away.
+#
+# Runs in the background beside run.sh, once per cycle, with $1 the supervisor's
+# PID. It stops when:
+#   - its supervisor is gone, or is no longer the process that started it
+#     (Issue #4568) - a SIGKILLed loop.sh must not leave a probe behind;
+#   - it has seen a container and that container has since gone away;
+#   - it has recovered a container whose control plane was dead (Issue #323).
+# Until a container has been seen it keeps waiting, because run.sh may still be
+# building the image; the supervisor check is what bounds that wait.
 probe_control_plane() {
     command -v container >/dev/null 2>&1 || return 0
-    local failures=0 name
+    local owner="$1" owner_ppid
+    owner_ppid="$(ps -o ppid= -p "${owner}" 2>/dev/null | tr -d ' ')"
+    local failures=0 name watched=""
     while true; do
         sleep "${VIBE_PROBE_INTERVAL_SECONDS}"
-        name="$(running_vibe_container)"
-        if [[ -z "${name}" ]]; then
+        probe_owner_gone "${owner}" "${owner_ppid}" && return 0
+        if ! name="$(running_vibe_container "${watched}")"; then
             failures=0
             continue
         fi
+        if [[ -z "${name}" ]]; then
+            failures=0
+            if [[ -n "${watched}" ]]; then
+                echo "loop.sh: control-plane probe stopping — the container it watched is gone"
+                return 0
+            fi
+            continue
+        fi
+        watched="${name}"
         if bounded 30 container exec "${name}" true >/dev/null 2>&1; then
             failures=0
             continue
@@ -464,13 +568,19 @@ run_under_deadline() {
         "${VIBE_RUN_MAX_SECONDS}" "$@"
 }
 
+# Issue #4568: a probe orphaned by an earlier supervisor (SIGKILLed mid-cycle) is
+# reaped before this supervisor starts any probe of its own.
+reap_orphaned_probes
+
 while true; do
     run_status=0
     # Issue #323: probe the container's control plane while the run is up. The
-    # probe exits on its own once it recovers a dead container; otherwise it is
-    # stopped below when the run ends.
-    probe_control_plane &
+    # probe exits on its own once it recovers a dead container, or once the
+    # container it watched goes away; otherwise it is stopped below when the run
+    # ends (Issue #4568).
+    probe_control_plane "$$" &
     probe_pid=$!
+    register_probe "${probe_pid}"
     # Anchor the cap for the worker (Issue #421): epoch-seconds captured here,
     # immediately before `timeout` starts counting, so the ceiling the worker
     # computes and the deadline the supervisor enforces describe the same run.
@@ -504,6 +614,7 @@ while true; do
     fi
     kill "${probe_pid}" 2>/dev/null || true
     wait "${probe_pid}" 2>/dev/null || true
+    unregister_probe "${probe_pid}"
     if [[ "${run_status}" -eq "${RUN_DEADLINE_EXIT}" ]] || \
        [[ "${run_status}" -eq "${RUN_KILLED_EXIT}" ]]; then
         # Issue #322: the run outlived its wall-clock cap. Say so distinctly —
