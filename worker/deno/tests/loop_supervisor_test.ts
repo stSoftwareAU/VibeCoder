@@ -1018,19 +1018,25 @@ async function writeFakeSupervisor(tmpDir: string): Promise<string> {
  * fake is re-parented to init, exactly as an orphaned probe would be.
  */
 async function startOrphanFake(fakePath: string): Promise<number[]> {
-  await new Deno.Command("bash", {
-    args: ["-c", `nohup bash ${fakePath} >/dev/null 2>&1 &`],
-    stdout: "null",
+  const result = await new Deno.Command("bash", {
+    args: ["-c", 'nohup bash "$1" >/dev/null 2>&1 & echo $!', "_", fakePath],
+    stdout: "piped",
     stderr: "null",
   }).output();
-  // The background child may not have exec'd bash with fakePath yet when
-  // the intermediate shell exits. Wait for the command line the reaper sees.
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const pids = await pgrepFull(fakePath);
-    if (pids.length > 0) return pids;
+  const pid = Number(new TextDecoder().decode(result.stdout).trim());
+  assert(result.success && Number.isInteger(pid) && pid > 0);
+  // The shell can exit before the background process has exec'd bash.
+  // Wait for both its command line and reparenting before inspecting it.
+  for (let i = 0; i < 50; i++) {
+    if (
+      (await getCommand(pid)).includes(fakePath) && await parentPidOf(pid) === 1
+    ) {
+      return [pid];
+    }
     await delay(100);
   }
-  return [];
+  killQuietly([pid]);
+  throw new Error(`fake supervisor ${pid} did not start and become an orphan`);
 }
 
 Deno.test({
