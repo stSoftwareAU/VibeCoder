@@ -32,13 +32,13 @@ Version bump: `VERSION` is not touched by this change.
 
 ## Evidence
 
-Backend only. `lib/milestone_branch_sync.ts` loses `refusal: true` from the
+`lib/milestone_branch_sync.ts` loses `refusal: true` from the
 withhold verdict and its doc comments are corrected;
 `lib/milestone_sync_streak.ts` doc comments (`MILESTONE_REFUSAL_CEILING`,
-`refusedCycles`) now name the withhold alongside the deferral. No manual states
-that a withhold counts toward the ceiling (`docs/` swept for `cargo budget`,
-`CARGO_BUDGET_AGENT_WITHHELD`, `refusedCycles`; `docs/INTERNALS.md` and
-`docs/workflows/milestones.md` cycle-budget text remains true).
+`refusedCycles`) now name the withhold alongside the deferral. The operator
+manuals in `docs/INTERNALS.md`, `docs/CONTAINER.md` and
+`docs/workflows/milestones.md` now describe the withhold as uncounted rather
+than a refusal.
 
 ## Reproduction
 
