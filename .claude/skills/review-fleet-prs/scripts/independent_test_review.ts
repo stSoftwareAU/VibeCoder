@@ -127,5 +127,10 @@ export async function decideIndependentOutcome(
       `independent test review incomplete: ${reasons.join("; ")}`,
     );
   }
-  return decideOutcome(review, removedTests, { autoRelease: true });
+  // The reviewer currently has no isolated target checkout or runner-owned
+  // execution evidence. Its prose cannot establish that the surviving tests
+  // were independently inspected or exercised.
+  throw new Error(
+    "independent test execution evidence is unavailable; retry after an isolated runner is available",
+  );
 }

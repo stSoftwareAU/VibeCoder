@@ -126,6 +126,40 @@ Deno.test("incomplete independent evidence retries instead of approving", async 
   );
 });
 
+Deno.test("a complete-looking review claim cannot approve without runner evidence", async () => {
+  const review: FableReview = {
+    summary: "",
+    findings: [],
+    testChanges: "meaningful",
+    testChangeNotes: [evidence as TestChangeNote],
+    unrelatedIssues: [],
+    checklist: [],
+  };
+  const gh = (args: string[]) =>
+    Promise.resolve(
+      JSON.stringify(
+        args[0] === "pr"
+          ? {
+            closingIssuesReferences: [],
+            body: "Part of #42",
+            headRefName: "issue-42-example",
+          }
+          : { title: "The new contract", body: "" },
+      ),
+    );
+  await assertRejects(
+    () =>
+      decideIndependentOutcome(
+        { repo: "acme/widgets", number: 99, kind: "fleet" },
+        review,
+        [],
+        gh,
+      ),
+    Error,
+    "independent test execution evidence is unavailable",
+  );
+});
+
 Deno.test("posting binds an approval to the reviewed commit", () => {
   assertEquals(
     postReviewArgs(
