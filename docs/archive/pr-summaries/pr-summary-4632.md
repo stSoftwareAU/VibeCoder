@@ -16,8 +16,9 @@ Version bump: none; no version file changed for this fix.
 
 - A PPID of 1 does not prove a Virtualization VM is orphaned or belongs to the
   container being recovered.
-- Apple `container inspect` does not expose a host VM PID, so the recovery keeps
-  unrelated VMs untouched and records that VM termination was skipped.
+- Apple `container inspect` does not expose a host VM PID, so `container-reap`
+  identifies the VM's runtime helper by executable and container-name argv.
+  It leaves unrelated VMs untouched and logs when no helper matches.
 
 ### Essential Design Decisions
 

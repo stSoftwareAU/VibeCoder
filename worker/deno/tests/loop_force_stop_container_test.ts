@@ -89,6 +89,9 @@ esac
         PATH: `${binDir}:${Deno.env.get("PATH") ?? ""}`,
         BASH_ENV: join(binDir, "bash_env"),
         HOME: tmpDir,
+        WORK_DIR: join(tmpDir, "work"),
+        CONFIG_FILE: join(tmpDir, "config.json"),
+        CONFIG_PATH: join(tmpDir, "config.json"),
         VIBE_STATE_DIR: join(tmpDir, "state"),
         VIBE_PROBE_INTERVAL_SECONDS: "0",
         VIBE_PROBE_FAILURES: "1",
@@ -112,6 +115,10 @@ esac
         log,
         "container reaper finished for vibe-coder-worker",
       );
+      const events = await Deno.readTextFile(
+        join(tmpDir, "work", "logs", "self-heal.jsonl"),
+      );
+      assertStringIncludes(events, '"action":"container_wedged"');
       const targetStatus = await Promise.race([
         helpers[0].status,
         new Promise<undefined>((resolve) =>
