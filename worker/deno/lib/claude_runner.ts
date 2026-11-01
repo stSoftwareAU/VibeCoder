@@ -27,7 +27,6 @@ import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
-  type EphemeralRootDeps,
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
   parkRunningBuild,
@@ -481,8 +480,6 @@ export interface ClaudeRunResult {
 
 /** Options for running Claude with timeout. */
 export interface RunClaudeOptions {
-  /** Override the ephemeral cargo root operations, for isolated callers and tests. */
-  ephemeralRootDeps?: EphemeralRootDeps;
   /** Enforced CLI sandbox for a provider-neutral role invocation. */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
@@ -1246,11 +1243,11 @@ async function runClaudeWithTimeoutBody(
   };
   if (finishClamp?.belowFloor) return finishRefusal();
 
-  // Managers cannot run builds; other agents may build from their shell.
+  // An agent in a checkout runs cargo and deno. Below the floor it does not
+  // start (Issue #4360). No checkout means there is no build to bound, and
+  // the gate is a no-op until production arms it.
   if (cwd) {
-    const park = options.orchestrationRole === "manager"
-      ? await parkRunningBuild()
-      : await parkInFlightBuild(cwd, options.ephemeralRootDeps);
+    const park = await parkInFlightBuild(cwd);
     if (park) return { ok: false, error: new Error(park) };
   }
 

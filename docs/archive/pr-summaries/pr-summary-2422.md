@@ -1,55 +1,106 @@
 ## Summary
 
-Agent startup now checks the host floor without requiring cargo build headroom. Explicit build steps keep their headroom admission, so the reported disk readings no longer turn manager startup into a failed call. Fixes stSoftwareAU/NEAT-AI-Discovery#2422.
+An external orchestrated issue run now checks the executor's build admission
+once, before the manager's plan call. When the host is below its floor, or a
+cargo checkout is short of the floor plus headroom with the trim refused, the
+run ends with the park reason and makes no provider call. Part of
+stSoftwareAU/NEAT-AI-Discovery#2422.
 
-Version bump: none; this internal worker change does not alter a published compatibility version.
+Version bump: none; this internal worker change does not alter a published
+compatibility version.
+
+Run-level outcome, stated plainly: this does **not** let a cargo checkout run at
+the reported 58.2–64.3 GB readings. The executor can run `cargo`, so it stays
+held to the 46 GB floor plus 25 GB headroom, and the reading is the same one the
+executor would have been parked at. What changes is that the run ends before the
+manager's paid plan call instead of after it, and the next claim no longer pays
+for the plan again.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The reported 58.2–64.3 GB readings exceeded the 46 GB host floor but were below the 71 GB build reserve; manager startup inherited a build-only refusal and aborted before useful work.
-- Agent startup uses the floor-only park already used for active-process monitoring. Build admission remains at explicit build steps.
+- On the reported readings the manager was parked before any provider call on
+  `main`. An earlier iteration of this branch let the manager start at the floor
+  only; review showed that in the only flow that sets the manager role, the
+  executor call always follows and is parked at the same reading, so the
+  exemption only added a wasted plan call (and a Codex manager can build, so it
+  was not safe either). That exemption is removed; `claude_runner.ts` and
+  `heavy_build_gate.ts` are unchanged from `main`.
+- The check is the executor's own: `parkInFlightBuild(workspaceDir)`, the park
+  every build-capable agent already gets in `runClaudeWithTimeout`.
 
 ### Essential Design Decisions
 
-- A host below its floor still parks the agent as infrastructure.
-- Disk-probe errors remain failures; the change does not treat an unavailable measurement as safe space.
-- Explicit build checks and their pruning protections remain in place.
+- The check runs at the top of `runOrchestratedIssueRun`, before preflight and
+  before `runExternalOrchestration`, so nothing is spent and no checkpoint is
+  written for a run that cannot proceed.
+- A disk-probe error is not treated as free space: `parkInFlightBuild` surfaces
+  it as before.
+- A checkout with no cargo project is held to the floor only (Issue #4413), as
+  before.
+- Guards of the existing outcome (an agent call parked as infrastructure): the
+  park reason carries `HOST_DISK_PARK_NOTE`, so it is classified as
+  infrastructure and not as a repository fast failure or a `failed-once`; the
+  gate is a no-op until production arms it. The new path returns the reason as
+  the run error exactly as `runClaudeWithTimeout` does.
 
 ### Undiscoverable Facts
 
-- The regression test injects the issue's 58.2 GB and 64.3 GB readings; it does not replay a live fleet run.
-- The reported failure text was `manager call failed after 2 attempt(s): ephemeral cargo root over budget (58.2 GB free, floor 46.0 GB + headroom 25.0 GB)`.
+- The test injects the issue's 58.2 GB reading and an empty fake ephemeral cargo
+  root; it does not replay a live fleet run, and the real
+  `/var/tmp/vibe-cargo-target` is never read or pruned.
+- The reported failure text was
+  `manager call failed after 2 attempt(s): ephemeral cargo root over budget (58.2 GB free, floor 46.0 GB + headroom 25.0 GB)`.
 
 ## Evidence
 
-This is a backend worker change. `worker/deno/tests/heavy_build_gate_in_flight_4413_test.ts` drives the real `runClaudeWithTimeout` entry point with injected disk readings. The regression fails against current `origin/main` production code and passes with the fix. `worker/deno/tests/repo_fast_failure_tracker_test.ts` also verifies that a host-disk stop is not counted as a repository fast failure.
+Backend worker change.
+`worker/deno/tests/orchestration_gate_host_disk_2422_test.ts` drives the real
+`runOrchestratedIssueRun` with a fake provider runner and the real
+`parkInFlightBuild`. Updated docs: `docs/CONTAINER.md` (the "In-flight builds
+stop at the same floor" section).
 
 ```mermaid
 flowchart LR
-    A[Agent startup] --> B{Host below floor?}
-    B -->|Yes| C[Park as infrastructure]
-    B -->|No| D[Start manager]
-    D --> E[Explicit build step]
-    E --> F{Build headroom available?}
-    F -->|Yes| G[Run build]
-    F -->|No| H[Keep build admission refusal]
+    A[Orchestrated issue run] --> B{Executor build admission}
+    B -->|Parked| C[End run with park reason, no provider call]
+    B -->|Admitted| D[Manager plan]
+    D --> E[Executor]
+    E --> F[Reviewer]
 ```
 
 ## Reproduction
 
-- **symptom** — a manager call failed at 58.2–64.3 GB free even though the host remained above its 46 GB floor, and the repository received fast-failure tallies.
-- **status** — `verified` — the regression failed against `origin/main` production at 58.2 GB and passed after the change.
-- **regression test** — `worker/deno/tests/heavy_build_gate_in_flight_4413_test.ts::agent start - a cargo checkout starts at the reported 58.2 and 64.3 GB readings`
+- **symptom** — a manager call failed at 58.2–64.3 GB free (trim refused) and
+  the run was repeated on the next claim.
+- **status** — `verified` — with the new check removed, the 58.2 GB and 30 GB
+  tests fail (the run proceeds to provider calls); with it, no provider call is
+  made.
+- **regression test** —
+  `worker/deno/tests/orchestration_gate_host_disk_2422_test.ts`
 
 ## Test Plan
 
-- `deno task test:unit tests/heavy_build_gate_in_flight_4413_test.ts` — passed, 11 tests. The new manager-start test failed against refreshed `origin/main` production (`manager startup must not require build headroom at 58.2 GB`) and passed on this branch. It also covers sufficient space; existing coverage in the same file confirms below-floor startup is still parked. The added measurement-failure case confirms the probe error is surfaced.
-- `deno task test:unit tests/repo_fast_failure_tracker_test.ts` — passed, 48 tests, including the host-disk fast-failure classification.
-- `deno task test:unit tests/claude_runner_host_disk_4390_test.ts` — passed, 3 tests, preserving the active-process floor stop.
-- `deno lint lib/claude_runner.ts lib/heavy_build_gate.ts tests/heavy_build_gate_in_flight_4413_test.ts` from `worker/deno` — passed.
-- `deno check lib/claude_runner.ts lib/heavy_build_gate.ts tests/heavy_build_gate_in_flight_4413_test.ts` from `worker/deno` — passed.
-- `deno fmt --check lib/claude_runner.ts lib/heavy_build_gate.ts tests/heavy_build_gate_in_flight_4413_test.ts` from `worker/deno` — passed.
-- No assertions were removed from existing tests.
-- `./quality.sh < /dev/null` — did not complete: the bounded 900-second command exited 124; its last stage line was `deno tests: FAILED (948.8s)`. The full gate remains unverified.
+- `worker/deno/tests/orchestration_gate_host_disk_2422_test.ts` (3 tests at
+  head): cargo checkout at 58.2 GB ends parked with `headroom` and
+  `Parked as infrastructure (Issue #4360).` and zero provider calls; host at 30
+  GB ends parked with zero calls; positive controls — a cargo checkout at 72 GB
+  and a Deno-only checkout at 58.2 GB still run and make provider calls.
+- Red check: deleting the `if (park) return ...` line in
+  `runOrchestratedIssueRun` makes the 58.2 GB and 30 GB tests fail with
+  `the run must end parked`; restored, 3 passed.
+- `deno task test:unit` on that file plus
+  `tests/orchestration_3642_gate_test.ts` and
+  `tests/heavy_build_gate_in_flight_4413_test.ts` (the latter two unchanged from
+  `main`) — 43 passed, 0 failed.
+- Branch outcomes: park `headroom` → `orchestration_gate_host_disk_2422_test.ts`
+  (58.2 GB); park below floor → same file (30 GB); admitted cargo → same file
+  (72 GB); non-cargo checkout → same file (Deno-only at 58.2 GB).
+- Callers of the changed function: `runOrchestratedIssueRun` is reached through
+  `issue_run_gate.ts`; the existing gate tests run with the in-flight gate
+  unarmed (a no-op) and still pass.
+- Docs checked: `docs/CONTAINER.md` sections on the in-flight park;
+  `heavy_build_gate.ts` doc comments are unchanged and still true because that
+  file is unchanged.
+- `./quality.sh` — not run in this round (budget); CI runs the same checks.
