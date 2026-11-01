@@ -651,8 +651,8 @@ summary the quoted-sentence or line-citation check could not read at the
 head goes there too, along with any not-checked citation case the
 line-citation check reported. Whatever remains after the recovery turn —
 plus a model pass that returned no verdict and a summary that could not be
-checked — is appended to `.pr_response_message` under `### Drift check
-(Issue #3143)`, so it reaches the PR reply instead of being pushed silently.
+checked — is appended to `.pr_response_message` under `### Drift check`, so it
+reaches the PR reply instead of being pushed silently.
 The residual lists the change-request quotes still present, the prose findings
 and Test Plan counts still standing, a model pass that returned
 no verdict, a named summary the quote check could not read, and — under the heading "Test Plan
@@ -660,7 +660,7 @@ figures the drift check could not verify" (Issue #3740) — each Test Plan figur
 still unchecked after the recovery turn, with its reason. A push whose only
 drift is an unchecked figure is therefore not reported clean. Surviving mutants
 go in the same residual under their own heading,
-`#### Mutation check (Issue #3750)`, and so do any budget, cap or runner-error
+`#### Mutation check`, and so do any budget, cap or runner-error
 reports from the mutation check; those reports never trigger a recovery turn
 by themselves.
 

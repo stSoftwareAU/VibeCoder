@@ -86,7 +86,7 @@ turn ran, the mutation check is re-run once.
 
 **Report.** Survivors still left after that are appended to
 `.pr_response_message` in the drift-check residual, under their own heading
-`#### Mutation check (Issue #3750)`. A review-fix push is not blocked by
+`#### Mutation check`. A review-fix push is not blocked by
 survivors; they are reported in the PR reply and the push still happens.
 
 A budget-exhausted or mutant-cap run is reported under that heading as such,
@@ -307,7 +307,7 @@ Both keys are per-repo options, set operator-side under
 
 In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the
 mutant cap and runner errors are reported in the PR reply instead, under the
-`#### Mutation check (Issue #3750)` heading (see
+`#### Mutation check` heading (see
 [Review-fix runs](#review-fix-runs-issue-3750)).
 
 A Rust run killed at the budget before cargo-mutants finishes its baseline is
