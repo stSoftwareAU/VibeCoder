@@ -65,10 +65,13 @@ import {
 import type { ChecklistState } from "../../../../worker/deno/lib/review_checklists.ts";
 import {
   type LabelError,
+  reviewerOwnedLabelFromHistory,
   type RunGh,
   syncNeedsHumanLabel,
 } from "./needs_human.ts";
 import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
+import { decideIndependentOutcome } from "./independent_test_review.ts";
+import { loadReviewerPolicy, policyForRepo } from "./reviewer_policy.ts";
 import { type BranchUpdateResult, updateBranchOnce } from "./branch_update.ts";
 import { postRunInfo, recordPosted } from "./review_cost.ts";
 import { releaseClaims } from "./claim.ts";
@@ -82,6 +85,7 @@ interface Input {
     url: string;
     headSha: string;
     kind?: "dependabot" | "fleet";
+    reconsideredTestHold?: boolean;
     testChanges: { removed: string[]; edited: string[] };
     // From the gate entry; required, so a stale entry fails loudly rather
     // than skipping the checklist checks (Issue #3594).
@@ -321,6 +325,31 @@ export function postedResult(
   };
 }
 
+/** Bind the verdict to the commit actually reviewed, even if the head moves. */
+export function postReviewArgs(
+  pr: { repo: string; number: number; headSha: string },
+  outcome: Outcome,
+  bodyFile: string,
+): string[] {
+  const event = outcome === "approved"
+    ? "APPROVE"
+    : outcome === "held"
+    ? "COMMENT"
+    : "REQUEST_CHANGES";
+  return [
+    "api",
+    `repos/${pr.repo}/pulls/${pr.number}/reviews`,
+    "--method",
+    "POST",
+    "-f",
+    `commit_id=${pr.headSha}`,
+    "-f",
+    `event=${event}`,
+    "-F",
+    `body=@${bodyFile}`,
+  ];
+}
+
 const isNotOptedIn = (reasons: readonly string[]) =>
   reasons.length === 1 && reasons[0] === "repo not opted in";
 
@@ -443,19 +472,75 @@ export async function main() {
   }
 
   const removed = pr.testChanges.removed;
-  const repos = await loadAutoReleaseRepos();
-  const { outcome, autoReleased, autoReleaseHeld } = await decidePostOutcome(
-    pr,
-    review,
-    removed,
-    repos,
-    (args) => run("gh", args),
+  const configPath = Deno.args.find((a) => a.startsWith("--config="))?.slice(9);
+  const policyVersion = policyForRepo(
+    await loadReviewerPolicy(configPath),
+    pr.repo,
   );
+  if (policyVersion !== "legacy") {
+    for (const note of review.testChangeNotes) {
+      if (note.kind === "added-skip") {
+        review.findings.push({
+          file: note.file,
+          line: note.line,
+          problem:
+            "The change adds a test skip, removing regression protection.",
+          fix: "Restore the test and repair the underlying failure.",
+        });
+      }
+    }
+  }
+  const result = policyVersion === "legacy"
+    ? await decidePostOutcome(
+      pr,
+      review,
+      removed,
+      await loadAutoReleaseRepos(configPath),
+      (args) => run("gh", args),
+    )
+    : {
+      outcome: await decideIndependentOutcome(
+        pr,
+        review,
+        removed,
+        (args) => run("gh", args),
+      ),
+      autoReleased: false,
+      autoReleaseHeld: undefined,
+    };
+  const { outcome, autoReleased, autoReleaseHeld } = result;
   const dir = Deno.args.find((a) => a.startsWith("--state-dir="))?.slice(12) ??
     stateDir();
-  const previous = latestByPr(await readLog(dir)).get(
+  let previous = latestByPr(await readLog(dir)).get(
     prKey(pr.repo, pr.number),
   );
+  const reviewer = Deno.args.find((a) => a.startsWith("--reviewer="))?.slice(
+    11,
+  );
+  if (
+    !previous && reviewer && policyVersion !== "legacy" && outcome !== "held" &&
+    pr.reconsideredTestHold === true
+  ) {
+    try {
+      if (
+        await reviewerOwnedLabelFromHistory(
+          pr,
+          reviewer,
+          (args) => run("gh", args),
+        )
+      ) {
+        previous = {
+          repo: pr.repo,
+          number: pr.number,
+          addedNeedsHuman: true,
+        } as LogRecord;
+      }
+    } catch (e) {
+      console.error(
+        `could not recover reviewer label ownership: ${(e as Error).message}`,
+      );
+    }
+  }
   // The run footer: the round's attempt that is posting (its log sits beside
   // the input file in the round's directory), an interactive session, or no
   // model run at all. Its cost is added when the round ends (review_cost.ts).
@@ -471,23 +556,10 @@ export async function main() {
     reviewBody(outcome, review, removed, filedIssues, {
       autoReleased,
       run: runInfo,
+      policyVersion,
     }),
   );
-  const flag = outcome === "approved"
-    ? "--approve"
-    : outcome === "held"
-    ? "--comment"
-    : "--request-changes";
-  await run("gh", [
-    "pr",
-    "review",
-    String(pr.number),
-    "-R",
-    pr.repo,
-    flag,
-    "--body-file",
-    bodyFile,
-  ]);
+  await run("gh", postReviewArgs(pr, outcome, bodyFile));
   await Deno.remove(bodyFile).catch(() => {});
   if (runInfo.kind === "round") {
     // Best effort: an unrecorded review just keeps "cost unknown".
@@ -507,9 +579,35 @@ export async function main() {
     );
   }
 
+  let labelPrevious = previous;
+  if (previous?.addedNeedsHuman && outcome !== "held") {
+    try {
+      const current = JSON.parse(
+        await run("gh", [
+          "pr",
+          "view",
+          String(pr.number),
+          "-R",
+          pr.repo,
+          "--json",
+          "headRefOid,state",
+        ]),
+      );
+      if (current.headRefOid !== pr.headSha || current.state !== "OPEN") {
+        labelPrevious = undefined;
+      }
+    } catch (e) {
+      labelPrevious = undefined;
+      console.error(
+        `could not re-check head before releasing label: ${
+          (e as Error).message
+        }`,
+      );
+    }
+  }
   const label = await syncNeedsHumanLabel(
     outcome,
-    previous,
+    labelPrevious,
     pr,
     (args) => run("gh", args),
   );
@@ -549,7 +647,8 @@ export async function main() {
     testChangeNotes: review.testChangeNotes,
     removedTests: removed,
     filedIssues,
-    addedNeedsHuman: label.addedNeedsHuman,
+    addedNeedsHuman: label.addedNeedsHuman ||
+      (labelPrevious === undefined && previous?.addedNeedsHuman === true),
     ...(autoReleased ? { autoReleased: true as const } : {}),
     ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
   };

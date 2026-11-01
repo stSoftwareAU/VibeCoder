@@ -10,7 +10,7 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
 
 {{REVIEW_CONTEXT}}
 
-1. Read the linked issue and the repo's `AGENTS.md` / `CODING-STANDARDS.md`
+1. Read the governing issue and the repo's `AGENTS.md` / `CODING-STANDARDS.md`
    if they exist.
 2. Check that the change does what the issue asks and nothing unrelated. The
    routine dependency refresh the worker commits on every PR (the
@@ -61,19 +61,36 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    more, allows less (e.g. no longer tolerates a permission or a call it
    used to allow), or pins a stricter count, and nothing it used to check
    is dropped. A change that tightens one thing and loosens another is
-   **meaningful**. If a test is removed, skipped, weakened or loosened and
-   the linked issue does not require it (for example it looks like it was
-   changed to make the build pass), report it as a blocking **finding**
-   asking for the test to be restored, not only under `testChanges`.
-   Report it under `testChanges` as **meaningful** only when the issue
-   requires the change. For each `testChangeNotes` entry give `kind`
+   **meaningful**. Judge each substantive change against the trusted issue,
+   the base and head code, and the actual surviving tests. Record which old
+   behaviour is obsolete or intentionally changed, which contract remains,
+   and the existing or replacement coverage that protects it. If functionality
+   is removed, evidence that its behaviour and callers are gone can explain
+   why no replacement is needed. Where applicable, run a reproducible
+   regression or mutation check and record the command, break and result;
+   inspect the surviving assertion and its fixture yourself, including whether
+   a widened range accepts every possible result. Neither a boolean claim nor
+   a vacuous assertion proves protection. Do not treat the author's evidence or
+   a structured note as a substitute for this independent inspection.
+   Report unjustified lost protection, skips, implementations hard-coded to tests,
+   blanket allowlists and reduced quality or security requirements as blocking
+   **findings**. Missing evidence or unavailable tools need repair or retry;
+   material uncertainty about the product contract can require the owner.
+   For each `testChangeNotes` entry give `kind`
    (`expected-value` for a changed expected value or behaviour,
    `removed-case`, `added-skip`, `weakened-assertion`, `removed-file` or
-   `other`); `criterionQuote`, the acceptance criterion from a linked issue
-   that requires the change, quoted verbatim from the issue's title or body
-   (not comments), or omitted if there is none; and `failsWithoutChange`,
-   `true` or a short statement that the edited test still fails without the
-   code it guards.
+   `other`); `criterionQuote`, a relevant passage from the governing issue's
+   title or body (not comments); `oldBehaviour`, `requiredBehaviour`,
+   `coverage`, and `regressionCheck` with the evidence you independently
+   inspected. For a mutation check supply `{ "method": "mutation", "command":
+   "...", "break": "...", "result": "..." }`; for removed functionality use
+   `{ "method": "removed-functionality", "evidence": "..." }`; otherwise
+   use `{ "method": "not-applicable", "reason": "..." }` only when a
+   regression check cannot apply. The issue need not name a particular test
+   deletion.
+   For a repository using the legacy policy, also include
+   `failsWithoutChange` with the result of the edited test's regression check;
+   the legacy opt-in uses that field in addition to its historical rules.
 6. {{PREVIOUS_FINDINGS}}
 7. Repo review checklists: {{REVIEW_CHECKLISTS}}
    When that is empty, the repo has no checklist that applies to this
@@ -123,13 +140,13 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
 
 Only report **blocking** findings: things that are wrong, unsafe or
 untested. Style preferences and optional polish are not blocking. A
-meaningful test change the issue requires is not a finding; report it under
-`testChanges`. Do not guess: every finding needs a file and line from the
+justified test change with preserved protection is not a finding; report it
+under `testChanges`. Do not guess: every finding needs a file and line from the
 diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
 Reply with only this JSON:
-`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "...", "category": "quality_check" | "summary_incomplete"}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
+`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "...", "category": "quality_check" | "summary_incomplete"}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed>", "kind": "expected-value", "criterionQuote": "<passage from governing issue>", "oldBehaviour": "<obsolete or changed behaviour>", "requiredBehaviour": "<remaining contract>", "coverage": "<surviving test and assertion, or removed functionality evidence>", "regressionCheck": {"method": "mutation", "command": "<command>", "break": "<change made>", "result": "<observed result>"}}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
 Use `[]` for `checklist` when there is no checklist section, and for `closure` when no closure entry is listed.
 
 For each finding, use `quality_check` for an implementation or test defect and

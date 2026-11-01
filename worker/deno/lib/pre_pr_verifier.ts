@@ -142,6 +142,57 @@ export interface ReviewFinding {
   problem: string;
   fix?: string;
 }
+/** Validate the review's audit record; semantic judgement remains independent. */
+export function testChangeEvidenceGaps(
+  notes: readonly Record<string, unknown>[],
+): string[] {
+  if (notes.length === 0) return ["no test change evidence"];
+  const gaps: string[] = [];
+  for (const note of notes) {
+    const at = `${note.file}:${note.line}`;
+    if (
+      typeof note.file !== "string" || !note.file.trim() ||
+      typeof note.line !== "number" || !Number.isInteger(note.line) ||
+      note.line < 0 ||
+      typeof note.change !== "string" || !note.change.trim()
+    ) {
+      gaps.push(`${at}: invalid test change location or description`);
+    }
+    for (
+      const field of [
+        "criterionQuote",
+        "oldBehaviour",
+        "requiredBehaviour",
+        "coverage",
+      ]
+    ) {
+      if (typeof note[field] !== "string" || !(note[field] as string).trim()) {
+        gaps.push(`${at}: missing ${field} evidence`);
+      }
+    }
+    const check = note.regressionCheck;
+    if (typeof check !== "object" || check === null || Array.isArray(check)) {
+      gaps.push(`${at}: missing reproducible regression check`);
+      continue;
+    }
+    const c = check as Record<string, unknown>;
+    const fields = c.method === "mutation"
+      ? ["command", "break", "result"]
+      : c.method === "removed-functionality"
+      ? ["evidence"]
+      : c.method === "not-applicable"
+      ? ["reason"]
+      : [];
+    if (
+      fields.length === 0 ||
+      fields.some((field) =>
+        typeof c[field] !== "string" || !(c[field] as string).trim()
+      )
+    ) gaps.push(`${at}: incomplete regression check`);
+  }
+  return gaps;
+}
+
 export interface ReviewTestChangeNote {
   file: string;
   line: number;
@@ -936,6 +987,17 @@ async function verifyInCheckout(
   }
   try {
     const parsed = parseReviewReply(run.output ?? "");
+    if (parsed.testChanges === "meaningful" && parsed.findings.length === 0) {
+      const gaps = testChangeEvidenceGaps(
+        parsed.testChangeNotes as unknown as Record<string, unknown>[],
+      );
+      if (gaps.length > 0) {
+        return notChecked(
+          `test review evidence incomplete: ${gaps.join("; ")}`,
+          run,
+        );
+      }
+    }
     const callerVerdicts = parseCallerVerdicts(
       replyObject(run.output ?? "").callers,
     );

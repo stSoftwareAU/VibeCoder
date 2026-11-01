@@ -77,6 +77,7 @@ const shim = `#!/bin/sh
 echo "$*" >> "$SHIM_LOG"
 case "$*" in
   "pr view 4645 -R stSoftwareAU/VibeCoder --json headRefOid,state,mergeStateStatus,isDraft,mergeable") echo "{\\"headRefOid\\":\\"$SHIM_HEAD\\",\\"state\\":\\"OPEN\\",\\"mergeStateStatus\\":\\"CLEAN\\",\\"isDraft\\":false,\\"mergeable\\":\\"MERGEABLE\\"}" ;;
+  "pr view 4645 -R stSoftwareAU/VibeCoder --json headRefOid,state") echo "{\\"headRefOid\\":\\"$SHIM_HEAD\\",\\"state\\":\\"OPEN\\"}" ;;
   "pr view 4645 -R stSoftwareAU/VibeCoder --json closingIssuesReferences,body,headRefName") echo '{"closingIssuesReferences":[{"repository":{"owner":{"login":"stSoftwareAU"},"name":"VibeCoder"},"number":4588}],"body":"","headRefName":"issue-4588-fix"}' ;;
   "issue view 4588 -R stSoftwareAU/VibeCoder --json title,body") echo '{"title":"Cargo withhold","body":"Leave refusedCycles unchanged for a cargo withhold"}' ;;
   "api repos/stSoftwareAU/VibeCoder/pulls/4645/reviews "*) for arg in "$@"; do case "$arg" in body=@*) cp "\${arg#body=@}" "$SHIM_BODY" ;; esac; done ;;

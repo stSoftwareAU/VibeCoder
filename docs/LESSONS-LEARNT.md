@@ -62,7 +62,7 @@ This trade-off is a real lesson learnt. We don't yet have a proven fix: how to g
 
 **What the prompts and guidelines enforce:**
 
-- **TDD** — Write failing tests first, then implement. Do not comment out or remove existing tests; if business logic changes require test changes, that must be explicitly documented in the PR summary.
+- **TDD** — Write failing tests first, then implement. Do not remove or weaken useful tests to pass a gate. Document intentional test changes, the remaining contract and its coverage in the PR summary.
 - **Quality gate** — The worker runs `./quality.sh` (`deno test`, `deno lint`, `deno check`, shellcheck) before creating a PR; if it fails after one auto-fix attempt, the PR is not created. So tests must pass locally and cover the business logic.
 - **PR summary and evidence** — The worker must create a PR summary with Summary, Evidence, and Test Plan. For bugs/enhancements, evidence includes references to the tests that verify the fix. Test changes must be called out.
 - **Benchmark audit** — `./quality.sh` includes a check that no benchmarks are masquerading as unit tests, so tests stay focused on behaviour.

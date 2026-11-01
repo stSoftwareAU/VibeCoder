@@ -197,8 +197,11 @@ guessing.
      checked in the PR summary's Test Plan (Issue #3259).
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
-   may require changing or deleting a test; document why and what still protects
-   the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
+   may require changing or deleting a test; document the obsolete or changed
+   behaviour, remaining contract and existing or replacement coverage. For
+   removed functionality, show that the behaviour and callers are gone. Where
+   applicable, record a reproducible regression or mutation check. For UI/PWA
+   tests prefer user-visible browser behaviour and
    semantic locators; avoid exact DOM-structure assertions unless explicitly
    required. **A style literal is incidental wherever it lives.** An exact
    colour, length, `calc()`/`min()` expression, font, z-index, class name or

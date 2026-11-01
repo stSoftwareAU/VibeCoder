@@ -139,7 +139,7 @@ echo "$*" >> "$SHIM_LOG"
 case "$*" in
   "pr view 42 -R acme/widgets --json headRefOid,state,mergeStateStatus,isDraft,mergeable")
     echo "{\\"headRefOid\\":\\"$SHIM_HEAD\\",\\"state\\":\\"OPEN\\",\\"mergeStateStatus\\":\\"CLEAN\\",\\"isDraft\\":false,\\"mergeable\\":\\"MERGEABLE\\"}" ;;
-  "pr review "*) ;;
+  "api repos/acme/widgets/pulls/42/reviews "*) ;;
   "api repos/acme/widgets/issues/42/comments --paginate") cat "$SHIM_COMMENTS" ;;
   "api -X DELETE repos/acme/widgets/issues/comments/"*) echo "\${4##*/}" >> "$SHIM_DELETED" ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
@@ -226,7 +226,9 @@ Deno.test("post.ts deletes the claim at the reviewed head after posting the revi
 
   // The review is posted before the claim is deleted.
   const calls = (await Deno.readTextFile(shimLog)).trim().split("\n");
-  const reviewAt = calls.findIndex((c) => c.startsWith("pr review "));
+  const reviewAt = calls.findIndex((c) =>
+    c.startsWith("api repos/acme/widgets/pulls/42/reviews ")
+  );
   const deleteAt = calls.findIndex((c) => c.includes("-X DELETE"));
   assertEquals(reviewAt >= 0 && deleteAt > reviewAt, true, calls.join("\n"));
 });

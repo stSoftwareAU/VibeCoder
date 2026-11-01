@@ -52,6 +52,17 @@ export interface TestChangeNote {
   kind?: TestChangeKind; // what sort of edit it is; only "expected-value" can auto-release (Issue #3397)
   criterionQuote?: string; // verbatim acceptance criterion of a linked issue that requires the change
   failsWithoutChange?: boolean | string; // whether the edited test fails without the code change
+  oldBehaviour?: string;
+  requiredBehaviour?: string;
+  coverage?: string;
+  regressionCheck?: {
+    method: string;
+    command?: string;
+    break?: string;
+    result?: string;
+    evidence?: string;
+    reason?: string;
+  };
 }
 
 // A pre-existing problem Fable noticed that the PR did not cause (already on
@@ -358,7 +369,7 @@ export function reviewBody(
   removedTests: readonly string[],
   filed: readonly FiledIssue[] = [],
   // `run`: the model run that wrote the review, for its run footer.
-  opts: { autoReleased?: boolean; run?: RunInfo } = {},
+  opts: { autoReleased?: boolean; run?: RunInfo; policyVersion?: string } = {},
 ): string {
   const lines: string[] = [];
   if (outcome === "changes_requested") {
@@ -384,6 +395,24 @@ export function reviewBody(
       "",
       "Approve to merge or request changes; then remove `needs-human`.",
     );
+  } else if (
+    outcome === "approved" && opts.policyVersion === "2026-11-02" &&
+    (review.testChanges === "meaningful" || removedTests.length > 0)
+  ) {
+    lines.push(
+      "Independent test review:",
+      "",
+      ...review.testChangeNotes.flatMap((n) => [
+        `- \`${n.file}:${n.line}\`: ${n.change}`,
+        `  - Requirement: ${n.criterionQuote}`,
+        `  - Old behaviour: ${n.oldBehaviour}`,
+        `  - Required behaviour: ${n.requiredBehaviour}`,
+        `  - Coverage: ${n.coverage}`,
+        `  - Regression check: ${JSON.stringify(n.regressionCheck)}`,
+      ]),
+      "",
+      review.summary,
+    );
   } else if (outcome === "approved" && opts.autoReleased) {
     lines.push(
       "Auto-released: this PR changes existing tests, and each change is required by an acceptance criterion of a linked issue.",
@@ -396,6 +425,9 @@ export function reviewBody(
     );
   } else {
     lines.push(review.summary);
+  }
+  if (opts.policyVersion) {
+    lines.push("", `Test review policy: ${opts.policyVersion}`);
   }
   const checklist = checklistLines(review);
   if (checklist.length > 0) lines.push("", ...checklist);

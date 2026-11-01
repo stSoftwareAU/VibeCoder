@@ -162,6 +162,7 @@ export interface ReadyPr {
   author: string;
   kind: "dependabot" | "fleet";
   headSha: string;
+  reconsideredTestHold?: boolean;
   baseRef: string;
   // Existing test files this PR removes or edits; the model review judges
   // whether the edits are meaningful. A removed test file always is.
@@ -350,6 +351,20 @@ export function reviewedAtHead(
   return reviews.some((r) =>
     countsAsReview(r, reviewer) && r.commit?.oid === headSha
   );
+}
+
+function isOldTestHold(
+  review: Review | undefined,
+  headSha: string,
+  policy: string,
+): boolean {
+  return policy === CURRENT_REVIEW_POLICY && review?.commit?.oid === headSha &&
+    review.state === "COMMENTED" &&
+    (review.body ?? "").startsWith(
+      "Held for owner review: this PR changes existing tests.",
+    ) &&
+    (review.body ?? "").includes(REVIEW_MARKER) &&
+    !(review.body ?? "").includes(policyMarker(CURRENT_REVIEW_POLICY));
 }
 
 // The commit this reviewer last sent the PR back at, when its latest counted
@@ -706,13 +721,7 @@ export async function skipReason(
   const latest = pr.reviews.nodes.filter((r) =>
     r.commit?.oid === pr.headRefOid && countsAsReview(r, reviewer)
   ).at(-1);
-  const oldTestHold = policy === CURRENT_REVIEW_POLICY &&
-    latest?.state === "COMMENTED" &&
-    (latest.body ?? "").startsWith(
-      "Held for owner review: this PR changes existing tests.",
-    ) &&
-    (latest.body ?? "").includes(REVIEW_MARKER) &&
-    !(latest.body ?? "").includes(policyMarker(CURRENT_REVIEW_POLICY));
+  const oldTestHold = isOldTestHold(latest, pr.headRefOid, policy);
   if (latest && !oldTestHold) return "already-reviewed";
   // The owner, or another reviewer, approved this head by hand: a second
   // approval adds nothing, and the PR merges once it is up to date.
@@ -1362,6 +1371,13 @@ export async function pass(
       author: pr.author!.login,
       kind,
       headSha: pr.headRefOid,
+      reconsideredTestHold: isOldTestHold(
+        pr.reviews.nodes.filter((r) =>
+          r.commit?.oid === pr.headRefOid && countsAsReview(r, reviewer)
+        ).at(-1),
+        pr.headRefOid,
+        policyForRepo(policy, repo),
+      ),
       baseRef: pr.baseRefName,
       testChanges: existingTestChanges(files),
       noTestAdded: noTestAdded(files, kind),

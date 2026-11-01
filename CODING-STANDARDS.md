@@ -269,20 +269,17 @@ evidence that supported behaviour, an invariant, or a contract regressed.
 3. Do not remove, skip, or weaken tests just to pass a gate. If a supported
    contract changes, or a test pins only incidental implementation, update or
    remove the test deliberately and document the reason and remaining coverage.
-   **Change only what the issue changes.** When an issue alters part of what
-   an existing test expects, edit that expectation and keep every other
-   assertion the test made — a green gate before and after does not prove
-   nothing was lost. Before raising the PR, go through the assertions your
-   diff removes from each existing test (`git diff <base>...HEAD` over the
-   edited test files). Each one needs an issue requirement that makes it
-   untrue, recorded in the PR summary. An assertion removed without one is a
-   blocking self-review finding: restore it, or move it to a test that still
-   covers the behaviour and say where. The Test Plan table that used to block the pull request for this was removed (Issue #4234). The requirement
-   shows the new value is right, not that the edited test still checks
-   anything: each edited
-   expectation also owes the red-check in **An edited expectation must
-   still go red without its guard** under **Test coverage expectations**
-   below.
+   For each substantive test change, document the old behaviour that is
+   obsolete or intentionally changed, the supported behaviour that remains,
+   and the existing or replacement coverage protecting it. If functionality
+   has genuinely been removed, evidence that the behaviour and callers are
+   gone can establish why no replacement test is needed. Redundant assertions
+   may be removed when the surviving coverage protects the same contract.
+   Independent review verifies this evidence against trusted requirements and
+   actual coverage. A missing safety net, skip, tautological assertion or
+   reduced quality threshold is a blocking finding. Where applicable, use a
+   reproducible regression or mutation check to show the surviving test fails
+   without its guard; a claim alone does not prove this.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its

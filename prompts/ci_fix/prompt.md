@@ -97,6 +97,12 @@ Instrumentation is temporary, so tag it. Prefix every debug log you add inside a
 
 ## Fixing the Failure
 
+For a substantive test change, document the obsolete or intentionally changed
+behaviour, the remaining contract and its existing or replacement coverage.
+Evidence that removed functionality and its callers are gone can justify no
+replacement. Where applicable, record a reproducible regression or mutation
+check; never remove useful protection or reduce thresholds to pass CI.
+
 With the loop red and the cause named, read the failing test, CI config, and relevant source to confirm the root cause, then apply a minimal, targeted fix: fix the source or test data for a failing test, the build config or dependencies for a build failure, the violations for a lint failure. Do not disable tests, skip checks, or suppress errors to make CI pass — address the root cause. Use Australian English. Commit with a clear message referencing PR #{{PR_NUMBER}}. Then run the loop from step 1 again and watch it go green — that is the difference between "the check passes now" and "the check passes because the cause is gone".
 
 **Fix the general case, not the specific input the failing test uses.** Never branch on, hardcode, or special-case a fixture value to satisfy an assertion — a check that goes green because the code recognises the fixture leaves the defect live for every other input. If the general fix is not obvious, say so in `.pr_response_message` rather than fitting the code to the test.

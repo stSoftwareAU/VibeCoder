@@ -1,6 +1,7 @@
 // The `needs-human` label a held /review-fleet-prs PR carries (Issue #2927).
 
 import type { LogRecord, Outcome } from "./review_log.ts";
+import { REVIEW_MARKER, sameLogin } from "./review_log.ts";
 
 export const NEEDS_HUMAN = "needs-human";
 
@@ -12,6 +13,73 @@ export interface LabelError {
 }
 
 export type RunGh = (args: string[]) => Promise<string>;
+
+/** Recover an old host's ownership only from complete GitHub history. */
+export async function reviewerOwnedLabelFromHistory(
+  pr: { repo: string; number: number; headSha: string },
+  reviewer: string,
+  runGh: RunGh,
+): Promise<boolean> {
+  const readPages = async (path: string): Promise<unknown[]> => {
+    const pages = JSON.parse(
+      await runGh(["api", path, "--paginate", "--slurp"]),
+    );
+    if (!Array.isArray(pages) || !pages.every(Array.isArray)) {
+      throw new Error("malformed GitHub history");
+    }
+    return pages.flat();
+  };
+  const object = (v: unknown): Record<string, unknown> | undefined =>
+    typeof v === "object" && v !== null && !Array.isArray(v)
+      ? v as Record<string, unknown>
+      : undefined;
+  const events = await readPages(`repos/${pr.repo}/issues/${pr.number}/events`);
+  const labels: Record<string, unknown>[] = [];
+  for (const event of events) {
+    const e = object(event);
+    if (!e || typeof e.event !== "string") {
+      throw new Error("malformed issue event");
+    }
+    if (e.event !== "labeled" && e.event !== "unlabeled") continue;
+    const label = object(e.label);
+    if (typeof label?.name !== "string") {
+      throw new Error("malformed label event");
+    }
+    if (label.name.toLowerCase() === NEEDS_HUMAN) labels.push(e);
+  }
+  const last = labels.at(-1);
+  const actor = object(last?.actor);
+  if (
+    !last || last.event !== "labeled" || typeof actor?.login !== "string" ||
+    !sameLogin(actor.login, reviewer) ||
+    typeof last.created_at !== "string" ||
+    !Number.isFinite(Date.parse(last.created_at))
+  ) return false;
+  const reviews = await readPages(
+    `repos/${pr.repo}/pulls/${pr.number}/reviews`,
+  );
+  if (
+    reviews.some((item) => {
+      const r = object(item);
+      const user = object(r?.user);
+      return r?.state === "CHANGES_REQUESTED" &&
+        typeof user?.login === "string" && !sameLogin(user.login, reviewer);
+    })
+  ) return false;
+  return reviews.some((item) => {
+    const r = object(item);
+    const user = object(r?.user);
+    return r?.state === "COMMENTED" && typeof user?.login === "string" &&
+      sameLogin(user.login, reviewer) && r.commit_id === pr.headSha &&
+      typeof r.body === "string" &&
+      r.body.startsWith(
+        "Held for owner review: this PR changes existing tests.",
+      ) &&
+      r.body.includes(REVIEW_MARKER) && typeof r.submitted_at === "string" &&
+      Number.isFinite(Date.parse(r.submitted_at)) &&
+      Date.parse(r.submitted_at) <= Date.parse(last.created_at as string);
+  });
+}
 
 // add for a hold; remove only when the PR's latest log record says the skill added it.
 export function needsHumanAction(
@@ -40,11 +108,17 @@ async function hasNeedsHumanLabel(
     "labels",
   ]);
   const parsed = JSON.parse(out) as { labels?: { name: string }[] };
+  if (
+    !Array.isArray(parsed.labels) ||
+    !parsed.labels.every((label) => typeof label.name === "string")
+  ) {
+    throw new Error("PR response lacks a valid labels list");
+  }
   // Case-insensitive: `gh pr edit` resolves label names case-insensitively
   // (GitHub label names are case-insensitively unique), so a canonical label
   // spelled e.g. `Needs-Human` must still match (same convention as
   // label_security.ts and stall_repair.ts).
-  return (parsed.labels ?? []).some(
+  return parsed.labels.some(
     (l) => l.name.trim().toLowerCase() === NEEDS_HUMAN,
   );
 }
@@ -61,11 +135,19 @@ export async function syncNeedsHumanLabel(
   if (!action) return { addedNeedsHuman: false };
 
   if (action === "add") {
-    // Best-effort ownership check: a failed read falls through to the add
-    // attempt below, same as before this check existed.
-    const alreadyPresent = await hasNeedsHumanLabel(pr, runGh).catch(() =>
-      false
-    );
+    // Without a successful read an idempotent add cannot establish ownership.
+    let alreadyPresent: boolean;
+    try {
+      alreadyPresent = await hasNeedsHumanLabel(pr, runGh);
+    } catch (e) {
+      return {
+        addedNeedsHuman: previous?.addedNeedsHuman === true,
+        labelError: {
+          action: "add",
+          error: `could not read labels: ${(e as Error).message}`,
+        },
+      };
+    }
     if (alreadyPresent) {
       // Someone else already holds this PR — never claim it as added by us.
       return { addedNeedsHuman: previous?.addedNeedsHuman === true };

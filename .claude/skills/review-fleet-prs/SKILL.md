@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner (unless the repo opts in to auto-release of issue-required test changes). Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort, including the safety net for changed tests; clean PRs are approved and blocking problems get a request for changes. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
@@ -51,28 +51,20 @@ escalation.
    a test that would fail on the regression, unless existing tests already
    cover it. A refactor, docs, config, workflow or presentation change may not
    need one. Do not reward assertions that pin incidental CSS, DOM or internals.
-4. **A test is never removed or loosened to make the quality gate pass.** A
-   test removed, skipped, weakened or loosened without the linked issue
-   requiring it is a blocking finding: the PR goes back to the fleet to
-   restore it. A deliberate change the issue does require (an expected value
-   or behaviour the issue changes, or deleting a test that only pinned the
-   old implementation) is the owner's call: the PR is held with a
-   comment-only review, neither approved nor sent back, and labelled
-   `needs-human`; the skill removes that label on a later approve or
-   send-back only when it was the one that added it. **Opt-in exception:** a
-   repo listed in `.config.json` `pr_reviewer_auto_release` (an array of
-   `owner/repo`; absent or empty is off) has such a hold approved instead
-   (auto-released) only when there are no findings, no test file was removed,
-   the PR has a linked issue (`closingIssuesReferences`) whose title or body
-   could be read, and every note is kind `expected-value` with a
-   `criterionQuote` of at least 5 words found verbatim in a linked issue's
-   title or body (comments never count) and a positive `failsWithoutChange`.
-   A removed case, added skip, weakened or deleted assertion, removed test
-   file or any fetch failure keeps the hold. Trivial edits
-   (formatting, renames, imports, added cases, fixture paths) are not, and
-   neither are edits that only **tighten** a meaningful behavioural or
-   contractual test (it now asserts more or allows less, as the issue asks):
-   those are approved. An added brittle assertion is a finding, not a benefit.
+4. **Independently judge the surviving safety net.** For each substantive
+   test change, inspect the trusted governing issue, old and new behaviour,
+   and actual coverage. Record the obsolete or deliberately changed contract,
+   the required behaviour that remains and the test protecting it. A removal
+   of functionality can instead be justified by evidence that its behaviour
+   and callers are gone. Where applicable, reproduce a regression or mutation
+   check; a boolean or vacuous assertion is not proof. Request changes for
+   unjustified lost protection, skips, implementations hard-coded to tests,
+   blanket allowlists or reduced quality or security requirements. Missing
+   evidence or unavailable tools require repair or retry. Material uncertainty
+   about the intended product contract can require the owner. A file deletion
+   or category alone is not a reason for a hold. Trivial edits and changes
+   that only tighten a supported contract remain approvable. The legacy
+   policy remains available as an explicit operator override.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
@@ -331,14 +323,9 @@ The script does the rest, so do not post anything yourself:
   itself: a `missing` checklist item (even with no matching finding), a
   checklist file that could not be applied (malformed, undecodable, or an
   unknown changed-file list) and an item the reply gave no verdict.
-  Otherwise a meaningful test change or a removed test file means **held for
-  the owner**, as a comment-only review the
-  worker ignores; otherwise **approve**. **Auto-release:** for a repo in
-  `pr_reviewer_auto_release` (read via `auto_release.ts`; a malformed value
-  makes `post.ts` fail loud), a hold is instead an approval when rule 4's
-  conditions all hold. The body opens "Auto-released: ..." and lists each
-  change with its quoted criterion; there is no held comment and no
-  `needs-human` label.
+  Under the current policy, substantive test changes require the independent
+  evidence in rule 4 before approval; incomplete evidence fails and retries.
+  The legacy policy retains its historical hold and opt-in behaviour.
 - After an approval, when a fleet or Dependabot PR is behind its base and is
   neither a draft nor conflicting, it asks GitHub to update the reviewed head
   (rule 9), so the armed auto-merge can complete once CI re-runs. The result
@@ -377,9 +364,7 @@ The script does the rest, so do not post anything yourself:
 
 It prints `{ posted, outcome?, autoReleased?, autoReleaseHeld?,
 filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
-`autoReleased: true` is also in the `log.jsonl` record, and `summary.md`
-prefixes that PR's "Approved, last 7 days" line with
-`(auto-released: issue-required test change)` as an audit trail.
+`autoReleased: true` records a release under the legacy policy.
 `autoReleaseHeld` lists the reasons an opted-in repo's hold was kept; it is
 printed and logged only for a held PR in an opted-in repo.
 `labelError` names the label action (`add` or `remove`) and the `gh` error

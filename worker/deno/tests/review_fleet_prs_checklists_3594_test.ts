@@ -547,10 +547,10 @@ Deno.test("post.ts end to end: a malformed base file and a clean reply posts req
       `#!/bin/sh
 if [ "$1 $2" = "pr view" ]; then
   echo '{"headRefOid":"head-7","state":"OPEN","mergeStateStatus":"CLEAN"}'
-elif [ "$1 $2" = "pr review" ]; then
+elif [ "$1 $2" = "api repos/acme/app/pulls/7/reviews" ]; then
   echo "$@" > "${tmp}/review_args"
   while [ $# -gt 0 ]; do
-    if [ "$1" = "--body-file" ]; then cp "$2" "${tmp}/body.md"; fi
+    case "$1" in body=@*) cp "\${1#body=@}" "${tmp}/body.md" ;; esac
     shift
   done
 fi
@@ -596,7 +596,11 @@ fi
     assertEquals(result.outcome, "changes_requested");
     assertStringIncludes(
       await Deno.readTextFile(`${tmp}/review_args`),
-      "--request-changes",
+      "event=REQUEST_CHANGES",
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(`${tmp}/review_args`),
+      "commit_id=head-7",
     );
     const body = await Deno.readTextFile(`${tmp}/body.md`);
     assertStringIncludes(body, "Repository review checklists were not applied");

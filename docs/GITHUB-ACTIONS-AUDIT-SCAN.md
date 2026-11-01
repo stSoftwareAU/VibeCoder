@@ -1276,8 +1276,8 @@ history is a failed step, never a guess. This closes
 Code-owner review is turned **off** in every repository ruleset whose
 `pull_request` rule requires it (found by each rule's `ruleset_id`, never by
 name — Issue #2685) and never turned on: the fleet reviewer is a GitHub App,
-which cannot be a code owner, so its approval is the gate and a PR that
-removes or loosens tests is held for the owner (THREAT-MODEL R14). An
+which cannot be a code owner, so its approval is the gate; it independently
+reviews changed tests and their surviving coverage (THREAT-MODEL R14). An
 organisation ruleset that requires it is a failed step naming the ruleset,
 for an owner to change there. The old `--require-code-owner-review` and
 `--require-reviews` flags are refused with that explanation.

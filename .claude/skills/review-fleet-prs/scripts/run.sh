@@ -595,7 +595,7 @@ gate_pass() {
     log "audit send-back: $(jq -r '"\(.repo)#\(.number)"' <<<"$entry"): $(
       cd "$SCRIPTS_DIR" && deno run --allow-run=gh,osascript --allow-read \
         --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts \
-        --input="$input" --no-model 2>&1)"
+        --input="$input" --config="$CONFIG" ${REVIEWER[@]+"${REVIEWER[@]}"} --no-model 2>&1)"
   done < <(jq -c '.auditBlocked[]?' <<<"$ready" 2>/dev/null)
   OVER_LIMIT=$(jq -r '.skipped["over-limit"] // 0' <<<"$ready" 2>/dev/null)
   [[ $OVER_LIMIT =~ ^[0-9]+$ ]] || OVER_LIMIT=0
@@ -690,6 +690,13 @@ start_review() {
     return 1
   fi
   C_DIR="$C_STATE_DIR/rounds/$(basename "$dir")"
+  # Only reviewer policy reaches the review container, not credentials in the
+  # operator's config. The gate already validated these keys on this pass.
+  if [[ -f $CONFIG ]]; then
+    jq '{pr_reviewer_test_policy, pr_reviewer_auto_release}' "$CONFIG" >"$dir/reviewer-policy.json" || return 1
+  else
+    printf '%s\n' '{}' >"$dir/reviewer-policy.json"
+  fi
   # The round runs in the container, so every path it is given is the
   # container's; the prompt is a file in the round's own directory.
   cat >"$dir/prompt.md" <<PROMPT
@@ -702,7 +709,8 @@ $(cat "$dir/gate.json")
 Follow the skill's 'Reviewing the ready PRs' section for the ready PR above:
 steps 1. Review, 2. Post and 4. Report. Skip step 3 (Learn from recurring
 findings): the runner does that in a round of its own. Run post.ts from
-$C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR,
+$C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR
+and --config=$C_DIR/reviewer-policy.json ${REVIEWER[*]},
 and write its input files directly in $C_DIR (not a sub-directory: post.ts
 reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.
