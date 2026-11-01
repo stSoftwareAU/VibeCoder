@@ -200,6 +200,11 @@ interface GitScript {
    * runs once the base is already an ancestor of the head.
    */
   headAfterRungMerge?: string;
+  /**
+   * stderr of a `git reset --hard` that fails, leaving HEAD where it was
+   * (Issue #4616). Unset, the reset succeeds.
+   */
+  resetError?: string;
 }
 
 function makeGitScript(overrides?: Partial<GitScript>): GitScript {
@@ -281,6 +286,13 @@ function makeGit(
         const revision = args[2] ?? "";
         captured.resets.push(revision);
         captured.events.push("git:reset-hard");
+        // A failing reset leaves HEAD where it was (Issue #4616).
+        if (script.resetError !== undefined) {
+          return Promise.resolve({
+            ok: true,
+            value: { code: 1, stdout: "", stderr: script.resetError },
+          });
+        }
         headOverride = revision;
         return Promise.resolve({
           ok: true,
@@ -1021,7 +1033,7 @@ Deno.test("processMergeConflict - a conflicted merge that passes the pre-push ch
         kind: "passed",
         ran: ["deno lint in worker/deno"],
         leftToCi: [
-          "deno test in worker/deno — too slow for the pre-push budget",
+          "cargo test in worker/rust — remote crates unreachable, left to CI",
         ],
         repairRounds: 0,
       },
@@ -1036,7 +1048,7 @@ Deno.test("processMergeConflict - a conflicted merge that passes the pre-push ch
   assertStringIncludes(resolved, "**Local checks before push:**");
   assertStringIncludes(resolved, "- deno lint in worker/deno");
   assertStringIncludes(resolved, "Left to CI:");
-  assertStringIncludes(resolved, "too slow for the pre-push budget");
+  assertStringIncludes(resolved, "remote crates unreachable, left to CI");
 });
 
 Deno.test("processMergeConflict - a clean merge is checked against the head it started from before the push (Issue #4616)", async () => {
@@ -1115,6 +1127,63 @@ Deno.test("processMergeConflict - a pre-push check cut short by the run ending w
   );
   assertEquals(conclusions, []);
   assertEquals(captured.commitAndPushCalls, 0);
+  // HEAD moved off the start tip, so the local branch is restored to it.
+  assertEquals(captured.resets, [CONFLICT_HEAD]);
+});
+
+Deno.test("processMergeConflict - a refused clean merge restores the local branch to the head it started from (Issue #4616)", async () => {
+  const detail = "deno check failed on the merged tree after 2 repair rounds";
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+    undefined,
+    { verifier: { kind: "refused", detail } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(captured.commitAndPushCalls, 0, "a refusal must not push");
+  // The clean merge's local commit moved HEAD; it is discarded by resetting to
+  // the start tip, the only revision the attempt ever began from.
+  assertEquals(captured.resets, [CONFLICT_HEAD]);
+  assertStringIncludes(captured.comments.at(-1) ?? "", detail);
+});
+
+Deno.test("processMergeConflict - a refusal with HEAD still at the start tip issues no reset (Issue #4616)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ headAfterMerge: CONFLICT_HEAD }),
+    undefined,
+    { verifier: { kind: "refused", detail: "a refused check" } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(captured.commitAndPushCalls, 0, "a refusal must not push");
+  assertEquals(captured.resets, []);
+});
+
+Deno.test("processMergeConflict - a failed local restore is named in the failure detail (Issue #4616)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      mergeCode: 0,
+      unmergedAfterMerge: [],
+      resetError: "fatal: unable to write new index file",
+    }),
+    undefined,
+    { verifier: { kind: "refused", detail: "a refused check" } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(captured.commitAndPushCalls, 0, "a refusal must not push");
+  const failure = captured.comments.at(-1) ?? "";
+  assertStringIncludes(failure, "a refused check");
+  assertStringIncludes(
+    failure,
+    `could not restore the local branch to ${CONFLICT_HEAD}: fatal: unable to write new index file`,
+  );
 });
 
 Deno.test("processMergeConflict - the pre-push check runs only after the conflict-marker guard (Issue #4616)", async () => {
@@ -2042,7 +2111,11 @@ Deno.test("buildAttemptComment - promises no in-run quality gate (Issue #2306)",
   );
   // What does gate the result is named instead, so removing the promise does
   // not read as "nothing checks this merge".
-  assertStringIncludes(body, "CI on the pushed merge");
+  assertStringIncludes(
+    body,
+    "the fast checks on the packages the merge touched",
+  );
+  assertStringIncludes(body, "CI on the pushed merge is the full gate");
   assertStringIncludes(body, "judgement call is named file by file");
 });
 

@@ -233,7 +233,9 @@ progress and stopped on conflicts. Its contract is absolute:
   — remote modules that cannot be reached, or a host `rustc` older than the
   crate's `rust-version` — do not block the push: they are left to CI and named
   on the resolved comment. A tool that is not installed, or the checks' 900-second
-  budget being spent, refuses the push as unverified.
+  budget being spent, refuses the push as unverified. The resolved comment
+  carries a **Local checks before push** section: what ran on the merged tree,
+  which checks were left to CI, and how many repair rounds the agent spent.
 - **Dependency versions are the first bounded carve-out.** The prompt says so
   itself: the worker
   settles dependency-version hunks in known manifests before the agent runs, and
@@ -1256,16 +1258,18 @@ that gap, and reading the queue means reading both:
 An attempt routinely runs for twenty to thirty minutes, and the only record of
 where that time went used to be the wall-clock gap between two log lines.
 Issue #2308 closed that: every attempt records the wall-clock seconds of each
-stage it ran — on this path `deepen`, `rules`, `issue-context`, `agent` and
-`push` — plus the host it ran on. There is no `gate` stage here, because the
-PR path runs no quality gate of its own (Issue #2306); the pre-push checks
-under [The contract](#-the-contract) are the checks before the push. The line rides at the bottom of the attempt's own conclusion comment —
-the resolved marker or the failed one — and the same stages and host go out as
-one structured log record, so a reader never has to reconcile two different
-breakdowns:
+stage it ran — on this path `deepen`, `rules`, `issue-context`, `agent`, `gate`
+and `push`, in that order — plus the host it ran on. `gate` is the pre-push
+fast checks on the merged tree under [The contract](#-the-contract) and their
+repair rounds (Issue #4616), so the agent's first resolution is timed under
+`agent` and a repair round's time counts towards `gate`. The PR path has no
+quality gate of its own (Issue #2306). The line rides at the bottom of the
+attempt's own conclusion comment — the resolved marker or the failed one — and
+the same stages and host go out as one structured log record, so a reader never
+has to reconcile two different breakdowns:
 
 ```text
-Timings (host `mel-01`): deepen 3s · rules 1s · issue-context 4s · agent 212s · push 6s
+Timings (host `mel-01`): deepen 3s · rules 1s · issue-context 4s · agent 212s · gate 94s · push 6s
 ```
 
 A stage that was started and never stopped renders as `unfinished` rather than

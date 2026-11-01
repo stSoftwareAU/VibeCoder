@@ -27,10 +27,12 @@
  * - Before the push, check the merged tree deterministically (Issue #4616):
  *   the fast checks for the paths the merge touched run in the clone, a
  *   failing check gets bounded repair rounds from the agent, and a check that
- *   still fails refuses the push so nothing lands. Checks too slow for that
- *   budget are left to CI and named on the PR. CI on the pushed merge stays
- *   the full gate (Issue #2306): a conflicting PR has had none at all, so that
- *   is often the first time its tests meet current base code.
+ *   still fails, a check that cannot be run, and a budget spent before the
+ *   checks finish all refuse the push so nothing lands. Only checks whose
+ *   remote modules are unreachable, or whose toolchain is older than the
+ *   repository needs, are left to CI and named on the PR. CI on the pushed
+ *   merge stays the full gate (Issue #2306): a conflicting PR has had none at
+ *   all, so that is often the first time its tests meet current base code.
  * - Push without force, so every commit on the PR survives.
  * - Comment on the PR describing what was merged.
  *
@@ -489,6 +491,50 @@ async function abortMerge(run: GitRunner, cwd: string): Promise<void> {
   await git(run, ["merge", "--abort"], cwd);
 }
 
+/**
+ * Abort any merge in progress, then restore the local branch to the tip this
+ * attempt started from (Issue #4616).
+ *
+ * Used when the pre-push verification refuses or is cut short, so the merge
+ * commit a clean merge left locally, or a repair commit the agent made, is not
+ * kept on the branch. `merge --abort` cannot remove a clean merge's commit,
+ * since no merge is in progress by then.
+ *
+ * What is destroyed is only the commits made after `headBeforeMerge` in this
+ * attempt. That tip is where the attempt began, so nothing before it is
+ * dropped. Those commits were never pushed and nothing outside this attempt
+ * refers to them. origin's copy of the branch is never written, and the next
+ * attempt checks the branch out at origin's tip anyway (preparePrBranch). The
+ * reset is skipped when HEAD already sits at `headBeforeMerge`.
+ *
+ * @param run - The git runner
+ * @param cwd - The clone the attempt runs in
+ * @param headBeforeMerge - The tip the attempt started from
+ * @param logger - Logger for an unreadable HEAD
+ * @param repo - Repository, for the log record
+ * @returns The reason the local branch could not be restored, or `undefined`
+ */
+async function discardLocalMerge(
+  run: GitRunner,
+  cwd: string,
+  headBeforeMerge: string,
+  logger: Logger,
+  repo: string,
+): Promise<string | undefined> {
+  await abortMerge(run, cwd);
+  const head = await readHeadSha(run, cwd, logger, repo);
+  if (head === headBeforeMerge) return undefined;
+  const reset = await git(
+    run,
+    ["reset", "--hard", headBeforeMerge],
+    cwd,
+  );
+  if (reset.code === 0) return undefined;
+  const detail = reset.stderr.trim() || reset.stdout.trim() ||
+    `git exited ${reset.code}`;
+  return `could not restore the local branch to ${headBeforeMerge}: ${detail}`;
+}
+
 // ---------------------------------------------------------------------------
 // Comment helpers
 // ---------------------------------------------------------------------------
@@ -514,8 +560,9 @@ export function buildAttemptComment(
     `This PR conflicts with \`${baseBranch}\`, so no CI can run on it. The ` +
     "worker is merging the base branch in for real — both sides' changes " +
     "survive wherever both can stand, and each judgement call is named file " +
-    "by file in the conclusion comment. CI on the pushed merge is the gate " +
-    "on the result (Issue #2306).",
+    "by file in the conclusion comment. Before it pushes, the worker runs the " +
+    "fast checks on the packages the merge touched (Issue #4616); CI on the " +
+    "pushed merge is the full gate (Issue #2306).",
   ];
 
   if (disruptedCount > 0) {
@@ -1899,7 +1946,7 @@ async function resolveConflict(
   // conflict can still bring in breakage — and after the unmerged-path and
   // conflict-marker guards above, so it only ever sees a fully resolved tree.
   // A failing check gets bounded repair rounds from the agent; a refusal
-  // aborts the merge and fails the attempt, so nothing reaches origin.
+  // discards the local merge and fails the attempt, so nothing reaches origin.
   timer.start("gate");
   const verification = await (processorDeps.verifyMergeBeforePushFn ??
     verifyMergeBeforePush)({
@@ -1948,23 +1995,45 @@ async function resolveConflict(
     });
   timer.stop();
   if (verification.kind === "refused") {
-    // Nothing here is pushed. The merge is aborted where git still has one in
-    // progress. A clean merge has nothing to abort, so its local merge commit
-    // stays until the next attempt: preparePrBranch checks the branch out at
-    // origin's fetched tip, which drops that commit whenever the fetch succeeds.
-    await abortMerge(run, workDir);
+    // Nothing here is pushed. The local branch goes back to the tip the
+    // attempt started from, so the merge commit (or repair commit) is not kept
+    // locally either. A failed restore is reported in the failure detail.
+    const localReset = await discardLocalMerge(
+      run,
+      workDir,
+      headBeforeMerge,
+      logger,
+      repo,
+    );
     return await failAttempt(
       input,
       processorDeps,
       conflictedFiles,
-      verification.detail,
+      localReset === undefined
+        ? verification.detail
+        : `${verification.detail}; ${localReset}`,
       attemptNumber,
       timer,
       headBeforeMerge,
     );
   }
   if (verification.kind === "cut-short") {
-    await abortMerge(run, workDir);
+    const localReset = await discardLocalMerge(
+      run,
+      workDir,
+      headBeforeMerge,
+      logger,
+      repo,
+    );
+    if (localReset !== undefined) {
+      // A withdrawn attempt posts no conclusion, so the failed restore is
+      // logged here instead. The next attempt still checks the branch out at
+      // origin's tip.
+      logger.error(
+        "Merge-conflict attempt withdrawn, but the local branch could not be restored",
+        { repo, prNumber, detail: localReset },
+      );
+    }
     return await withdrawCutShortAttempt(
       input,
       processorDeps,
