@@ -1023,7 +1023,14 @@ async function startOrphanFake(fakePath: string): Promise<number[]> {
     stdout: "null",
     stderr: "null",
   }).output();
-  return await pgrepFull(fakePath);
+  // The background child may not have exec'd bash with fakePath yet when
+  // the intermediate shell exits. Wait for the command line the reaper sees.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const pids = await pgrepFull(fakePath);
+    if (pids.length > 0) return pids;
+    await delay(100);
+  }
+  return [];
 }
 
 Deno.test({
