@@ -3112,3 +3112,333 @@ Deno.test("CI turn limit aborts both initial and quality-retry runs before commi
     }
   }
 });
+
+async function runHistoryRewriteCase(
+  dir: string,
+  options: {
+    authorIdent?: string;
+    authorCode?: number;
+    authorError?: Error;
+    authors?: string;
+    authorReadCode?: number;
+  },
+) {
+  const calls: string[][] = [];
+  const warnings: string[] = [];
+  const warningEntries: Array<{
+    message: string;
+    fields?: Record<string, unknown>;
+  }> = [];
+  const infoEntries: typeof warningEntries = [];
+  const comments: string[] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: openPrGh((args) => {
+        if (args[0] === "pr" && args[1] === "comment") {
+          comments.push(args[args.indexOf("--body") + 1] ?? "");
+        }
+        return Promise.resolve("");
+      }),
+    },
+    claude: {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            output: "fixed secret finding",
+            exitCode: 0,
+            timedOut: false,
+          },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    },
+    git: {
+      runGitCommand: ((args: string[]) => {
+        calls.push(args);
+        if (args[0] === "var" && options.authorError) {
+          return Promise.resolve({ ok: false, error: options.authorError });
+        }
+        const stdout = args[0] === "var"
+          ? options.authorIdent ?? "Worker <worker@example.com> 1 +0000"
+          : args[0] === "merge-base"
+          ? `${BASE}\n`
+          : args[0] === "log"
+          ? options.authors ?? "worker@example.com\n"
+          : args[0] === "rev-list"
+          ? "2\n"
+          : "";
+        const code = args[0] === "var"
+          ? options.authorCode ?? 0
+          : args[0] === "log"
+          ? options.authorReadCode ?? 0
+          : 0;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code,
+            stdout,
+            stderr: code === 0 ? "" : "fatal: author information unavailable",
+          },
+        });
+      }) as unknown as GitDeps["runGitCommand"],
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+  const logger = makeSilentLogger();
+  logger.warn = (message, fields) => {
+    warnings.push(`${message} ${JSON.stringify(fields ?? {})}`);
+    warningEntries.push({ message, fields });
+  };
+  logger.info = (message, fields) => infoEntries.push({ message, fields });
+  const result = await processCiFailure(
+    makeInput({ checkName: "gitleaks / scan" }),
+    {
+      promptsDir: PROMPTS_DIR,
+      logger,
+      deps,
+      stateDir: `${dir}/state`,
+      workDir: dir,
+      workRoot: dir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      qualityGateFn: () =>
+        Promise.resolve({ action: "passed", qualityOutput: "ok" }),
+    },
+  );
+  assertEquals(result.ok, true);
+  return { calls, warnings, warningEntries, infoEntries, comments };
+}
+
+const BASE = "b".repeat(40);
+
+Deno.test("processCiFailure - refuses to rewrite a branch with a foreign author (Issue #4554)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { calls } = await runHistoryRewriteCase(dir, {
+      authors: "worker@example.com\nother@example.com\n",
+    });
+    assertEquals(
+      calls.some((args) => ["reset", "commit", "push"].includes(args[0] ?? "")),
+      false,
+    );
+    assertEquals(calls.some((args) => args[0] === "var"), true);
+    assertEquals(calls.some((args) => args[0] === "log"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - refuses empty-email commits from real Git before reset, commit or push (Issue #4554)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    let authors = "";
+    // Exercise Git's actual empty-email record, with owned commits on either
+    // side. Only the final newline terminates the output; the others are data.
+    for (
+      const args of [
+        ["init", "--template=", "--initial-branch=main"],
+        [
+          "-c",
+          "user.email=worker@example.com",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "worker",
+        ],
+        [
+          "-c",
+          "user.email=",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "human with no email",
+        ],
+        [
+          "-c",
+          "user.email=worker@example.com",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "worker fix",
+        ],
+        ["log", "--format=%ae"],
+      ]
+    ) {
+      const output = await new Deno.Command("git", {
+        args: ["-c", "user.name=Test", "-c", "commit.gpgsign=false", ...args],
+        cwd: dir,
+        clearEnv: true,
+        env: {
+          PATH: Deno.env.get("PATH") ?? "",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: `${dir}/absent-global-config`,
+        },
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
+      authors = new TextDecoder().decode(output.stdout);
+    }
+    assertEquals(authors, "worker@example.com\n\nworker@example.com\n");
+
+    const { calls, warnings, comments } = await runHistoryRewriteCase(dir, {
+      authors,
+    });
+    assertEquals(calls.some((args) => args[0] === "log"), true);
+    assertEquals(
+      calls.filter((args) =>
+        ["reset", "commit", "push"].includes(args[0] ?? "")
+      ),
+      [],
+    );
+    assertEquals(
+      warnings.some((message) => message.includes("blank author email")),
+      true,
+    );
+    assertEquals(
+      comments.some((body) =>
+        body.includes("**The branch history was rebuilt.**")
+      ),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - rebuilds a worker-only branch (Issue #4554)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { calls, infoEntries, comments } = await runHistoryRewriteCase(
+      dir,
+      {},
+    );
+    assertEquals(calls.some((args) => args[0] === "reset"), true);
+    assertEquals(calls.some((args) => args[0] === "commit"), true);
+    assertEquals(
+      calls.some((args) =>
+        args[0] === "push" && args.includes("--force-with-lease")
+      ),
+      true,
+    );
+    const commit = calls.find((args) => args[0] === "commit");
+    const message = commit?.[commit.indexOf("-m") + 1] ?? "";
+    assertStringIncludes(message, "gitleaks / scan");
+    assertStringIncludes(message, "scans every commit");
+    assertStringIncludes(message, "PR #42");
+    assertEquals(
+      infoEntries.find((entry) =>
+        entry.message ===
+          "Rebuilding branch history to clear a range-scoped find"
+      )?.fields,
+      {
+        branchName: "issue-42-fix-bug",
+        baseBranch: "main",
+        baseSha: BASE,
+        collapsedCommits: 2,
+      },
+    );
+    assertEquals(
+      infoEntries.find((entry) =>
+        entry.message === "Branch history rebuilt and force-pushed"
+      )?.fields,
+      { branchName: "issue-42-fix-bug", baseSha: BASE, collapsedCommits: 2 },
+    );
+    assertEquals(
+      comments.some((body) =>
+        body.includes("**The branch history was rebuilt.**") &&
+        body.includes("force-pushed with a lease")
+      ),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - refuses history rebuild when author identity is unresolved (Issue #4554)", async () => {
+  for (
+    const { options, reason, detail } of [
+      {
+        options: { authorCode: 1 },
+        reason: "author information unavailable",
+        detail: "fatal: author information unavailable",
+      },
+      {
+        options: { authorError: new Error("author command could not start") },
+        reason: "author command could not start",
+        detail: "author command could not start",
+      },
+      {
+        options: { authorIdent: "Worker <broken identity> 1 +0000" },
+        reason: "no usable author identity",
+        detail: "Git returned no usable author identity",
+      },
+    ]
+  ) {
+    const dir = await Deno.makeTempDir();
+    try {
+      const { calls, warnings, warningEntries } = await runHistoryRewriteCase(
+        dir,
+        options,
+      );
+      assertEquals(calls.some((args) => args[0] === "var"), true);
+      assertEquals(
+        calls.some((args) =>
+          ["reset", "commit", "push"].includes(args[0] ?? "")
+        ),
+        false,
+      );
+      assertEquals(
+        warnings.some((message) =>
+          message.includes("author identity could not be resolved")
+        ),
+        true,
+      );
+      assertEquals(warnings.some((message) => message.includes(reason)), true);
+      assertEquals(
+        warningEntries.find((entry) =>
+          entry.message ===
+            "History rebuild refused: worker author identity could not be resolved"
+        )?.fields,
+        {
+          repo: "org/repo",
+          prNumber: 42,
+          branchName: "issue-42-fix-bug",
+          error: detail,
+        },
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("processCiFailure - refuses history rebuild when commit authors cannot be read (Issue #4554)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { calls, warnings } = await runHistoryRewriteCase(dir, {
+      authorReadCode: 1,
+    });
+    assertEquals(calls.some((args) => args[0] === "log"), true);
+    assertEquals(
+      calls.some((args) => ["reset", "commit", "push"].includes(args[0] ?? "")),
+      false,
+    );
+    assertEquals(
+      warnings.some((message) =>
+        message.includes("could not read commit authors")
+      ),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
