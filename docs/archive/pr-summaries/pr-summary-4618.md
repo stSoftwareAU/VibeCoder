@@ -29,24 +29,22 @@ repositories remain in the shared configuration.
 
 ### Undiscoverable Facts
 
-- The remote has main but no Develop branch, despite CONTRIBUTING naming Develop.
+- The owner's App is installed on stSoftwareAU only, while the shared fleet
+  configuration also lists private TitlePage repositories.
 
 ## Evidence
 
 - Read and updated the babysitter workflow manual and the GitHub App manual's
   Before using it section: docs/workflows/fleet-pr-babysitter.md and
   docs/workflows/fleet-pr-babysitter-github-app.md.
-- Targeted tests: 33 passed, including type checking, with Deno 2.9.5 and an
-  external import map pointing to a local denoland/std checkout. JSR downloads
-  are unavailable here. This is supplemental validation, not a pinned-dependency
-  CI pass. Two pre-existing noImplicitReturns errors in that external source
-  checkout were excluded from checking; repository checks were not weakened.
-- The existing agent-launch test was run in its child mode with its fake runner
-  token, because its subprocess does not inherit the external import map.
-- The normal quality gate was attempted: lint, formatting, Mermaid and source
-  guards passed. Tests, type checking and completeness checks could not load
-  JSR dependencies. Markdownlint, Semgrep, Checkov and ruleset checks were
-  unavailable. The full gate is not green.
+- Pinned-dependency run on a fleet Mac after merging main:
+  - `fleet_babysitter_repositories_test.ts`, `fleet_babysitter_app_test.ts`,
+    `fleet_pr_babysitter_test.ts`, `fleet_pr_babysitter_setup_test.ts`: 34
+    passed, 0 failed.
+  - `deno check` on both commands, `deno lint`, `deno fmt --check`: clean.
+  - `deno task check:manifests`: passed once the new module gained its sweep
+    slice (`docs/audits/lib-sweep-coverage/top-up-4618.json`).
+  - markdownlint-cli2 on the changed docs: 0 errors.
 - No UI change; no screenshots needed. No live App credentials were available
   for an end-to-end GitHub installation test.
 
@@ -66,5 +64,4 @@ repositories remain in the shared configuration.
 
 ## Merge verification
 
-- Pinned-dependency CI and independent review are pending. This PR is a draft
-  until those checks establish readiness.
+- CI: pending on this PR.
