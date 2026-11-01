@@ -12,9 +12,14 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
 
 1. Read the linked issue and the repo's `AGENTS.md` / `CODING-STANDARDS.md`
    if they exist.
-2. Check that the change does what the issue asks and nothing unrelated. A
-   change that clears a dependency audit that is red on this PR is not
-   unrelated: every PR red on an advisory fixes it itself, even when another
+2. Check that the change does what the issue asks and nothing unrelated. The
+   routine dependency refresh the worker commits on every PR (the
+   `chore: bump dependencies via bump-deps.sh` commit;
+   `prompts/coding_guidelines/prompt.md`, "Dependency Bumps and Supply
+   Chain") is not unrelated: it is part of the PR, so do not ask for it to be
+   reverted as unrelated to the issue. Review it for correctness like any
+   other change. A change that clears a dependency audit that is red on this PR
+   is not unrelated: every PR red on an advisory fixes it itself, even when another
    PR carries the same fix (`prompts/ci_fix/prompt.md`, "Dependency
    audit failures"). Review it for correctness like any other change.
 3. Look for correctness bugs, unhandled edge cases, security problems
