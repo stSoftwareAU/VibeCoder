@@ -72,7 +72,8 @@ function tomlString(value: string): string {
 /**
  * Codex `-c` overrides that select the babysitter permissions profile: read
  * everywhere, write only the clone and scratch directory, no write to the
- * clone's `.git`, and no access at all to `protectedPaths`.
+ * clone's `.git`, no access at all to `protectedPaths`, and network access for
+ * the agent's read-only GitHub requests.
  */
 export function buildBabysitterSandboxArgs(options: {
   dir: string;
@@ -115,5 +116,7 @@ export function buildBabysitterSandboxArgs(options: {
     `default_permissions=${tomlString(BABYSITTER_PERMISSIONS_PROFILE)}`,
     "-c",
     `${BABYSITTER_FILESYSTEM_KEY}={ ${table} }`,
+    "-c",
+    `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.network={ enabled = true }`,
   ];
 }

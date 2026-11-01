@@ -131,6 +131,8 @@ Deno.test("buildBabysitterSandboxArgs emits the exact profile overrides", async 
           grant(protectedPaths[1]!, "none"),
         ].join(", ")
       } }`,
+      "-c",
+      "permissions.babysitter-agent.network={ enabled = true }",
     ]);
     // Codex splits a `-c` key on every dot, so no path may sit in a key.
     assertEquals(
@@ -274,7 +276,7 @@ Deno.test("buildBabysitterSandboxArgs escapes double quotes in protected paths",
       protectedPaths: [protectedPath],
     });
 
-    assertEquals(args.length, 4);
+    assertEquals(args.length, 6);
     assert(
       args[3]!.endsWith(`, "${root}/a/b\\"c" = "none" }`),
       args[3],

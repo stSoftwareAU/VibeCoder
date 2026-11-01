@@ -95,6 +95,12 @@ its own token. The agent token lasts about an hour and is not refreshed, so
 reads late in a longer repair can fail. PR description fixes reach GitHub only
 via the archived summary.
 
+The profile explicitly enables network access so the agent can fetch GitHub
+feedback and check details. Host `[sandbox_workspace_write]` settings do not
+apply to this profile: `network_access` and `writable_roots` are not inherited,
+and `/tmp` is not automatically writable. The agent can write to its assigned
+clone and scratch directory instead.
+
 **Verifying the credential boundary.** The permissions-profile keys were written
 without an installed Codex to test against. The paths are passed as the keys of
 one inline-table value, not as dotted `-c` keys, because Codex splits a `-c` key
