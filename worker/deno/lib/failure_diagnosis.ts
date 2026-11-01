@@ -1150,7 +1150,7 @@ export function getFailureDiagnosis(
 
     case "token_scope":
       return `- The worker's GitHub token lacks the \`workflow\` OAuth scope, and this change creates or updates a file under \`.github/workflows/\`
-- GitHub rejects such a push from any OAuth token without that scope, so the run stopped **before** pushing (Issue #1475)
+- GitHub rejects such a push from any OAuth token without that scope, so the run stopped **before** pushing
 - This is a **host credential issue**, not related to the issue content — no attempt was made to push
 - An operator must grant the scope to the worker account (\`gh auth refresh -s workflow\`), re-provision \`gh/hosts.yml\` and restart the worker; a host whose token has the scope can pick the issue up as it is`;
 
@@ -1165,7 +1165,7 @@ export function getFailureDiagnosis(
 - Consider adding specific file paths, expected behaviour, or acceptance criteria`;
 
     case "workflow_gate":
-      return `- A workflow file this run added or changed carries a GitHub Actions finding the base commit did not, so the changed-workflow gate refused the run (Issue #1859)
+      return `- A workflow file this run added or changed carries a GitHub Actions finding the base commit did not, so the changed-workflow gate refused the run
 - The finding is a defect in the change, not a documentation shortfall: it stops the run whether or not a pull request already exists
 - Fix the named file \u2014 a finding that genuinely does not apply cannot be cleared by the run (the gate honours no in-file suppression marker), so it needs a human to review it, or a fix to the scanner
 - When the run had already raised its pull request, that PR stays open and carries the outstanding finding \u2014 the work is delivered, the finding is not`;
@@ -1178,7 +1178,7 @@ export function getFailureDiagnosis(
 
     case "prompt_too_long":
       return `- The agent CLI refused the run with \`Prompt is too long\` — the conversation no longer fits the model's context window
-- This is a **worker fault**, not a property of the issue: a resumed session that overflows is discarded and retried once on a fresh session without counting against the issue (Issue #2682)
+- This is a **worker fault**, not a property of the issue: a resumed session that overflows is discarded and retried once on a fresh session without counting against the issue
 - This failure is counted because the fresh session overflowed too, so the issue's own context (body, comments, prompt) is likely too large for one run
 - Consider trimming the issue body or splitting the task into smaller sub-issues`;
 
@@ -1189,25 +1189,25 @@ export function getFailureDiagnosis(
 - An operator should check the host's shared clone (e.g. \`git fsck\`) and re-clone or repair it if refs or objects are missing or corrupt, then remove the \`needs-human\` label so the issue is claimable again`;
 
     case "summary_incomplete":
-      return `- The PR summary did not pass the worker's completion gates (Issue #3431)
+      return `- The PR summary did not pass the worker's completion gates
 - The gate's comment on the issue names each gap in the summary
 - This is the agent's deliverable falling short, not a worker defect
 - The normal retry and \`failed-once\` rules apply`;
 
     case "security_fix_gate":
-      return `- The security fix did not pass the worker's security-fix gate (Issue #3454)
+      return `- The security fix did not pass the worker's security-fix gate
 - The agent did not deliver the vulnerability-fix verification evidence the gate requires
 - This is the agent's deliverable falling short, not a worker defect
 - The normal retry and \`failed-once\` rules apply`;
 
     case "pre_push_gate":
-      return `- The branch did not pass the worker's pre-push gate (PR #3716 review)
+      return `- The branch did not pass the worker's pre-push gate
 - The gate's comment on the issue quotes the failing check's output, which names each file and finding
 - This is the branch's content failing the repository's own checks, not a worker defect
 - The normal retry and \`failed-once\` rules apply`;
 
     case "criteria_unmet":
-      return `- The run did not meet every acceptance criterion, even after its in-run rounds (Issue #4146)
+      return `- The run did not meet every acceptance criterion, even after its in-run rounds
 - The gate's comment on the issue names each unmet criterion
 - No PR was raised and no follow-up issue was filed: the branch stays pushed, and the next run resumes it to finish the job
 - The normal retry and \`failed-once\` rules apply`;
@@ -1215,7 +1215,7 @@ export function getFailureDiagnosis(
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
-- Every run is given the headless browser unless the repository sets \`skip_screenshot_check\` (Issue #2925); if the agent reported a browser error, it is quoted in the PR summary or the run log
+- Every run is given the headless browser unless the repository sets \`skip_screenshot_check\`; if the agent reported a browser error, it is quoted in the PR summary or the run log
 - A retry happens only while the issue is not labelled \`failed\`; once it is, the issue is retried only after a human removes that label`;
 
     case "internal_error":
@@ -1289,7 +1289,7 @@ export function getFailureDiagnosisOneliner(
     case "push_failure":
       return "Likely cause: git push failed (permissions or network issue).";
     case "token_scope":
-      return "Likely cause: the worker's token lacks the 'workflow' scope and the change touches .github/workflows/ (Issue #1475).";
+      return "Likely cause: the worker's token lacks the 'workflow' scope and the change touches .github/workflows/.";
     case "no_changes":
       if (clarityWasAssessed(clarityStatus)) {
         return "Likely cause: Claude could not determine what changes to make (issue was assessed as clear).";
@@ -1306,7 +1306,7 @@ export function getFailureDiagnosisOneliner(
     case "workflow_gate":
       return "Blocked by the changed-workflow file checks: a workflow file this run touched carries a finding the base commit did not.";
     case "prompt_too_long":
-      return "Likely cause: the agent CLI refused the run as 'Prompt is too long' even on a fresh session (Issue #2682).";
+      return "Likely cause: the agent CLI refused the run as 'Prompt is too long' even on a fresh session.";
     // Deliberately not "Likely cause": nothing was guessed. The setup phase
     // detected the host's shared clone was damaged and said so (Issue #2884).
     case "clone_corrupt":

@@ -2684,13 +2684,14 @@ async function completionBody(
 
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
-   * an earlier gate's block: independent Spec/Standards review, reproduction
-   * status, summary scrub, result placeholder, mutation check, coverage
-   * carry-over, the pre-PR verifier, then unmet criteria (Issue #4583 the
-   * review and reproduction verdicts; Issue #3393 the mutation check; Issue
-   * #3795 the coverage carry-over check; Issue #3395 the verifier). One source
-   * of truth for both the ordered fold below and the gates' own standalone
-   * blocks further down.
+   * the block of the gate that calls the fold: independent Spec/Standards
+   * review, reproduction status, summary scrub, result placeholder, mutation
+   * check, coverage carry-over, the pre-PR verifier, then unmet criteria
+   * (Issue #4583 the review and reproduction verdicts; Issue #3393 the
+   * mutation check; Issue #3795 the coverage carry-over check; Issue #3395 the
+   * verifier; Issue #4591 the unmet-criteria fold from the verifier's block).
+   * One source of truth for both the ordered fold below and the gates' own
+   * standalone blocks further down.
    */
   interface LateSummaryVerdict {
     categories?: readonly FailureCategory[];
@@ -3022,7 +3023,8 @@ async function completionBody(
    * Fold every blocked late verdict (independent Spec/Standards review,
    * reproduction status, summary scrub, result placeholder, mutation check,
    * coverage carry-over, pre-PR verifier, unmet criteria — in that order)
-   * other than those in `skip` into an earlier gate's block (Issue #4583).
+   * other than those in `skip` into the block of the gate that calls this
+   * (Issues #4583, #4591).
    * `allowsTestChanges` is set on the result when the block, or any verdict
    * folded in, is one that only a test change satisfies (the mutation check
    * or the coverage carry-over check).
@@ -3296,24 +3298,22 @@ async function completionBody(
   // This runs the fleet reviewer's own brief with execution rights after the
   // summary is written. Its findings reach the single recovery turn and, if
   // still present on the re-run, are reported like any other summary-rule
-  // block. Last in the late-summary chain, so nothing further folds in.
+  // block. The unmet-criteria verdict is the one late verdict after it, and
+  // folds in here (Issue #4591).
   // ---------------------------------------------------------------------
   if (prePrVerifierVerdict.blocked && prePrVerifier?.status === "checked") {
     logger.warn("Pre-PR verifier reported findings (Issue #3395)", {
       findings: prePrVerifier.review.findings.length,
     });
-    const comment = prePrVerifierVerdict.comment();
+    // Issue #4591: built by the fold so the unmet-criteria verdict, the one
+    // late verdict after this one, is in the note and the pull request comment.
+    const folded = foldInLateSummaryVerdicts(
+      prePrVerifierVerdict.reason,
+      prePrVerifierVerdict.comment(),
+      [prePrVerifierVerdict],
+    );
     const held = await reportSummaryRuleBlock(
-      {
-        categories: prePrVerifierVerdict.categories ?? ["quality_check"],
-        reason: prePrVerifierVerdict.reason,
-        comment,
-        sections: [comment],
-        standingViolations,
-        verifierHoldComment: comment,
-        docHoldComment: "",
-        ...(unmetCriteria.length > 0 ? { unmetCriteria } : {}),
-      },
+      folded,
       ctx,
       state,
       prBody,

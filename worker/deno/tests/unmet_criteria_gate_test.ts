@@ -39,7 +39,7 @@ Deno.test("unmetCriteriaReason - counts the criteria and says the PR is raised a
 Deno.test("buildUnmetCriteriaGateComment - names each criterion and does not claim the PR is withheld", () => {
   const comment = buildUnmetCriteriaGateComment(UNMET);
   assert(
-    comment.startsWith("### Acceptance criteria not met (Issue #4146)\n"),
+    comment.startsWith("### Acceptance criteria not met\n"),
     "the note opens with its heading",
   );
   assertStringIncludes(comment, "- **partial** — The router sends planning");
@@ -48,6 +48,18 @@ Deno.test("buildUnmetCriteriaGateComment - names each criterion and does not cla
   assertStringIncludes(comment, "`Part of #N`");
   assertEquals(WITHHELD.test(comment), false, comment);
   assert(!comment.includes("⛔"), "the heading must not read as a stop sign");
+});
+
+Deno.test("unmetCriteriaReason and buildUnmetCriteriaGateComment - carry no issue number in their output (Issue #4585)", () => {
+  // Posted in target repos, where a bare `#N` links to an unrelated issue.
+  const outputs = [
+    unmetCriteriaReason(UNMET.slice(0, 1)),
+    unmetCriteriaReason(UNMET),
+    buildUnmetCriteriaGateComment(UNMET),
+  ];
+  for (const text of outputs) {
+    assertEquals(text.match(/#\d+/g) ?? [], [], text);
+  }
 });
 
 /**

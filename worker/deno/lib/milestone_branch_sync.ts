@@ -582,9 +582,9 @@ export interface ConflictConclusion {
   rung?: ConflictLadderRung;
   /**
    * Set on a not-charged conflict refusal — the merge gate refused the
-   * resolution, or the merge was refused by a cargo withhold (Issue #4328,
-   * Issue #4326). Counted against {@link MILESTONE_REFUSAL_CEILING}. A
-   * cycle-budget deferral (Issue #4517) is not a refusal and is not counted.
+   * resolution (Issue #4328). Counted against {@link MILESTONE_REFUSAL_CEILING}.
+   * A cycle-budget deferral (Issue #4517) and a cargo-budget withhold (Issues
+   * #4326, #4588) are not refusals and are not counted.
    */
   refusal?: true;
   /**
@@ -616,7 +616,10 @@ export function escalateRepeatedRefusal(
   // A cargo-budget withhold never climbs: a full disk is the host's fault,
   // not the branch's, and rolling the branch back frees no disk. It waits for
   // the host like every other disk stop. Climbing here filed a
-  // `merge-fallback` issue on every milestone of a host short of disk.
+  // `merge-fallback` issue on every milestone of a host short of disk. The
+  // withhold is not a refusal either (Issue #4588), so this early return is
+  // defence in depth: the verdict carries no `refusal` to count in the first
+  // place.
   if (verdict.reason === CARGO_BUDGET_AGENT_WITHHELD) return verdict;
   if (!verdict.refusal || refusedBefore < ceiling) return verdict;
   return {
@@ -913,6 +916,8 @@ export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
  * Ledger reason when a merge-only cycle withholds the agent because a cargo
  * build would not fit the host (Issue #4326). Never charged: the branch waits
  * for the host to recover, and {@link escalateRepeatedRefusal} never climbs it.
+ * It is not a refusal, so it adds nothing to {@link SyncStreakEntry.refusedCycles}
+ * and never pre-loads the refusal ceiling (Issue #4588).
  */
 export const CARGO_BUDGET_AGENT_WITHHELD = "cargo budget withheld the agent";
 
@@ -1032,11 +1037,12 @@ export function judgeSyncFailure(
       r.includes(CARGO_BUDGET_AGENT_WITHHELD)
     );
     if (cargoWithheld !== undefined) {
+      // Issue #4588: a withhold waits for the host's disk. It is not a refusal
+      // the merge gate made, so it adds nothing to `refusedCycles`.
       return {
         outcome: "not-charged",
         reason: CARGO_BUDGET_AGENT_WITHHELD,
         rung: "agent",
-        refusal: true,
       };
     }
     const refused = reasons.find((r) => r.includes(AGENT_PROVIDER_UNAVAILABLE));

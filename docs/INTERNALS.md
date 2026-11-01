@@ -4393,7 +4393,9 @@ climbs, and the branch waits for a cycle with the runway. It adds nothing to
 either the ledger's `count` (the escalation streak) or `resolverDeclines`,
 which only the resolver recovery ladder reads as prior declines,
 so the first agent decline after any number of deferrals is attempt 1 of 3. A
-ledger written before this change has no `resolverDeclines` and reads it as 0,
+cargo-budget withhold is also not a refusal and leaves `refusedCycles`
+unchanged (Issue #4588); unlike a cycle-budget deferral, it advances `count`.
+A ledger written before this change has no `resolverDeclines` and reads it as 0,
 so the decline count restarts there.
 
 ```mermaid
@@ -4557,9 +4559,10 @@ So is a conflict the deterministic rules settle: the resolution gate reports a
 `skipped` verdict marked `landUnverified`, which `judgeResolutionVerdict` lets
 through where it would otherwise refuse an unverified resolution. A conflict
 that needs the agent is not landed in that cycle: the agent is free to run the
-very cargo build the host cannot afford, so it is not offered. Every such cycle
-is a refusal that is never charged and never climbs the recovery ladder: the
-branch waits for the host's disk, as every other disk stop does. A Deno check
+very cargo build the host cannot afford, so it is not offered. Each such
+withhold is not a refusal, is not counted in `refusedCycles`, is never charged
+and never climbs the recovery ladder (Issue #4588): the branch waits for the
+host's disk, as every other disk stop does. A Deno check
 that cannot reach its module host is left to CI by both the merge gate and the
 resolution gate (Issues #4422 and #4451), never charged as a refused tree. See
 [HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
@@ -4720,7 +4723,8 @@ whether the worker diagnostic has been `reported`, Issue #2388),
 `lastSyncedDefaultSha` and
 `rollbacks`, plus three fields Issue #4328 adds: `refusedCycles` (consecutive
 not-charged refusals, zeroed by a charged conclusion or a landed sync; a
-cycle-budget deferral is not a refusal and leaves it unchanged, Issue #4517),
+cycle-budget deferral or cargo-budget withhold is not a refusal and leaves it
+unchanged, Issues #4517 and #4588),
 `rollbackFailures` (lifetime roll-backs that could not merge) and `rebuilds`
 (lifetime milestone rebuilds on the branch), and `resolverDeclines` (charged
 verdicts for which `climbsRecoveryLadder` holds; only the resolver recovery
@@ -4813,6 +4817,7 @@ is the branch's to answer for:
 | The agent ran out **its own** timeout                           | `failed` — the rung was climbed and the conflict beat it (Issue #2305) |
 | The **worker** ended the run at the cycle deadline              | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305) |
 | Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309); not counted in `refusedCycles` and never climbs: the branch waits for a cycle with the runway (Issue #4517) |
+| Conflicted and the agent is withheld by the cargo budget         | `not-charged` — not counted in `refusedCycles` and never climbs; the branch waits for disk (Issue #4588) |
 | Merge gate refused the merged tree (`isMergeGateFailure`)        | `failed` — one attempt charged, as for a textual conflict (Issue #4304) |
 | Merge gate refused the resolution (`gateFailure`)                | `not-charged` — counted in `refusedCycles`, and the fourth consecutive one is `failed` and climbs to the hand-off (Issues #4328, #4517); the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
