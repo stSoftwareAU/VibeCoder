@@ -68,7 +68,7 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
           args = options.args as string[];
           return {} as Deno.ChildProcess;
         },
-        () => Promise.resolve("codex-cli 0.164.0"),
+        () => Promise.resolve("codex"),
       );
       assertEquals(requests[0]!.body, {
         repositories: ["repo"],
@@ -110,7 +110,7 @@ Deno.test("agent launch does not record an attempt when token minting fails", as
             spawned = true;
             return {} as Deno.ChildProcess;
           },
-          () => Promise.resolve("codex-cli 0.164.0"),
+          () => Promise.resolve("codex"),
         )
       );
       assertEquals(guarded, false);
@@ -149,7 +149,7 @@ Deno.test("agent launch refuses a relative HOME before minting a token or spawni
             spawned = true;
             return {} as Deno.ChildProcess;
           },
-          () => Promise.resolve("codex-cli 0.164.0"),
+          () => Promise.resolve("codex"),
         ),
       Error,
       "must be an absolute path",
@@ -179,7 +179,7 @@ Deno.test("agent launch does not spawn an already attempted head", async () => {
           spawned = true;
           return {} as Deno.ChildProcess;
         },
-        () => Promise.resolve("codex-cli 0.164.0"),
+        () => Promise.resolve("codex"),
       );
       assertEquals(requests.length, 1);
       assertEquals(result, undefined);
@@ -504,7 +504,7 @@ Deno.test("babysitter agent env - rejects an empty token", () => {
   assertThrows(() => babysitterAgentEnv("/scratch/agent", ""), Error, "token");
 });
 
-Deno.test("agent launch rejects old Codex before mint, attempt or spawn", async () => {
+Deno.test("agent launch stops before mint, attempt or spawn when Codex cannot be provided", async () => {
   let fetched = false;
   let attempted = false;
   let spawned = false;
@@ -526,10 +526,10 @@ Deno.test("agent launch rejects old Codex before mint, attempt or spawn", async 
           spawned = true;
           return {} as Deno.ChildProcess;
         },
-        () => Promise.resolve("codex-cli 0.110.0"),
+        () => Promise.reject(new Error("Codex install failed")),
       ),
     Error,
-    "requires Codex CLI 0.164.0 or newer",
+    "Codex install failed",
   );
   assertEquals([fetched, attempted, spawned], [false, false, false]);
 });

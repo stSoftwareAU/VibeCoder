@@ -327,7 +327,14 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     options: Deno.CommandOptions & { timeoutMs: number };
   }[] = [];
   spawnBabysitterAgent(
-    { dir, scratch, prompt, agentToken, protectedPaths },
+    {
+      dir,
+      scratch,
+      prompt,
+      agentToken,
+      protectedPaths,
+      codex: "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
+    },
     (executable, options) => {
       calls.push({ executable, options });
       return {} as unknown as Deno.ChildProcess;
@@ -335,7 +342,10 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   );
   const [call] = calls;
   assert(call);
-  assertEquals(call.executable, "codex");
+  assertEquals(
+    call.executable,
+    "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
+  );
   const env = call.options.env as Record<string, string>;
   assertEquals(env.GH_TOKEN, agentToken);
   assert(env.GH_TOKEN !== runnerToken);
@@ -375,6 +385,7 @@ Deno.test("codex agent is not given the workspace-write sandbox and cannot read 
       prompt: "Fix conflicts on PR #1",
       agentToken: "agent-read-only-token",
       protectedPaths,
+      codex: "codex",
     },
     (_executable, options) => {
       calls.push(options.args as string[]);
@@ -418,6 +429,7 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
           prompt: "Fix conflicts on PR #1",
           agentToken: "agent-read-only-token",
           protectedPaths: [],
+          codex: "codex",
         },
         () => {
           spawned = true;

@@ -4,7 +4,7 @@ import {
   BABYSITTER_PERMISSIONS_PROFILE,
   babysitterProtectedPaths,
   buildBabysitterSandboxArgs,
-  checkBabysitterCodexVersion,
+  codexVersionMeetsFloor,
 } from "../lib/fleet_babysitter_sandbox.ts";
 
 /** The grant entry as it appears inside the inline table. */
@@ -344,28 +344,28 @@ Deno.test("path validation rejects an absolute path containing a NUL byte", asyn
   });
 });
 
-Deno.test("Codex version preflight fails closed on old or unrecognised versions", async () => {
+Deno.test("Codex version floor fails closed on old or unrecognised versions", () => {
   for (
     const version of [
       "codex-cli 0.110.0",
       "codex-cli 0.163.99",
       "codex-cli 0.164.0-beta.1",
+      "codex-cli 0.163.0-alpha.1",
+      "codex-cli 0.166.0-",
       "unknown",
     ]
   ) {
-    await assertRejects(
-      () => checkBabysitterCodexVersion(() => Promise.resolve(version)),
-      Error,
-      "0.164.0",
-    );
+    assertEquals(codexVersionMeetsFloor(version), false, version);
   }
   for (
     const version of [
       "codex-cli 0.164.0",
       "codex-cli 0.165.0",
       "codex-cli 1.0.0",
+      "codex-cli 0.166.0-alpha.5.1",
+      "codex-cli 0.164.1-beta.1",
     ]
   ) {
-    await checkBabysitterCodexVersion(() => Promise.resolve(version));
+    assertEquals(codexVersionMeetsFloor(version), true, version);
   }
 });
