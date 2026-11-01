@@ -77,9 +77,22 @@ export function checkOfflineSnapshotEntries(entries: string): void {
 }
 
 /** Execute one structured check in an isolated Apple container, or defer. */
-export async function runOfflineRepoCheck(
+export function runOfflineRepoCheck(
   request: OfflineRepoRequest,
 ): Promise<OfflineRepoResult> {
+  return runOfflineRepoCheckInternal(request);
+}
+
+interface Overlay {
+  head: string;
+  path: string;
+  expectedBlob?: string;
+}
+type InternalResult = OfflineRepoResult & { overlayBlob?: string };
+async function runOfflineRepoCheckInternal(
+  request: OfflineRepoRequest,
+  overlay?: Overlay,
+): Promise<InternalResult> {
   if (!/^[0-9a-f]{40}$/i.test(request.head)) {
     return { status: "unavailable", detail: "A full commit ID is required" };
   }
@@ -98,7 +111,7 @@ export async function runOfflineRepoCheck(
   let name: string | undefined;
   let imageAlias: string | undefined;
   let launched = false;
-  let outcome: OfflineRepoResult = {
+  let outcome: InternalResult = {
     status: "unavailable",
     detail: "Check did not start",
   };
@@ -152,7 +165,7 @@ export async function runOfflineRepoCheck(
       GIT_TERMINAL_PROMPT: "0",
       GIT_NO_REPLACE_OBJECTS: "1",
     };
-    const git = async (args: string[]) => {
+    const git = async (args: string[], trim = true) => {
       const child = spawnCommandWithTimeout("git", {
         args,
         cwd: fixture,
@@ -182,7 +195,7 @@ export async function runOfflineRepoCheck(
         collect(child.stderr),
       ]);
       if (!status.success) throw new Error(`Snapshot failed: ${stderr}`);
-      return stdout.trim();
+      return trim ? stdout.trim() : stdout;
     };
     const objects = await git([
       "-C",
@@ -240,6 +253,75 @@ export async function runOfflineRepoCheck(
       "--",
       ".",
     ]);
+    let overlayBlob: string | undefined;
+    if (overlay) {
+      let directory = `${fixture}/repo`;
+      for (const part of request.cwd === "." ? [] : request.cwd.split("/")) {
+        directory += `/${part}`;
+        if (!(await Deno.lstat(directory)).isDirectory) {
+          throw new Error("Project directory is not a regular directory");
+        }
+      }
+      const resolved = await git([
+        "-C",
+        `${fixture}/meta`,
+        "rev-parse",
+        "--verify",
+        `${overlay.head}^{commit}`,
+      ]);
+      if (resolved.toLowerCase() !== overlay.head.toLowerCase()) {
+        throw new Error("Overlay commit mismatch");
+      }
+      const entry = await git([
+        "-C",
+        `${fixture}/meta`,
+        "--literal-pathspecs",
+        "ls-tree",
+        "--format=%(objectmode) %(objecttype) %(objectname)",
+        resolved,
+        "--",
+        overlay.path,
+      ]);
+      const match = /^(100644|100755) blob ([0-9a-f]{40})$/.exec(entry);
+      if (!match) throw new Error("Overlay test is not a tracked regular file");
+      overlayBlob = match[2]!;
+      if (overlay.expectedBlob && overlayBlob !== overlay.expectedBlob) {
+        throw new Error("Overlay blob mismatch");
+      }
+      let target = `${fixture}/repo`;
+      const parts = overlay.path.split("/");
+      for (const part of parts.slice(0, -1)) {
+        target += `/${part}`;
+        if (!(await Deno.lstat(target)).isDirectory) {
+          throw new Error("Overlay ancestor is not a directory");
+        }
+      }
+      target += `/${parts.at(-1)}`;
+      try {
+        if (!(await Deno.lstat(target)).isFile) {
+          throw new Error("Overlay target is not a regular file");
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+      const content = await git([
+        "-C",
+        `${fixture}/meta`,
+        "cat-file",
+        "blob",
+        overlayBlob,
+      ], false);
+      await Deno.writeTextFile(target, content);
+      const written = await git([
+        "-C",
+        `${fixture}/meta`,
+        "hash-object",
+        target,
+      ]);
+      if (written !== overlayBlob) {
+        throw new Error("Overlay bytes did not match blob");
+      }
+    }
     await Deno.remove(`${fixture}/meta`, { recursive: true });
     await Deno.writeTextFile(
       `${fixture}/supervisor.sh`,
@@ -285,6 +367,7 @@ export async function runOfflineRepoCheck(
       code: result.code,
       output: result.stdout.slice((OFFLINE_ISOLATION_MARKER + READY).length) +
         result.stderr,
+      ...(overlayBlob ? { overlayBlob } : {}),
     };
   } catch (error) {
     outcome = { status: "unavailable", detail: String(error) };
@@ -345,4 +428,107 @@ export async function runOfflineRepoCheck(
     }
   }
   return outcome;
+}
+
+export interface PairedOfflineDenoRequest {
+  sourceRepo: string;
+  base: string;
+  head: string;
+  /** Host-planned project directory and repository-relative test path. */
+  cwd: string;
+  testPath: string;
+  hostRoot: string;
+  image?: string;
+}
+export type PairedOfflineDenoResult =
+  | {
+    status: "observed";
+    base: InternalResult;
+    head: InternalResult;
+    blob: string;
+  }
+  | {
+    status: "unavailable";
+    detail: string;
+    base?: InternalResult;
+    head?: InternalResult;
+  };
+
+/** Observe the head test and its exact overlay on base; never infer regression. */
+export async function runPairedOfflineDenoTest(
+  request: PairedOfflineDenoRequest,
+): Promise<PairedOfflineDenoResult> {
+  const validPath = (path: string) =>
+    path.length > 0 && !path.startsWith("/") &&
+    !path.includes("\0") && path.split("/").every((p) =>
+      p !== "" && p !== "." && p !== ".."
+    );
+  if (
+    !/^[0-9a-f]{40}$/i.test(request.base) ||
+    !/^[0-9a-f]{40}$/i.test(request.head) ||
+    !validPath(request.testPath) ||
+    !(request.cwd === "." || validPath(request.cwd)) ||
+    !(request.testPath.endsWith(".ts") || request.testPath.endsWith(".tsx")) ||
+    !(request.cwd === "." || request.testPath.startsWith(request.cwd + "/"))
+  ) {
+    return { status: "unavailable", detail: "Invalid paired test request" };
+  }
+  const relative = request.cwd === "."
+    ? request.testPath
+    : request.testPath.slice(request.cwd.length + 1);
+  const common = {
+    sourceRepo: request.sourceRepo,
+    cwd: request.cwd,
+    hostRoot: request.hostRoot,
+    image: request.image,
+    argv: [
+      "deno",
+      "test",
+      "--cached-only",
+      "--no-prompt",
+      "--allow-all",
+      `./${relative}`,
+    ],
+  };
+  const head = await runOfflineRepoCheckInternal({
+    ...common,
+    head: request.head,
+  }, { head: request.head, path: request.testPath });
+  if (head.status !== "passed" || !head.overlayBlob) {
+    return {
+      status: "unavailable",
+      detail:
+        "Head check did not pass; offline failures may reflect missing dependencies",
+      head,
+    };
+  }
+  const base = await runOfflineRepoCheckInternal({
+    ...common,
+    head: request.base,
+  }, {
+    head: request.head,
+    path: request.testPath,
+    expectedBlob: head.overlayBlob,
+  });
+  if (base.status !== "passed") {
+    return {
+      status: "unavailable",
+      detail:
+        "Base check did not pass; offline failures may reflect missing dependencies",
+      head,
+      base,
+    };
+  }
+  if (
+    base.imageDigest !== head.imageDigest ||
+    base.overlayBlob !== head.overlayBlob
+  ) {
+    return {
+      status: "unavailable",
+      detail: "Paired execution environment changed",
+      head,
+      base,
+    };
+  }
+  return { status: "observed", base, head, blob: head.overlayBlob };
 }

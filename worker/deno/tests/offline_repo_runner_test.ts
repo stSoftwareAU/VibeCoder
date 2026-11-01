@@ -2,6 +2,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   checkOfflineSnapshotEntries,
   runOfflineRepoCheck,
+  runPairedOfflineDenoTest,
 } from "../lib/offline_repo_runner.ts";
 
 Deno.test("offline runner refuses unpinned or unsupported requests before launching", async () => {
@@ -97,6 +98,79 @@ Deno.test({
       });
       assertEquals(failed.status, "failed");
       if (failed.status === "failed") assertEquals(failed.code, 7);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Apple paired check binds head test overlay and defers ambiguous base failure",
+  ignore: !Deno.env.get("VIBE_OFFLINE_TEST_IMAGE"),
+  async fn() {
+    const root = await Deno.makeTempDir();
+    const git = async (...args: string[]) => {
+      const out = await new Deno.Command("git", { args, cwd: root }).output();
+      if (!out.success) throw new Error(new TextDecoder().decode(out.stderr));
+      return new TextDecoder().decode(out.stdout).trim();
+    };
+    try {
+      await git("init");
+      await git("config", "user.name", "Test");
+      await git("config", "user.email", "test@example.invalid");
+      await Deno.writeTextFile(`${root}/value.ts`, "export const value = 1;\n");
+      await git("add", "value.ts");
+      await git("commit", "-m", "base");
+      const base = await git("rev-parse", "HEAD");
+      await Deno.writeTextFile(`${root}/value.ts`, "export const value = 2;\n");
+      await Deno.writeTextFile(
+        `${root}/value_test.ts`,
+        `import { value } from "./value.ts";
+Deno.test("value", () => { if (value !== 2) throw Error("wrong value"); });
+`,
+      );
+      await git("add", "value.ts", "value_test.ts");
+      await git("commit", "-m", "head");
+      const head = await git("rev-parse", "HEAD");
+      const result = await runPairedOfflineDenoTest({
+        sourceRepo: root,
+        base,
+        head,
+        cwd: ".",
+        testPath: "value_test.ts",
+        hostRoot: root,
+        image: Deno.env.get("VIBE_OFFLINE_TEST_IMAGE")!,
+      });
+      assertEquals(result.status, "unavailable");
+      if (result.status === "unavailable") {
+        assertEquals(result.head?.status, "passed");
+        assertEquals(result.base?.status, "failed");
+      }
+      const same = await runPairedOfflineDenoTest({
+        sourceRepo: root,
+        base: head,
+        head,
+        cwd: ".",
+        testPath: "value_test.ts",
+        hostRoot: root,
+        image: Deno.env.get("VIBE_OFFLINE_TEST_IMAGE")!,
+      });
+      assertEquals(same.status, "observed");
+      if (same.status === "observed") {
+        assertEquals(same.base.status, "passed");
+        assertEquals(same.head.status, "passed");
+        assertEquals(same.blob.length, 40);
+      }
+      const invalid = await runPairedOfflineDenoTest({
+        sourceRepo: root,
+        base,
+        head,
+        cwd: ".",
+        testPath: "../value_test.ts",
+        hostRoot: root,
+      });
+      assertEquals(invalid.status, "unavailable");
     } finally {
       await Deno.remove(root, { recursive: true });
     }
