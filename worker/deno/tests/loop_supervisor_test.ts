@@ -1350,6 +1350,168 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "loop.sh #4568 - a failed listing and side containers do not end the worker watch",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: LONG_RUN_STUB,
+      containerStub: [
+        "#!/bin/bash",
+        'count="$(dirname "$0")/../count"',
+        'log="$(dirname "$0")/../container.log"',
+        'echo "$*" >> "$log"',
+        'case "$1" in',
+        '  ls) n=$(cat "$count" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$count"',
+        '      case "$n" in',
+        '        1) echo "vibe-coder-999-egress running";;',
+        '        2) echo "vibe-coder-999-init running";;',
+        "        3) :;;",
+        '        4) echo "vibe-coder-999 running";;',
+        "        5) exit 1;;",
+        '        *) echo "vibe-coder-999 running";;',
+        "      esac;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "1",
+    });
+    try {
+      for (let i = 0; i < 100; i++) {
+        await delay(100);
+        const log = await Deno.readTextFile(
+          join(harness.tmpDir, "container.log"),
+        ).catch(() => "");
+        if (log.split("exec vibe-coder-999 true\n").length >= 3) break;
+      }
+      const log = await Deno.readTextFile(
+        join(harness.tmpDir, "container.log"),
+      );
+      assert(
+        log.split("exec vibe-coder-999 true\n").length >= 3,
+        `worker must be probed again after listing failure; got:\n${log}`,
+      );
+      assert(
+        !log.includes("exec vibe-coder-999-egress") &&
+          !log.includes("exec vibe-coder-999-init"),
+        `side containers must not be probed; got:\n${log}`,
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "loop.sh #4568 - a registered orphan with a different command survives",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: LONG_RUN_STUB });
+    const stateDir = join(harness.tmpDir, ".vibe-coder");
+    const marker = join(harness.tmpDir, "unrelated-sleep");
+    await Deno.symlink("/bin/sleep", marker);
+    let pids: number[] = [];
+    let child: Deno.ChildProcess | undefined;
+    try {
+      await new Deno.Command("bash", {
+        args: [
+          "-c",
+          'cd "$1"; nohup "$2" 300 >/dev/null 2>&1 &',
+          "bash",
+          harness.tmpDir,
+          marker,
+        ],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      pids = await pgrepFull(marker);
+      assertEquals(pids.length, 1);
+      const pid = pids[0];
+      assert(pid !== undefined);
+      assertEquals(await parentPidOf(pid), 1);
+      await registerProbe(stateDir, pid, await Deno.realPath(harness.tmpDir));
+      child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
+      await delay(3000);
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"));
+      assert(await isRunning(pid), "unrelated orphan must survive");
+      assert(!log.includes("reaping orphaned control-plane probe"), log);
+    } finally {
+      killQuietly(pids);
+      if (child !== undefined) await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #4568 - the probe stops when its living supervisor changes parent",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: LONG_RUN_STUB,
+      containerStub: NO_CONTAINER_STUB,
+    });
+    const parent = new Deno.Command("bash", {
+      args: [
+        "-c",
+        "./loop.sh > loop.log 2>&1 & echo $! > loop.pid; while [[ ! -e release ]]; do sleep 0.1; done",
+      ],
+      cwd: harness.tmpDir,
+      env: {
+        HOME: harness.tmpDir,
+        PATH: `${join(harness.tmpDir, "bin")}:${Deno.env.get("PATH") ?? ""}`,
+        VIBE_RUN_MAX_SECONDS: "0",
+        VIBE_PROBE_INTERVAL_SECONDS: "1",
+      },
+      stdout: "null",
+      stderr: "null",
+    }).spawn();
+    let tree: number[] = [];
+    try {
+      let pid = 0;
+      for (let i = 0; i < 50 && !pid; i++) {
+        await delay(100);
+        pid = Number(
+          await Deno.readTextFile(join(harness.tmpDir, "loop.pid")).catch(() =>
+            "0"
+          ),
+        );
+      }
+      assert(pid > 0);
+      const probe = await findProbe(pid, 1);
+      assert(probe !== undefined, "probe must start before parent exits");
+      assertEquals(await parentPidOf(pid), parent.pid);
+      tree = [pid, ...await getDescendants(pid)];
+      await Deno.writeTextFile(join(harness.tmpDir, "release"), "");
+      await parent.status;
+      for (let i = 0; i < 80 && await isRunning(probe); i++) await delay(100);
+      assert(await isRunning(pid), "supervisor must remain alive");
+      assert(!(await isRunning(probe)), "probe must stop after reparenting");
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"));
+      assert(log.includes("changed parent"), log);
+    } finally {
+      killQuietly(tree);
+      try {
+        parent.kill("SIGKILL");
+      } catch { /* already exited */ }
+      await parent.status;
+      await harness.cleanup();
+    }
+  },
+});
+
 // ===========================================================================
 // Issue #1221 — the control-plane probe must not depend on a `timeout` binary
 //

@@ -46,7 +46,7 @@ set -uo pipefail
 #           escalates a repeatedly failing host through the host's own
 #           `callbacks.host_failure` hook (Issue #2108) - never GitHub.
 #   #4568 — the control-plane probe stops with its loop.sh, or with the container
-#           it watched; a fresh loop.sh reaps probes orphaned from this checkout.
+#           it watched; a fresh loop.sh reaps registered orphans from this checkout.
 ################################################################################
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -419,11 +419,15 @@ VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
 # One file per live probe, named by its PID (Issue #4568): see reap_orphaned_probes.
 VIBE_PROBES_DIR="${VIBE_STATE_DIR}/probes"
 
-# Echo the name of the running vibe-coder container, or nothing.
+# Echo the running worker container, excluding launch-time side containers.
+# When given a name, look only for that worker; propagate listing failures.
 running_vibe_container() {
-    command -v container >/dev/null 2>&1 || return 0
+    command -v container >/dev/null 2>&1 || return 1
     bounded 30 container ls 2>/dev/null |
-        awk '$1 ~ /^vibe-coder-/ && $0 ~ /running/ { print $1; exit }'
+        awk -v watched="${1:-}" '$1 ~ /^vibe-coder-/ && $1 !~ /-(egress|init)$/ &&
+            $0 ~ /running/ && (watched == "" || $1 == watched) && !found {
+                print $1; found = 1
+            }'
 }
 
 # Terminate a container whose control plane is dead, and the VM behind it.
@@ -518,20 +522,23 @@ probe_control_plane() {
     command -v container >/dev/null 2>&1 || return 0
     local owner="$1" owner_ppid
     owner_ppid="$(ps -o ppid= -p "${owner}" 2>/dev/null | tr -d ' ')"
-    local failures=0 name seen=0
+    local failures=0 name watched=""
     while true; do
         sleep "${VIBE_PROBE_INTERVAL_SECONDS}"
         probe_owner_gone "${owner}" "${owner_ppid}" && return 0
-        name="$(running_vibe_container)"
+        if ! name="$(running_vibe_container "${watched}")"; then
+            failures=0
+            continue
+        fi
         if [[ -z "${name}" ]]; then
             failures=0
-            if (( seen )); then
+            if [[ -n "${watched}" ]]; then
                 echo "loop.sh: control-plane probe stopping — the container it watched is gone"
                 return 0
             fi
             continue
         fi
-        seen=1
+        watched="${name}"
         if bounded 30 container exec "${name}" true >/dev/null 2>&1; then
             failures=0
             continue
