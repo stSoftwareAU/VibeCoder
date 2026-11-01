@@ -251,6 +251,7 @@ export async function requestBranchUpdate(
   repo: string,
   prNumber: number,
   ghFn: GhFn,
+  expectedHeadSha?: string,
 ): Promise<Result<void>> {
   if (!REPO_PATTERN.test(repo)) {
     return {
@@ -264,6 +265,14 @@ export async function requestBranchUpdate(
       error: new Error(`Invalid PR number for branch update: ${prNumber}`),
     };
   }
+  if (
+    expectedHeadSha !== undefined && !/^[a-f0-9]{40}$/i.test(expectedHeadSha)
+  ) {
+    return {
+      ok: false,
+      error: new Error("Invalid expected head SHA for branch update"),
+    };
+  }
 
   try {
     await ghFn([
@@ -271,6 +280,9 @@ export async function requestBranchUpdate(
       "--method",
       "PUT",
       `repos/${repo}/pulls/${prNumber}/update-branch`,
+      ...(expectedHeadSha
+        ? ["-f", `expected_head_sha=${expectedHeadSha}`]
+        : []),
     ]);
     return { ok: true, value: undefined };
   } catch (error: unknown) {

@@ -281,6 +281,17 @@ Deno.test("handleMergeAttempt - secrets in the merge error are redacted before t
 // requestBranchUpdate
 // ---------------------------------------------------------------------------
 
+Deno.test("requestBranchUpdate pins the head used for required checks", async () => {
+  let sent: string[] = [];
+  const head = "a".repeat(40);
+  const result = await requestBranchUpdate("owner/repo", 12, (args) => {
+    sent = args;
+    return Promise.resolve("");
+  }, head);
+  assert(result.ok);
+  assertEquals(sent.slice(-2), ["-f", `expected_head_sha=${head}`]);
+});
+
 Deno.test("requestBranchUpdate - calls the update-branch endpoint", async () => {
   const calls: string[][] = [];
   const result = await requestBranchUpdate("owner/repo", 12, (args) => {
