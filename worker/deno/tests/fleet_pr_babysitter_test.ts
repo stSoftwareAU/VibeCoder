@@ -491,3 +491,28 @@ Deno.test("a PR labelled needs-human is never a babysitter candidate", () => {
   assertEquals(reason(pr), null);
   assertEquals(reason({ ...pr, labels: [] }), "merge conflict");
 });
+
+// Issue #4677: CI is the gate, so a check this host cannot run is reported,
+// not a reason to discard an otherwise complete repair.
+Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "name it in your final response");
+    assertStringIncludes(
+      prompt,
+      "does not by itself withhold BABYSITTER_READY",
+    );
+  }
+});
+
+// Issue #4677: a resolved conflict was discarded over unrelated verifier
+// findings (VibeCoder#4675); other feedback is out of a conflict's scope.
+Deno.test("other open feedback does not withhold readiness from a resolved conflict", () => {
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  assertStringIncludes(
+    prompt,
+    "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
+  );
+});
