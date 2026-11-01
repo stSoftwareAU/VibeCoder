@@ -22,6 +22,7 @@ import {
 import { selectBabysitterRepositories } from "../lib/fleet_babysitter_repositories.ts";
 import type { FetchFn } from "../lib/github_app_auth.ts";
 import {
+  babysitterHostCredentialPaths,
   babysitterProtectedPaths,
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
@@ -445,16 +446,29 @@ export function spawnBabysitterAgent(
 export async function startBabysitterAgent(
   app: BabysitterAppConfig,
   repo: string,
-  options: { dir: string; scratch: string; prompt: string; home: string },
+  options: {
+    dir: string;
+    scratch: string;
+    prompt: string;
+    home: string;
+    configPath: string;
+    env?: (name: string) => string | undefined;
+  },
   beforeSpawn: () => Promise<boolean>,
   fetchFn: FetchFn = globalThis.fetch,
   spawn: typeof spawnCommandWithTimeout = spawnCommandWithTimeout,
   resolveCodex: () => Promise<string> = () =>
     ensureBabysitterCodex(options.home),
 ): Promise<Deno.ChildProcess | undefined> {
+  const hostCredentials = await babysitterHostCredentialPaths(
+    options.configPath,
+    options.home,
+    options.env,
+  );
   const protectedPaths = await babysitterProtectedPaths(
     options.home,
     app.privateKeyPath,
+    hostCredentials,
   );
   const codex = await resolveCodex();
   const agentToken = await mintBabysitterAgentToken(app, repo, fetchFn);
@@ -497,6 +511,7 @@ async function fix(
   authors: string[],
   login: string,
   app: BabysitterAppConfig,
+  configPath: string,
 ): Promise<void> {
   const workerId = `babysitter-${crypto.randomUUID()}`;
   const lock = await acquireBranchUpdateLock({
@@ -604,7 +619,7 @@ async function fix(
     child = await startBabysitterAgent(
       app,
       repo,
-      { dir, scratch, prompt, home },
+      { dir, scratch, prompt, home, configPath },
       async () => {
         const stateDir = babysitterStateDir();
         await Deno.mkdir(stateDir, { recursive: true });
@@ -759,6 +774,7 @@ async function pass(
   login: string,
   app: BabysitterAppConfig,
   config: Awaited<ReturnType<typeof loadConfig>>,
+  configPath: string,
   repositories: readonly string[],
   repoFilter?: string,
   prFilter?: number,
@@ -829,7 +845,7 @@ async function pass(
             run: () =>
               withBabysitterWriteScope(
                 repo,
-                () => fix(repo, pr, authors, login, app),
+                () => fix(repo, pr, authors, login, app, configPath),
               ),
           });
         }
@@ -875,9 +891,8 @@ if (import.meta.main) {
   console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {
-      const config = await loadConfig(
-        Deno.env.get("CONFIG_PATH") ?? ".config.json",
-      );
+      const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
+      const config = await loadConfig(configPath);
       const accessible = await accessibleBabysitterRepositories(app);
       const repositories = selectBabysitterRepositories(
         config.repos,
@@ -896,6 +911,7 @@ if (import.meta.main) {
           login,
           app,
           config,
+          configPath,
           repositories,
           repoFilter,
           prFilter,

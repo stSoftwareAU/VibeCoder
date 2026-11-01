@@ -54,10 +54,31 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
       const requests: Array<{ url: string; body: unknown }> = [];
       let env: Record<string, string> | undefined;
       let args: string[] = [];
+      const configPath = `${home}/worker-config.json`;
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          ssh_key_path: "~/fleet/id_ed25519",
+          gh_config_dir: "~/gh-fleet",
+          github_app_private_key_path: "~/worker-app.pem",
+          pr_reviewer_app: { private_key_path: "~/reviewer-app.pem" },
+        }),
+      );
+      const hostEnv: Record<string, string> = {
+        VIBE_CREDENTIAL_DIR: `${home}/custom-credentials`,
+        GH_CONFIG_DIR: `${home}/host-gh-config`,
+      };
       await startBabysitterAgent(
         { appId: "123", installationId: "456", privateKeyPath },
         "owner/repo",
-        { dir: "/clone", scratch: "/scratch", prompt: "repair", home },
+        {
+          dir: "/clone",
+          scratch: "/scratch",
+          prompt: "repair",
+          home,
+          configPath,
+          env: (name) => hostEnv[name],
+        },
         () => Promise.resolve(true),
         fakeTokenExchange(
           { permissions: BABYSITTER_AGENT_PERMISSIONS },
@@ -83,6 +104,23 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
           arg.includes(`${JSON.stringify(privateKeyPath)} = "none"`)
         ),
       );
+      const profile = args.find((arg) =>
+        arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={`)
+      )!;
+      for (
+        const path of [
+          `${home}/custom-credentials`,
+          `${home}/.vibe-coder/credentials`,
+          `${home}/host-gh-config`,
+          `${home}/gh-fleet`,
+          `${home}/.config/gh`,
+          `${home}/worker-app.pem`,
+          `${home}/reviewer-app.pem`,
+          `${home}/fleet/id_ed25519`,
+        ]
+      ) {
+        assert(profile.includes(`${JSON.stringify(path)} = "none"`), path);
+      }
     } finally {
       await Deno.remove(home, { recursive: true });
     }
@@ -99,7 +137,13 @@ Deno.test("agent launch does not record an attempt when token minting fails", as
         startBabysitterAgent(
           { appId: "123", installationId: "456", privateKeyPath },
           "owner/repo",
-          { dir: "/clone", scratch: "/scratch", prompt: "repair", home },
+          {
+            dir: "/clone",
+            scratch: "/scratch",
+            prompt: "repair",
+            home,
+            configPath: `${home}/missing-config.json`,
+          },
           () => {
             guarded = true;
             return Promise.resolve(true);
@@ -136,6 +180,7 @@ Deno.test("agent launch refuses a relative HOME before minting a token or spawni
             scratch: "/scratch",
             prompt: "repair",
             home: "relative",
+            configPath: "/missing-config.json",
           },
           () => {
             guarded = true;
@@ -169,7 +214,13 @@ Deno.test("agent launch does not spawn an already attempted head", async () => {
       const result = await startBabysitterAgent(
         { appId: "123", installationId: "456", privateKeyPath },
         "owner/repo",
-        { dir: "/clone", scratch: "/scratch", prompt: "repair", home },
+        {
+          dir: "/clone",
+          scratch: "/scratch",
+          prompt: "repair",
+          home,
+          configPath: `${home}/missing-config.json`,
+        },
         () => Promise.resolve(false),
         fakeTokenExchange(
           { permissions: BABYSITTER_AGENT_PERMISSIONS },
@@ -513,7 +564,13 @@ Deno.test("agent launch stops before mint, attempt or spawn when Codex cannot be
       startBabysitterAgent(
         { appId: "123", installationId: "456", privateKeyPath: "/key" },
         "owner/repo",
-        { dir: "/clone", scratch: "/scratch", prompt: "repair", home: "/home" },
+        {
+          dir: "/clone",
+          scratch: "/scratch",
+          prompt: "repair",
+          home: "/home",
+          configPath: "/missing-config.json",
+        },
         () => {
           attempted = true;
           return Promise.resolve(true);

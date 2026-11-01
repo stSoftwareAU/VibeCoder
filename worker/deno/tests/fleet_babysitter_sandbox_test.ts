@@ -42,7 +42,7 @@ Deno.test("babysitterProtectedPaths lists babysitter entries and the configured 
     await Deno.writeTextFile(`${vibeDir}/worker-notes`, "notes");
     await Deno.writeTextFile(keyElsewhere, "pem");
 
-    const result = await babysitterProtectedPaths(home, keyElsewhere);
+    const result = await babysitterProtectedPaths(home, keyElsewhere, []);
 
     for (
       const expected of [
@@ -72,7 +72,7 @@ Deno.test("babysitterProtectedPaths includes both a symlinked key and its target
     await Deno.writeTextFile(target, "pem");
     await Deno.symlink(target, link);
 
-    const result = await babysitterProtectedPaths(home, link);
+    const result = await babysitterProtectedPaths(home, link, []);
 
     assert(result.includes(link), "symlink path must be listed");
     assert(
@@ -82,11 +82,70 @@ Deno.test("babysitterProtectedPaths includes both a symlinked key and its target
   });
 });
 
+Deno.test("babysitterProtectedPaths normalises and resolves missing and symlinked credential paths", async () => {
+  await withTempDirs(async ([home, targetDir, linkDir]) => {
+    const target = `${targetDir}/reviewer.pem`;
+    const link = `${linkDir}/reviewer-link.pem`;
+    const missing = `${linkDir}/not-created/reviewer-link.pem`;
+    await Deno.writeTextFile(target, "pem");
+    await Deno.symlink(target, link);
+
+    const result = await babysitterProtectedPaths(home, `${home}/key.pem`, [
+      `${linkDir}/not-created/../reviewer-link.pem`,
+      missing,
+      `${linkDir}/not-created/../reviewer-link.pem/..`,
+    ]);
+
+    assert(result.includes(link), "normalised symlink location must be denied");
+    assert(
+      result.includes(await Deno.realPath(target)),
+      "symlink target must be denied",
+    );
+    assert(
+      result.includes(missing),
+      "a missing path must retain its normalised location",
+    );
+    assert(!result.includes(`${linkDir}/not-created/../reviewer-link.pem`));
+    assert(
+      result.includes(`${linkDir}`),
+      "normalised traversal target is protected",
+    );
+  });
+});
+
+Deno.test("babysitterProtectedPaths denies a symlinked credential directory and its target", async () => {
+  await withTempDirs(async ([home, targetDir, linkDir]) => {
+    const target = `${targetDir}/credentials`;
+    const link = `${linkDir}/credential-link`;
+    await Deno.mkdir(target);
+    await Deno.symlink(target, link);
+
+    const result = await babysitterProtectedPaths(home, `${home}/key.pem`, [
+      link,
+    ]);
+
+    assert(result.includes(link));
+    assert(result.includes(await Deno.realPath(target)));
+  });
+});
+
+Deno.test("babysitterProtectedPaths fails on an unexpected symlink resolution error", async () => {
+  await withTempDirs(async ([home, elsewhere]) => {
+    const loop = `${elsewhere}/loop`;
+    await Deno.symlink(loop, loop);
+
+    await assertRejects(
+      () => babysitterProtectedPaths(home, `${home}/key.pem`, [loop]),
+      Error,
+    );
+  });
+});
+
 Deno.test("babysitterProtectedPaths tolerates a missing .vibe-coder directory", async () => {
   await withTempDirs(async ([home, elsewhere]) => {
     const keyPath = `${elsewhere}/absent-key.pem`;
 
-    const result = await babysitterProtectedPaths(home, keyPath);
+    const result = await babysitterProtectedPaths(home, keyPath, []);
 
     assertEquals(result, [keyPath]);
   });
@@ -95,12 +154,12 @@ Deno.test("babysitterProtectedPaths tolerates a missing .vibe-coder directory", 
 Deno.test("babysitterProtectedPaths rejects non-absolute home or key paths", async () => {
   await withTempDirs(async ([home]) => {
     await assertRejects(
-      () => babysitterProtectedPaths("relative/home", `${home}/key.pem`),
+      () => babysitterProtectedPaths("relative/home", `${home}/key.pem`, []),
       Error,
       "must be an absolute path",
     );
     await assertRejects(
-      () => babysitterProtectedPaths(home, "key.pem"),
+      () => babysitterProtectedPaths(home, "key.pem", []),
       Error,
       "must be an absolute path",
     );
@@ -207,6 +266,16 @@ Deno.test("buildBabysitterSandboxArgs refuses a clone directory equal to or insi
       protectedPaths,
     });
     assertEquals(args[0], "-c");
+    assertThrows(
+      () =>
+        buildBabysitterSandboxArgs({
+          dir: `${root}/clone`,
+          scratch,
+          protectedPaths: [`${root}/clone/credentials`],
+        }),
+      Error,
+      "overlaps writable path",
+    );
   });
 });
 
@@ -242,6 +311,16 @@ Deno.test("buildBabysitterSandboxArgs refuses a scratch directory equal to or in
       protectedPaths,
     });
     assertEquals(args[0], "-c");
+    assertThrows(
+      () =>
+        buildBabysitterSandboxArgs({
+          dir,
+          scratch: `${root}/scratch`,
+          protectedPaths: [`${root}/scratch/credentials`],
+        }),
+      Error,
+      "overlaps writable path",
+    );
   });
 });
 
@@ -332,13 +411,13 @@ Deno.test("buildBabysitterSandboxArgs refuses a non-absolute protected path", as
 Deno.test("path validation rejects an absolute path containing a NUL byte", async () => {
   await withTempDirs(async ([home, elsewhere]) => {
     await assertRejects(
-      () => babysitterProtectedPaths(home, `${elsewhere}/key\0.pem`),
+      () => babysitterProtectedPaths(home, `${elsewhere}/key\0.pem`, []),
       Error,
       "must be an absolute path",
     );
     // Positive control: the same path without the NUL byte is accepted.
     assertEquals(
-      await babysitterProtectedPaths(home, `${elsewhere}/key.pem`),
+      await babysitterProtectedPaths(home, `${elsewhere}/key.pem`, []),
       [`${elsewhere}/key.pem`],
     );
   });
