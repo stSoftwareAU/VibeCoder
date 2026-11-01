@@ -6,6 +6,29 @@ import {
   getInstallationToken,
 } from "./github_app_auth.ts";
 import { fetchWithTimeout } from "./subprocess_timeout.ts";
+import { listBabysitterRepositories } from "./fleet_babysitter_repositories.ts";
+
+/** Discover access with a metadata-only token, never installed as the write token. */
+export async function accessibleBabysitterRepositories(
+  config: BabysitterAppConfig,
+  fetchFn: FetchFn = globalThis.fetch,
+): Promise<Set<string>> {
+  const jwt = await generateAppJWT(
+    config.appId,
+    await Deno.readTextFile(config.privateKeyPath),
+  );
+  const minted = await getInstallationToken(
+    jwt,
+    config.installationId,
+    fetchFn,
+    undefined,
+    { metadata: "read" },
+  );
+  return await listBabysitterRepositories(
+    minted.token,
+    fetchFn === globalThis.fetch ? fetchWithTimeout : fetchFn,
+  );
+}
 
 export interface BabysitterAppConfig {
   appId: string;

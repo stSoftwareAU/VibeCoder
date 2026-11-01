@@ -1,0 +1,12 @@
+{
+  "issue": 4618,
+  "chunk": "top-up-4618",
+  "title": "top-up: babysitter repositories scoped to its App installation",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/pull/4618",
+  "definition": "Fleet PR babysitter discovery of the repositories its GitHub App installation can reach, read completely with pagination, and the configured subset it may scan and mint write tokens for. API errors and incomplete lists fail closed.",
+  "status": "claimed",
+  "sweptAt": "6011fb23d16ae046e57e5359e32b89d1e2c8c692",
+  "paths": [
+    "worker/deno/lib/fleet_babysitter_repositories.ts"
+  ]
+}

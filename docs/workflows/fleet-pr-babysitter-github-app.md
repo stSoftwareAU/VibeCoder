@@ -83,8 +83,13 @@ requests human reviewers on new PRs, and an App cannot be requested as one.
 
 ## Before using it
 
-Setup supports monitored repositories under one owner and verifies the App's
-permissions. Configure the bot as a trusted lock author on every fleet host;
+Setup selects one App installation belonging to a configured repository owner
+and verifies its permissions. The shared `.config.json` may contain repositories
+from other owners: setup and the runner log and skip repositories absent from
+the installation's complete repository list. No second configuration is needed.
+If more than one installation matches, pass `--installation-id=<id>` to setup.
+No accessible configured repositories, incomplete discovery, authentication
+failures and API errors still fail the pass. Configure the bot as a trusted lock author on every fleet host;
 setup can verify only its own host. The runner's installation token is
 refreshed during long passes. The Codex agent gets a separate read-only token
 for the target repository, which is not refreshed and needs the App to hold
