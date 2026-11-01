@@ -1827,6 +1827,56 @@ Deno.test("ownDiffUnchanged: a dropped file named by an earlier finding gap is a
   );
 });
 
+Deno.test("ownDiffUnchanged: nested earlier gaps name files for version bumps and context moves (Issue #4619)", async () => {
+  const nestedGap = (file: string) => ({
+    file: "(earlier review)",
+    earlier: {
+      file: "(earlier review)",
+      earlier: { file, line: 1, problem: "Fix the original finding" },
+      line: 0,
+      problem: "Earlier finding remains unresolved",
+    },
+  });
+  const versionGh = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "fix",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([
+      { filename: "VERSION", patch: versionPatch("1.32.4", "1.32.5") },
+    ]),
+    "repos/o/r/compare/main...head": compareFiles([
+      { filename: "VERSION", patch: versionPatch("1.32.5", "1.32.6") },
+    ]),
+  }).gh;
+  assertEquals(
+    await ownDiffUnchanged(versionGh, "o/r", "main", "X", "head", [
+      nestedGap("./VERSION"),
+    ]),
+    false,
+  );
+  assertEquals(
+    await ownDiffUnchanged(versionGh, "o/r", "main", "X", "head", [
+      nestedGap("other.ts"),
+    ]),
+    true,
+  );
+
+  const movedGh = ownDiffGh(entryBelowHeading, entryAboveHeading);
+  assertEquals(
+    await ownDiffUnchanged(movedGh, "o/r", "main", "X", "head", [
+      nestedGap("docs/CHANGELOG.md"),
+    ]),
+    false,
+  );
+  assertEquals(
+    await ownDiffUnchanged(movedGh, "o/r", "main", "X", "head", [
+      nestedGap("other.ts"),
+    ]),
+    true,
+  );
+});
+
 Deno.test("ownDiffUnchanged: a file only the head lists is a fresh review (Issue #4542)", async () => {
   const { gh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{
