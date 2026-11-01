@@ -703,6 +703,29 @@ Deno.test("probeProxyConnectDetailed - a 403 with no body is not denied, after E
   });
 });
 
+Deno.test("probeProxyConnectDetailed - a non-timer read error after a partial answer fails", async () => {
+  const head = new TextEncoder().encode(
+    "HTTP/1.1 403 Forbidden\r\nContent-Length: 20\r\n\r\n",
+  );
+  let reads = 0;
+  const conn = {
+    write: (data: Uint8Array) => Promise.resolve(data.length),
+    read: (buffer: Uint8Array) => {
+      if (reads++ === 0) {
+        buffer.set(head);
+        return Promise.resolve(head.length);
+      }
+      return Promise.reject(new Deno.errors.ConnectionReset("reset by peer"));
+    },
+    close: () => {},
+  } as unknown as Deno.Conn;
+  assertEquals(await probeFake(conn, 5000), {
+    result: "failed",
+    observed: "error: reset by peer",
+  });
+  assertEquals(reads, 2);
+});
+
 Deno.test("probeProxyConnectDetailed - a 200 is succeeded at its head, without a second read (Issue #4559)", async () => {
   // A second read would hang; the 200 must not ask for one.
   const fake = chunkedConn(
@@ -749,35 +772,20 @@ Deno.test("probeProxyConnectDetailed - a Content-Length that is not plain digits
 /** Budget for one real-proxy child process (Issue #4559). */
 const REAL_PROXY_CHILD_TIMEOUT_MS = 20_000;
 
-/**
- * Run `body` against the real proxy in a child process granted loopback
- * network only, and return what `body` returns. `deno task test:unit` grants
- * no network access, so the proxy cannot bind in this process; the socket
- * tests in worker/deno/tests/egress_proxy_test.ts take the same route. Inside `body`,
- * `startEgressProxy` and `probeProxyConnectDetailed` are in scope.
- *
- * @param body - Function body (JavaScript) that ends with a `return`
- * @returns The JSON value the child printed
- */
-async function runAgainstRealProxy(body: string): Promise<unknown> {
-  const proxyModule = new URL("../lib/egress_proxy.ts", import.meta.url).href;
-  const probeModule = new URL("../lib/egress_selfcheck.ts", import.meta.url)
-    .href;
-  const program = `(async () => {
-const { startEgressProxy } = await import(${JSON.stringify(proxyModule)});
-const { probeProxyConnectDetailed } = await import(${
-    JSON.stringify(probeModule)
-  });
-const outcome = await (async () => {${body}})();
-await Deno.stdout.write(new TextEncoder().encode(JSON.stringify(outcome) + "\\n"));
-})().then(() => Deno.exit(0), (error) => { console.error(error); Deno.exit(1); });`;
+/** Run a real-proxy scenario in a child with loopback-only network access. */
+async function runAgainstRealProxy(scenario: string): Promise<unknown> {
+  const script = new URL(
+    "./support/egress_selfcheck_scenarios.ts",
+    import.meta.url,
+  );
   const child = new Deno.Command(Deno.execPath(), {
     args: [
-      "eval",
+      "run",
       "--no-config",
       "--no-lock",
       "--allow-net=127.0.0.1",
-      program,
+      script.pathname,
+      scenario,
     ],
     stdin: "null",
     stdout: "piped",
@@ -807,37 +815,11 @@ await Deno.stdout.write(new TextEncoder().encode(JSON.stringify(outcome) + "\\n"
 }
 
 Deno.test("probeProxyConnectDetailed - the real proxy's refusal of a host off the allowlist is denied over loopback (Issue #4559)", async () => {
-  const outcome = await runAgainstRealProxy(`
-    const proxy = await startEgressProxy({ port: 0, allowlist: ['api.github.com'], logDenied: () => {} });
-    try {
-      return await probeProxyConnectDetailed('http://127.0.0.1:' + proxy.addr.port, 'example.com', 5000);
-    } finally {
-      await proxy.close();
-    }
-  `);
+  const outcome = await runAgainstRealProxy("denied");
   assertEquals(outcome, { result: "denied", observed: "denied" });
 });
 
 Deno.test("probeProxyConnectDetailed - the real proxy's 200 to an allowlisted host is succeeded over loopback (Issue #4559)", async () => {
-  // The proxy refuses loopback answers as private, so the host resolves to a
-  // public address and the connect seam dials a local listener instead.
-  const outcome = await runAgainstRealProxy(`
-    const upstream = Deno.listen({ hostname: '127.0.0.1', port: 0 });
-    const accepted = upstream.accept().then((conn) => conn.close()).catch(() => {});
-    const proxy = await startEgressProxy({
-      port: 0,
-      allowlist: ['api.github.com'],
-      logDenied: () => {},
-      resolve: () => Promise.resolve(['93.184.216.34']),
-      connect: () => Deno.connect({ hostname: '127.0.0.1', port: upstream.addr.port }),
-    });
-    try {
-      return await probeProxyConnectDetailed('http://127.0.0.1:' + proxy.addr.port, 'api.github.com', 5000);
-    } finally {
-      await proxy.close();
-      upstream.close();
-      await accepted;
-    }
-  `);
+  const outcome = await runAgainstRealProxy("allowed");
   assertEquals(outcome, { result: "succeeded", observed: "connected" });
 });

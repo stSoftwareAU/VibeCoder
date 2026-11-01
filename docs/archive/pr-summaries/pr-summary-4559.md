@@ -34,7 +34,7 @@ final version.
 ### Undiscoverable Facts
 
 - `deno task test:unit` grants no `--allow-net`, so the real-proxy tests run the
-  proxy and probe in a `deno eval` child with `--allow-net=127.0.0.1`, as
+  proxy and probe in a `deno run` child with `--allow-net=127.0.0.1`, as
   `worker/deno/tests/egress_proxy_test.ts` does.
 
 ## Evidence
@@ -59,6 +59,8 @@ New tests in `worker/deno/tests/egress_selfcheck_test.ts`:
 - `a 403 whose head and body arrive in separate reads is denied` (Issue #4559)
 - `a head split inside its blank line or inside the marker is still denied`
 - `a 403 with no body is not denied, after EOF or when the body never arrives`
+- `a non-timer read error after a partial answer fails` (a `throw error` to
+  `break` mutation fails this test)
 - `a 200 is succeeded at its head, without a second read`
 - `an answer longer than the byte cap is cut at the cap`
 - `a Content-Length that is not plain digits announces no body, so a 200 stays complete at its head`
@@ -68,7 +70,7 @@ New tests in `worker/deno/tests/egress_selfcheck_test.ts`:
 - `the real proxy's 200 to an allowlisted host is succeeded over loopback`
 
 Red check: with the original `lib/egress_selfcheck.ts` restored and the new
-tests kept, 3 of the 32 tests in the file failed (the two split-read tests and
+tests kept, 3 of the 33 tests in the file failed (the two split-read tests and
 the byte-cap test); with the fix, all pass. The two real-proxy tests and the
 `200` test pass on the original code too: over loopback the head and body
 usually arrive together, so they pin the contract against the production proxy
@@ -79,7 +81,7 @@ No assertion was removed or changed in an existing test.
 Results: `deno task test:unit` over
 `worker/deno/tests/egress_selfcheck_test.ts`,
 `worker/deno/tests/egress_proxy_command_test.ts` and
-`worker/deno/tests/launcher_egress_selfcheck_test.ts`: 55 passed, 0 failed.
+`worker/deno/tests/launcher_egress_selfcheck_test.ts`: 57 passed, 0 failed.
 `./quality.sh < /dev/null`: every stage passed except `deno tests` (31406
 passed, 2 failed); the two failures are the Rust-formatter tests in
 `worker/deno/tests/completion_phase_repo_formatters_test.ts` (no rustup
