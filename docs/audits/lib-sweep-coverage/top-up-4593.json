@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4593",
   "definition": "Codex permissions-profile arguments that deny the fleet babysitter's agent the GitHub App private key and App settings paths, and the resolution of those protected paths (including symlink targets).",
   "status": "claimed",
-  "sweptAt": "ad1d292a95e06b785011a249fdc78712c3814b24",
+  "sweptAt": "b372b02c036fc71f38c5b37d0604a37cd13cd02d",
   "paths": [
     "worker/deno/lib/fleet_babysitter_sandbox.ts"
   ]
