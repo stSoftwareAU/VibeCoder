@@ -29,8 +29,8 @@ Version bump: none for this change.
   `sync-pr-only` verdict is ignored. Preserve whether each PR search succeeded;
   never cache a verdict from partial results, including a `predates-reopen`
   verdict based on an older delivery. A recovered search is retried even when
-  the issue's `updatedAt` is unchanged. The shared title helper still returns
-  an empty list on failure; its optional failure callback supplies the status
+  the issue's `updatedAt` is unchanged. The shared title helper still returns an
+  empty list on failure; its optional failure callback supplies the status
   needed by milestone classification.
 - The issue's private-repository examples did not include repository or PR
   identifiers. The public examples were verified; the private examples were not
@@ -86,9 +86,9 @@ sequenceDiagram
   Additional cases cover malformed JSON and non-array search responses.
 - The branch retry test now keeps title results empty, fails only the first
   branch lookup, then returns a merged same-repository `issue-1` head. It
-  asserts two branch lookups and a claimed delivery on the second scan.
-  Making the branch helper remember its first failure and never retry made
-  this test fail.
+  asserts two branch lookups and a claimed delivery on the second scan. Making
+  the branch helper remember its first failure and never retry made this test
+  fail.
 - This change is backend and documentation only; no screenshot applies.
 
 ## Test Plan
@@ -102,7 +102,8 @@ sequenceDiagram
   title-response cases that assert the diagnostic cause and continued body sync.
 - `worker/deno/tests/issue_query_test.ts`:
   `fetchMergedPRsByIssueBranch - requests merged issue heads and returns validated delivery metadata`,
-  `fetchMergedPRsByIssueBranch - distinguishes unreadable searches from empty results`, and
+  `fetchMergedPRsByIssueBranch - distinguishes unreadable searches from empty results`,
+  and
   `fetchMergedPRsByIssueBranch - rejects malformed rows without claiming a delivery`.
 - `worker/deno/tests/milestone_completion_test.ts`:
   `recovers merged same-repo issue-branch PRs and preserves reopen checks`,
@@ -129,22 +130,23 @@ sequenceDiagram
   PRs on other branches alone. For the retry fixes, updated both milestone
   classification passages to describe partial-search cache suppression.
 - `markdownlint-cli2` on `docs/INTERNALS.md`, `docs/USAGE.md`,
-  `docs/workflows/milestones.md` and this summary after the retry fixes — passed;
-  0 reported issues.
-- Earlier validation: `runMermaidCheck` across the repository after writing
-  the unchanged summary diagram —
-  passed; 1,601 Markdown files and 1,367 Mermaid blocks checked.
-- Earlier validation: `deno task pr-summary-check --base main --issue-body-file /tmp/vibe-issue-4621-body.md --labels work-on,idle-task ../../docs/archive/pr-summaries/pr-summary-4621.md`
+  `docs/workflows/milestones.md` and this summary after the retry fixes —
+  passed; 0 reported issues.
+- Earlier validation: `runMermaidCheck` across the repository after writing the
+  unchanged summary diagram — passed; 1,601 Markdown files and 1,367 Mermaid
+  blocks checked.
+- Earlier validation:
+  `deno task pr-summary-check --base main --issue-body-file /tmp/vibe-issue-4621-body.md --labels work-on,idle-task ../../docs/archive/pr-summaries/pr-summary-4621.md`
   from `worker/deno` — passed; 0 blocked and 0 not checked.
 - `deno task check:manifests` — failed on the existing
   `worker/deno/lib/fleet_babysitter_codex.ts` entry missing from
   `docs/audits/lib-sweep-coverage.json`; the same failure is present on
   `origin/main` at commit `82b1e121`.
 - Earlier full gate, before these retry fixes: `./quality.sh < /dev/null` —
-  failed because its completeness check and Deno
-  test pass report that same base-branch sweep-ledger omission; Deno lint, type
-  check, formatting, Mermaid, markdownlint and Semgrep passed. Config
-  integration and Checkov were skipped by the environment.
+  failed because its completeness check and Deno test pass report that same
+  base-branch sweep-ledger omission; Deno lint, type check, formatting, Mermaid,
+  markdownlint and Semgrep passed. Config integration and Checkov were skipped
+  by the environment.
 - Removed from `worker/deno/tests/milestone_completion_test.ts`:
   `assertEquals(bad[0]?.claimProblem, "sync-pr-only");`
   - Required by: "So the rollup body tells the reviewer that delivered work may
