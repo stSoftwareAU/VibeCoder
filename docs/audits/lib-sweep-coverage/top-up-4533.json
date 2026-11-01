@@ -1,0 +1,12 @@
+{
+  "issue": 4533,
+  "chunk": "top-up-4533",
+  "title": "top-up: mutation check test discovery from deno.json",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4533",
+  "definition": "Parses deno.json/jsonc test.include/exclude and imports for the diff-scoped mutation check, with glob matching that must not backtrack catastrophically and config parse errors that must fail loud.",
+  "status": "claimed",
+  "sweptAt": "bdb4c017f43c43e89b38c01dbc22daac10de0fd0",
+  "paths": [
+    "worker/deno/lib/deno_test_config.ts"
+  ]
+}
