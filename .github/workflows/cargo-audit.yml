@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # actions/checkout@v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing here pushes, so the job token must not be left behind
@@ -25,6 +26,7 @@ jobs:
           persist-credentials: false
       # SHA-pinned, so the toolchain can no longer be read from the ref
       # name — it is named explicitly instead (Issue #3645).
+      # dtolnay/rust-toolchain@v1
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
