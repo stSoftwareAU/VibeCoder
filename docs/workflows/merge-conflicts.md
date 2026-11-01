@@ -225,8 +225,10 @@ progress and stopped on conflicts. Its contract is absolute:
 - **The worker checks a PR's merge before it is pushed (Issue #4616).** Once the
   agent has staged its resolution, the worker runs the repository's fast local
   checks on the packages the merge touched, before anything is pushed: the
-  format check, lint (clippy with `-D warnings`, and `deno lint`), the type and
-  compile check including test targets, and those packages' tests. A failure
+  format check, lint (clippy with the arguments the repository's CI workflow passes
+  to `cargo clippy`, else `--workspace --all-targets -- -D warnings`, and `deno
+  lint`), the type and compile check including test targets, and those
+  packages' tests. A failure
   goes back to the agent as a repair round in the same attempt, two rounds at
   most, and a failing check is never a reason to push. If the rounds run out the
   push is refused and the attempt fails, with nothing pushed. Environment faults

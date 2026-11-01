@@ -23,6 +23,7 @@ import {
   MERGE_FAST_CHECKS_BUDGET_MS,
   type MergeFastChecksOutcome,
   planFastChecks,
+  readCiClippyArgs,
   runMergeFastChecks,
   type VerifyBeforePushOptions,
   verifyMergeBeforePush,
@@ -121,6 +122,7 @@ Deno.test("planFastChecks: a Deno project runs fmt, lint, check and its manifest
       ["task", "test:unit"],
     ]);
     assert(plan.every((c) => c.kind === "deno" && c.timeoutMs === 0));
+    assertEquals(plan.map((c) => c.dir), plan.map(() => `${root}/pkgs/app`));
   });
 });
 
@@ -156,6 +158,103 @@ Deno.test("planFastChecks: Cargo runs --locked only where a Cargo.lock is commit
       `cargo test --workspace --locked in ${locked}`,
     ]);
     assert(plan.every((c) => c.kind === "cargo"));
+    assertEquals(
+      plan.map((c) => c.dir),
+      [unlocked, unlocked, unlocked, locked, locked, locked],
+    );
+  });
+});
+
+const CI_WORKFLOW = (run: string) =>
+  `name: ci\njobs:\n  lint:\n    steps:\n      - run: ${run}\n`;
+
+Deno.test("planFastChecks: clippy takes the flags the repository's CI declares, and changing them changes the command", async () => {
+  const workflowFor = (run: string) => ({
+    "crate/Cargo.toml": CARGO_MANIFEST,
+    ".github/workflows/ci.yml": CI_WORKFLOW(run),
+  });
+  const clippyOf = async (run: string) =>
+    await withTree(workflowFor(run), async (root) => {
+      const plan = await planFastChecks(root, ["crate/a.rs"]);
+      return plan[1]!.args;
+    });
+  assertEquals(
+    await clippyOf(
+      "cargo clippy --all-targets --all-features -- -D warnings -W clippy::too_many_lines",
+    ),
+    [
+      "clippy",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings",
+      "-W",
+      "clippy::too_many_lines",
+    ],
+  );
+  assertEquals(
+    await clippyOf("cargo clippy --workspace -- -D clippy::pedantic"),
+    ["clippy", "--workspace", "--", "-D", "clippy::pedantic"],
+  );
+});
+
+Deno.test("planFastChecks: a CI-declared clippy gets --locked before the separator, once", async () => {
+  await withTree({
+    "crate/Cargo.toml": CARGO_MANIFEST,
+    "crate/Cargo.lock": "# lock\n",
+    ".github/workflows/ci.yml": CI_WORKFLOW(
+      "cargo clippy --all-targets -- -D warnings",
+    ),
+    ".github/workflows/zz.yml": CI_WORKFLOW("cargo clippy --locked"),
+  }, async (root) => {
+    const plan = await planFastChecks(root, ["crate/a.rs"]);
+    assertEquals(plan[1]!.args, [
+      "clippy",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings",
+    ]);
+  });
+  await withTree({
+    "crate/Cargo.toml": CARGO_MANIFEST,
+    "crate/Cargo.lock": "# lock\n",
+    ".github/workflows/ci.yml": CI_WORKFLOW("cargo clippy --locked -- -D x"),
+  }, async (root) => {
+    const plan = await planFastChecks(root, ["crate/a.rs"]);
+    assertEquals(plan[1]!.args, ["clippy", "--locked", "--", "-D", "x"]);
+  });
+});
+
+Deno.test("readCiClippyArgs: skips comments and unreproducible lines, joins continuations, and reads none from a repo that declares none", async () => {
+  await withTree({
+    ".github/workflows/a.yml": [
+      "# cargo clippy -- -D commented",
+      "      - run: cargo clippy -- -D ${{ matrix.lint }}",
+      '      - run: cargo clippy -- -D "quoted"',
+      "      - run: |",
+      "          cargo +nightly clippy --all-targets \\",
+      "            -- -D warnings && echo done",
+      "",
+    ].join("\n"),
+    ".github/workflows/notes.txt": "cargo clippy -- -D ignored\n",
+  }, async (root) => {
+    assertEquals(await readCiClippyArgs(root), [
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings",
+    ]);
+  });
+  await withTree({
+    ".github/workflows/a.yml": CI_WORKFLOW("deno task test"),
+  }, async (root) => {
+    assertEquals(await readCiClippyArgs(root), undefined);
+  });
+  await withTree({ "crate/Cargo.toml": CARGO_MANIFEST }, async (root) => {
+    assertEquals(await readCiClippyArgs(root), undefined);
   });
 });
 
@@ -456,7 +555,23 @@ Deno.test("listMergeTouchedPaths: a nonzero exit or a thrown git call is an erro
   const raised = await listMergeTouchedPaths(thrown, "abc123");
   assertEquals(raised.ok, false);
   if (!raised.ok) {
-    assertStringIncludes(raised.error.message, "spawn git ENOENT");
+    assertEquals(
+      raised.error.message,
+      "git diff --name-only failed: spawn git ENOENT",
+    );
+  }
+  const text = await listMergeTouchedPaths(
+    () => Promise.reject("boom"),
+    "abc123",
+  );
+  assertEquals(text.ok, false);
+  if (!text.ok) {
+    assertEquals(text.error.message, "git diff --name-only failed: boom");
+  }
+  const raisedAgain = await listMergeTouchedPaths(thrown, "abc123");
+  assertEquals(raised.ok, false);
+  if (!raisedAgain.ok) {
+    assertStringIncludes(raisedAgain.error.message, "spawn git ENOENT");
   }
 });
 

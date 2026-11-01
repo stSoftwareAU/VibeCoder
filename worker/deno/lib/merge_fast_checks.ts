@@ -198,13 +198,71 @@ export async function listMergeTouchedPaths(
   };
 }
 
+/** The clippy arguments used where the repository's CI declares none. */
+const DEFAULT_CLIPPY_ARGS = [
+  "--workspace",
+  "--all-targets",
+  "--",
+  "-D",
+  "warnings",
+];
+
+/**
+ * The arguments the repository's CI passes to `cargo clippy` (Issue #4616).
+ *
+ * Reads `.github/workflows/*.yml` and `*.yaml` in name order and returns the
+ * tokens after `clippy` on the first invocation it can reproduce, so the
+ * planned command carries the same lint flags CI does. Comment lines are
+ * skipped, a backslash continuation is joined, and a line with a shell
+ * expansion or quote (`${{ }}`, `$VAR`, a quoted word) is skipped because it
+ * cannot be reproduced as argv.
+ *
+ * @param repoDir - Root of the checkout
+ * @returns The CI's clippy arguments, or `undefined` when none is declared
+ */
+export async function readCiClippyArgs(
+  repoDir: string,
+): Promise<string[] | undefined> {
+  const dir = `${repoDir}/.github/workflows`;
+  const names: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.isFile && /\.ya?ml$/.test(entry.name)) names.push(entry.name);
+    }
+  } catch {
+    return undefined;
+  }
+  for (const name of names.sort()) {
+    let text: string;
+    try {
+      text = await Deno.readTextFile(`${dir}/${name}`);
+    } catch {
+      continue;
+    }
+    for (const line of text.replace(/\\\r?\n/g, " ").split("\n")) {
+      if (line.trimStart().startsWith("#")) continue;
+      const found = /\bcargo\s+(?:\+\S+\s+)?clippy((?:\s+[^\s&|;#]+)*)/.exec(
+        line,
+      );
+      if (!found) continue;
+      const tokens = (found[1] ?? "").split(/\s+/).filter((token) =>
+        token.length > 0
+      );
+      if (tokens.some((token) => /[$"'`]/.test(token))) continue;
+      return tokens;
+    }
+  }
+  return undefined;
+}
+
 /**
  * The checks to run for every project the merge touched, in order.
  *
  * A Deno project runs `fmt --check`, `lint`, its type check (the repository's
  * own `check` task where one is defined) and each task that
  * {@link resolutionTasksFor} names. A Cargo project runs `fmt`, `clippy` with
- * warnings denied, and {@link cargoTestArgs}. Every planned check leaves
+ * the arguments the repository's CI passes ({@link readCiClippyArgs}, else
+ * `--workspace --all-targets -- -D warnings`), and {@link cargoTestArgs}. Every planned check leaves
  * `timeoutMs` at 0; {@link runMergeFastChecks} sets the remaining budget when
  * it runs the check, and a check that exceeds it is `unverified` (exit 124),
  * never a repair target.
@@ -223,23 +281,28 @@ export async function planFastChecks(
       .map((project) => [project.dir, project.args]),
   );
   const checks: FastCheck[] = [];
+  const clippyArgs = (await readCiClippyArgs(repoDir)) ?? DEFAULT_CLIPPY_ARGS;
   for (const project of await findProjectManifests(repoDir)) {
     const rel = relativeDir(repoDir, project.dir);
     if (!isTouched(rel, touchedPaths)) continue;
     if (project.kind === "cargo") {
-      const locked = (await isFile(`${project.dir}/Cargo.lock`))
+      const locked = (await isFile(`${project.dir}/Cargo.lock`)) &&
+          !clippyArgs.includes("--locked")
         ? ["--locked"]
         : [];
+      // `--locked` is a cargo option, so it goes before the `--` separator.
+      const separator = clippyArgs.indexOf("--");
+      const cargoSide = separator < 0
+        ? clippyArgs
+        : clippyArgs.slice(0, separator);
+      const lintSide = separator < 0 ? [] : clippyArgs.slice(separator);
       checks.push(
         plannedCheck("cargo", project.dir, ["fmt", "--all", "--", "--check"]),
         plannedCheck("cargo", project.dir, [
           "clippy",
-          "--workspace",
-          "--all-targets",
+          ...cargoSide,
           ...locked,
-          "--",
-          "-D",
-          "warnings",
+          ...lintSide,
         ]),
         plannedCheck("cargo", project.dir, await cargoTestArgs(project.dir)),
       );

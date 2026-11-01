@@ -41,9 +41,13 @@ flowchart LR
   any path. Per touched project: Deno runs `fmt --check`, `lint`, the type check
   (the repo's `check` task if defined), then `check:manifests` and `test:unit`
   or `test` when defined; Cargo runs `fmt --all -- --check`, `clippy --workspace
-  --all-targets -- -D warnings`, and `cargo test --workspace` (`--locked` with a
-  committed `Cargo.lock`). The clippy flags are `-D warnings`, an assumption:
-  the repository's CI flags are not read.
+  --all-targets [--locked] -- -D warnings`, and `cargo test --workspace`
+  (`--locked` with a committed `Cargo.lock`). The clippy arguments are read from
+  the repository's CI: the tokens after `cargo clippy` on the first
+  reproducible invocation in `.github/workflows/*.yml|yaml` (comments, `${{ }}`
+  and quoted words skipped) replace the default, and `--locked` is added before
+  the `--` separator when a `Cargo.lock` is committed and CI does not already
+  pass it. `-D warnings` applies only where CI declares no clippy invocation.
 - Fail closed: a tool that is not installed, a check that times out, or the 900
   s budget being spent refuses the push as `unverified` with no repair round
   (the agent cannot fix those). Only the two environment faults the milestone
@@ -67,7 +71,8 @@ flowchart LR
 
 Backend and prompt only, no UI. No fleet-wide measurement is claimed.
 
-- `worker/deno/tests/merge_fast_checks_test.ts` (28 tests): planning, running,
+- `worker/deno/tests/merge_fast_checks_test.ts` (31 tests): planning (including the
+  CI-declared clippy flags changing the planned command), running,
   fail-closed outcomes, and the repair loop.
 - `worker/deno/tests/pr_merge_conflict_processor_test.ts`: the verifier is
   called after the marker guard and before the push, on conflicted and clean
@@ -144,6 +149,15 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
   for milestone repairs.
 - `docs/audits/lib-sweep-coverage/top-up-4616.json` claims the new module for
   the sweep ledger.
-- Not done: no live run against a real conflicting PR; clippy flags beyond
-  `-D warnings` are not read from the repository's CI; the mutation check was
-  not run locally.
+- Mutation survivors closed: `merge_fast_checks.ts:137` (`dir` of a planned
+  check) is pinned by `dir` assertions in the Deno and Cargo planning tests;
+  `merge_fast_checks.ts:181` (Error versus non-Error thrown value in
+  `listMergeTouchedPaths`) is pinned by exact-message assertions for an `Error`
+  and a string throw.
+- Clippy CI flags: `readCiClippyArgs` and the planning tests
+  (`planFastChecks: clippy takes the flags the repository's CI declares ...`,
+  `... --locked before the separator, once`, `readCiClippyArgs: skips comments
+  ...`) change the declared flags and see the planned command change.
+- Not done: no live run against a real conflicting PR; the default spawn runner
+  is not unit-tested; the prompt still says "clippy with `-D warnings`" as the
+  usual case.
