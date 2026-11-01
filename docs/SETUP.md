@@ -1657,12 +1657,13 @@ Configuration Reference.
 
 ### The minimum viable config
 
-A first run genuinely needs only who may instruct the worker, who reviews its
-PRs, what it monitors, and how it authenticates:
+Configure what the worker monitors, how it authenticates, and optionally who
+reviews its PRs. Who may instruct it is derived from repository collaborators;
+the interactive Bash and PowerShell wizards ask for `pr_reviewers`, never
+`allowed_authors`. Press Enter to keep existing reviewers or leave them unset:
 
 ```json
 {
-  "allowed_authors": ["myusername"],
   "pr_reviewers": ["myusername"],
   "repos": ["myorg/repo1"],
   "ssh_key_path": "~/.ssh/vibe-worker_ed25519",
@@ -1695,7 +1696,6 @@ explained beneath the block, never inside it.
 
 ```json
 {
-  "allowed_authors": ["myusername"],
   "pr_reviewers": ["myusername"],
   "repos": ["myorg/repo1", "myorg/repo2"],
   "ssh_key_path": "~/.ssh/vibe-worker_ed25519",

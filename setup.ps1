@@ -1350,7 +1350,7 @@ function Read-VibeInteractiveConfig {
     $config = Read-VibeConfigFile
     $existing = [ordered]@{
         repos            = Get-VibeConfigValue -Config $config -Name "repos"
-        allowed_authors  = Get-VibeConfigValue -Config $config -Name "allowed_authors"
+        pr_reviewers     = Get-VibeConfigValue -Config $config -Name "pr_reviewers"
         service_accounts = Get-VibeConfigValue -Config $config -Name "service_accounts"
         ssh_key_path     = Get-VibeConfigValue -Config $config -Name "ssh_key_path"
         gh_config_dir    = Get-VibeConfigValue -Config $config -Name "gh_config_dir"
@@ -1375,10 +1375,11 @@ function Read-VibeInteractiveConfig {
         -Existing $existing.repos
     if ($repos) { $answers.repos = ConvertTo-VibeList -Value $repos }
 
-    $authors = Read-Answer `
-        -Prompt "GitHub username(s) to process issues from (comma-separated)" `
-        -Existing $existing.allowed_authors
-    if ($authors) { $answers.allowed_authors = ConvertTo-VibeList -Value $authors }
+    $reviewers = Read-Answer `
+        -Prompt "PR reviewer username(s) (optional, comma-separated)" `
+        -Existing $existing.pr_reviewers `
+        -Notes @("Who may direct the worker is derived from repository collaborators.")
+    if ($reviewers) { $answers.pr_reviewers = ConvertTo-VibeList -Value $reviewers }
 
     $serviceAccounts = Read-Answer `
         -Prompt "Service account login(s) this fleet runs as (comma-separated)" `
@@ -1414,7 +1415,7 @@ function Read-VibeInteractiveConfig {
     }
     $ghConfigDir = Read-Answer `
         -Prompt "gh config directory for service account (optional)" `
-        -Existing (if ($existing.gh_config_dir) { $existing.gh_config_dir } else { $ghDefault }) `
+        -Existing $(if ($existing.gh_config_dir) { $existing.gh_config_dir } else { $ghDefault }) `
         -Notes @("Used for all gh CLI operations (separate from personal gh auth).")
     if ($ghConfigDir) { $answers.gh_config_dir = $ghConfigDir }
 
