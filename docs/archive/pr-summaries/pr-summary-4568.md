@@ -54,6 +54,20 @@ The focused listing and side-container test and the fingerprint carry-over
 test passed locally. The other process-based tests could not be validated in
 this sandbox: spawning `ps` was denied. The full quality gate was not run.
 
+## Acceptance Criteria
+
+- **met** — the probe exits when the `loop.sh` that started it is dead or has a
+  different parent, and when the container it watched has gone — evidence:
+  `worker/deno/tests/loop_supervisor_test.ts` (`loop.sh #4568 - SIGKILL to the supervisor alone takes its control-plane probe down too`, `loop.sh #4568 - the probe stops once the container it watched is gone, and loop.sh keeps supervising`)
+- **met** — start-up ends a registered orphaned probe from the same checkout —
+  evidence: `worker/deno/tests/loop_supervisor_test.ts`
+  (`loop.sh #4568 - a fresh supervisor reaps a probe orphaned from its checkout`)
+- **missing** — start-up ends any probe whose parent is PID 1 from the same
+  checkout, including orphans started before registration existed — reason:
+  an unregistered orphan cannot be told apart from a legitimate `loop.sh`
+  launched under PID 1 using process properties alone, so only registered
+  probes are reaped and older orphans still need a manual kill
+
 ## Merge verification
 
 CI and review of the updated changes are pending. Legacy unregistered orphans
