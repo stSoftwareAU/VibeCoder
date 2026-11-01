@@ -595,7 +595,7 @@ gate_pass() {
     log "audit send-back: $(jq -r '"\(.repo)#\(.number)"' <<<"$entry"): $(
       cd "$SCRIPTS_DIR" && deno run --allow-run=gh,osascript --allow-read \
         --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts \
-        --input="$input" --config="$CONFIG" ${REVIEWER[@]+"${REVIEWER[@]}"} --no-model 2>&1)"
+        --input="$input" --config="$CONFIG" --no-model 2>&1)"
   done < <(jq -c '.auditBlocked[]?' <<<"$ready" 2>/dev/null)
   OVER_LIMIT=$(jq -r '.skipped["over-limit"] // 0' <<<"$ready" 2>/dev/null)
   [[ $OVER_LIMIT =~ ^[0-9]+$ ]] || OVER_LIMIT=0
@@ -710,7 +710,7 @@ Follow the skill's 'Reviewing the ready PRs' section for the ready PR above:
 steps 1. Review, 2. Post and 4. Report. Skip step 3 (Learn from recurring
 findings): the runner does that in a round of its own. Run post.ts from
 $C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR
-and --config=$C_DIR/reviewer-policy.json ${REVIEWER[*]},
+and --config=$C_DIR/reviewer-policy.json,
 and write its input files directly in $C_DIR (not a sub-directory: post.ts
 reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.

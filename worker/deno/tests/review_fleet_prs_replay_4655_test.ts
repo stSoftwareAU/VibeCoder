@@ -80,31 +80,40 @@ case "$*" in
   "pr view 4645 -R stSoftwareAU/VibeCoder --json headRefOid,state") echo "{\\"headRefOid\\":\\"$SHIM_HEAD\\",\\"state\\":\\"OPEN\\"}" ;;
   "pr view 4645 -R stSoftwareAU/VibeCoder --json closingIssuesReferences,body,headRefName") echo '{"closingIssuesReferences":[{"repository":{"owner":{"login":"stSoftwareAU"},"name":"VibeCoder"},"number":4588}],"body":"","headRefName":"issue-4588-fix"}' ;;
   "issue view 4588 -R stSoftwareAU/VibeCoder --json title,body") echo '{"title":"Cargo withhold","body":"Leave refusedCycles unchanged for a cargo withhold"}' ;;
-  "api repos/stSoftwareAU/VibeCoder/pulls/4645/reviews "*) for arg in "$@"; do case "$arg" in body=@*) cp "\${arg#body=@}" "$SHIM_BODY" ;; esac; done ;;
+  "api repos/stSoftwareAU/VibeCoder/pulls/4645/reviews --method POST "*) for arg in "$@"; do case "$arg" in body=@*) cp "\${arg#body=@}" "$SHIM_BODY" ;; esac; done; echo "{\\"user\\":{\\"login\\":\\"stsoftware-pr-reviewer[bot]\\"},\\"commit_id\\":\\"$SHIM_HEAD\\"}" ;;
+  "api repos/stSoftwareAU/VibeCoder/issues/4645/events --paginate --slurp") echo '[[{"event":"labeled","actor":{"login":"stsoftware-pr-reviewer[bot]"},"label":{"name":"needs-human"},"created_at":"2026-11-01T18:30:32Z"}]]' ;;
+  "api repos/stSoftwareAU/VibeCoder/pulls/4645/reviews --paginate --slurp") echo "[[{\\"state\\":\\"COMMENTED\\",\\"user\\":{\\"login\\":\\"stsoftware-pr-reviewer[bot]\\"},\\"commit_id\\":\\"$SHIM_HEAD\\",\\"body\\":\\"Held for owner review: this PR changes existing tests. Automated review by /review-fleet-prs\\",\\"submitted_at\\":\\"2026-11-01T18:30:27Z\\"}]]" ;;
   "api repos/stSoftwareAU/VibeCoder/issues/4645/comments --paginate") echo '[]' ;;
   "pr edit 4645 -R stSoftwareAU/VibeCoder --remove-label needs-human") ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
 esac
 `;
 
-async function replay(owned: boolean, moved = false, finding = false) {
+async function replay(
+  owned: boolean,
+  moved = false,
+  finding = false,
+  crossHost = false,
+) {
   const home = await Deno.makeTempDir();
   const bin = `${home}/bin`, state = `${home}/state`;
   await Deno.mkdir(bin);
   await Deno.mkdir(state);
   await Deno.writeTextFile(`${bin}/gh`, shim);
   await Deno.chmod(`${bin}/gh`, 0o755);
-  await Deno.writeTextFile(
-    `${state}/log.jsonl`,
-    JSON.stringify({
-      at: "2026-11-02T00:00:00Z",
-      repo: REPO,
-      number: 4645,
-      outcome: "held",
-      headSha: HEAD,
-      addedNeedsHuman: owned,
-    }) + "\n",
-  );
+  if (!crossHost) {
+    await Deno.writeTextFile(
+      `${state}/log.jsonl`,
+      JSON.stringify({
+        at: "2026-11-02T00:00:00Z",
+        repo: REPO,
+        number: 4645,
+        outcome: "held",
+        headSha: HEAD,
+        addedNeedsHuman: owned,
+      }) + "\n",
+    );
+  }
   const input = `${home}/input.json`;
   await Deno.writeTextFile(
     input,
@@ -116,6 +125,7 @@ async function replay(owned: boolean, moved = false, finding = false) {
         url: `https://github.com/${REPO}/pull/4645`,
         headSha: HEAD,
         kind: "fleet",
+        reconsideredTestHold: crossHost,
         testChanges: { removed: [], edited: [FILE] },
         checklistState: { problem: null, expected: [] },
         previousFindings: [],
@@ -198,6 +208,13 @@ Deno.test("replay preserves a pre-existing hold and sends a vacuous assertion ba
   assertEquals(result.result.outcome, "changes_requested");
   assertStringIncludes(result.body, "tautological");
   assertEquals(result.calls.includes("--remove-label needs-human"), false);
+});
+
+Deno.test("replay recovers another host's reviewer-owned label from GitHub", async () => {
+  const result = await replay(false, false, false, true);
+  assertEquals(result.result.outcome, "approved");
+  assertStringIncludes(result.calls, "issues/4645/events --paginate --slurp");
+  assertStringIncludes(result.calls, "--remove-label needs-human");
 });
 
 Deno.test("replay posts nothing when the head moved", async () => {

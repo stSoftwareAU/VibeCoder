@@ -514,33 +514,6 @@ export async function main() {
   let previous = latestByPr(await readLog(dir)).get(
     prKey(pr.repo, pr.number),
   );
-  const reviewer = Deno.args.find((a) => a.startsWith("--reviewer="))?.slice(
-    11,
-  );
-  if (
-    !previous && reviewer && policyVersion !== "legacy" && outcome !== "held" &&
-    pr.reconsideredTestHold === true
-  ) {
-    try {
-      if (
-        await reviewerOwnedLabelFromHistory(
-          pr,
-          reviewer,
-          (args) => run("gh", args),
-        )
-      ) {
-        previous = {
-          repo: pr.repo,
-          number: pr.number,
-          addedNeedsHuman: true,
-        } as LogRecord;
-      }
-    } catch (e) {
-      console.error(
-        `could not recover reviewer label ownership: ${(e as Error).message}`,
-      );
-    }
-  }
   // The run footer: the round's attempt that is posting (its log sits beside
   // the input file in the round's directory), an interactive session, or no
   // model run at all. Its cost is added when the round ends (review_cost.ts).
@@ -559,8 +532,41 @@ export async function main() {
       policyVersion,
     }),
   );
-  await run("gh", postReviewArgs(pr, outcome, bodyFile));
+  const postedReview = await run("gh", postReviewArgs(pr, outcome, bodyFile));
   await Deno.remove(bodyFile).catch(() => {});
+  if (
+    !previous && policyVersion !== "legacy" && outcome !== "held" &&
+    pr.reconsideredTestHold === true
+  ) {
+    try {
+      const posted = JSON.parse(postedReview);
+      if (
+        typeof posted.user?.login !== "string" ||
+        posted.commit_id !== pr.headSha
+      ) {
+        throw new Error(
+          "posted review response lacks author or reviewed commit",
+        );
+      }
+      if (
+        await reviewerOwnedLabelFromHistory(
+          pr,
+          posted.user.login,
+          (args) => run("gh", args),
+        )
+      ) {
+        previous = {
+          repo: pr.repo,
+          number: pr.number,
+          addedNeedsHuman: true,
+        } as LogRecord;
+      }
+    } catch (e) {
+      console.error(
+        `could not recover reviewer label ownership: ${(e as Error).message}`,
+      );
+    }
+  }
   if (runInfo.kind === "round") {
     // Best effort: an unrecorded review just keeps "cost unknown".
     await recordPosted(roundDir, {
