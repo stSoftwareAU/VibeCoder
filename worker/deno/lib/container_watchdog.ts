@@ -731,6 +731,11 @@ export async function reapWedgedContainer(
     runtimeExecutable: deps.runtimeExecutable,
     excludePids: killedPids,
   });
+  if (holders.length === 0) {
+    deps.log(
+      `[container-watchdog] no runtime helper found for ${containerName}`,
+    );
+  }
   for (const holder of holders) {
     if (deps.killProcess(holder.pid)) killedPids.push(holder.pid);
     else {
