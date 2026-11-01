@@ -411,10 +411,9 @@ reap_orphaned_probes() {
 #
 # So probe, do not infer: a trivial `exec` against the live container, and N
 # consecutive failures means the control plane is gone whatever `container ls`
-# says. Recovery skips `stop`/`kill` — they are already known not to work in
-# this state — and terminates the host-side client, then the VM, verifying
-# each. Killing the client alone leaves the VM running: on 2026-08-22 it sat
-# at 705% CPU with nothing supervising it.
+# says. Recovery attempts the runtime kill, then terminates the host-side
+# client. The runtime interface has no verifiable per-container VM identity,
+# so Virtualization VMs stay untouched; PPID 1 is not ownership evidence.
 ################################################################################
 VIBE_PROBE_INTERVAL_SECONDS="${VIBE_PROBE_INTERVAL_SECONDS:-120}"
 VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
@@ -457,17 +456,12 @@ force_stop_container() {
         kill -KILL "${client}" 2>/dev/null || true
     fi
 
-    # The VM outlives its client (Issue #323): killing the client alone left a
-    # VM at 705% CPU on 2026-08-22, which makes the next cycle fail the same
-    # way. Only VMs with no live client are touched.
-    local vm ppid
-    while read -r vm; do
-        [[ -z "${vm}" ]] && continue
-        ppid="$(ps -o ppid= -p "${vm}" 2>/dev/null | tr -d ' ')"
-        [[ "${ppid}" == "1" ]] || continue
-        echo "loop.sh: reaping orphaned VM PID ${vm}"
-        kill -TERM "${vm}" 2>/dev/null || true
-    done < <(pgrep -f "Virtualization.VirtualMachine" 2>/dev/null || true)
+    # Apple container's inspect model contains container identity and runtime
+    # state, but no host VM PID. Its VM is a launchd-managed XPC process, so
+    # PPID 1 cannot establish which container owns it. Do not signal a VM based
+    # on a global process-name match; leave it running until ownership is
+    # available from a supported runtime interface.
+    echo "loop.sh: VM termination skipped for ${name} — no verifiable VM ownership metadata"
 }
 
 # Whether the supervisor that started a probe is gone, or is no longer the

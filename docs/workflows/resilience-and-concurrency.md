@@ -164,7 +164,17 @@ Backoff only helps once the launcher returns. On host-23 it never did: a worker 
 1. **Outer watchdog (primary).** The launch plan carries a `watchdog` deadline — the worker's own maximum run duration plus a 10-minute margin, `VIBE_CONTAINER_WATCHDOG_SECONDS` to override — and both launchers wait on the runtime client under it instead of for ever. On expiry `deno run … mod.ts container-reap --name <container> --client-pid <pid>` runs `<runtime> kill` first and, if the container is still there after a 30-second grace (`VIBE_CONTAINER_REAP_GRACE_SECONDS`), SIGKILLs the runtime client and every host process whose argv carries the container name. The launcher then exits **87** — a named reason, outside the runtime CLI's own 125/126/127 range — so the supervisor backs off and the next cycle runs: "wedged for ever" becomes "one lost cycle".
 2. **Pre-launch reaper (belt and braces).** Before each launch the same command runs with `--stale`, reaping every `vibe-coder-*` container older than the deadline, or with no live launcher process behind it — which is also how a wedge that outlived a host reboot is caught. It runs before the image build, so a leaked VM is not still holding the host's memory through it.
 
-The control-plane probe that `loop.sh` runs beside each run (Issue #323) exits once its `loop.sh` is gone or changes parent, or once the container it watched has gone away (Issue #4568). A live `loop.sh` re-parented mid-cycle, for example after a `nohup` session logs out or its terminal closes, loses its probe until the next cycle records the new parent. A fresh `loop.sh` reaps registered probes an earlier supervisor orphaned from the same checkout at start-up. Probes orphaned before registration was introduced have no record and still require a manual kill; identify them carefully before signalling them.
+The control-plane probe that `loop.sh` runs beside each run (Issue #323) exits once its `loop.sh` is gone or changes parent, or once the container it watched has gone away (Issue #4568). If the control plane stays unresponsive after the runtime kill, `loop.sh` terminates the matching host-side `container run` client. It does not sweep or signal Virtualization VM processes: Apple `container inspect` exposes container identity and runtime state but no host VM PID, and a VM's PPID of 1 does not identify its owner. The runtime interface currently used here has no supported way to verify a VM-to-container mapping, so the supervisor logs that VM termination was skipped and leaves those processes untouched. A wedged VM can therefore remain until the runtime or host recovers it. A live `loop.sh` re-parented mid-cycle, for example after a `nohup` session logs out or its terminal closes, loses its probe until the next cycle records the new parent. A fresh `loop.sh` reaps registered probes an earlier supervisor orphaned from the same checkout at start-up. Probes orphaned before registration was introduced have no record and still require a manual kill; identify them carefully before signalling them.
+
+```mermaid
+flowchart TD
+  Probe["Control-plane probe fails repeatedly"] --> RuntimeKill["Try runtime kill"]
+  RuntimeKill --> StillRunning{"Container still running?"}
+  StillRunning -->|No| Done["Recovery complete"]
+  StillRunning -->|Yes| Client["Terminate matching run client"]
+  Client --> Skip["Log skipped VM termination"]
+  Skip --> Done
+```
 
 Every forced reap is emitted as a `container_wedged` self-heal event, so `self-heal-summary` surfaces a chronically wedging host instead of losing it in a local log. Diagnosing the VM wedge itself is out of scope — the fleet survives it either way.
 
