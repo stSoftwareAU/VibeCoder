@@ -974,3 +974,93 @@ Deno.test("orchestration gate - a timed-out run still carries the earlier calls'
     );
   });
 });
+
+/** Answers each call from its role: the executor (haiku) gets `executor`, the plan `plan`, the review `review`. */
+function answerByRole(
+  plan: Partial<ClaudeRunResult>,
+  executor: Partial<ClaudeRunResult>,
+  review: Partial<ClaudeRunResult>,
+): Responder {
+  return (options) =>
+    runResult(
+      options.model === "haiku"
+        ? { output: "step output", ...executor }
+        : options.prompt.startsWith(REVIEW_PREFIX)
+        ? { output: "manager review", ...review }
+        : { ...plan },
+    );
+}
+
+Deno.test("orchestration gate - a call that billed nothing and degraded nothing adds no stats entry (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner(answerByRole({}, {}, {
+      runStats: statsFor("claude-opus-4-8", 300),
+    }));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.orchestrationCalls, undefined);
+  });
+});
+
+Deno.test("orchestration gate - only a call's final attempt carries its fallback, degradation and extension fields (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const plan = statsFor("claude-sonnet-4-6", 100);
+    const failedAttempt = statsFor("claude-haiku-4-5", 4000);
+    const finalAttempt = statsFor("claude-haiku-4-5", 5000);
+    const extensions = {
+      granted: 2,
+    } as unknown as ClaudeRunResult["extensions"];
+    const fake = fakeRunner(answerByRole(
+      { runStats: plan },
+      {
+        runStats: finalAttempt,
+        invocationStats: [failedAttempt, finalAttempt],
+        fallbackModel: "claude-sonnet-4-6",
+        preflightDegraded: true,
+        preflightDegradedReason: "usage probe unavailable",
+        extensions,
+      },
+      { runStats: statsFor("claude-opus-4-8", 300) },
+    ));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.orchestrationCalls, [
+      { runStats: plan },
+      { runStats: failedAttempt },
+      {
+        runStats: finalAttempt,
+        fallbackModel: "claude-sonnet-4-6",
+        preflightDegraded: true,
+        preflightDegradedReason: "usage probe unavailable",
+        extensions,
+      },
+    ]);
+  });
+});
+
+Deno.test("orchestration gate - a degraded call without a reason or run stats still gets an entry (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner(answerByRole(
+      {},
+      { preflightDegraded: true },
+      { runStats: statsFor("claude-opus-4-8", 300) },
+    ));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.orchestrationCalls, [
+      { preflightDegraded: true },
+    ]);
+  });
+});
