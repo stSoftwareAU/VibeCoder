@@ -7,7 +7,7 @@
  * agent as a repair round. A check that cannot be run refuses the push, since
  * unrunnable is not clean. A Deno remote module the host cannot reach (Issue
  * #4422) or a `rustc` older than the workspace requires (Issue #3255) is an
- * environment fault, so that check is left to CI rather than failed.
+ * environment fault: verification is deferred and the attempt is withdrawn.
  *
  * The checks reuse the helpers the resolution gate already uses, so both gates
  * judge the same commands.
@@ -36,7 +36,13 @@ import {
   type ProjectKind,
 } from "./project_manifests.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
-import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  carryEnvThroughSudo,
+  untrustedQualityCommandEnv,
+  untrustedSpawn,
+} from "./quality_gate_phase.ts";
+import { parkInFlightBuild } from "./heavy_build_gate.ts";
+import { parse } from "@std/yaml/parse";
 
 /** One budget across every fast check of one merge (Issue #4616). */
 export const MERGE_FAST_CHECKS_BUDGET_MS = 900_000;
@@ -87,6 +93,7 @@ export type PrePushVerification =
     repairRounds: number;
   }
   | { kind: "refused"; detail: string }
+  | { kind: "deferred"; detail: string }
   | { kind: "cut-short"; outcome: MergeConflictAgentOutcome };
 
 /** Inputs to {@link verifyMergeBeforePush}. */
@@ -100,6 +107,8 @@ export interface VerifyBeforePushOptions {
   /** Runs one git command in the checkout. */
   git: FastCheckGit;
   /** Override the check run (tests). Defaults to {@link runMergeFastChecks}. */
+  park?: (repoDir: string) => Promise<string | null>;
+  repoCredentialEnv?: Record<string, string>;
   runChecks?: (
     repoDir: string,
     touchedPaths: readonly string[],
@@ -211,7 +220,7 @@ const DEFAULT_CLIPPY_ARGS = [
  * The arguments the repository's CI passes to `cargo clippy` (Issue #4616).
  *
  * Reads `.github/workflows/*.yml` and `*.yaml` in name order and returns the
- * tokens after `clippy` on the first invocation it can reproduce, so the
+ * tokens after `clippy` on the first run invocation it can reproduce, so the
  * planned command carries the same lint flags CI does. Comment lines are
  * skipped, a backslash continuation is joined, and a line with a shell
  * expansion or quote (`${{ }}`, `$VAR`, a quoted word) is skipped because it
@@ -239,17 +248,30 @@ export async function readCiClippyArgs(
     } catch {
       continue;
     }
-    for (const line of text.replace(/\\\r?\n/g, " ").split("\n")) {
-      if (line.trimStart().startsWith("#")) continue;
-      const found = /\bcargo\s+(?:\+\S+\s+)?clippy((?:\s+[^\s&|;#]+)*)/.exec(
-        line,
+    let workflow: unknown;
+    try {
+      workflow = parse(text);
+    } catch {
+      continue;
+    }
+    const runs = (value: unknown): string[] => {
+      if (Array.isArray(value)) return value.flatMap(runs);
+      if (value === null || typeof value !== "object") return [];
+      return Object.entries(value).flatMap(([key, child]) =>
+        key === "run" && typeof child === "string" ? [child] : runs(child)
       );
-      if (!found) continue;
-      const tokens = (found[1] ?? "").split(/\s+/).filter((token) =>
-        token.length > 0
-      );
-      if (tokens.some((token) => /[$"'`]/.test(token))) continue;
-      return tokens;
+    };
+    for (const script of runs(workflow)) {
+      for (const line of script.replace(/\\\r?\n/g, " ").split("\n")) {
+        const found = /^\s*cargo\s+(?:\+\S+\s+)?clippy((?:\s+[^\s&|;#]+)*)/
+          .exec(line);
+        if (!found) continue;
+        const tokens = (found[1] ?? "").split(/\s+/).filter(Boolean);
+        if (!tokens.length || tokens.some((token) => /[$"'`]/.test(token))) {
+          continue;
+        }
+        return tokens;
+      }
     }
   }
   return undefined;
@@ -262,7 +284,7 @@ export async function readCiClippyArgs(
  * own `check` task where one is defined) and each task that
  * {@link resolutionTasksFor} names. A Cargo project runs `fmt`, `clippy` with
  * the arguments the repository's CI passes ({@link readCiClippyArgs}, else
- * `--workspace --all-targets -- -D warnings`), and {@link cargoTestArgs}. Every planned check leaves
+ * `--workspace --all-targets -- -D warnings` when CI omits warnings denial), and {@link cargoTestArgs}. Every planned check leaves
  * `timeoutMs` at 0; {@link runMergeFastChecks} sets the remaining budget when
  * it runs the check, and a check that exceeds it is `unverified` (exit 124),
  * never a repair target.
@@ -281,7 +303,14 @@ export async function planFastChecks(
       .map((project) => [project.dir, project.args]),
   );
   const checks: FastCheck[] = [];
-  const clippyArgs = (await readCiClippyArgs(repoDir)) ?? DEFAULT_CLIPPY_ARGS;
+  const declaredClippyArgs = await readCiClippyArgs(repoDir);
+  const clippyArgs =
+    declaredClippyArgs?.some((arg, index) =>
+        arg === "-Dwarnings" ||
+        (arg === "-D" && declaredClippyArgs[index + 1] === "warnings")
+      )
+      ? declaredClippyArgs
+      : DEFAULT_CLIPPY_ARGS;
   for (const project of await findProjectManifests(repoDir)) {
     const rel = relativeDir(repoDir, project.dir);
     if (!isTouched(rel, touchedPaths)) continue;
@@ -336,16 +365,36 @@ export async function planFastChecks(
  * A spawn failure (the toolchain is not installed) throws, so the caller
  * reports the check as unverified rather than as a failure or a pass.
  */
-const spawnFastCheck: FastCheckRunner = async (check) => {
-  const result = await runWithTimeout(
+export async function spawnFastCheck(
+  check: FastCheck,
+  repoCredentialEnv: Record<string, string> = {},
+  spawn: typeof runWithTimeout = runWithTimeout,
+  drop: typeof untrustedSpawn = untrustedSpawn,
+): Promise<{ code: number; output: string }> {
+  const dropped = await drop([
     check.kind === "cargo" ? "cargo" : Deno.execPath(),
-    check.args,
+    ...check.args,
+  ]);
+  const env = untrustedQualityCommandEnv({
+    spawnable: dropped,
+    cwd: check.dir,
+    repoCredentialEnv,
+  });
+  const target = env["CARGO_TARGET_DIR"];
+  const command = carryEnvThroughSudo(
+    dropped,
+    target === undefined ? {} : { CARGO_TARGET_DIR: target },
+  );
+  const result = await spawn(
+    command[0]!,
+    command.slice(1),
     {
       cwd: check.dir,
       timeoutMs: check.timeoutMs,
       // Build artefacts off the persistent volume where the runtime refuses
       // to trim it (Issue #2247); empty on every other runtime.
-      env: buildCacheEnvForCheckout(check.dir),
+      env,
+      clearEnv: true,
     },
   );
   if (!result.ok) throw result.error;
@@ -360,7 +409,7 @@ const spawnFastCheck: FastCheckRunner = async (check) => {
     };
   }
   return { code, output };
-};
+}
 
 /**
  * Run the planned checks against the merged tree, stopping at the first
@@ -368,8 +417,7 @@ const spawnFastCheck: FastCheckRunner = async (check) => {
  *
  * One deadline covers every check, and each check gets what is left of it. A
  * check failing for an environment reason (an unreachable remote module, a
- * `rustc` older than the workspace requires) is left to CI and the run goes
- * on. Any other failure stops the run, so the repair round names the first
+ * `rustc` older than the workspace requires) leaves the merge unverified. Any other failure stops the run, so the repair round names the first
  * thing that is wrong. A check that cannot run, a check that times out (exit
  * code 124, which a repair round cannot fix), or a budget spent before a check
  * starts, is `unverified`.
@@ -434,17 +482,22 @@ export async function runMergeFastChecks(
       ? detectRemoteModuleGap(result.output)
       : undefined;
     if (remote) {
-      leftToCi.push(
-        `${check.label} could not fetch its remote modules (${remote.cause})`,
-      );
-      continue;
+      return {
+        status: "unverified",
+        detail:
+          `${check.label} could not fetch its remote modules (${remote.cause})`,
+        output: tail(result.output),
+      };
     }
     const gap = check.kind === "cargo"
       ? detectRustToolchainGap(result.output)
       : undefined;
     if (gap) {
-      leftToCi.push(describeRustToolchainGap(check.label, result.code, gap));
-      continue;
+      return {
+        status: "unverified",
+        detail: describeRustToolchainGap(check.label, result.code, gap),
+        output: tail(result.output),
+      };
     }
     return {
       status: "failed",
@@ -496,7 +549,7 @@ async function mergeIsStaged(git: FastCheckGit): Promise<boolean> {
  *
  * A failing check gets up to `maxRounds` repair rounds. Each round runs the
  * merge-conflict agent with the failing command and its output, then lists the
- * touched paths and runs the checks again. An `unverified` check is refused at
+ * touched paths and runs the checks again. An `unverified` check is deferred at
  * once, with no repair: the agent cannot answer a check that did not run. A
  * repair run the worker or the provider ended is `cut-short`, not judged.
  *
@@ -507,7 +560,13 @@ export async function verifyMergeBeforePush(
   opts: VerifyBeforePushOptions,
 ): Promise<PrePushVerification> {
   const { repoDir, headBeforeMerge, baseBranch, git, logger } = opts;
-  const runChecks = opts.runChecks ?? runMergeFastChecks;
+  const runChecks = opts.runChecks ??
+    ((dir, paths) =>
+      runMergeFastChecks(
+        dir,
+        paths,
+        (check) => spawnFastCheck(check, opts.repoCredentialEnv),
+      ));
   const maxRounds = opts.maxRounds ?? MERGE_FAST_CHECK_REPAIR_ROUNDS;
 
   const listed = await listMergeTouchedPaths(git, headBeforeMerge);
@@ -522,6 +581,8 @@ export async function verifyMergeBeforePush(
   let repairRounds = 0;
 
   for (;;) {
+    const parked = await (opts.park ?? parkInFlightBuild)(repoDir);
+    if (parked) return { kind: "deferred", detail: parked };
     const outcome = await runChecks(repoDir, touched);
     if (outcome.status === "passed") {
       return {
@@ -533,7 +594,7 @@ export async function verifyMergeBeforePush(
     }
     if (outcome.status === "unverified") {
       return {
-        kind: "refused",
+        kind: "deferred",
         detail: withOutput(outcome.detail, outcome.output),
       };
     }

@@ -86,7 +86,9 @@ export function _resetUntrustedUserProbe(): void {
  * Falls back to running as the worker on an image that predates the `agent`
  * account, so a host mid-upgrade keeps working — degraded, not broken.
  */
-async function untrustedSpawn(cmd: readonly string[]): Promise<string[]> {
+export async function untrustedSpawn(
+  cmd: readonly string[],
+): Promise<string[]> {
   if (untrustedUserAvailable === undefined) {
     untrustedUserAvailable = await canRunAsUntrustedUser();
     if (!untrustedUserAvailable) {

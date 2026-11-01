@@ -69,9 +69,10 @@ import {
   markerStateFilePath,
 } from "../lib/heartbeat_storage.ts";
 import type { ClaudeRunResult } from "../lib/claude_runner.ts";
-import type {
-  PrePushVerification,
-  VerifyBeforePushOptions,
+import {
+  type PrePushVerification,
+  type VerifyBeforePushOptions,
+  verifyMergeBeforePush,
 } from "../lib/merge_fast_checks.ts";
 import type { LogContext, Logger } from "../types.ts";
 
@@ -623,6 +624,7 @@ function makeClaude(
    * the watchdog SIGTERM the run-end delivers (Issue #1693).
    */
   resultOverrides?: Partial<ClaudeRunResult>,
+  replies?: string[],
 ): Partial<ClaudeDeps> {
   return {
     runClaudeWithRetry: (async (
@@ -634,6 +636,10 @@ function makeClaude(
       },
     ) => {
       captured.agentRuns++;
+      const reply = replies?.[captured.agentRuns - 1];
+      if (reply !== undefined && options.cwd) {
+        await Deno.writeTextFile(options.cwd + "/.pr_response_message", reply);
+      }
       captured.agentPrompts.push(options?.prompt ?? "");
       captured.agentCalls.push({ phase: options?.phase, cwd: options?.cwd });
       captured.events.push("agent:run");
@@ -683,6 +689,7 @@ async function runProcessor(
     crashHandling?: Partial<CrashHandlingDeps>;
     /** Fields merged over the agent result (Issue #1693). */
     claudeResult?: Partial<ClaudeRunResult>;
+    agentReplies?: string[];
     /** Id `gh pr comment` reports for each posted comment (Issue #1693). */
     postedCommentId?: number;
     /** Comment bodies already on the PR (Issue #1772). */
@@ -752,6 +759,7 @@ async function runProcessor(
       captured,
       opts?.claudeDelayMs ?? 0,
       opts?.claudeResult,
+      opts?.agentReplies,
     ),
     crashHandling: opts?.crashHandling,
   });
@@ -3784,4 +3792,87 @@ Deno.test("processMergeConflict - a failing PR body sync does not fail the run",
   assert(result.ok);
   assertEquals(result.value.merged, true);
   assertEquals(result.value.escalated, false);
+});
+
+Deno.test("processMergeConflict - infrastructure deferral restores the merge and withdraws without charge", async () => {
+  for (
+    const detail of [
+      "cargo missing",
+      "run deadline timed out",
+      "disk parked",
+      "remote module unavailable",
+      "rustc too old",
+    ]
+  ) {
+    const { captured, result } = await runProcessor(
+      makeInput(),
+      makeGitScript(),
+      undefined,
+      {
+        verifier: (opts) =>
+          verifyMergeBeforePush({
+            ...opts,
+            park: () =>
+              Promise.resolve(detail === "disk parked" ? detail : null),
+            runChecks: () =>
+              Promise.resolve({
+                status: "unverified",
+                detail,
+                output: "infrastructure check output",
+              }),
+          }),
+        postedCommentId: 9001,
+      },
+    );
+    assert(result.ok);
+    assertEquals(result.value.attemptCharged, false);
+    assertEquals(result.value.merged, false);
+    assertEquals(captured.commitAndPushCalls, 0);
+    assertEquals(captured.commentsDeleted, [9001]);
+    assertEquals(captured.resets, [CONFLICT_HEAD]);
+    assertEquals(
+      captured.comments.some((c) =>
+        c.includes(CONFLICT_FAILED_MARKER) ||
+        c.includes(CONFLICT_RESOLVED_MARKER)
+      ),
+      false,
+    );
+  }
+});
+
+Deno.test("processMergeConflict preserves resolution and repair replies on success and refusal", async () => {
+  for (const refused of [false, true]) {
+    const resolution =
+      "Judgement: lib/a.ts — kept both guards; dropped nothing; because both apply.\nIntent override: lib/a.ts — kept the newer requirement";
+    const repair = "Repair reply: corrected lint in lib/a.ts";
+    const { captured, result } = await runProcessor(
+      makeInput(),
+      makeGitScript(),
+      undefined,
+      {
+        agentReplies: [resolution, repair],
+        verifier: async (opts) => {
+          const fixed = await opts.runRepairAgent({
+            round: 1,
+            maxRounds: 2,
+            failingCommand: "deno lint",
+            output: "lint failed",
+            mergedCommitSubjects: [],
+          });
+          assert(fixed.ok);
+          return refused ? { kind: "refused", detail: "lint still fails" } : {
+            kind: "passed",
+            ran: ["deno lint"],
+            leftToCi: [],
+            repairRounds: 1,
+          };
+        },
+      },
+    );
+    assert(result.ok);
+    const comment = captured.comments.at(-1) ?? "";
+    assertStringIncludes(comment, resolution);
+    assertStringIncludes(comment, repair);
+    assertEquals(captured.commitAndPushCalls, refused ? 0 : 1);
+  }
 });

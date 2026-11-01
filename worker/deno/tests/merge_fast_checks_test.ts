@@ -25,6 +25,7 @@ import {
   planFastChecks,
   readCiClippyArgs,
   runMergeFastChecks,
+  spawnFastCheck,
   type VerifyBeforePushOptions,
   verifyMergeBeforePush,
 } from "../lib/merge_fast_checks.ts";
@@ -195,7 +196,7 @@ Deno.test("planFastChecks: clippy takes the flags the repository's CI declares, 
   );
   assertEquals(
     await clippyOf("cargo clippy --workspace -- -D clippy::pedantic"),
-    ["clippy", "--workspace", "--", "-D", "clippy::pedantic"],
+    ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
   );
 });
 
@@ -224,7 +225,15 @@ Deno.test("planFastChecks: a CI-declared clippy gets --locked before the separat
     ".github/workflows/ci.yml": CI_WORKFLOW("cargo clippy --locked -- -D x"),
   }, async (root) => {
     const plan = await planFastChecks(root, ["crate/a.rs"]);
-    assertEquals(plan[1]!.args, ["clippy", "--locked", "--", "-D", "x"]);
+    assertEquals(plan[1]!.args, [
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings",
+    ]);
   });
 });
 
@@ -327,7 +336,7 @@ Deno.test("runMergeFastChecks: the first failure stops later checks and names it
   });
 });
 
-Deno.test("runMergeFastChecks: a remote-module gap is left to CI, not failed, and the run goes on", async () => {
+Deno.test("runMergeFastChecks: a remote-module gap leaves the merge unverified", async () => {
   await withTree({ "pkgs/app/deno.json": DENO_MANIFEST }, async (root) => {
     const dir = `${root}/pkgs/app`;
     const calls: FastCheck[] = [];
@@ -343,19 +352,17 @@ Deno.test("runMergeFastChecks: a remote-module gap is left to CI, not failed, an
       }, calls),
       manualClock().now,
     );
-    assertEquals(outcome.status, "passed");
-    if (outcome.status !== "passed") return;
-    assertEquals(outcome.ran.length, 4);
-    assertEquals(outcome.leftToCi.length, 1);
+    assertEquals(outcome.status, "unverified");
+    if (outcome.status !== "unverified") return;
     assertStringIncludes(
-      outcome.leftToCi[0]!,
+      outcome.detail,
       `deno task test:unit in ${dir} could not fetch its remote modules`,
     );
     assertEquals(calls.length, 5);
   });
 });
 
-Deno.test("runMergeFastChecks: a rustc older than the workspace requires is left to CI and the run goes on", async () => {
+Deno.test("runMergeFastChecks: a rustc older than the workspace requires leaves the merge unverified", async () => {
   await withTree({ "crate/Cargo.toml": CARGO_MANIFEST }, async (root) => {
     const dir = `${root}/crate`;
     const outcome = await runMergeFastChecks(
@@ -370,14 +377,9 @@ Deno.test("runMergeFastChecks: a rustc older than the workspace requires is left
       }),
       manualClock().now,
     );
-    assertEquals(outcome.status, "passed");
-    if (outcome.status !== "passed") return;
-    assertEquals(outcome.ran, [
-      `cargo fmt --all -- --check in ${dir}`,
-      `cargo test --workspace in ${dir}`,
-    ]);
-    assertEquals(outcome.leftToCi.length, 1);
-    assertStringIncludes(outcome.leftToCi[0]!, "rust-version 1.85");
+    assertEquals(outcome.status, "unverified");
+    if (outcome.status !== "unverified") return;
+    assertStringIncludes(outcome.detail, "rust-version 1.85");
   });
 });
 
@@ -759,7 +761,7 @@ Deno.test("verifyMergeBeforePush: the maxRounds option bounds the repair rounds"
   assertEquals(h.seen.length, 2);
 });
 
-Deno.test("verifyMergeBeforePush: an unverified check is refused at once, with no repair", async () => {
+Deno.test("verifyMergeBeforePush: an unverified check is deferred at once, with no repair", async () => {
   const h = harness({
     outcomes: [{
       status: "unverified",
@@ -770,8 +772,8 @@ Deno.test("verifyMergeBeforePush: an unverified check is refused at once, with n
   const result = await verifyMergeBeforePush(h.options);
   assertEquals(h.agentCalls.length, 0);
   assertEquals(h.seen.length, 1);
-  assertEquals(result.kind, "refused");
-  if (result.kind !== "refused") return;
+  assertEquals(result.kind, "deferred");
+  if (result.kind !== "deferred") return;
   assertStringIncludes(result.detail, "could not be run");
   assertStringIncludes(result.detail, "spawn deno ENOENT");
 });
@@ -845,4 +847,113 @@ Deno.test("verifyMergeBeforePush: a failing merged-subjects log gives the repair
   assertEquals(result.kind, "passed");
   assertEquals(h.agentCalls[0]!.mergedCommitSubjects, []);
   assertEquals(h.agentCalls[0]!.mergeStaged, true);
+});
+
+Deno.test("spawnFastCheck isolates credentials and uses the untrusted spawn", async () => {
+  {
+    let called = false;
+    const result = await spawnFastCheck(
+      {
+        dir: Deno.cwd(),
+        kind: "deno",
+        label: "deno lint",
+        args: ["lint"],
+        timeoutMs: 123,
+      },
+      { DECLARED_CREDENTIAL: "declared" },
+      (binary, args, options) => {
+        called = true;
+        assertEquals(binary, "sudo");
+        assertEquals(args.slice(0, 4), ["-n", "-u", "agent", "--"]);
+        assertEquals(options?.clearEnv, true);
+        assertEquals(options?.env?.["REVIEW_SECRET_TOKEN"], undefined);
+        assertEquals(options?.env?.["DECLARED_CREDENTIAL"], "declared");
+        assertEquals(options?.timeoutMs, 123);
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            success: true,
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+          },
+        });
+      },
+      (cmd) => Promise.resolve(["sudo", "-n", "-u", "agent", "--", ...cmd]),
+    );
+    assert(called);
+    assertEquals(result.code, 0);
+  }
+});
+
+Deno.test("verifyMergeBeforePush parks before initial checks and after repair", async () => {
+  for (const parkOn of [1, 2]) {
+    const h = harness({ outcomes: [LINT_FAILURE] });
+    let parks = 0;
+    h.options.park = () =>
+      Promise.resolve(++parks === parkOn ? "disk headroom unavailable" : null);
+    assertEquals(await verifyMergeBeforePush(h.options), {
+      kind: "deferred",
+      detail: "disk headroom unavailable",
+    });
+    assertEquals(h.seen.length, parkOn - 1);
+    assertEquals(h.agentCalls.length, parkOn - 1);
+  }
+});
+
+Deno.test("readCiClippyArgs reads run commands, ignoring step names and empty invocations", async () => {
+  await withTree({
+    ".github/workflows/ci.yml":
+      "steps:\n  - name: Run cargo clippy\n    run: cargo clippy\n  - run: |\n      cargo clippy --all-targets -- -D warnings\n",
+  }, async (root) => {
+    assertEquals(await readCiClippyArgs(root), [
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings",
+    ]);
+    await Deno.writeTextFile(
+      root + "/workflow-source",
+      "run: cargo clippy --bad",
+    );
+    await Deno.symlink(
+      root + "/workflow-source",
+      root + "/.github/workflows/aa-symlink.yml",
+    );
+    await Deno.mkdir(root + "/.github/workflows/directory.yml");
+    await Deno.writeTextFile(
+      root + "/.github/workflows/directory.yml/ci.yml",
+      "run: cargo clippy --bad",
+    );
+    assertEquals(await readCiClippyArgs(root), [
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings",
+    ]);
+  });
+});
+
+Deno.test("spawnFastCheck parent credentials do not reach a real child", async () => {
+  const moduleUrl =
+    new URL("../lib/merge_fast_checks.ts", import.meta.url).href;
+  const script = `
+    import { spawnFastCheck } from ${JSON.stringify(moduleUrl)};
+    const result = await spawnFastCheck({
+      dir: Deno.cwd(), kind: "deno", label: "credential isolation probe",
+      args: ["eval", "--no-config", 'console.log(Deno.env.get("REVIEW_SECRET_TOKEN") ?? "absent")'],
+      timeoutMs: 10000,
+    }, {}, undefined, (cmd) => Promise.resolve([...cmd]));
+    if (result.code !== 0) throw new Error(result.output);
+    console.log(result.output);
+  `;
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", script],
+    env: { REVIEW_SECRET_TOKEN: "parent-secret" },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+  assertEquals(new TextDecoder().decode(result.stdout).trim(), "absent");
 });

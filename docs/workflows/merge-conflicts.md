@@ -226,18 +226,22 @@ progress and stopped on conflicts. Its contract is absolute:
   agent has staged its resolution, the worker runs the repository's fast local
   checks on the packages the merge touched, before anything is pushed: the
   format check, lint (clippy with the arguments the repository's CI workflow passes
-  to `cargo clippy`, else `--workspace --all-targets -- -D warnings`, and `deno
+  to `cargo clippy` when they deny warnings, else
+  `--workspace --all-targets -- -D warnings`, and `deno
   lint`), the type and compile check including test targets, and those
   packages' tests. A failure
   goes back to the agent as a repair round in the same attempt, two rounds at
   most, and a failing check is never a reason to push. If the rounds run out the
-  push is refused and the attempt fails, with nothing pushed. Environment faults
-  — remote modules that cannot be reached, or a host `rustc` older than the
-  crate's `rust-version` — do not block the push: they are left to CI and named
-  on the resolved comment. A tool that is not installed, or the checks' 900-second
-  budget being spent, refuses the push as unverified. The resolved comment
-  carries a **Local checks before push** section: what ran on the merged tree,
-  which checks were left to CI, and how many repair rounds the agent spent.
+  push is refused and the attempt fails, with nothing pushed. Infrastructure
+  faults — missing tools, unreachable remote modules, an old host toolchain,
+  disk pressure, or an exhausted check or run deadline — defer verification.
+  The worker discards the local merge and withdraws the attempt without charge
+  or a push. Disk admission runs before the first check and each re-check.
+  Repository commands run with the quality gate's allowlisted environment,
+  declared repository credentials and untrusted account drop. Resolution and
+  repair replies are retained together in the final comment. The resolved comment
+  carries a **Local checks before push** section with the commands that passed
+  and how many repair rounds the agent spent.
 - **Dependency versions are the first bounded carve-out.** The prompt says so
   itself: the worker
   settles dependency-version hunks in known manifests before the agent runs, and

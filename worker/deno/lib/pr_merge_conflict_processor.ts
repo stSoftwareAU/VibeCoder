@@ -47,6 +47,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { resolveRepoCredentials } from "./repo_credentials.ts";
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import {
@@ -1947,9 +1948,20 @@ async function resolveConflict(
   // conflict-marker guards above, so it only ever sees a fully resolved tree.
   // A failing check gets bounded repair rounds from the agent; a refusal
   // discards the local merge and fails the attempt, so nothing reaches origin.
+  const replies: string[] = [];
+  const resolutionReply = await agentReply();
+  if (resolutionReply) replies.push(resolutionReply);
+  const credentials = await resolveRepoCredentials(
+    repo,
+    processorDeps.repoConfigs?.[repo]?.qualityCredentials,
+  );
   timer.start("gate");
   const verification = await (processorDeps.verifyMergeBeforePushFn ??
     verifyMergeBeforePush)({
+      repoCredentialEnv: credentials.ok ? credentials.value.env : {},
+      ...(credentials.ok
+        ? {}
+        : { park: () => Promise.resolve(credentials.error.message) }),
       repoDir: workDir,
       headBeforeMerge,
       baseBranch,
@@ -1990,6 +2002,11 @@ async function resolveConflict(
             repairRunStats,
           );
         }
+        const repairReply = await createMergeConflictReplyReader(
+          workDir,
+          logger,
+        )();
+        if (repairReply) replies.push(repairReply);
         return repairOutcome;
       },
     });
@@ -2009,15 +2026,15 @@ async function resolveConflict(
       input,
       processorDeps,
       conflictedFiles,
-      localReset === undefined
-        ? verification.detail
-        : `${verification.detail}; ${localReset}`,
+      [verification.detail, ...replies, localReset].filter(Boolean).join(
+        "\n\n",
+      ),
       attemptNumber,
       timer,
       headBeforeMerge,
     );
   }
-  if (verification.kind === "cut-short") {
+  if (verification.kind === "cut-short" || verification.kind === "deferred") {
     const localReset = await discardLocalMerge(
       run,
       workDir,
@@ -2041,7 +2058,9 @@ async function resolveConflict(
       conflictedFiles,
       attemptNumber,
       timer,
-      verification.outcome.providerUnavailable === undefined
+      verification.kind === "deferred"
+        ? { markerReason: verification.detail, phrase: verification.detail }
+        : verification.outcome.providerUnavailable === undefined
         ? CUT_SHORT_BY_RUN_END
         : cutShortByProvider(verification.outcome.providerUnavailable),
     );
@@ -2127,7 +2146,7 @@ async function resolveConflict(
     workDir,
   );
   if (ancestor.code !== 0) {
-    const detail = await agentReply();
+    const detail = replies.join("\n\n");
     return await failAttempt(
       input,
       processorDeps,
@@ -2165,7 +2184,7 @@ async function resolveConflict(
     syncFn,
   );
 
-  const detail = await agentReply();
+  const detail = replies.join("\n\n");
   try {
     await postPrComment(
       deps,
