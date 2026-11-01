@@ -1752,8 +1752,8 @@ const droppedGh = (
       parents: 2,
     }]),
     "repos/o/r/compare/main...X": compareFiles([
-      { filename: "a.ts", patch: dropPatch },
       { filename: "docs.md", patch: "@@ -1 +1 @@\n-x\n+y" },
+      { filename: "a.ts", patch: dropPatch },
     ]),
     "repos/o/r/compare/main...head": compareFiles(headFiles),
   }).gh;
