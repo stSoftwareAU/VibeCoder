@@ -50,11 +50,12 @@ export interface HistoryRewriteRequest {
   /** Repository working directory. */
   cwd?: string;
   /**
-   * Author emails this run is allowed to rewrite. A branch carrying a commit
-   * from anyone else is somebody's work in progress, and collapsing it would
-   * destroy authorship that is not ours to touch.
+   * Author emails this run is allowed to rewrite. The caller supplies Git's
+   * effective author identity; an empty or unusable list is refused. A branch
+   * carrying another author's commit is somebody's work in progress, and
+   * collapsing it would destroy authorship that is not ours to touch.
    */
-  ownedAuthorEmails?: ReadonlyArray<string>;
+  ownedAuthorEmails: ReadonlyArray<string>;
 }
 
 /** Why a rebuild was refused, or what it did. */
@@ -164,6 +165,22 @@ export async function rebuildBranchHistory(
     };
   }
 
+  const owned = [
+    ...new Set(request.ownedAuthorEmails.map((email) => email.trim())),
+  ];
+  if (
+    owned.length === 0 ||
+    owned.some((email) => !/^[^\s<>@]+@[^\s<>@]+$/.test(email))
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to rewrite '${branchName}': worker author identity is ` +
+          `missing or unusable; no commits were changed`,
+      ),
+    };
+  }
+
   // The merge base, not the base branch tip: rebuilding onto a tip that has
   // moved would silently drag in everything merged since the branch was cut,
   // turning a history rewrite into an unreviewed rebase.
@@ -194,34 +211,37 @@ export async function rebuildBranchHistory(
   // Every commit about to be collapsed must be ours. A branch carrying
   // someone else's commit is their work, and squashing it would erase an
   // authorship record we have no standing to touch.
-  const owned = request.ownedAuthorEmails ?? [];
-  if (owned.length > 0) {
-    const authors = await deps.runGitCommand(
-      ["log", "--format=%ae", `${baseSha}..HEAD`],
-      options,
-    );
-    if (!authors.ok || authors.value.code !== 0) {
-      return {
-        ok: false,
-        error: new Error(
-          `could not read the authors of '${branchName}' before rewriting it`,
-        ),
-      };
-    }
-    const foreign = authors.value.stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .filter((email) => !owned.includes(email));
-    if (foreign.length > 0) {
-      return {
-        ok: false,
-        error: new Error(
-          `refusing to rewrite '${branchName}': it carries commits by ` +
-            `${[...new Set(foreign)].join(", ")}, which this run did not write`,
-        ),
-      };
-    }
+  const authors = await deps.runGitCommand(
+    ["log", "--format=%ae", `${baseSha}..HEAD`],
+    options,
+  );
+  if (!authors.ok || authors.value.code !== 0) {
+    const detail = authors.ok
+      ? authors.value.stderr.trim()
+      : authors.error.message;
+    return {
+      ok: false,
+      error: new Error(
+        `could not read commit authors of '${branchName}' before rewriting it: ${detail}`,
+      ),
+    };
+  }
+  // Remove only Git's final newline, never an empty-email commit record.
+  const authorEmails = authors.value.stdout === ""
+    ? []
+    : authors.value.stdout.replace(/\n$/, "").split("\n");
+  const foreign = authorEmails
+    .map((line) => line.trim())
+    .filter((email) => !owned.includes(email))
+    .map((email) => email || "(blank author email)");
+  if (foreign.length > 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to rewrite '${branchName}': it carries commits by ` +
+          `${[...new Set(foreign)].join(", ")}, which this run did not write`,
+      ),
+    };
   }
 
   const countResult = await deps.runGitCommand(
