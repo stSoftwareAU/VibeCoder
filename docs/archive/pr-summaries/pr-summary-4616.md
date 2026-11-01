@@ -71,8 +71,8 @@ flowchart LR
 
 Backend and prompt only, no UI. No fleet-wide measurement is claimed.
 
-- `worker/deno/tests/merge_fast_checks_test.ts` (31 tests): planning (including the
-  CI-declared clippy flags changing the planned command), running,
+- `worker/deno/tests/merge_fast_checks_test.ts` (31 tests): planning (including
+  the CI-declared clippy flags changing the planned command), running,
   fail-closed outcomes, and the repair loop.
 - `worker/deno/tests/pr_merge_conflict_processor_test.ts`: the verifier is
   called after the marker guard and before the push, on conflicted and clean
@@ -156,8 +156,10 @@ Backend and prompt only, no UI. No fleet-wide measurement is claimed.
   and a string throw.
 - Clippy CI flags: `readCiClippyArgs` and the planning tests
   (`planFastChecks: clippy takes the flags the repository's CI declares ...`,
-  `... --locked before the separator, once`, `readCiClippyArgs: skips comments
-  ...`) change the declared flags and see the planned command change.
+  `... --locked before the separator, once`,
+  `readCiClippyArgs: skips comments
+  ...`) change the declared flags and see
+  the planned command change.
 - Not done: no live run against a real conflicting PR; the default spawn runner
   is not unit-tested; the prompt still says "clippy with `-D warnings`" as the
   usual case.
