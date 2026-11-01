@@ -59,9 +59,10 @@ Deno.test({
       await git("init");
       await git("config", "user.name", "Test");
       await git("config", "user.email", "test@example.invalid");
+      await Deno.writeTextFile(`${root}/host-only-secret`, "host secret");
       await Deno.writeTextFile(
         `${root}/check.sh`,
-        '#!/bin/sh\nset -eu\ntest -z "${GH_TOKEN:-}"\ntest -z "${GITHUB_TOKEN:-}"\ntest ! -e /fixture/repo/.git\ntest ! -e /fixture/secret\nif printf x >> /fixture/readonly-probe 2>/dev/null; then exit 41; fi\nif (echo > /dev/tcp/1.1.1.1/443) 2>/dev/null; then exit 42; fi\nprintf good > writable-check\nprintf \'pinned passed\\n\'\n',
+        `#!/bin/sh\nset -eu\ntest -z "\${GH_TOKEN:-}"\ntest -z "\${GITHUB_TOKEN:-}"\ntest ! -e /fixture/repo/.git\ntest ! -e '${root}/host-only-secret'\nif printf x >> /fixture/readonly-probe 2>/dev/null; then exit 41; fi\nif (echo > /dev/tcp/1.1.1.1/443) 2>/dev/null; then exit 42; fi\nprintf good > writable-check\nprintf 'pinned passed\\n'\n`,
       );
       await Deno.writeTextFile(
         `${root}/fail.sh`,
