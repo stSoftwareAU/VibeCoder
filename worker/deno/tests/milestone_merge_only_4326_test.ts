@@ -276,7 +276,8 @@ Deno.test("mergeOnlyBindings - a cargo tree withholds the agent, and no over-bud
       true,
     );
     assertEquals(first.outcome, "not-charged");
-    assertEquals(first.refusal, true);
+    // Not a refusal: a cargo withhold never counts toward the ceiling (Issue #4588).
+    assertEquals(first.refusal, undefined);
     // The branch waits for the host's disk; it never climbs to the roll-back.
     const second = escalateRepeatedRefusal(first, 1);
     assertEquals(second.outcome, "not-charged");
@@ -601,6 +602,8 @@ Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pu
     const conclusion = judgeSyncFailure(result.error, true);
     assertEquals(conclusion.outcome, "not-charged");
     assertEquals(conclusion.reason, CARGO_BUDGET_AGENT_WITHHELD);
+    // Not a refusal: the withhold never counts toward the ceiling (Issue #4588).
+    assertEquals(conclusion.refusal, undefined);
     // Never climbs: the branch waits for the host's disk.
     assertEquals(
       escalateRepeatedRefusal(conclusion, 1).outcome,
