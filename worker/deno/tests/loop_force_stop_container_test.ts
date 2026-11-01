@@ -98,6 +98,7 @@ esac
     const child = new Deno.Command("bash", {
       args: ["-c", "exec ./loop.sh > loop.log 2>&1"],
       cwd: tmpDir,
+      clearEnv: true,
       env: {
         PATH: `${binDir}:${Deno.env.get("PATH") ?? ""}`,
         BASH_ENV: join(binDir, "bash_env"),
