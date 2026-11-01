@@ -126,7 +126,7 @@ import {
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
-import { requestBranchUpdate } from "./merge_block_escalation.ts";
+import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
@@ -3678,8 +3678,13 @@ export async function createProductionRunCoreDeps(
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
-        updateBranchFn: (repo, prNumber) =>
-          requestBranchUpdate(repo, prNumber, gh),
+        updateBranchFn: (repo, prNumber, base) =>
+          base
+            ? requestReadyBranchUpdate(repo, prNumber, gh, base)
+            : Promise.resolve({
+              ok: false,
+              error: new Error("PR base is unknown"),
+            }),
         // Issue #4424: an armed PR behind a merge queue is not updated — the
         // queue tests it against its future head and lands it.
         isMergeQueueBase: makeIsMergeQueueBase(gh),
