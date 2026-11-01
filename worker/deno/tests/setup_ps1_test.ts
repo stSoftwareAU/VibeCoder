@@ -1270,3 +1270,47 @@ Deno.test({
     }
   },
 });
+
+pwshTest(
+  "setup.ps1 - reviewer prompt does not recreate deprecated authors",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const configPath = `${tmp}/.config.json`;
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          repos: ["TitlePage/private", "stSoftwareAU/VibeCoder"],
+          pr_reviewers: ["existing"],
+        }),
+      );
+      const run = await runPwsh(
+        `
+      function Test-VibeInteractive { return $true }
+      $script:answerIndex = 0
+      function Read-Host {
+        param([string] $Prompt)
+        $script:answerIndex++
+        if ($script:answerIndex -eq 2) { return "reviewer1, reviewer2" }
+        return ""
+      }
+      $answers = Read-VibeInteractiveConfig
+      Write-VibeInteractiveConfig -Answers $answers
+    `,
+        { HOME: tmp, CONFIG_FILE: configPath },
+      );
+      assertEquals(run.code, 0, run.output);
+      assertStringIncludes(run.output, "PR reviewer username(s)");
+      assert(!run.output.includes("GitHub username(s) to process issues from"));
+      const config = JSON.parse(await Deno.readTextFile(configPath));
+      assertEquals(config.pr_reviewers, ["reviewer1", "reviewer2"]);
+      assertEquals(config.allowed_authors, undefined);
+      assertEquals(config.repos, [
+        "TitlePage/private",
+        "stSoftwareAU/VibeCoder",
+      ]);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
