@@ -7,7 +7,8 @@
  * them. The block is gated on the same boolean as those definitions, so the
  * assertions cover both sides of the gate: a key-off run renders exactly the
  * prompt it renders today, and a key-on run carries every rule the split
- * depends on while the Spec and Standards reviewers are left untouched.
+ * depends on, pins dispatch to the foreground (Issue #4599), and leaves the
+ * Spec and Standards reviewers untouched.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -63,6 +64,14 @@ function section(prompt: string, heading: string): string {
   const rest = prompt.slice(start + 1);
   const end = rest.indexOf("\n## ", 1);
   return end < 0 ? rest : rest.slice(0, end);
+}
+
+/** One bullet of a block, from its lead phrase up to the next bullet. */
+function bullet(block: string, lead: string): string {
+  const start = block.indexOf(lead);
+  assert(start >= 0, `block carries no bullet with "${lead}"`);
+  const end = block.indexOf("\n- **", start);
+  return end < 0 ? block.slice(start) : block.slice(start, end);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +140,26 @@ Deno.test("issue prompt - key on carries the advisor/executor rules", async () =
     block,
     "An executor that errors, or returns no result, counts as one mismatch",
   );
+});
+
+Deno.test("issue prompt - the block dispatches executors and reviewers in the foreground (Issue #4599)", async () => {
+  const on = await issuePrompt({ issueExecutorSplit: true });
+  const block = section(on, "## Advisor and Executors — You Plan, They Edit");
+
+  // A background executor can outlive the advisor's turn, so the executor
+  // bullet pins the foreground for every call in the single dispatch message.
+  const executors = bullet(
+    block,
+    "One executor per independent group of files.",
+  );
+  assertStringIncludes(executors, "`run_in_background: false`");
+  assertStringIncludes(executors, "in a single message");
+  // The reviewers are dispatched the same way, so their verdicts come back
+  // before the summary is written.
+  const reviewers = bullet(block, "The reviewers are not executors.");
+  assertStringIncludes(reviewers, "`run_in_background: false`");
+  // Nothing in the block lets any dispatch run in the background.
+  assertEquals(block.includes("run_in_background: true"), false);
 });
 
 Deno.test("issue prompt - the block dispatches the agent name the executors register under", async () => {

@@ -23,6 +23,10 @@ import { ISSUE_EXECUTOR_AGENT_NAME } from "./issue_executor_agents.ts";
  *
  * Splices in with a blank line either side; the builder supplies those, so the
  * constant itself starts at its heading and ends without a trailing newline.
+ *
+ * Dispatch is pinned to the foreground (Issue #4599) because a background
+ * executor can outlive the advisor's turn, which would end the run with no PR
+ * summary.
  */
 export const ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS = `\
 ## Advisor and Executors — You Plan, They Edit
@@ -43,7 +47,12 @@ still governs every sub-agent this section does not describe.
 - **One executor per independent group of files.** A group is independent when
   no other executor in the same run edits any file in it — two executors must
   never hold the same file. There is no cap on how many run concurrently:
-  dispatch every independent group at once, in a single message.
+  dispatch every independent group at once, in a single message, each call with
+  \`run_in_background: false\`. Calls in one message still run concurrently, and
+  every result comes back to you in this turn. A background dispatch can
+  outlive your turn: you would end it with an executor still editing, never
+  read its diff, and the run would reach the PR with no summary. Never end a
+  turn while an executor you dispatched has not returned.
 - **Each executor does its own reads, edits and tests.** Give it the files, the
   change you want, and the tests covering those files; it runs those tests —
   stdin redirected from \`/dev/null\` — and reports the output. An executor
@@ -61,6 +70,7 @@ still governs every sub-agent this section does not describe.
 - **The reviewers are not executors.** The Spec and Standards reviewer
   sub-agents required by
   [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
-  are unchanged: you dispatch them yourself, they run on this phase's model
-  unless the run defines them as their own agents, and they review rather than
-  edit.`;
+  are unchanged: you dispatch them yourself, the same way, with
+  \`run_in_background: false\`, so their verdicts reach you before you write the
+  summary. They run on this phase's model unless the run defines them as their
+  own agents, and they review rather than edit.`;

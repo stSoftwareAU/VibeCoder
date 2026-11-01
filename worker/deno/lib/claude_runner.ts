@@ -126,6 +126,7 @@ import {
 import { buildRunStats, type RunStats } from "./run_stats.ts";
 import {
   formatIssueEditDenialLog,
+  hasUnfinishedIssueExecutor,
   resolveIssueExecutorHookSettings,
   summariseIssueExecutorSplitRun,
 } from "./issue_executor_enforcement.ts";
@@ -2843,6 +2844,17 @@ async function runClaudeWithTimeoutBody(
     }
     if (hostDiskPark) {
       return { ok: false, error: new Error(hostDiskPark) };
+    }
+    if (
+      options.issueExecutorSplit && !timedOut && status.code === 0 &&
+      hasUnfinishedIssueExecutor(rawOutput)
+    ) {
+      return {
+        ok: false,
+        error: new Error(
+          "Split issue run has unfinished executor work; refusing completion and PR creation (Issue #4599).",
+        ),
+      };
     }
     return {
       ok: true,
