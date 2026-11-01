@@ -125,10 +125,12 @@ file or behaviour it claims must appear in `git diff <base>...HEAD` — not mere
 exist at the head, since a merge from the base branch can supersede the change —
 and a summary that contradicts the diff is a blocking self-review finding
 (Issue #3015). The same appear-in-diff rule holds for every doc the diff adds
-or edits, for any claim that this PR changes something, and each claim is
-re-verified after any merge of the base branch — but a test or file cited only
-as existing evidence needs merely to exist and have run on the final head, in
-the diff or already tracked (Issue #3058).
+or edits, for any claim that this PR changes something, and a claim whose
+subject a base-branch merge absorbed is dropped, while counts, line citations
+and run results true at the PR's last own commit stay as written when a base
+merge only moves them — but a test or file cited only as existing evidence
+needs merely to exist and have run on the final head, in the diff or already
+tracked (Issue #3058).
 
  moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
 so `docs/` root remains a curated table of contents. The worker still checks the
