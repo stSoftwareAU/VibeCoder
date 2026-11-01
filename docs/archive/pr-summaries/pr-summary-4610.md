@@ -60,6 +60,9 @@ backstop.
   `name[bot]`, the form the fleet configuration lists.
 - `idle-task` is the work label the worker may apply itself; `work-on` stays
   human-only.
+- A repository's VibeCoder-routed checks merge into one issue listing every
+  tool. A read-only dry run over 7 days would otherwise have filed six
+  near-identical issues for one private repository.
 - Each pass inspects at most 40 failed runs per repository and remembers the
   runs it has scanned, so the first pass on a busy repository does not hold
   repairs up for a week's backlog.
@@ -80,7 +83,7 @@ Manual read: `docs/workflows/fleet-pr-babysitter.md` (updated with a
 "Shift-left detection" section). Visual evidence is not applicable; this is a
 background service with no UI.
 
-- `tests/shift_left_failures_test.ts`: 22 tests. Each scan behaviour was
+- `tests/shift_left_failures_test.ts`: 23 tests. Each scan behaviour was
   written first and seen failing: routing, generic grouping, the `idle-task`
   label, author-verified markers, branch-matched runs, a missing log skipped,
   the escape-refusal retry, and the per-pass cap with resume.
@@ -91,6 +94,10 @@ background service with no UI.
   `VIBE_SHIFT_LEFT` name; all four are fixed.
 - Related suites (babysitter, App, env registry, log-level lint, marker
   author cap, sweep coverage): 116 passed, 0 failed.
+- Read-only dry run against two repositories over 7 days: 170 qualifying
+  failures, for example clippy on 21 fleet PRs, coverage on 21, `cargo
+  mutants` on 15 (routed to the repository, whose `quality.sh` has no
+  mutants step) and `deno test` on 12 in each repository.
 
 ## Test Plan
 

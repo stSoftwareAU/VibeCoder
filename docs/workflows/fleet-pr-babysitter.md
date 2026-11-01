@@ -123,6 +123,8 @@ the same check earlier.
   | CI runs the tool but no local gate does, in 2 or more repositories | VibeCoder, once (a fleet-wide gap) |
   | CI runs the tool but this repository's local gate does not | That repository |
 
+- A repository's VibeCoder-routed checks are filed as one issue that lists
+  every tool, because they share one cause.
 - Issues carry the `idle-task` label, so the fleet picks them up without a
   human label. A recurrence adds at most one comment a day to the open issue; a
   recurrence after the issue was closed files a new issue that links the old

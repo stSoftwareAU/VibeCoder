@@ -242,6 +242,8 @@ function fakeGh(opts: {
   unlinkedRuns?: boolean;
   /** Job ids whose log is gone (HTTP 404). */
   missingLogs?: number[];
+  /** Each run also fails a second locally runnable job (`cargo fmt`). */
+  twoTools?: boolean;
 }): FakeGh {
   const calls: string[][] = [];
   const runs = [7, 8, 9].map((pr) => ({
@@ -260,14 +262,20 @@ function fakeGh(opts: {
     }
     const jobs = /\/actions\/runs\/(\d+)\/jobs/.exec(path);
     if (jobs) {
-      return Promise.resolve(JSON.stringify({
+      const clippy = JSON.stringify({
         id: Number(jobs[1]) + 1,
         name: "rust-checks",
         steps: [{
           name: "cargo clippy (warnings denied)",
           conclusion: "failure",
         }],
-      }));
+      });
+      const fmt = JSON.stringify({
+        id: Number(jobs[1]) + 2,
+        name: "lint",
+        steps: [{ name: "cargo fmt --check", conclusion: "failure" }],
+      });
+      return Promise.resolve(opts.twoTools ? `${clippy}\n${fmt}` : clippy);
     }
     const logJob = /\/actions\/jobs\/(\d+)\/logs/.exec(path);
     if (logJob && opts.missingLogs?.includes(Number(logJob[1]))) {
@@ -524,4 +532,19 @@ Deno.test("scan: a pass inspects a bounded number of runs and the next pass resu
     c.some((a) => /\/actions\/runs\/\d+\/jobs/.test(a))
   );
   assertEquals(jobReads.length, 1);
+});
+
+Deno.test("scan: several checks the local gate already runs, in one repository, are one VibeCoder issue", async () => {
+  // They share one cause (the fleet pushed without a passing local gate), so
+  // one issue lists every tool rather than one near-duplicate per tool.
+  const fake = fakeGh({
+    twoTools: true,
+    gate: "cargo clippy --workspace\ncargo fmt --all -- --check",
+  });
+  await scan(fake);
+  assertEquals(createsIn(fake), ["owner/VibeCoder"]);
+  const create = fake.calls.find((c) => c[0] === "issue" && c[1] === "create")!;
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(body, "cargo clippy");
+  assertStringIncludes(body, "cargo fmt");
 });

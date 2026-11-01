@@ -366,6 +366,58 @@ export async function genericGroups(
   return out;
 }
 
+/**
+ * Merge a repository's VibeCoder-routed groups into one. They share a cause —
+ * the fleet raised or pushed without a passing local gate — so one issue
+ * names every tool instead of one near-duplicate issue per tool.
+ */
+export async function perRepoFleetGroups(
+  routed: ReadonlyArray<{ group: RepeatedFailure; route: ShiftLeftRoute }>,
+): Promise<{ group: RepeatedFailure; route: ShiftLeftRoute }[]> {
+  const byRepo = new Map<
+    string,
+    { group: RepeatedFailure; route: ShiftLeftRoute }[]
+  >();
+  const out: { group: RepeatedFailure; route: ShiftLeftRoute }[] = [];
+  for (const entry of routed) {
+    if (entry.route.target !== "vibecoder" || entry.group.repos) {
+      out.push(entry);
+      continue;
+    }
+    byRepo.set(entry.group.repo, [
+      ...(byRepo.get(entry.group.repo) ?? []),
+      entry,
+    ]);
+  }
+  for (const [repo, entries] of byRepo) {
+    if (entries.length === 1) {
+      out.push(entries[0]!);
+      continue;
+    }
+    const groups = entries.map((e) => e.group);
+    const unique = (values: string[]) => [...new Set(values)];
+    out.push({
+      group: {
+        key: await shiftLeftKey(repo, "fleet-local-gate", "all"),
+        repo,
+        check: unique(groups.map((g) => g.check)).join(", "),
+        step: unique(groups.map((g) => g.step)).join(", "),
+        tool: unique(groups.map((g) => g.tool)).sort().join(", "),
+        prNumbers: [...new Set(groups.flatMap((g) => g.prNumbers))]
+          .sort((a, b) => a - b),
+        pushers: groups.flatMap((g) => g.pushers),
+        codes: unique(groups.flatMap((g) => g.codes)).sort(),
+        observations: groups.flatMap((g) => g.observations),
+      },
+      route: {
+        target: "vibecoder",
+        reason: unique(entries.map((e) => e.route.reason)).join("; "),
+      },
+    });
+  }
+  return out;
+}
+
 export function formatShiftLeftMarker(key: string): string {
   return `<!-- ${SHIFT_LEFT_MARKER_PREFIX}:${key} -->`;
 }
@@ -893,8 +945,10 @@ export async function runShiftLeftScan(deps: ShiftLeftScanDeps): Promise<void> {
   const generic = await genericGroups(routed);
   const covered = new Set(generic.map((g) => g.group.tool));
   const filings = [
-    ...routed.filter(({ group, route }) =>
-      !(route.target === "product" && covered.has(group.tool))
+    ...await perRepoFleetGroups(
+      routed.filter(({ group, route }) =>
+        !(route.target === "product" && covered.has(group.tool))
+      ),
     ),
     ...generic,
   ];
