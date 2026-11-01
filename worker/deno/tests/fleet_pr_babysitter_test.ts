@@ -550,3 +550,17 @@ Deno.test("only a head whose runs were cancelled and none failed is re-run", () 
   assertEquals(cancelledRunsToRerun([r(1, "completed", "success")]), []);
   assertEquals(cancelledRunsToRerun([]), []);
 });
+
+// Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
+// a test the repair never touched; CI on the base is the arbiter.
+Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "unrelated to the files you changed and passes in CI on the base branch",
+    );
+  }
+});
