@@ -35,9 +35,11 @@ gated" header comment names it. Version bump: not part of this change. Closes
 ### Undiscoverable Facts
 
 - The only Rust in this repository is `evals/capability_security/accept/rust` (a
-  `Cargo.toml`, no tracked `Cargo.lock`), so `cargo audit` at the repo root may
-  report that it cannot load a `Cargo.lock`. The check is advisory, so this does
-  not block a merge.
+  `Cargo.toml`, no tracked `Cargo.lock`), and `cargo audit` at the repo root
+  exits 2 with `Couldn't load Cargo.lock` (seen in CI run 125005038640). The
+  three toolchain, install and audit steps therefore carry
+  `if: hashFiles('Cargo.lock') != ''` and are skipped until a root lockfile is
+  committed. This is the one deviation from the issue's verbatim template.
 - `workflow_definitions.ts` still lists `schedule` as a `cargo-audit` trigger
   and in its template; that catalogue was not changed here (outside this issue).
 

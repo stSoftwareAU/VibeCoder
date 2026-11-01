@@ -28,7 +28,14 @@ jobs:
       # name — it is named explicitly instead (Issue #3645).
       # dtolnay/rust-toolchain@v1
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        if: hashFiles('Cargo.lock') != ''
         with:
           toolchain: stable
-      - run: cargo install cargo-audit
-      - run: cargo audit
+      # `cargo audit` reads the root Cargo.lock and exits 2 when there is
+      # none. This repository tracks no root lockfile (its only Rust is the
+      # eval fixture under evals/), so there is nothing to audit until one is
+      # committed; the steps then run with no further change.
+      - if: hashFiles('Cargo.lock') != ''
+        run: cargo install cargo-audit
+      - if: hashFiles('Cargo.lock') != ''
+        run: cargo audit
