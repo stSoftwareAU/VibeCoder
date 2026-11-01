@@ -5,6 +5,28 @@ export interface RegressionCheckPlan {
   argv: string[];
 }
 
+/** Parse `git ls-tree -rz --full-tree` output captured by the host at head. */
+export function parseHeadTree(output: string): Set<string> {
+  if (output.length > 8 * 1024 * 1024 || (output && !output.endsWith("\0"))) {
+    throw new Error("Invalid or oversized head-tree output");
+  }
+  const records = output ? output.slice(0, -1).split("\0") : [];
+  if (records.length > 20_000) throw new Error("Head tree has too many files");
+  const files = new Set<string>();
+  for (const record of records) {
+    const match =
+      /^(100644|100755|120000|160000) (blob|commit) ([0-9a-f]{40})\t([^\0]+)$/
+        .exec(record);
+    if (!match || (match[1] === "160000") !== (match[2] === "commit")) {
+      throw new Error("Malformed head-tree record");
+    }
+    if (match[1] === "120000" || match[1] === "160000") continue;
+    if (files.has(match[4]!)) throw new Error("Duplicate head-tree path");
+    files.add(match[4]!);
+  }
+  return files;
+}
+
 /** Plan only supported tests present in the verified head tree. */
 export function planRegressionChecks(
   testFiles: readonly string[],

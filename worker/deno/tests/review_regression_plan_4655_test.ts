@@ -1,5 +1,8 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { planRegressionChecks } from "../../../.claude/skills/review-fleet-prs/scripts/review_regression_plan.ts";
+import {
+  parseHeadTree,
+  planRegressionChecks,
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_regression_plan.ts";
 
 Deno.test("regression planner uses paths as data in a fixed offline Deno command", () => {
   assertEquals(
@@ -58,4 +61,13 @@ Deno.test("regression planner rejects non-tree, unsafe, unsupported and excessiv
       new Set(Array.from({ length: 9 }, (_, n) => `${n}_test.ts`)),
     )
   );
+});
+
+Deno.test("head tree parser selects regular blobs and rejects malformed records", () => {
+  const oid = "a".repeat(40);
+  const tree = `100644 blob ${oid}\ttests/guard_test.ts\0` +
+    `120000 blob ${oid}\ttests/link_test.ts\0`;
+  assertEquals([...parseHeadTree(tree)], ["tests/guard_test.ts"]);
+  assertThrows(() => parseHeadTree(`100644 blob ${oid}\ttests/a_test.ts`));
+  assertThrows(() => parseHeadTree(`100644 blob nonsense\ttests/a_test.ts\0`));
 });

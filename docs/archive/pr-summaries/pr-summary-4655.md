@@ -18,4 +18,4 @@ The replay uses the public #4645 hold through discovery and posting, with review
 
 ## Limitations
 
-The positive replay cases currently fail by design: the trusted isolated runner and its integration are not implemented. The tests do not establish a live model’s semantic judgement. The no-op human label-add limitation above remains. No PR has been opened.
+The positive replay cases currently fail by design. The experimental Apple runner and host-side planner/collector are not wired to production: no host-owned PR fetch or two-stage review/post lifecycle exists, and an offline dependency failure cannot yet be distinguished from a genuine base regression. Genuine removal without replacement and non-Deno suites remain pending. A live Apple test checked the host adapter: same-head tests returned observations for later review, while a head-green/base-red case stayed pending. The tests do not establish a live model’s semantic judgement. The no-op human label-add limitation above remains. No PR has been opened.
