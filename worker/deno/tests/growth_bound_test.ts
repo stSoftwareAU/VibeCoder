@@ -212,31 +212,51 @@ Deno.test("assertLinearGrowth - names the shape and both measurements when it fa
   assert(message.includes("super-linear"), `missing verdict: ${message}`);
 });
 
-Deno.test("assertLinearGrowth - catches genuinely quadratic work on a real clock", () => {
-  // Nested scan over the input: 4x the characters costs ~16x the time on any
-  // host, so the detector fires without an absolute budget anywhere in it.
+Deno.test("assertLinearGrowth - catches genuinely quadratic work, measured by counted steps", () => {
+  // Deterministic: the "clock" is a counter of inner-loop steps, so 4x the
+  // characters costs exactly 16x the steps on any host and load. No wall-clock
+  // reading is involved, so a busy CI runner cannot mask the blow-up.
+  let steps = 0;
   const quadratic = (input: string): number => {
     let hits = 0;
     for (let i = 0; i < input.length; i++) {
-      for (let j = 0; j < input.length; j++) if (input[i] === input[j]) hits++;
+      for (let j = 0; j < input.length; j++) {
+        steps++;
+        if (input[i] === input[j]) hits++;
+      }
     }
     return hits;
   };
-  // repeats: 3 (not the real-clock default of 1 elsewhere in this file) —
-  // this is the one test here that reads the real clock instead of a
-  // fakeClock, so a single sample is exposed to scheduler/GC noise on a busy
-  // CI runner inflating the base reading and masking the quadratic blow-up.
-  // Keeping the fastest of several runs is the same noise-cancelling
-  // technique measureGrowth itself defaults to (Issue #3174 CI flake).
   assertThrows(
     () =>
       assertLinearGrowth(
         "nested scan",
         (chars) => "ab".repeat(chars / 2),
         quadratic,
-        { baseChars: 2_000, sizeFactor: 4, repeats: 3, graceMs: 5 },
+        {
+          baseChars: 200,
+          sizeFactor: 4,
+          repeats: 3,
+          graceMs: 0,
+          now: () => steps,
+        },
       ),
     AssertionError,
     "super-linear",
   );
+});
+
+Deno.test("assertLinearGrowth - passes linear work, measured by counted steps", () => {
+  let steps = 0;
+  const linear = (input: string): number => {
+    for (let i = 0; i < input.length; i++) steps++;
+    return input.length;
+  };
+  const out = assertLinearGrowth(
+    "single scan",
+    (chars) => "ab".repeat(chars / 2),
+    linear,
+    { baseChars: 200, sizeFactor: 4, repeats: 3, graceMs: 0, now: () => steps },
+  );
+  assertEquals(out, 800);
 });
