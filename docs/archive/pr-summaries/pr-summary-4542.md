@@ -63,7 +63,7 @@ New tests in `worker/deno/tests/review_fleet_prs_gate_2675_test.ts`, all named
   asserts `awaiting-fix` through `skipReason`, and a control where a finding
   names a remaining file)
 - a dropped file that a finding names is a fresh review, qualified paths
-  included
+  included; this also applies when the name is nested in an earlier-finding gap
 - a dropped file with unknown or empty findings is a fresh review
 - a file only the head lists is a fresh review
 - a dropped file beside a real change to a remaining file is a fresh review
@@ -93,6 +93,12 @@ file in the shared fixture. No existing assertion was removed or edited.
 Callers of `ownDiffUnchanged`: the gate's single production call site
 passes the findings of the exact sent-back head, unchanged; the existing tests
 of the function still pass.
+
+Second review-fix push: `findingNamesFile` follows earlier-finding gaps when
+checking a dropped file, so restoring a file named by an unresolved earlier
+finding triggers a fresh review. `deno task test:unit
+tests/review_fleet_prs_gate_2675_test.ts` passed, 44 tests, 0 failed, including
+the new gap-shaped finding case.
 
 Twinned rules: SKILL.md rule 8 and `edge-cases.md` both restate the comparison
 and were updated together; no other copy of the rule was found.
