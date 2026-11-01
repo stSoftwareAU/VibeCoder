@@ -26,11 +26,13 @@ final version.
 
 - The fold's skip list is `[prePrVerifierVerdict]` only, not the four verdicts
   the issue suggests. The skip list seeds the block's categories, and the
-  placeholder, mutation and coverage verdicts carry none, so listing them adds
-  `summary_incomplete` and breaks the existing verifier-only expectation
-  `["quality_check"]` (`completion_phase_pre_pr_verifier_3395_test.ts`). Those
-  three gates run earlier and report first, so folding them here changes nothing
-  a reader sees.
+  placeholder and coverage carry-over verdicts carry no categories, so listing
+  them seeds `summary_incomplete` and breaks the existing verifier-only
+  expectation `["quality_check"]`
+  (`completion_phase_pre_pr_verifier_3395_test.ts`). The mutation verdict
+  carries its own (`quality_check`, or `internal_error` when the mutation run
+  errors), so listing it would add those instead. Those three gates run earlier
+  and report first, so folding them here changes nothing a reader sees.
 - The block's categories are still the verifier's own; `criteria_unmet` is added
   only when an unmet criterion exists. `verifierHoldComment` is unchanged (the
   fold sets it from the same verdict).
