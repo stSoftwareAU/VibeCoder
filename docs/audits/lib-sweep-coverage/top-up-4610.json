@@ -1,0 +1,12 @@
+{
+  "issue": 4610,
+  "chunk": "top-up-4610",
+  "title": "top-up: shift-left detection of repeated fleet PR CI failures",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4610",
+  "definition": "Fleet PR babysitter detection of CI failures that recur across fleet PRs and that a local check could have caught, routed to the repository that owns the fix. Marker matches are trusted only when a fleet account wrote them.",
+  "status": "claimed",
+  "sweptAt": "f15926f8d9f8b44c9bec2e9def9f48b26fe56485",
+  "paths": [
+    "worker/deno/lib/shift_left_failures.ts"
+  ]
+}
