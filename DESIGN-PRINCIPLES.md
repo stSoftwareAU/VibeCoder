@@ -648,7 +648,7 @@ in the session: the unmet-criteria gate
 work. Since Issue #4234 that note is advice, so a criterion still unmet
 afterwards does not withhold the pull request. The PR is raised and armed, and
 the unmet criteria are named in one `## Notes for the reviewer` comment. A
-`missing` entry makes the body `Part of #N`, so the issue stays open. The entry
+`partial` or `missing` entry makes the body `Part of #N`, so the issue stays open. The entry
 is read from the summary's own block, whatever heading the issue used, so an
 issue that states no criteria heading is held open the same way when the run
 leaves part of it undone (Issue #4477). No follow-up issue is ever filed for
@@ -658,7 +658,7 @@ is labelled `needs-human`. A run that **times out** keeps a draft `Part of #N`
 PR (`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so
 the next run resumes the branch. When that run completes, the draft is marked
 ready and squash auto-merge is armed, even if a criterion is still unmet; its
-body says `Closes #N` unless an entry is `missing`, which keeps `Part of #N`. Whether
+body says `Closes #N` unless an entry is `partial` or `missing`, which keeps `Part of #N`. Whether
 the run was degraded changes none of this. See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run).
 

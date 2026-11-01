@@ -160,13 +160,15 @@ export function summaryDigestFromBody(body: string): string | undefined {
  * creation runs it through `ensurePrReferencesIssue`.
  *
  * Issue #3177: a summary whose `## Acceptance Criteria` block marks any
- * criterion `missing` does not close the issue. Its closing keywords for the
- * issue become `Part of #N`, a `## Not closing #N` section names the missing
+ * criterion `partial` or `missing` does not close the issue. Its closing keywords for the
+ * issue become `Part of #N`, a `## Not closing #N` section names the unmet
  * criteria, and `ensureReferences` is skipped so no `Closes #N` is appended.
  */
 export function assemblePrBody(input: {
   summaryContent: string;
   issueNumber: number;
+  /** Trusted identity, required to reconcile qualified references. */
+  issueIdentity?: import("./missing_criterion_close_guard.ts").IssueIdentity;
   extraSections: string;
   footer: string;
   /** SHA-256 digest (hex) of `summaryContent`, recorded in the body (Issue #3315). */
@@ -192,12 +194,23 @@ export function assemblePrBody(input: {
   const withholdClose = withholdsIssueClose(input.summaryContent);
   if (withholdClose) {
     const missing = findMissingCriteria(input.summaryContent);
-    body = withholdIssueClose(body, input.issueNumber) +
-      buildMissingCriteriaPrNote(input.issueNumber, missing) + "\n";
+    body += buildMissingCriteriaPrNote(
+      input.issueNumber,
+      missing,
+      input.issueIdentity &&
+        input.issueIdentity.prRepo.toLowerCase() !==
+          input.issueIdentity.issueRepo.toLowerCase()
+        ? input.issueIdentity.issueRepo
+        : undefined,
+    ) + "\n";
   }
   body += input.extraSections;
   body += input.footer;
-  body += buildIdempotencyMarker(input.issueNumber);
+  // A local issue marker would identify the wrong issue for a cross-repo PR.
+  const crossRepo = input.issueIdentity !== undefined &&
+    input.issueIdentity.prRepo.toLowerCase() !==
+      input.issueIdentity.issueRepo.toLowerCase();
+  if (!crossRepo) body += buildIdempotencyMarker(input.issueNumber);
   body += "\n" + buildSummaryDigestMarker(input.summaryDigest);
   if (input.subAgentTier !== undefined) {
     body += "\n" + buildSubAgentTierMarker(input.subAgentTier);
@@ -206,7 +219,11 @@ export function assemblePrBody(input: {
   if (input.assignmentId !== undefined) {
     body += "\n" + buildAssignmentIdMarker(input.assignmentId);
   }
-  if (withholdClose) return body;
+  if (withholdClose) {
+    return withholdIssueClose(body, input.issueNumber, input.issueIdentity);
+  }
+  // Local reference insertion cannot identify a foreign governing issue.
+  if (crossRepo) return body;
   return ensureReferences(body, input.issueNumber);
 }
 
@@ -528,6 +545,7 @@ export async function buildSyncedPrBodyCandidate(
   const body = assemblePrBody({
     summaryContent,
     issueNumber,
+    issueIdentity: { prRepo: input.repo, issueRepo: input.repo },
     extraSections,
     footer,
     summaryDigest: currentDigest,

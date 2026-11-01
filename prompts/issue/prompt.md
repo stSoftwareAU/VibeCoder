@@ -1020,9 +1020,8 @@ merges on green CI with no reviewer:
 
 - **Finish every unmet criterion.** When any criterion is `partial` or
   `missing`, finish it. A criterion still unmet when the run ends is named on
-  the PR, which the worker raises anyway (Issues #4146, #4234): a `missing` one
-  makes it `Part of #{{ISSUE_NUMBER}}`, never `Closes #{{ISSUE_NUMBER}}`, while
-  a `partial` one does not hold the issue open. An approved issue is never
+  the PR, which the worker raises anyway (Issues #4146, #4234): a `partial` or `missing` one
+  makes it `Part of #{{ISSUE_NUMBER}}`, never `Closes #{{ISSUE_NUMBER}}`. An approved issue is never
   handed back (Issue #4227). Never relabel a `missing` criterion `partial` or
   `met` to get past this; the Spec reviewer's verdict records the departure.
   Once a file has changed, the
@@ -1219,7 +1218,7 @@ however small or non-visual the edit seems.
 
 ## Issue Closure in PR Summary
 
-Every PR must say whether it closes its issue. When no criterion is `missing`,
+Every PR must say whether it closes its issue. When no criterion is `partial` or `missing`,
 the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body if your summary
 leaves it out, so write it in the summary yourself and the committed summary and
 the PR body agree.
@@ -1228,13 +1227,12 @@ In your `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` file, write
 one of:
 
 - `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
-  criterion `missing`. This includes an issue that states no criteria heading:
+  criterion `partial` or `missing`. This includes an issue that states no criteria heading:
   when you leave any part of what that issue asks undone, record each undone
   part as a `missing` entry in the issue's own words, whatever heading the issue
   used;
 - `Closes #{{ISSUE_NUMBER}}` (or `Fixes #{{ISSUE_NUMBER}}` / `Resolves
-  #{{ISSUE_NUMBER}}`) otherwise: no criterion is `missing`, including when one
-  is `partial`, or the issue states no criteria heading and nothing it asks is
+  #{{ISSUE_NUMBER}}`) otherwise: no criterion is `partial` or `missing`, or the issue states no criteria heading and nothing it asks is
   left undone.
 
 In the `Part of` case, write no closing keyword for the issue anywhere in the

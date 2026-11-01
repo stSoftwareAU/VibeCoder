@@ -1889,7 +1889,7 @@ At the end of your work, after all commits are complete, create
 for every PR summary — containing:
 
 1. **Summary** — What was changed and why, including `Part of #<n>` when the
-   `## Acceptance Criteria` block marks any criterion `missing`, otherwise
+   `## Acceptance Criteria` block marks any criterion `partial` or `missing`, otherwise
    `Closes #<n>`.
 2. **Spec** — The after-run record of what the diff alone cannot tell a
    reviewer, under `### Intent and Rationale`, `### Essential Design
@@ -1977,10 +1977,10 @@ issue and raises no PR. A closed or unreadable dependency does not defer;
 the committed run hands off to a human and raises no PR.
 The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
-whose `## Acceptance Criteria` block marks any criterion `missing` is raised
+whose `## Acceptance Criteria` block marks any criterion `partial` or `missing` is raised
 as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
 the issue open and queued, with its existing labels, so a later run finishes
-the missing criteria (Issue #4304).
+the unmet criteria (Issue #4304).
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits

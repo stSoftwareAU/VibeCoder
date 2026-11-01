@@ -1054,7 +1054,7 @@ flowchart TD
     style B fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
 ```
 
-### A `missing` criterion does not close the issue
+### An unmet criterion does not close the issue
 
 "A missing core deliverable is not a PR" used to be prose that only a reviewer
 enforced, and a PR into a milestone branch has no reviewer: it merges as soon
@@ -1065,9 +1065,9 @@ gate parses, that the deliverable was absent. Since Issue #3177 the worker
 reads that signal at both ends
 ([`missing_criterion_close_guard.ts`](../../worker/deno/lib/missing_criterion_close_guard.ts)):
 
-- **At PR creation.** When the summary's closure block has any `missing`
+- **At PR creation.** When the summary's closure block has any `partial` or `missing`
   entry, `assemblePrBody` rewrites the summary's closing keywords for the
-  issue to `Part of #N`, adds a `## Not closing #N` section naming the missing
+  issue to `Part of #N`, adds a `## Not closing #N` section naming the unmet
   criteria, and appends no `Closes #N`. The same assembly runs when the PR
   body is re-synced from the summary, so a later commit that finishes the
   work (and marks the criteria `met`) restores the closing keyword. The block is
@@ -1080,12 +1080,19 @@ reads that signal at both ends
   issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
   milestone auto-close) and `ensureIssueClosedIfPrMerged` (used by the
   housekeeping sweep and the recovery path) — read the merged PR's closure
-  block. With a `missing` entry they leave the issue open and preserve its
-  existing discovery labels. They log the missing criteria without applying
+  block. With a `partial` or `missing` entry they leave the issue open and preserve its
+  existing discovery labels. They log the unmet criteria without applying
   `needs-human` or posting repeated hand-off comments. Existing-PR lookup
   also skips such merged PRs, including when a cached title lookup finds
   them, so the original issue can resume and raise its completion PR. The
   cached path reads the merged PR body live; no persisted cache shape changes.
+  This lookup searches the issue repository; a PR in another repository needs
+  separately established governing-issue and PR identities and is not
+  discovered by this lookup. A cross-repository body must not claim the local
+  issue with the same number. A caller publishing for a foreign issue must
+  supply trusted PR and issue repositories to `assemblePrBody` and catch
+  `MissingIssueIdentityError` as a pending publication until identity is known
+  (Issue #4637).
 
 - **What counts as unmet.** Every `partial` or `missing` closure entry, matched
   to the issue's criteria by its words (Issue #3128). A scope item the closure
@@ -1098,7 +1105,7 @@ reads that signal at both ends
   here.
 - **Completion marks a draft ready.** Completion rewrites a draft's body, runs
   `gh pr ready` and arms squash auto-merge, even when a criterion is still
-  unmet. The body says `Closes #N` unless an entry is `missing`, which keeps
+  unmet. The body says `Closes #N` unless an entry is `partial` or `missing`, which keeps
   `Part of #N`.
 
 - **A timed-out run keeps a draft.** A run that times out (or is released on
@@ -1110,7 +1117,7 @@ reads that signal at both ends
   next run re-claims it, resumes the branch and finishes.
 - **Ready, and merging as soon as possible.** When the resumed run completes,
   completion rewrites the draft's body (`Closes #N`, or `Part of #N` while an
-  entry is `missing`), runs `gh pr ready` and arms squash auto-merge in the
+  entry is `partial` or `missing`), runs `gh pr ready` and arms squash auto-merge in the
   same step, rather than waiting for the sweep.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
@@ -1487,7 +1494,7 @@ The shape is fixed and machine-checked, so the worker owns it:
 5. after the blocks are swapped in, the worker aligns the summary's closing
    keyword for the issue with the rendered block, by the same rule
    `assemblePrBody` applies to the PR body (Issue #3177): when any rendered
-   entry is `missing`, every `Closes`/`Fixes`/`Resolves #N` for the issue
+   entry is `partial` or `missing`, every `Closes`/`Fixes`/`Resolves #N` for the issue
    becomes `Part of #N`; when none is, a bare `Part of #N` becomes
    `Closes #N`. Keywords for other issues are untouched. So the committed
    `pr-summary-N.md` and the PR body say the same thing
