@@ -64,8 +64,8 @@ numbers cited as provenance: #4599 (this issue), #2343 (the split block).
   `prompt_builder.ts` into the issue prompt; the existing "key-on prompt is the
   key-off prompt plus the block" test still passes.
 - `./quality.sh`: every stage passed except `deno tests`: parallel pass 31551
-  passed, 2 failed, both in `completion_phase_repo_formatters_test.ts` (lines 480
-  and 567, the cargo fmt commit tests; this host has no rustup/cargo and the
+  passed, 2 failed, both in `completion_phase_repo_formatters_test.ts` (lines
+  480 and 567, the cargo fmt commit tests; this host has no rustup/cargo and the
   diff does not touch that code). The serial pass did not run because the
   parallel pass failed; `config integration` and `checkov` were skipped for
   local prerequisites. `deno task pr-summary-check`: 0 blocked, 0 not checked.
