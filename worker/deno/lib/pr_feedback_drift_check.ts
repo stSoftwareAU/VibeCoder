@@ -796,7 +796,7 @@ export function formatDriftResidual(residual: DriftResidual): string {
   const hasHits = residualHasTextHits(residual);
 
   const lines: string[] = [];
-  lines.push("### Drift check (Issue #3143)");
+  lines.push("### Drift check");
   lines.push("");
   // When there is nothing but an unavailable model pass or an unchecked
   // change-request quote, the "found text…" intro would claim a hit that

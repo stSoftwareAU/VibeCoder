@@ -283,7 +283,7 @@ Deno.test("processPrFeedback - drift check: recovery leaves the sentence, report
     assertStringIncludes(recoveryOptions.prompt, SENTENCE);
 
     assertEquals(recordedComments.length, 1);
-    assertStringIncludes(recordedComments[0]!, "Drift check (Issue #3143)");
+    assertStringIncludes(recordedComments[0]!, "### Drift check");
     assertStringIncludes(recordedComments[0]!, SENTENCE);
   } finally {
     await Deno.remove(workDir, { recursive: true });
@@ -364,7 +364,7 @@ Deno.test("processPrFeedback - drift check: recovery fixes the sentence, no drif
     assert(!summaryContent.includes(SENTENCE));
 
     assertEquals(recordedComments.length, 1);
-    assert(!recordedComments[0]!.includes("Drift check (Issue #3143)"));
+    assert(!recordedComments[0]!.includes("### Drift check"));
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
