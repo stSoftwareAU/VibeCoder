@@ -5235,8 +5235,15 @@ with `--force-with-lease`. Guards, all required:
 
 - The branch must be one a run creates (`fix/`, `issue/`, `chore/`,
   `milestone/`) and must not be the default branch.
-- Every commit being collapsed must be the worker's own; a branch carrying
-  someone else's commit is refused.
+- Git resolves the worker's effective author identity in the target checkout,
+  including author environment overrides and repository/global configuration.
+  If Git cannot provide a usable identity, the rebuild is refused. Only that
+  resolved identity is trusted; commits are never treated as owned because
+  they already appear on the branch.
+- Every commit being collapsed must use the resolved author email; a branch
+  carrying someone else's commit, a commit with a blank author email, or whose
+  commit authors cannot be read, is refused before reset, replacement commit or
+  force-push.
 - `--force-with-lease`, never `--force`, so a concurrent writer is detected
   rather than clobbered.
 - **One rebuild per underlying failure.** A finding that survives a rebuild is
