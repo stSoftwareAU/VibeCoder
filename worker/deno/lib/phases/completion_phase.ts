@@ -3151,7 +3151,7 @@ async function completionBody(
   // silent over-claim is what is blocked. Non-`bug` issues are unaffected.
   // ---------------------------------------------------------------------
   if (reproductionVerdict.blocked) {
-    logger.warn("Reproduction-status gate blocked PR creation", {
+    logger.warn("Reproduction-status gate reported findings", {
       status: reproduction.block.status,
       problems: reproduction.problems,
     });
@@ -3203,7 +3203,7 @@ async function completionBody(
   }
 
   if (placeholderBlocked) {
-    logger.warn("Result-placeholder gate blocked PR creation", {
+    logger.warn("Result-placeholder gate reported findings", {
       tokens: placeholderTokens,
     });
     const folded = foldInLateSummaryVerdicts(
@@ -3232,7 +3232,7 @@ async function completionBody(
   // (Issue #3395), the late verdicts still named below it.
   // ---------------------------------------------------------------------
   if (mutationVerdict.blocked) {
-    logger.warn("Mutation gate blocked PR creation", {
+    logger.warn("Mutation gate reported findings", {
       reason: mutationVerdict.reason,
     });
     const folded = foldInLateSummaryVerdicts(
@@ -3264,7 +3264,7 @@ async function completionBody(
   // the late verdict still named below it.
   // ---------------------------------------------------------------------
   if (coverageCarryOverVerdict.blocked) {
-    logger.warn("Coverage carry-over gate blocked PR creation", {
+    logger.warn("Coverage carry-over gate reported findings", {
       reason: coverageCarryOverVerdict.reason,
     });
     const folded = foldInLateSummaryVerdicts(
@@ -3299,7 +3299,7 @@ async function completionBody(
   // block. Last in the late-summary chain, so nothing further folds in.
   // ---------------------------------------------------------------------
   if (prePrVerifierVerdict.blocked && prePrVerifier?.status === "checked") {
-    logger.warn("Pre-PR verifier blocked PR creation (Issue #3395)", {
+    logger.warn("Pre-PR verifier reported findings (Issue #3395)", {
       findings: prePrVerifier.review.findings.length,
     });
     const comment = prePrVerifierVerdict.comment();

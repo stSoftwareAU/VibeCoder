@@ -105,6 +105,7 @@ Deno.test(
     let armed = 0;
     let claimQuestions = 0;
     const verifierInputs: PrePrVerifierInput[] = [];
+    const warned: string[] = [];
 
     const config = buildDefaultWorkerConfig();
     config.workDir = workDir;
@@ -131,6 +132,11 @@ Deno.test(
     };
 
     const deps = createMockDeps({
+      logger: {
+        warn: (message: string) => {
+          warned.push(message);
+        },
+      },
       github: {
         createClient: () => stubClient(posted),
         runGhCommand: (args: string[]) => {
@@ -238,6 +244,22 @@ Deno.test(
     assertEquals(onPr[0]!.body.includes("failed-once"), false);
     // The claim check is deleted: a stubbed question must not be consulted.
     assertEquals(claimQuestions, 0);
+    // Advisory gates must not log that they blocked PR creation (Issue #4579).
+    assertEquals(
+      warned.some((message) => message.includes("blocked PR creation")),
+      false,
+    );
+    // This fixture reaches three reworded gates: reproduction status, plus the
+    // result-placeholder and pre-PR verifier gates on the re-run after the note.
+    for (
+      const message of [
+        "Reproduction-status gate reported findings",
+        "Result-placeholder gate reported findings",
+        "Pre-PR verifier reported findings (Issue #3395)",
+      ]
+    ) {
+      assertEquals(warned.includes(message), true, `missing: ${message}`);
+    }
   },
 );
 
