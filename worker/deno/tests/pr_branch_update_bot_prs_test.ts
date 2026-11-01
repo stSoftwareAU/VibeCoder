@@ -169,7 +169,9 @@ async function scanWith(
     getDefaultBranch: async () => "main",
     listPrs,
     getBehindBy: async () => 3,
-    getMergeableStatus: async () => "MERGEABLE",
+    // Conflicting, so a selected PR yields an action: a merely-behind PR is
+    // no longer updated by the scan (Issue #4613).
+    getMergeableStatus: async () => "CONFLICTING",
     isMergeQueueBase: async () => false,
   });
   if (!result.ok) throw result.error;

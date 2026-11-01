@@ -195,7 +195,7 @@ iteration, then sleep and repeat:
 | 1        | PR feedback and reviews        | Authorised commenters or thumbs-up                                                                           |
 | 1.5      | Failed spelling/quality checks | Spelling, shellcheck, Deno quality checks on open PRs                                                        |
 | 1.55     | Failed CI/integration checks   | Automatic diagnosis and fix of CI failures on open PRs                                                       |
-| 1.6      | PR branch updates              | Rebase/merge to keep branches current                                                                        |
+| 1.6      | PR branch updates              | Merge the base into a conflicting PR (a merely-behind PR is refreshed by the auto-merge sweep once ready)    |
 | 1.64     | PR body digest reconcile       | Re-sync a PR body whose summary digest differs from the summary at its head (pushes the worker did not make) |
 | 1.65     | Auto-merge catch-up            | Enable auto-merge on mergeable PRs                                                                           |
 | 1.66     | Branch cleanup                 | Delete branches for merged PRs                                                                               |

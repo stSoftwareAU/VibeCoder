@@ -18,7 +18,7 @@ and the **same GitHub user** (e.g. stsvcbot) is often shared by many Vibe
 Coders. The worker monitors **all open PRs by that user** — it does not act on
 other users’ PRs. It fixes **spelling** and **quality** (shellcheck, Deno
 quality checks) failures, keeps branches **up to date** with the base
-(rebase/merge; on a merge-queued default branch only conflicting PRs are updated, not merely behind ones, Issue #4424), and resolves **merge conflicts** when it can. **Auto-merge** is
+(rebase/merge; a conflicting PR is always updated, but a PR that is only behind is refreshed only when it is otherwise ready to merge, Issue #4613, and not at all on a merge-queued default branch, Issue #4424), and resolves **merge conflicts** when it can. **Auto-merge** is
 turned on only when the PR is actually mergeable, and every merge first passes a
 **pre-merge gate** that re-checks CI and branch freshness (a merge-queued default branch is landed by its queue instead). User feedback
 (comments, "Request changes") is also handled: address it, push, mark processed.
@@ -88,8 +88,8 @@ monitor the PR — author is sufficient.
   authorised commenter**). (1.5)
   Spelling/quality — such a PR has a failed check: **spelling** (a
   spelling-named check whose failing step is codespell, cspell or typos) or
-  **quality** (e.g. shellcheck, Deno quality checks) — fixed automatically. (1.6) Branch updates — the PR branch is behind base or
-  has merge conflicts. (1.65) Auto-merge — the PR exists but auto-merge is not
+  **quality** (e.g. shellcheck, Deno quality checks) — fixed automatically. (1.6) Branch updates — the PR branch has
+  merge conflicts; a PR that is only behind is refreshed by the auto-merge sweep once it is otherwise ready (Issue #4613). (1.65) Auto-merge — the PR exists but auto-merge is not
   enabled (and the PR is mergeable).
 - **Actors:** The worker (one per hostname, often sharing one GitHub user);
   GitHub API; Claude (for feedback and spelling/code fixes).
@@ -770,14 +770,16 @@ checks pass. The worker does the following:
    this may be the repo default branch or a milestone branch (e.g.
    `milestone/oidc`). If `baseRefName` is unavailable, the repo default branch
    is used as a fallback.
-2. **Update the branch** — If the branch is behind the base (and the base has no merge queue; on a merge-queued default branch a PR that is only behind is left alone, Issue #4424): fetch the latest
-   base branch, merge it into the feature branch, and push normally — never a
+2. **Update the branch** — If the branch has merge conflicts with its base, fetch the
+   latest base branch, merge it into the feature branch, and push normally — never a
    rebase and never a force-push, so a PR under review keeps its commits and
-   its review comments (Issue #2807). The comparison and merge always use the
-   PR's actual base branch, so PRs targeting milestone
-   branches are updated against that milestone branch, not the repo default
-  . This keeps the PR up to date and avoids merge conflicts at
-   merge time.
+   its review comments (Issue #2807). A PR that is only behind is not merged
+   into by this scan (Issue #4613): an armed PR is refreshed by the auto-merge
+   sweep's `update-branch` once it is otherwise ready to merge (see Priority 1.65),
+   and a merge-queued default branch gets no refresh for being behind (Issue #4424).
+   The comparison and merge always use the PR's actual base branch, so PRs
+   targeting milestone branches are updated against that milestone branch, not the
+   repo default branch. This resolves conflicts before merge time.
 3. **Resolve merge conflicts** — Conflicts are judged against **origin's head
    for the branch**, which is what GitHub merges: the branch is fast-forwarded
    to that head before it is evaluated, so a stale local copy left in the
@@ -802,11 +804,12 @@ checks pass. The worker does the following:
    the review. The decision rides the batched branch-state query, so it costs
    no extra call; the skip is logged at info.
 
-So: **PRs are always kept mergeable when possible**. If a PR is out of date, the
-branch is automatically updated (unless its default branch has a merge queue, which
-tests the PR against its future head instead) and merge issues resolved; if automatic
-resolution fails, the run continues and the next cycle may retry or the user can
-intervene.
+So: **PRs are always kept mergeable when possible**. A PR with merge conflicts has
+its branch updated and its merge issues resolved. A PR that is only behind is
+refreshed once it is armed and otherwise ready to merge (Issue #4613), and a
+merge-queued default branch tests it against its future head instead (Issue #4424).
+If automatic resolution fails, the run continues and the next cycle may retry or the
+user can intervene.
 
 ### 🟢 Priority 1.65 — Auto-merge
 
@@ -825,14 +828,24 @@ intervene.
 - **No review hold** (Issue #4291) — the sweep never withholds arming, or
   disarms, for a review, a pre-PR finding or a label. PRs do not merge until
   they have a review approval and CI is green, and GitHub enforces both.
-- **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
-  its base gets one `update-branch` request per pass, since GitHub never
-  updates it under the strict up-to-date rule. Not for a PR that is only behind
+- **Armed and behind** (Issue #2462, narrowed by Issue #4613) — an armed PR whose
+  head has fallen behind its base gets one `update-branch` request per pass, since
+  GitHub never updates it under the strict up-to-date rule. The request is sent
+  only when the PR is otherwise ready to merge: review satisfied (`reviewDecision`
+  `APPROVED`, or empty or null where no review is required), not `CONFLICTING`, and
+  every check in `statusCheckRollup` completed successfully on its current head. A
+  pending, failed or unreadable check, or a `REVIEW_REQUIRED`, `CHANGES_REQUESTED`
+  or unreadable decision, is not ready and gets no update. While another armed PR on
+  the same base is already up to date, review-satisfied, conflict-free and not
+  failing, no update is sent to that base, and at most one update per base is sent
+  per pass. Only fleet PRs the sweep lists are counted. Each skipped update is
+  logged at info with its reason (Issue #4613). Not for a PR that is only behind
   when its base is behind a merge queue (Issue #4424): the queue tests the PR
-  against its future head, and an update would only move that head. A
-  conflicting PR on such a base still gets the update. Not when a reviewer has
-  requested changes (Issue #2702): that PR cannot merge anyway, so it gets
-  neither the update nor a merge attempt, and the sweep logs why at info.
+  against its future head, and an update would only move that head. A conflicting
+  PR is never sent `update-branch` here; its conflict is resolved under Priority 1.6.
+  Not when a reviewer has requested changes (Issue #2702): that PR cannot merge
+  anyway, so it gets neither the update nor a merge attempt, and the sweep logs why
+  at info.
 - **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
   current head is not armed until a new head arrives, and a queued base is
   never merged directly (`merge-queue-removed`,
@@ -877,24 +890,26 @@ When the gate blocks because the PR branch is **behind its target**, the worker
 does not force the merge and does not give up — it **defers and retries**:
 
 1. The PR is **left open** and the deferral is logged.
-2. The branch-update maintenance (Priority 1.6 above) merges the latest target
-   into the feature branch and pushes normally — a green PR that is only
-   waiting for approval is kept current this way every cycle.
+2. The branch-update scan (Priority 1.6 above) does not merge the latest target
+   into the feature branch for being behind (Issue #4613). The behind-only refresh
+   is the auto-merge sweep's `update-branch` (Priority 1.65), sent once the PR is
+   otherwise ready to merge. A green PR that is only waiting for review is not
+   refreshed while it waits.
 3. CI re-runs on the new head.
 4. The next cycle re-evaluates the gate and merges once CI is green and the
    branch is up to date.
 
-This is an automatic **auto-update → re-check → merge-if-green** loop with no
-bespoke retry machinery — the same maintenance that keeps PRs mergeable also
-clears the deferral.
+This is an **update → re-check → merge-if-green** loop with no bespoke retry
+machinery. The sweep's `update-branch` clears the deferral once the PR is otherwise
+ready to merge.
 
 ```mermaid
 sequenceDiagram
     participant G as Pre-merge gate
-    participant M as Branch-update maintenance
+    participant M as Auto-merge sweep
     participant CI as GitHub CI
     G->>G: behind target → blocked, leave PR open
-    M->>M: merge target into feature branch, plain push
+    M->>M: update-branch once review and checks are ready (Issue #4613)
     CI->>CI: re-run required checks on new head
     G->>G: next cycle: CI passed + up to date → merge
 ```
@@ -925,9 +940,10 @@ flowchart TD
 
 ## 📊 Diagram: branch update flow (gitGraph)
 
-The following `gitGraph` diagram shows how the worker keeps PR branches up to
-date — when the base branch receives new commits, the base is merged into the
-feature branch to keep it current before auto-merge:
+The following `gitGraph` diagram shows how a PR branch picks up new commits on its
+base — when the base branch receives new commits, the base is merged into the
+feature branch before auto-merge, but only when an update is needed (a conflict, or
+an armed PR the sweep finds otherwise ready, Issue #4613):
 
 ```mermaid
 gitGraph
@@ -946,8 +962,9 @@ gitGraph
 ```
 
 _The `main` line represents `Develop`. When new commits land on `Develop` (from
-other merged PRs), the worker merges them into the feature branch and pushes
-normally to keep it current — the PR's own commits are never rewritten.
+other merged PRs), they are merged into the feature branch and pushed normally
+only when an update is needed (a conflict, or the sweep's `update-branch` for an
+otherwise ready PR) — the PR's own commits are never rewritten.
 After feedback fixes and quality checks, the PR is auto-merged._
 
 ## 🔁 A branch that can never be updated (Issue #335)
@@ -1049,10 +1066,10 @@ flowchart TD
 - **Spelling fix failure:** Treated like other failures; may trigger failure
   tracking and eventual exit for restart.
 - **PR branch behind target at merge time:** The pre-merge gate **defers** —
-  the PR is left open, branch-update maintenance merges the target in, CI
-  re-runs, and the
-  next cycle re-evaluates (see the dual-layer pre-merge gate above). The merge is
-  never forced against a stale branch.
+  the PR is left open, the auto-merge sweep's `update-branch` refreshes it once it
+  is otherwise ready to merge (Issue #4613), CI re-runs, and the next cycle
+  re-evaluates (see the dual-layer pre-merge gate above). The merge is never forced
+  against a stale branch.
 - **Out-of-scope PR feedback:** The agent decides with the assumption stated,
   or rebuts with reasons — never a hand-back or a follow-up issue
   (Issue #4304).

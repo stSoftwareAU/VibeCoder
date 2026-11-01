@@ -30,6 +30,12 @@
  *    until they have a review approval and CI is green, and GitHub enforces
  *    both. The sweep never withholds arming, or disarms, for a review, a
  *    finding or a label; only the routing holds in item 3 disarm.
+ * 5. **A branch is updated for a ready PR only, one per base** (Issue #4613)
+ *    — an armed PR that has fallen behind its base is updated only once it
+ *    could merge (review satisfied, checks passed). Only one PR per base is
+ *    updated per pass, and none while another PR on that base is ready and
+ *    already up to date, so a queue of ready PRs on one base does not keep
+ *    restarting each other's CI. A merge-queue base is left to its queue.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -105,14 +111,18 @@ export interface SweepAutoMergeOptions {
   ) => Promise<PrLiveStateReading>;
   /**
    * Ask GitHub to update an armed PR's branch through the `update-branch`
-   * REST endpoint (Issue #2462). Called once per sweep pass for a PR that
-   * is armed and behind; a failed update is recorded and the sweep moves on.
+   * REST endpoint (Issue #2462). Called only for a PR that is armed, behind
+   * its base and ready to merge — review satisfied and checks passed (Issue
+   * #4613) — and at most one such call per base per sweep pass. A failed
+   * update is recorded and the sweep moves on.
    */
   updateBranchFn: (repo: string, prNumber: number) => Promise<Result<void>>;
   /**
    * Whether a base branch is behind a GitHub merge queue (Issue #4424). An
    * armed, behind PR on a queued base is not sent to `updateBranchFn`: the
    * queue tests it against its future head, and auto-merge is already armed.
+   * The queue check runs before the ready-to-merge test (Issue #4613), so a
+   * queued base never reaches the one-per-base rule.
    */
   isMergeQueueBase: (repo: string, baseRefName: string) => Promise<boolean>;
   /**
@@ -262,6 +272,56 @@ export async function sweepAutoMerge(
       );
 
       let mutated = false;
+      // Issue #4613: the bases this pass has already sent an update to. A base
+      // is added only when GitHub accepted the update.
+      const updatedBases = new Set<string>();
+      // One live read per PR per pass (Issue #1774): the in-flight check below
+      // and the main loop share it, so a PR is never read twice.
+      const readings = new Map<number, Promise<PrLiveStateReading>>();
+      const readingOf = (pr: SweepablePr): Promise<PrLiveStateReading> => {
+        let memo = readings.get(pr.number);
+        if (memo === undefined) {
+          memo = (async (): Promise<PrLiveStateReading> => {
+            try {
+              return await prLiveState(repo, pr);
+            } catch (err) {
+              return { unknown: true, error: errorMessage(err) };
+            }
+          })();
+          readings.set(pr.number, memo);
+        }
+        return memo;
+      };
+      // Issue #4613: a PR is in flight on its base when it is armed, up to
+      // date, mergeable, approved and its checks have passed or are still
+      // pending. It is about to land, so another PR on that base waits for it.
+      // An unreadable check is not in flight.
+      const findInFlightOnBase = async (
+        pr: SweepablePr,
+      ): Promise<SweepablePr | undefined> => {
+        const base = pr.baseRefName ?? "";
+        for (const other of prs) {
+          if (other.number === pr.number) continue;
+          if ((other.baseRefName ?? "") !== base) continue;
+          if (other.isDraft === true) continue;
+          if (
+            other.labels?.some((l) => l.name?.toLowerCase() === "needs-human")
+          ) {
+            continue;
+          }
+          const reading = await readingOf(other);
+          if (reading.open !== true) continue;
+          if (
+            reading.armed === true && reading.behind !== true &&
+            reading.mergeable !== "CONFLICTING" &&
+            reading.reviewSatisfied === true &&
+            (reading.checks === "passed" || reading.checks === "pending")
+          ) {
+            return other;
+          }
+        }
+        return undefined;
+      };
       for (const pr of prs) {
         // Owner rule 2026-11-01: a needs-human PR waits on a person. Updating
         // its branch only reruns CI, so the sweep leaves it alone.
@@ -297,12 +357,7 @@ export async function sweepAutoMerge(
         // open — the next sweep asks again. Deliberately outside the try
         // below: a state read that failed is not "the merge attempt threw",
         // and reporting it as one would name the wrong cause.
-        let reading: PrLiveStateReading;
-        try {
-          reading = await prLiveState(repo, pr);
-        } catch (err) {
-          reading = { unknown: true, error: errorMessage(err) };
-        }
+        const reading = await readingOf(pr);
         if (!reading.open) {
           summary.prsSkippedNotOpen++;
           logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
@@ -330,13 +385,20 @@ export async function sweepAutoMerge(
 
         // Issue #2462: an armed PR whose head falls behind its base stays
         // open forever under the strict up-to-date policy — GitHub never
-        // updates the branch itself, and re-arming does not either. Ask
-        // once per pass, then leave the merge attempt to the next pass (no
-        // retry loop here — `handleMergeAttempt`'s ladder owns the rest).
+        // updates the branch itself, and re-arming does not either. Ask for
+        // an update, then leave the merge attempt to the next pass (no retry
+        // loop here — `handleMergeAttempt`'s ladder owns the rest).
         // This deliberately overlaps the git-based `decidePrUpdateAction`
         // in pr_branch_update.ts: that pass owns unarmed branch upkeep for
         // its own candidates, while this one only unblocks an already-armed
         // merge. A conflicting PR is never updated — GitHub would refuse it.
+        //
+        // Issue #4613: nor is one that could not merge yet. The update is for
+        // a PR that is ready to merge — review satisfied and checks passed —
+        // and only one PR per base is updated per pass. None is updated while
+        // another PR on the same base is ready and already up to date, so a
+        // queue of ready PRs does not keep restarting each other's CI. A
+        // failed update leaves nothing in flight, so the next ready PR may try.
         //
         // Issue #2702: nor is one a reviewer has blocked. It cannot merge
         // until the review is answered, so the update unblocks nothing — and
@@ -376,8 +438,48 @@ export async function sweepAutoMerge(
           armedNow && reading.behind === true &&
           reading.mergeable !== "CONFLICTING"
         ) {
+          // Issue #4613: a PR that could not merge yet is not updated.
+          let notReady: string | undefined;
+          if (reading.reviewSatisfied !== true) {
+            notReady = "review not satisfied";
+          } else if (reading.checks !== "passed") {
+            notReady = `checks ${
+              reading.checks ?? "unreadable"
+            } on its current head`;
+          }
+          if (notReady !== undefined) {
+            logger.info(
+              "Auto-merge sweep: armed PR is behind its base, but is not ready " +
+                `to merge (${notReady}) — no branch update; it is refreshed ` +
+                "only once it can merge, one PR per base at a time (Issue #4613)",
+              { repo, prNumber: pr.number },
+            );
+            continue;
+          }
+          const base = pr.baseRefName ?? "";
+          if (updatedBases.has(base)) {
+            logger.info(
+              "Auto-merge sweep: armed PR is behind its base and ready, but " +
+                "another PR on this base was already updated this pass " +
+                "(Issue #4613) — no branch update",
+              { repo, prNumber: pr.number },
+            );
+            continue;
+          }
+          const inFlight = await findInFlightOnBase(pr);
+          if (inFlight !== undefined) {
+            logger.info(
+              "Auto-merge sweep: armed PR is behind its base and ready, but " +
+                `#${inFlight.number} on the same base is ready and already up ` +
+                "to date — waiting for it to merge or fail before updating " +
+                "another (Issue #4613)",
+              { repo, prNumber: pr.number, inFlightPrNumber: inFlight.number },
+            );
+            continue;
+          }
           try {
             const update = await updateBranchFn(repo, pr.number);
+            if (update.ok) updatedBases.add(base);
             recordOutcome(
               repo,
               pr.number,

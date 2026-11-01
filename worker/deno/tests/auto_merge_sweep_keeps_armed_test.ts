@@ -53,6 +53,12 @@ async function sweepOnePr(
           : null,
         mergeStateStatus: live.behind ? "BEHIND" : "CLEAN",
         reviewDecision: "",
+        // Issue #4613: a ready PR is one whose checks have passed.
+        statusCheckRollup: [{
+          __typename: "CheckRun",
+          status: "COMPLETED",
+          conclusion: "SUCCESS",
+        }],
         labels: live.labels.map((name) => ({ name })),
       }));
     }
@@ -129,8 +135,9 @@ const OPEN_RECORD = JSON.stringify([{
   }]),
 }]);
 
-// Armed and behind, so the sweep takes the branch-update path rather than the
-// real merge ladder (which is not behind this seam).
+// Armed, behind and ready (approved, checks passed), so the sweep takes the
+// branch-update path rather than the real merge ladder (which is not behind
+// this seam). Issue #4613: only a ready PR is updated.
 for (
   const [name, labels, comments] of [
     ["a PR with no label or record", [], "[]"],

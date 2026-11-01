@@ -43,7 +43,7 @@ flowchart TD
     F -- pending/failed --> G[Blocked: leave PR open]
     F -- "no checks at all" --> N[Blocked: unverified —<br/>branch update, retry next cycle]
     F -- passed --> H{behindBy > 0?}
-    H -- yes --> I[Defer: branch-update maintenance<br/>merges target in, plain push →<br/>CI re-runs → retry next cycle]
+    H -- yes --> I["Defer: PR left open and logged<br/>the branch-update scan no longer merges<br/>the target in for being behind (Issue #4613)"]
     H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync, or a milestone-fix PR<br/>whose head merges the default branch)<br/>--match-head-commit &lt;checked SHA&gt;"]
     J -- head moved --> L[Defer: re-read checks<br/>for the new head next cycle]
     D --> K[Default branch updated by verified merge only]
@@ -341,7 +341,9 @@ decision keeps a human-tuned queue, and then only its parameters are kept
 `strict_required_status_checks_policy` is `mergeQueue === undefined`).
 
 **Falling back** leaves the worker on the behaviour it has without a queue: a
-behind PR is updated, and the direct-merge gate refuses while it is behind. The
+behind PR is refreshed only when it is otherwise ready to merge
+([Branch updates without a merge queue](#branch-updates-without-a-merge-queue)),
+and the direct-merge gate refuses while it is behind. The
 setup run prints one line per repository with the reason for the fallback. The
 detection result is not written to `.config.json`: it is recomputed at each setup
 run, and the live ruleset is the record. (No write to `.config.json` in
@@ -377,6 +379,67 @@ for a default-branch target
 ([`direct_merge.ts`](../worker/deno/lib/direct_merge.ts), the `prTargetsDefaultBranch`
 guard), and a `milestone/**` branch whose rules carry no `merge_queue` rule is
 not treated as queued ([`merge_queue_runtime.ts`](../worker/deno/lib/merge_queue_runtime.ts)).
+
+### Branch updates without a merge queue
+
+On a base with no merge queue, the strict up-to-date rule puts every other open
+PR behind after each merge. Refreshing a PR merely because it has fallen behind
+keeps moving the head of a PR that is only waiting for review, so the worker
+does not do it (Issue #4613). A PR still merges only when it is up to date and
+green. It is simply no longer refreshed while it waits for review. This is the
+shipped behaviour:
+
+1. **The sweep refreshes a behind PR only when it is otherwise ready.** The
+   auto-merge sweep ([`auto_merge_sweep.ts`](../worker/deno/lib/auto_merge_sweep.ts))
+   calls `update-branch` on an armed PR that is behind its base only when all of
+   these hold:
+   - auto-merge is armed;
+   - review is satisfied: `reviewDecision` is `APPROVED`, or empty or null where
+     no review is required. `REVIEW_REQUIRED`, `CHANGES_REQUESTED` and an
+     unreadable decision are not ready;
+   - the PR is not `CONFLICTING`;
+   - every check in `statusCheckRollup` has completed successfully on its current
+     head. A pending, failed or unreadable check is not ready.
+2. **One PR per base at a time.** No update is sent while another armed PR on the
+   same base is already up to date, review-satisfied, conflict-free and not
+   failing (that is, it is merging or its checks are running). That PR must merge
+   or fail first. At most one update per base is sent in each sweep pass. Only
+   fleet PRs the sweep lists are counted; PRs by other authors are not.
+3. **The branch-update scan no longer refreshes for being behind.**
+   `scanPrBranchUpdates` in
+   [`pr_branch_update.ts`](../worker/deno/lib/pr_branch_update.ts) merges the base
+   into a PR branch only to resolve a conflict, on any base. The sweep's
+   `update-branch` is the only behind-only refresh.
+4. **Every skipped update is logged with its reason.** The sweep logs at info,
+   `Auto-merge sweep: …(Issue #4613)`. The scan logs
+   `no branch update merely to be current … (Issue #4613)`.
+5. **What does not change.** A merge-queue base is untouched: Issue #4424 still
+   means a PR that is only behind is not updated there, and a conflicting PR still
+   is. No check or ruleset changes. Strictness is not looked up: a base that is not
+   strict never reports a PR as `BEHIND`, so the sweep never reaches rule 1 there.
+
+**Assumptions.** Readiness is read from the same `gh pr view --json` round trip as
+the sweep's existing live-state read, whose field list now ends
+`…reviewDecision,statusCheckRollup`; no extra call is made. A PR whose check state
+cannot be read is not updated. Every check in the rollup counts, not only the
+required ones, so a non-required failing or pending check also holds the update.
+
+```mermaid
+flowchart TD
+    A["Armed PR behind its base<br/>(listed by the auto-merge sweep)"] --> Q{Base has a<br/>merge queue?}
+    Q -- yes --> QN["No update for being behind (Issue #4424)<br/>a conflict is still updated"]
+    Q -- no --> C{Conflicting?}
+    C -- yes --> CN["No update: GitHub would refuse it;<br/>the merge-conflict ladder owns it"]
+    C -- no --> R{Review satisfied?<br/>APPROVED, or empty where none required}
+    R -- "no: REVIEW_REQUIRED, CHANGES_REQUESTED or unreadable" --> RN["Not ready: no update<br/>logged at info (Issue #4613)"]
+    R -- yes --> K{Every check in the rollup<br/>completed successfully?}
+    K -- "no: pending, failed or unreadable" --> KN["Not ready: no update<br/>logged at info (Issue #4613)"]
+    K -- yes --> O{Another armed PR on this base already<br/>up to date, approved, conflict-free, not failing?}
+    O -- yes --> ON["Held: that PR merges or fails first<br/>logged at info (Issue #4613)"]
+    O -- no --> P{Update already sent to<br/>this base this pass?}
+    P -- yes --> PN["Held: one update per base per pass<br/>logged at info (Issue #4613)"]
+    P -- no --> U["update-branch sent"]
+```
 
 ## Layer 2 — the worker pre-merge "backstop"
 
@@ -595,20 +658,23 @@ reached, and a PR that is only behind is not updated (see
 [Merge queue](#merge-queue)).
 
 When the gate blocks because the branch is behind its target, the PR is **left
-open** and a deferral is logged. The existing branch-update maintenance
-(Priority 1.27, `pr_branch_update.ts`) merges the target into the branch and
-pushes normally — never a rebase, never a force-push, so a PR under review
-keeps its commits and review comments (#2807) — CI re-runs on the new head,
-and the next cycle re-evaluates the gate — an automatic **auto-update →
-re-check → merge-if-green** loop with no bespoke retry machinery.
+open** and a deferral is logged. The branch-update scan (`pr_branch_update.ts`,
+Priority 1.27) no longer merges the target into a branch merely because it is
+behind (Issue #4613): it does so only to resolve a conflict. The behind-only
+refresh is the auto-merge sweep's `update-branch`, sent once the PR is otherwise
+ready to merge ([Branch updates without a merge queue](#branch-updates-without-a-merge-queue)).
+Whatever merges the target in, the worker never rebases or force-pushes, so a PR
+under review keeps its commits and review comments (#2807). CI re-runs on the new
+head, and the next cycle re-evaluates the gate: an **update → re-check →
+merge-if-green** loop with no bespoke retry machinery.
 
 ```mermaid
 sequenceDiagram
     participant G as Pre-merge gate
-    participant M as Branch-update maintenance
+    participant M as Auto-merge sweep
     participant CI as GitHub CI
     G->>G: behindBy > 0 → blocked, leave PR open
-    M->>M: merge target into feature branch, plain push
+    M->>M: update-branch once review and checks are ready (Issue #4613)
     CI->>CI: re-run required checks on new head
     G->>G: next cycle: CI passed + behindBy == 0 → merge
 ```
@@ -1293,7 +1359,7 @@ default tip never refills the attempt count.
 | --------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Required CI check **pending**                       | Backstop returns blocked; PR left open                     | Next cycle re-checks once CI completes                                         |
 | Required CI check **failed**                        | Backstop returns blocked; PR left open                     | Fix lands on the feature branch; CI re-runs; re-evaluated next cycle           |
-| Feature branch **behind target** (no merge queue)   | Backstop defers; PR left open                              | Branch-update maintenance merges the target in → CI re-runs → merge-if-green   |
+| Feature branch **behind target** (no merge queue)   | Backstop defers; PR left open                              | Sweep's `update-branch` once the PR is otherwise ready (Issue #4613) → CI re-runs → merge-if-green |
 | Default branch has a **merge queue**                | Direct-merge fallback returns `blocked: merge_queue`; a PR that is only behind is not updated | The queue tests the PR against its future head and lands it once green |
 | Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate                    |
 | Green PR **refused by the merge**                   | Branch update requested; warning logged                    | Retried every cycle (Issue #4304) — never handed to a human                    |

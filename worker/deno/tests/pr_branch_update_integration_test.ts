@@ -187,7 +187,7 @@ function buildMockUpdateOpenPrBranches(options: {
 // Integration: Full dispatch path — scan → execute
 // =============================================================================
 
-Deno.test("integration: updateOpenPrBranches - PR behind base triggers rebase and force-push", async () => {
+Deno.test("integration: updateOpenPrBranches - PR merely behind base is not rebased or force-pushed (Issue #4613)", async () => {
   const updatedPrs: number[] = [];
   const lockedPrs: number[] = [];
   const releasedLocks: number[] = [];
@@ -210,13 +210,13 @@ Deno.test("integration: updateOpenPrBranches - PR behind base triggers rebase an
   const result = await updateFn();
 
   assertEquals(result.ok, true, "Update should succeed");
-  assertEquals(updatedPrs, [10], "PR #10 should have been updated");
-  assertEquals(lockedPrs, [10], "Lock should have been acquired for PR #10");
   assertEquals(
-    releasedLocks,
-    [1000],
-    "Lock should have been released for PR #10",
+    updatedPrs,
+    [],
+    "PR #10 is merely behind, so it must not be updated (Issue #4613)",
   );
+  assertEquals(lockedPrs, [], "No lock is taken for a behind-only PR");
+  assertEquals(releasedLocks, [], "No lock is released for a behind-only PR");
 });
 
 Deno.test("integration: updateOpenPrBranches - PR with merge conflicts triggers update", async () => {
@@ -301,7 +301,7 @@ Deno.test("integration: updateOpenPrBranches - distributed lock prevents concurr
       ],
     },
     behindBy: { 40: 5 },
-    mergeableStatus: {},
+    mergeableStatus: { 40: "CONFLICTING" },
     updatedPrs,
     lockedPrs,
     releasedLocks,
@@ -349,17 +349,17 @@ Deno.test("integration: updateOpenPrBranches - mixed scenario across multiple re
 
   assertEquals(result.ok, true, "Multi-repo update should succeed");
 
-  // PR #100 (behind), #200 (conflicting), #201 (behind) should be updated
-  // PR #101 (current, mergeable) should be skipped
-  assertEquals(updatedPrs.length, 3, "Three PRs should have been updated");
-  assert(updatedPrs.includes(100), "PR #100 (behind) should be updated");
+  // Issue #4613: PR #100 and #201 are merely behind, so they are not updated.
+  // PR #200 (conflicting) should be updated; PR #101 (current, mergeable) too.
+  assertEquals(updatedPrs.length, 1, "One PR should have been updated");
+  assert(!updatedPrs.includes(100), "PR #100 (behind) must not be updated");
   assert(updatedPrs.includes(200), "PR #200 (conflicting) should be updated");
-  assert(updatedPrs.includes(201), "PR #201 (behind) should be updated");
+  assert(!updatedPrs.includes(201), "PR #201 (behind) must not be updated");
   assert(!updatedPrs.includes(101), "PR #101 (current) should not be updated");
 
-  // All updated PRs should have had locks acquired and released
-  assertEquals(lockedPrs.length, 3, "Locks acquired for all updated PRs");
-  assertEquals(releasedLocks.length, 3, "Locks released for all updated PRs");
+  // The one updated PR should have had its lock acquired and released
+  assertEquals(lockedPrs.length, 1, "Lock acquired for the updated PR");
+  assertEquals(releasedLocks.length, 1, "Lock released for the updated PR");
 });
 
 Deno.test("integration: updateOpenPrBranches - lock released on setup failure", async () => {
@@ -376,7 +376,7 @@ Deno.test("integration: updateOpenPrBranches - lock released on setup failure", 
       ],
     },
     behindBy: { 50: 4 },
-    mergeableStatus: {},
+    mergeableStatus: { 50: "CONFLICTING" },
     updatedPrs,
     lockedPrs,
     releasedLocks,
@@ -498,15 +498,21 @@ Deno.test("integration: scan + execute chain produces real results, not just log
   // Verify scan produced real actions (not empty stub output)
   assertEquals(
     scanResult.value.actions.length,
-    2,
-    "Should find 2 PRs needing updates",
+    1,
+    "Should find 1 PR needing a conflict update",
   );
-  assertEquals(scanResult.value.skippedCount, 1, "Should skip 1 up-to-date PR");
+  assertEquals(
+    scanResult.value.skippedCount,
+    2,
+    "Should skip the behind-only PR (Issue #4613) and the up-to-date PR",
+  );
 
   const behindAction = scanResult.value.actions.find((a) => a.prNumber === 1);
-  assert(behindAction !== undefined, "PR #1 (behind) must have an action");
-  assertEquals(behindAction!.reason, "behind");
-  assertEquals(behindAction!.behindBy, 5);
+  assertEquals(
+    behindAction,
+    undefined,
+    "PR #1 (behind only) must not have an action (Issue #4613)",
+  );
 
   const conflictAction = scanResult.value.actions.find((a) => a.prNumber === 2);
   assert(
@@ -558,19 +564,19 @@ Deno.test("integration: scan + execute chain produces real results, not just log
   assert(execResult.ok);
 
   // Verify execution produced real results (not empty stub output)
-  assertEquals(execResult.value.updatedCount, 2, "Should update 2 PRs");
+  assertEquals(execResult.value.updatedCount, 1, "Should update 1 PR");
   assertEquals(execResult.value.failedCount, 0, "No failures expected");
   assertEquals(execResult.value.lockedCount, 0, "No lock contention");
   assertEquals(
     execResult.value.details.length,
-    2,
-    "Should have 2 detail entries",
+    1,
+    "Should have 1 detail entry",
   );
 
   // Verify the correct branches were updated
   assert(
-    executedBranches.includes("feature-a"),
-    "feature-a should have been rebased",
+    !executedBranches.includes("feature-a"),
+    "feature-a (behind only) must not be rebased (Issue #4613)",
   );
   assert(
     executedBranches.includes("feature-b"),
@@ -584,14 +590,14 @@ Deno.test("integration: scan + execute chain produces real results, not just log
   // Verify distributed locks were acquired and released for each update
   assertEquals(
     lockOps.acquired.length,
-    2,
-    "Locks acquired for both updated PRs",
+    1,
+    "Lock acquired for the one updated PR",
   );
   assertEquals(
     lockOps.released.length,
-    2,
-    "Locks released for both updated PRs",
+    1,
+    "Lock released for the one updated PR",
   );
-  assert(lockOps.acquired.includes(1), "Lock acquired for PR #1");
+  assert(!lockOps.acquired.includes(1), "No lock taken for PR #1");
   assert(lockOps.acquired.includes(2), "Lock acquired for PR #2");
 });

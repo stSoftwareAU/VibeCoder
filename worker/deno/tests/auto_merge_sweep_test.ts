@@ -537,6 +537,7 @@ Deno.test("a PR whose draft state is unknown (older cache entry) is attempted as
 // ---------------------------------------------------------------------------
 
 Deno.test("an armed, behind PR gets exactly one branch update and no merge attempt", async () => {
+  // Issue #4613: the PR is ready to merge (approved, checks passed).
   const { state, options } = harness({
     "stSoftwareAU/VibeCoder": [{ number: 42 }],
   }, {
@@ -546,6 +547,8 @@ Deno.test("an armed, behind PR gets exactly one branch update and no merge attem
         mergeable: "MERGEABLE",
         armed: true,
         behind: true,
+        reviewSatisfied: true,
+        checks: "passed",
       }),
   });
 
@@ -653,6 +656,7 @@ Deno.test("a draft armed, behind PR gets no update call", async () => {
 
 Deno.test("a failed branch update is recorded and the sweep continues", async () => {
   warnings.length = 0;
+  // Issue #4613: both PRs are ready to merge, so both reach the update call.
   const { state, options } = harness({
     "stSoftwareAU/VibeCoder": [{ number: 42 }, { number: 43 }],
   }, {
@@ -662,6 +666,8 @@ Deno.test("a failed branch update is recorded and the sweep continues", async ()
         mergeable: "MERGEABLE",
         armed: true,
         behind: true,
+        reviewSatisfied: true,
+        checks: "passed",
       }),
     updateBranchFn: (_repo, prNumber) =>
       prNumber === 42

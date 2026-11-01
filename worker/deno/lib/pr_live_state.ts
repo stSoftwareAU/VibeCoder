@@ -84,6 +84,18 @@ export type PrLiveStateReading =
      * (Issue #2702) — the auto-merge sweep then never updates the branch.
      */
     changesRequested?: true;
+    /**
+     * Present, and true, only when `reviewDecision` is `APPROVED`, empty or
+     * null (Issue #4613). Feeds the auto-merge sweep's ready-to-merge test:
+     * absent means unknown, which is never ready.
+     */
+    reviewSatisfied?: true;
+    /**
+     * The aggregate of `statusCheckRollup`: `passed`, `pending` or `failed`
+     * (Issue #4613). Absent when unreadable, which is never ready. Feeds the
+     * auto-merge sweep's ready-to-merge test.
+     */
+    checks?: "passed" | "pending" | "failed";
     unknown?: undefined;
   }
   | PrNotOpenReading;
@@ -146,8 +158,15 @@ export async function readPrLiveState(
     };
   }
 
-  const { state, mergeable, armed, behind, changesRequested } =
-    parsePrLiveFields(raw);
+  const {
+    state,
+    mergeable,
+    armed,
+    behind,
+    changesRequested,
+    reviewSatisfied,
+    checks,
+  } = parsePrLiveFields(raw);
   if (state === "OPEN") {
     return {
       open: true,
@@ -155,6 +174,8 @@ export async function readPrLiveState(
       armed,
       behind,
       ...(changesRequested ? { changesRequested } : {}),
+      ...(reviewSatisfied ? { reviewSatisfied } : {}),
+      ...(checks ? { checks } : {}),
     };
   }
   if (state === "CLOSED" || state === "MERGED") return { open: false, state };

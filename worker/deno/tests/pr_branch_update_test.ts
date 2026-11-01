@@ -210,7 +210,7 @@ Deno.test("scanPrBranchUpdates - skips repos not in allowlist", async () => {
 // scanPrBranchUpdates — PR scanning decisions
 // =============================================================================
 
-Deno.test("scanPrBranchUpdates - returns action for PR behind base", async () => {
+Deno.test("scanPrBranchUpdates - a PR merely behind its base yields no action on an unqueued base (Issue #4613)", async () => {
   const deps = makeBaseDeps({
     listPrs: async () => [makePr()],
     getBehindBy: async () => 5,
@@ -219,10 +219,8 @@ Deno.test("scanPrBranchUpdates - returns action for PR behind base", async () =>
 
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertEquals(result.value.actions.length, 1);
-    assertEquals(result.value.actions[0]!.reason, "behind");
-    assertEquals(result.value.actions[0]!.behindBy, 5);
-    assertEquals(result.value.skippedCount, 0);
+    assertEquals(result.value.actions.length, 0);
+    assertEquals(result.value.skippedCount, 1);
   }
 });
 
@@ -293,7 +291,7 @@ Deno.test("scanPrBranchUpdates - uses default branch when baseRefName is empty",
   const deps = makeBaseDeps({
     listPrs: async () => [makePr({ baseRefName: "" })],
     getDefaultBranch: async () => "develop",
-    getBehindBy: async () => 2,
+    getMergeableStatus: async () => "CONFLICTING",
   });
   const result = await scanPrBranchUpdates(deps);
 
@@ -310,7 +308,7 @@ Deno.test("scanPrBranchUpdates - falls back to main when getDefaultBranch fails"
     getDefaultBranch: async () => {
       throw new Error("API error");
     },
-    getBehindBy: async () => 1,
+    getMergeableStatus: async () => "CONFLICTING",
   });
   const result = await scanPrBranchUpdates(deps);
 
@@ -361,13 +359,12 @@ Deno.test("scanPrBranchUpdates - processes multiple repos and PRs", async () => 
 
   assertEquals(result.ok, true);
   if (result.ok) {
-    // PR #10 is behind (action), PR #11 is current (skipped), PR #20 is conflicting (action)
-    assertEquals(result.value.actions.length, 2);
-    assertEquals(result.value.skippedCount, 1);
+    // PR #10 is behind but not updated (Issue #4613), PR #11 is current (skipped), PR #20 is conflicting (action)
+    assertEquals(result.value.actions.length, 1);
+    assertEquals(result.value.skippedCount, 2);
 
     const pr10Action = result.value.actions.find((a) => a.prNumber === 10);
-    assertEquals(pr10Action?.reason, "behind");
-    assertEquals(pr10Action?.behindBy, 3);
+    assertEquals(pr10Action, undefined);
 
     const pr20Action = result.value.actions.find((a) => a.prNumber === 20);
     assertEquals(pr20Action?.reason, "conflicting");
@@ -381,7 +378,7 @@ Deno.test("scanPrBranchUpdates - continues scanning after listPrs failure", asyn
       if (repo === "org/failing-repo") throw new Error("API error");
       return [makePr({ number: 50 })];
     },
-    getBehindBy: async () => 1,
+    getMergeableStatus: async () => "CONFLICTING",
   });
 
   const result = await scanPrBranchUpdates(deps);
@@ -443,11 +440,11 @@ Deno.test("scanPrBranchUpdates - uses batched state when fetchBranchStateBatch s
     0,
     "batch hit should skip per-PR REST mergeable call",
   );
-  assertEquals(result.value.actions.length, 2);
-  assertEquals(result.value.skippedCount, 1);
+  // PR #10 is behind but not updated (Issue #4613); PR #12 is current.
+  assertEquals(result.value.actions.length, 1);
+  assertEquals(result.value.skippedCount, 2);
   const pr10 = result.value.actions.find((a) => a.prNumber === 10);
-  assertEquals(pr10?.reason, "behind");
-  assertEquals(pr10?.behindBy, 5);
+  assertEquals(pr10, undefined);
   const pr11 = result.value.actions.find((a) => a.prNumber === 11);
   assertEquals(pr11?.reason, "conflicting");
 });
@@ -518,7 +515,7 @@ Deno.test("scanPrBranchUpdates - missing PR in batch falls back to per-PR REST f
       getBehindByCalls++;
       return head === "issue-11" ? 2 : 0;
     },
-    getMergeableStatus: async () => "MERGEABLE",
+    getMergeableStatus: async () => "CONFLICTING",
     fetchBranchStateBatch: async () => {
       // Only #10 in batch — #11 falls back.
       return new Map([[10, { behindBy: 0, mergeable: "MERGEABLE" }]]);
@@ -529,7 +526,7 @@ Deno.test("scanPrBranchUpdates - missing PR in batch falls back to per-PR REST f
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertEquals(getBehindByCalls, 1, "PR not in batch must use REST fallback");
-  // PR #11 is behind 2 → action; PR #10 is current+mergeable → skipped.
+  // PR #11 is conflicting → action; PR #10 is current+mergeable → skipped.
   assertEquals(result.value.actions.length, 1);
   assertEquals(result.value.actions[0]?.prNumber, 11);
 });
@@ -548,7 +545,7 @@ Deno.test("scanPrBranchUpdates - skips batch helper for empty PR list", async ()
   assertEquals(batchCalls, 0);
 });
 
-Deno.test("scanPrBranchUpdates - behind PR uses behind reason regardless of mergeable status", async () => {
+Deno.test("scanPrBranchUpdates - a behind PR with a MERGEABLE status yields no action on an unqueued base (Issue #4613)", async () => {
   const deps = makeBaseDeps({
     listPrs: async () => [makePr()],
     getBehindBy: async () => 3,
@@ -559,10 +556,79 @@ Deno.test("scanPrBranchUpdates - behind PR uses behind reason regardless of merg
 
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertEquals(result.value.actions.length, 1);
-    assertEquals(result.value.actions[0]!.reason, "behind");
-    assertEquals(result.value.actions[0]!.behindBy, 3);
+    assertEquals(result.value.actions.length, 0);
+    assertEquals(result.value.skippedCount, 1);
   }
+});
+
+Deno.test("scanPrBranchUpdates - a conflicting PR behind an unqueued base yields a conflicting action with the real behind count (Issue #4613)", async () => {
+  const deps = makeBaseDeps({
+    listPrs: async () => [makePr()],
+    getBehindBy: async () => 3,
+    getMergeableStatus: async () => "CONFLICTING",
+  });
+
+  const result = await scanPrBranchUpdates(deps);
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.actions.length, 1);
+    assertEquals(result.value.actions[0]!.reason, "conflicting");
+    assertEquals(result.value.actions[0]!.behindBy, 3);
+    assertEquals(result.value.skippedCount, 0);
+  }
+});
+
+/**
+ * Scan one behind-only PR (3 commits behind, MERGEABLE) on a base that is or
+ * is not queued, and return the info line the scan logged for it (Issue #4613).
+ */
+async function scanBehindLog(
+  queued: boolean,
+): Promise<{ message: string; context: unknown } | undefined> {
+  const entries: { message: string; context: unknown }[] = [];
+  const deps = makeBaseDeps({
+    logger: {
+      ...makeSilentLogger(),
+      info: (message: string, context?: unknown) => {
+        entries.push({ message, context });
+      },
+    },
+    listPrs:
+      async () => [makePr({ number: 42, headRefName: "issue-42-fix-bug" })],
+    getBehindBy: async () => 3,
+    getMergeableStatus: async () => "MERGEABLE",
+    isMergeQueueBase: async () => queued,
+  });
+  const result = await scanPrBranchUpdates(deps);
+  assertEquals(result.ok, true);
+  return entries.find((entry) => entry.message.includes("#42"));
+}
+
+Deno.test("scanPrBranchUpdates - a behind-only PR on an unqueued base logs the Issue #4613 wording, distinct from the queued base's Issue #4424 wording", async () => {
+  const unqueued = await scanBehindLog(false);
+  const queued = await scanBehindLog(true);
+
+  assertEquals(unqueued !== undefined, true, "unqueued scan must log the PR");
+  assertEquals(queued !== undefined, true, "queued scan must log the PR");
+
+  const unqueuedMessage = unqueued!.message;
+  assertEquals(unqueuedMessage.includes("is 3 commit(s) behind main"), true);
+  assertEquals(
+    unqueuedMessage.includes("(Issue #4613)"),
+    true,
+    unqueuedMessage,
+  );
+  assertEquals(unqueuedMessage.includes("auto-merge sweep"), true);
+  assertEquals(unqueuedMessage.includes("merge queue"), false);
+  assertEquals(unqueued!.context, { repo: "org/repo", prNumber: 42 });
+
+  const queuedMessage = queued!.message;
+  assertEquals(queuedMessage.includes("(Issue #4424)"), true, queuedMessage);
+  assertEquals(queuedMessage.includes("(Issue #4613)"), false);
+  assertEquals(queuedMessage.includes("merge queue"), true);
+
+  assertEquals(unqueuedMessage === queuedMessage, false);
 });
 
 // =============================================================================
@@ -1044,6 +1110,7 @@ Deno.test("scanPrBranchUpdates - finds worker PRs regardless of author identity"
   const deps = makeBaseDeps({
     listPrs: async () => [makePr({ number: 23 })],
     getBehindBy: async () => 3,
+    getMergeableStatus: async () => "CONFLICTING",
   });
   const result = await scanPrBranchUpdates(deps);
 
@@ -1051,7 +1118,9 @@ Deno.test("scanPrBranchUpdates - finds worker PRs regardless of author identity"
   if (result.ok) {
     assertEquals(result.value.actions.length, 1);
     assertEquals(result.value.actions[0]!.prNumber, 23);
-    assertEquals(result.value.actions[0]!.reason, "behind");
+    // Issue #4613: the scan no longer proposes a behind-only update, so the
+    // fixture is conflicting to keep the selection under test.
+    assertEquals(result.value.actions[0]!.reason, "conflicting");
   }
 });
 
@@ -1280,7 +1349,8 @@ Deno.test("isHostPushedBotPr - a blank author, blank host or missing commit list
 Deno.test("scanPrBranchUpdates - never updates a PR whose review decision is CHANGES_REQUESTED (Issue #2702)", async () => {
   // Updating a blocked PR cannot help it merge, and on GRQ#5032 the update
   // is what moved the head underneath the owner's review. PR 12 is the
-  // other direction: the same state without the block is still updated.
+  // other direction: the same conflicting state without the block is still
+  // updated (a merely-behind PR is no longer updated, Issue #4613).
   const infos: string[] = [];
   const deps = makeBaseDeps({
     logger: {
@@ -1308,7 +1378,7 @@ Deno.test("scanPrBranchUpdates - never updates a PR whose review decision is CHA
         }],
         [12, {
           behindBy: 5,
-          mergeable: "MERGEABLE",
+          mergeable: "CONFLICTING",
           reviewDecision: "APPROVED",
         }],
       ]),
@@ -1326,7 +1396,7 @@ Deno.test("scanPrBranchUpdates - never updates a PR whose review decision is CHA
   );
 });
 
-Deno.test("scanPrBranchUpdates + executePrBranchUpdates - a green PR awaiting approval that is behind is kept current, pushed without force (Issue #2807)", async () => {
+Deno.test("scanPrBranchUpdates + executePrBranchUpdates - a green PR awaiting approval that is behind is not scanned for an update (Issue #4613), and an update run on it is pushed without force (Issue #2807)", async () => {
   const fixture = await setupGitRepoFixture("issue-2807-");
   const trace = await startGitTrace();
   try {
@@ -1356,10 +1426,15 @@ Deno.test("scanPrBranchUpdates + executePrBranchUpdates - a green PR awaiting ap
     }));
     assertEquals(scan.ok, true);
     if (!scan.ok) return;
-    assertEquals(scan.value.actions.map((a) => a.prNumber), [77]);
+    // Issue #4613: a merely-behind PR is not scanned for an update; the
+    // auto-merge sweep owns that update once the PR is armed and approved.
+    assertEquals(scan.value.actions.map((a) => a.prNumber), []);
+    assertEquals(scan.value.skippedCount, 1);
 
+    // The update itself must still push without force. The action is
+    // hand-built, because the scan no longer proposes a behind-only one.
     const executed = await executePrBranchUpdates(
-      scan.value.actions,
+      [makeAction({ prNumber: 77, branchName: branch, behindBy: 1 })],
       makeExecDeps({
         setupRepo: async () => ({ ok: true, value: clone }),
         performBranchUpdate: (params) =>

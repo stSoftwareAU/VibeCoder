@@ -49,11 +49,15 @@ async function runSweep(f: SweepFixture): Promise<SweepRun> {
   const listed: SweepablePr = f.noBaseRef === true
     ? { number: PR.number, headRefName: PR.headRefName }
     : PR;
+  // Ready to merge by default (approved, checks passed), so an unqueued base
+  // reaches the update path (Issue #4613).
   const reading: PrLiveStateReading = {
     open: true,
     mergeable: "MERGEABLE",
     armed: true,
     behind: true,
+    reviewSatisfied: true,
+    checks: "passed",
     ...f.reading,
   } as PrLiveStateReading;
 

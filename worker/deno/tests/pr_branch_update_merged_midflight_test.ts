@@ -188,7 +188,7 @@ Deno.test("makeGhPrStateFetcher - asks gh for state and mergeable, and returns t
   // Issue #2702: the review decision rides the same round trip.
   assertEquals(
     calls[0]!.includes(
-      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
+      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,statusCheckRollup",
     ),
     true,
   );

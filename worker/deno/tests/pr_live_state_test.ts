@@ -9,6 +9,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { PR_LIVE_STATE_JSON_FIELDS } from "../lib/pr_branch_update.ts";
 import {
   guardPrStillOpen,
   isPrLiveStateRead,
@@ -48,7 +49,7 @@ Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdic
     "--repo",
     "owner/repo",
     "--json",
-    "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
+    PR_LIVE_STATE_JSON_FIELDS,
   ]]);
 });
 
@@ -155,13 +156,7 @@ Deno.test("isPrLiveStateRead - recognises this read's own argv, and nothing else
   // `gh pr view --json state,<something else>`, and a fixture that answered
   // those with a live-state payload would be answering the wrong question.
   assert(
-    isPrLiveStateRead([
-      "pr",
-      "view",
-      "7",
-      "--json",
-      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
-    ]),
+    isPrLiveStateRead(["pr", "view", "7", "--json", PR_LIVE_STATE_JSON_FIELDS]),
   );
   assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state"]));
   assert(!isPrLiveStateRead(["pr", "view", "7", "--json", "state,mergedAt"]));
@@ -370,4 +365,56 @@ Deno.test("readPrLiveState - a CHANGES_REQUESTED review decision rides the same 
       decision,
     );
   }
+});
+
+Deno.test("readPrLiveState - an approved, green PR carries reviewSatisfied and checks passed (Issue #4613)", async () => {
+  const reading = await readPrLiveState("owner/repo", 12, () =>
+    Promise.resolve(
+      JSON.stringify({
+        state: "OPEN",
+        mergeable: "MERGEABLE",
+        autoMergeRequest: { enabledBy: "worker-bot" },
+        mergeStateStatus: "BEHIND",
+        reviewDecision: "APPROVED",
+        statusCheckRollup: [{
+          __typename: "CheckRun",
+          status: "COMPLETED",
+          conclusion: "SUCCESS",
+        }],
+      }),
+    ));
+
+  assertEquals(reading, {
+    open: true,
+    mergeable: "MERGEABLE",
+    armed: true,
+    behind: true,
+    reviewSatisfied: true,
+    checks: "passed",
+  });
+});
+
+Deno.test("readPrLiveState - an unreviewed, failing PR carries no reviewSatisfied and checks failed (Issue #4613)", async () => {
+  const reading = await readPrLiveState("owner/repo", 12, () =>
+    Promise.resolve(
+      JSON.stringify({
+        state: "OPEN",
+        mergeable: "MERGEABLE",
+        autoMergeRequest: { enabledBy: "worker-bot" },
+        mergeStateStatus: "BEHIND",
+        reviewDecision: "REVIEW_REQUIRED",
+        statusCheckRollup: [{
+          __typename: "CheckRun",
+          status: "COMPLETED",
+          conclusion: "FAILURE",
+        }],
+      }),
+    ));
+
+  assert(reading.open === true, "the PR is open");
+  assert(
+    !("reviewSatisfied" in reading),
+    "a review that is not satisfied must leave reviewSatisfied absent",
+  );
+  assertEquals(reading.checks, "failed");
 });

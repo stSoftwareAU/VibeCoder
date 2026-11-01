@@ -381,14 +381,15 @@ Deno.test("branch update - a PR already current with its base is left alone", as
   assertEquals(result.value.skippedCount, 1);
 });
 
-Deno.test("branch update - a PR genuinely behind its base is still updated", async () => {
+Deno.test("branch update - a PR merely behind its milestone base is not updated (Issue #4613)", async () => {
   const result = await scanFor(STALE_TOPOLOGY);
 
   assert(result.ok);
   if (!result.ok) return;
-  assertEquals(result.value.actions.length, 1, "a stale branch still updates");
-  const action = result.value.actions[0]!;
-  assertEquals(action.prNumber, PR_NUMBER);
-  assertEquals(action.reason, "behind");
-  assertEquals(action.behindBy, 4);
+  assertEquals(
+    result.value.actions,
+    [],
+    "a stale branch is not updated merely to be current — the auto-merge sweep owns that update (Issue #4613)",
+  );
+  assertEquals(result.value.skippedCount, 1);
 });

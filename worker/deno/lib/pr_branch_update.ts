@@ -2,10 +2,11 @@
  * PR branch update decision logic (Issue #1122).
  *
  * Determines which open PRs need their branches updated by checking
- * how far behind the base branch they are and whether they have
- * merge conflicts. A PR behind a GitHub merge queue is not updated for
- * being behind (Issue #4424) — the queue tests it against its future head —
- * but a conflicting one still is.
+ * whether they have merge conflicts. A PR is updated only to resolve a
+ * conflict: a PR merely behind its base is never updated by this scan, on any
+ * base (Issue #4613). The auto-merge sweep owns the single, ready-only
+ * `update-branch`. A PR behind a GitHub merge queue is likewise not updated
+ * for being behind (Issue #4424) — the queue tests it against its future head.
  *
  * Issue #1281: Integrates distributed locking to prevent concurrent
  * workers from updating the same PR branch simultaneously.
@@ -139,12 +140,112 @@ export interface PrLiveFields {
    * decision and for an absent field, so unknown never blocks an update.
    */
   changesRequested?: true;
+  /**
+   * Present, and true, only when `reviewDecision` is `APPROVED`, `""` or
+   * `null` (Issue #4613) — GitHub reports `""`/`null` when no review is
+   * required. Feeds the auto-merge sweep's ready-to-merge test (Issue #4613).
+   * Absent for `REVIEW_REQUIRED`, `CHANGES_REQUESTED`, any other value, a
+   * missing key and every shape the parser cannot read: unknown is never
+   * satisfied.
+   */
+  reviewSatisfied?: true;
+  /**
+   * The rollup of `statusCheckRollup` (Issue #4613), present only when that
+   * field is an array. Feeds the auto-merge sweep's ready-to-merge test
+   * (Issue #4613). Absent when the key is missing or not an array.
+   */
+  checks?: PrChecksState;
 }
 
 /**
- * Parse one `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision`
- * payload (Issue #2307; Issue #2462 added the two auto-merge fields and
- * Issue #2702 `reviewDecision`).
+ * The outcome of a PR's `statusCheckRollup` (Issue #4613).
+ *
+ * `failed` if any check failed, else `pending` if any check has not finished,
+ * else `passed`. See {@link classifyCheckRollup}.
+ */
+export type PrChecksState = "passed" | "pending" | "failed";
+
+/** Conclusions (CheckRun) that mean a check failed (Issue #4613). */
+const FAILED_CHECK_CONCLUSIONS: ReadonlySet<string> = new Set([
+  "FAILURE",
+  "TIMED_OUT",
+  "CANCELLED",
+  "ACTION_REQUIRED",
+  "STARTUP_FAILURE",
+]);
+
+/** Conclusions (CheckRun) that mean a check passed (Issue #4613). */
+const PASSED_CHECK_CONCLUSIONS: ReadonlySet<string> = new Set([
+  "SUCCESS",
+  "NEUTRAL",
+  "SKIPPED",
+]);
+
+/** StatusContext states that mean a check failed (Issue #4613). */
+const FAILED_STATUS_STATES: ReadonlySet<string> = new Set(["FAILURE", "ERROR"]);
+
+/** StatusContext states that mean a check has not finished (Issue #4613). */
+const PENDING_STATUS_STATES: ReadonlySet<string> = new Set([
+  "PENDING",
+  "EXPECTED",
+]);
+
+/**
+ * Roll a `statusCheckRollup` array up into one {@link PrChecksState}
+ * (Issue #4613), for the auto-merge sweep's ready-to-merge test.
+ *
+ * Each entry is a CheckRun (`status`, `conclusion`) or a StatusContext
+ * (`state`). The rollup is `failed` if any entry failed, else `pending` if any
+ * entry has not finished, else `passed`. An empty array is `passed`. A value
+ * that is not an array is unknown and returns `undefined`.
+ *
+ * Unknown is never passed: an entry that is neither a finished CheckRun nor a
+ * recognised StatusContext state counts as `pending`. Comparison is
+ * case-insensitive after trimming.
+ */
+export function classifyCheckRollup(
+  rollup: unknown,
+): PrChecksState | undefined {
+  if (!Array.isArray(rollup)) return undefined;
+  let anyFailed = false;
+  let anyPending = false;
+  for (const entry of rollup) {
+    const outcome = classifyCheckEntry(entry);
+    if (outcome === "failed") anyFailed = true;
+    if (outcome === "pending") anyPending = true;
+  }
+  if (anyFailed) return "failed";
+  if (anyPending) return "pending";
+  return "passed";
+}
+
+/** Classify one rollup entry (Issue #4613); see {@link classifyCheckRollup}. */
+function classifyCheckEntry(entry: unknown): PrChecksState {
+  if (typeof entry !== "object" || entry === null) return "pending";
+  const check = entry as Record<string, unknown>;
+  if (typeof check.state === "string") {
+    const state = check.state.trim().toUpperCase();
+    if (FAILED_STATUS_STATES.has(state)) return "failed";
+    if (PENDING_STATUS_STATES.has(state)) return "pending";
+    return state === "SUCCESS" ? "passed" : "pending";
+  }
+  const status = typeof check.status === "string"
+    ? check.status.trim().toUpperCase()
+    : "";
+  const conclusion = typeof check.conclusion === "string"
+    ? check.conclusion.trim().toUpperCase()
+    : "";
+  if (FAILED_CHECK_CONCLUSIONS.has(conclusion)) return "failed";
+  if (status !== "COMPLETED") return "pending";
+  if (PASSED_CHECK_CONCLUSIONS.has(conclusion)) return "passed";
+  return "pending";
+}
+
+/**
+ * Parse one `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,statusCheckRollup`
+ * payload (Issue #2307; Issue #2462 added the two auto-merge fields,
+ * Issue #2702 `reviewDecision`, and Issue #4613 `statusCheckRollup`, which
+ * feeds `checks` and `reviewSatisfied`).
  *
  * A bare state string — what the fetcher asked for with `--jq .state` before
  * this issue, and what a `gh` stub still answers — reads as that state with
@@ -174,6 +275,7 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
     };
   }
   const fields = parsed as Record<string, unknown>;
+  const checks = classifyCheckRollup(fields.statusCheckRollup);
   return {
     state: classifyState(
       typeof fields.state === "string" ? fields.state : "",
@@ -187,6 +289,12 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
     ...(fields.reviewDecision === "CHANGES_REQUESTED"
       ? { changesRequested: true as const }
       : {}),
+    ...(fields.reviewDecision === "APPROVED" ||
+        fields.reviewDecision === "" ||
+        fields.reviewDecision === null
+      ? { reviewSatisfied: true as const }
+      : {}),
+    ...(checks !== undefined ? { checks } : {}),
   };
 }
 
@@ -230,7 +338,9 @@ export function classifyPrLiveState(raw: string): PrLiveState {
  * `mergeStateStatus` to the same round trip, so the auto-merge sweep can see
  * an armed PR whose head has fallen behind without a second `gh` call.
  * Issue #2702 added `reviewDecision`, so the same read tells the sweep not to
- * update a PR a reviewer has blocked. One round trip answers all five.
+ * update a PR a reviewer has blocked. Issue #4613 added `statusCheckRollup`,
+ * so the sweep's ready-to-merge test reads checks and approval from the same
+ * round trip. One round trip answers all six.
  */
 export function makeGhPrStateFetcher(
   ghFn: (args: string[]) => Promise<string>,
@@ -257,7 +367,7 @@ export function makeGhPrStateFetcher(
  * questions nobody asked it.
  */
 export const PR_LIVE_STATE_JSON_FIELDS =
-  "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision";
+  "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,statusCheckRollup";
 
 /** Overall result of executing PR branch updates (Issue #1233). */
 export interface PrBranchUpdateExecutionResult {
@@ -433,9 +543,10 @@ export interface PrBranchUpdateDeps {
   ) => Promise<Map<number, PrBranchStateEntry> | null>;
   /**
    * Whether a base branch is behind a GitHub merge queue (Issue #4424). On a
-   * queued base the queue tests each PR against its real future head, so a
-   * PR is not updated merely for being behind; a conflict still is. Asked
-   * once per repo and base per scan. A `false` answer keeps today's rules.
+   * queued base the queue tests each PR against its real future head. Since
+   * Issue #4613 the scan never updates a PR merely for being behind, on any
+   * base, so this answer only selects the log wording for a PR that is behind
+   * and left alone. Asked once per repo and base per scan.
    */
   isMergeQueueBase: (repo: string, baseBranch: string) => Promise<boolean>;
 }
@@ -725,13 +836,17 @@ export async function selectBranchUpdatePrs(
  * Returns an action if the PR needs updating, or null if it can be skipped.
  *
  * Decision rules:
- * 1. If behind_by > 0 and the base is not behind a merge queue → needs update
+ * 1. If behind_by > 0 and behind-only updates are not deferred → needs update
  *    (reason: "behind")
  * 2. If mergeable == "CONFLICTING" → needs update (reason: "conflicting"),
- *    carrying the real behind_by. A conflict is updated even on a queued base
- *    (Issue #4424), because the queue cannot land a conflicting PR.
- * 3. Otherwise → skip (already current and no conflicts, or behind a queue
- *    that will test the PR against its future head — Issue #4424)
+ *    carrying the real behind_by. A conflict is updated even when a behind-only
+ *    update is deferred (Issue #4424, Issue #4613), because a conflict must be
+ *    resolved before the PR can land.
+ * 3. Otherwise → skip (already current and no conflicts, or behind and deferred)
+ *
+ * `deferBehind` is true when a behind-only update is deferred: either the base
+ * is behind a merge queue (Issue #4424), or the ready-only branch-update policy
+ * applies (Issue #4613), under which the auto-merge sweep owns that update.
  */
 export function decidePrUpdateAction(
   repo: string,
@@ -739,9 +854,9 @@ export function decidePrUpdateAction(
   baseBranch: string,
   behindBy: number,
   mergeableStatus: string,
-  mergeQueued: boolean,
+  deferBehind: boolean,
 ): PrBranchUpdateAction | null {
-  if (behindBy > 0 && !mergeQueued) {
+  if (behindBy > 0 && !deferBehind) {
     return {
       repo,
       prNumber: pr.number,
@@ -803,6 +918,14 @@ async function isQueuedBaseForScan(
  * This is the decision logic only — it does not perform git operations.
  * The caller (shell or Deno orchestrator) is responsible for acting
  * on the returned actions.
+ *
+ * Issue #4613: the scan never produces a `behind`-only action, on any base. A
+ * fleet session merges the base into a PR branch only to resolve a conflict;
+ * the auto-merge sweep owns the single, ready-only `update-branch`, one PR per
+ * base at a time. Mergeability is therefore read for every PR, behind or not,
+ * so a conflict is found whatever the PR's position. The merge-queue question
+ * (Issue #4424) now only selects the wording of the log line for a PR that is
+ * behind and left alone.
  *
  * @param deps - Injectable dependencies for scanning
  * @returns Result containing scan results with actions to take
@@ -873,9 +996,9 @@ export async function scanPrBranchUpdates(
         );
         continue;
       }
-      // Issue #4424: a PR behind a merge queue is not updated for being
-      // behind; the queue tests it against its future head.
-      const mergeQueued = await isQueuedBaseForScan(
+      // Issue #4424 / Issue #4613: the merge-queue answer only chooses the
+      // wording of the log line for a PR left alone for being behind.
+      const queuedBase = await isQueuedBaseForScan(
         deps,
         queuedBases,
         repo,
@@ -900,43 +1023,43 @@ export async function scanPrBranchUpdates(
           continue;
         }
 
-        // Only check mergeable status when branch appears current — or, on a
-        // queued base, when it is behind, since a conflict still needs a
-        // merge (Issue #4424).
-        if (behindBy === 0 || mergeQueued) {
-          try {
-            mergeableStatus = await deps.getMergeableStatus(repo, pr.number);
-          } catch {
-            // If we cannot determine mergeability, skip this PR
-            skippedCount++;
-            continue;
-          }
+        // Mergeability is read whether or not the branch is behind: a
+        // conflict needs a merge either way (Issue #4424, Issue #4613).
+        try {
+          mergeableStatus = await deps.getMergeableStatus(repo, pr.number);
+        } catch {
+          // If we cannot determine mergeability, skip this PR
+          skippedCount++;
+          continue;
         }
       }
 
+      // Issue #4613: a behind-only PR is always deferred, so `true` here.
       const action = decidePrUpdateAction(
         repo,
         pr,
         baseBranch,
         behindBy,
         mergeableStatus,
-        mergeQueued,
+        true,
       );
 
       if (action) {
         deps.logger.info(
-          action.reason === "behind"
-            ? `PR #${pr.number} (${pr.headRefName}) is ${behindBy} commit(s) behind ${baseBranch} — needs update`
-            : `PR #${pr.number} (${pr.headRefName}) has merge conflicts — needs resolution`,
+          `PR #${pr.number} (${pr.headRefName}) has merge conflicts — needs resolution`,
           { repo, prNumber: pr.number, reason: action.reason },
         );
         actions.push(action);
       } else {
         skippedCount++;
-        if (mergeQueued && behindBy > 0) {
+        if (behindBy > 0) {
           deps.logger.info(
-            `PR #${pr.number} (${pr.headRefName}) is ${behindBy} commit(s) behind ${baseBranch}, ` +
-              `which is behind a GitHub merge queue — no branch update; the queue tests it against its future head (Issue #4424)`,
+            queuedBase
+              ? `PR #${pr.number} (${pr.headRefName}) is ${behindBy} commit(s) behind ${baseBranch}, ` +
+                `which is behind a GitHub merge queue — no branch update; the queue tests it against its future head (Issue #4424)`
+              : `PR #${pr.number} (${pr.headRefName}) is ${behindBy} commit(s) behind ${baseBranch} — ` +
+                `no branch update merely to be current; the auto-merge sweep refreshes it once it is armed, ` +
+                `approved, conflict-free and green, one PR per base at a time (Issue #4613)`,
             { repo, prNumber: pr.number },
           );
         }

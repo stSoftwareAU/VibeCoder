@@ -1,8 +1,8 @@
 /**
- * Tests for the merge-queue exception in the branch-update maintenance loop
- * (Issue #4424). A PR behind a queued base is not updated for being behind;
- * a conflicting one still is. Every case that is not queued keeps today's
- * behaviour, and the fixture for each queued case has an unqueued twin.
+ * Tests for the behind-only deferral in the branch-update maintenance loop.
+ * A PR merely behind its base is not updated for being behind — on a queued
+ * base (Issue #4424) and, since Issue #4613, on an unqueued base too — while a
+ * conflicting one still is. The merge-queue answer only changes the log line.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -151,10 +151,11 @@ Deno.test("decidePrUpdateAction - a conflicting PR behind a queued base yields a
 // scanPrBranchUpdates — the per-PR REST path (no batch fetcher)
 // ---------------------------------------------------------------------------
 
-Deno.test("scan (REST) - behind-only PR on an unqueued base yields a behind action and reads no mergeable status", async () => {
+Deno.test("scan (REST) - behind-only PR on an unqueued base yields no action and still reads its mergeable status (Issue #4613)", async () => {
   const run = await runScan({ queued: false });
-  assertEquals(run.actions, [{ prNumber: 42, reason: "behind", behindBy: 3 }]);
-  assertEquals(run.mergeableReads, 0);
+  assertEquals(run.actions, []);
+  assertEquals(run.skippedCount, 1);
+  assertEquals(run.mergeableReads, 1);
 });
 
 Deno.test("scan (REST) - behind-only PR on a queued base yields no action", async () => {
@@ -204,12 +205,13 @@ Deno.test("scan (batch) - behind PR on a queued base, mergeable MERGEABLE, yield
   assertEquals(run.skippedCount, 1);
 });
 
-Deno.test("scan (batch) - the same behind PR on an unqueued base yields a behind action", async () => {
+Deno.test("scan (batch) - the same behind PR on an unqueued base yields no action (Issue #4613)", async () => {
   const batch = new Map<number, PrBranchStateEntry>([
     [42, { behindBy: 3, mergeable: "MERGEABLE" }],
   ]);
   const run = await runScan({ queued: false, batch });
-  assertEquals(run.actions, [{ prNumber: 42, reason: "behind", behindBy: 3 }]);
+  assertEquals(run.actions, []);
+  assertEquals(run.skippedCount, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -237,9 +239,17 @@ Deno.test("scan - a behind-only PR on a queued base is logged at info naming the
   );
 });
 
-Deno.test("scan - a failing merge-queue read is treated as not queued, so a behind PR is still updated", async () => {
+Deno.test("scan - a failing merge-queue read is treated as not queued, so a behind PR is left alone with the Issue #4613 wording", async () => {
   const run = await runScan({ queued: "throws" });
-  assertEquals(run.actions, [{ prNumber: 42, reason: "behind", behindBy: 3 }]);
+  assertEquals(run.actions, []);
+  const line = run.infos.find((m) => m.includes("#42"));
+  assertEquals(
+    line?.includes("(Issue #4613)"),
+    true,
+    `expected the unqueued Issue #4613 info line, got: ${
+      JSON.stringify(run.infos)
+    }`,
+  );
 });
 
 Deno.test("scan - a failing merge-queue read is logged at warning, naming the repo, base and cause (fail loud)", async () => {
