@@ -7,14 +7,9 @@
  * explicit cargo build steps keep the full budget, and the floor applies to
  * every checkout.
  *
- * The unit tests inject an empty or fake ephemeral root, so no real target
- * directory is read or pruned, and every checkout is a temp directory removed
- * afterwards. The call-site tests cover a Deno-only checkout under a merge-only
- * reading, which never reads the real root, a cargo checkout below the floor,
- * which stops at the defer admission before any root is read, and cargo agent
- * startup in the reported headroom window, which checks only the floor. No
- * call-site test uses a merge-only cargo build admission, because that path
- * would read the real `/var/tmp/vibe-cargo-target`.
+ * The tests inject an empty or fake ephemeral root, so no real target
+ * directory is read or pruned. Call-site tests cover manager and build-capable
+ * agent startup as well as the host floor.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -247,6 +242,7 @@ type AgentRun = Awaited<ReturnType<typeof runClaudeWithTimeout>>;
 async function runAgentIn(
   dir: string,
   r: HeavyBuildDiskReading | (() => Promise<HeavyBuildDiskReading>),
+  role?: "manager" | "executor",
 ): Promise<AgentRun> {
   const clock = fakeClock();
   const logger = {
@@ -267,6 +263,8 @@ async function runAgentIn(
     return await armed(r, () =>
       runClaudeWithTimeout({
         prompt: "test",
+        orchestrationRole: role,
+        ephemeralRootDeps: emptyRoot,
         cwd: dir,
         agentBinaryPath: stub.path,
         clock,
@@ -307,7 +305,7 @@ Deno.test({
     for (const freeGb of [58.2, 64.3, 72]) {
       const run = await withCheckout(
         { "Cargo.toml": CARGO_TOML },
-        (dir) => runAgentIn(dir, reading(freeGb)),
+        (dir) => runAgentIn(dir, reading(freeGb), "manager"),
       );
       assert(
         run.ok,
@@ -315,6 +313,22 @@ Deno.test({
       );
       assertEquals(run.value.exitCode, 0);
       assertEquals(run.value.timedOut, false);
+    }
+  },
+});
+
+Deno.test({
+  name: "agent start - executor and role-less cargo agents need headroom",
+  ignore: Deno.build.os === "windows",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    for (const role of ["executor", undefined] as const) {
+      const run = await withCheckout(
+        { "Cargo.toml": CARGO_TOML },
+        (dir) => runAgentIn(dir, reading(58.2), role),
+      );
+      assert(!run.ok, `${role ?? "role-less"} agent must be parked`);
+      assertStringIncludes(run.error.message, "headroom");
     }
   },
 });

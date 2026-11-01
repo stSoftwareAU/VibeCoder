@@ -65,10 +65,10 @@
  * probe registered (tests, ad hoc callers) nothing is gated, which is the
  * documented `unknown` default of Issue #226.
  *
- * Issue #4360: starting a generic agent checks only the host floor through
- * {@link parkRunningBuild}; manager startup does not itself start a build.
- * Explicit mutation, remediation and discrimination build steps use
- * {@link parkInFlightBuild} to check build admission. A checkout with no cargo
+ * Issue #4360: a manager, which cannot run builds, checks only the host floor
+ * through {@link parkRunningBuild}. Other agents and explicit mutation,
+ * remediation and discrimination build steps use {@link parkInFlightBuild}
+ * to check build admission. A checkout with no cargo
  * project is held to the floor only, and its idle sibling target directories
  * are not pruned for it, because only cargo writes to the ephemeral cargo root
  * (Issue #4413). {@link parkRunningBuild} also stops an active process at the
@@ -524,9 +524,10 @@ export async function parkInFlightBuild(
  * (Issue #4540).
  *
  * The claim gate opens at the host floor, but {@link parkInFlightBuild}
- * refuses a cargo checkout's agent until the floor plus the cargo headroom is
- * free. In between, every claim on a cargo repository was taken, parked and
- * released, and taken again next cycle, while work that could run waited.
+ * refuses a build-capable cargo checkout agent until the floor plus the cargo
+ * headroom is free; a manager is held to the floor only. Before claim
+ * deferral, build-capable claims in this window were taken, parked and
+ * released, then taken again next cycle while work that could run waited.
  * This asks the in-flight park's own question as a dry run — the checkout's
  * own cache is credited and idle siblings count as prunable, but nothing is
  * removed at scan time. A host below its floor is left to the host-disk claim
@@ -556,8 +557,8 @@ export async function cargoClaimDeferral(
 /**
  * The repositories whose existing clone {@link cargoClaimDeferral} defers,
  * each with its reason (Issue #4540). A repository not cloned yet is left
- * claimable: its cargo-ness is unknown, and the in-flight park stays the
- * backstop.
+ * claimable: its cargo-ness is unknown, and the in-flight park remains the
+ * backstop for build-capable agents and explicit build steps.
  */
 export async function cargoClaimDeferredRepos(
   repos: readonly string[],

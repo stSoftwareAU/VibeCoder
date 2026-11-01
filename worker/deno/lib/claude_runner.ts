@@ -27,7 +27,9 @@ import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
+  type EphemeralRootDeps,
   inFlightHostDiskGateEnabled,
+  parkInFlightBuild,
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
@@ -479,6 +481,8 @@ export interface ClaudeRunResult {
 
 /** Options for running Claude with timeout. */
 export interface RunClaudeOptions {
+  /** Override the ephemeral cargo root operations, for isolated callers and tests. */
+  ephemeralRootDeps?: EphemeralRootDeps;
   /** Enforced CLI sandbox for a provider-neutral role invocation. */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
@@ -1242,10 +1246,11 @@ async function runClaudeWithTimeoutBody(
   };
   if (finishClamp?.belowFloor) return finishRefusal();
 
-  // Starting an agent is not itself a build: preserve the host floor here,
-  // while build-specific steps apply the cargo headroom admission (Issue #4360).
+  // Managers cannot run builds; other agents may build from their shell.
   if (cwd) {
-    const park = await parkRunningBuild();
+    const park = options.orchestrationRole === "manager"
+      ? await parkRunningBuild()
+      : await parkInFlightBuild(cwd, options.ephemeralRootDeps);
     if (park) return { ok: false, error: new Error(park) };
   }
 
