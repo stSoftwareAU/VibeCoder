@@ -15,7 +15,7 @@ Deno.test("Issue #4435 - review brief step 2 does not treat a change that clears
     const phrase of [
       "A change that clears a dependency audit that is red on this PR is not unrelated",
       "every PR red on an advisory fixes it itself, even when another PR carries the same fix",
-      "Review it for correctness like any other change",
+      '"Dependency audit failures"). Review it for correctness like any other change',
     ]
   ) {
     assertStringIncludes(text, phrase);
