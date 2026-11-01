@@ -23,13 +23,13 @@ final version.
 
 - `babysitterProtectedPaths` (`worker/deno/lib/fleet_babysitter_sandbox.ts`)
   enumerates the `fleet-pr-babysitter*` entries when the agent starts, plus the
-  configured `privateKeyPath`, and adds each `realPath`, because the profile
-  has no prefix pattern and `app.json` may name a key anywhere.
+  configured `privateKeyPath`, and adds each `realPath`, because the profile has
+  no prefix pattern and `app.json` may name a key anywhere.
 - `spawnBabysitterAgent` takes `protectedPaths` as a required argument and the
   builder throws on an empty list or a writable directory inside a protected
-  path, so no caller can turn the boundary off by omission. `startBabysitterAgent`
-  computes the list before minting the token, so a failure leaves no attempt
-  recorded.
+  path, so no caller can turn the boundary off by omission.
+  `startBabysitterAgent` computes the list before minting the token, so a
+  failure leaves no attempt recorded.
 - The profile writes the `-c` overrides as TOML with JSON-escaped path keys, so
   a path containing a quote cannot add a key.
 
@@ -51,10 +51,10 @@ final version.
 Backend only, no UI. Code: `worker/deno/lib/fleet_babysitter_sandbox.ts` (new),
 `worker/deno/commands/fleet_pr_babysitter.ts` (`spawnBabysitterAgent`,
 `startBabysitterAgent`, `fix`). Docs: `docs/workflows/fleet-pr-babysitter.md`
-(sandbox sentence and a "Verifying the credential boundary" paragraph); the
-lib sweep ledger gains `docs/audits/lib-sweep-coverage/top-up-4593.json` for
-the new module. `SECURITY.md` and `docs/THREAT-MODEL.md` do not mention the
-babysitter's sandbox, so they are unchanged.
+(sandbox sentence and a "Verifying the credential boundary" paragraph); the lib
+sweep ledger gains `docs/audits/lib-sweep-coverage/top-up-4593.json` for the new
+module. `SECURITY.md` and `docs/THREAT-MODEL.md` do not mention the babysitter's
+sandbox, so they are unchanged.
 
 Callers of the changed functions: `spawnBabysitterAgent` is called only by
 `startBabysitterAgent`; `startBabysitterAgent` only by `fix()`, which now passes
@@ -72,14 +72,14 @@ Changed: `worker/deno/tests/fleet_pr_babysitter_test.ts` (the argv test expects
 the profile arguments in place of `--sandbox workspace-write`; new tests for no
 `--sandbox`, a `none` entry per protected path, and refusal of an empty list)
 and `worker/deno/tests/fleet_babysitter_app_test.ts` (calls pass `home`; the
-success test asserts the key path is `none`; a relative `home` is refused
-before any fetch, guard or spawn).
+success test asserts the key path is `none`; a relative `home` is refused before
+any fetch, guard or spawn).
 
 Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`: the expected argv
-pair `"--sandbox", "workspace-write"`.
-Required by: "Keep the App key and config out of reach of the agent's sandbox".
-Replaced by: `...buildBabysitterSandboxArgs({ dir, scratch, protectedPaths })`
-in the same test, plus the new no-`--sandbox` test.
+pair `"--sandbox", "workspace-write"`. Required by: "Keep the App key and config
+out of reach of the agent's sandbox". Replaced by:
+`...buildBabysitterSandboxArgs({ dir, scratch, protectedPaths })` in the same
+test, plus the new no-`--sandbox` test.
 
 Red checks: replacing the profile spread with `"--sandbox", "workspace-write"`
 fails four tests (the argv test, the new no-`--sandbox` test, the empty-list
@@ -93,8 +93,8 @@ passed except `deno tests` (31427 passed, 3 failed). Two failures are the
 Rust-formatter tests ("formatter should commit the Rust fix") and one was the
 ledger test fixed afterwards; I did not run the Rust-formatter tests on the base
 branch, so they are unverified as pre-existing. `config integration` and
-`checkov` were skipped for local prerequisites, and the serial pass did not
-run because the parallel pass failed. The gate was not re-run after the ledger
-fix; the ledger test and `check:manifests` were.
+`checkov` were skipped for local prerequisites, and the serial pass did not run
+because the parallel pass failed. The gate was not re-run after the ledger fix;
+the ledger test and `check:manifests` were.
 
 Not checked: any run against a real Codex.
