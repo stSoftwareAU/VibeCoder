@@ -584,3 +584,24 @@ Deno.test("a red-CI marker within the second-check window still leads to the sec
   assertEquals(state.prClosed, true);
   assertEquals(state.lanes, []);
 });
+
+Deno.test("a PR held for a declared human gate keeps its needs-human (owner rule 2026-11-01)", async () => {
+  // A check that declared `vibe-human-gate:` waits on a person; stall repair
+  // must not lift the label and restart the lanes on it.
+  const { state, deps } = harness({
+    prComments: [{
+      body: `<!-- vibe-ci-human-gate check="bootstrap-applied" head="${
+        "a".repeat(40)
+      }" -->\nApply the template.`,
+      user: { login: FLEET },
+      created_at: iso(NOW - 3600),
+    }],
+  });
+  const stall = stallFor("red-ci", { labels: ["needs-human"] });
+
+  assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
+  state.now += THRESHOLD * 10;
+  assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
+  assertEquals(state.calls.filter((a) => a[0] !== "api"), []);
+  assertEquals(state.syncs, 0);
+});

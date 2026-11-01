@@ -121,6 +121,8 @@ Deno.test("listBotPrs - carries the maintenance PrEntry fields through", async (
     mergeable: "CONFLICTING",
     author: { login: "dependabot[bot]" },
     isCrossRepository: false,
+    // The needs-human hold reads labels off every admitted entry.
+    labels: [],
   });
 });
 
