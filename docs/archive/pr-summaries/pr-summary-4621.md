@@ -33,7 +33,7 @@ sequenceDiagram
     participant G as GitHub PR
     participant M as Milestone rollup
     C->>A: issue title, issue branch, pushed HEAD
-    A->>G: read title; repair if issue ref is missing
+    A->>G: read title, repair if issue ref is missing
     A->>G: synchronise adopted body
     M->>G: search canonical title and merged issue-N heads
     M->>M: require same-repo exact issue branch and check reopen time
@@ -54,6 +54,7 @@ sequenceDiagram
 - `deno check --frozen --lock=deno.lock` on the four changed production modules — passed.
 - **Docs sweep** — searched root and nested READMEs, active docs, and source for `agent_pr_adoption`, `agent-raised PR`, `classifyClosedIssues`, `sync-pr-only`, and `milestone_claim_verdict_v1`. Read the milestone completion sections in `docs/INTERNALS.md` and `docs/workflows/milestones.md`, plus the adoption passage in `docs/USAGE.md`; updated all three docs. Remaining hits: `docs/INTERNALS.md:5876` still describes the body-sync helper's adoption role, and `docs/USAGE.md:118` correctly leaves marker-less PRs on other branches alone.
 - `markdownlint-cli2` on the active docs set after the `docs/USAGE.md` edit — passed; 0 reported issues.
+- `runMermaidCheck` across the repository after writing the summary diagram — passed; 1,601 Markdown files and 1,367 Mermaid blocks checked.
 - `deno task pr-summary-check --base main --issue-body-file /tmp/vibe-issue-4621-body.md --labels work-on,idle-task ../../docs/archive/pr-summaries/pr-summary-4621.md` from `worker/deno` — passed; 0 blocked and 0 not checked.
 - `deno task check:manifests` — failed on the existing `worker/deno/lib/fleet_babysitter_codex.ts` entry missing from `docs/audits/lib-sweep-coverage.json`; the same failure is present on `origin/main` at commit `82b1e121`.
 - `./quality.sh < /dev/null` — failed because its completeness check and Deno test pass report that same base-branch sweep-ledger omission; Deno lint, type check, formatting, Mermaid, markdownlint and Semgrep passed. Config integration and Checkov were skipped by the environment.
