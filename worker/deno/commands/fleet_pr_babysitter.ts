@@ -11,6 +11,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import { markCommentProcessed } from "../lib/pr_comments.ts";
 import {
+  accessibleBabysitterRepositories,
   babysitterAgentEnv,
   type BabysitterAppConfig,
   babysitterAppIdentity,
@@ -18,6 +19,7 @@ import {
   readBabysitterAppConfig,
   startBabysitterAppAuth,
 } from "../lib/fleet_babysitter_app.ts";
+import { selectBabysitterRepositories } from "../lib/fleet_babysitter_repositories.ts";
 import type { FetchFn } from "../lib/github_app_auth.ts";
 import {
   buildFetchTrackingRefArgs,
@@ -655,16 +657,12 @@ async function pass(
   execute: boolean,
   login: string,
   app: BabysitterAppConfig,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  repositories: readonly string[],
   repoFilter?: string,
   prFilter?: number,
 ): Promise<void> {
   await recoverTemporaryClones(Deno.env.get("TMPDIR") || "/tmp");
-  const config = await loadConfig(
-    Deno.env.get("CONFIG_PATH") ?? ".config.json",
-  );
-  if (repoFilter && !config.repos.includes(repoFilter)) {
-    throw new Error(`Repository ${repoFilter} is not monitored by this host`);
-  }
   const authors = [
     ...new Set([login, ...config.fleetPrAuthors, ...config.serviceAccounts]),
   ];
@@ -680,7 +678,7 @@ async function pass(
   }
   const discover = async (): Promise<RepairTask[]> => {
     const repairs: RepairTask[] = [];
-    for (const repo of config.repos) {
+    for (const repo of repositories) {
       if (repoFilter && repo !== repoFilter) continue;
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
         throw new Error(`Invalid repository: ${repo}`);
@@ -758,45 +756,47 @@ if (import.meta.main) {
   const prFilter = prArg === undefined ? undefined : Number(prArg);
   const home = Deno.env.get("HOME");
   if (!home) throw new Error("HOME is not set");
-  const monitored =
-    (await loadConfig(Deno.env.get("CONFIG_PATH") ?? ".config.json")).repos;
-  if (!monitored.length || (repoFilter && !monitored.includes(repoFilter))) {
-    throw new Error(
-      "Target repository is not monitored, or no monitored repositories are configured",
-    );
-  }
-  if (
-    new Set(monitored.map((repo) => repo.split("/")[0]?.toLowerCase())).size !==
-      1
-  ) {
-    throw new Error(
-      "Babysitter App currently requires monitored repositories under one owner",
-    );
-  }
   const app = await readBabysitterAppConfig(home);
   const login = await babysitterAppIdentity(app);
   Deno.env.set(
     "VIBE_GITHUB_QUOTA_WORK_DIR",
     `${home}/.vibe-coder/fleet-pr-babysitter`,
   );
-  const stopAuth = await startBabysitterAppAuth(
-    app,
-    undefined,
-    undefined,
-    repoFilter ? [repoFilter] : monitored,
-  );
   console.log(`Using GitHub App ${login} for babysitter requests.`);
-  try {
-    do {
+  do {
+    try {
+      const config = await loadConfig(
+        Deno.env.get("CONFIG_PATH") ?? ".config.json",
+      );
+      const accessible = await accessibleBabysitterRepositories(app);
+      const repositories = selectBabysitterRepositories(
+        config.repos,
+        accessible,
+        repoFilter,
+      );
+      const stopAuth = await startBabysitterAppAuth(
+        app,
+        undefined,
+        undefined,
+        repositories,
+      );
       try {
-        await pass(execute, login, app, repoFilter, prFilter);
-      } catch (error) {
-        console.error(error);
-        if (!watch) Deno.exitCode = 1;
+        await pass(
+          execute,
+          login,
+          app,
+          config,
+          repositories,
+          repoFilter,
+          prFilter,
+        );
+      } finally {
+        stopAuth();
       }
-      if (watch) await new Promise((resolve) => setTimeout(resolve, 300_000));
-    } while (watch);
-  } finally {
-    stopAuth();
-  }
+    } catch (error) {
+      console.error(error);
+      if (!watch) Deno.exitCode = 1;
+    }
+    if (watch) await new Promise((resolve) => setTimeout(resolve, 300_000));
+  } while (watch);
 }

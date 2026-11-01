@@ -13,6 +13,16 @@ the babysitter dismisses the addressed review if it is still the current review
 and the PR head has not changed. GitHub CI then
 runs the repository's quality and regression checks on the updated branch.
 
+The shared repository list stays unchanged. The babysitter monitors only the
+configured repositories accessible to its selected GitHub App installation and
+logs each skipped repository. For example, an App installed only on
+`stSoftwareAU` skips private `TitlePage` repositories in the same configuration.
+Access is rediscovered at the start of each pass, including in `--watch` mode;
+write tokens are scoped to the accessible configured subset. An explicitly
+requested inaccessible `--repo` fails, as do discovery errors or an empty
+accessible subset. Access changes during a pass remain API errors and are
+re-evaluated on the next pass.
+
 From the VibeCoder checkout:
 
 ```sh
