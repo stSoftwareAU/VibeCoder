@@ -5,6 +5,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  accessibleBabysitterRepositories,
   appConfigPath,
   BABYSITTER_AGENT_PERMISSIONS,
   babysitterAgentEnv,
@@ -131,6 +132,7 @@ Deno.test("setup adds bot lock trust without losing existing fleet identities", 
         service_accounts: ["worker"],
         fleet_pr_authors: ["author"],
         untouched: true,
+        repos: ["TitlePage/private", "stSoftwareAU/repo"],
       }),
     );
     assertEquals(
@@ -147,6 +149,7 @@ Deno.test("setup adds bot lock trust without losing existing fleet identities", 
       "fleet-pr-babysitter[bot]",
     ]);
     assertEquals(value.untouched, true);
+    assertEquals(value.repos, ["TitlePage/private", "stSoftwareAU/repo"]);
     assertEquals(
       await configureBabysitterLockTrust(path, "FLEET-PR-BABYSITTER[BOT]"),
       false,
@@ -431,4 +434,41 @@ Deno.test("babysitter agent env - gives the agent its token and scratch director
 
 Deno.test("babysitter agent env - rejects an empty token", () => {
   assertThrows(() => babysitterAgentEnv("/scratch/agent", ""), Error, "token");
+});
+
+Deno.test("access discovery uses metadata-only credentials and rechecks changed access", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const config = { appId: "123", installationId: "456", privateKeyPath };
+    const requests: Array<{ url: string; body: unknown }> = [];
+    let visible = "stSoftwareAU/one";
+    const fetchFn: FetchFn = (url, init) => {
+      if (String(url).endsWith("/access_tokens")) {
+        return fakeTokenExchange(
+          { permissions: { metadata: "read" } },
+          requests,
+        )(url, init);
+      }
+      assertEquals(
+        new Headers(init?.headers).get("Authorization"),
+        "Bearer ghs_agent_token",
+      );
+      return Promise.resolve(
+        Response.json({
+          total_count: 1,
+          repositories: [{ full_name: visible }],
+        }),
+      );
+    };
+    assertEquals([...await accessibleBabysitterRepositories(config, fetchFn)], [
+      "stsoftwareau/one",
+    ]);
+    visible = "stSoftwareAU/two";
+    assertEquals([...await accessibleBabysitterRepositories(config, fetchFn)], [
+      "stsoftwareau/two",
+    ]);
+    assertEquals(requests.map((request) => request.body), [
+      { permissions: { metadata: "read" } },
+      { permissions: { metadata: "read" } },
+    ]);
+  });
 });
