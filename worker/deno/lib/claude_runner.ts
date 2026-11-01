@@ -126,6 +126,7 @@ import {
 import { buildRunStats, type RunStats } from "./run_stats.ts";
 import {
   formatIssueEditDenialLog,
+  hasUnfinishedIssueExecutor,
   resolveIssueExecutorHookSettings,
   summariseIssueExecutorSplitRun,
 } from "./issue_executor_enforcement.ts";
@@ -255,10 +256,28 @@ export type {
 /** Default error scan tail lines. */
 const DEFAULT_ERROR_SCAN_TAIL_LINES = 30;
 
+/** The stats-bearing fields of one provider call inside an orchestrated run (Issue #4595). */
+export type OrchestratedCallStats = Pick<
+  ClaudeRunResult,
+  | "runStats"
+  | "fallbackModel"
+  | "preflightDegraded"
+  | "preflightDegradedReason"
+  | "extensions"
+>;
+
 /** Result from a Claude run with retry. */
 export interface ClaudeRunResult {
   /** Per-attempt usage retained for lifecycle follow-on costs (Issue #3720). */
   invocationStats?: (RunStats | undefined)[];
+  /**
+   * The stats of every provider call an external-orchestration run made other
+   * than the one this result is (Issue #4595): the plan and executor calls,
+   * and any earlier attempt of a retried call. Set only by the orchestration
+   * gate, in call order, so the run's cost and models cover every call and
+   * not just the one returned. The stats-bearing fields only, never output.
+   */
+  orchestrationCalls?: OrchestratedCallStats[];
   /**
    * Exit code (0 = success, 124 = timeout, 2 = rate limit exhaustion,
    * 137 = out of memory or killed — see {@link outOfMemory} and
@@ -2825,6 +2844,17 @@ async function runClaudeWithTimeoutBody(
     }
     if (hostDiskPark) {
       return { ok: false, error: new Error(hostDiskPark) };
+    }
+    if (
+      options.issueExecutorSplit && !timedOut && status.code === 0 &&
+      hasUnfinishedIssueExecutor(rawOutput)
+    ) {
+      return {
+        ok: false,
+        error: new Error(
+          "Split issue run has unfinished executor work; refusing completion and PR creation (Issue #4599).",
+        ),
+      };
     }
     return {
       ok: true,

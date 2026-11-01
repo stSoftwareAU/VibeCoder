@@ -102,7 +102,18 @@ Prompt templates. The advisor and executor instructions are built in code, and
 the template carries only a placeholder.
 
 - The block is `ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS`
-  (`worker/deno/lib/issue_executor_split_prompt.ts:27`).
+  (`worker/deno/lib/issue_executor_split_prompt.ts:31`).
+- The block pins every executor and reviewer dispatch to the foreground
+  (`run_in_background: false`, Issue #4599). The Claude CLI's `Agent` tool can
+  run a sub-agent in the background, which lets the advisor end its turn with an
+  executor still running and reach the PR with no summary. The split-run
+  `PreToolUse` guard also matches `Agent|Task` and denies advisor dispatches
+  unless they explicitly set `run_in_background: false`. After the CLI exits,
+  the runner requires a completed synchronous result for each executor call;
+  an outstanding dispatch, launch acknowledgement or error marks the invocation
+  unfinished and prevents completion and PR creation. The existing failure path
+  retains the work for retry. `issue_executor_enforcement_test.ts` covers the
+  guard and drives the real runner with unfinished and completed fake-CLI streams.
 - `buildPrompt` splices it into `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` when the split
   is on, and renders the empty string otherwise
   (`worker/deno/lib/prompt_builder.ts:718-728`, `:782`, `:832-834`).

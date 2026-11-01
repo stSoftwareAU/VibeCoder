@@ -20,7 +20,7 @@
  * > distinguish subagent calls from main-thread calls."
  *
  * So the denial branch is the one taken: a `PreToolUse` hook matching
- * `Edit|Write` denies the call when `agent_id` is absent (the advisor) and
+ * `Edit|Write|Agent|Task` denies edits when `agent_id` is absent (the advisor) and
  * allows it when it is present (an executor). A denial is a refused tool
  * call, not a failed run — the advisor is told why and delegates instead.
  *
@@ -55,7 +55,11 @@ export const ISSUE_EXECUTOR_EDIT_TOOLS: readonly string[] = ["Edit", "Write"];
 export const ISSUE_EXECUTOR_DENIAL_MARKER = "[issue-executor-split]";
 
 /** The `PreToolUse` matcher the hook is registered under. */
-export const ISSUE_EXECUTOR_HOOK_MATCHER = ISSUE_EXECUTOR_EDIT_TOOLS.join("|");
+export const ISSUE_EXECUTOR_HOOK_MATCHER = [
+  ...ISSUE_EXECUTOR_EDIT_TOOLS,
+  "Agent",
+  "Task",
+].join("|");
 
 /** The fields of a `PreToolUse` hook payload this guard reads. */
 export interface IssueEditHookPayload {
@@ -63,8 +67,8 @@ export interface IssueEditHookPayload {
   hook_event_name?: unknown;
   /** The tool about to run, e.g. `Edit`. */
   tool_name?: unknown;
-  /** The tool's arguments; only `file_path` is read, for the carve-out. */
-  tool_input?: { file_path?: unknown };
+  /** Edit path for the carve-out, or dispatch execution mode. */
+  tool_input?: { file_path?: unknown; run_in_background?: unknown };
   /** Present only when the call comes from a sub-agent (the executors). */
   agent_id?: unknown;
 }
@@ -110,13 +114,13 @@ function text(value: unknown): string | undefined {
 }
 
 /**
- * Decide whether one `PreToolUse` call is an advisor edit that must be denied.
+ * Decide whether an advisor edit or non-foreground dispatch must be denied.
  *
  * Deny exactly when the tool is one of {@link ISSUE_EXECUTOR_EDIT_TOOLS} and
  * the payload carries **no** `agent_id` — the CLI's own signal for "the main
  * thread called this", which in a split run is the advisor. Everything else
- * is allowed: an executor's edit (`agent_id` present), any non-edit tool, and
- * any payload for another event.
+ * is allowed except advisor Agent/Task calls without explicit foreground mode.
+ * Sub-agent calls and payloads for another event are allowed.
  *
  * @param payload - The hook payload, as parsed from the guard's stdin
  * @returns The decision, carrying the tool name and reason when denying
@@ -129,6 +133,16 @@ export function decideIssueEditHook(payload: unknown): IssueEditHookDecision {
   if (event !== undefined && event !== "PreToolUse") return { deny: false };
 
   const tool = text(input.tool_name);
+  if (
+    (tool === "Agent" || tool === "Task") && text(input.agent_id) === undefined
+  ) {
+    return input.tool_input?.run_in_background === false ? { deny: false } : {
+      deny: true,
+      tool,
+      reason:
+        `${ISSUE_EXECUTOR_DENIAL_MARKER} ${tool} denied: dispatch with run_in_background: false so the advisor can inspect the completed work (Issue #4599).`,
+    };
+  }
   if (tool === undefined || !ISSUE_EXECUTOR_EDIT_TOOLS.includes(tool)) {
     return { deny: false };
   }
@@ -183,6 +197,9 @@ export function renderIssueEditHookOutput(
  * @returns A single line, no trailing newline
  */
 export function formatIssueEditDenialLog(tool: string): string {
+  if (tool === "Agent" || tool === "Task") {
+    return `${ISSUE_EXECUTOR_DENIAL_MARKER} denied advisor ${tool} call — dispatch must set run_in_background: false (Issue #4599); the run continues.`;
+  }
   return `${ISSUE_EXECUTOR_DENIAL_MARKER} denied advisor ${tool} call — the ` +
     `edit belongs to an "${ISSUE_EXECUTOR_AGENT_NAME}" sub-agent ` +
     `(Issue #2344); the run continues.`;
@@ -317,6 +334,61 @@ function resultText(content: unknown): string {
         : ""
     )
     .join("\n");
+}
+
+/**
+ * Require a synchronous result for every advisor executor dispatch before a
+ * split invocation can succeed. A launch acknowledgement is not completion.
+ * Missing ids and malformed/truncated stream lines fail closed.
+ *
+ * @param rawStreamOutput - The invocation's stream-json output
+ * @returns Whether executor work is unfinished or cannot be verified
+ */
+export function hasUnfinishedIssueExecutor(rawStreamOutput: string): boolean {
+  const pending = new Set<string>();
+  const background = new Set<string>();
+  for (const line of rawStreamOutput.split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return true;
+    }
+    if (!event || typeof event !== "object") return true;
+    if (event.parent_tool_use_id != null) continue;
+    const blocks = event.message?.content;
+    if (!Array.isArray(blocks)) continue;
+    for (const block of blocks) {
+      if (
+        event.type === "assistant" && block?.type === "tool_use" &&
+        DISPATCH_TOOLS.includes(block.name) &&
+        namesExecutor(block.input)
+      ) {
+        const id = text(block.id);
+        if (!id) return true;
+        pending.add(id);
+        if (block.input?.run_in_background !== false) background.add(id);
+      } else if (
+        event.type === "user" && block?.type === "tool_result" &&
+        pending.has(block.tool_use_id)
+      ) {
+        // The CLI can return a background-launch acknowledgement as a tool
+        // result. Its structured isAsync flag and launch text are not a
+        // completed executor result, even if foreground was requested.
+        const body = resultText(block.content);
+        if (
+          background.has(block.tool_use_id) ||
+          event.tool_use_result?.isAsync === true ||
+          /\bagent launched|\brunning (?:in the )?background|\boutput_file\s*:/i
+            .test(body)
+        ) continue;
+        if (block.is_error === true) return true;
+        pending.delete(block.tool_use_id);
+      }
+    }
+  }
+  return pending.size > 0;
 }
 
 /**

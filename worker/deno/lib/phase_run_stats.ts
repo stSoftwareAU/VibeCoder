@@ -77,6 +77,11 @@ export interface PhaseClaudeResult {
    * reviewable after rollout.
    */
   extensions?: ExtensionTelemetry;
+  /**
+   * The other provider calls an orchestrated issue run made (Issue #4595);
+   * `recordClaudeRunStats` records each as its own entry beside this result.
+   */
+  orchestrationCalls?: PhaseClaudeResult[];
 }
 
 /** Post-a-comment callback (decoupled from any specific GitHub client). */

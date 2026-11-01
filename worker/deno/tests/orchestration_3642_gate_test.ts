@@ -856,3 +856,244 @@ Deno.test("orchestration gate - a Codex manager or reviewer cannot change the ch
     assertStringIncludes(warnings.join("\n"), "reverted");
   });
 });
+
+/** Run stats for one call, named by the model it was served and the tokens it spent. */
+function statsFor(model: string, outputTokens: number): RunStats {
+  return {
+    servedModels: [model],
+    requestedModel: model,
+    wallClockMs: outputTokens,
+    durationMs: outputTokens,
+    tokenUsage: {
+      inputTokens: 1,
+      outputTokens,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    },
+  };
+}
+
+Deno.test("orchestration gate - a retried returned review contributes only its earlier attempt", async () => {
+  await withWorkDir(async (dir) => {
+    const earlierAttempt = statsFor("claude-opus-4-8", 4000);
+    const finalAttempt = statsFor("claude-opus-4-8", 5000);
+    const fake = fakeRunner((options) =>
+      runResult({
+        output: options.prompt.startsWith(REVIEW_PREFIX)
+          ? "manager review"
+          : "step output",
+        runStats: options.prompt.startsWith(REVIEW_PREFIX)
+          ? finalAttempt
+          : statsFor("claude-haiku-4-5", 100),
+        ...(options.prompt.startsWith(REVIEW_PREFIX)
+          ? { invocationStats: [earlierAttempt, finalAttempt] }
+          : {}),
+      })
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.runStats, finalAttempt);
+    assertEquals(
+      outcome.value.orchestrationCalls?.filter((call) =>
+        call.runStats?.servedModels[0] === "claude-opus-4-8"
+      ),
+      [{ runStats: earlierAttempt }],
+    );
+  });
+});
+
+Deno.test("orchestration gate - the result carries the plan and executor calls' stats beside the review's (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner((options) =>
+      runResult({
+        output: options.prompt.startsWith(REVIEW_PREFIX)
+          ? "manager review"
+          : "step output",
+        // Distinct figures per call: plan 100 (sonnet), executor 7000 (haiku), review 300 (opus).
+        runStats: options.model === "haiku"
+          ? statsFor("claude-haiku-4-5", 7000)
+          : options.model === "opus"
+          ? statsFor("claude-opus-4-8", 300)
+          : statsFor("claude-sonnet-4-6", 100),
+      })
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    // The returned result is still the review, so the phase's own handling is unchanged.
+    assertEquals(outcome.value.runStats?.servedModels, ["claude-opus-4-8"]);
+    // The calls the review does not cover ride beside it, in call order.
+    assertEquals(
+      outcome.value.orchestrationCalls?.map((call) =>
+        call.runStats?.tokenUsage?.outputTokens
+      ),
+      [100, 7000],
+    );
+    assertEquals(
+      outcome.value.orchestrationCalls?.map((call) =>
+        call.runStats?.servedModels[0]
+      ),
+      ["claude-sonnet-4-6", "claude-haiku-4-5"],
+    );
+  });
+});
+
+Deno.test("orchestration gate - a retried executor call contributes every attempt it billed (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const failedAttempt = statsFor("claude-haiku-4-5", 4000);
+    const finalAttempt = statsFor("claude-haiku-4-5", 5000);
+    const fake = fakeRunner((options) =>
+      runResult({
+        output: options.prompt.startsWith(REVIEW_PREFIX)
+          ? "manager review"
+          : "step output",
+        runStats: options.model === "haiku"
+          ? finalAttempt
+          : statsFor("claude-opus-4-8", 300),
+        ...(options.model === "haiku"
+          ? { invocationStats: [failedAttempt, undefined, finalAttempt] }
+          : {}),
+      })
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    const haikuTokens = outcome.value.orchestrationCalls
+      ?.filter((call) => call.runStats?.servedModels[0] === "claude-haiku-4-5")
+      .map((call) => call.runStats?.tokenUsage?.outputTokens);
+    assertEquals(haikuTokens, [4000, 5000]);
+  });
+});
+
+Deno.test("orchestration gate - a timed-out run still carries the earlier calls' stats (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    let call = 0;
+    const fake = fakeRunner(() => {
+      call++;
+      // The plan finishes; the executor then times out.
+      return call === 1
+        ? runResult({ runStats: statsFor("claude-sonnet-4-6", 100) })
+        : runResult({
+          exitCode: 124,
+          timedOut: true,
+          runStats: statsFor("claude-haiku-4-5", 7000),
+        });
+    });
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.timedOut, true);
+    // Every call but the one returned: the plan, then any earlier executor attempt.
+    assertEquals(
+      outcome.value.orchestrationCalls?.length,
+      fake.calls.length - 1,
+    );
+    assertEquals(
+      outcome.value.orchestrationCalls?.[0]?.runStats?.servedModels[0],
+      "claude-sonnet-4-6",
+    );
+  });
+});
+
+/** Answers each call from its role: the executor (haiku) gets `executor`, the plan `plan`, the review `review`. */
+function answerByRole(
+  plan: Partial<ClaudeRunResult>,
+  executor: Partial<ClaudeRunResult>,
+  review: Partial<ClaudeRunResult>,
+): Responder {
+  return (options) =>
+    runResult(
+      options.model === "haiku"
+        ? { output: "step output", ...executor }
+        : options.prompt.startsWith(REVIEW_PREFIX)
+        ? { output: "manager review", ...review }
+        : { ...plan },
+    );
+}
+
+Deno.test("orchestration gate - a call that billed nothing and degraded nothing adds no stats entry (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner(answerByRole({}, {}, {
+      runStats: statsFor("claude-opus-4-8", 300),
+    }));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.orchestrationCalls, undefined);
+  });
+});
+
+Deno.test("orchestration gate - only a call's final attempt carries its fallback, degradation and extension fields (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const plan = statsFor("claude-sonnet-4-6", 100);
+    const failedAttempt = statsFor("claude-haiku-4-5", 4000);
+    const finalAttempt = statsFor("claude-haiku-4-5", 5000);
+    const extensions = {
+      granted: 2,
+    } as unknown as ClaudeRunResult["extensions"];
+    const fake = fakeRunner(answerByRole(
+      { runStats: plan },
+      {
+        runStats: finalAttempt,
+        invocationStats: [failedAttempt, finalAttempt],
+        fallbackModel: "claude-sonnet-4-6",
+        preflightDegraded: true,
+        preflightDegradedReason: "usage probe unavailable",
+        extensions,
+      },
+      { runStats: statsFor("claude-opus-4-8", 300) },
+    ));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.orchestrationCalls, [
+      { runStats: plan },
+      { runStats: failedAttempt },
+      {
+        runStats: finalAttempt,
+        fallbackModel: "claude-sonnet-4-6",
+        preflightDegraded: true,
+        preflightDegradedReason: "usage probe unavailable",
+        extensions,
+      },
+    ]);
+  });
+});
+
+Deno.test("orchestration gate - a degraded call without a reason or run stats still gets an entry (Issue #4595)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner(answerByRole(
+      {},
+      { preflightDegraded: true },
+      { runStats: statsFor("claude-opus-4-8", 300) },
+    ));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    if (!outcome.ok) return;
+    assertEquals(outcome.value.orchestrationCalls, [
+      { preflightDegraded: true },
+    ]);
+  });
+});
