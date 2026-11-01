@@ -20,6 +20,7 @@ Deno.test({
     const binDir = join(tmpDir, "bin");
     await Deno.mkdir(binDir);
     await Deno.copyFile(LOOP_SH, join(tmpDir, "loop.sh"));
+    await Deno.symlink(join(REPO_ROOT, "worker"), join(tmpDir, "worker"));
     await Deno.chmod(join(tmpDir, "loop.sh"), 0o755);
 
     const writeExecutable = async (name: string, contents: string) => {
@@ -32,7 +33,7 @@ Deno.test({
       "container",
       `#!/bin/bash
 case "$1" in
-  kill) exit 0 ;;
+  kill) /bin/sleep 0.75; exit 0 ;;
   ls) printf 'NAME STATUS\\nvibe-coder-worker running\\n' ;;
   exec) exit 1 ;;
   *) exit 2 ;;
@@ -49,10 +50,16 @@ case "$*" in
 esac
 `,
     );
+    const startHelper = () =>
+      new Deno.Command("/bin/sleep", { args: ["30"] }).spawn();
+    const helpers = [startHelper(), startHelper(), startHelper()] as const;
     await writeExecutable(
       "ps",
       `#!/bin/bash
 case " $* " in
+  *' -A -o pid=,args= '*) printf '%s container-runtime-linux vibe-coder-worker\\n%s container-runtime-linux vibe-coder-other\\n%s Virtualization.VirtualMachine\\n' "${
+        helpers[0].pid
+      }" "${helpers[1].pid}" "${helpers[2].pid}" ;;
   *' -p 6661 '*|*' -p 6662 '*) echo 1 ;;
   *) exec /bin/ps "$@" ;;
 esac
@@ -92,17 +99,29 @@ esac
     }).spawn();
 
     try {
-      // The runtime kill is ineffective; the probe proceeds through the real
-      // force_stop_container path while two unrelated launchd VMs have PPID 1.
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const log = await Deno.readTextFile(join(tmpDir, "loop.log")).catch(() =>
-        ""
-      );
+      // Wait for recovery, including a slow runtime response, under a deadline.
+      let log = "";
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        log = await Deno.readTextFile(join(tmpDir, "loop.log")).catch(() => "");
+        if (log.includes("container reaper finished")) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       assertStringIncludes(log, "survived the runtime kill");
       assertStringIncludes(
         log,
-        "VM termination skipped for vibe-coder-worker — no verifiable VM ownership metadata",
+        "container reaper finished for vibe-coder-worker",
       );
+      const targetStatus = await Promise.race([
+        helpers[0].status,
+        new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), 1_000)
+        ),
+      ]);
+      assertEquals(targetStatus?.success, false);
+      for (const helper of helpers.slice(1)) {
+        Deno.kill(helper.pid, 0);
+      }
       const signals = await Deno.readTextFile(join(tmpDir, "signals.log"))
         .catch(() => "");
       assertEquals(
@@ -112,6 +131,12 @@ esac
       );
     } finally {
       await killProcessTree(child);
+      for (const helper of helpers) {
+        try {
+          helper.kill("SIGKILL");
+        } catch { /* already exited */ }
+        await helper.status;
+      }
       await Deno.remove(tmpDir, { recursive: true });
     }
   },

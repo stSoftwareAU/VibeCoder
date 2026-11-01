@@ -412,8 +412,8 @@ reap_orphaned_probes() {
 # So probe, do not infer: a trivial `exec` against the live container, and N
 # consecutive failures means the control plane is gone whatever `container ls`
 # says. Recovery attempts the runtime kill, then terminates the host-side
-# client. The runtime interface has no verifiable per-container VM identity,
-# so Virtualization VMs stay untouched; PPID 1 is not ownership evidence.
+# client and the runtime helper identified by the container name. Unrelated
+# Virtualization VMs stay untouched; PPID 1 is not ownership evidence.
 ################################################################################
 VIBE_PROBE_INTERVAL_SECONDS="${VIBE_PROBE_INTERVAL_SECONDS:-120}"
 VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
@@ -431,7 +431,7 @@ running_vibe_container() {
             }'
 }
 
-# Terminate a container whose control plane is dead, and the VM behind it.
+# Terminate a wedged container and its matching runtime helper.
 force_stop_container() {
     local name="$1"
     [[ -z "${name}" ]] && return 0
@@ -456,12 +456,21 @@ force_stop_container() {
         kill -KILL "${client}" 2>/dev/null || true
     fi
 
-    # Apple container's inspect model contains container identity and runtime
-    # state, but no host VM PID. Its VM is a launchd-managed XPC process, so
-    # PPID 1 cannot establish which container owns it. Do not signal a VM based
-    # on a global process-name match; leave it running until ownership is
-    # available from a supported runtime interface.
-    echo "loop.sh: VM termination skipped for ${name} — no verifiable VM ownership metadata"
+    # Reuse the watchdog's process selector: only runtime executables whose
+    # argv identifies this container can be signalled.
+    if [[ -z "${DENO_CMD}" || ! -f "${WORKER_MOD}" ]]; then
+        echo "loop.sh: cannot reap ${name}: Deno or worker module unavailable" >&2
+        return 1
+    fi
+    if ! bounded 120 "${DENO_CMD}" run \
+        --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
+        --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
+        "${WORKER_MOD}" container-reap --runtime container --name "${name}" \
+        --grace-seconds 0 --reason "control-plane probe failed" </dev/null; then
+        echo "loop.sh: container reaper did not clear ${name}" >&2
+    fi
+    echo "loop.sh: container reaper finished for ${name}"
+
 }
 
 # Whether the supervisor that started a probe is gone, or is no longer the
