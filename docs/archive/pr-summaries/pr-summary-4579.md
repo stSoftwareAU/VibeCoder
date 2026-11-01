@@ -44,19 +44,21 @@ Backend log-text change. Tests run from `worker/deno`:
 
 - Extended `worker/deno/tests/completion_phase_advisory_gates_4234_test.ts`
   (first test) to capture logger warnings via `createMockDeps`, asserting no
-  warning contains "blocked PR creation" and that "Reproduction-status gate
-  reported findings" is logged.
-  - Red check: against the unfixed lib it failed at the new assertion
-    (`Values are not equal ... Actual: true, Expected: false`); it passes with
-    the reworded messages.
-  - Only the reproduction-status warn fires in this fixture. The
-    result-placeholder, mutation, coverage carry-over and pre-PR verifier
-    messages are reworded the same way but not driven by a test; they are one
-    string each, and their reach is not staged by this fixture (exempt
-    (untestable): the mutation and coverage runners are not wired in the mock
-    deps, and the earlier tests that reach the verifier and placeholder gates,
-    `completion_phase_pre_pr_verifier_3395_test.ts` and
-    `completion_phase_summary_rule_retry_test.ts`, do not capture the logger).
+  warning contains "blocked PR creation" and that the reproduction-status,
+  result-placeholder ("Result-placeholder gate reported findings") and pre-PR
+  verifier ("Pre-PR verifier reported findings (Issue #3395)") warnings are
+  logged; this fixture reaches all three.
+- Extended `worker/deno/tests/completion_phase_mutation_gate_test.ts` ("a
+  surviving mutant is noted and the PR is still raised") to assert
+  `outcome.warnings` contains "Mutation gate reported findings" and no warning
+  contains "blocked PR creation".
+- Extended `worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts`
+  ("an uncovered carried line blocks the PR and names file:line") the same way
+  for "Coverage carry-over gate reported findings".
+  - Red check: with the five lines in `completion_phase.ts` temporarily put back
+    to "blocked PR creation", the three test files ran 30 passed, 3 failed (the
+    4234 test and the mutation and coverage tests above, each at the new
+    assertion); with the reworded messages they pass (33 passed, 0 failed).
 - No existing assertion was removed or edited.
 - Docs: grepped `README.md`, `docs/` (excluding archive) and `prompts/` for
   "blocked PR creation"; the only hit is the historical audit record named

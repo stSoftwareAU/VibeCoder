@@ -288,6 +288,17 @@ Deno.test("completion - a surviving mutant is noted and the PR is still raised",
   assertStringIncludes(outcome.comments[0]!, `${CHANGED_FILE}:42`);
   assertStringIncludes(outcome.comments[0]!, "negated if condition");
   assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
+  // The gate is advisory, so its log line must not say it blocked the PR (Issue #4579).
+  assertEquals(
+    outcome.warnings.includes("Mutation gate reported findings"),
+    true,
+    `warnings: ${JSON.stringify(outcome.warnings)}`,
+  );
+  assertEquals(
+    outcome.warnings.some((w) => w.includes("blocked PR creation")),
+    false,
+    `warnings: ${JSON.stringify(outcome.warnings)}`,
+  );
 });
 
 Deno.test("completion - the runner is given the PR diff and the default budget", async () => {

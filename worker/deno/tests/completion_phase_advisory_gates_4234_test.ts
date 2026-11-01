@@ -249,11 +249,17 @@ Deno.test(
       warned.some((message) => message.includes("blocked PR creation")),
       false,
     );
-    // Only this gate's warn fires in this fixture, so only it is asserted.
-    assertEquals(
-      warned.includes("Reproduction-status gate reported findings"),
-      true,
-    );
+    // This fixture reaches three reworded gates: reproduction status, plus the
+    // result-placeholder and pre-PR verifier gates on the re-run after the note.
+    for (
+      const message of [
+        "Reproduction-status gate reported findings",
+        "Result-placeholder gate reported findings",
+        "Pre-PR verifier reported findings (Issue #3395)",
+      ]
+    ) {
+      assertEquals(warned.includes(message), true, `missing: ${message}`);
+    }
   },
 );
 
