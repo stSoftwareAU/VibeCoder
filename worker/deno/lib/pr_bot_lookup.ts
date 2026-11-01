@@ -93,6 +93,10 @@ function toPrEntry(pr: OpenPRWithBody, login: string): PrEntry {
     entry.autoMergeRequest = pr.autoMergeRequest;
   }
   if (pr.mergeable !== undefined) entry.mergeable = pr.mergeable;
+  // The needs-human hold reads labels off every admitted entry.
+  if (pr.labels !== undefined) {
+    entry.labels = pr.labels.map((name) => ({ name }));
+  }
   return entry;
 }
 
