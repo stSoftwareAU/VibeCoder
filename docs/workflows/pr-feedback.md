@@ -622,11 +622,12 @@ Six checks run, each only when it applies:
    mutator, 40-mutant cap, `skip_mutation_check`,
    `mutation_check_budget_seconds`, `quality_credentials` handling and
    `exempt (untestable)` exemptions read from the PR summary. An unexempted
-   survivor is a hit for the recovery turn, which may add or change tests and
-   docs but no production code. A budget, cap or runner error is reported, not
-   a hit. Survivors still left are reported in the PR reply; they do not block
-   the push. The standalone `pr-feedback-processor process` command passes
-   the loaded repository configuration to this check as the run loop does.
+   survivor is a hit for the recovery turn, which kills each survivor with a
+   test and may remove or fix a line a survivor shows is dead or wrong. A
+   budget, cap or runner error is reported, not a hit. Survivors still left are
+   reported in the PR reply; they do not block the push. The standalone
+   `pr-feedback-processor process` command passes the loaded repository
+   configuration to this check as the run loop does.
    Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
 
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
@@ -634,8 +635,8 @@ check is a hit too (Issue #3740) — and the agent, with full tools, is asked
 to rewrite the listed sentences, recount the Test Plan, restate each unchecked
 figure as "`<file>` (N tests at head)" or remove it, and rewrite or remove
 each stale quoted sentence, without changing code, except that a mutation
-survivor (item 6) is answered
-with tests or docs, never production code. The checks are then re-run, and
+survivor (item 6) is answered with tests or docs, and production code only
+where the survivor shows a line is dead or wrong. The checks are then re-run, and
 the mutation check runs once more when survivors were found and the turn ran;
 a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn

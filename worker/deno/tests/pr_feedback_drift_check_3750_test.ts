@@ -271,7 +271,10 @@ Deno.test("runPrFeedbackDriftCheck - a survivor that outlives the recovery turn 
       calls[1]!.prompt,
       "No test went red when each of these mutations was applied",
     );
-    assertStringIncludes(calls[1]!.prompt, "Change no production code");
+    assertStringIncludes(
+      calls[1]!.prompt,
+      "Change production code only where a listed mutation shows the line is dead or wrong",
+    );
 
     assertEquals(seamCalls, [beforeSha, beforeSha]);
 
@@ -548,7 +551,7 @@ Deno.test("formatDriftResidual - a mutationNote-only residual prints the note un
   assertStringIncludes(text, "mutation budget exhausted after 1 of 2 mutants");
 });
 
-Deno.test("buildDriftRecoveryPrompt - survivors switch the closing step to the test-only wording and fence the survivors", () => {
+Deno.test("buildDriftRecoveryPrompt - survivors switch the closing step to the tests-first wording and fence the survivors", () => {
   const prompt = buildDriftRecoveryPrompt({
     repo: "org/repo",
     prNumber: 7,
@@ -564,7 +567,17 @@ Deno.test("buildDriftRecoveryPrompt - survivors switch the closing step to the t
   );
   assertStringIncludes(prompt, "lib/rule.ts:2");
   assertStringIncludes(prompt, "Add a test that kills each listed mutation");
-  assertStringIncludes(prompt, "Change no production code");
+  assertStringIncludes(prompt, "no input can reach it");
+  assertStringIncludes(prompt, "remove or fix that line");
+  assertStringIncludes(
+    prompt,
+    "only for a line production can reach but a test cannot stage",
+  );
+  assertStringIncludes(
+    prompt,
+    "Change production code only where a listed mutation shows the line is dead or wrong",
+  );
+  assert(!prompt.includes("Change no production code"));
   assert(!prompt.includes("Change no code —"));
 });
 
@@ -580,6 +593,6 @@ Deno.test("buildDriftRecoveryPrompt - with no survivors the documentation-only c
     prompt,
     "Change no code — this is a documentation fix only. Commit the change, referencing PR #7.",
   );
-  assert(!prompt.includes("Change no production code"));
+  assert(!prompt.includes("Change production code only"));
   assert(!prompt.includes("Add a test that kills each listed mutation"));
 });
