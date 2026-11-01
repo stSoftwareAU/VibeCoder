@@ -10,6 +10,7 @@ import {
   configureBabysitterLockTrust,
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
+import { checkBabysitterCodexVersion } from "../lib/fleet_babysitter_sandbox.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
 import { escapeXml } from "../lib/xml_escape.ts";
 
@@ -109,9 +110,10 @@ async function main(): Promise<number> {
   if (!config.repos.length) {
     throw new Error("No monitored repos in .config.json");
   }
-  for (const binary of ["git", "codex", "rtk"]) {
+  for (const binary of ["git", "rtk"]) {
     await command(binary, ["--version"]);
   }
+  await checkBabysitterCodexVersion();
   await runGhCommand(["--version"]);
   if (checkOnly && !argument("app-id")) {
     throw new Error("--check requires --app-id");

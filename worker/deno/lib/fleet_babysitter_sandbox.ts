@@ -1,3 +1,5 @@
+import { runWithTimeout } from "./subprocess_timeout.ts";
+
 /**
  * Filesystem boundary for the fleet babysitter's Codex agent (Issue #4593).
  *
@@ -119,4 +121,32 @@ export function buildBabysitterSandboxArgs(options: {
     "-c",
     `permissions.${BABYSITTER_PERMISSIONS_PROFILE}.network={ enabled = true }`,
   ];
+}
+
+/** Refuse versions that can silently ignore the agent permissions profile. */
+export async function checkBabysitterCodexVersion(
+  readVersion: () => Promise<string> = async () => {
+    const result = await runWithTimeout("codex", ["--version"], {
+      timeoutMs: 30_000,
+    });
+    if (!result.ok) throw result.error;
+    if (!result.value.success) {
+      throw new Error(`codex --version failed: ${result.value.stderr.trim()}`);
+    }
+    return result.value.stdout.trim();
+  },
+): Promise<void> {
+  const version = await readVersion();
+  const match = /^codex-cli (\d+)\.(\d+)\.(\d+)$/.exec(version);
+  const parts = match?.slice(1).map(Number);
+  if (
+    !parts || parts.some((part) => !Number.isSafeInteger(part)) ||
+    (parts[0] === 0 && (parts[1]! < 164))
+  ) {
+    throw new Error(
+      `Babysitter requires Codex CLI 0.164.0 or newer; got ${
+        JSON.stringify(version)
+      }`,
+    );
+  }
 }

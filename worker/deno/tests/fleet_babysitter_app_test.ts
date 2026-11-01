@@ -67,6 +67,7 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
           args = options.args as string[];
           return {} as Deno.ChildProcess;
         },
+        () => Promise.resolve("codex-cli 0.164.0"),
       );
       assertEquals(requests[0]!.body, {
         repositories: ["repo"],
@@ -108,6 +109,7 @@ Deno.test("agent launch does not record an attempt when token minting fails", as
             spawned = true;
             return {} as Deno.ChildProcess;
           },
+          () => Promise.resolve("codex-cli 0.164.0"),
         )
       );
       assertEquals(guarded, false);
@@ -146,6 +148,7 @@ Deno.test("agent launch refuses a relative HOME before minting a token or spawni
             spawned = true;
             return {} as Deno.ChildProcess;
           },
+          () => Promise.resolve("codex-cli 0.164.0"),
         ),
       Error,
       "must be an absolute path",
@@ -175,6 +178,7 @@ Deno.test("agent launch does not spawn an already attempted head", async () => {
           spawned = true;
           return {} as Deno.ChildProcess;
         },
+        () => Promise.resolve("codex-cli 0.164.0"),
       );
       assertEquals(requests.length, 1);
       assertEquals(result, undefined);
@@ -495,4 +499,34 @@ Deno.test("babysitter agent env - gives the agent its token and scratch director
 
 Deno.test("babysitter agent env - rejects an empty token", () => {
   assertThrows(() => babysitterAgentEnv("/scratch/agent", ""), Error, "token");
+});
+
+Deno.test("agent launch rejects old Codex before mint, attempt or spawn", async () => {
+  let fetched = false;
+  let attempted = false;
+  let spawned = false;
+  await assertRejects(
+    () =>
+      startBabysitterAgent(
+        { appId: "123", installationId: "456", privateKeyPath: "/key" },
+        "owner/repo",
+        { dir: "/clone", scratch: "/scratch", prompt: "repair", home: "/home" },
+        () => {
+          attempted = true;
+          return Promise.resolve(true);
+        },
+        () => {
+          fetched = true;
+          return Promise.resolve(new Response());
+        },
+        () => {
+          spawned = true;
+          return {} as Deno.ChildProcess;
+        },
+        () => Promise.resolve("codex-cli 0.110.0"),
+      ),
+    Error,
+    "requires Codex CLI 0.164.0 or newer",
+  );
+  assertEquals([fetched, attempted, spawned], [false, false, false]);
 });

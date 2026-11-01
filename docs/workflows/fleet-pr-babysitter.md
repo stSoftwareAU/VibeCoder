@@ -67,7 +67,10 @@ failure is logged and the next pass retries. Organisation-specific extensions
 can use this to publish a separate babysitter heartbeat and failure record. Dry
 runs and runs limited to a repository or PR do not report service health.
 
-The host needs `gh`, `git`, `deno` and `codex`. When RTK is available, each
+The host needs `gh`, `git`, `deno` and Codex CLI 0.164.0 or newer. Setup and
+each repair check the Codex version before minting an agent token; older or
+unrecognised versions are refused because they may silently ignore the
+permissions profile. When RTK is available, each
 repair receives instructions to use it; otherwise the babysitter logs a warning
 and continues without it. Before execution, put the App's `<slug>[bot]` login in
 `service_accounts` or `fleet_pr_authors` **on every fleet host**. Run setup on

@@ -22,6 +22,7 @@ import type { FetchFn } from "../lib/github_app_auth.ts";
 import {
   babysitterProtectedPaths,
   buildBabysitterSandboxArgs,
+  checkBabysitterCodexVersion,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
   buildFetchTrackingRefArgs,
@@ -435,7 +436,9 @@ export async function startBabysitterAgent(
   beforeSpawn: () => Promise<boolean>,
   fetchFn: FetchFn = globalThis.fetch,
   spawn: typeof spawnCommandWithTimeout = spawnCommandWithTimeout,
+  readVersion?: () => Promise<string>,
 ): Promise<Deno.ChildProcess | undefined> {
+  await checkBabysitterCodexVersion(readVersion);
   const protectedPaths = await babysitterProtectedPaths(
     options.home,
     app.privateKeyPath,
