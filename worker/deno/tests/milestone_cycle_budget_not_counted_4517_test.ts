@@ -18,6 +18,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   AGENT_DEFERRED_CYCLE_BUDGET,
   type MilestoneBranchSyncDeps,
+  resolverRungDue,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
 import {
@@ -25,6 +26,7 @@ import {
   presyncMilestoneBranch,
 } from "../lib/milestone_presync.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
+import { AGENT_PROVIDER_UNAVAILABLE } from "../lib/milestone_conflict_ladder.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import {
   isConflictBudgetExhausted,
@@ -32,6 +34,8 @@ import {
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   MILESTONE_REFUSAL_CEILING,
   milestoneSyncStreakPath,
+  resetConflictLedgerOnSuccess,
+  saveSyncStreaks,
   type SyncStreakEntry,
   syncStreakKey,
 } from "../lib/milestone_sync_streak.ts";
@@ -469,5 +473,312 @@ Deno.test("syncMilestoneBranches - a deferral streak then one agent decline is a
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
+  }
+});
+
+/** A plain non-conflict git failure: not charged, and it advances `count`. */
+function fetchFailedError(): Error {
+  return new Error("fetch failed: network unreachable");
+}
+
+/** A conflict the agent provider could not answer for: disrupted, not charged. */
+function disruptedError(): MilestoneConflictEscalation {
+  return new MilestoneConflictEscalation(
+    "every rung left it undecided",
+    [fileAnalysis(`agent: ${AGENT_PROVIDER_UNAVAILABLE}`)],
+    [],
+    tip(0),
+    undefined,
+    MILESTONE_SHA,
+  );
+}
+
+Deno.test("syncMilestoneBranches - a non-climbing failure streak then one resolver decline is attempt 1 of 3 (Issue #4587)", async () => {
+  // Non-climbing failures advance `count`, but never `resolverDeclines`, so
+  // the first real decline after any such streak must not climb the ladder.
+  const failures: Array<{ name: string; syncError: () => Error }> = [
+    { name: "non-conflict git failure", syncError: fetchFailedError },
+    { name: "disrupted provider outage", syncError: disruptedError },
+  ];
+  for (const failure of failures) {
+    for (const streak of [3, 6, 9]) {
+      const { dir, streakPath } = await workDir();
+      try {
+        const syncCalls: string[] = [];
+        const rollbacks: string[] = [];
+        const rebuilds: string[] = [];
+        const closes: string[] = [];
+        let cycle = 0;
+        const runCycle = (syncError: () => Error, deadlineMs?: number) => {
+          cycle++;
+          return syncMilestoneBranches(sweepDeps({
+            streakPath,
+            defaultSha: tip(cycle),
+            syncError,
+            syncCalls,
+            rollbacks,
+            rebuilds,
+            closes,
+            ...(deadlineMs !== undefined ? { deadlineMs } : {}),
+          }));
+        };
+        for (let i = 0; i < streak; i++) await runCycle(failure.syncError);
+        // Positive control: each failure really advanced the streak count.
+        const failing = await readEntry(streakPath);
+        assertEquals(
+          failing?.count,
+          streak,
+          `${failure.name} x${streak} advances count`,
+        );
+        assertEquals(
+          failing?.resolverDeclines ?? 0,
+          0,
+          `${failure.name} x${streak} is never a decline`,
+        );
+
+        // The cycle with the runway: the agent runs and declines once.
+        await runCycle(agentDeclinedError, LONG_CYCLE_MS);
+        const entry = await readEntry(streakPath);
+        assert(entry);
+        // Positive control: the decline was a charged resolver decline.
+        assertEquals(entry.lastAttempt?.outcome, "failed");
+        assertEquals(
+          entry.lastAttempt?.reason,
+          "the conflict resolver declined",
+        );
+        assertEquals(
+          entry.conflictAttempts,
+          1,
+          `after ${failure.name} x${streak}`,
+        );
+        assertEquals(rollbacks, [], `after ${failure.name} x${streak}`);
+        assertEquals(rebuilds, [], `after ${failure.name} x${streak}`);
+        assertEquals(closes, [], `after ${failure.name} x${streak}`);
+        assertEquals(syncCalls.length, streak + 1);
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
+  }
+});
+
+Deno.test("syncMilestoneBranches - three consecutive resolver declines still climb to the roll-back on the fourth cycle (Issue #4587)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    const syncCalls: string[] = [];
+    const rollbacks: string[] = [];
+    for (let cycle = 1; cycle <= MILESTONE_CONFLICT_ATTEMPT_BUDGET; cycle++) {
+      await syncMilestoneBranches(sweepDeps({
+        streakPath,
+        defaultSha: tip(cycle),
+        syncError: () => agentDeclinedError(),
+        syncCalls,
+        rollbacks,
+        deadlineMs: LONG_CYCLE_MS,
+      }));
+      assertEquals(
+        rollbacks,
+        [],
+        `decline ${cycle} is within the budget and must not roll back`,
+      );
+    }
+    // Positive control: the three declines were counted by the ladder.
+    assertEquals(
+      (await readEntry(streakPath))?.resolverDeclines,
+      MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    );
+
+    await syncMilestoneBranches(sweepDeps({
+      streakPath,
+      defaultSha: tip(MILESTONE_CONFLICT_ATTEMPT_BUDGET + 1),
+      syncError: () => agentDeclinedError(),
+      syncCalls,
+      rollbacks,
+      deadlineMs: LONG_CYCLE_MS,
+    }));
+    assertEquals(rollbacks, [
+      `${REPO}|${BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("resolverRungDue - the ladder reads resolverDeclines, not count (Issue #4587)", () => {
+  const declined = {
+    at: "2026-10-31T12:00:00.000Z",
+    outcome: "failed" as const,
+    reason: "the conflict resolver declined",
+  };
+  // Nine failures of other kinds and no declines: still resolve.
+  assertEquals(
+    resolverRungDue({
+      count: 9,
+      escalated: false,
+      resolverDeclines: 0,
+      lastAttempt: declined,
+    }),
+    null,
+  );
+  // Three declines climb to the roll-back, whatever `count` holds.
+  assertEquals(
+    resolverRungDue({
+      count: 1,
+      escalated: false,
+      resolverDeclines: 3,
+      lastAttempt: declined,
+    }),
+    "rollback",
+  );
+});
+
+Deno.test("sync streak ledger - resolverDeclines round-trips, and an older file reads as zero (Issue #4587)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    // An old-shape ledger file: `count` only, no `resolverDeclines`.
+    await Deno.writeTextFile(
+      streakPath,
+      JSON.stringify({ [KEY]: { count: 9, escalated: false } }),
+    );
+    const older = await readEntry(streakPath);
+    assertEquals(older?.count, 9);
+    assertEquals(older?.resolverDeclines, undefined);
+
+    await saveSyncStreaks(streakPath, {
+      [KEY]: { count: 1, escalated: false, resolverDeclines: 2 },
+    });
+    assertEquals((await readEntry(streakPath))?.resolverDeclines, 2);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("resetConflictLedgerOnSuccess - a landed sync drops resolverDeclines (Issue #4587)", () => {
+  const reset = resetConflictLedgerOnSuccess({
+    count: 3,
+    escalated: false,
+    resolverDeclines: 2,
+  });
+  assertEquals("resolverDeclines" in reset, false);
+});
+
+Deno.test("syncMilestoneBranches - a moved default tip re-arms a spent budget but keeps the resolver declines (Issue #4587)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    // A spent budget whose roll-back has already run, which is what lets the
+    // moved default tip re-arm it at all, after three resolver declines.
+    await saveSyncStreaks(streakPath, {
+      [KEY]: {
+        count: 0,
+        escalated: false,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+        rollbacks: 1,
+        resolverDeclines: 3,
+        fallbackDefaultSha: tip(0),
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: "the conflict resolver declined",
+        },
+      },
+    });
+    const syncCalls: string[] = [];
+    const rollbacks: string[] = [];
+    const rebuilds: string[] = [];
+    const logs: string[] = [];
+    const runCycle = (cycle: number) => {
+      const deps = sweepDeps({
+        streakPath,
+        defaultSha: tip(cycle),
+        syncError: () => agentDeclinedError(),
+        syncCalls,
+        rollbacks,
+        logs,
+        deadlineMs: LONG_CYCLE_MS,
+      });
+      deps.rebuildMilestoneFn = () => {
+        rebuilds.push(BRANCH);
+        return Promise.resolve(true);
+      };
+      return syncMilestoneBranches(deps);
+    };
+
+    await runCycle(1);
+    // Positive control: the moved tip really re-armed the spent budget.
+    assert(logs.join("\n").includes("has moved to"));
+    assertEquals(syncCalls.length, 1);
+    // The re-arm reset the attempts but carried the three declines over, so
+    // this decline is the fourth, not attempt 1 of 3.
+    const rearmed = await readEntry(streakPath);
+    assertEquals(rearmed?.resolverDeclines, 4);
+    assertEquals(rearmed?.conflictAttempts, 1);
+
+    await runCycle(2);
+    await runCycle(3);
+    assertEquals((await readEntry(streakPath))?.resolverDeclines, 6);
+    assertEquals(rebuilds, [], "the rebuild rung is not yet due");
+
+    // Six carried-over declines reach the rebuild rung on the next cycle.
+    await runCycle(4);
+    assertEquals(rebuilds, [BRANCH], "the carried declines reach the rebuild");
+    assertEquals(rollbacks, [], "the spent roll-back is not taken again");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a landed roll-back clears the budget but keeps the resolver declines (Issue #4587)", async () => {
+  const { dir, streakPath } = await workDir();
+  try {
+    // A spent budget after three declines, with no roll-back yet: the third
+    // decline's rung is the roll-back, which lands this cycle.
+    await saveSyncStreaks(streakPath, {
+      [KEY]: {
+        count: 0,
+        escalated: false,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+        resolverDeclines: 3,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: "the conflict resolver declined",
+        },
+      },
+    });
+    const syncCalls: string[] = [];
+    const rollbacks: string[] = [];
+    const deps = sweepDeps({
+      streakPath,
+      defaultSha: tip(1),
+      syncError: () => agentDeclinedError(),
+      syncCalls,
+      rollbacks,
+      deadlineMs: LONG_CYCLE_MS,
+    });
+    const recorded = deps.rollbackFn!;
+    deps.rollbackFn = async (request) => {
+      await recorded(request);
+      return { merged: true, reverted: [] };
+    };
+    await syncMilestoneBranches(deps);
+    // Positive control: the roll-back really ran, and it landed.
+    assertEquals(rollbacks, [
+      `${REPO}|${BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+    ]);
+    const entry = await readEntry(streakPath);
+    assert(entry);
+    assertEquals(entry.rollbacks, 1, "the landed roll-back is recorded");
+    assertEquals(
+      entry.conflictAttempts,
+      0,
+      "a landed roll-back refills the budget",
+    );
+    assertEquals(
+      entry.resolverDeclines,
+      3,
+      "a landed roll-back does not reset the decline count",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
