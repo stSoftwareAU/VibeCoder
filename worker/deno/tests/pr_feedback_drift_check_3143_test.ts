@@ -927,6 +927,25 @@ Deno.test("formatDriftResidual - carries no issue number in its output (Issue #4
   assertEquals(text.match(/#\d+/g) ?? [], [], text);
 });
 
+Deno.test("formatDriftResidual - the mutation check section carries no issue number (Issue #4585)", () => {
+  for (
+    const residual of [
+      { mutationSurvivors: ["lib/rule.ts:2: flipped `>` to `<`"] },
+      { mutationNote: "a mutation note" },
+      { mutationCheckUnavailable: "mutation check failed to run" },
+    ]
+  ) {
+    const text = formatDriftResidual({
+      findings: [],
+      mismatches: [],
+      docsSweepProblems: [],
+      ...residual,
+    });
+    assertStringIncludes(text, "#### Mutation check");
+    assertEquals(text.match(/#\d+/g) ?? [], [], text);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Sanity-check note (not an executable test): the two breakages below were
 // applied by hand and the named tests confirmed red, then reverted.

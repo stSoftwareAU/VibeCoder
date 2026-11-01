@@ -28,6 +28,11 @@ final version.
   Configuration)" comment); the "Automated Processing Failed" comment carries
   only the one-line cause. They are the same defect on a sibling path, so one
   sweep covers the category.
+- `formatDriftResidual` also had a `#### Mutation check (Issue #3750)` heading
+  in the same drift-check reply; it is now `#### Mutation check`, with the
+  provenance in the code comment above it. The pins in
+  `pr_feedback_drift_check_3750_test.ts` and
+  `pr_feedback_processor_mutation_check_3750_test.ts` use the new heading.
 - The `Part of #N` / `Closes #N` placeholders in the note and draft bodies are
   literal text, not digits, and `Part of #${issueNumber}` is the target repo's
   own number; both stay.
@@ -70,6 +75,17 @@ numbers cited as provenance: #4585 only (this issue).
   `buildDraftContinuationBody`, `formatDriftResidual` turned its new test red;
   `(Issue #4158)` in `label_failure.ts`, `(Issue #1475)` in the one-liner and
   `(Issue #2682)` in the detail bullet turned the failure-comment tests red.
+- Added in `pr_feedback_drift_check_3143_test.ts`:
+  `formatDriftResidual - the mutation check section carries no issue number`,
+  covering a residual with `mutationSurvivors`, `mutationNote` and
+  `mutationCheckUnavailable` in turn.
+- Mutation check: it reported "baseline tests fail before mutation" for 48 test
+  files and so judged no mutants. Those files pass when run directly on this
+  head (e.g. `failure_comment_no_vibecoder_numbers_4585_test.ts`,
+  `host_fault_test.ts`, `semgrep_check_test.ts`, `never_hand_back_4227_test.ts`,
+  `run_outcome_test.ts`: 86 passed, 0 failed), so the failure comes from the
+  mutation runner's baseline environment, not from a changed line. This diff
+  changes only string literals and their pins; each is asserted by a test above.
 - Edited pins (no assertion removed): the heading pins in
   `unmet_criteria_gate_test.ts` (`startsWith`),
   `pr_feedback_drift_check_3143_test.ts` and

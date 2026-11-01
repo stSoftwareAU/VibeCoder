@@ -861,7 +861,8 @@ export function formatDriftResidual(residual: DriftResidual): string {
     survivors.length > 0 || residual.mutationNote !== undefined ||
     residual.mutationCheckUnavailable !== undefined
   ) {
-    lines.push("#### Mutation check (Issue #3750)");
+    // Mutation check section (Issue #3750); the heading carries no issue number.
+    lines.push("#### Mutation check");
     lines.push("");
     if (survivors.length > 0) {
       lines.push(
