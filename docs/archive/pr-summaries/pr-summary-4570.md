@@ -13,9 +13,12 @@ prompt says when the bump runs. Closes #4570.
 - The agent cannot see the bump commit, so the fix is a worker-written PR-body
   note beside the existing milestone skip note, not a new summary obligation or
   gate.
-- The coding-guidelines sentence ended in a dangling "see."; it now states that
-  the bump runs after the agent's turn, is committed to the PR, and is noted in
-  the PR body.
+- The coding-guidelines paragraph (`prompts/coding_guidelines/prompt.md`, "The
+  bump and the substantive change land in the same PR") now states that the bump
+  runs after the agent's turn and before `./quality.sh`, that its commit is part
+  of the PR, and that the agent never sees it: the PR body notes it, so the
+  summary must not claim no dependency, lockfile or version changed beyond the
+  agent's own change.
 
 ### Essential Design Decisions
 
@@ -74,6 +77,11 @@ Issue numbers cited: #4570 (this issue), #1775 (milestone skip note, existing),
 - Entry points checked: completion-phase PR creation (`completionBody`) and
   PR-body resync (`buildSyncedPrBodyCandidate`); both covered by a test above.
   No existing test edited; no assertion removed.
+- Latest push (`fa06857f`) only re-wrapped and reordered that guidelines
+  paragraph (the commit-is-part-of-the-PR sentence now precedes the
+  "you never see that commit" sentence); the wording and meaning match the
+  Intent bullet above, and no code or test changed, so the test results above
+  still hold at the head.
 - Existing text re-read: the milestone skip note and `rejected_*` comments are
   unchanged and still true; no guideline-pinning test exists for the old
   sentence.
