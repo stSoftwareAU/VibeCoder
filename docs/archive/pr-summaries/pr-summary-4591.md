@@ -66,3 +66,9 @@ block the PR), #4234 (completion gates made advisory), #4591 (this issue).
   `completionBody` (closure, review, reproduction, scrub, placeholder, mutation,
   coverage, unmet) is untouched; the verifier gate is the only block that was
   hand-built.
+- `./quality.sh`: every stage passed except `deno tests`, parallel pass 31552
+  passed, 2 failed, both in `completion_phase_repo_formatters_test.ts` (lines 480
+  and 567: the cargo fmt commit tests; this host has no rustup/cargo, and the code
+  they cover is not touched by this diff). The serial pass did not run because
+  the parallel pass failed; `config integration` and `checkov` were skipped for
+  local prerequisites. `deno task pr-summary-check`: 0 blocked, 0 not checked.
