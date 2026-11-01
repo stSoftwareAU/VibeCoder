@@ -67,6 +67,8 @@ New tests in `worker/deno/tests/review_fleet_prs_gate_2675_test.ts`, all named
 - a dropped file with unknown or empty findings is a fresh review
 - a file only the head lists is a fresh review
 - a dropped file beside a real change to a remaining file is a fresh review
+  (the sent-back listing puts the dropped file first, so the test also checks
+  that comparison continues to the changed file)
 - a 300-file head listing is refused as head-only files
 - a repeated filename in either listing is a fresh review
 
@@ -85,8 +87,10 @@ Red checks (each break restored afterwards):
 - the `b.length >= 300` check was dead code (the head-only rule already refuses
   such a listing), so it was removed rather than tested
 
-No existing assertion was removed or edited; no existing test needed a fixture
-change. Callers of `ownDiffUnchanged`: the gate's single production call site
+Review-fix push: `deno task test:unit tests/review_fleet_prs_gate_2675_test.ts`
+passed, 43 tests, 0 failed, with the dropped file ordered before the changed
+file in the shared fixture. No existing assertion was removed or edited.
+Callers of `ownDiffUnchanged`: the gate's single production call site
 passes the findings of the exact sent-back head, unchanged; the existing tests
 of the function still pass.
 
