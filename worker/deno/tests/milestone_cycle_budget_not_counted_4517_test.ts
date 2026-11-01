@@ -493,6 +493,68 @@ function disruptedError(): MilestoneConflictEscalation {
   );
 }
 
+Deno.test("syncMilestoneBranches - charged non-climbing failures do not count as resolver declines (Issue #4587)", async () => {
+  for (const gate of [false, true]) {
+    const { dir, streakPath } = await workDir();
+    try {
+      if (gate) {
+        await saveSyncStreaks(streakPath, {
+          [KEY]: {
+            count: 0,
+            escalated: false,
+            refusedCycles: MILESTONE_REFUSAL_CEILING,
+          },
+        });
+      }
+      const syncCalls: string[] = [];
+      const rollbacks: string[] = [];
+      const rebuilds: string[] = [];
+      const closes: string[] = [];
+      const runCycle = (cycle: number, syncError: () => Error) =>
+        syncMilestoneBranches(sweepDeps({
+          streakPath,
+          defaultSha: tip(cycle),
+          syncError,
+          syncCalls,
+          rollbacks,
+          rebuilds,
+          closes,
+          deadlineMs: LONG_CYCLE_MS,
+        }));
+      await runCycle(1, gate ? gateRefusedError : agentDeferredError);
+      const failed = await readEntry(streakPath);
+      assert(failed);
+      assertEquals(failed?.lastAttempt?.outcome, "failed");
+      assertEquals(failed?.resolverDeclines ?? 0, 0);
+      assertEquals(rollbacks.length, gate ? 1 : 0);
+      assertEquals(rebuilds, []);
+      assertEquals(closes, []);
+      if (gate) {
+        // The ceiling exhausts the budget; a re-arm retains the decline count.
+        await saveSyncStreaks(streakPath, {
+          [KEY]: {
+            ...resetConflictLedgerOnSuccess(failed),
+            resolverDeclines: failed.resolverDeclines,
+          },
+        });
+      }
+      await runCycle(2, agentDeclinedError);
+      const declined = await readEntry(streakPath);
+      assertEquals(
+        declined?.lastAttempt?.reason,
+        "the conflict resolver declined",
+      );
+      assertEquals(declined?.resolverDeclines, 1);
+      assertEquals(rollbacks.length, gate ? 1 : 0);
+      assertEquals(rebuilds, []);
+      assertEquals(closes, []);
+      assertEquals(syncCalls.length, 2);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
 Deno.test("syncMilestoneBranches - a non-climbing failure streak then one resolver decline is attempt 1 of 3 (Issue #4587)", async () => {
   // Non-climbing failures advance `count`, but never `resolverDeclines`, so
   // the first real decline after any such streak must not climb the ladder.
