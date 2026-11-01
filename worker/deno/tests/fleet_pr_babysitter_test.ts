@@ -506,3 +506,13 @@ Deno.test("a check the host cannot run is named but does not withhold readiness"
     );
   }
 });
+
+// Issue #4677: a resolved conflict was discarded over unrelated verifier
+// findings (VibeCoder#4675); other feedback is out of a conflict's scope.
+Deno.test("other open feedback does not withhold readiness from a resolved conflict", () => {
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  assertStringIncludes(
+    prompt,
+    "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
+  );
+});
