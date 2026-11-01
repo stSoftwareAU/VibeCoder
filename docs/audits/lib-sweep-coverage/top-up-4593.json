@@ -1,0 +1,12 @@
+{
+  "issue": 4593,
+  "chunk": "top-up-4593",
+  "title": "top-up: fleet babysitter agent filesystem boundary",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4593",
+  "definition": "Codex permissions-profile arguments that deny the fleet babysitter's agent the GitHub App private key and App settings paths, and the resolution of those protected paths (including symlink targets).",
+  "status": "claimed",
+  "sweptAt": "ad1d292a95e06b785011a249fdc78712c3814b24",
+  "paths": [
+    "worker/deno/lib/fleet_babysitter_sandbox.ts"
+  ]
+}
