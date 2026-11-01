@@ -18,6 +18,7 @@ import {
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
   babysitterRtkInstruction,
+  behindRefreshSkip,
   behindUpdateHeld,
   buildRepairPrompt,
   cloneForRepair,
@@ -140,7 +141,7 @@ Deno.test("babysitter selects only conflicts and failed CI", () => {
 });
 
 // Issue #4613: a behind PR is refreshed only when it is otherwise ready to merge.
-Deno.test("a behind PR is refreshed only when armed, review-satisfied and checks passed", () => {
+Deno.test("a behind PR is refreshed only when armed and review-satisfied, whatever its checks say", () => {
   const behind = { ...pr, mergeStateStatus: "BEHIND" };
   const armed = { ...behind, autoMergeRequest: {} };
   // Not armed yet: left alone until it is.
@@ -150,16 +151,33 @@ Deno.test("a behind PR is refreshed only when armed, review-satisfied and checks
     reason({ ...armed, reviewDecision: "REVIEW_REQUIRED" }),
     null,
   );
-  // Armed and approved, but a check is still running.
+  // Armed and approved with a check running or queued: the rollup cannot say
+  // whether it is required, so it does not hold the refresh.
+  for (const check of [{ status: "IN_PROGRESS" }, { status: "QUEUED" }]) {
+    assertEquals(
+      reason({
+        ...armed,
+        reviewDecision: "APPROVED",
+        statusCheckRollup: [check],
+      }),
+      "branch behind base",
+    );
+  }
+  // A null request is not armed; a null decision needs no review.
   assertEquals(
-    reason({
-      ...armed,
-      reviewDecision: "APPROVED",
-      statusCheckRollup: [{ status: "IN_PROGRESS" }],
-    }),
+    reason({ ...behind, autoMergeRequest: null, reviewDecision: "APPROVED" }),
     null,
   );
-  // Armed, no review required, and every check passed.
+  assertEquals(
+    reason({ ...armed, reviewDecision: null }),
+    "branch behind base",
+  );
+  // Armed and approved but not behind: nothing to refresh.
+  assertEquals(
+    reason({ ...armed, mergeStateStatus: "CLEAN", reviewDecision: "APPROVED" }),
+    null,
+  );
+  // Armed and no review required.
   assertEquals(reason({ ...armed, reviewDecision: "" }), "branch behind base");
 });
 
@@ -226,6 +244,22 @@ Deno.test("behindUpdateHeld ignores drafts, needs-human PRs and the PR itself", 
     null,
   );
   assertEquals(behindUpdateHeld(behindCandidate, [behindCandidate]), null);
+  // The PR itself is never its own blocker, even when it would qualify.
+  assertEquals(behindUpdateHeld(readyInFlight, [readyInFlight]), null);
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, state: "CLOSED" },
+    ]),
+    null,
+  );
+  assertEquals(
+    behindUpdateHeld(behindCandidate, [
+      behindCandidate,
+      { ...readyInFlight, mergeable: "CONFLICTING" },
+    ]),
+    null,
+  );
 });
 
 Deno.test("behindUpdateHeld ignores PRs awaiting review or arming", () => {
@@ -258,6 +292,60 @@ Deno.test("behindUpdateHeld ignores PRs with failed checks or that are themselve
       behindCandidate,
       { ...readyInFlight, mergeStateStatus: "BEHIND" },
     ]),
+    null,
+  );
+});
+
+Deno.test("behindRefreshSkip holds a behind PR for an in-flight PR and queues one per base", () => {
+  const queued = new Set<string>();
+  const behindToo = { ...behindCandidate, number: 3 };
+  // A repair that is not a behind refresh is never skipped, nor queued.
+  assertEquals(
+    behindRefreshSkip(
+      "o/r",
+      behindCandidate,
+      "failed CI",
+      [readyInFlight],
+      queued,
+    ),
+    null,
+  );
+  assertEquals(queued.size, 0);
+  // Held by the in-flight PR #2; nothing is queued.
+  const held = behindRefreshSkip(
+    "o/r",
+    behindCandidate,
+    "branch behind base",
+    [behindCandidate, readyInFlight],
+    queued,
+  );
+  assertStringIncludes(held ?? "", "#2 on main is ready");
+  assertEquals(queued.size, 0);
+  // Nothing in flight: the first goes ahead and takes the base ...
+  const prs = [behindCandidate, behindToo];
+  assertEquals(
+    behindRefreshSkip(
+      "o/r",
+      behindCandidate,
+      "branch behind base",
+      prs,
+      queued,
+    ),
+    null,
+  );
+  assertEquals([...queued], ["o/r#main"]);
+  // ... so the second waits for the next pass.
+  const second = behindRefreshSkip(
+    "o/r",
+    behindToo,
+    "branch behind base",
+    prs,
+    queued,
+  );
+  assertStringIncludes(second ?? "", "already has a branch update queued");
+  // Another repository's base is separate.
+  assertEquals(
+    behindRefreshSkip("o/other", behindToo, "branch behind base", prs, queued),
     null,
   );
 });

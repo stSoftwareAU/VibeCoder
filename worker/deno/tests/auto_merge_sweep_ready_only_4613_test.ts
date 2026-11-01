@@ -45,12 +45,16 @@ interface Fake {
   queuedBases: Set<string>;
   /** PR numbers whose branch update GitHub refuses. */
   refusedUpdates: Set<number>;
+  /** PR numbers whose live read throws instead of answering. */
+  throwingReads: Set<number>;
 }
 
 function makeFake(
   listing: SweepablePr[],
   readings: Record<number, PrLiveStateReading>,
-  extras: Partial<Pick<Fake, "queuedBases" | "refusedUpdates">> = {},
+  extras: Partial<
+    Pick<Fake, "queuedBases" | "refusedUpdates" | "throwingReads">
+  > = {},
 ): Fake {
   return {
     listing,
@@ -59,6 +63,7 @@ function makeFake(
     ),
     queuedBases: extras.queuedBases ?? new Set(),
     refusedUpdates: extras.refusedUpdates ?? new Set(),
+    throwingReads: extras.throwingReads ?? new Set(),
   };
 }
 
@@ -98,6 +103,9 @@ async function runPass(f: Fake): Promise<Pass> {
       pr: SweepablePr,
     ): Promise<PrLiveStateReading> => {
       pass.reads.push(pr.number);
+      if (f.throwingReads.has(pr.number)) {
+        return Promise.reject(new Error(`gh failed for #${pr.number}`));
+      }
       const reading: PrLiveStateReading = f.readings.get(pr.number) ?? {
         unknown: true,
         error: `no reading for #${pr.number}`,
@@ -186,18 +194,12 @@ Deno.test("Issue #4613: a behind, armed PR awaiting review gets no update and no
 // (ii) Checks gate
 // ---------------------------------------------------------------------------
 
-Deno.test("Issue #4613: a behind, armed PR approved but without passed checks gets no update, and the reason is logged", async () => {
+Deno.test("Issue #4613: a behind, armed, approved PR is updated whatever its checks say, since non-required checks cannot be told apart", async () => {
   const cases: [string, PrLiveStateReading][] = [
+    ["pending", openReading({ ...READY, checks: "pending" })],
+    ["failed", openReading({ ...READY, checks: "failed" })],
     [
-      "checks pending on its current head",
-      openReading({ ...READY, checks: "pending" }),
-    ],
-    [
-      "checks failed on its current head",
-      openReading({ ...READY, checks: "failed" }),
-    ],
-    [
-      "checks unreadable on its current head",
+      "unreadable",
       openReading({
         mergeable: "MERGEABLE",
         armed: true,
@@ -206,19 +208,36 @@ Deno.test("Issue #4613: a behind, armed PR approved but without passed checks ge
       }),
     ],
   ];
-  for (const [reason, reading] of cases) {
+  for (const [label, reading] of cases) {
     const pass = await runPass(makeFake(
       [{ number: 1, baseRefName: "main" }],
       { 1: reading },
     ));
 
-    assertEquals(pass.updated, [], reason);
-    assertEquals(pass.attempted, [], reason);
-    assert(
-      hasLine(pass, reason, 1),
-      `expected a '${reason}' line, got: ${JSON.stringify(pass.infos)}`,
-    );
+    assertEquals(pass.updated, [1], `checks ${label}`);
+    assertEquals(pass.attempted, [], `checks ${label}`);
   }
+});
+
+Deno.test("Issue #4613: a live read that throws is an unknown PR: no update, the error is logged, and it holds nobody back", async () => {
+  const listing = [
+    { number: 1, baseRefName: "main" },
+    { number: 2, baseRefName: "main" },
+  ];
+  // #1 is the one being read when it throws.
+  const own = await runPass(makeFake(listing, { 2: openReading(READY) }, {
+    throwingReads: new Set([1]),
+  }));
+  assertEquals(own.updated, [2]);
+  assert(
+    own.warns.some((w) => w.includes("PR state unknown")),
+    `expected an unknown-state warning, got: ${JSON.stringify(own.warns)}`,
+  );
+  // #2 is read as the possible in-flight PR of #1 and throws: not in flight.
+  const other = await runPass(makeFake(listing, { 1: openReading(READY) }, {
+    throwingReads: new Set([2]),
+  }));
+  assertEquals(other.updated, [1]);
 });
 
 // ---------------------------------------------------------------------------

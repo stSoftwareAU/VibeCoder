@@ -323,10 +323,11 @@ export function reason(pr: Pr): string | null {
     return "requested review changes";
   }
   // Issue #4613: a behind PR is refreshed only when it is otherwise ready.
+  // Checks are not judged: the rollup does not say which are required, and a
+  // failed or stuck non-required check must not strand a behind PR.
   if (
     pr.mergeStateStatus === "BEHIND" && isArmed(pr) &&
-    reviewSatisfied(pr.reviewDecision) &&
-    classifyCheckRollup(pr.statusCheckRollup) === "passed"
+    reviewSatisfied(pr.reviewDecision)
   ) return "branch behind base";
   return null;
 }
@@ -362,6 +363,33 @@ export function behindUpdateHeld(pr: Pr, prs: Pr[]): number | null {
     return checks === "passed" || checks === "pending";
   });
   return held?.number ?? null;
+}
+
+/**
+ * Issue #4613: whether a behind PR's refresh is skipped this pass, as the log
+ * line saying why, or null to go ahead. Only a "branch behind base" repair is
+ * ever skipped. A PR waits while another PR on its base is in flight, and only
+ * one PR per `${repo}#${base}` is queued per pass: `queued` records the bases
+ * already taken, and is added to when the refresh goes ahead.
+ */
+export function behindRefreshSkip(
+  repo: string,
+  pr: Pr,
+  why: string,
+  prs: Pr[],
+  queued: Set<string>,
+): string | null {
+  if (why !== "branch behind base") return null;
+  const held = behindUpdateHeld(pr, prs);
+  if (held !== null) {
+    return `${repo}#${pr.number}: branch behind base, but #${held} on ${pr.baseRefName} is ready and already up to date — waiting for it to merge or fail (Issue #4613)`;
+  }
+  const baseKey = `${repo}#${pr.baseRefName}`;
+  if (queued.has(baseKey)) {
+    return `${repo}#${pr.number}: branch behind base, but an earlier PR on ${pr.baseRefName} already has a branch update queued this pass (Issue #4613)`;
+  }
+  queued.add(baseKey);
+  return null;
 }
 
 /** Explicitly scoped repositories may include PRs by any author. */
@@ -855,23 +883,10 @@ async function pass(
           !why ||
           !eligibleAuthor(pr.author.login, authors, repoFilter !== undefined)
         ) continue;
-        if (why === "branch behind base") {
-          // Issue #4613: refresh a behind PR only when it is ready, one per base.
-          const held = behindUpdateHeld(pr, prs);
-          if (held !== null) {
-            console.log(
-              `${repo}#${pr.number}: branch behind base, but #${held} on ${pr.baseRefName} is ready and already up to date — waiting for it to merge or fail (Issue #4613)`,
-            );
-            continue;
-          }
-          const baseKey = `${repo}#${pr.baseRefName}`;
-          if (behindQueued.has(baseKey)) {
-            console.log(
-              `${repo}#${pr.number}: branch behind base, but an earlier PR on ${pr.baseRefName} already has a branch update queued this pass (Issue #4613)`,
-            );
-            continue;
-          }
-          behindQueued.add(baseKey);
+        const skipped = behindRefreshSkip(repo, pr, why, prs, behindQueued);
+        if (skipped !== null) {
+          console.log(skipped);
+          continue;
         }
         console.log(`${repo}#${pr.number}: ${why}`);
         if (execute) {

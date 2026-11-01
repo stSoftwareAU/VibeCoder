@@ -834,10 +834,10 @@ user can intervene.
   head has fallen behind its base gets one `update-branch` request per pass, since
   GitHub never updates it under the strict up-to-date rule. The request is sent
   only when the PR is armed and otherwise ready to merge: review satisfied (`reviewDecision`
-  `APPROVED`, or empty or null where no review is required), not `CONFLICTING`, and
-  every check in `statusCheckRollup` completed successfully on its current head. A
-  pending, failed or unreadable check, or a `REVIEW_REQUIRED`, `CHANGES_REQUESTED`
-  or unreadable decision, is not ready and gets no update. While another armed PR on
+  `APPROVED`, or empty or null where no review is required), and not `CONFLICTING`.
+  Checks are not judged, since the rollup does not say which are required. A
+  `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or unreadable decision is not ready and
+  gets no update. While another armed PR on
   the same base is already up to date, review-satisfied, conflict-free and with
   its checks passed or pending (and not a draft or `needs-human`), no update is
   sent to that base, and at most one update per base is sent

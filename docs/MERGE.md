@@ -397,9 +397,11 @@ shipped behaviour:
    - review is satisfied: `reviewDecision` is `APPROVED`, or empty or null where
      no review is required. `REVIEW_REQUIRED`, `CHANGES_REQUESTED` and an
      unreadable decision are not ready;
-   - the PR is not `CONFLICTING`;
-   - every check in `statusCheckRollup` has completed successfully on its current
-     head. A pending, failed or unreadable check is not ready.
+   - the PR is not `CONFLICTING`.
+
+   Checks are not judged: the live read cannot tell a required check from a
+   non-required one, so a failed or stuck non-required check must not strand a
+   behind PR that GitHub will not merge until it is updated.
 2. **One PR per base at a time.** No update is sent while another armed PR on the
    same base is already up to date, review-satisfied, conflict-free and not
    failing (that is, it is merging or its checks are running). That PR must merge
@@ -412,7 +414,7 @@ shipped behaviour:
    refreshes are the sweep's `update-branch` and the fleet PR babysitter's
    ([`fleet_pr_babysitter.ts`](../worker/deno/commands/fleet_pr_babysitter.ts)),
    and each applies rules 1 and 2. The babysitter repairs a behind PR only when
-   it is armed, review-satisfied and all its checks have passed. It holds that
+   it is armed and review-satisfied (checks are not judged). It holds that
    PR while another open PR on its base is armed and up to date (the babysitter
    counts every open PR it lists, not only fleet PRs), and it queues at most one
    branch update per base in each pass. The merge ladder's `behind_target` retry
@@ -431,9 +433,11 @@ shipped behaviour:
 the sweep's existing live-state read, whose field list now ends
 `…reviewDecision,statusCheckRollup`; no extra call is made. The babysitter reads the same fields from its own
 `gh pr list --json` and `gh pr view --json` calls, which now include
-`autoMergeRequest`. A PR whose check state
-cannot be read is not updated. Every check in the rollup counts, not only the
-required ones, so a non-required failing or pending check also holds the update.
+`autoMergeRequest`. Checks are
+not judged for the update: the rollup does not say which checks are required, and
+GitHub never merges a behind PR on a strict base, so a failed, cancelled or stuck
+non-required check would otherwise strand it. A PR whose required checks fail is
+still updated once; the one-per-base rule limits the cost to a single PR at a time.
 
 ```mermaid
 flowchart TD
@@ -443,9 +447,7 @@ flowchart TD
     C -- yes --> CN["No update: GitHub would refuse it;<br/>the merge-conflict ladder owns it"]
     C -- no --> R{Review satisfied?<br/>APPROVED, or empty where none required}
     R -- "no: REVIEW_REQUIRED, CHANGES_REQUESTED or unreadable" --> RN["Not ready: no update<br/>logged at info (Issue #4613)"]
-    R -- yes --> K{Every check in the rollup<br/>completed successfully?}
-    K -- "no: pending, failed or unreadable" --> KN["Not ready: no update<br/>logged at info (Issue #4613)"]
-    K -- yes --> O{Another armed PR on this base already<br/>up to date, approved, conflict-free, not failing?}
+    R -- yes --> O{Another armed PR on this base already<br/>up to date, approved, conflict-free, not failing?}
     O -- yes --> ON["Held: that PR merges or fails first<br/>logged at info (Issue #4613)"]
     O -- no --> P{Update already sent to<br/>this base this pass?}
     P -- yes --> PN["Held: one update per base per pass<br/>logged at info (Issue #4613)"]
@@ -685,7 +687,7 @@ sequenceDiagram
     participant M as Auto-merge sweep
     participant CI as GitHub CI
     G->>G: behindBy > 0 → blocked, leave PR open
-    M->>M: update-branch once review and checks are ready (Issue #4613)
+    M->>M: update-branch once review is satisfied (Issue #4613)
     CI->>CI: re-run required checks on new head
     G->>G: next cycle: CI passed + behindBy == 0 → merge
 ```

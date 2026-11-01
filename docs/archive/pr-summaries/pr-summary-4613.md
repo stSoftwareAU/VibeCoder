@@ -1,9 +1,9 @@
 ## Summary
 
 On a base with no merge queue, a behind PR is now refreshed only once it is
-armed, review-satisfied, conflict-free and green, and only one PR per base is
-refreshed at a time. The auto-merge sweep, the branch-update scan and the fleet
-PR babysitter all follow it, and every skipped update is logged with its reason.
+armed, review-satisfied and conflict-free, and only one PR per base is refreshed
+at a time. The auto-merge sweep, the branch-update scan and the fleet PR
+babysitter all follow it, and every skipped update is logged with its reason.
 Closes #4613.
 
 ```mermaid
@@ -12,7 +12,7 @@ flowchart TD
     Q -- yes --> S0[Skip, #4424]
     Q -- no --> C{Conflicting?}
     C -- yes --> S1[Not updated by the sweep; the scan merges the base to resolve it]
-    C -- no --> R{Review satisfied and checks passed?}
+    C -- no --> R{Review satisfied?}
     R -- no --> S2[Skip, logged: not ready]
     R -- yes --> P{Base already updated this pass?}
     P -- yes --> S3[Skip, logged]
@@ -39,13 +39,17 @@ flowchart TD
 - Review is satisfied when `reviewDecision` is `APPROVED`, empty or null (no
   review required). `REVIEW_REQUIRED`, `CHANGES_REQUESTED`, a missing key or an
   unparseable payload is not ready.
-- Checks are judged from `statusCheckRollup` on the same `gh pr view` round
-  trip: every entry must have completed successfully (an empty rollup counts as
-  passed). The required-check set is not in that read, so a failing or stuck
-  non-required check also holds the refresh.
+- Checks are not judged for the refresh. The live read carries no required-check
+  set, and GitHub never merges a behind PR on a strict base, so a failed,
+  cancelled or stuck non-required check would strand it. The pre-PR verifier
+  flagged exactly that, so the gate was removed rather than widened. The
+  one-per-base rule bounds the cost of refreshing a PR whose required checks
+  fail. `statusCheckRollup` is still read, only to decide whether another PR is
+  in flight.
 - "In flight" is stateless: another armed PR on the same base that is up to
-  date, review-satisfied, conflict-free and passed or pending. The sweep counts
-  only the fleet PRs it lists; the babysitter counts every open PR in the
+  date, review-satisfied, conflict-free and passed or pending (checks are used
+  here only, to tell a PR that is about to land from one that is not). The sweep
+  counts only the fleet PRs it lists; the babysitter counts every open PR in the
   listing.
 - Not gated: the merge ladder's `behind_target` retry
   (`lib/merge_block_escalation.ts`), reached for unarmed PRs at merge time. It
@@ -69,15 +73,18 @@ Sibling members grepped for the docs sweep: `Priority 1.6`, `1.65`,
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Update a behind PR only when it is otherwise ready to merge:
+- **partial** — Update a behind PR only when it is otherwise ready to merge:
   auto-merge is armed, the required review is satisfied, there are no conflicts,
   and the required checks passed on its current head — evidence:
   `worker/deno/lib/auto_merge_sweep.ts`,
-  `worker/deno/tests/auto_merge_sweep_ready_only_4613_test.ts` — reviewer:
-  partial — reason: the reviewer noted all rollup checks (not only required
-  ones) are judged and `UNKNOWN` mergeable counts as not conflicting; both are
-  documented in `docs/MERGE.md` and the required set is not in the live-state
-  read
+  `worker/deno/commands/fleet_pr_babysitter.ts`,
+  `worker/deno/tests/auto_merge_sweep_ready_only_4613_test.ts`,
+  `worker/deno/tests/fleet_pr_babysitter_test.ts` — reviewer: partial — reason:
+  armed, review and conflict gating are delivered; checks are deliberately not
+  gated, because the live read cannot tell required checks from non-required
+  ones and judging every check stranded a PR behind a failed or stuck
+  non-required check (a pre-PR verifier finding, fixed by removing the gate; see
+  Essential Design Decisions and `docs/MERGE.md`)
 - **met** — Update at most one such PR per base at a time. Wait for it to merge,
   or to fail, before updating the next — evidence:
   `worker/deno/tests/auto_merge_sweep_ready_only_4613_test.ts` (three-pass test)
@@ -116,6 +123,12 @@ Sibling members grepped for the docs sweep: `Priority 1.6`, `1.65`,
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
+- **violation** — rollup gate judged non-required checks — evidence:
+  `worker/deno/lib/auto_merge_sweep.ts:440` — reason: fixed in this diff (checks
+  no longer gate the update; sweep and babysitter updated, tests inverted)
+- **violation** — babysitter queue decision untested — evidence:
+  `worker/deno/commands/fleet_pr_babysitter.ts:858` — reason: fixed in this diff
+  (extracted `behindRefreshSkip`, tested)
 - **violation** — milestone behind-count test lost its check — evidence:
   `worker/deno/tests/milestone_merge_behaviour_test.ts:384` — reason: fixed in
   this diff (asserts the scan's `4 commit(s) behind` log line)
@@ -143,18 +156,18 @@ Sibling members grepped for the docs sweep: `Priority 1.6`, `1.65`,
   passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check` clean on
   the touched `.ts` files. `markdownlint_check_test.ts`: 23 passed.
 - New: `worker/deno/tests/auto_merge_sweep_ready_only_4613_test.ts` (review,
-  checks, one per pass, in-flight across passes, per-base, failed update, queue
+  checks not gating (pending, failed, unreadable all updated), a throwing live
+  read, one per pass, in-flight across passes, per-base, failed update, queue
   base, read-once, six not-in-flight operands plus a control);
   `worker/deno/tests/pr_live_fields_4613_test.ts` (`reviewSatisfied`,
-  `classifyCheckRollup`); babysitter `reason` and `behindUpdateHeld` cases in
-  `worker/deno/tests/fleet_pr_babysitter_test.ts`; two `readPrLiveState` cases
-  in `worker/deno/tests/pr_live_state_test.ts`.
+  `classifyCheckRollup`); babysitter `reason`, `behindUpdateHeld` and
+  `behindRefreshSkip` cases in `worker/deno/tests/fleet_pr_babysitter_test.ts`;
+  two `readPrLiveState` cases in `worker/deno/tests/pr_live_state_test.ts`.
 - Break-checks (code edited, test red, code restored): review check removed →
-  red; checks check removed → red; per-pass set removed → red; in-flight check
-  removed → red; set-on-failure → red; each `findInFlightOnBase` operand (draft,
-  needs-human, open, armed, mergeable, `checks === "passed"`) → red; babysitter
-  armed, review and base-filter checks → red; scan wrong behind count / skipped
-  log → red.
+  red; per-pass set removed → red; in-flight check removed → red; set-on-failure
+  → red; each `findInFlightOnBase` operand (draft, needs-human, open, armed,
+  mergeable, `checks === "passed"`) → red; babysitter armed, review and
+  base-filter checks → red; scan wrong behind count / skipped log → red.
 - Removed or changed in existing tests (all Required by: "A fleet session merges
   the base into a PR branch only to resolve a conflict"):
   - `worker/deno/tests/pr_branch_update_test.ts`,
@@ -174,8 +187,10 @@ Sibling members grepped for the docs sweep: `Priority 1.6`, `1.65`,
 - Callers of `decidePrUpdateAction` checked: `scanPrBranchUpdates` only. Callers
   of the live-state read: sweep, merge-conflict drain and CI-fix passes read the
   new fields as optional and ignore them.
-- Not covered by a unit test: the babysitter's `discover` skip logic and its
-  per-pass set (a closure over `gh`).
+- Mutation survivors addressed: the babysitter `reason`/`behindUpdateHeld`
+  operands and the `discover` skip logic (extracted as `behindRefreshSkip` and
+  tested, queue-add removal → red) and the sweep's throwing-read fallback in
+  `readingOf` (new test).
 - Related docs rules checked: none found in prompts or `CODING-STANDARDS.md` on
   this subject.
 

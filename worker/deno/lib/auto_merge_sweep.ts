@@ -32,7 +32,7 @@
  *    finding or a label; only the routing holds in item 3 disarm.
  * 5. **A branch is updated for a ready PR only, one per base** (Issue #4613)
  *    — an armed PR that has fallen behind its base is updated only once it
- *    could merge (review satisfied, checks passed). Only one PR per base is
+ *    could merge (review satisfied; checks are not judged, see below). Only one PR per base is
  *    updated per pass, and none while another PR on that base is ready and
  *    already up to date, so a queue of ready PRs on one base does not keep
  *    restarting each other's CI. A merge-queue base is left to its queue.
@@ -112,8 +112,8 @@ export interface SweepAutoMergeOptions {
   /**
    * Ask GitHub to update an armed PR's branch through the `update-branch`
    * REST endpoint (Issue #2462). Called only for a PR that is armed, behind
-   * its base and ready to merge — review satisfied and checks passed (Issue
-   * #4613) — and at most one such call per base per sweep pass. A failed
+   * its base and ready to merge — review satisfied (Issue
+   * #4613; checks are not judged) — and at most one such call per base per sweep pass. A failed
    * update is recorded and the sweep moves on.
    */
   updateBranchFn: (repo: string, prNumber: number) => Promise<Result<void>>;
@@ -396,7 +396,7 @@ export async function sweepAutoMerge(
         // conflicting PR is never updated — GitHub would refuse it.
         //
         // Issue #4613: nor is one that could not merge yet. The update is for
-        // a PR that is ready to merge — review satisfied and checks passed —
+        // a PR that is ready to merge — review satisfied —
         // and only one PR per base is updated per pass. None is updated while
         // another PR on the same base is ready and already up to date, so a
         // queue of ready PRs does not keep restarting each other's CI. A
@@ -440,20 +440,17 @@ export async function sweepAutoMerge(
           armedNow && reading.behind === true &&
           reading.mergeable !== "CONFLICTING"
         ) {
-          // Issue #4613: a PR that could not merge yet is not updated.
-          let notReady: string | undefined;
+          // Issue #4613: a PR that could not merge yet is not updated. Checks
+          // are deliberately not judged: the live read cannot tell a required
+          // check from a non-required one, and GitHub refuses to merge a
+          // behind PR on a strict base, so a failed or stuck non-required
+          // check must not leave it behind for good.
           if (reading.reviewSatisfied !== true) {
-            notReady = "review not satisfied";
-          } else if (reading.checks !== "passed") {
-            notReady = `checks ${
-              reading.checks ?? "unreadable"
-            } on its current head`;
-          }
-          if (notReady !== undefined) {
             logger.info(
               "Auto-merge sweep: armed PR is behind its base, but is not ready " +
-                `to merge (${notReady}) — no branch update; it is refreshed ` +
-                "only once it can merge, one PR per base at a time (Issue #4613)",
+                "to merge (review not satisfied) — no branch update; it is " +
+                "refreshed only once it can merge, one PR per base at a time " +
+                "(Issue #4613)",
               { repo, prNumber: pr.number },
             );
             continue;
