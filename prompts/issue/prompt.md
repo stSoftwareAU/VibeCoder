@@ -1267,10 +1267,12 @@ rewrite it, never append to it:
   status, each test's pass/fail result, any "known defect" note, and every
   function, file and helper it names — each must exist at the head and be used
   as described. An illustrative example ("for example `X`") is a claim too —
-  grep `X` for the stated property before naming it. A Test Plan bullet that
-  quotes a behaviour must name the test in that file that covers it. The
-  first-run claim check that blocked a false claim before the pull request
-  was raised was removed (Issue #4234).
+  grep `X` for the stated property before naming it. For counts, `path:line`
+  citations and run results, "the head" means the PR's last own commit, not
+  a later merge of the base branch. A Test Plan bullet that quotes a behaviour
+  must name the test in that file that covers it. The first-run claim check
+  that blocked a false claim before the pull request was raised was removed
+  (Issue #4234).
 - Re-derive the Summary, Evidence and Acceptance Criteria sections from that
   diff, not from memory of the run. Every file or behaviour the summary says
   this PR changes must appear in `git diff <base>...HEAD` — existing at the
@@ -1290,9 +1292,10 @@ rewrite it, never append to it:
   appear in the diff — but a file or test cited only as existing evidence
   needs merely to exist at the head, in the diff or already tracked, matching
   the named-test rule below.
-- After any merge of the base branch into this branch, or on finding the base
-  has advanced, re-run this check: a claim whose subject the merge absorbed is
-  dropped, or the work is redone so the diff carries it again.
+- A merge of the base branch can absorb this PR's change, and a claim whose
+  subject the merge absorbed is dropped, or the work is redone so the diff
+  carries it again. Counts, `path:line` citations and run results that were true
+  at the PR's last own commit stay as written when a base merge only moves them.
 - A body that contradicts the diff — a claimed file, behaviour or criterion the
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
