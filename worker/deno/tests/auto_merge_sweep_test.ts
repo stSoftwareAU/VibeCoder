@@ -722,6 +722,31 @@ Deno.test("an armed, behind PR with changes requested gets no branch update (Iss
   );
 });
 
+Deno.test("an armed, behind PR labelled needs-human gets no branch update (owner rule 2026-11-01)", async () => {
+  // A needs-human PR waits on a person: updating it only reruns CI.
+  infos.length = 0;
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{
+      number: 43,
+      labels: [{ name: "needs-human" }],
+    }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, []);
+});
+
 // ---------------------------------------------------------------------------
 // Auto-merge follows the base (Issue #3433)
 // ---------------------------------------------------------------------------

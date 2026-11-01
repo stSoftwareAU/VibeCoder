@@ -345,3 +345,25 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
   assertEquals(call.options.stdout, "inherit");
   assertEquals(call.options.stderr, "inherit");
 });
+
+// Owner rule 2026-11-01: the babysitter honours needs-human.
+Deno.test("a PR labelled needs-human is never a babysitter candidate", () => {
+  const pr = {
+    state: "OPEN",
+    number: 1,
+    title: "t",
+    author: { login: "fleet" },
+    headRefName: "h",
+    headRefOid: "a",
+    baseRefName: "main",
+    isCrossRepository: false,
+    isDraft: false,
+    mergeable: "CONFLICTING",
+    mergeStateStatus: "DIRTY",
+    reviewDecision: null,
+    statusCheckRollup: [{ conclusion: "FAILURE" }],
+    labels: [{ name: "needs-human" }],
+  };
+  assertEquals(reason(pr), null);
+  assertEquals(reason({ ...pr, labels: [] }), "merge conflict");
+});
