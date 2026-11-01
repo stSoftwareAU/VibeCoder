@@ -59,6 +59,23 @@ printf 'REPO_SNAPSHOT_READY\\n'
 exec "$@"
 `;
 
+/** Reject unsupported or oversized Git trees before materialising any files. */
+export function checkOfflineSnapshotEntries(entries: string): void {
+  let bytes = 0;
+  const lines = entries ? entries.split("\n") : [];
+  if (lines.length > MAX_SNAPSHOT_FILES) {
+    throw new Error("Snapshot has too many files");
+  }
+  for (const line of lines) {
+    const match = /^(100644|100755|120000) ([0-9]+)$/.exec(line);
+    if (!match) throw new Error("Snapshot contains an unsupported entry");
+    bytes += Number(match[2]);
+    if (!Number.isSafeInteger(bytes) || bytes > MAX_SNAPSHOT_BYTES) {
+      throw new Error("Snapshot exceeds the size limit");
+    }
+  }
+}
+
 /** Execute one structured check in an isolated Apple container, or defer. */
 export async function runOfflineRepoCheck(
   request: OfflineRepoRequest,
@@ -189,19 +206,7 @@ export async function runOfflineRepoCheck(
       "--format=%(objectmode) %(objectsize)",
       actual,
     ]);
-    let bytes = 0;
-    const lines = entries ? entries.split("\n") : [];
-    if (lines.length > MAX_SNAPSHOT_FILES) {
-      throw new Error("Snapshot has too many files");
-    }
-    for (const line of lines) {
-      const match = /^(100644|100755|120000) ([0-9]+)$/.exec(line);
-      if (!match) throw new Error("Snapshot contains an unsupported entry");
-      bytes += Number(match[2]);
-      if (!Number.isSafeInteger(bytes) || bytes > MAX_SNAPSHOT_BYTES) {
-        throw new Error("Snapshot exceeds the size limit");
-      }
-    }
+    checkOfflineSnapshotEntries(entries);
     await git([
       "-C",
       `${fixture}/meta`,

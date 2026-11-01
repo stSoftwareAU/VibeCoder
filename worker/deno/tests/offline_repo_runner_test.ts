@@ -1,5 +1,8 @@
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { runOfflineRepoCheck } from "../lib/offline_repo_runner.ts";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  checkOfflineSnapshotEntries,
+  runOfflineRepoCheck,
+} from "../lib/offline_repo_runner.ts";
 
 Deno.test("offline runner refuses unpinned or unsupported requests before launching", async () => {
   const request = {
@@ -26,6 +29,16 @@ Deno.test("offline runner refuses unpinned or unsupported requests before launch
     })).status,
     "unavailable",
   );
+});
+
+Deno.test("snapshot limits reject excessive trees and unsupported entries", () => {
+  checkOfflineSnapshotEntries("100644 134217728");
+  assertThrows(() => checkOfflineSnapshotEntries("100644 134217729"));
+  assertThrows(() =>
+    checkOfflineSnapshotEntries(Array(20_001).fill("100644 0").join("\n"))
+  );
+  assertThrows(() => checkOfflineSnapshotEntries("160000 0"));
+  assertThrows(() => checkOfflineSnapshotEntries("100644 9007199254740992"));
 });
 
 Deno.test({
