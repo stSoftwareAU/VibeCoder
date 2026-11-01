@@ -142,16 +142,29 @@ Deno.test("renderReviewBrief fills {{CLOSURE_ENTRIES}} and the reply shape carri
 
 Deno.test("SKILL.md resolves the brief's partial-or-missing closure rule for the re-review, and the brief keeps that rule", () => {
   // SKILL.md's {{PREVIOUS_FINDINGS}} value says a closure gap is not repeated
-  // as a finding; the brief's step 8 still makes each one a finding. Pin both
+  // as a finding; the brief still makes each one a finding. Pin both
   // so the conflict stays resolved by the wording below.
+  const brief = section(
+    TEMPLATE,
+    "Review Mode — one change against its linked issue",
+  );
+  const closureStep = /^(\d+)\. Closure entries marked/m.exec(brief);
+  assert(closureStep, "the brief no longer has a numbered closure rule");
+  const review = flat(SKILL_REVIEW);
   assert(
-    flatWholeFile(SKILL).includes(
-      "even where step 8 would make a `partial` or `missing` closure entry a finding",
+    review.includes(
+      `even where step ${
+        closureStep[1]
+      } would make a \`partial\` or \`missing\` closure entry a finding`,
     ),
     "SKILL.md no longer carries the closure wording",
   );
   assert(
-    flatWholeFile(TEMPLATE).includes("Every `partial` or `missing` entry"),
+    flat(brief).includes("Every `partial` or `missing` entry"),
     "the brief no longer carries the partial-or-missing closure rule",
+  );
+  assert(
+    review.includes("Still report that entry's verdict in `closure`."),
+    "SKILL.md no longer requires the closure verdict",
   );
 });

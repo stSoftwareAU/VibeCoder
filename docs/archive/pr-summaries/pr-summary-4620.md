@@ -52,11 +52,24 @@ one gap per not-`fixed` verdict, so a reply that leaves the defect out of
 - Added `worker/deno/tests/pr_review_brief_shared_3395_test.ts` "SKILL.md
   resolves the brief's partial-or-missing closure rule…": red when the SKILL.md
   sentence is reverted (observed), green with it.
-- `deno task test:unit` on both files: 29 and 8 passed, 0 failed. No assertion
-  removed or edited.
+- Review fixes scope the wording checks to `1. Review` in SKILL.md and
+  `Review Mode — one change against its linked issue` in the brief. Moving
+  either pinned rule outside its section makes the test fail (observed).
+- The closure step number is read from the brief. Changing its numbered item
+  from 8 to 9 makes the SKILL.md reference check fail (observed, then restored).
+- Deleting "Still report that entry's verdict in `closure`." makes the scoped
+  instruction check fail (observed, then restored).
+- The replay now asserts on the returned review's closure verdict and note.
+  Making `reviewForPost` return `closure: undefined` fails that assertion
+  (observed, then restored); the former input-only assertion was replaced.
+- `deno task test:unit` on both files: 37 passed, 0 failed after restoration.
+- The local quality gate passes formatter, linter, whole-tree type checking,
+  Markdown lint, Mermaid and completeness checks. Its full test suite crashes
+  in Deno with "pledge test permissions called before restoring previous
+  pledge"; a separate full unit-suite run reproduces that runtime panic.
+  Semgrep and Checkov cannot run: neither tool nor its container runtime/image
+  is available. Config integration is skipped because `.config.json` is absent.
 - Twin copies: the wording appears only in SKILL.md
   (`git grep "leave it out of"`); the brief is unchanged.
-
-<!-- vibe-quality-gate-skipped reason="full ./quality.sh not run for budget; touched tests were run; CI runs the full gate" -->
 
 Not checked: the posted effect on a live fleet re-review.

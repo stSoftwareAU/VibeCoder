@@ -809,12 +809,13 @@ Deno.test("fleet post - an unresolved closure defect stays one outstanding findi
   };
 
   // Round 1: the gap stands in for the defect and the closure verdict is kept.
-  const round1 = reviewForPost(reply, {
+  const firstReview = reviewForPost(reply, {
     checklistState,
     previousFindings: [original],
-  }).findings;
+  });
+  const round1 = firstReview.findings;
   assertEquals(round1.length, 1);
-  assertEquals(reply.closure, [{
+  assertEquals((firstReview as { closure?: unknown }).closure, [{
     criterion: "criterion 4",
     verdict: "partial",
     note: "only the parser is delivered",
