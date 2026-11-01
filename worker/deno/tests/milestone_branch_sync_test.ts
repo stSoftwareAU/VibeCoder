@@ -3106,7 +3106,8 @@ async function rollbackFiling(
       : {};
     const entries: Record<string, SyncStreakEntry> = {
       ladder: {
-        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+        count: 0,
+        resolverDeclines: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
         escalated: false,
         ...lastSynced,
         lastAttempt: {
@@ -3116,7 +3117,8 @@ async function rollbackFiling(
         },
       },
       "ladder-in-cycle": {
-        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+        count: 0,
+        resolverDeclines: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
         escalated: false,
         ...lastSynced,
         lastAttempt: {
@@ -3260,7 +3262,8 @@ Deno.test("syncMilestoneBranches - a resolver refusal already repeated for sever
     const streakPath = milestoneSyncStreakPath(dir);
     await saveSyncStreaks(streakPath, {
       [`owner/repo|${LEDGER_BRANCH}`]: {
-        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
+        count: 0,
+        resolverDeclines: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
         escalated: false,
         lastAttempt: {
           at: new Date(1_000).toISOString(),
@@ -3304,7 +3307,8 @@ Deno.test("syncMilestoneBranches - retiring a milestone clears every open issue 
     const streakPath = milestoneSyncStreakPath(dir);
     await saveSyncStreaks(streakPath, {
       [`owner/repo|${LEDGER_BRANCH}`]: {
-        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
+        count: 0,
+        resolverDeclines: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
         escalated: false,
         lastAttempt: {
           at: new Date(1_000).toISOString(),
@@ -3401,7 +3405,8 @@ Deno.test("syncMilestoneBranches - a merge-gate failure that has spent three bud
     const streakPath = milestoneSyncStreakPath(dir);
     await saveSyncStreaks(streakPath, {
       [`owner/repo|${LEDGER_BRANCH}`]: {
-        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
+        count: 0,
+        resolverDeclines: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
         escalated: false,
         lastAttempt: {
           at: new Date(1_000).toISOString(),
@@ -3446,7 +3451,8 @@ Deno.test("syncMilestoneBranches - a rebuild with no rebuild function closes in 
     const streakPath = milestoneSyncStreakPath(dir);
     await saveSyncStreaks(streakPath, {
       [`owner/repo|${LEDGER_BRANCH}`]: {
-        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 2,
+        count: 0,
+        resolverDeclines: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 2,
         escalated: false,
         lastAttempt: {
           at: new Date(1_000).toISOString(),
