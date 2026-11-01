@@ -84,9 +84,17 @@ flowchart TD
 - `worker/deno/tests/integration_test_manifest_test.ts`: included above (10
   tests), confirming the shell-driving regression is classified as an
   integration test.
-- `worker/deno/lib/container_watchdog.ts`: the new "no runtime helper found"
-  log line is on the path the test's reaper run reaches only when no helper
-  matches; it is a log-only branch with no behavioural outcome to assert.
+- `worker/deno/tests/container_watchdog_test.ts` (37 tests at head): two new
+  `reapWedgedContainer` cases. With only an unrelated Virtualization VM and a
+  `container-runtime-linux vibe-coder-other` helper listed, nothing is killed
+  and the log contains `no runtime helper found for vibe-coder-66770`; with a
+  matching helper listed, only it is killed and the line is absent. Branch
+  outcomes: `holders.length === 0` true and false are both reached; replacing
+  the condition with `false` turns the first case red (PR #4638 review).
+- `loop_force_stop_container_test.ts` also sets `XDG_STATE_HOME` inside the
+  temp directory and asserts a `launch-*.log` is created under it, so the
+  launch-log directory cannot escape the sandbox. `deno test -A` over both
+  files passed (38 tests) on this head.
 - Summary freshness (#3768): the CI failure was this file being older than the
   code commit; fixed by this rewrite.
 - `deno lint` and `deno fmt --check` on the changed TypeScript files passed.

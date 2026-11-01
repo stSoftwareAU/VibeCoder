@@ -10,6 +10,19 @@ const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
 const LOOP_SH = `${REPO_ROOT}/loop.sh`;
 const join = (...parts: string[]): string => parts.join("/");
 
+/** Every `launch-*.log` under `dir`, recursively (symlinks not followed). */
+async function findLaunchLogs(dir: string): Promise<string[]> {
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory) found.push(...await findLaunchLogs(path));
+    else if (entry.isFile && /^launch-.*\.log$/.test(entry.name)) {
+      found.push(path);
+    }
+  }
+  return found;
+}
+
 Deno.test({
   name:
     "loop.sh leaves unrelated Virtualization VMs untouched during recovery (Issue #4632)",
@@ -93,6 +106,8 @@ esac
         CONFIG_FILE: join(tmpDir, "config.json"),
         CONFIG_PATH: join(tmpDir, "config.json"),
         VIBE_STATE_DIR: join(tmpDir, "state"),
+        // log-dir picks the launch-log directory from these; keep it in tmpDir.
+        XDG_STATE_HOME: join(tmpDir, "xdg-state"),
         VIBE_PROBE_INTERVAL_SECONDS: "0",
         VIBE_PROBE_FAILURES: "1",
         LOOP_SLEEP_SECONDS: "1",
@@ -119,6 +134,13 @@ esac
         join(tmpDir, "work", "logs", "self-heal.jsonl"),
       );
       assertStringIncludes(events, '"action":"container_wedged"');
+      // The cycle's launch log lands inside the sandbox, not a live host dir.
+      const launchLogs = await findLaunchLogs(tmpDir);
+      assertEquals(
+        launchLogs.length > 0,
+        true,
+        `expected a launch-*.log under ${tmpDir}`,
+      );
       const targetStatus = await Promise.race([
         helpers[0].status,
         new Promise<undefined>((resolve) =>

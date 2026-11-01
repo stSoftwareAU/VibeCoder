@@ -497,6 +497,51 @@ Deno.test("reapWedgedContainer - SIGKILLs the client and the runtime helper when
   );
 });
 
+Deno.test("reapWedgedContainer - logs that no runtime helper was found and leaves other VMs alone (Issue #4632)", async () => {
+  const unrelated = parseProcessTable(
+    "7001 1 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine\n" +
+      "7002 1 /usr/local/bin/container-runtime-linux --root /x vibe-coder-other",
+  );
+  const { deps, killed, logs } = stubDeps({
+    listProcesses: () => Promise.resolve(unrelated),
+  });
+
+  await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-66770",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+  });
+
+  assertEquals(killed, []);
+  assertEquals(
+    logs.some((l) =>
+      l.includes("no runtime helper found for vibe-coder-66770")
+    ),
+    true,
+    `logs: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("reapWedgedContainer - a matching runtime helper is killed without the no-helper line (Issue #4632)", async () => {
+  const { deps, killed, logs } = stubDeps({
+    listProcesses: () =>
+      Promise.resolve(
+        parseProcessTable(
+          " 9021 /usr/libexec/container-runtime-linux --name vibe-coder-66770 --debug",
+        ),
+      ),
+  });
+
+  await reapWedgedContainer(deps, {
+    containerName: "vibe-coder-66770",
+    reason: "watchdog deadline of 60s expired",
+    trigger: "watchdog",
+  });
+
+  assertEquals(killed, [9021]);
+  assertEquals(logs.some((l) => l.includes("no runtime helper found")), false);
+});
+
 Deno.test("reapWedgedContainer - a record that outlives every kill is reported as a failure", async () => {
   const { deps, events, logs } = stubDeps({
     runRuntime: (args) =>
