@@ -224,19 +224,21 @@ function segmentMatches(pattern: string, text: string): boolean {
 
 /**
  * Does the pattern match the path? `**` matches zero or more whole segments.
- * A pattern fully consumed while path segments remain is a match, so a
- * directory entry covers everything beneath it. Decided by a memoised table of
+ * Excludes also match when path segments remain, so a directory entry covers
+ * everything beneath it. Decided by a memoised table of
  * (pattern index, path index), filled bottom-up, so a hostile pattern costs
  * O(pattern × path) and cannot recurse deeply.
  */
 function matchSegments(
   pattern: readonly string[],
   path: readonly string[],
+  include: boolean,
 ): boolean {
   const width = path.length + 1;
   // reach[i * width + j]: pattern[i..] matches path[j..].
   const reach = new Uint8Array((pattern.length + 1) * width);
-  for (let j = 0; j < width; j++) reach[pattern.length * width + j] = 1;
+  if (include) reach[pattern.length * width + path.length] = 1;
+  else for (let j = 0; j < width; j++) reach[pattern.length * width + j] = 1;
   for (let i = pattern.length - 1; i >= 0; i--) {
     const seg = pattern[i] as string;
     for (let j = path.length; j >= 0; j--) {
@@ -264,7 +266,9 @@ function matchesAny(
     if (include && !/[*?{]/.test(entry)) {
       return segmentsOf(entry).join("/") === path.join("/");
     }
-    return compileEntry(entry).some((pattern) => matchSegments(pattern, path));
+    return compileEntry(entry).some((pattern) =>
+      matchSegments(pattern, path, include)
+    );
   });
 }
 

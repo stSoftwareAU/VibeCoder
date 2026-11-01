@@ -170,6 +170,24 @@ Deno.test("isDenoTestPath - a directory include retains the suffix rule", () => 
   assert(isDenoTestPath("src/foo.ts", file));
 });
 
+Deno.test("isDenoTestPath - include globs match the whole path", () => {
+  const glob = parse('{"test":{"include":["test/*"]}}');
+  assert(isDenoTestPath("test/a.ts", glob));
+  assertEquals(isDenoTestPath("test/helpers/util.ts", glob), false);
+
+  const braces = parse('{"test":{"include":["{src,lib}"]}}');
+  assertEquals(isDenoTestPath("src/foo.ts", braces), false);
+  assertEquals(isDenoTestPath("lib/foo.ts", braces), false);
+});
+
+Deno.test("isDenoTestPath - exclude patterns still cover descendants", () => {
+  const c = parse(
+    '{"test":{"include":["test/**"],"exclude":["test/*"]}}',
+  );
+  assertEquals(isDenoTestPath("test/helpers/util.ts", c), false);
+  assert(isDenoTestPath("test/a_test.ts", c));
+});
+
 Deno.test("isDenoTestPath - a ./ prefix and a trailing slash are ignored", () => {
   const c = parse('{"test":{"include":["./test/**/"]}}');
   assert(isDenoTestPath("test/a.ts", c));
