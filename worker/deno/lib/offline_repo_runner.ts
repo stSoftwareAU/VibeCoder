@@ -96,6 +96,7 @@ export async function runOfflineRepoCheck(
   let fixture: string | undefined;
   let runtime: Awaited<ReturnType<typeof resolveRuntime>> | undefined;
   let name: string | undefined;
+  let imageAlias: string | undefined;
   let launched = false;
   let outcome: OfflineRepoResult = {
     status: "unavailable",
@@ -118,6 +119,26 @@ export async function runOfflineRepoCheck(
       throw new Error(`Image unavailable: ${inspect.stderr}`);
     }
     const digest = inspectedDigest(inspect.stdout, runtime);
+    // Apple does not resolve installed images by digest. A private, random
+    // reference prevents routine concurrent updates of the source tag from
+    // changing this run. The host and its container engine remain trusted.
+    imageAlias = `vibe-offline-image:${crypto.randomUUID()}`;
+    const tagged = await runBounded(runtime.executable, [
+      "image",
+      "tag",
+      image,
+      imageAlias,
+    ], 10_000);
+    if (tagged.code !== 0) {
+      throw new Error(`Image pin failed: ${tagged.stderr}`);
+    }
+    const pin = await runBounded(runtime.executable, [
+      ...runtime.dialect.imageInspectArgs,
+      imageAlias,
+    ], 10_000);
+    if (pin.code !== 0 || inspectedDigest(pin.stdout, runtime) !== digest) {
+      throw new Error("Image changed while creating the run reference");
+    }
     fixture = await Deno.realPath(
       await Deno.makeTempDir({ prefix: "vibe-offline-repo-" }),
     );
@@ -230,7 +251,7 @@ export async function runOfflineRepoCheck(
     launched = true;
     const result = await runBounded(
       runtime.executable,
-      offlineIsolationArgs(runtime, image, fixture, name, [
+      offlineIsolationArgs(runtime, imageAlias, fixture, name, [
         "/bin/sh",
         "/fixture/run-repo.sh",
         request.cwd || ".",
@@ -248,7 +269,7 @@ export async function runOfflineRepoCheck(
     }
     const after = await runBounded(runtime.executable, [
       ...runtime.dialect.imageInspectArgs,
-      image,
+      imageAlias,
     ], 10_000);
     if (after.code !== 0 || inspectedDigest(after.stdout, runtime) !== digest) {
       throw new Error("Image changed during execution");
@@ -288,6 +309,27 @@ export async function runOfflineRepoCheck(
         outcome = {
           status: "unavailable",
           detail: `Offline container cleanup failed: ${error}`,
+        };
+      }
+    }
+    if (imageAlias && runtime) {
+      try {
+        const cleanup = await runBounded(runtime.executable, [
+          "image",
+          "delete",
+          "--force",
+          imageAlias,
+        ], 10_000);
+        if (cleanup.code !== 0) {
+          outcome = {
+            status: "unavailable",
+            detail: `Image cleanup failed: ${cleanup.stderr}`,
+          };
+        }
+      } catch (error) {
+        outcome = {
+          status: "unavailable",
+          detail: `Image cleanup failed: ${error}`,
         };
       }
     }
