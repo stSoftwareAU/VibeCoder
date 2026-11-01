@@ -80,9 +80,10 @@ PR-raise gate (`invokeMutationCheck`).
 
 **Recovery.** An unexempted survivor is a drift-check hit. It goes into the
 drift check's one recovery turn, with the same survivor wording as the PR-raise
-gate. That turn may add or change tests and docs, but no production code (the
-other drift items still say change no code). When survivors were found and the
-turn ran, the mutation check is re-run once.
+gate. That turn kills each survivor with a test, and may remove or fix a line a
+survivor shows is dead or wrong; the other drift items still say change no
+code. When survivors were found and the turn ran, the mutation check is re-run
+once.
 
 **Report.** Survivors still left after that are appended to
 `.pr_response_message` in the drift-check residual, under their own heading
@@ -105,7 +106,7 @@ flowchart TD
     A["Review-fix agent turn"] --> B{"Mutation check on lines this run added"}
     B -- "not applicable, skipped or no survivor" --> D["Drift check continues"]
     B -- "budget, cap or runner error" --> N["Reported under<br/>Mutation check heading"]
-    B -- "unexempted survivor" --> R["Drift recovery turn:<br/>tests and docs, no production code"]
+    B -- "unexempted survivor" --> R["Drift recovery turn:<br/>tests and docs; production code only for a dead or wrong line"]
     R --> C["Re-run mutation check once"]
     C -- "survivors left" --> N
     C -- "none left" --> D
