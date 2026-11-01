@@ -1,13 +1,13 @@
 ## Summary
 
-An orchestrated issue run now records the stats of every provider call it
-made, not only the returned one. `runOrchestratedIssueRun` still returns the
-last manager (review) call on `done` and the runner's timed-out call on a
-timed-out run, but that result now carries the plan and executor calls (and any
-earlier attempt of a retried call) in a new `orchestrationCalls` field.
+An orchestrated issue run now records the stats of every provider call it made,
+not only the returned one. `runOrchestratedIssueRun` still returns the last
+manager (review) call on `done` and the runner's timed-out call on a timed-out
+run, but that result now carries the plan and executor calls (and any earlier
+attempt of a retried call) in a new `orchestrationCalls` field.
 `recordClaudeRunStats` records each as its own `state.claudeRunStats` entry
-ahead of the returned result's, so the issue's cost/model comment and the
-fleet figures from `measureIssuePhaseRun` cover the whole run. Closes #4595.
+ahead of the returned result's, so the issue's cost/model comment and the fleet
+figures from `measureIssuePhaseRun` cover the whole run. Closes #4595.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -68,7 +68,7 @@ provenance is #4595, this issue.
 - `worker/deno/tests/orchestration_3642_gate_test.ts` (new):
   - "the result carries the plan and executor calls' stats beside the review's"
     - distinct tokens and models per call; asserts the returned result is still
-    the review's and the other two ride in call order.
+      the review's and the other two ride in call order.
   - "a retried executor call contributes every attempt it billed" - an
     `invocationStats` of `[failed, undefined, final]`; asserts both billed
     attempts and no double count of the final one.
@@ -80,9 +80,9 @@ provenance is #4595, this issue.
   - "measureIssuePhaseRun - an orchestrated run's spend and duration include its
     executor call" - duration 6 s against 3 s for the review alone, and a higher
     USD figure.
-- Red check: before the change the five new tests failed (128 passed, 5
-  failed); after it, 183 passed across the gate, stats-comment,
-  execute-phase-assignment, completion run-stats and fleet run-cost test files.
+- Red check: before the change the five new tests failed (128 passed, 5 failed);
+  after it, 183 passed across the gate, stats-comment, execute-phase-assignment,
+  completion run-stats and fleet run-cost test files.
 - Break checks, each leaving the gate and stats-comment files red: returning
   `lastManagerResult` unwrapped in the `done` branch (2 failed); unwrapped in
   the timed-out branch (1 failed); `slice(0, -1)` -> `slice(0)` (double count, 2
