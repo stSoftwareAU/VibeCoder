@@ -35,7 +35,7 @@ final version.
 
 - `deno task test:unit` grants no `--allow-net`, so the real-proxy tests run the
   proxy and probe in a `deno eval` child with `--allow-net=127.0.0.1`, as
-  `tests/egress_proxy_test.ts` does.
+  `worker/deno/tests/egress_proxy_test.ts` does.
 
 ## Evidence
 
@@ -76,9 +76,10 @@ but do not reproduce the split. The split is reproduced by the chunked fake.
 
 No assertion was removed or changed in an existing test.
 
-Results: `deno task test:unit` over `tests/egress_selfcheck_test.ts`,
-`tests/egress_proxy_command_test.ts` and
-`tests/launcher_egress_selfcheck_test.ts`: 55 passed, 0 failed.
+Results: `deno task test:unit` over
+`worker/deno/tests/egress_selfcheck_test.ts`,
+`worker/deno/tests/egress_proxy_command_test.ts` and
+`worker/deno/tests/launcher_egress_selfcheck_test.ts`: 55 passed, 0 failed.
 `./quality.sh < /dev/null`: every stage passed except `deno tests` (31406
 passed, 2 failed); the two failures are the Rust-formatter tests in
 `worker/deno/tests/completion_phase_repo_formatters_test.ts` (no rustup

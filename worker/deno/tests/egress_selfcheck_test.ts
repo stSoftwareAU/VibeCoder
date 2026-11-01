@@ -753,7 +753,7 @@ const REAL_PROXY_CHILD_TIMEOUT_MS = 20_000;
  * Run `body` against the real proxy in a child process granted loopback
  * network only, and return what `body` returns. `deno task test:unit` grants
  * no network access, so the proxy cannot bind in this process; the socket
- * tests in tests/egress_proxy_test.ts take the same route. Inside `body`,
+ * tests in worker/deno/tests/egress_proxy_test.ts take the same route. Inside `body`,
  * `startEgressProxy` and `probeProxyConnectDetailed` are in scope.
  *
  * @param body - Function body (JavaScript) that ends with a `return`
