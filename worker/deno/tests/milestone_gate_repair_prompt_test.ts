@@ -163,6 +163,127 @@ Deno.test("merge conflict prompt - an ordinary resolution renders no repair bloc
   assertEquals(/\{\{[A-Z_]+\}\}/.test(prompt), false);
 });
 
+Deno.test("merge conflict prompt - a repair whose merge is staged, not committed, says so (Issue #4616)", async () => {
+  const captured: Captured = { prompts: [], options: [] };
+  await runMergeConflictAgent({
+    repo: "stSoftwareAU/VibeCoder",
+    target: { kind: "pr", prNumber: 4321 },
+    baseBranch: "main",
+    conflictedFiles: ["worker/deno/lib/foo.ts"],
+    workDir: "/tmp/nonexistent-gate-repair",
+    promptsDir: PROMPTS_DIR,
+    logger: silentLogger(),
+    repair: {
+      ...REPAIR,
+      mergedCommitSubjects: [...REPAIR.mergedCommitSubjects],
+      mergeStaged: true,
+    },
+    runAgent: makeRunner(captured),
+  });
+
+  const prompt = captured.prompts[0]!;
+  assertStringIncludes(
+    prompt,
+    "already resolved and staged (not yet committed)",
+  );
+  assertEquals(
+    prompt.includes("already resolved and committed"),
+    false,
+    "a staged merge is not described as committed",
+  );
+  // Steps 4 and 5 say what happens next for a staged merge: the worker
+  // commits it, and a refused check ends the attempt with nothing pushed.
+  assertStringIncludes(
+    prompt,
+    "leave the merge uncommitted — the worker commits it, so do **not** run `git commit`",
+  );
+  assertStringIncludes(
+    prompt,
+    "the attempt fails, nothing is pushed, and the branch stays as its author had it",
+  );
+  assertEquals(
+    prompt.includes("the worker folds whichever it finds"),
+    false,
+    "a staged merge is not described as folded into an existing merge commit",
+  );
+  assertEquals(
+    prompt.includes("the worker resets the branch to where it stood"),
+    false,
+    "a staged refusal is not described as a milestone reset",
+  );
+});
+
+Deno.test("merge conflict prompt - a committed repair keeps the milestone step wording (Issue #4616)", async () => {
+  const captured: Captured = { prompts: [], options: [] };
+  await runMergeConflictAgent({
+    repo: "stSoftwareAU/GRQ-AutoTrader",
+    target: { kind: "branch", intoBranch: "milestone/168-execution" },
+    baseBranch: "Develop",
+    conflictedFiles: ["docs/development.md"],
+    workDir: "/tmp/nonexistent-gate-repair",
+    promptsDir: PROMPTS_DIR,
+    logger: silentLogger(),
+    repair: {
+      ...REPAIR,
+      mergedCommitSubjects: [...REPAIR.mergedCommitSubjects],
+    },
+    runAgent: makeRunner(captured),
+  });
+
+  const prompt = captured.prompts[0]!;
+  assertStringIncludes(
+    prompt,
+    "the worker folds whichever it finds into the existing merge commit",
+  );
+  assertStringIncludes(
+    prompt,
+    "the worker resets the branch to where it stood, and the escalation carries both check outputs",
+  );
+  assertEquals(
+    prompt.includes("the attempt fails, nothing is pushed"),
+    false,
+    "a committed milestone repair keeps its escalation wording",
+  );
+});
+
+Deno.test("merge conflict prompt - a PR-target repair names the PR, not a milestone branch (Issue #4616)", async () => {
+  const captured: Captured = { prompts: [], options: [] };
+  await runMergeConflictAgent({
+    repo: "stSoftwareAU/VibeCoder",
+    target: { kind: "pr", prNumber: 4321 },
+    baseBranch: "main",
+    conflictedFiles: ["worker/deno/lib/foo.ts"],
+    workDir: "/tmp/nonexistent-gate-repair",
+    promptsDir: PROMPTS_DIR,
+    logger: silentLogger(),
+    repair: {
+      ...REPAIR,
+      mergedCommitSubjects: [...REPAIR.mergedCommitSubjects],
+      mergeStaged: true,
+    },
+    runAgent: makeRunner(captured),
+  });
+
+  const prompt = captured.prompts[0]!;
+  assertStringIncludes(
+    prompt,
+    "PR #4321 in repository stSoftwareAU/VibeCoder conflicted with its base branch",
+  );
+  assertStringIncludes(
+    prompt,
+    "resolved in your working tree, not yet pushed",
+  );
+  assertStringIncludes(
+    prompt,
+    "the fast local checks the worker runs before it pushes",
+  );
+  assertEquals(
+    prompt.includes("A milestone branch in repository"),
+    false,
+    "a PR repair is not described as a milestone branch",
+  );
+});
+
 /** A config carrying only what the binding reads. */
 function config(claudeTimeout: number): WorkerConfig {
   return {

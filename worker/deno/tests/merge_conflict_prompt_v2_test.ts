@@ -11,9 +11,11 @@
  *
  * Issue #2306 also removed two things these tests now assert are gone: the
  * "stop and `git merge --abort`" rule, because an unresolved merge helps
- * nobody, and the quality-instructions block, because CI on the pushed merge
- * is the gate on a PR and the worker's type-check gate is the gate on a
- * milestone branch.
+ * nobody, and the quality-instructions block, because the agent does not run
+ * the repository's gate. Issue #4616 then named the checks the worker itself
+ * runs before a PR's merge is pushed: the fast local checks on the packages
+ * the merge touched, with the type-check gate still the gate on a milestone
+ * branch.
  *
  * Australian English is used throughout (behaviour, colour, organisation).
  */
@@ -121,11 +123,33 @@ Deno.test("merge_conflict - the rendered prompt withholds the gate from the agen
     flat,
     "The repository's quality gate is not yours this merge",
   );
-  // The gate that does apply is named on each path, so "do not run it" is
-  // not read as "nothing checks this merge".
-  assertStringIncludes(flat, "CI on the pushed merge");
-  assertStringIncludes(flat, "Resolve carefully enough that those checks pass");
+  // The checks that do apply are named on each path, so "do not run it" is
+  // not read as "nothing checks this merge" (Issue #4616).
+  assertStringIncludes(
+    flat,
+    "the worker itself runs the repository's fast local checks on the packages the merge touched before anything is pushed",
+  );
+  assertStringIncludes(
+    flat,
+    "the format check, lint (clippy with `-D warnings`, and `deno lint`), the type and compile check including test targets",
+  );
+  assertStringIncludes(
+    flat,
+    "A failure is returned to you as a repair round in this same attempt",
+  );
+  assertStringIncludes(flat, "A failing check is never a reason to push");
+  assertStringIncludes(flat, "Do not run those checks yourself first");
   assertStringIncludes(flat, "type-check gate");
+  assertEquals(
+    flat.includes("CI on the pushed merge"),
+    false,
+    "CI is no longer named as the check that governs a PR merge",
+  );
+  assertEquals(
+    flat.includes("do not pre-empt"),
+    false,
+    "the prompt no longer tells the agent to leave the checks alone",
+  );
   assertStringIncludes(
     flat,
     "run one test suite at a time, in the foreground, never with `run_in_background`, and only for the crates or packages the change touched",

@@ -69,6 +69,10 @@ import {
   markerStateFilePath,
 } from "../lib/heartbeat_storage.ts";
 import type { ClaudeRunResult } from "../lib/claude_runner.ts";
+import type {
+  PrePushVerification,
+  VerifyBeforePushOptions,
+} from "../lib/merge_fast_checks.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -111,6 +115,27 @@ interface Captured {
   pushes: string[][];
   /** Revisions `git reset --hard` was pointed at (Issue #2279). */
   resets: string[];
+  /** The phase and cwd each agent run was started with (Issue #4616). */
+  agentCalls: { phase?: string; cwd?: string }[];
+  /** What the pre-push verifier was called with (Issue #4616). */
+  verifierCalls: {
+    repoDir: string;
+    headBeforeMerge: string;
+    baseBranch: string;
+  }[];
+}
+
+/**
+ * How the pre-push verifier answers in a test (Issue #4616): a fixed verdict,
+ * or a function that may call the repair runner the processor supplied.
+ */
+type VerifierFixture =
+  | PrePushVerification
+  | ((opts: VerifyBeforePushOptions) => Promise<PrePushVerification>);
+
+/** A pre-push verification that passed with nothing to report (Issue #4616). */
+function passedNothing(): PrePushVerification {
+  return { kind: "passed", ran: [], leftToCi: [], repairRounds: 0 };
 }
 
 interface GitScript {
@@ -589,10 +614,16 @@ function makeClaude(
 ): Partial<ClaudeDeps> {
   return {
     runClaudeWithRetry: (async (
-      options: { prompt?: string; captureInvocationStats?: boolean },
+      options: {
+        prompt?: string;
+        captureInvocationStats?: boolean;
+        phase?: string;
+        cwd?: string;
+      },
     ) => {
       captured.agentRuns++;
       captured.agentPrompts.push(options?.prompt ?? "");
+      captured.agentCalls.push({ phase: options?.phase, cwd: options?.cwd });
       captured.events.push("agent:run");
       // A real resolution runs for minutes; a few milliseconds is enough for
       // a test to observe what happens *while* it runs (Issue #395).
@@ -661,6 +692,11 @@ async function runProcessor(
     workRoot?: string;
     /** Wire the real follow-on recorder instead of the no-op mock. */
     recordFollowOn?: boolean;
+    /**
+     * How the pre-push verifier answers (Issue #4616). Absent, it passes with
+     * nothing to report — so the existing fixtures keep their comments.
+     */
+    verifier?: VerifierFixture;
   },
 ): Promise<{
   captured: Captured;
@@ -686,6 +722,8 @@ async function runProcessor(
     emptyCommits: [],
     pushes: [],
     resets: [],
+    agentCalls: [],
+    verifierCalls: [],
   };
 
   const deps = createMockDeps({
@@ -728,6 +766,21 @@ async function runProcessor(
     // Pin the prompts directory: the checkout under test, not whatever
     // VIBE_BASE_DIR/PROMPTS_DIR the host happens to export.
     promptsDir: new URL("../../../prompts", import.meta.url).pathname,
+    // Issue #4616: the pre-push check is injected, so no existing fixture meets
+    // the real toolchain. Every call is recorded, which is the positive control
+    // that the verifier was reached. `...depOverrides` still wins over it.
+    verifyMergeBeforePushFn: (verifyOpts) => {
+      captured.verifierCalls.push({
+        repoDir: verifyOpts.repoDir,
+        headBeforeMerge: verifyOpts.headBeforeMerge,
+        baseBranch: verifyOpts.baseBranch,
+      });
+      captured.events.push("verify");
+      const fixture = opts?.verifier ?? passedNothing();
+      return typeof fixture === "function"
+        ? fixture(verifyOpts)
+        : Promise.resolve(fixture);
+    },
     ...depOverrides,
   });
 
@@ -952,6 +1005,193 @@ Deno.test("processMergeConflict - a clean merge records no conflict-fix cost (Is
   assert(result.ok);
   assertEquals(captured.agentRuns, 0);
   assertEquals(await readLifecycleLedger(lifecycleLedgerPath(workRoot)), []);
+});
+
+// ---------------------------------------------------------------------------
+// Pre-push verification (Issue #4616)
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - a conflicted merge that passes the pre-push checks is pushed, with the checks on the resolved comment (Issue #4616)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    undefined,
+    {
+      verifier: {
+        kind: "passed",
+        ran: ["deno lint in worker/deno"],
+        leftToCi: [
+          "deno test in worker/deno — too slow for the pre-push budget",
+        ],
+        repairRounds: 0,
+      },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(captured.commitAndPushCalls, 1);
+  const resolved = captured.comments.at(-1) ?? "";
+  assertStringIncludes(resolved, CONFLICT_RESOLVED_MARKER);
+  assertStringIncludes(resolved, "**Local checks before push:**");
+  assertStringIncludes(resolved, "- deno lint in worker/deno");
+  assertStringIncludes(resolved, "Left to CI:");
+  assertStringIncludes(resolved, "too slow for the pre-push budget");
+});
+
+Deno.test("processMergeConflict - a clean merge is checked against the head it started from before the push (Issue #4616)", async () => {
+  const { captured, result, workDir } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  // Positive control: the verifier was reached on the clean-merge path, with
+  // the head before the merge and the base merged in.
+  assertEquals(captured.verifierCalls, [{
+    repoDir: workDir,
+    headBeforeMerge: CONFLICT_HEAD,
+    baseBranch: "main",
+  }]);
+  assertEquals(captured.commitAndPushCalls, 1);
+  const verifiedAt = captured.events.indexOf("verify");
+  const pushedAt = captured.events.indexOf("git:commitAndPushPending");
+  assert(
+    verifiedAt >= 0 && verifiedAt < pushedAt,
+    `the check must run before the push; got ${captured.events.join(",")}`,
+  );
+});
+
+Deno.test("processMergeConflict - a refused pre-push check pushes nothing and fails the attempt (Issue #4616)", async () => {
+  const detail = "deno check failed on the merged tree after 2 repair rounds";
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    undefined,
+    { verifier: { kind: "refused", detail } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.processed, true);
+  assertEquals(captured.commitAndPushCalls, 0, "a refusal must not push");
+  assert(
+    captured.gitArgs.some((a) => a[0] === "merge" && a[1] === "--abort"),
+    "the merge must be aborted on a refusal",
+  );
+
+  // The attempt fails on the PR, carrying the verifier's reason.
+  const failure = captured.comments.at(-1) ?? "";
+  assertStringIncludes(failure, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(failure, detail);
+  // Nothing is labelled resolved and the conflict label is not cleared.
+  assertEquals(
+    captured.comments.some((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
+    false,
+  );
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - a pre-push check cut short by the run ending withdraws the attempt (Issue #4616)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    undefined,
+    {
+      verifier: { kind: "cut-short", outcome: { terminated: true } },
+      postedCommentId: 9001,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.runEnded, true);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.processed, false);
+  assertEquals(captured.commentsDeleted, [9001]);
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+  assertEquals(captured.commitAndPushCalls, 0);
+});
+
+Deno.test("processMergeConflict - the pre-push check runs only after the conflict-marker guard (Issue #4616)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ markersAfterAgent: true }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(
+    captured.verifierCalls,
+    [],
+    "a tree still holding markers must never reach the checks",
+  );
+  assertEquals(captured.commitAndPushCalls, 0);
+  assertStringIncludes(
+    captured.comments.at(-1) ?? "",
+    "the working tree still contains conflict markers",
+  );
+});
+
+Deno.test("processMergeConflict - a failing pre-push check is repaired by the agent in repair mode, and each round is costed on its own (Issue #4616)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-repair-ledger-" });
+  const stats = pricedConflictRun();
+  try {
+    const { captured, result, workDir } = await runProcessor(
+      makeInput(),
+      makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+      undefined,
+      {
+        recordFollowOn: true,
+        workRoot,
+        claudeResult: { invocationStats: [stats], runStats: stats },
+        verifier: async (verifyOpts) => {
+          const repaired = await verifyOpts.runRepairAgent({
+            round: 1,
+            maxRounds: 2,
+            failingCommand: "deno check lib/x.ts",
+            output: "TS2304: Cannot find name 'x'.",
+            mergedCommitSubjects: ["feat: add x"],
+          });
+          assert(repaired.ok, JSON.stringify(repaired));
+          return {
+            kind: "passed",
+            ran: ["deno check"],
+            leftToCi: [],
+            repairRounds: 1,
+          };
+        },
+      },
+    );
+
+    assert(result.ok, JSON.stringify(result));
+    assertEquals(captured.agentRuns, 1);
+    assertEquals(captured.agentCalls, [{
+      phase: "merge_conflict",
+      cwd: workDir,
+    }]);
+    assertStringIncludes(captured.agentPrompts[0] ?? "", "Repair Mode");
+    assertEquals(captured.commitAndPushCalls, 1);
+    assertStringIncludes(
+      captured.comments.at(-1) ?? "",
+      "Repair rounds the agent spent on failing checks: 1.",
+    );
+
+    // The repair round is its own ledger event. Keyed on the head alone it
+    // would collapse into the first agent run's event (Issue #4153).
+    const events = await readLifecycleLedger(lifecycleLedgerPath(workRoot));
+    assertEquals(events.length, 1);
+    const event = events[0]!;
+    assert(event.kind === "follow_on");
+    assertEquals(event.cycle, `${CONFLICT_HEAD}:repair-1`);
+    assertEquals(event.attempt, 1);
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+  }
 });
 
 Deno.test("processMergeConflict - refuses to push a tree that still has conflict markers", async () => {
@@ -3283,9 +3523,11 @@ Deno.test("processMergeConflict - the structured log record carries the same hos
     | { stage: string; seconds: number | null }[]
     | undefined;
   assert(Array.isArray(timings), "the record must carry the stage report");
+  // `gate` is the pre-push verification (Issue #4616), timed between the agent
+  // and the push.
   assertEquals(
     timings.map((t) => t.stage),
-    ["deepen", "rules", "issue-context", "agent", "push"],
+    ["deepen", "rules", "issue-context", "agent", "gate", "push"],
   );
   // Five injected seconds per stage, and every stage finished: a stage that
   // silently went missing, or reported `unfinished`, fails here.

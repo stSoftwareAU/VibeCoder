@@ -17,9 +17,11 @@ PR-feedback queue either. Priority **1.61** closes that gap: it labels every
 base branch into the PR branch **for real** — both sides' changes survive
 wherever both can stand, never a side-pick — and pushes without force. Where the
 two sides genuinely contradict, the agent **decides** and names the call file by
-file on the PR; it does not run the repository's quality gate, because CI on the
-pushed merge is the gate on a PR and the worker's own type-check gate is the
-gate on a milestone branch (Issue #2306). A dependency-version conflict is settled by deterministic rules
+file on the PR; it does not run the repository's quality gate. Before a PR's
+merge is pushed the worker runs the repository's fast local checks on the
+packages the merge touched, sends any failure back to the agent for repair, and
+refuses the push if the repairs run out (Issue #4616). On a milestone branch the
+worker's type-check gate does that job instead (Issue #2306). A dependency-version conflict is settled by deterministic rules
 first, and the AI is only asked about what those rules could not decide.
 
 **The ladder is three judged runs, shared with every other pass that touches
@@ -217,10 +219,21 @@ progress and stopped on conflicts. Its contract is absolute:
   `issue-<N>-…` branch) is never rebuilt; the prompt tells the agent to update
   it with `gh pr edit <n> --body-file <file>` and name that in
   `.pr_response_message` (Issue #4515).
-- **The agent runs no quality gate.** CI on the pushed merge is the gate on a
-  PR — a conflicting PR has had none at all, so that run is usually the first
-  time its tests meet current base code — and the worker's type-check gate,
-  with its repair round, is the gate on a milestone branch.
+- **The agent runs no quality gate.** The full gate is the worker's, not the
+  agent's. On a milestone branch the worker's type-check gate, with its repair
+  round, is the check before the push.
+- **The worker checks a PR's merge before it is pushed (Issue #4616).** Once the
+  agent has staged its resolution, the worker runs the repository's fast local
+  checks on the packages the merge touched, before anything is pushed: the
+  format check, lint (clippy with `-D warnings`, and `deno lint`), the type and
+  compile check including test targets, and those packages' tests. A failure
+  goes back to the agent as a repair round in the same attempt, two rounds at
+  most, and a failing check is never a reason to push. If the rounds run out the
+  push is refused and the attempt fails, with nothing pushed. Environment faults
+  — remote modules that cannot be reached, or a host `rustc` older than the
+  crate's `rust-version` — do not block the push: they are left to CI and named
+  on the resolved comment. A tool that is not installed, or the checks' 900-second
+  budget being spent, refuses the push as unverified.
 - **Dependency versions are the first bounded carve-out.** The prompt says so
   itself: the worker
   settles dependency-version hunks in known manifests before the agent runs, and
@@ -1245,8 +1258,8 @@ where that time went used to be the wall-clock gap between two log lines.
 Issue #2308 closed that: every attempt records the wall-clock seconds of each
 stage it ran — on this path `deepen`, `rules`, `issue-context`, `agent` and
 `push` — plus the host it ran on. There is no `gate` stage here, because the
-PR path runs no quality gate (Issue #2306); CI on the pushed merge is the
-gate. The line rides at the bottom of the attempt's own conclusion comment —
+PR path runs no quality gate of its own (Issue #2306); the pre-push checks
+under [The contract](#-the-contract) are the checks before the push. The line rides at the bottom of the attempt's own conclusion comment —
 the resolved marker or the failed one — and the same stages and host go out as
 one structured log record, so a reader never has to reconcile two different
 breakdowns:

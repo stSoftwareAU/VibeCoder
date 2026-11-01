@@ -95,8 +95,8 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
   // `TARGET_DESCRIPTION` rather than a bare PR number.
   // Issue #2306: the agent no longer runs the repository's quality gate in
   // the run, so the template carries no `QUALITY_INSTRUCTIONS` block. CI on
-  // the pushed merge is the gate on a PR; the worker's type-check gate is the
-  // gate on a milestone branch.
+  // the worker's fast local checks run on a PR's staged merge before the push;
+  // the worker's type-check gate is the gate on a milestone branch.
   merge_conflict: [
     "TARGET_DESCRIPTION",
     "BASE_BRANCH",
