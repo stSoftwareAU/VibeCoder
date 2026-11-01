@@ -102,7 +102,14 @@ Prompt templates. The advisor and executor instructions are built in code, and
 the template carries only a placeholder.
 
 - The block is `ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS`
-  (`worker/deno/lib/issue_executor_split_prompt.ts:27`).
+  (`worker/deno/lib/issue_executor_split_prompt.ts:31`).
+- The block pins every executor and reviewer dispatch to the foreground
+  (`run_in_background: false`, Issue #4599). The Claude CLI's `Agent` tool can
+  run a sub-agent in the background, which lets the advisor end its turn with an
+  executor still running and reach the PR with no summary. This is prompt
+  wording only: the `--agents` definitions in `issue_executor_agents.ts` do not
+  force it, and `worker/deno/tests/issue_prompt_executor_split_2343_test.ts`
+  pins the wording.
 - `buildPrompt` splices it into `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` when the split
   is on, and renders the empty string otherwise
   (`worker/deno/lib/prompt_builder.ts:718-728`, `:782`, `:832-834`).
