@@ -131,9 +131,10 @@ export interface GateRefusalRecord {
 export interface SyncStreakEntry {
   /**
    * Consecutive failed sync cycles for this branch, a cycle-budget deferral
-   * excepted (Issue #4517). The resolver recovery ladder reads it as the
-   * number of prior declines, so a deferral that added to it would carry the
-   * first real decline to a later rung.
+   * excepted (Issue #4517). The resolver recovery ladder does not read it: it
+   * reads {@link resolverDeclines} (Issue #4587), so a non-climbing failure
+   * that advances this figure cannot carry the first real decline to a later
+   * rung.
    */
   count: number;
   /** True once the needs-human comment has been posted for this streak. */
@@ -237,6 +238,17 @@ export interface SyncStreakEntry {
    * count (Issue #4517). A charged conclusion zeroes it. Absent reads as 0.
    */
   refusedCycles?: number;
+  /**
+   * Consecutive resolver declines that climb the recovery ladder (Issue
+   * #4587), that is verdicts where `climbsRecoveryLadder(reason)` holds. It is
+   * the figure the ladder reads for its rung. Only a landed sync or a landed
+   * rebuild resets it. A re-arm for a moved default tip and a landed roll-back
+   * keep it (Issue #4587).
+   * Absent reads as 0: an entry written before this change restarts its
+   * decline count from zero, a deliberately safe direction that gives the
+   * resolver its budget again.
+   */
+  resolverDeclines?: number;
   /**
    * Lifetime roll-backs that could not merge (Issue #4328). Absent reads as 0.
    */
@@ -492,10 +504,13 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const revertedShas = readShaList(entry.revertedShas);
   // Issue #4328: an older file has none of these, and reads as zero.
   const refusedCycles = optionalCount(entry.refusedCycles);
+  // Issue #4587: an older file has none of these either, and reads as zero.
+  const resolverDeclines = optionalCount(entry.resolverDeclines);
   const rollbackFailures = optionalCount(entry.rollbackFailures);
   const rebuilds = optionalCount(entry.rebuilds);
   return {
     ...(refusedCycles !== undefined ? { refusedCycles } : {}),
+    ...(resolverDeclines !== undefined ? { resolverDeclines } : {}),
     ...(rollbackFailures !== undefined ? { rollbackFailures } : {}),
     ...(rebuilds !== undefined ? { rebuilds } : {}),
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
@@ -705,8 +720,10 @@ export function resetConflictLedgerOnSuccess(
     // A landed sync is the proof the gate is no longer refusing anything
     // (Issue #2388) — the wedge goes with the conflict it described.
     gateRefusal: _wedged,
-    // A landed sync ends any refusal streak too (Issue #4328).
+    // A landed sync ends any refusal streak too (Issue #4328), and any run of
+    // resolver declines with it (Issue #4587).
     refusedCycles: _refused,
+    resolverDeclines: _declines,
     ...rest
   } = entry;
   return { ...rest, conflictAttempts: 0 };

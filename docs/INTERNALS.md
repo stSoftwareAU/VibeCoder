@@ -4389,10 +4389,12 @@ refusal is charged as a failure and climbs to the hand-off. The wedge holds the
 milestone's claims back; the ceiling is what ends the ladder on a cycle that
 does run the sync. A cycle-budget deferral (`agent deferred: cycle budget`) is
 not a refusal (Issue #4517): it is not counted in `refusedCycles` and never
-climbs, and the branch waits for a cycle with the runway. It also adds
-nothing to the ledger's `count`, which the resolver recovery ladder reads as
-prior declines, so the first agent decline after any number of deferrals is
-attempt 1 of 3.
+climbs, and the branch waits for a cycle with the runway. It adds nothing to
+either the ledger's `count` (the escalation streak) or `resolverDeclines`,
+which only the resolver recovery ladder reads as prior declines,
+so the first agent decline after any number of deferrals is attempt 1 of 3. A
+ledger written before this change has no `resolverDeclines` and reads it as 0,
+so the decline count restarts there.
 
 ```mermaid
 stateDiagram-v2
@@ -4720,7 +4722,10 @@ whether the worker diagnostic has been `reported`, Issue #2388),
 not-charged refusals, zeroed by a charged conclusion or a landed sync; a
 cycle-budget deferral is not a refusal and leaves it unchanged, Issue #4517),
 `rollbackFailures` (lifetime roll-backs that could not merge) and `rebuilds`
-(lifetime milestone rebuilds on the branch). Every field is optional and every malformed field is dropped, so a
+(lifetime milestone rebuilds on the branch), and `resolverDeclines` (charged
+verdicts for which `climbsRecoveryLadder` holds; only the resolver recovery
+ladder reads it, Issue #4587). An older file without `resolverDeclines` reads
+it as 0. Every field is optional and every malformed field is dropped, so a
 file written before the ledger existed loads as a branch with an unspent budget
 rather than failing the whole load — and a `deferUntil` an older worker wrote
 is dropped on load, so a cooldown that no longer exists cannot pace a branch
@@ -4767,12 +4772,14 @@ Three rules decide what the ledger does, and each is a pure helper:
   The alternative was a branch that sat out every remaining cycle for ever with
   nobody asked to look at it; the cost is bounded by the default branch's own
   cadence — one re-arm per default push, never one per sync cycle.
-- **Only a landed sync, a rebuild that lands, or that fallback re-arm zeroes it.**
+- **A landed sync, a landed rebuild, a landed roll-back or that fallback re-arm zeroes the budget.**
   `resetConflictLedgerOnSuccess` is the one thing that returns
   `conflictAttempts` to zero; the lifetime `rollbacks`, `rollbackFailures` and `rebuilds` counts survive,
   because they describe the branch rather than the conflict that just ended,
   while `failedAttempts`, `fallbackDefaultSha` and `refusedCycles` go with the
-  budget or streak they describe (Issue #4328). Because `rollbacks` and
+  budget or streak they describe (Issue #4328). A landed sync or rebuild also
+  drops `resolverDeclines`; a fallback re-arm or landed roll-back carries it
+  over so the recovery ladder retains its place (Issue #4587). Because `rollbacks` and
   `rollbackFailures` survive, every later spent budget on a branch that has
   rolled back is offered a rebuild first.
 
