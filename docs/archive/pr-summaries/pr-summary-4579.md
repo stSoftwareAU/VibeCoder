@@ -11,9 +11,9 @@ Closes #4579.
 
 ### Intent and Rationale
 
-- An operator searching worker logs for "blocked PR creation" was counting
-  runs that raised and armed a PR alongside the two gates that really stop the
-  run. Rewording the five lines makes the phrase mean one thing again.
+- An operator searching worker logs for "blocked PR creation" was counting runs
+  that raised and armed a PR alongside the two gates that really stop the run.
+  Rewording the five lines makes the phrase mean one thing again.
 
 ### Essential Design Decisions
 
@@ -44,18 +44,18 @@ Backend log-text change. Tests run from `worker/deno`:
 
 - Extended `worker/deno/tests/completion_phase_advisory_gates_4234_test.ts`
   (first test) to capture logger warnings via `createMockDeps`, asserting no
-  warning contains "blocked PR creation" and that
-  "Reproduction-status gate reported findings" is logged.
+  warning contains "blocked PR creation" and that "Reproduction-status gate
+  reported findings" is logged.
   - Red check: against the unfixed lib it failed at the new assertion
     (`Values are not equal ... Actual: true, Expected: false`); it passes with
     the reworded messages.
   - Only the reproduction-status warn fires in this fixture. The
     result-placeholder, mutation, coverage carry-over and pre-PR verifier
     messages are reworded the same way but not driven by a test; they are one
-    string each, and their reach is not staged by this fixture
-    (exempt (untestable): the mutation and coverage runners are not wired in
-    the mock deps, and the earlier tests that reach the verifier and
-    placeholder gates, `completion_phase_pre_pr_verifier_3395_test.ts` and
+    string each, and their reach is not staged by this fixture (exempt
+    (untestable): the mutation and coverage runners are not wired in the mock
+    deps, and the earlier tests that reach the verifier and placeholder gates,
+    `completion_phase_pre_pr_verifier_3395_test.ts` and
     `completion_phase_summary_rule_retry_test.ts`, do not capture the logger).
 - No existing assertion was removed or edited.
 - Docs: grepped `README.md`, `docs/` (excluding archive) and `prompts/` for
