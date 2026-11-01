@@ -608,3 +608,218 @@ Deno.test("waitForProxyListener - a timed-out dial is retried until the proxy ac
   assertEquals(calls, 2);
   assertEquals(clock, 250);
 });
+
+/**
+ * A connection that answers successive reads with `chunks`, one chunk per
+ * read, so a test chooses where the answer is split. After the last chunk a
+ * read is EOF when `endsWithEof`; otherwise it hangs until the conn is closed,
+ * which the probe timer does. Counts the reads it has answered.
+ */
+function chunkedConn(
+  chunks: readonly string[],
+  endsWithEof: boolean,
+): { conn: Deno.Conn; reads: () => number } {
+  const encoder = new TextEncoder();
+  let reads = 0;
+  let hang: ((error: Error) => void) | undefined;
+  const conn = {
+    write: (data: Uint8Array) => Promise.resolve(data.length),
+    read: (buf: Uint8Array) => {
+      reads++;
+      const next = chunks[reads - 1];
+      if (next !== undefined) {
+        const bytes = encoder.encode(next);
+        buf.set(bytes);
+        return Promise.resolve(bytes.length);
+      }
+      if (endsWithEof) return Promise.resolve(null);
+      return new Promise<number | null>((_, reject) => {
+        hang = reject;
+      });
+    },
+    close: () => {
+      hang?.(new Error("closed"));
+      hang = undefined;
+    },
+  } as unknown as Deno.Conn;
+  return { conn, reads: () => reads };
+}
+
+/** Probe a fake proxy that answers through `conn`. */
+function probeFake(conn: Deno.Conn, timeoutMs = 100) {
+  return withConnect(
+    () => Promise.resolve(conn),
+    () =>
+      probeProxyConnectDetailed(
+        "http://proxy.test:3128",
+        "example.com",
+        timeoutMs,
+      ),
+  );
+}
+
+const DENIED_BODY = "[EGRESS_DENIED] host=example.com reason=not-allowlisted\n";
+
+Deno.test("probeProxyConnectDetailed - a 403 whose head and body arrive in separate reads is denied (Issue #4559)", async () => {
+  const length = new TextEncoder().encode(DENIED_BODY).length;
+  const head = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n" +
+    `Connection: close\r\nContent-Length: ${length}\r\n\r\n`;
+  const split = chunkedConn([head, DENIED_BODY], false);
+  assertEquals(await probeFake(split.conn), {
+    result: "denied",
+    observed: "denied",
+  });
+  assertEquals(split.reads(), 2);
+});
+
+Deno.test("probeProxyConnectDetailed - a head split inside its blank line or inside the marker is still denied (Issue #4559)", async () => {
+  const length = new TextEncoder().encode(DENIED_BODY).length;
+  const head = `HTTP/1.1 403 Forbidden\r\nContent-Length: ${length}\r\n\r\n`;
+  const split = chunkedConn(
+    [head.slice(0, -1), "\n" + DENIED_BODY.slice(0, 5), DENIED_BODY.slice(5)],
+    false,
+  );
+  assertEquals(await probeFake(split.conn), {
+    result: "denied",
+    observed: "denied",
+  });
+  assertEquals(split.reads(), 3);
+});
+
+Deno.test("probeProxyConnectDetailed - a 403 with no body is not denied, after EOF or when the body never arrives (Issue #4559)", async () => {
+  const length = new TextEncoder().encode(DENIED_BODY).length;
+  const head = `HTTP/1.1 403 Forbidden\r\nContent-Length: ${length}\r\n\r\n`;
+  const atEof = chunkedConn([head], true);
+  assertEquals(await probeFake(atEof.conn), {
+    result: "through",
+    observed: "HTTP/1.1 403 Forbidden",
+  });
+  // The marker word lives only in a body that never arrives; the timer ends the read.
+  const neverArrives = chunkedConn([head], false);
+  const outcome = await probeFake(neverArrives.conn, 200);
+  assertEquals(outcome, {
+    result: "through",
+    observed: "HTTP/1.1 403 Forbidden",
+  });
+});
+
+Deno.test("probeProxyConnectDetailed - a non-timer read error after a partial answer fails", async () => {
+  const head = new TextEncoder().encode(
+    "HTTP/1.1 403 Forbidden\r\nContent-Length: 20\r\n\r\n",
+  );
+  let reads = 0;
+  const conn = {
+    write: (data: Uint8Array) => Promise.resolve(data.length),
+    read: (buffer: Uint8Array) => {
+      if (reads++ === 0) {
+        buffer.set(head);
+        return Promise.resolve(head.length);
+      }
+      return Promise.reject(new Deno.errors.ConnectionReset("reset by peer"));
+    },
+    close: () => {},
+  } as unknown as Deno.Conn;
+  assertEquals(await probeFake(conn, 5000), {
+    result: "failed",
+    observed: "error: reset by peer",
+  });
+  assertEquals(reads, 2);
+});
+
+Deno.test("probeProxyConnectDetailed - a 200 is succeeded at its head, without a second read (Issue #4559)", async () => {
+  // A second read would hang; the 200 must not ask for one.
+  const fake = chunkedConn(
+    ["HTTP/1.1 200 Connection Established\r\n\r\n"],
+    false,
+  );
+  assertEquals(await probeFake(fake.conn, 200), {
+    result: "succeeded",
+    observed: "connected",
+  });
+  assertEquals(fake.reads(), 1);
+});
+
+Deno.test("probeProxyConnectDetailed - an answer longer than the byte cap is cut at the cap (Issue #4559)", async () => {
+  const head = "HTTP/1.1 403 Forbidden\r\nContent-Length: 5000\r\n\r\n";
+  const filler = "x".repeat(1000);
+  // The marker sits past the 2048-byte cap, so it is never read.
+  const fake = chunkedConn(
+    [head, filler, filler, filler, DENIED_BODY],
+    false,
+  );
+  assertEquals(await probeFake(fake.conn, 200), {
+    result: "through",
+    observed: "HTTP/1.1 403 Forbidden",
+  });
+  assertEquals(fake.reads(), 3);
+});
+
+Deno.test("probeProxyConnectDetailed - a Content-Length that is not plain digits announces no body, so a 200 stays complete at its head (Issue #4559)", async () => {
+  for (const value of ["abc", "1e3", "12 34", "0x10", "-5", "", "+7"]) {
+    // A second read would hang; a non-digit value must not ask for one.
+    const fake = chunkedConn(
+      [`HTTP/1.1 200 Connection Established\r\nContent-Length: ${value}\r\n\r\n`],
+      false,
+    );
+    assertEquals(await probeFake(fake.conn, 200), {
+      result: "succeeded",
+      observed: "connected",
+    }, `Content-Length: ${JSON.stringify(value)}`);
+    assertEquals(fake.reads(), 1, `Content-Length: ${JSON.stringify(value)}`);
+  }
+});
+
+/** Budget for one real-proxy child process (Issue #4559). */
+const REAL_PROXY_CHILD_TIMEOUT_MS = 20_000;
+
+/** Run a real-proxy scenario in a child with loopback-only network access. */
+async function runAgainstRealProxy(scenario: string): Promise<unknown> {
+  const script = new URL(
+    "./support/egress_selfcheck_scenarios.ts",
+    import.meta.url,
+  );
+  const child = new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--no-config",
+      "--no-lock",
+      "--allow-net=127.0.0.1",
+      script.pathname,
+      scenario,
+    ],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const timer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The child has already exited.
+    }
+  }, REAL_PROXY_CHILD_TIMEOUT_MS);
+  try {
+    const { code, stdout, stderr } = await child.output();
+    if (code !== 0) {
+      throw new Error(
+        `real proxy child exited ${code}\n${new TextDecoder().decode(stderr)}`,
+      );
+    }
+    const lines = new TextDecoder().decode(stdout).split("\n").filter((line) =>
+      line.trim() !== ""
+    );
+    return JSON.parse(lines[lines.length - 1] ?? "");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+Deno.test("probeProxyConnectDetailed - the real proxy's refusal of a host off the allowlist is denied over loopback (Issue #4559)", async () => {
+  const outcome = await runAgainstRealProxy("denied");
+  assertEquals(outcome, { result: "denied", observed: "denied" });
+});
+
+Deno.test("probeProxyConnectDetailed - the real proxy's 200 to an allowlisted host is succeeded over loopback (Issue #4559)", async () => {
+  const outcome = await runAgainstRealProxy("allowed");
+  assertEquals(outcome, { result: "succeeded", observed: "connected" });
+});
