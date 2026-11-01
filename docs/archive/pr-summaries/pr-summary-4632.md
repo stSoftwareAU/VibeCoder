@@ -93,8 +93,10 @@ flowchart TD
   the condition with `false` turns the first case red (PR #4638 review).
 - `loop_force_stop_container_test.ts` also sets `XDG_STATE_HOME` inside the
   temp directory and asserts a `launch-*.log` is created under it, so the
-  launch-log directory cannot escape the sandbox. `deno test -A` over both
-  files passed (38 tests) on this head.
+  launch-log directory cannot escape the sandbox. The spawned loop also uses
+  `clearEnv: true`, preventing other inherited settings from directing its
+  output to host paths. The two test files passed (38 tests) with read, env,
+  run, write and hostname permissions after this change.
 - Summary freshness (#3768): the CI failure was this file being older than the
   code commit; fixed by this rewrite.
 - `deno lint` and `deno fmt --check` on the changed TypeScript files passed.
