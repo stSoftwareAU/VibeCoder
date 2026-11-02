@@ -596,7 +596,7 @@ Deno.test("agent browser limits hand the local gate to the runner", () => {
     );
     assertStringIncludes(
       prompt,
-      "The runner executes the target repository's quality.sh after you finish",
+      "When the target repository has quality.sh, the runner executes it after you finish",
     );
     assertStringIncludes(
       prompt,

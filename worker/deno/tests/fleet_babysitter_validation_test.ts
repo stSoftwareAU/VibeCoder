@@ -3,11 +3,13 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import {
   babysitterValidationEnv,
   BabysitterValidationError,
   buildBabysitterValidationProfile,
+  readBoundedOutput,
   runBabysitterValidation,
 } from "../lib/fleet_babysitter_validation.ts";
 import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
@@ -38,10 +40,11 @@ Deno.test("babysitter validation hands browser gate work to the runner before co
     await Deno.writeTextFile(`${dir}/file.txt`, "after\n");
     let runnerCalls = 0;
     await validateAndCommit(dir, 4674, { login: "bot[bot]", id: "123" }, {
-      validate: async () => {
+      runValidation: async () => {
         runnerCalls++;
         assertEquals(await git(dir, "rev-parse", "HEAD"), initialHead);
         assert((await git(dir, "status", "--porcelain")).includes("file.txt"));
+        return { kind: "passed", command: "./quality.sh" };
       },
     });
     assertEquals(runnerCalls, 1);
@@ -69,7 +72,8 @@ Deno.test("runner check failure prevents the repair commit", async () => {
     await assertRejects(
       () =>
         validateAndCommit(dir, 4674, { login: "bot[bot]", id: "123" }, {
-          validate: () => Promise.reject(new Error("browser assertion failed")),
+          runValidation: () =>
+            Promise.reject(new Error("browser assertion failed")),
         }),
       Error,
       "browser assertion failed",
@@ -127,6 +131,37 @@ Deno.test("missing sandbox-exec is an unavailable capability", async () => {
   }
 });
 
+Deno.test("runner reports sandbox process spawn failure as unavailable", async () => {
+  const dir = await Deno.makeTempDir();
+  const scratch = await Deno.makeTempDir();
+  const home = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\n");
+    const error = await assertRejects(
+      () =>
+        runBabysitterValidation(
+          dir,
+          scratch,
+          `${home}/config.json`,
+          home,
+          {
+            platform: "darwin",
+            sandboxExec: "/usr/bin/sandbox-exec",
+            run: async () =>
+              Promise.reject(new Error("operation not permitted")),
+          },
+        ),
+      BabysitterValidationError,
+      "could not start sandbox-exec",
+    );
+    assertEquals(error.kind, "unavailable");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
 Deno.test("runner skips when a target repository has no local gate", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -140,6 +175,34 @@ Deno.test("runner skips when a target repository has no local gate", async () =>
     });
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runner drains long command streams while retaining only bounded output", async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("x".repeat(25_000)));
+      controller.close();
+    },
+  });
+  const output = await readBoundedOutput(stream);
+  assertEquals(output.length, 20_000);
+  assertEquals(output, "x".repeat(20_000));
+});
+
+Deno.test("runner reports a missing gate as an empty-gate error", async () => {
+  const dir = await Deno.makeTempDir();
+  const scratch = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/quality.sh`, " \n\t");
+    await assertRejects(
+      () => runBabysitterValidation(dir, scratch, "", scratch),
+      Error,
+      "empty quality.sh",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(scratch, { recursive: true });
   }
 });
 
@@ -173,7 +236,7 @@ Deno.test("successful runner check uses an isolated sandbox and environment", as
           called = true;
           assertEquals(binary, "/usr/bin/sandbox-exec");
           assertEquals(args.slice(-2), ["/bin/bash", "./quality.sh"]);
-          assertEquals(options.cwd, dir);
+          assertEquals(options.cwd, await Deno.realPath(dir));
           assertEquals(options.env.HOME, scratch);
           assertEquals(options.env.TMPDIR, scratch);
           assertEquals(options.env.GH_TOKEN, undefined);
@@ -181,11 +244,23 @@ Deno.test("successful runner check uses an isolated sandbox and environment", as
           const profile = await Deno.readTextFile(args[1]!);
           assertStringIncludes(
             profile,
+            `(deny file-read* (subpath "${configPath}"))`,
+          );
+          assertStringIncludes(
+            profile,
             `(deny file-read* (subpath "${home}/custom-gh"))`,
           );
           assertStringIncludes(
             profile,
             `(deny file-read* (subpath "${home}/Library/Keychains"))`,
+          );
+          assertStringIncludes(
+            profile,
+            `(deny file-read* (subpath "${home}/.ssh"))`,
+          );
+          assertStringIncludes(
+            profile,
+            `(deny file-read* (subpath "${home}/.aws"))`,
           );
           assertStringIncludes(
             profile,
@@ -286,15 +361,46 @@ Deno.test("runner sandbox and environment deny runner credentials", async () => 
   );
 });
 
+Deno.test("runner sandbox rejects invalid or overlapping protected paths", () => {
+  assertThrows(
+    () =>
+      buildBabysitterValidationProfile("relative/clone", "/tmp/scratch", []),
+    Error,
+    "absolute",
+  );
+  assertThrows(
+    () =>
+      buildBabysitterValidationProfile(
+        "/tmp/credentials/clone",
+        "/tmp/scratch",
+        ["/tmp/credentials"],
+      ),
+    Error,
+    "overlaps protected path",
+  );
+  assertThrows(
+    () =>
+      buildBabysitterValidationProfile(
+        "/tmp/clone",
+        "/tmp/scratch",
+        ["/tmp/key\0file"],
+      ),
+    Error,
+    "NUL",
+  );
+});
+
 Deno.test({
   name: "macOS sandbox denies a credential read during runner validation",
   ignore: Deno.build.os !== "darwin",
   fn: async () => {
     const root = await Deno.makeTempDir();
+    const secretDir = await Deno.makeTempDir();
     try {
-      const secret = `${root}/credential`;
+      const secret = `${secretDir}/credential`;
       const profilePath = `${root}/sandbox.sb`;
       await Deno.writeTextFile(secret, "must not be readable\n");
+      await Deno.mkdir(`${root}/.git`);
       const profile = buildBabysitterValidationProfile(
         root,
         root,
@@ -307,8 +413,20 @@ Deno.test({
         stderr: "piped",
       }).output();
       assert(!result.success, "sandbox unexpectedly allowed credential read");
+      const gitWrite = await new Deno.Command("/usr/bin/sandbox-exec", {
+        args: [
+          "-f",
+          profilePath,
+          "/usr/bin/touch",
+          `${root}/.git/runner-write`,
+        ],
+        stdout: "null",
+        stderr: "piped",
+      }).output();
+      assert(!gitWrite.success, "sandbox unexpectedly allowed a .git write");
     } finally {
       await Deno.remove(root, { recursive: true });
+      await Deno.remove(secretDir, { recursive: true });
     }
   },
 });

@@ -102,7 +102,7 @@ function boundedOutput(value: string): string {
     : `… output truncated …\n${value.slice(-OUTPUT_LIMIT)}`;
 }
 
-async function readBounded(
+export async function readBoundedOutput(
   stream: ReadableStream<Uint8Array>,
 ): Promise<string> {
   const reader = stream.getReader();
@@ -138,8 +138,8 @@ async function runIsolatedCommand(
     timeoutMs: options.timeoutMs,
   });
   const [stdout, stderr, status] = await Promise.all([
-    readBounded(child.stdout),
-    readBounded(child.stderr),
+    readBoundedOutput(child.stdout),
+    readBoundedOutput(child.stderr),
     child.status,
   ]);
   return { ...status, stdout, stderr };
@@ -159,10 +159,14 @@ export async function runBabysitterValidation(
     env?: Record<string, string>;
   } = {},
 ): Promise<BabysitterValidationResult> {
+  const [checkedDir, checkedScratch] = await Promise.all([
+    Deno.realPath(dir),
+    Deno.realPath(scratch),
+  ]);
   const readFile = options.readFile ?? Deno.readTextFile;
   let gate: string;
   try {
-    gate = await readFile(`${dir}/quality.sh`);
+    gate = await readFile(`${checkedDir}/quality.sh`);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
       return { kind: "not-applicable", command: "./quality.sh (not present)" };
@@ -198,18 +202,24 @@ export async function runBabysitterValidation(
   const protectedPaths = await babysitterProtectedPaths(
     home,
     `${home}/.vibe-coder/fleet-pr-babysitter.private-key.pem`,
-    [...credentialPaths, `${home}/Library/Keychains`],
+    [
+      configPath,
+      ...credentialPaths,
+      `${home}/Library/Keychains`,
+      `${home}/.ssh`,
+      `${home}/.aws`,
+    ],
   );
   const profile = buildBabysitterValidationProfile(
-    dir,
-    scratch,
+    checkedDir,
+    checkedScratch,
     protectedPaths,
   );
-  const profilePath = `${scratch}/runner-validation.sb`;
+  const profilePath = `${checkedScratch}/runner-validation.sb`;
   await Deno.writeTextFile(profilePath, profile, { mode: 0o600 });
   const env = babysitterValidationEnv(options.env ?? Deno.env.toObject());
-  env.HOME = scratch;
-  env.TMPDIR = scratch;
+  env.HOME = checkedScratch;
+  env.TMPDIR = checkedScratch;
   const run = options.run ?? runIsolatedCommand;
   let result: Awaited<ReturnType<typeof runIsolatedCommand>>;
   try {
@@ -219,7 +229,7 @@ export async function runBabysitterValidation(
       "/bin/bash",
       "./quality.sh",
     ], {
-      cwd: dir,
+      cwd: checkedDir,
       timeoutMs: VALIDATION_TIMEOUT_MS,
       env,
     });

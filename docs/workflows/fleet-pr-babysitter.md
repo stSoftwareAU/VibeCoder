@@ -10,8 +10,9 @@ every five minutes and queues newly actionable PRs without starting two repairs
 for the same PR. After Codex reports a completed fix, the babysitter runs the
 target repository's `quality.sh` before staging or committing. On macOS, that
 runner-owned check runs outside Codex's browser-restricting profile, under a
-separate sandbox that denies configured credential paths and receives no
-credential-shaped environment variables, and keeps the clone's `.git` read-only.
+separate sandbox that denies the worker configuration, configured credential
+paths, the user's Keychains directory and `securityd`; it receives no
+credential-shaped environment variables and keeps the clone's `.git` read-only.
 This lets browser checks launch
 Chromium without giving the check runner credentials. A failed check is
 returned to Codex once with bounded output; an unavailable sandbox is reported
