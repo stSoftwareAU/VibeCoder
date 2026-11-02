@@ -33,6 +33,8 @@ async function writeFile(path: string, contents: string): Promise<void> {
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "issue-974-" });
+  // The untrusted `agent` account must be able to read the fixture (Issue #4659).
+  await Deno.chmod(dir, 0o755);
   try {
     await fn(dir);
   } finally {

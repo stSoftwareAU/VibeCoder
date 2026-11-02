@@ -84,6 +84,16 @@ compromise of the model required. All three now call
 `buildUntrustedCommandEnv()` with `clearEnv: true`, so the child sees only
 allowlisted names.
 
+**Follow-up (Issue #4659).** Two more sites were a fourth and fifth instance of
+this class. The milestone resolution gate's `spawnTask`
+(`lib/milestone_resolution_gate.ts`, which runs `quality.sh`, `deno task` and
+`cargo test`) and the milestone merge gate's `spawnTypeCheck`
+(`lib/milestone_merge_gate.ts`) both inherited the worker's environment. They
+are now routed through `worker/deno/lib/untrusted_gate_spawn.ts`, which gives
+the child an allowlisted environment, starts it with `clearEnv: true`, and runs
+it as the untrusted account where one is available. Declared
+`quality_credentials` are not threaded to the milestone sync path.
+
 ## Findings filed, not fixed here
 
 Recorded as their own `security` issues per `docs/SECURITY-SCAN.md`; each is a

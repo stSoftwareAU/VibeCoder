@@ -45,8 +45,10 @@ import {
   type ProjectKind,
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
-import { runWithTimeout } from "./subprocess_timeout.ts";
-import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  runRepositoryCommand,
+  type UntrustedGateSpawnDeps,
+} from "./untrusted_gate_spawn.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
   shouldSkipEphemeralCargoBuild,
@@ -182,22 +184,25 @@ function isUnitSuite(task: string): boolean {
   return (UNIT_SUITE_TASKS as readonly string[]).includes(task);
 }
 
-/** Spawn one of the repository's own tasks within the remaining budget. */
-const spawnTask: ResolutionTaskRunner = async (task) => {
-  const result = await runWithTimeout(
+/**
+ * Spawn one of the repository's own tasks within the remaining budget.
+ *
+ * The task runs as the untrusted account from the allowlisted environment, not
+ * the worker's inherited one (Issue #4659).
+ */
+export const spawnTask = async (
+  task: Parameters<ResolutionTaskRunner>[0],
+  deps: UntrustedGateSpawnDeps = {},
+): ReturnType<ResolutionTaskRunner> => {
+  const result = await runRepositoryCommand(
     task.kind === "script"
       ? "bash"
       : task.kind === "cargo"
       ? "cargo"
       : Deno.execPath(),
     task.args,
-    {
-      cwd: task.dir,
-      timeoutMs: task.timeoutMs,
-      // Build artefacts off the persistent volume where the runtime refuses
-      // to trim it (Issue #2247); empty on every other runtime.
-      env: buildCacheEnvForCheckout(task.dir),
-    },
+    { cwd: task.dir, timeoutMs: task.timeoutMs },
+    deps,
   );
   if (!result.ok) return { code: 1, output: result.error.message };
   const { code, stdout, stderr, timedOut } = result.value;
