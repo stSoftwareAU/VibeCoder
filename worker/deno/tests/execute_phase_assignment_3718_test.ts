@@ -177,6 +177,7 @@ Deno.test("execute_phase assignment - the request carries the work dir, trusted 
     assertEquals(request.workDir, config.workDir);
     assertEquals(request.repo, "org/repo");
     assertEquals(request.issueNumber, 3718);
+    assertEquals(request.reviewPolicyFingerprint?.length, 64);
     assert(
       request.trustedAuthors.includes("testbot"),
       "the run's own GitHub user is a trusted author",

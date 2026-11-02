@@ -87,6 +87,8 @@ export interface AssignmentTreatment {
   roles: RoleTreatment[];
   workerVersion?: string;
   workerCommit?: string;
+  /** SHA-256 of allowlisted, resolved review-policy settings (Issue #4658). */
+  reviewPolicyFingerprint?: string;
   subscriptionAllocation?: string;
 }
 
@@ -320,6 +322,7 @@ const TREATMENT_KEYS: readonly string[] = [
   "roles",
   "workerVersion",
   "workerCommit",
+  "reviewPolicyFingerprint",
   "subscriptionAllocation",
 ];
 
@@ -554,6 +557,18 @@ function validateTreatment(value: unknown): AssignmentTreatment {
     value.workerCommit,
     (v) => requireToken(v, "treatment.workerCommit"),
   );
+  const reviewPolicyFingerprint = optional(
+    value.reviewPolicyFingerprint,
+    (v) => {
+      if (typeof v !== "string" || !/^[0-9a-f]{64}$/.test(v)) {
+        throw new LifecycleEventSchemaError(
+          "treatment.reviewPolicyFingerprint",
+          "must be a SHA-256 fingerprint",
+        );
+      }
+      return v;
+    },
+  );
   const subscriptionAllocation = optional(
     value.subscriptionAllocation,
     (v) => requireLabel(v, "treatment.subscriptionAllocation"),
@@ -562,6 +577,9 @@ function validateTreatment(value: unknown): AssignmentTreatment {
     roles,
     ...(workerVersion !== undefined ? { workerVersion } : {}),
     ...(workerCommit !== undefined ? { workerCommit } : {}),
+    ...(reviewPolicyFingerprint !== undefined
+      ? { reviewPolicyFingerprint }
+      : {}),
     ...(subscriptionAllocation !== undefined ? { subscriptionAllocation } : {}),
   };
 }

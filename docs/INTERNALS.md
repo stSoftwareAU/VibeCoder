@@ -1116,6 +1116,60 @@ This sidecar only ever describes one host; an operator who wants an `issue`-phas
 run to measure or compare behaviour across the whole fleet configures
 `fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
+### 📊 PR completion evidence report (Issue #4658)
+
+`deno task pr-completion-report --input <snapshot.json>` reads a normalized,
+read-only evidence snapshot and emits dated JSON. The snapshot joins GitHub PR
+state, validated hash-chain audit entries, reviewer action records, blocker
+intervals, CI durations, regression observations and component deployment
+heartbeats. The snapshot producer must verify its audit-chain sources; this
+command validates and accounts for supplied evidence but does not authenticate
+the snapshot or retrieve cross-host records. It performs no GitHub writes and
+does not change host configuration. It does not infer a human or automated
+actor from a GitHub login; missing action or deployment evidence remains
+unknown or degraded.
+
+The snapshot carries explicit UTC `cohort.start`, `cohort.end` and
+`cohort.observedAt` values. PR observations deduplicate by `repo#number`; each
+action also has a stable action ID, run and component identity, timestamp,
+outcome and PR number; `headSha` is optional, and absent source coverage remains
+unknown. A report labels a merged PR unattended only when the recorded action
+history is complete, verified, contains both implementation or repair and
+merge actions, and contains no verified human action. A GitHub user login does
+not change that result. Older ledger entries remain readable but do not gain
+fabricated provenance.
+
+The report keeps stalled and closed-unmerged PRs in the eligible denominator,
+counts owner-gated PRs separately only when their gate evidence is verified,
+and returns `null` for proportions with no denominator. It separates default
+branch deliveries from milestone PRs and intermediate rollup PRs. CI minutes
+are unavailable when a delivered change has a run without a duration. Post-
+merge regressions and unresolved attribution remain separate from merge speed.
+`targetEvaluation` stays pending until a verified rollout has a complete
+fourteen-day window; it reports the provisional 90% target and never gates a
+merge. The repeatable `rollout` counts distinguish eligible stranded PRs,
+rediscovery and processing.
+
+Deployment observations are collected from lifecycle assignment records,
+review-round records and the babysitter's local `deployment-health.json` under
+its existing state directory. Each stores a code revision and a SHA-256
+fingerprint over a fixed allowlist of resolved policy settings; no credentials
+or raw configuration enter the fingerprint. Missing or stale heartbeats,
+unknown revisions, policy mismatches and mixed observations make deployment
+status degraded. The report consumes an exported snapshot; it does not itself
+retrieve cross-host audit journals, repair deployment state, or change the
+ordinary discovery path. The trusted update route remains the existing
+[`worker-checkout-update` launcher step](#-entry-point-runsh--runps1).
+
+```mermaid
+flowchart LR
+    G[GitHub PR observations] --> S[Evidence snapshot]
+    A[Verified audit and round records] --> S
+    H[Worker, reviewer, babysitter heartbeats] --> S
+    S --> R[Read-only PR completion report]
+    R --> T[Fourteen-day rollout evaluation]
+```
+
 ### 🧾 Lifecycle ledger and issue assignment (Issue #3718)
 
 Part of #3644. Before the first agent invocation of an `issue`-phase run, the

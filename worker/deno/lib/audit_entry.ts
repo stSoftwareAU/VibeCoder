@@ -14,8 +14,25 @@
 /** Outcome of the underlying network call. */
 export type AuditOutcome = "success" | "error";
 
+/** Action classes the trusted audit hook can identify without guessing. */
+export type AuditActionKind =
+  | "implementation"
+  | "repair"
+  | "review"
+  | "dismissal"
+  | "merge"
+  | "unknown";
+
 /** A GitHub mutation to record (caller-supplied fields). */
 export interface AuditMutation {
+  /** Worker-generated identifier for this individual action. */
+  actionId?: string;
+  /** Runtime component classification derived from the trusted caller path. */
+  component?: "worker" | "reviewer" | "babysitter" | "unknown";
+  /** Known PR number; absent when the mutation target is not a PR. */
+  prNumber?: number;
+  /** Action class; unknown is explicit when the hook cannot safely infer it. */
+  actionKind?: AuditActionKind;
   /** ISO 8601 timestamp. Filled in by `recordMutation` when absent. */
   timestamp?: string;
   /** Run-correlation id (joins to #2381). */
@@ -45,6 +62,10 @@ export interface AuditEntry extends AuditMutation {
 
 /** Field order used for the canonical payload (chain fields excluded). */
 const PAYLOAD_FIELDS: ReadonlyArray<keyof AuditMutation> = [
+  "actionId",
+  "component",
+  "prNumber",
+  "actionKind",
   "timestamp",
   "runId",
   "repo",

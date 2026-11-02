@@ -1,5 +1,7 @@
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
+import { atomicWrite } from "../lib/file_utils.ts";
+import { fingerprintReviewPolicy } from "../lib/pr_completion_report.ts";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand, runGhCommandRaw } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -893,6 +895,36 @@ function babysitterStateDir(): string {
   }/vibe-coder/fleet-pr-babysitter`;
 }
 
+/** Persist the babysitter's current build and resolved policy heartbeat. */
+export async function recordBabysitterDeployment(
+  stateDir: string,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  codeRevision = Deno.env.get("VIBE_BUILD_COMMIT") ?? "unknown",
+  observedAt = new Date().toISOString(),
+): Promise<void> {
+  const policyFingerprint = await fingerprintReviewPolicy({
+    issue_executor_split: config.issueExecutorSplit,
+    issue_sub_agent_tier: config.issueSubAgentTier,
+    issue_reviewer_agents: config.issueReviewerAgents,
+    external_orchestration: config.externalOrchestration,
+  });
+  await Deno.mkdir(stateDir, { recursive: true });
+  const result = await atomicWrite({
+    targetFile: `${stateDir}/deployment-health.json`,
+    content: JSON.stringify({
+      component: "babysitter",
+      codeRevision,
+      policyFingerprint,
+      observedAt,
+    }) + "\n",
+  });
+  if (!result.ok) {
+    throw new Error(
+      `could not record babysitter deployment heartbeat: ${result.error.message}`,
+    );
+  }
+}
+
 /**
  * Find CI failures that keep recurring on fleet PRs and could have been
  * caught locally, and file each in the repository that owns the fix
@@ -1052,6 +1084,7 @@ if (import.meta.main) {
       const config = await loadConfig(
         Deno.env.get("CONFIG_PATH") ?? ".config.json",
       );
+      await recordBabysitterDeployment(babysitterStateDir(), config);
       const accessible = await accessibleBabysitterRepositories(app);
       const repositories = selectBabysitterRepositories(
         config.repos,

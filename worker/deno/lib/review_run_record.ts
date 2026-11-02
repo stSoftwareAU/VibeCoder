@@ -39,5 +39,12 @@ export interface ReviewRunAttempt {
 export interface ReviewRunRecord {
   /** The round's id: its directory's name (`20261016-101500`). */
   round: string;
+  /** Active reviewer build and resolved policy at the most recent heartbeat. */
+  deployment?: {
+    component: "reviewer";
+    codeRevision: string;
+    policyFingerprint: string;
+    observedAt: string;
+  };
   attempts: ReviewRunAttempt[];
 }

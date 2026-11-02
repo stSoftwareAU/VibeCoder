@@ -240,13 +240,15 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // each side reached 157 alone, and together the registry held 158.
   // Issue #4048 added `egress-selfcheck` (count 158 → 159).
   // Issue #4498 added `reclaim-host-caches` (count 159 → 160).
-  assertEquals(commands.length, 160);
+  // Issue #4658 added `pr-completion-report` (count 160 → 161).
+  assertEquals(commands.length, 161);
   assertEquals(commands.includes("reclaim-host-caches"), true);
   assertEquals(commands.includes("egress-selfcheck"), true);
   assertEquals(commands.includes("clear-worker-gate-labels"), true);
   assertEquals(commands.includes("route-issue"), true);
   assertEquals(commands.includes("egress-proxy"), true);
   assertEquals(commands.includes("fleet-experiment-report"), true);
+  assertEquals(commands.includes("pr-completion-report"), true);
   assertEquals(commands.includes("subscription-allocation"), true);
   assertEquals(commands.includes("lib-sweep-record"), true);
   assertEquals(commands.includes("sweep-drift"), true);

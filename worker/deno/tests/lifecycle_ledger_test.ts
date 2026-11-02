@@ -105,6 +105,16 @@ function oneOfEachKind(): LifecycleEventInput[] {
   ];
 }
 
+Deno.test("lifecycle ledger reads legacy assignment treatments without policy fingerprints", () => {
+  const input = oneOfEachKind()[0];
+  assert(input?.kind === "assignment");
+  const legacy = validateLifecycleEvent(buildLifecycleEvent(input));
+  assertEquals(legacy.kind, "assignment");
+  if (legacy.kind === "assignment") {
+    assertEquals(legacy.treatment.reviewPolicyFingerprint, undefined);
+  }
+});
+
 /** Run `body` against a fresh temporary directory, removed afterwards. */
 async function withTempDir(
   body: (dir: string) => Promise<void>,

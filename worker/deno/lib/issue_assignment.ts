@@ -249,6 +249,8 @@ export interface IssueAssignmentInput {
   roles: readonly RoleTreatment[];
   /** The subscription the run was allocated to, when one was. */
   subscriptionAllocation?: string;
+  /** Fingerprint of the effective, allowlisted review policy for this run. */
+  reviewPolicyFingerprint?: string;
 }
 
 /** Everything the assignment reads from the outside world. */
@@ -323,6 +325,9 @@ export async function recordIssueAssignment(
         roles: [...input.roles],
         ...(facts.version ? { workerVersion: facts.version } : {}),
         ...(facts.commit ? { workerCommit: facts.commit } : {}),
+        ...(input.reviewPolicyFingerprint
+          ? { reviewPolicyFingerprint: input.reviewPolicyFingerprint }
+          : {}),
         ...(subscriptionAllocation !== undefined
           ? { subscriptionAllocation }
           : {}),

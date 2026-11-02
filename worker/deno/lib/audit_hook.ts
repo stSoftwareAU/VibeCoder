@@ -25,6 +25,7 @@ import {
   type RecordOptions,
   resolveRunId,
 } from "./audit_journal.ts";
+import type { AuditActionKind } from "./audit_entry.ts";
 import {
   classifyGhMutation,
   classifyGitMutation,
@@ -91,13 +92,62 @@ function resolveCaller(): string | undefined {
     "github.ts",
   ];
   for (const line of stack.split("\n")) {
-    const match = line.match(/(worker\/deno\/lib\/[A-Za-z0-9_]+\.ts)/);
+    const match = line.match(
+      /(worker\/deno\/(?:lib|commands)\/[A-Za-z0-9_]+\.ts)/,
+    );
     if (match && match[1]) {
       const path = match[1];
       if (!skip.some((s) => path.endsWith(s))) return path;
     }
   }
   return undefined;
+}
+
+function componentFor(
+  caller?: string,
+): "worker" | "reviewer" | "babysitter" | "unknown" {
+  if (!caller) return "unknown";
+  if (caller.includes("fleet_pr_babysitter")) return "babysitter";
+  if (caller.includes("review_round") || caller.includes("pr_maintenance")) {
+    return "reviewer";
+  }
+  return "worker";
+}
+
+function actionKindFor(
+  info: MutationInfo,
+  caller: string | undefined,
+  args: readonly string[],
+): AuditActionKind {
+  if (info.verb === "pr-merge") return "merge";
+  if (info.verb === "pr-review") return "review";
+  if (
+    info.verb === "api-put" &&
+    /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/reviews\/[1-9]\d*$/
+      .test(info.target ?? "") &&
+    args.some((arg) => /^state=DISMISSED$/i.test(arg))
+  ) return "dismissal";
+  if (info.verb === "git-push") {
+    if (
+      caller?.includes("pr_ci_processor") ||
+      caller?.includes("pr_feedback_processor")
+    ) return "repair";
+    if (
+      caller?.includes("agent_pr_adoption") ||
+      caller?.includes("completion_phase")
+    ) return "implementation";
+  }
+  return "unknown";
+}
+
+function prNumberFor(info: MutationInfo): number | undefined {
+  if (!info.target) return undefined;
+  const apiTarget = info.target.match(/\/pulls\/([1-9]\d*)(?:\/|$)/);
+  const raw = apiTarget?.[1] ??
+    (info.verb.startsWith("pr-") ? info.target : undefined);
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const number = Number(raw);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
 
 /**
@@ -113,19 +163,24 @@ async function record(
   info: MutationInfo,
   exitCode: number | undefined,
   opts: AuditHookOptions,
+  args: readonly string[],
 ): Promise<void> {
+  const caller = resolveCaller();
   try {
     const result = await recordMutation({
+      actionId: crypto.randomUUID(),
+      component: componentFor(caller),
+      actionKind: actionKindFor(info, caller, args),
+      ...(prNumberFor(info) !== undefined
+        ? { prNumber: prNumberFor(info) }
+        : {}),
       runId: opts.runId ?? resolveRunId(opts.env ?? processEnvLookup),
       verb: info.verb,
       outcome: exitCode === 0 ? "success" : "error",
       ...(info.repo ? { repo: info.repo } : {}),
       ...(info.target ? { target: info.target } : {}),
       ...(exitCode !== undefined ? { exitCode } : {}),
-      ...(() => {
-        const caller = resolveCaller();
-        return caller ? { caller } : {};
-      })(),
+      ...(caller ? { caller } : {}),
     }, opts);
     if (!result.ok) {
       console.error(
@@ -158,7 +213,7 @@ export async function auditGhMutation(
   if (!isAuditJournalEnabled(opts.env ?? processEnvLookup)) return;
   const info = classifyGhMutation(args);
   if (!info) return;
-  await record(info, exitCode, opts);
+  await record(info, exitCode, opts, args);
 }
 
 /**
@@ -177,5 +232,5 @@ export async function auditGitMutation(
   if (!isAuditJournalEnabled(opts.env ?? processEnvLookup)) return;
   const info = classifyGitMutation(args);
   if (!info) return;
-  await record(info, exitCode, opts);
+  await record(info, exitCode, opts, args);
 }
