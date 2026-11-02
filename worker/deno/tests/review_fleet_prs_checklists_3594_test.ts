@@ -783,6 +783,95 @@ Deno.test("fleet post - an earlier finding comes back as a readable gap that sta
   assertStringIncludes(again.problem, "a.ts:2 — two paths broken");
 });
 
+Deno.test("fleet post - an unresolved closure defect stays one outstanding finding across rounds, then clears when fixed", () => {
+  const original = {
+    file: "a.ts",
+    line: 2,
+    problem: "criterion 4 marked met but only partly delivered",
+    fix: "deliver the rest",
+  };
+  const checklistState = { expected: [], problem: null };
+  const closure = [{
+    criterion: "criterion 4",
+    verdict: "partial",
+    note: "only the parser is delivered",
+  }];
+  const reply = {
+    summary: "still partly delivered",
+    findings: [],
+    testChanges: "none",
+    earlierFindings: [{
+      index: 1,
+      verdict: "partly",
+      note: "criterion 4 is still partial",
+    }],
+    closure,
+  };
+
+  // Round 1: the gap stands in for the defect and the closure verdict is kept.
+  const firstReview = reviewForPost(reply, {
+    checklistState,
+    previousFindings: [original],
+  });
+  const round1 = firstReview.findings;
+  assertEquals(round1.length, 1);
+  assertEquals((firstReview as { closure?: unknown }).closure, [{
+    criterion: "criterion 4",
+    verdict: "partial",
+    note: "only the parser is delivered",
+  }]);
+  assertStringIncludes(round1[0]!.problem, "criterion 4 is still partial");
+  assertStringIncludes(
+    round1[0]!.problem,
+    "a.ts:2 — criterion 4 marked met but only partly delivered",
+  );
+
+  // Round 2: the logged finding comes back and is still not fixed; still one.
+  const logged1 = JSON.parse(JSON.stringify(round1));
+  const round2 = reviewForPost({
+    ...reply,
+    earlierFindings: [{
+      index: 1,
+      verdict: "not fixed",
+      note: "still partial",
+    }],
+  }, {
+    checklistState,
+    previousFindings: logged1,
+  }).findings;
+  assertEquals(round2.length, 1);
+
+  // Round 3: fixed on both the earlier finding and the closure entry; none.
+  const logged2 = JSON.parse(JSON.stringify(round2));
+  const round3 = reviewForPost({
+    summary: "delivered",
+    findings: [],
+    testChanges: "none",
+    earlierFindings: [{ index: 1, verdict: "fixed", note: "all delivered" }],
+    closure: [{ criterion: "criterion 4", verdict: "met", note: "delivered" }],
+  }, {
+    checklistState,
+    previousFindings: logged2,
+  }).findings;
+  assertEquals(round3.length, 0);
+
+  // Contrast: a fresh finding in the same round is not deduplicated, so the
+  // wording in SKILL.md is what keeps the closure gap to one finding.
+  const contrast = reviewForPost({
+    ...reply,
+    findings: [{
+      file: "a.ts",
+      line: 2,
+      problem: "criterion 4 is marked met",
+      fix: "deliver criterion 4 in full",
+    }],
+  }, {
+    checklistState,
+    previousFindings: [original],
+  }).findings;
+  assertEquals(contrast.length, 2);
+});
+
 Deno.test("fleet post - a missing earlier-findings inventory cannot approve", () => {
   let message = "";
   try {

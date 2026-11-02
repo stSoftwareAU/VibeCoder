@@ -273,7 +273,7 @@ fields as follows:
 - `{{TEST_CHANGES}}` — the entry's `testChanges` (the removed and edited test
   files).
 - `{{PREVIOUS_FINDINGS}}` — when the entry's `previousFindings` is not empty:
-  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A verdict other than `fixed` already sends that finding back with your note, so leave it out of `findings`."; otherwise
+  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A verdict other than `fixed` already sends that finding back with your note, so leave it out of `findings`, even where step 8 would make a `partial` or `missing` closure entry a finding. Still report that entry's verdict in `closure`."; otherwise
   "No earlier review of this PR asked for fixes."
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
   (the repo's `review-checklists.json` at the base ref, matched against the
