@@ -32,6 +32,10 @@ Version bump: none for this change.
   the issue's `updatedAt` is unchanged. The shared title helper still returns an
   empty list on failure; its optional failure callback supplies the status
   needed by milestone classification.
+- The merged issue-branch search caches successful results, including empty
+  lists, in the issue cache (`prs_branch_merged_issue_<N>`, the cache's TTL), so
+  a scan of closed issues with no delivery reads each PR list once. An
+  unreadable search is never cached and is retried on the next scan.
 - The issue's private-repository examples did not include repository or PR
   identifiers. The public examples were verified; the private examples were not
   independently inspectable.
@@ -114,6 +118,15 @@ sequenceDiagram
   `checkAndHandleMilestoneCompletions`.
 - `worker/deno/tests/completion_phase_acceptance_closure_test.ts`:
   `passes the issue title to agent-raised PR adoption`.
+- `worker/deno/tests/milestone_completion_test.ts`:
+  `classifyClosedIssues - caches empty title and branch searches across scans`
+  (added in commit 29dbb8f4) asserts two scans of a delivery-less issue make one
+  branch read and one title read. Removing the `cache` argument that
+  `classifyClosedIssues` passes to `fetchMergedPRsByIssueBranch` makes it fail
+  (branch reads rise to 2).
+- `deno task test:unit tests/milestone_completion_test.ts tests/issue_query_test.ts`
+  from `worker/deno` on the merged head (with commit 29dbb8f4's branch-search
+  cache) — passed; 293 passed, 0 failed.
 - `deno task test:unit tests/agent_pr_adoption_test.ts tests/issue_query_test.ts tests/milestone_completion_test.ts tests/completion_phase_acceptance_closure_test.ts`
   from `worker/deno` — passed, 317 tests after the retry fixes.
 - `deno fmt --check` on the eight changed TypeScript files — passed.
