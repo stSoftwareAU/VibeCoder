@@ -640,3 +640,28 @@ Deno.test("only a head whose runs were cancelled and none failed is re-run", () 
   assertEquals(cancelledRunsToRerun([r(1, "completed", "success")]), []);
   assertEquals(cancelledRunsToRerun([]), []);
 });
+
+// Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
+// a test the repair never touched; CI on the base is the arbiter.
+Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "unrelated to the files you changed and passes in CI on the base branch",
+    );
+  }
+});
+
+// Issue #4694: a check that reads commit history cannot see the uncommitted
+// fix the agent is forbidden to commit (VibeCoder#4675, #4687).
+Deno.test("a check that reads commit history does not withhold readiness", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "reads commit history");
+  }
+});
