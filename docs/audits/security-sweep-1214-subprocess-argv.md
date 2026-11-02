@@ -94,7 +94,10 @@ the child an allowlisted environment, starts it with `clearEnv: true`, and runs
 it as the untrusted account where one is available. Declared
 `quality_credentials` are resolved from the trusted per-repository configuration
 and carried through both gates, including the merge-only path. Undeclared
-credentials remain excluded.
+credentials remain excluded. The declared values reach the dropped account on
+the child's stdin, not in argv, so the process table never shows them. The
+sweep's rebuild gate resolves them too, and a dropped account that cannot read
+the checkout fails the gate closed.
 
 ## Findings filed, not fixed here
 

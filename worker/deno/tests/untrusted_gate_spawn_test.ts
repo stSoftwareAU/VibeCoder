@@ -19,7 +19,11 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { runRepositoryCommand } from "../lib/untrusted_gate_spawn.ts";
+import {
+  credentialCarryingCommand,
+  manifestsFor,
+  runRepositoryCommand,
+} from "../lib/untrusted_gate_spawn.ts";
 import { verifyResolvedTree } from "../lib/milestone_resolution_gate.ts";
 import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
 import { mergeOnlyBindings } from "../lib/milestone_merge_only.ts";
@@ -65,17 +69,35 @@ const identity = (cmd: readonly string[]): Promise<string[]> =>
 const sudoWrapper = (cmd: readonly string[]): Promise<string[]> =>
   Promise.resolve(["sudo", "-n", "-u", "agent", "--", ...cmd]);
 
-/** A fake `spawn` that records every call and returns `outcome`. */
-function recordingSpawn(outcome: SpawnOutcome = SUCCESS): {
+/** Whether a spawn is the readability probe, `test -r …`, dropped or not. */
+function isProbe(executable: string, args: string[]): boolean {
+  const at = executable === "sudo" ? args.indexOf("--") + 1 : -1;
+  return (at < 0 ? executable : args[at]) === "test";
+}
+
+/**
+ * A fake `spawn` that records every gate call and returns `outcome`. The
+ * readability probe is recorded apart in `probes` and answers `probeOutcome`.
+ */
+function recordingSpawn(
+  outcome: SpawnOutcome = SUCCESS,
+  probeOutcome: SpawnOutcome = SUCCESS,
+): {
   spawn: Spawn;
   calls: SpawnCall[];
+  probes: SpawnCall[];
 } {
   const calls: SpawnCall[] = [];
+  const probes: SpawnCall[] = [];
   const spawn: Spawn = (executable, args, options) => {
+    if (isProbe(executable, args)) {
+      probes.push({ executable, args: [...args], options });
+      return Promise.resolve(probeOutcome);
+    }
     calls.push({ executable, args: [...args], options });
     return Promise.resolve(outcome);
   };
-  return { spawn, calls };
+  return { spawn, calls, probes };
 }
 
 /** Run `run` with a fresh temporary directory, removed afterwards. */
@@ -110,6 +132,33 @@ function assertNoSecrets(
     undefined,
     "CLAUDE_CODE_OAUTH_TOKEN must not reach the child",
   );
+}
+
+/**
+ * A declared credential reaches the child without touching argv: no argv
+ * element holds the value, and under sudo it travels on stdin as base64.
+ */
+function assertCredentialOffArgv(
+  call: SpawnCall,
+  value: string,
+  sudo: boolean,
+): void {
+  assertEquals(
+    call.options?.env?.DECLARED_TOKEN,
+    value,
+    "control: the child still receives the value",
+  );
+  for (const element of [call.executable, ...call.args]) {
+    assert(
+      !element.includes(value),
+      `argv element leaks the value: ${element}`,
+    );
+  }
+  if (sudo) {
+    assertEquals(call.options?.input, `DECLARED_TOKEN=${btoa(value)}\n`);
+  } else {
+    assertEquals(call.options?.input, undefined);
+  }
 }
 
 /** The one call a fake `spawn` recorded, failing the test if there is not one. */
@@ -488,11 +537,7 @@ Deno.test("milestone spawns carry declared credentials through sudo and exclude 
           call.options?.commandLabel,
           "repository gate (declared credentials redacted)",
         );
-        if (sudo) {
-          assert(
-            call.args.includes("DECLARED_TOKEN=declared-fixture+= with spaces"),
-          );
-        }
+        assertCredentialOffArgv(call, "declared-fixture+= with spaces", sudo);
       }
     }
   });
@@ -553,8 +598,210 @@ Deno.test("both milestone gates forward declared credentials to every task, incl
       for (const call of calls) {
         assertNoSecrets(call.options?.env, source);
         assertEquals(call.options?.env?.DECLARED_TOKEN, "fixture+= spaces");
-        assert(call.args.includes("DECLARED_TOKEN=fixture+= spaces"));
+        assertCredentialOffArgv(call, "fixture+= spaces", true);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #4703 review: credentials stay off argv; an unreadable checkout fails closed
+// ---------------------------------------------------------------------------
+
+Deno.test("credentialCarryingCommand - the wrapper hands the child exact values from stdin", async () => {
+  const values: Record<string, string> = {
+    SPACED: "a b=c 'quoted' $HOME `x`",
+    MULTILINE: "line1\nline2\n",
+    EMPTY: "",
+    UNICODE: "caf\u00e9 \u2713",
+  };
+  const { argv, input } = credentialCarryingCommand(
+    Object.entries(values),
+    "sh",
+    [
+      "-c",
+      'printf "%s|" "$SPACED" "$MULTILINE" "$EMPTY" "$UNICODE"; read -r rest || echo "stdin-empty"',
+    ],
+  );
+  for (const element of argv) {
+    for (const value of Object.values(values).filter(Boolean)) {
+      assert(!element.includes(value), `argv leaks ${value}`);
+    }
+  }
+  const child = new Deno.Command(argv[0]!, {
+    args: argv.slice(1),
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+    clearEnv: true,
+    env: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
+  }).spawn();
+  const writer = child.stdin.getWriter();
+  await writer.write(new TextEncoder().encode(input));
+  await writer.close();
+  const out = await child.output();
+  assertEquals(new TextDecoder().decode(out.stderr), "");
+  assertEquals(
+    new TextDecoder().decode(out.stdout),
+    `${values.SPACED}|${values.MULTILINE}|${values.EMPTY}|${values.UNICODE}|stdin-empty\n`,
+  );
+});
+
+Deno.test("credentialCarryingCommand - refuses a name that is not an identifier", () => {
+  let error: unknown;
+  try {
+    credentialCarryingCommand([["BAD NAME", "x"]], "true", []);
+  } catch (err) {
+    error = err;
+  }
+  assert(error instanceof Error);
+  assertEquals(
+    error.message,
+    "Invalid repository credential environment name",
+  );
+});
+
+Deno.test("runRepositoryCommand - under sudo the probe checks the checkout and manifest as the dropped account", async () => {
+  await withTempDir(async (dir) => {
+    const { spawn, calls, probes } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd: dir, timeoutMs: 5000, manifests: ["Cargo.toml"] },
+      { spawn, drop: sudoWrapper, source: sourceWithSecrets() },
+    );
+    assertEquals(calls.length, 1, "the gate runs once the probe passes");
+    const probe = onlyCall(probes);
+    assertEquals(probe.executable, "sudo");
+    assertEquals(probe.args.slice(0, 5), ["-n", "-u", "agent", "--", "test"]);
+    assertEquals(probe.args.slice(5), [
+      "-r",
+      dir,
+      "-a",
+      "-x",
+      dir,
+      "-a",
+      "-r",
+      `${dir}/Cargo.toml`,
+    ]);
+    assertEquals(probe.options?.clearEnv, true);
+  });
+});
+
+Deno.test("runRepositoryCommand - a checkout the dropped account cannot read is an error, not a run", async () => {
+  await withTempDir(async (dir) => {
+    for (
+      const probeOutcome of [
+        {
+          ok: true as const,
+          value: {
+            code: 1,
+            success: false,
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+          },
+        },
+        { ok: false as const, error: new Error("sudo gone") },
+      ]
+    ) {
+      const { spawn, calls } = recordingSpawn(SUCCESS, probeOutcome);
+      const result = await runRepositoryCommand(
+        "cargo",
+        ["check"],
+        { cwd: dir, timeoutMs: 5000, manifests: ["Cargo.toml"] },
+        { spawn, drop: sudoWrapper, source: sourceWithSecrets() },
+      );
+      assert(!result.ok, "an unreadable checkout must not report a result");
+      assert(result.error.message.includes("'agent' account cannot read"));
+      assert(result.error.message.includes("Cargo.toml"));
+      assertEquals(calls.length, 0, "the gate command must not run");
+    }
+  });
+});
+
+Deno.test("runRepositoryCommand - running as the worker needs no probe", async () => {
+  await withTempDir(async (dir) => {
+    const { spawn, calls, probes } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd: dir, timeoutMs: 5000, manifests: ["Cargo.toml"] },
+      { spawn, drop: identity, source: sourceWithSecrets() },
+    );
+    assertEquals(probes.length, 0);
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("neither milestone gate reports passed for a checkout the dropped account cannot read", async () => {
+  await withTempDir(async (dir) => {
+    // A Deno tree with no `check` task: the `deno check **/*.ts` fallback is
+    // the command that exits 0 with "No matching files found" when it cannot
+    // see the tree.
+    await Deno.writeTextFile(`${dir}/deno.json`, JSON.stringify({ tasks: {} }));
+    await Deno.writeTextFile(`${dir}/mod.ts`, "export const x = 1;\n");
+    const unreadable = {
+      ok: true as const,
+      value: {
+        code: 1,
+        success: false,
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+      },
+    };
+    for (const readable of [false, true]) {
+      const { spawn, calls } = recordingSpawn(
+        {
+          ok: true,
+          value: {
+            code: 0,
+            success: true,
+            stdout: "No matching files found",
+            stderr: "",
+            timedOut: false,
+          },
+        },
+        readable ? SUCCESS : unreadable,
+      );
+      const deps = { spawn, drop: sudoWrapper, source: sourceWithSecrets() };
+      const merged = await checkMergedTree(
+        dir,
+        undefined,
+        async () => false,
+        deps,
+      );
+      const resolved = await verifyResolvedTree(
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        async () => false,
+        deps,
+      );
+      if (readable) {
+        // Positive control: with a readable tree the same fixture passes.
+        assertEquals(merged.status, "passed");
+        assert(calls.length > 0);
+      } else {
+        assertEquals(merged.status, "failed");
+        assertEquals(resolved.status, "failed");
+        assert(merged.output.includes("cannot read"));
+        assertEquals(calls.length, 0, "no gate command may run");
+      }
+    }
+  });
+});
+
+Deno.test("manifestsFor - names the file whose readability proves the project is visible", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(await manifestsFor("cargo", dir), ["Cargo.toml"]);
+    assertEquals(await manifestsFor("script", dir), ["quality.sh"]);
+    assertEquals(await manifestsFor("deno", dir), []);
+    await Deno.writeTextFile(`${dir}/deno.jsonc`, "{}");
+    assertEquals(await manifestsFor("deno", dir), ["deno.jsonc"]);
+    await Deno.writeTextFile(`${dir}/deno.json`, "{}");
+    assertEquals(await manifestsFor("deno", dir), ["deno.json"]);
   });
 });

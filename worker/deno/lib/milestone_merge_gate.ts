@@ -29,6 +29,7 @@
  */
 
 import {
+  manifestsFor,
   runRepositoryCommand,
   type UntrustedGateSpawnDeps,
 } from "./untrusted_gate_spawn.ts";
@@ -456,6 +457,7 @@ export const spawnTypeCheck = async (
   const result = await runRepositoryCommand(executable, project.args, {
     cwd: project.dir,
     timeoutMs: MERGE_GATE_TIMEOUT_MS,
+    manifests: await manifestsFor(project.kind, project.dir),
   }, deps);
   if (!result.ok) return { code: 1, output: result.error.message };
   const { code, stdout, stderr, timedOut } = result.value;

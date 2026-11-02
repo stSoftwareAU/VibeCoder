@@ -247,6 +247,12 @@ export async function runWithTimeout(
      * needs when the hook is the thing that hung.
      */
     captureOutputOnTimeout?: boolean;
+    /**
+     * Text written to the child's stdin, which is then closed. Carries a
+     * secret to the child without putting it on the command line, where the
+     * process table shows it. Omitted: stdin is the null device.
+     */
+    input?: string;
   },
 ): Promise<Result<SubprocessResult>> {
   const requestedMs = options.timeoutMs;
@@ -283,7 +289,7 @@ export async function runWithTimeout(
       cwd: options?.cwd,
       ...(options?.env ? { env: options.env } : {}),
       ...(options?.clearEnv ? { clearEnv: true } : {}),
-      stdin: "null",
+      stdin: options?.input === undefined ? "null" : "piped",
       stdout: options?.quiet ? "null" : "piped",
       // stderr is always piped + captured. Muting stderr at the OS
       // level discards exit-trap diagnostics from helper scripts
@@ -294,6 +300,14 @@ export async function runWithTimeout(
     });
 
     const child = command.spawn();
+    if (options?.input !== undefined) {
+      // The child's exit status, not this write, is the verdict: a child that
+      // died before reading breaks the pipe, and that shows as its failure.
+      const writer = child.stdin.getWriter();
+      writer.write(new TextEncoder().encode(options.input))
+        .then(() => writer.close())
+        .catch(() => {});
+    }
     const outcome = await waitForChildExit(
       child,
       controller.signal,

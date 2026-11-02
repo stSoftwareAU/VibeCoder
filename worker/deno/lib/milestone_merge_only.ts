@@ -14,13 +14,17 @@ import {
   checkMergedTree,
   findTypeCheckProjects as findProjectsInTree,
   type MergeGateFn,
+  type MergeGateOutcome,
   type TypeCheckProject,
 } from "./milestone_merge_gate.ts";
 import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import type { syncMilestoneBranchWithDefault } from "./git_pull.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { resolveRepoCredentials } from "./repo_credentials.ts";
-import type { RepoCredentialSpec } from "./repo_credentials.ts";
+import type {
+  RepoCredentialDeps,
+  RepoCredentialSpec,
+} from "./repo_credentials.ts";
 import type { UntrustedGateSpawnDeps } from "./untrusted_gate_spawn.ts";
 import type { Logger } from "../types.ts";
 import type { MilestoneConflictAgentFn } from "./milestone_conflict_ladder.ts";
@@ -148,6 +152,46 @@ export function mergeOnlyBindings(
       };
     },
   };
+}
+
+/**
+ * The sweep's rebuild gate: the type check on a rebuilt milestone tree, run
+ * with the credentials the repository declared, as the sync's own gates are.
+ * Without them a check that needs a private module passes in the sync and
+ * fails here, and the rebuilt tree is not delivered (PR #4703 review).
+ *
+ * @param input.repo - `owner/repo`, whose declared credentials are resolved.
+ * @param input.dir - The rebuilt tree.
+ * @param input.qualityCredentials - What the repository declared.
+ * @param input.credentialDeps - Credential seams; production omits them.
+ * @param input.checkFn - The type check; production: `checkMergedTree`.
+ * @returns The check's outcome; `failed` when a declared mint command failed.
+ */
+export async function rebuildGateWithCredentials(input: {
+  repo: string;
+  dir: string;
+  qualityCredentials?: RepoCredentialSpec | undefined;
+  credentialDeps?: RepoCredentialDeps;
+  checkFn?: typeof checkMergedTree;
+}): Promise<MergeGateOutcome> {
+  const credentials = await resolveRepoCredentials(
+    input.repo,
+    input.qualityCredentials,
+    ...(input.credentialDeps === undefined ? [] : [input.credentialDeps]),
+  );
+  if (!credentials.ok) {
+    return {
+      status: "failed",
+      detail: "repository credential resolution failed",
+      output: credentials.error.message,
+    };
+  }
+  return (input.checkFn ?? checkMergedTree)(
+    input.dir,
+    undefined,
+    undefined,
+    { repoCredentialEnv: credentials.value.env },
+  );
 }
 
 /** What {@link syncWithMergeOnlyBindings} runs the sync for. */

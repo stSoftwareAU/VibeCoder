@@ -106,6 +106,8 @@ async function withTree<T>(
   body: (dir: string) => Promise<T>,
 ): Promise<T> {
   const dir = await Deno.makeTempDir({ prefix: "milestone-merge-only-tree-" });
+  // The gates run as the untrusted account, which must be able to read the tree.
+  await Deno.chmod(dir, 0o755);
   try {
     for (const [name, text] of Object.entries(files)) {
       await Deno.writeTextFile(`${dir}/${name}`, text);

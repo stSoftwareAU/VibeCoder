@@ -46,6 +46,7 @@ import {
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
 import {
+  manifestsFor,
   runRepositoryCommand,
   type UntrustedGateSpawnDeps,
 } from "./untrusted_gate_spawn.ts";
@@ -201,7 +202,11 @@ export const spawnTask = async (
       ? "cargo"
       : Deno.execPath(),
     task.args,
-    { cwd: task.dir, timeoutMs: task.timeoutMs },
+    {
+      cwd: task.dir,
+      timeoutMs: task.timeoutMs,
+      manifests: await manifestsFor(task.kind, task.dir),
+    },
     deps,
   );
   if (!result.ok) return { code: 1, output: result.error.message };

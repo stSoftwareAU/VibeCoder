@@ -12,6 +12,7 @@ import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { MergeGateOutcome } from "./milestone_merge_gate.ts";
 import type {
   GitHubClient,
   Logger,
@@ -6730,6 +6731,27 @@ export async function createProductionRunCoreDeps(
   return { deps, config: coreConfig, cleanup };
 }
 
+/**
+ * The sweep's rebuild gate (PR #4344): the type check on a rebuilt milestone
+ * tree in the shared clone, run with the credentials the repository declared
+ * so it judges the tree exactly as the sync's own gates do.
+ */
+export function rebuildGateForSweep(
+  workDir: string,
+  config: WorkerConfig,
+): (repo: string) => Promise<MergeGateOutcome> {
+  return async (repo) => {
+    const { rebuildGateWithCredentials } = await import(
+      "./milestone_merge_only.ts"
+    );
+    return rebuildGateWithCredentials({
+      repo,
+      dir: `${workDir}/${repo.split("/")[1]}`,
+      qualityCredentials: config.repoConfig?.[repo]?.qualityCredentials,
+    });
+  };
+}
+
 /** What {@link syncMilestoneBranchForSweep} needs for one branch. */
 export interface SweepMilestoneSyncInput {
   repo: string;
@@ -7045,10 +7067,7 @@ async function syncMilestoneBranchesFn(
     agentTimeoutMs: config.claudeTimeout * 1000,
     // PR #4344 review: the sync's own merge gate judges a rebuilt tree in the
     // same clone before it is delivered.
-    rebuildGateFn: async (repo) => {
-      const { checkMergedTree } = await import("./milestone_merge_gate.ts");
-      return checkMergedTree(`${workDir}/${repo.split("/")[1]}`);
-    },
+    rebuildGateFn: rebuildGateForSweep(workDir, config),
     // Issue #1781: the default roll-back runs executeRollback in the
     // same clone the sync just used.
     rollbackGitFn: async (repo, args) => {

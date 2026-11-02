@@ -361,3 +361,23 @@ Deno.test("runWithTimeout uses the safe label instead of credential argv in time
     console.warn = originalWarn;
   }
 });
+
+Deno.test("runWithTimeout - input reaches the child's stdin", async () => {
+  const secret = "stdin-only-secret-4703";
+  const result = await runWithTimeout(
+    "sh",
+    ["-c", 'read -r line; printf "%s" "$line"'],
+    { timeoutMs: 10_000, input: `${secret}\n` },
+  );
+  assert(result.ok);
+  assertEquals(result.value.stdout, secret);
+
+  // Control: without `input` stdin is the null device, so the read gets nothing.
+  const bare = await runWithTimeout(
+    "sh",
+    ["-c", 'read -r line; printf "[%s]" "$line"'],
+    { timeoutMs: 10_000 },
+  );
+  assert(bare.ok);
+  assertEquals(bare.value.stdout, "[]");
+});

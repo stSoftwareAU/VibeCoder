@@ -30,21 +30,38 @@ final version.
   (`syncWithMergeOnlyBindings` calls `resolveRepoCredentials` per gate run, so a
   sync that needs no check mints nothing) and passed as
   `UntrustedGateSpawnDeps.repoCredentialEnv`. `runRepositoryCommand` validates
-  each name, adds them to the allowlist and places them after `sudo` through
-  `env -- NAME=value`, because `sudo`'s `env_reset` would otherwise drop them.
-  A mint failure refuses both gates. The command label is redacted
-  (`commandLabel` on `runWithTimeout`) so credential argv never reaches a
-  timeout diagnostic. Callers `presyncMilestoneBranchForIssueRun` and
-  `syncMilestoneBranchForSweep` pass `qualityCredentials` from `repoConfig`.
+  each name and adds the values to the allowlist. Under `sudo`, whose
+  `env_reset` would drop them, they never touch argv: the command becomes
+  `sudo -n -u agent -- sh -c '<read NAME=base64 lines, export, exec "$@">' sh
+  <cmd>` and the values go on the child's stdin (`runWithTimeout`'s new
+  `input`), so the process table (`hard_kill_evidence.ts`,
+  `kill_diagnostics.ts`) never shows them. Without `sudo` they ride
+  `Deno.Command`'s `env`. A mint failure refuses both gates. The command label
+  is redacted (`commandLabel` on `runWithTimeout`). Callers
+  `presyncMilestoneBranchForIssueRun` and `syncMilestoneBranchForSweep` pass
+  `qualityCredentials` from `repoConfig`, and the sweep's rebuild gate
+  (`rebuildGateForSweep`, PR #4344) resolves them with
+  `rebuildGateWithCredentials` and refuses on a mint failure.
+- Fail closed on an unreadable checkout (PR #4703 review, Issue #4697). When
+  the command is dropped to `agent`, `runRepositoryCommand` first runs
+  `test -r <cwd> -a -x <cwd> -a -r <cwd>/<manifest>` as that account and
+  returns an error (so `checkMergedTree` and `verifyResolvedTree` report
+  `failed`) if it fails, instead of running a check that cannot see the tree.
+  On a host where the shared clone is not agent-readable, milestone syncs are
+  refused until that access is fixed; running them as the worker instead would
+  undo the isolation this issue asks for.
 - `spawnTask` and `spawnTypeCheck` are now exported with an optional `deps`
   argument, so tests can inject the runner and environment source.
 
 ### Undiscoverable Facts
 
 - Run as `agent`, `deno check` over a directory `agent` cannot read exits 0 with
-  "No matching files found". Production checkouts are agent-readable (the
-  quality gate relies on it), but a test fixture from `Deno.makeTempDir` (0700)
-  is not, so `withTempDir` in `milestone_merge_gate_test.ts` now chmods 0755.
+  "No matching files found", and `cargo` there reports no `Cargo.toml`. Lane
+  worktrees are agent-readable (the quality gate relies on it); the shared
+  `${workDir}/<repo>` clone may not be (Issue #4697), hence the readability
+  probe above. A test fixture from `Deno.makeTempDir` (0700) is not readable
+  either, so `withTempDir` in `milestone_merge_gate_test.ts` and `withTree` in
+  `milestone_merge_only_4326_test.ts` chmod 0755.
 
 ## Evidence
 
@@ -76,6 +93,21 @@ Tests (all under `worker/deno/`):
   `tests/subprocess_timeout_test.ts` pins the redacted label in a timeout
   diagnostic; `tests/milestone_merge_only_4326_test.ts` covers the merge-only
   binding.
+- PR #4703 review round (credentials, unreadable clone, rebuild gate):
+  `tests/untrusted_gate_spawn_test.ts` now asserts no argv element holds a
+  credential value while the child still receives it (env, plus stdin under
+  sudo), runs the real `sh` wrapper to prove it delivers spaces, newlines, an
+  empty value and non-ASCII exactly, pins the probe argv, and asserts neither
+  `checkMergedTree` nor `verifyResolvedTree` reports `passed` when the probe
+  fails even though the fake check would exit 0 with "No matching files found"
+  (control: the same fixture passes when the probe succeeds).
+  `tests/milestone_gate_credentials_wiring_test.ts` runs a real Deno `check`
+  that needs a minted token through the presync, the sweep and the rebuild gate
+  (control: no declared credentials fails), plus a mint failure refusing the
+  rebuild gate. `tests/subprocess_timeout_test.ts` covers `input`. Red checks:
+  deleting the `qualityCredentials` line in the sweep, in the presync, or the
+  credential env in the rebuild gate each turns its wiring case red; skipping
+  the probe turns three cases red.
 - `docs/audits/lib-sweep-coverage/top-up-4659.json` claims the new module for
   the lib sweep ledger; `deno task check:manifests` passes (847 passed).
 - Doc: `docs/audits/security-sweep-1214-subprocess-argv.md` gains a follow-up
@@ -88,30 +120,31 @@ Issue numbers cited as provenance, each looked up with `gh issue view`:
 - `#1214`: Security sweep chunk 12a: subprocess and argv construction...
 - `#2247`: On a trim-refused runtime, put build artefacts and caches on the
   ephemeral container layer...
+- `#4697`: Merge-conflict pre-push checks (#4616) refuse base merges in a Cargo
+  repo: cargo fmt run as agent reports no Cargo.toml in the clone...
 
 ## Test Plan
 
-- `deno task test:unit tests/untrusted_gate_spawn_test.ts
-  tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts`:
-  passed (38 parallel, 39 serial).
-- `deno task test:unit tests/lib_sweep_coverage_test.ts`: 39 passed.
-- Edited test: `tests/milestone_merge_gate_test.ts` `withTempDir` gains
-  `chmod 0o755`; no assertion removed. Without it, "real `deno check` rejects a
+- `deno task test:unit` over `untrusted_gate_spawn`, `milestone_merge_gate`,
+  `milestone_resolution_gate`, `milestone_merge_only_4326`, `subprocess_timeout`,
+  `milestone_gate_credentials_wiring`, `milestone_presync_merge_only_4326`,
+  `milestone_sweep_merge_only_4326` and `lib_sweep_coverage` tests: passed
+  (118 parallel, 62 serial). `deno fmt --check`, `deno lint`, `deno check` and
+  `deno task check:manifests` (847 passed) pass.
+- Edited tests: `tests/milestone_merge_gate_test.ts` `withTempDir` and
+  `tests/milestone_merge_only_4326_test.ts` `withTree` gain `chmod 0o755`; no
+  assertion removed. Edited expectations in `tests/untrusted_gate_spawn_test.ts`
+  (`call.args.includes("DECLARED_TOKEN=…")` → `assertCredentialOffArgv`) still go
+  red if the value returns to argv, because the helper scans every argv element. Without it, "real `deno check` rejects a
   broken tree" fails (red observed) because `agent` cannot read the fixture.
 - Callers checked: `spawnTask` is the default of `runTask` in
   `checkResolvedTree`; `spawnTypeCheck` the default of `checkMergedTree`'s
   runner; both go through `runRepositoryCommand`. The other repository-code
   spawns (`spawnFastCheck`, quality gate, lock regen, bump-deps, pre-flight)
   already isolate the environment.
-- Push for CI check `validate-scripts / validate` (PR #4703): the failure was
-  the PR-summary freshness gate (#3768), because head `c3d17dee` changed the
-  gate files and credential threading while this summary still said credentials
-  were not threaded. This rewrite makes the Design Decisions, Evidence and Test
-  Plan match `git diff main...HEAD`; `deno task pr-summary-check --base main
-  docs/archive/pr-summaries/pr-summary-4659.md` is the check re-run after it.
-- `./quality.sh`: the first run's only failures were the lib-sweep ledger (fixed
-  and re-verified above); the rerun passed every stage up to `deno tests` and
-  then exceeded the 590 s command cap before finishing, so the final full gate
-  did not complete.
+- Callers also checked for the new `runRepositoryCommand` probe: `spawnTask`
+  and `spawnTypeCheck` pass their manifests (`manifestsFor`); no other caller.
+  Callers of `runWithTimeout` are unchanged (`input` is optional).
+- `./quality.sh` was not run in this round (see the note below); CI runs it.
 
-<!-- vibe-quality-gate-skipped: full gate exceeded the 590 s command cap after the ledger fix; targeted tests, check:manifests, markdownlint, fmt, lint and type check passed; CI runs the full gate -->
+<!-- vibe-quality-gate-skipped: full gate not run in the PR #4703 review round; targeted tests, check:manifests, markdownlint, fmt, lint and type check passed; CI runs the full gate -->
