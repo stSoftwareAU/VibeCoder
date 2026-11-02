@@ -75,7 +75,7 @@ Backend-only change; no visual evidence applies.
 - Call sites checked: auto-merge sweep, reviewer upkeep and post-approval, PR branch maintenance, fleet PR babysitter, and merge-block escalation. Plain behind refreshes use the shared policy; conflict repair retains its existing path.
 - Test files named above exist at the repository head. No test assertion was removed from the Dependabot refusal, per-PR lock, or conflict-repair cases.
 - `deno task pr-summary-check --base 18cbb398 --issue-body-file /tmp/issue-4613-body.md --labels enhancement,top-priority,work-on ../../docs/archive/pr-summaries/pr-summary-4613.md` — passed; 0 blocked, 0 not checked.
-- The full `./quality.sh` gate has not yet run.
+- `./quality.sh < /dev/null` — failed after the ledger fix: 31,924 passed, 2 failed, 5 ignored. `tests/fleet_pr_babysitter_test.ts` could not download `https://jsr.io/@std/crypto/meta.json` in its isolated subprocess; the same failure occurred in the targeted retry. `tests/milestone_resolution_gate_test.ts::verifyResolvedTree - the repository's own task sees only the allowlisted environment` expected `failed` but got `passed`; a targeted run reproduced it (33 passed, 1 failed), and its production module, test and child-process helper are unchanged from base `18cbb398`. Config integration and Checkov were skipped by the gate because their runtime/configuration was unavailable. `deno task check:manifests < /dev/null` passed after adding the ownership module to the #4613 sweep-coverage record.
 
 ## Deno regression avoided
 
