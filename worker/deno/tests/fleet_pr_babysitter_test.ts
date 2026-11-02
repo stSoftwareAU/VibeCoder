@@ -91,6 +91,35 @@ const buildRepairPrompt = (
   return buildPlatformRepairPrompt(...args);
 };
 
+/**
+ * Run a platform-independent prompt rule against the macOS and the Linux
+ * prompt; a failure names the platform whose prompt broke it.
+ */
+function forBothPlatforms(
+  check: (
+    build: (...args: Parameters<typeof buildRepairPrompt>) => string,
+  ) => void,
+): void {
+  for (const platform of ["darwin", "linux"]) {
+    try {
+      check((...args) => {
+        const [why, number, repo, rtk, failure] = args;
+        return buildPlatformRepairPrompt(
+          why,
+          number,
+          repo,
+          rtk,
+          failure,
+          platform,
+        );
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${platform} prompt: ${message}`, { cause: error });
+    }
+  }
+}
+
 import { fenceUntrustedIssueText } from "../lib/prompt_delimiter.ts";
 
 /** Run a real git command for fixtures and for the injected runner in clone tests. */
@@ -940,29 +969,35 @@ Deno.test("codex agent refuses to start without protected credential paths", () 
 // run and another repair. Every repair re-runs the relevant local checks
 // before it reports ready.
 Deno.test("a CI repair must reproduce the failing step locally and see it pass before reporting ready", () => {
-  const prompt = buildRepairPrompt("failed CI", 5016, "owner/repo", "");
-  assertStringIncludes(prompt, "same command the workflow runs");
-  assertStringIncludes(prompt, "confirm it passes before");
-  assertStringIncludes(prompt, "quality.sh");
-  assert(!prompt.includes("GitHub CI runs those checks"));
+  forBothPlatforms((build) => {
+    const prompt = build("failed CI", 5016, "owner/repo", "");
+    assertStringIncludes(prompt, "same command the workflow runs");
+    assertStringIncludes(prompt, "confirm it passes before");
+    assertStringIncludes(prompt, "quality.sh");
+    assert(!prompt.includes("GitHub CI runs those checks"));
+  });
 });
 
 Deno.test("a review repair runs the local checks covering the changed files", () => {
-  const prompt = buildRepairPrompt(
-    "requested review changes",
-    1,
-    "owner/repo",
-    "",
-  );
-  assertStringIncludes(prompt, "formatter, linter, type or compile check");
-  assertStringIncludes(prompt, "confirm they pass before");
+  forBothPlatforms((build) => {
+    const prompt = build(
+      "requested review changes",
+      1,
+      "owner/repo",
+      "",
+    );
+    assertStringIncludes(prompt, "formatter, linter, type or compile check");
+    assertStringIncludes(prompt, "confirm they pass before");
+  });
 });
 
 Deno.test("a conflict repair still checks the packages it touched, not the whole suite", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
-  assertStringIncludes(prompt, "formatter, linter, type or compile check");
-  assertStringIncludes(prompt, "full regression suite");
-  assertStringIncludes(prompt, "BABYSITTER_READY");
+  forBothPlatforms((build) => {
+    const prompt = build("merge conflict", 1, "owner/repo", "");
+    assertStringIncludes(prompt, "formatter, linter, type or compile check");
+    assertStringIncludes(prompt, "full regression suite");
+    assertStringIncludes(prompt, "BABYSITTER_READY");
+  });
 });
 
 // Owner rule 2026-11-01: the babysitter honours needs-human.
@@ -1009,13 +1044,15 @@ Deno.test("a new change request on an attempted head gets its own attempt", () =
 // Issue #4668: a review asking for a description change could never be met,
 // because the agent may not edit the PR; the runner applies its proposal.
 Deno.test("a review repair may propose a PR description for the runner to apply", () => {
-  const prompt = buildRepairPrompt(
-    "requested review changes",
-    1,
-    "owner/repo",
-    "",
-  );
-  assertStringIncludes(prompt, ".babysitter-pr-body");
+  forBothPlatforms((build) => {
+    const prompt = build(
+      "requested review changes",
+      1,
+      "owner/repo",
+      "",
+    );
+    assertStringIncludes(prompt, ".babysitter-pr-body");
+  });
 });
 
 Deno.test("the proposed PR description is taken out of the clone before commit", async () => {
@@ -1155,11 +1192,13 @@ Deno.test("runner check failure is fenced into the next repair prompt", () => {
 // Issue #4677: a resolved conflict was discarded over unrelated verifier
 // findings (VibeCoder#4675); other feedback is out of a conflict's scope.
 Deno.test("other open feedback does not withhold readiness from a resolved conflict", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
-  assertStringIncludes(
-    prompt,
-    "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
-  );
+  forBothPlatforms((build) => {
+    const prompt = build("merge conflict", 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
+    );
+  });
 });
 
 // Issue #4684: cancelled CI is re-run, not handed to an agent to "fix".
@@ -1235,58 +1274,68 @@ Deno.test("the PR description update passes the write allowlist for its repo onl
 // Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
 // a test the repair never touched; CI on the base is the arbiter.
 Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
-  for (
-    const why of ["failed CI", "requested review changes", "merge conflict"]
-  ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(
-      prompt,
-      "unrelated to the files you changed and passes in CI on the base branch",
-    );
-  }
+  forBothPlatforms((build) => {
+    for (
+      const why of ["failed CI", "requested review changes", "merge conflict"]
+    ) {
+      const prompt = build(why, 1, "owner/repo", "");
+      assertStringIncludes(
+        prompt,
+        "unrelated to the files you changed and passes in CI on the base branch",
+      );
+    }
+  });
 });
 
 // Issue #4694: a check that reads commit history cannot see the uncommitted
 // fix the agent is forbidden to commit (VibeCoder#4675, #4687).
 Deno.test("a check that reads commit history does not withhold readiness", () => {
-  for (
-    const why of ["failed CI", "requested review changes", "merge conflict"]
-  ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(prompt, "reads commit history");
-  }
+  forBothPlatforms((build) => {
+    for (
+      const why of ["failed CI", "requested review changes", "merge conflict"]
+    ) {
+      const prompt = build(why, 1, "owner/repo", "");
+      assertStringIncludes(prompt, "reads commit history");
+    }
+  });
 });
 
 // Issue #4717: a CI repair fixed the failing checks, then held back over the
 // verifier's unrelated findings; a later review repair handles reviews.
 Deno.test("other open feedback does not withhold readiness from a CI repair", () => {
-  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", "");
-  assertStringIncludes(
-    prompt,
-    "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
-  );
+  forBothPlatforms((build) => {
+    const prompt = build("failed CI", 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
+    );
+  });
 });
 
 // Issue #4713: a code fix left VibeCoder's archived PR summary stale, so CI's
 // freshness gate failed and a second session existed only to refresh it.
 Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
-  for (
-    const why of ["failed CI", "requested review changes", "merge conflict"]
-  ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(prompt, "per-PR summary");
-    assertStringIncludes(prompt, "in the same fix");
-  }
+  forBothPlatforms((build) => {
+    for (
+      const why of ["failed CI", "requested review changes", "merge conflict"]
+    ) {
+      const prompt = build(why, 1, "owner/repo", "");
+      assertStringIncludes(prompt, "per-PR summary");
+      assertStringIncludes(prompt, "in the same fix");
+    }
+  });
 });
 
 // Issue #4720: GRQ-AutoTrader#5066's conflict stopped for an owner because the
 // base had deliberately retired behaviour the PR used; the base already
 // carries that decision, and conflicts are never handed to a human.
 Deno.test("a conflict where the base retired behaviour follows the base, not a human", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
-  assertStringIncludes(prompt, "deliberately removed or replaced behaviour");
-  assertStringIncludes(prompt, "follow the base");
-  assertStringIncludes(prompt, "never leave a conflict for a human");
+  forBothPlatforms((build) => {
+    const prompt = build("merge conflict", 1, "owner/repo", "");
+    assertStringIncludes(prompt, "deliberately removed or replaced behaviour");
+    assertStringIncludes(prompt, "follow the base");
+    assertStringIncludes(prompt, "never leave a conflict for a human");
+  });
 });
 
 // Issue #4710: a clone still being written by the agent's leftover test
@@ -1338,13 +1387,15 @@ for (const why of ["failed CI", "requested review changes", "merge conflict"]) {
 // Issue #4728: the agent ran `printenv GH_TOKEN`, putting its own token in a
 // tool result. Every repair kind is told never to print credentials.
 Deno.test("a repair never prints environment variables or credentials", () => {
-  for (
-    const why of ["failed CI", "requested review changes", "merge conflict"]
-  ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(prompt, "Never print, echo or log");
-    assertStringIncludes(prompt, "gh auth status");
-  }
+  forBothPlatforms((build) => {
+    for (
+      const why of ["failed CI", "requested review changes", "merge conflict"]
+    ) {
+      const prompt = build(why, 1, "owner/repo", "");
+      assertStringIncludes(prompt, "Never print, echo or log");
+      assertStringIncludes(prompt, "gh auth status");
+    }
+  });
 });
 
 Deno.test("defaultRemoteUrl follows gh's git_protocol, falling back to https with a warning", async () => {

@@ -181,9 +181,14 @@ registration prefixes while retaining the credential boundary from #4593.
 - `CHROMIUM_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome deno task test:browser`
   — attempted, refused by nested sandbox policy with `sandbox_apply: Operation
   not permitted`. Browser and Keychain evidence remains partial.
-- Existing assertions remain intact. The macOS prompt cases explicitly select
-  Darwin on every host; Linux cases require agent local validation for CI,
-  review and conflict repairs. The body-proposal test asserts the applied body
+- Existing assertions remain intact. The platform-independent prompt contract
+  tests (#4610, #4668, #4677 conflict and host-only, #4694, #4713, #4717, #4720,
+  #4728) now run against both the macOS and the Linux prompt through
+  `forBothPlatforms` in `worker/deno/tests/fleet_pr_babysitter_test.ts`; only
+  the runner-ownership assertions stay macOS-only. Linux cases require agent
+  local validation for CI, review and conflict repairs. Red check: removing
+  "same command the workflow runs" from the Linux prompt failed only the Linux
+  half of the CI repair test. The body-proposal test asserts the applied body
   and its preserved closing reference.
 - Searched for twinned validation/prompt rules: no second production validation
   implementation was found. Updated the operator manual alongside this summary.
