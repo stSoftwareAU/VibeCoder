@@ -7,6 +7,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import {
   authorKind,
   existingTestChanges,
+  heldAt,
   isTestPath,
   noTestAdded,
   ownDiffUnchanged,
@@ -18,6 +19,7 @@ import {
   sentBackAt,
   skipReason,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+import { HOLD_POLICY_VERSION } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const file = (
   filename: string,
@@ -1972,6 +1974,242 @@ Deno.test("ownDiffUnchanged: a repeated filename in either listing is a fresh re
       name,
     );
   }
+});
+
+// --- Issue #4643: a PR held for the owner, with only base merges since -------
+
+// A comment-only skill review that held the PR for the owner: it carries the
+// marker, as every review body the skill posts does.
+const heldReview = (commit_id: string | null, login = "nleck") =>
+  review(
+    "COMMENTED",
+    commit_id,
+    `Held for owner review\n\n_${REVIEW_MARKER}._`,
+    login,
+  );
+
+const heldPr = (commit = "X") =>
+  searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [heldReview(commit)] },
+  });
+
+// The base merged in after the hold at X. a.ts carries the same own change
+// on both sides, shifted to a new hunk header, unless headPatch differs.
+const heldMergeGh = (headPatch: string) =>
+  fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [
+      { sha: "base1", parents: 1 },
+      { sha: "m1", parents: 2 },
+    ]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: headPatch,
+    }]),
+  });
+
+Deno.test("heldAt: the latest counted review is a skill comment-only review at an older commit (Issue #4643)", () => {
+  assertEquals(heldAt([heldReview("X")], "nleck", "head"), "X");
+  // Held at the head itself: already reviewed, nothing to re-judge.
+  assertEquals(heldAt([heldReview("head")], "nleck", "head"), null);
+  // Another host's skill review counts whichever login posted it.
+  assertEquals(heldAt([heldReview("X", "stservice")], "nleck", "head"), "X");
+  // The owner's own comment is not a hold.
+  assertEquals(
+    heldAt([review("COMMENTED", "X", "a note", "owner")], "nleck", "head"),
+    null,
+  );
+  // A comment-only review by the reviewer without the marker is not a hold.
+  assertEquals(
+    heldAt([review("COMMENTED", "X", "a note", "nleck")], "nleck", "head"),
+    null,
+  );
+  // A later change request makes it a send-back, not a hold.
+  assertEquals(
+    heldAt(
+      [heldReview("X"), review("CHANGES_REQUESTED", "Y")],
+      "nleck",
+      "head",
+    ),
+    null,
+  );
+  // A later hold wins over an earlier change request.
+  assertEquals(
+    heldAt(
+      [review("CHANGES_REQUESTED", "Y"), heldReview("X")],
+      "nleck",
+      "head",
+    ),
+    "X",
+  );
+  // An approval is not a hold.
+  assertEquals(heldAt([review("APPROVED", "X")], "nleck", "head"), null);
+  assertEquals(heldAt([], "nleck", "head"), null);
+});
+
+Deno.test("skipReason: a merge-only head after a held review is awaiting-owner under the current hold policy (Issue #4643)", async () => {
+  const { gh, calls } = heldMergeGh("@@ -11,3 +11,4 @@\n+x");
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      () => false,
+      (oid) => (oid === "X" ? HOLD_POLICY_VERSION : null),
+    ),
+    "awaiting-owner",
+  );
+  // The own diff was compared from the held commit to the head.
+  assertEquals(calls.includes("repos/o/r/compare/X...head"), true);
+});
+
+Deno.test("skipReason: a held PR whose own diff changed is a fresh review (Issue #4643)", async () => {
+  const { gh } = heldMergeGh("@@ -11,3 +11,4 @@\n+y");
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    null,
+  );
+});
+
+Deno.test("skipReason: a held PR with no log record is a fresh review and the checker is never called (Issue #4643)", async () => {
+  const checked: string[] = [];
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => {
+        checked.push(since);
+        return Promise.resolve(true);
+      },
+      () => false,
+      () => null,
+    ),
+    null,
+  );
+  assertEquals(checked, []);
+});
+
+Deno.test("skipReason: a hold made under another hold policy is a fresh review and the checker is never called (Issue #4643)", async () => {
+  for (const policy of [HOLD_POLICY_VERSION - 1, HOLD_POLICY_VERSION + 1]) {
+    const checked: string[] = [];
+    assertEquals(
+      await skipReason(
+        heldPr(),
+        "nleck",
+        (since) => {
+          checked.push(since);
+          return Promise.resolve(true);
+        },
+        () => false,
+        () => policy,
+      ),
+      null,
+    );
+    assertEquals(checked, []);
+  }
+});
+
+Deno.test("skipReason: the owner's own comment on an older commit is not a hold (Issue #4643)", async () => {
+  const checked: string[] = [];
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("COMMENTED", "X", "a note", "owner")] },
+      }),
+      "nleck",
+      (since) => {
+        checked.push(since);
+        return Promise.resolve(true);
+      },
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    null,
+  );
+  assertEquals(checked, []);
+});
+
+Deno.test("skipReason: a held PR whose base merge dropped a file is a fresh review, since a hold has no earlier finding to name it (Issue #4643)", async () => {
+  // droppedGh's base merge removes docs.md from the own diff. A send-back may
+  // allow that when a finding is known; a hold has none, so the strict path
+  // refuses it.
+  const gh = droppedGh();
+  assertEquals(
+    await skipReason(
+      heldPr(),
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    null,
+  );
+});
+
+Deno.test("skipReason: a send-back and an approval behave as before and never consult the hold policy (Issue #4643)", async () => {
+  const { gh } = heldMergeGh("@@ -11,3 +11,4 @@\n+x");
+  const consulted: string[] = [];
+  const policy = (oid: string) => {
+    consulted.push(oid);
+    return HOLD_POLICY_VERSION;
+  };
+  const checker = (since: string) =>
+    ownDiffUnchanged(gh, "o/r", "main", since, "head");
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+      }),
+      "nleck",
+      checker,
+      () => false,
+      policy,
+    ),
+    "awaiting-fix",
+  );
+  assertEquals(
+    await skipReason(
+      searchPr({
+        headRefOid: "head",
+        baseRefName: "main",
+        reviews: { nodes: [review("APPROVED", "X")] },
+      }),
+      "nleck",
+      checker,
+      () => false,
+      policy,
+    ),
+    null,
+  );
+  assertEquals(consulted, []);
+});
+
+Deno.test("skipReason: a hold at the head commit is already reviewed (Issue #4643)", async () => {
+  assertEquals(
+    await skipReason(
+      heldPr("head"),
+      "nleck",
+      () => Promise.resolve(true),
+      () => false,
+      () => HOLD_POLICY_VERSION,
+    ),
+    "already-reviewed",
+  );
 });
 
 Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call cannot wedge the watch loop", async () => {
