@@ -3018,6 +3018,10 @@ export async function createProductionRunCoreDeps(
           // push. A PR that merged inside the scan→push window is a no-op,
           // not the `(stale info)` push failure it used to be reported as.
           getPrState: makeGhPrStateFetcher(runGhCommand),
+          // Issue #4613: plain behind updates use GitHub's guarded refresh
+          // request and shared per-base owner; conflicts still use repair.
+          requestReadyRefresh: (repo, prNumber, base) =>
+            requestReadyBranchUpdate(repo, prNumber, runGhCommand, base),
           // Issue #394: this lane works in its **own** worktree, never in the
           // shared `${WORK_DIR}/<repo>` clone. `setupRepo` opens with
           // `reset --hard` + `clean -fd` + `checkout <default>`, so running it

@@ -31,6 +31,39 @@ the worker backstop closes the gap on repositories where no ruleset covers the
 default branch or one cannot be configured (for example, when the worker lacks
 admin rights on the repo).
 
+## Refreshing a strict branch without a merge queue (Issue #4613)
+
+When a strict base has no merge queue, the worker refreshes a behind PR only
+after its live state confirms it is open, non-draft, armed for auto-merge,
+approved where review is required, mergeable, and green under the branch's
+effective required-check contract. The required-check reader includes
+aggregator checks and ignores unrelated optional jobs. A merge-queue base is
+left to the queue; conflict repair remains a separate path.
+
+The request re-reads the PR head, base, and GitHub test merge before sending an
+`expected_head_sha` update. A persisted GitHub comment records the selected PR
+for the base for up to six hours. Competing worker lanes use the existing
+distributed PR-comment lock for the short claim operation, then retain the
+base owner record while CI and merge are pending. Later passes clear it after
+merge, closure, a failed check, or expiry; an unreadable owner state is logged
+and retained for retry.
+
+```mermaid
+sequenceDiagram
+    participant Lane as Updater lane
+    participant Lock as Shared PR comment lock
+    participant Owner as Base owner comment
+    participant GH as GitHub PR and checks
+    Lane->>GH: Read live PR, rules, head and test merge
+    GH-->>Lane: Approved, mergeable, required checks passed
+    Lane->>Lock: Acquire shared per-base claim lock
+    Lane->>Owner: Reconcile owner, then persist this PR
+    Lane->>Lock: Release short claim lock
+    Lane->>GH: update-branch with expected head SHA
+    Note over Owner,GH: Owner remains while CI and merge are pending
+    Lane->>Owner: Release after merge, closure, failure or expiry
+```
+
 ```mermaid
 flowchart TD
     A[Worker wants to merge PR] --> B{Branch protected?}

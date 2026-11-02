@@ -13,6 +13,7 @@ import {
   FileLockTimeoutError,
   withFileLock,
 } from "../../../../worker/deno/lib/file_lock.ts";
+import { requestReadyBranchUpdate } from "../../../../worker/deno/lib/required_branch_checks_4613.ts";
 import {
   BRANCH_UPDATE_FILE,
   FAILED_FILE,
@@ -75,29 +76,26 @@ export type BranchUpdateResult =
 // update never lands on a head the review did not see. A refusal is
 // reported, never thrown: one stuck PR must not stop a pass or a post.
 export async function updateBranch(
-  pr: { repo: string; number: number; headSha: string },
+  pr: { repo: string; number: number; headSha: string; baseRefName: string },
   runGh: RunGh,
 ): Promise<BranchUpdateResult> {
-  try {
-    await runGh([
-      "api",
-      "--method",
-      "PUT",
-      `repos/${pr.repo}/pulls/${pr.number}/update-branch`,
-      "-f",
-      `expected_head_sha=${pr.headSha}`,
-    ]);
-    return { updated: true };
-  } catch (e) {
-    return { updated: false, error: (e as Error).message.split("\n")[0]! };
-  }
+  const result = await requestReadyBranchUpdate(
+    pr.repo,
+    pr.number,
+    runGh,
+    pr.baseRefName,
+    pr.headSha,
+  );
+  return result.ok
+    ? { updated: true }
+    : { updated: false, error: result.error.message.split("\n")[0]! };
 }
 
 // Gate and parallel post processes share one request lease per PR. Re-read
 // after taking the lock, and persist only this action's entry; another PR
 // can finish its API call in parallel without losing either cached head.
 export async function updateBranchOnce(
-  pr: { repo: string; number: number; headSha: string },
+  pr: { repo: string; number: number; headSha: string; baseRefName: string },
   dir: string,
   runGh: RunGh,
 ): Promise<BranchUpdateResult | undefined> {
@@ -119,6 +117,13 @@ export async function updateBranchOnce(
         if (result.updated) {
           await writeMemory(dir, BRANCH_UPDATE_FILE, { [key]: pr.headSha });
         } else {
+          if (
+            result.error.includes("merge-queue base is exempt") ||
+            result.error.includes("base refresh owned by")
+          ) {
+            console.info(`${key} branch refresh skipped: ${result.error}`);
+            return undefined;
+          }
           await writeMemory(dir, FAILED_FILE, {
             [`${key} branch-update`]: pr.headSha,
           });

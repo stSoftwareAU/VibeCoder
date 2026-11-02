@@ -358,6 +358,12 @@ export interface PrBranchExecutionDeps {
    * before — every failure is counted and warned about.
    */
   getPrState?: (repo: string, prNumber: number) => Promise<string>;
+  /** Shared ready-refresh path for behind-only updates (Issue #4613). */
+  requestReadyRefresh?: (
+    repo: string,
+    prNumber: number,
+    baseBranch: string,
+  ) => Promise<Result<void>>;
 }
 
 /**
@@ -1182,6 +1188,51 @@ export async function executePrBranchUpdates(
           repo: action.repo,
           prNumber: action.prNumber,
           lockCommentId,
+        });
+      }
+      continue;
+    }
+
+    // A plain behind update is not conflict repair. Route it through the
+    // shared ready-check and per-base owner; actual conflicts keep the local
+    // repair path below as the explicit exception.
+    if (action.reason === "behind" && deps.requestReadyRefresh) {
+      const update = await deps.requestReadyRefresh(
+        action.repo,
+        action.prNumber,
+        action.baseBranch,
+      );
+      if (lockCommentId !== undefined) {
+        await doReleaseLock({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          lockCommentId,
+        });
+      }
+      if (update.ok) {
+        updatedCount++;
+        deps.logger.info(
+          `PR #${action.prNumber} branch refresh requested under the shared ready policy`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+        details.push({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          branchName: action.branchName,
+          status: "updated",
+          message: "GitHub branch refresh requested",
+        });
+      } else {
+        deps.logger.info(
+          `PR #${action.prNumber} branch refresh skipped: ${update.error.message}`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+        details.push({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          branchName: action.branchName,
+          status: "contended",
+          message: `Refresh skipped: ${update.error.message}`,
         });
       }
       continue;

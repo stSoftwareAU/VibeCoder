@@ -7,7 +7,10 @@ import {
 
 const rules = [{
   type: "required_status_checks",
-  parameters: { required_status_checks: [{ context: "gate" }] },
+  parameters: {
+    strict_required_status_checks_policy: true,
+    required_status_checks: [{ context: "gate" }],
+  },
 }];
 const passed = {
   name: "gate",
@@ -57,17 +60,24 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   const baseHead = "c".repeat(40);
   let conclusion = "success";
   let decision = "APPROVED";
+  let strictPolicy = true;
+  let queued = false;
   let retarget = false;
   let wrongParent = false;
   let views = 0;
   const writes: string[][] = [];
+  const comments: Array<
+    { id: number; body: string; author: string; created_at: string }
+  > = [];
+  let nextCommentId = 100;
   const gh = (args: string[]): Promise<string> => {
     const endpoint = args[1] ?? "";
-    if (args[0] === "pr") {
+    if (args[0] === "pr" && args[1] === "view") {
       views++;
       return Promise.resolve(
         JSON.stringify({
           state: "OPEN",
+          isDraft: false,
           baseRefName: retarget && views === 2 ? "other-base" : "main",
           headRefOid: head,
           autoMergeRequest: {},
@@ -77,8 +87,38 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
         }),
       );
     }
+    if (args[0] === "pr" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify([{ number: 12 }]));
+    }
+    if (args[0] === "pr" && args[1] === "checks") {
+      return Promise.resolve(JSON.stringify([]));
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      const id = nextCommentId++;
+      comments.push({
+        id,
+        body: args[args.indexOf("--body") + 1]!,
+        author: "VibeCoderST",
+        created_at: new Date().toISOString(),
+      });
+      return Promise.resolve(
+        `https://github.com/owner/repo/issues/12#issuecomment-${id}`,
+      );
+    }
     if (endpoint === "--method") {
       writes.push(args);
+      return Promise.resolve("");
+    }
+    if (endpoint.includes("/comments?")) {
+      return Promise.resolve(JSON.stringify(comments.map((comment) => ({
+        ...comment,
+        user: { login: comment.author },
+      }))));
+    }
+    if (args.join(" ").includes("/issues/comments/")) {
+      const id = Number(args.join(" ").split("/").at(-1));
+      const index = comments.findIndex((comment) => comment.id === id);
+      if (index >= 0) comments.splice(index, 1);
       return Promise.resolve("");
     }
     if (endpoint.endsWith("/pulls/12")) {
@@ -102,14 +142,23 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       );
     }
     if (endpoint.includes("/rules/branches/")) {
-      return Promise.resolve(JSON.stringify([rules]));
+      return Promise.resolve(JSON.stringify([[
+        ...(queued ? [{ type: "merge_queue" }] : []),
+        {
+          ...rules[0],
+          parameters: {
+            ...rules[0]!.parameters,
+            strict_required_status_checks_policy: strictPolicy,
+          },
+        },
+      ]]));
     }
     if (endpoint.includes("/branches/")) {
       return Promise.resolve(
         JSON.stringify({
           protection: {
             enabled: false,
-            required_status_checks: { contexts: [], checks: [] },
+            required_status_checks: { strict: false, contexts: [], checks: [] },
           },
         }),
       );
@@ -128,9 +177,31 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     }
     throw new Error("unexpected endpoint");
   };
-  assertEquals((await requestReadyBranchUpdate("owner/repo", 12, gh)).ok, true);
+  const firstRequest = await requestReadyBranchUpdate("owner/repo", 12, gh);
+  if (!firstRequest.ok) throw firstRequest.error;
+  assertEquals(firstRequest.ok, true);
   assertEquals(writes.length, 1);
   assertEquals(writes[0]?.slice(-2), ["-f", `expected_head_sha=${head}`]);
+  strictPolicy = false;
+  const nonStrict = await requestReadyBranchUpdate("owner/repo", 12, gh);
+  assertEquals(nonStrict.ok, false);
+  if (!nonStrict.ok) {
+    assertEquals(
+      nonStrict.error.message,
+      "base does not require strict up-to-date checks",
+    );
+  }
+  strictPolicy = true;
+  queued = true;
+  const mergeQueue = await requestReadyBranchUpdate("owner/repo", 12, gh);
+  assertEquals(mergeQueue.ok, false);
+  if (!mergeQueue.ok) {
+    assertEquals(
+      mergeQueue.error.message,
+      "merge-queue base is exempt from behind-only refresh",
+    );
+  }
+  queued = false;
   views = 0;
   retarget = true;
   assertEquals(

@@ -46,6 +46,7 @@ import {
   saveShiftLeftLedger,
 } from "../lib/shift_left_failures.ts";
 import { RUN_FAILURE_TARGET_REPO } from "../lib/run_failure_issue.ts";
+import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
 import {
   acquireBranchUpdateLock,
   releaseBranchUpdateLock,
@@ -621,13 +622,9 @@ export function reason(pr: Pr): string | null {
   if (pr.reviewDecision === "CHANGES_REQUESTED") {
     return "requested review changes";
   }
-  if (
-    pr.mergeStateStatus === "BEHIND" &&
-    !pr.statusCheckRollup.some((check) =>
-      (check.status !== undefined && check.status !== "COMPLETED") ||
-      check.state === "PENDING"
-    )
-  ) return "branch behind base";
+  // The shared updater evaluates the effective required-check contract.
+  // An optional pending job must not hide a ready PR from that policy.
+  if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
   return null;
 }
 
@@ -883,14 +880,19 @@ async function fix(
       }
     }
     if (reason(pr) === "branch behind base") {
-      await run("gh", [
-        "api",
-        "-X",
-        "PUT",
-        `repos/${repo}/pulls/${pr.number}/update-branch`,
-        "-f",
-        `expected_head_sha=${pr.headRefOid}`,
-      ]);
+      const update = await requestReadyBranchUpdate(
+        repo,
+        pr.number,
+        (args) => run("gh", args),
+        pr.baseRefName,
+        pr.headRefOid,
+      );
+      if (!update.ok) {
+        console.log(
+          `${repo}#${pr.number}: branch refresh skipped or failed: ${update.error.message}`,
+        );
+        return;
+      }
       for (let attempt = 0; attempt < 20; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 2_000));
         const updated = await readPr(repo, pr.number);

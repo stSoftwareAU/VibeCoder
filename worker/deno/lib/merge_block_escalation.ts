@@ -35,6 +35,7 @@
 
 import type { Logger, Result } from "../types.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
 
 /** Injectable gh command runner. */
 type GhFn = (args: string[]) => Promise<string>;
@@ -335,7 +336,9 @@ export async function handleMergeAttempt(
     ((r: string, n: number) => requestBranchUpdate(r, n, ghFn));
 
   if (disposition === "update_branch") {
-    const update = await updateBranchFn(repo, prNumber);
+    const update = options.updateBranchFn
+      ? await updateBranchFn(repo, prNumber)
+      : await requestReadyBranchUpdate(repo, prNumber, ghFn);
     if (update.ok) {
       logger.info(
         "PR is behind its base — branch updated, checks will re-run",

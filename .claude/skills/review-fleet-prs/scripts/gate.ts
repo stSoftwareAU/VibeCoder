@@ -1194,7 +1194,12 @@ export async function pass(
       const result = DRY_RUN
         ? { updated: true as const }
         : await updateBranchOnce(
-          { repo, number: pr.number, headSha: pr.headRefOid },
+          {
+            repo,
+            number: pr.number,
+            headSha: pr.headRefOid,
+            baseRefName: pr.baseRefName,
+          },
           dir,
           callGh,
         );

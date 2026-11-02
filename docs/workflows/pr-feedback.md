@@ -17,8 +17,9 @@ PRs are fixed without being asked.** There is **one Vibe Coder per hostname**,
 and the **same GitHub user** (e.g. stsvcbot) is often shared by many Vibe
 Coders. The worker monitors **all open PRs by that user** — it does not act on
 other users’ PRs. It fixes **spelling** and **quality** (shellcheck, Deno
-quality checks) failures, keeps branches **up to date** with the base
-(rebase/merge; on a merge-queued default branch only conflicting PRs are updated, not merely behind ones, Issue #4424), and resolves **merge conflicts** when it can. **Auto-merge** is
+quality checks) failures, refreshes a behind branch on a strict non-queue base
+only when the PR is ready to merge, and resolves **merge conflicts** when it
+can. **Auto-merge** is
 turned on only when the PR is actually mergeable, and every merge first passes a
 **pre-merge gate** that re-checks CI and branch freshness (a merge-queued default branch is landed by its queue instead). User feedback
 (comments, "Request changes") is also handled: address it, push, mark processed.
@@ -42,6 +43,19 @@ flowchart TD
 ---
 
 ## 🎯 Purpose and scope
+
+### Strict bases without a merge queue (Issue #4613)
+
+The branch-update sweep does not refresh every armed PR after the base moves.
+On a strict base without a merge queue, it refreshes only an open, non-draft,
+armed PR with a satisfied required review, confirmed mergeability, and passing
+required checks for its verified head or test merge. Optional pending or
+skipped jobs do not block readiness. Update requests share a repository/base
+owner record across worker hosts and lanes; the selected PR keeps ownership
+while CI and merge are pending. Merge, closure, required-check failure, or the
+bounded lease expiry releases ownership. Unreadable rules or owner state are
+logged and retried without treating unknown as ready. A merge queue handles
+its own behind branches (Issue #4424), while conflict repair remains available.
 
 - **Purpose:** Define how the worker monitors **only PRs authored by the
   configured GitHub user**, **automatically** fixes spelling failures, quality
