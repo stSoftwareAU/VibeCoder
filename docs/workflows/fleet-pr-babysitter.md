@@ -159,8 +159,9 @@ PR that a fleet worker holds a live PR-feedback lease claim on
 that pass, so the babysitter never repairs beside a worker that is about to
 push. A failed or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
-not retried on that host for the same PR head. Removing the matching state file
-permits a retry. The shared lock prevents simultaneous work; this local attempt
+not retried on that host for the same PR head. A review repair is keyed on the
+head and the newest change-request review, so a new review on an attempted head
+gets its own attempt. Removing the matching state file permits a retry. The shared lock prevents simultaneous work; this local attempt
 record does not prevent a different host from retrying later.
 
 ## Shift-left detection
