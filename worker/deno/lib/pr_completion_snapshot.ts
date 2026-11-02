@@ -11,7 +11,9 @@
  *
  * A GitHub event is never attributed to a human or to the fleet from a login:
  * it becomes a `TrustedPrAction` with actor `unknown` unless a verified fleet
- * audit action of the same kind sits within {@link MATCH_WINDOW_MS} of it.
+ * action of the same kind sits within {@link MATCH_WINDOW_MS} of it. Those
+ * actions are audit actions, plus, as a lower-trust source, the review-fleet-prs
+ * skill's own review log (`reviewLogs`), which is not hash-chained.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
@@ -34,6 +36,11 @@ import {
   timestamp as utcMillis,
   type TrustedPrAction,
 } from "./pr_completion_report.ts";
+import {
+  type LogRecord,
+  type Outcome,
+  parseLog,
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 /** Read-only GitHub GET seam: resolves the parsed JSON body of `gh api <path>`. */
 export type GhJson = (path: string) => Promise<unknown>;
@@ -52,6 +59,12 @@ export interface CollectOptions {
   auditDirs: string[];
   /** Directories holding `<round>/review-run.json` records. */
   reviewRunDirs?: string[];
+  /**
+   * The review-fleet-prs skill's own `log.jsonl` files, one per host. A lower
+   * trust source than the audit journals: not hash-chained (see
+   * docs/INTERNALS.md). Absent or empty means none is read.
+   */
+  reviewLogs?: string[];
   /** Per-host lifecycle ledger files. */
   lifecycleLedgers?: string[];
   /** Babysitter state directories holding `deployment-health.json`. */
@@ -81,6 +94,14 @@ type Regression = PrCompletionInput["regressions"][number];
 
 /** Run identity for actions observed on GitHub rather than journalled. */
 const GITHUB_OBSERVATION_RUN = "github-observation";
+/** Run identity for review-log records; they are not journalled runs. */
+const REVIEW_LOG_RUN = "review-log";
+/** Outcomes of a review the skill posted: every one is a posted GitHub review. */
+const POSTED_OUTCOMES: ReadonlySet<string> = new Set<Outcome>([
+  "approved",
+  "changes_requested",
+  "held",
+]);
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
@@ -923,6 +944,91 @@ async function collectDeployments(
   return rows;
 }
 
+/**
+ * Whether a parsed review-log line is a posted review the matcher can use: a
+ * repository, a PR number, a UTC time and an outcome the skill posts.
+ */
+function isPostedReview(value: unknown): value is LogRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const r = value as Partial<LogRecord>;
+  if (
+    typeof r.repo !== "string" || !PR_REPO_PATTERN.test(r.repo) ||
+    typeof r.number !== "number" || !Number.isSafeInteger(r.number) ||
+    r.number < 1 || typeof r.at !== "string" ||
+    typeof r.outcome !== "string" || !POSTED_OUTCOMES.has(r.outcome)
+  ) {
+    return false;
+  }
+  try {
+    utcMillis(r.at, "review log at");
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Review actions from the review-fleet-prs skill's own logs. Each posted review
+ * becomes a verified fleet `review` action, so it can match the GitHub review
+ * event within {@link MATCH_WINDOW_MS} as an audit action does. The log is not
+ * hash-chained, so this is a lower-trust source (docs/INTERNALS.md). Records for
+ * PRs outside the cohort are ignored. A missing or unreadable file, and a
+ * malformed line, is noted and skipped, never silently. The same record across
+ * two logs is one action. Its head SHA is not carried: the report drops an
+ * action at a different head, and a review posted at an older head still
+ * matches its event by time.
+ */
+async function reviewLogActions(
+  paths: string[],
+  cohort: ReadonlySet<string>,
+  notes: string[],
+): Promise<TrustedPrAction[]> {
+  const byId = new Map<string, TrustedPrAction>();
+  for (const path of paths) {
+    let text: string;
+    try {
+      text = await Deno.readTextFile(path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        notes.push(`review log ${path} is missing; skipped`);
+      } else {
+        const reason = error instanceof Error ? error.message : String(error);
+        notes.push(`review log ${path} is unreadable (${reason}); skipped`);
+      }
+      continue;
+    }
+    const records = parseLog(text).filter(isPostedReview);
+    const lines = text.split("\n").filter((line) => line.trim() !== "").length;
+    if (records.length < lines) {
+      notes.push(
+        `review log ${path}: ${
+          lines - records.length
+        } malformed line(s) skipped`,
+      );
+    }
+    for (const record of records) {
+      if (!cohort.has(keyOf(record.repo, record.number))) continue;
+      const actionId =
+        `review-log:${record.repo}#${record.number}:${record.at}`;
+      byId.set(actionId, {
+        actionId,
+        runId: REVIEW_LOG_RUN,
+        component: "reviewer",
+        repo: record.repo,
+        prNumber: record.number,
+        kind: "review",
+        timestamp: record.at,
+        outcome: "confirmed",
+        actor: "fleet",
+        verified: true,
+      });
+    }
+  }
+  return [...byId.values()];
+}
+
 /** One audit entry, with whether its journal's directory chain verified. */
 interface JournalEntry {
   entry: AuditEntry;
@@ -1156,9 +1262,17 @@ export async function collectPrCompletionSnapshot(
     linked.filter((item) => !item.verified).map((item) => item.entry),
     false,
   );
-  const verifiedFleet = verifiedActions.filter((action) =>
-    action.verified && action.actor === "fleet"
+  const logActions = await reviewLogActions(
+    options.reviewLogs ?? [],
+    new Set(observed.map(({ record }) => keyOf(record.repo, record.number))),
+    notes,
   );
+  const verifiedFleet = [
+    ...verifiedActions.filter((action) =>
+      action.verified && action.actor === "fleet"
+    ),
+    ...logActions,
+  ];
   const fleetByPr = new Map<string, TrustedPrAction[]>();
   for (const action of verifiedFleet) {
     const key = keyOf(action.repo, action.prNumber);
@@ -1171,6 +1285,8 @@ export async function collectPrCompletionSnapshot(
   const githubActions: TrustedPrAction[] = [];
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
+  let reviewEvents = 0;
+  let prsWithReviewEvents = 0;
   for (const o of observed) {
     const { record } = o;
     const evidence = await fetchEvidence(
@@ -1179,6 +1295,10 @@ export async function collectPrCompletionSnapshot(
       record.number,
       notes,
     );
+    if (evidence.reviews.length > 0) {
+      reviewEvents += evidence.reviews.length;
+      prsWithReviewEvents++;
+    }
     blockers.push(...blockersFor(record, evidence));
     githubActions.push(
       ...unmatchedActions(
@@ -1191,6 +1311,14 @@ export async function collectPrCompletionSnapshot(
     if (record.state === "merged") {
       ciRuns.push(...await ciRunsFor(options.gh, record, notes));
     }
+  }
+  if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
+    const events = reviewEvents === 1 ? "review event" : "review events";
+    const prs = prsWithReviewEvents === 1 ? "PR" : "PRs";
+    notes.push(
+      `${reviewEvents} ${events} on ${prsWithReviewEvents} ${prs} had no review-log source; ` +
+        "the review-fleet-prs skill journals no audit records, so those reviews stay unknown unless an audit action matches them",
+    );
   }
 
   const deployments = await collectDeployments(options, observedMs, notes);
@@ -1226,7 +1354,12 @@ export async function collectPrCompletionSnapshot(
   const input: PrCompletionInput = {
     cohort: { ...options.cohort },
     prs: records,
-    actions: [...verifiedActions, ...unverifiedActions, ...githubActions],
+    actions: [
+      ...verifiedActions,
+      ...unverifiedActions,
+      ...logActions,
+      ...githubActions,
+    ],
     blockers,
     ciRuns,
     regressions: regressionsFor(observed),

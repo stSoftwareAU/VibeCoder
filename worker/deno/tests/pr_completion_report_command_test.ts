@@ -201,3 +201,94 @@ Deno.test("pr-completion-report --collect writes a snapshot that --input reprodu
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("pr-completion-report --collect rejects a --review-log that names no file", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of [true, ",", " , "]) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "review-log": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(
+      result.message,
+      "--review-log <log.jsonl,...> must name at least one file",
+    );
+  }
+});
+
+Deno.test("pr-completion-report --collect notes a --review-log it cannot read, and notes the missing review-log source when none is given", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    const missing = `${dir}/logs/absent.jsonl`;
+    const open = {
+      number: 1,
+      state: "open",
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: null,
+      closed_at: null,
+      title: "Change 1",
+      body: "",
+      labels: [],
+      base: { ref: "main" },
+      head: { ref: "issue-1", sha: "sha1" },
+    };
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) {
+        return path.includes("page=1") ? [open] : [];
+      }
+      if (path.startsWith("repos/org/repo/pulls/1/reviews")) {
+        return [{
+          id: 601,
+          state: "APPROVED",
+          submitted_at: "2026-10-20T01:00:00Z",
+          user: { login: "review-bot[bot]" },
+        }];
+      }
+      if (path.startsWith("repos/org/repo/pulls/")) return [];
+      if (path.startsWith("repos/org/repo/issues/")) return [];
+      throw new Error(`unrouted gh path: ${path}`);
+    };
+    const args = {
+      collect: true,
+      "audit-dir": auditDir,
+      repos: "org/repo",
+      "expected-revision": "rev1",
+      start: "2026-10-01T00:00:00Z",
+      end: "2026-11-01T00:00:00Z",
+    };
+    const config = { repos: ["org/repo"] } as unknown as WorkerConfig;
+
+    const withLog = await runPrCompletionCollect(
+      { ...args, "review-log": missing },
+      config,
+      gh,
+    );
+    assertEquals(withLog.success, true);
+    assert(
+      withLog.data?.coverageNotes.includes(
+        `review log ${missing} is missing; skipped`,
+      ),
+    );
+    assertStringIncludes(withLog.message, `coverage: review log ${missing}`);
+
+    const withoutLog = await runPrCompletionCollect(args, config, gh);
+    assertEquals(withoutLog.success, true);
+    assertStringIncludes(
+      withoutLog.message,
+      "coverage: 1 review event on 1 PR had no review-log source",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -1127,7 +1127,9 @@ is the optional `--write-snapshot <path>`, which holds the collected input so a
 later `--input` run reproduces the same report. A `--input` snapshot is not
 authenticated.
 
-`--collect` reads these sources, all read-only:
+`--collect` reads these sources, all read-only. The audit journals are the
+verified fleet source; the review-fleet-prs log is a lower-trust source, set
+out under **Review-fleet-prs log** below:
 
 - **GitHub**, through `gh api` GETs only, for each repository in `--repos`
   (default `config.repos`): the default branch; the pull requests created in
@@ -1143,6 +1145,8 @@ authenticated.
 - **Lifecycle ledgers** named by `--lifecycle-ledger`.
 - **Babysitter heartbeats**: `deployment-health.json` under each
   `--babysitter-state-dir`.
+- **Review-fleet-prs log**: each `log.jsonl` named by `--review-log`
+  (comma-separated, one per host). Lower trust; see below.
 
 The expected deployment comes from `--expected-components` (default
 `worker,reviewer,babysitter`), `--expected-revision` (default
@@ -1159,8 +1163,9 @@ if any directory's chains fail, or a directory has no journals, every PR's
 `actionsComplete` is false.
 
 **Match rule.** A GitHub event is attributed to the fleet only when a verified
-fleet audit action of the same kind on the same PR lies within ten minutes of
-it. Matching is one-to-one. The events are submitted reviews (`review`), review
+fleet action of the same kind on the same PR lies within ten minutes of it. The
+actions are audit actions, and for reviews also the review-fleet-prs log records
+(see below). Matching is one-to-one. The events are submitted reviews (`review`), review
 dismissals (`dismissal`), the merge (`merge`), and one push group per run of
 commits less than two minutes apart: the first group is `implementation` and
 later groups are `repair`.
@@ -1183,6 +1188,49 @@ Pushes whose target is `HEAD` cannot be linked, because the journal does not
 record the branch `HEAD` names. Empty or `-`-prefixed targets cannot be linked
 either, and nor can a branch name shared by PRs in two repositories. An unlinked
 push leaves its commits as `unknown` actions.
+
+**Review-fleet-prs log (lower trust).** The review-fleet-prs skill posts its
+reviews through its own `gh` calls, which do not pass the audit hook, so no
+audit action records them. After each post, the skill appends one line to its
+`log.jsonl` (`LOG_FILE` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`,
+in the skill's state directory, `stateDir()`). `--review-log <log.jsonl,...>`
+reads those files, one per host, with the skill's own `parseLog`, and the
+collector imports it from the skill's module, so the worker depends on that
+file. Each record carries `at`, `repo`, `number` and `headSha`, and an
+`outcome` of `approved`, `changes_requested` or `held`. Each is a posted GitHub
+review: a held PR is posted as a COMMENTED review.
+
+A record for a cohort PR becomes a verified fleet `review` action with actor
+`fleet`, outcome `confirmed` and the ID `review-log:<repo>#<number>:<at>`. The
+same record in two logs is one action. It matches a GitHub review event within
+ten minutes, as an audit action does. Matching uses the repository, the PR
+number and the time only. A review posted at an older head still matches, so the
+record's head SHA is not carried into the report, which would drop the action.
+Records for PRs outside the cohort are ignored. A missing or unreadable file,
+and a malformed line, are coverage notes; the rest of the log is still used.
+
+**This log is not hash-chained or tamper-evident.** The audit-chain verification
+(`verifyAllChains`) does not cover it. It is trusted at the same level as the
+lifecycle ledger and the review-run records: the fleet account's own record,
+not a journal that the chain protects. A record can therefore make a review
+event verified, and so help a PR count as unattended. The review-fleet-prs
+skill still does not journal to the audit chain. A PR whose GitHub review
+events have neither an audit action nor a review-log record stays unknown. With
+no `--review-log` and any GitHub review event in the cohort, the coverage notes
+say `N review events on M PRs had no review-log source`.
+
+**Dismissals.** The review-fleet-prs skill makes no dismissal call; its `gate.ts`
+comments only describe the worker's dismissals. The worker dismisses a review
+once its run reaches a conclusive outcome (`retireReview` in
+`worker/deno/lib/pr_feedback_processor.ts`), through `markCommentProcessed` in
+`worker/deno/lib/pr_comments.ts`, which PUTs
+`repos/<repo>/pulls/<n>/reviews/<id>/dismissals`. That call goes
+through `defaultGhCommand`, `runGhOrThrow` and `spawnGh`, the `gh` chokepoint
+the audit hook sits on, so it is already journalled. But `actionKindFor` in
+`audit_hook.ts` labels a dismissal only for a `…/reviews/<id>` endpoint with
+`state=DISMISSED`. The worker's `/dismissals` entry is therefore journalled with
+kind `unknown`, not `dismissal`, and does not match a GitHub dismissal event.
+Dismissal journalling is left as it is.
 
 **Unknown, never human.** A GitHub event with no matching verified fleet action
 becomes an `unknown` action: unverified, outcome unknown, with the ID

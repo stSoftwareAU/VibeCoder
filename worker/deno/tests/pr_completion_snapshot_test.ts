@@ -1233,3 +1233,207 @@ Deno.test("collect - pre-change review-run records and journal entries are ignor
     assertEquals(snapshot.input.prs[0]!.actionsComplete, true);
   });
 });
+
+/** The approval GitHub records for PR 1 at 01:00, with its review id. */
+const REVIEW_AT = "2026-10-20T01:00:00Z";
+
+/** A GitHub review as the reviews endpoint returns it. */
+function review(id: number, submittedAt: string): Json {
+  return {
+    id,
+    state: "APPROVED",
+    submitted_at: submittedAt,
+    user: { login: "review-bot[bot]" },
+  };
+}
+
+/** One review-log line, as the review-fleet-prs skill appends it. */
+function logLine(number: number, at: string, headSha = "sha1"): string {
+  return JSON.stringify({
+    at,
+    repo: REPO,
+    number,
+    title: `Change ${number}`,
+    url: `https://github.com/${REPO}/pull/${number}`,
+    headSha,
+    outcome: "approved",
+    summary: "Looks right.",
+    findings: [],
+    testChangeNotes: [],
+    removedTests: [],
+  });
+}
+
+/**
+ * Write a review log. Logs live in their own directory, apart from the audit
+ * directory, which reads every `.jsonl` file directly beneath it as a journal.
+ */
+async function writeLines(path: string, lines: string[]): Promise<string> {
+  await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+  await Deno.writeTextFile(path, lines.join("\n") + "\n");
+  return path;
+}
+
+/**
+ * PR 1, merged at 02:00, with its implementation and merge journalled and its
+ * one GitHub review at 01:00. Only the review-log sources vary between tests.
+ */
+async function reviewedPr(
+  dir: string,
+  extra: Partial<CollectOptions> = {},
+): Promise<CollectedSnapshot> {
+  await journal(dir, [
+    {
+      verb: "git-push",
+      actionKind: "implementation",
+      actionId: "a-push-review",
+      target: "issue-1",
+      timestamp: "2026-10-20T00:30:00Z",
+    },
+    {
+      verb: "pr-merge",
+      actionKind: "merge",
+      actionId: "a-merge-review",
+      repo: REPO,
+      prNumber: 1,
+      timestamp: "2026-10-20T02:00:00Z",
+    },
+  ]);
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(1)] },
+    reviews: { [pk(1)]: [review(601, REVIEW_AT)] },
+    commits: { [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")] },
+  });
+  return await collectPrCompletionSnapshot(
+    options(fakeGh(fixture), { auditDirs: [dir], ...extra }),
+  );
+}
+
+Deno.test("collect - a review-log record within ten minutes of a GitHub review verifies its history, so the PR is unattended", async () => {
+  await withDir(async (dir) => {
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      // Thirty seconds after GitHub's review, recorded at an older head.
+      logLine(1, "2026-10-20T01:00:30Z", "older-head"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unknownMerged, 0);
+    assertEquals(
+      snapshot.input.actions.some((action) =>
+        action.actionId === "gh:org/repo#1:review:601"
+      ),
+      false,
+      "the matched GitHub review must not stay an unknown action",
+    );
+    const logged = snapshot.input.actions.find((action) =>
+      action.actionId === "review-log:org/repo#1:2026-10-20T01:00:30Z"
+    );
+    assertEquals(logged?.kind, "review");
+    assertEquals(logged?.actor, "fleet");
+    assertEquals(logged?.verified, true);
+    assertEquals(logged?.outcome, "confirmed");
+    assertEquals(logged?.headSha, undefined, "no head is carried over");
+    assertEquals(
+      snapshot.coverageNotes.some((note) =>
+        note.includes("had no review-log source")
+      ),
+      false,
+    );
+  });
+});
+
+Deno.test("collect - a review-log record 15 minutes from a GitHub review does not match, so the PR stays unknown", async () => {
+  await withDir(async (dir) => {
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      logLine(1, "2026-10-20T01:15:00Z"),
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 1);
+    const event = snapshot.input.actions.find((action) =>
+      action.actionId === "gh:org/repo#1:review:601"
+    );
+    assertEquals(event?.actor, "unknown");
+    assertEquals(event?.verified, false);
+  });
+});
+
+Deno.test("collect - with no review log the GitHub review stays unknown and a coverage note says why", async () => {
+  await withDir(async (dir) => {
+    const snapshot = await reviewedPr(dir);
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      0,
+    );
+    const note = snapshot.coverageNotes.find((item) =>
+      item.includes("had no review-log source")
+    );
+    assertStringIncludes(
+      note ?? "",
+      "1 review event on 1 PR had no review-log source",
+    );
+  });
+});
+
+Deno.test("collect - a malformed review-log line is noted and skipped, while good lines count and out-of-cohort records are ignored", async () => {
+  await withDir(async (dir) => {
+    const log = await writeLines(`${dir}/logs/log.jsonl`, [
+      '{"at": "2026-10-20T01:00:3', // a torn line from an interrupted write
+      logLine(1, "2026-10-20T01:00:30Z"),
+      logLine(99, "2026-10-20T01:00:30Z"), // PR 99 is not in the cohort
+    ]);
+    const snapshot = await reviewedPr(dir, { reviewLogs: [log] });
+    const note = snapshot.coverageNotes.find((item) =>
+      item.includes("malformed")
+    );
+    assertStringIncludes(
+      note ?? "",
+      `review log ${log}: 1 malformed line(s) skipped`,
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      1,
+    );
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.prNumber === 99).length,
+      0,
+    );
+  });
+});
+
+Deno.test("collect - the same review-log record in two logs is one action, counted once", async () => {
+  await withDir(async (dir) => {
+    const line = logLine(1, "2026-10-20T01:00:30Z");
+    const logs = [
+      await writeLines(`${dir}/logs/host-a.jsonl`, [line]),
+      await writeLines(`${dir}/logs/host-b.jsonl`, [line]),
+    ];
+    const snapshot = await reviewedPr(dir, { reviewLogs: logs });
+    assertEquals(
+      snapshot.input.actions.filter((action) =>
+        action.actionId.startsWith("review-log:")
+      ).length,
+      1,
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.coverage.unknownPrHistory, 0);
+    assertEquals(report.delivery.reviewRounds, 1);
+  });
+});
+
+Deno.test("collect - a review log that is missing is noted, never silent, and its reviews stay unknown", async () => {
+  await withDir(async (dir) => {
+    const path = `${dir}/logs/absent.jsonl`;
+    const snapshot = await reviewedPr(dir, { reviewLogs: [path] });
+    assert(
+      snapshot.coverageNotes.includes(`review log ${path} is missing; skipped`),
+    );
+    assertEquals(
+      buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
+      0,
+    );
+  });
+});

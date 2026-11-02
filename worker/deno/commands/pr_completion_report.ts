@@ -5,7 +5,10 @@
  * `--input <snapshot.json>` reads a snapshot someone else produced.
  * `--collect` builds the snapshot itself: GitHub is read through `gh api`
  * GETs only, and audit journals, review-run records, lifecycle ledgers and
- * babysitter heartbeats are read from local or exported directories. Nothing
+ * babysitter heartbeats are read from local or exported directories. The
+ * review-fleet-prs skill's own `log.jsonl` files are read from
+ * `--review-log <log.jsonl,...>` as a lower-trust source (docs/INTERNALS.md).
+ * Nothing
  * is written to GitHub or host configuration. The only file written is the
  * optional `--write-snapshot <path>`, which holds the collected input so a
  * later `--input` run can reproduce the report.
@@ -130,6 +133,15 @@ export async function runPrCompletionCollect(
   }
   const start = asText(args.start) ??
     new Date(Date.parse(end) - DEFAULT_WINDOW_DAYS * DAY_MS).toISOString();
+  const reviewLogArg = args["review-log"];
+  const reviewLogs = asList(reviewLogArg);
+  if (reviewLogArg !== undefined && reviewLogs === undefined) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --review-log <log.jsonl,...> must name at least one file",
+    };
+  }
   const rolloutVerifiedAt = asText(args["rollout-verified-at"]);
   const writeSnapshot = asText(args["write-snapshot"]);
 
@@ -140,6 +152,7 @@ export async function runPrCompletionCollect(
       cohort: { start, end, observedAt },
       auditDirs: asList(args["audit-dir"]) ?? [resolveBaseDir()],
       reviewRunDirs: asList(args["review-run-dir"]),
+      reviewLogs,
       lifecycleLedgers: asList(args["lifecycle-ledger"]),
       babysitterStateDirs: asList(args["babysitter-state-dir"]),
       expected: {
