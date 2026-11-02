@@ -34,6 +34,10 @@ import type { WorkerConfig } from "../types.ts";
 import { setRunProviderOverride } from "../lib/agent_provider.ts";
 import { healthCacheFilePath } from "../lib/health_check_cache.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import {
+  runRepositoryCommand,
+  setGateCredentialSource,
+} from "../lib/untrusted_gate_spawn.ts";
 import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
@@ -1255,5 +1259,82 @@ Deno.test("production forwards genuine failures and only exact landed skip outco
       production.cleanup();
       await Deno.remove(root, { recursive: true });
     }
+  }
+});
+
+/**
+ * Run `printenv` as a milestone gate would, in `cwd`, with the credential
+ * source the production wiring registered. Returns the names it saw plus the
+ * refusal message when the source failed.
+ */
+async function gateSees(
+  cwd: string,
+): Promise<{ stdout: string; error?: string }> {
+  const result = await runRepositoryCommand(
+    "printenv",
+    [],
+    { cwd, timeoutMs: 10_000 },
+    { drop: (cmd) => Promise.resolve([...cmd]) },
+  );
+  if (!result.ok) return { stdout: "", error: result.error.message };
+  return { stdout: result.value.stdout };
+}
+
+Deno.test("createProductionRunCoreDeps - gates get the credentials their own repository declared (Issue #4659)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "vibe_4659_work_" });
+  const outside = await Deno.makeTempDir({ prefix: "vibe_4659_outside_" });
+  try {
+    for (const dir of ["alpha/sub", "beta", "gamma", "dupe", "failing"]) {
+      await Deno.mkdir(`${workDir}/${dir}`, { recursive: true });
+    }
+    await Deno.mkdir(`${outside}/alpha`);
+    const mint = (value: string) => ({
+      qualityCredentials: { mint: `printf 'MINTED_4659=${value}\n'` },
+    });
+    const config = buildDefaultWorkerConfig();
+    config.repoConfig = {
+      "org/alpha": mint("alpha"),
+      "org/beta": mint("beta"),
+      "org/dupe": mint("one"),
+      "other/dupe": mint("two"),
+      "org/failing": { qualityCredentials: { mint: "exit 3" } },
+    };
+    const { cleanup } = await createProductionRunCoreDeps(
+      createTestOptions({ workDir: `${workDir}/`, config }),
+    );
+    try {
+      // A project nested in the clone takes its repository's credential.
+      const nested = await gateSees(`${workDir}/alpha/sub`);
+      assert(nested.stdout.includes("MINTED_4659=alpha\n"), nested.stdout);
+      // Each repository gets its own, not another's.
+      const beta = await gateSees(`${workDir}/beta`);
+      assert(beta.stdout.includes("MINTED_4659=beta\n"), beta.stdout);
+      assert(!beta.stdout.includes("MINTED_4659=alpha"));
+      // A directory outside the work directory declared nothing.
+      const elsewhere = await gateSees(`${outside}/alpha`);
+      assertEquals(elsewhere.error, undefined);
+      assert(!elsewhere.stdout.includes("MINTED_4659"), elsewhere.stdout);
+      // A repository no config names declares nothing.
+      const unknown = await gateSees(`${workDir}/gamma`);
+      assertEquals(unknown.error, undefined);
+      assert(!unknown.stdout.includes("MINTED_4659"), unknown.stdout);
+      // Two repositories sharing a name cannot be told apart: neither is used.
+      const dupe = await gateSees(`${workDir}/dupe`);
+      assertEquals(dupe.error, undefined);
+      assert(!dupe.stdout.includes("MINTED_4659"), dupe.stdout);
+      // A mint that fails stops the command rather than running it without.
+      const failing = await gateSees(`${workDir}/failing`);
+      assert(
+        failing.error?.includes("Minting credentials for org/failing failed"),
+        String(failing.error),
+      );
+      assertEquals(failing.stdout, "");
+    } finally {
+      cleanup();
+    }
+  } finally {
+    setGateCredentialSource(undefined);
+    await Deno.remove(workDir, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
   }
 });

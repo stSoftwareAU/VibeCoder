@@ -47,6 +47,8 @@ async function sweepOnePr(
     if (args[0] === "pr" && args[1] === "view") {
       return Promise.resolve(JSON.stringify({
         state: "OPEN",
+        baseRefName: "main",
+        headRefOid: "a".repeat(40),
         mergeable: "MERGEABLE",
         autoMergeRequest: live.armed
           ? { enabledAt: "2026-01-01T00:00:00Z" }
@@ -72,6 +74,57 @@ async function sweepOnePr(
           },
         },
       }));
+    }
+    if (args[0] === "api" && args[1]?.endsWith(`/pulls/${PR_NUMBER}`)) {
+      return Promise.resolve(
+        JSON.stringify({
+          state: "open",
+          mergeable: true,
+          merge_commit_sha: "b".repeat(40),
+          head: { sha: "a".repeat(40) },
+          base: { ref: "main", sha: "c".repeat(40) },
+        }),
+      );
+    }
+    if (args[0] === "api" && args[1]?.includes("/git/commits/")) {
+      return Promise.resolve(
+        JSON.stringify({
+          parents: [{ sha: "c".repeat(40) }, { sha: "a".repeat(40) }],
+        }),
+      );
+    }
+    if (args[0] === "api" && args[1]?.includes("/rules/branches/")) {
+      return Promise.resolve(
+        JSON.stringify([[{
+          type: "required_status_checks",
+          parameters: { required_status_checks: [{ context: "gate" }] },
+        }]]),
+      );
+    }
+    if (args[0] === "api" && args[1]?.includes("/branches/")) {
+      return Promise.resolve(
+        JSON.stringify({
+          protection: {
+            enabled: false,
+            required_status_checks: { contexts: [], checks: [] },
+          },
+        }),
+      );
+    }
+    if (args[0] === "api" && args[1]?.includes("/check-runs?")) {
+      return Promise.resolve(
+        JSON.stringify([{
+          check_runs: args[1].includes("b".repeat(40)) ? [] : [{
+            name: "gate",
+            status: "completed",
+            conclusion: "success",
+            app: { id: 1, slug: "external-ci" },
+          }],
+        }]),
+      );
+    }
+    if (args[0] === "api" && args[1]?.includes("/status?")) {
+      return Promise.resolve(JSON.stringify([{ statuses: [] }]));
     }
     if (
       args[0] === "api" &&

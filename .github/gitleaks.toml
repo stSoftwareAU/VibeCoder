@@ -67,6 +67,11 @@ regexes = [
   # digits fixture in its input and assertion. Range scans retain that commit;
   # exempt only the exact synthetic value in those two contexts.
   '''(?:GH_TOKEN=|!error\.message\.includes\(")gh[p]_123456789012345678901234567890123456''',
+  # Issue #4659: this is an environment variable NAME, not a credential value.
+  # Earlier commits declare it in both gate tests before moving it to their
+  # shared harness. Exempt only the exact synthetic declaration, including
+  # those historical copies; other credentials in these files remain scanned.
+  '''^\s*(export )?const PARENT_CREDENTIAL = "VIBE_4659_PARENT_SECRET";\s*$''',
   '''self-diagnostic-unschedulable-\d+''',
   # Issue #4253: the two hard-kill redaction tests originally committed this
   # alphabet-and-digits synthetic PAT as a literal. Range scans still see

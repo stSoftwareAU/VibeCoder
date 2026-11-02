@@ -361,3 +361,7 @@ Merge conflict repair for PR #4716: preserve absolute resolution of the selected
 configuration path and use the base branch deployment-publishing loader for each
 babysitter pass. Both deployment heartbeats and protected-path validation retain
 the selected configuration.
+
+Merge conflict repair: preserve both historical gitleaks fixture exemptions and
+the base credential-logging instruction, while retaining the platform-specific
+runner validation prompts and both prompt regression tests.

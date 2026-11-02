@@ -126,7 +126,7 @@ import {
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
-import { requestBranchUpdate } from "./merge_block_escalation.ts";
+import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
@@ -457,6 +457,8 @@ import {
   setLiveTrustedAuthors,
   trustedAuthorsFor,
 } from "./trust_snapshot.ts";
+import { resolveRepoCredentials } from "./repo_credentials.ts";
+import { setGateCredentialSource } from "./untrusted_gate_spawn.ts";
 import { censusUntrustedLabelIssues } from "./census_untrusted_label_issues.ts";
 import {
   formatDerivedAuthorsFoldSummary,
@@ -882,6 +884,27 @@ export async function createProductionRunCoreDeps(
   } catch {
     config = buildDefaultWorkerConfig();
   }
+  // The milestone gates run repository commands in a bare directory; give
+  // them the credentials that directory's repository declared (Issue #4659).
+  setGateCredentialSource(async (dir) => {
+    // The gates may run in a project nested in the clone, so the repository
+    // is the first segment below the work directory, not the last.
+    const prefix = `${workDir.replace(/\/+$/, "")}/`;
+    if (!dir.startsWith(prefix)) return {};
+    const name = dir.slice(prefix.length).split("/")[0];
+    const keys = Object.keys(config.repoConfig ?? {}).filter((key) =>
+      key.split("/")[1] === name
+    );
+    // Two repositories sharing a name cannot be told apart by directory.
+    const key = keys.length === 1 ? keys[0] : undefined;
+    if (key === undefined) return {};
+    const resolved = await resolveRepoCredentials(
+      key,
+      config.repoConfig?.[key]?.qualityCredentials,
+    );
+    if (!resolved.ok) throw resolved.error;
+    return resolved.value.env;
+  });
   // Apply phase model config overrides (Issue #1265)
   setPhaseModelConfigOverrides(config.phaseModelOverrides);
   // Apply phase effort config overrides (Issue #1403)
@@ -3691,8 +3714,13 @@ export async function createProductionRunCoreDeps(
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
-        updateBranchFn: (repo, prNumber) =>
-          requestBranchUpdate(repo, prNumber, gh),
+        updateBranchFn: (repo, prNumber, base) =>
+          base
+            ? requestReadyBranchUpdate(repo, prNumber, gh, base)
+            : Promise.resolve({
+              ok: false,
+              error: new Error("PR base is unknown"),
+            }),
         // Issue #4424: an armed PR behind a merge queue is not updated — the
         // queue tests it against its future head and lands it.
         isMergeQueueBase: makeIsMergeQueueBase(gh),

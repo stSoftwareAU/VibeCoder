@@ -21,6 +21,11 @@ import type {
   MergeGateFn,
   MergeGateOutcome,
 } from "../lib/milestone_merge_gate.ts";
+import {
+  assertOnlyAllowlistedNames,
+  NAMES_PROBE,
+  runGateInChild,
+} from "./support/gate_child_env.ts";
 
 const passingTypeCheck: MergeGateFn = () =>
   Promise.resolve({
@@ -717,4 +722,79 @@ Deno.test("verifyResolvedTree - a type check with nothing left to CI carries no 
 
   assertEquals(outcome.status, "passed", outcome.detail);
   assertEquals(outcome.checkLeftToCi, undefined);
+});
+/** The probe module: the real spawnTask runs inside `verifyResolvedTree`. */
+const RESOLUTION_PROBE = `import { verifyResolvedTree } from ${
+  JSON.stringify(
+    new URL("../lib/milestone_resolution_gate.ts", import.meta.url).href,
+  )
+};
+const passingTypeCheck = () =>
+  Promise.resolve({ status: "passed" as const, detail: "type check passed", output: "" });
+// \`undefined\` selects the real spawnTask runner, not an injected one.
+console.log("OUTCOME " + JSON.stringify(await verifyResolvedTree(Deno.args[0]!, undefined, passingTypeCheck)));
+`;
+
+Deno.test("verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)", async () => {
+  const dir = await tree({ "test:unit": NAMES_PROBE });
+  try {
+    // The default runner, inside a child process that holds a parent credential.
+    const outcome = await runGateInChild(RESOLUTION_PROBE, dir);
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertOnlyAllowlistedNames(outcome.output);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - the repository's own task is refused when its manifest is a symbolic link (Issue #4659)", async () => {
+  const dir = await tree({ "test:unit": "true" });
+  try {
+    await Deno.rename(`${dir}/deno.json`, `${dir}/real.json`);
+    await Deno.symlink(`${dir}/real.json`, `${dir}/deno.json`);
+    const passingTypeCheck = () =>
+      Promise.resolve({
+        status: "passed" as const,
+        detail: "type check passed",
+        output: "",
+      });
+    // `undefined` selects the real spawnTask runner, not an injected one.
+    const outcome = await verifyResolvedTree(
+      dir,
+      undefined,
+      passingTypeCheck,
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.output, "is a symbolic link");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+for (const unavailableTask of ["check:manifests", "test:unit"]) {
+  Deno.test(`verifyResolvedTree - account access failure for ${unavailableTask} stays left to CI`, async () => {
+    const { outcome } = await gate(
+      {
+        "check:manifests": "true",
+        "test:unit": "true",
+      },
+      async (task) =>
+        task.task === unavailableTask
+          ? { code: 1, output: "probe 3", accountUnavailable: "probe 3" }
+          : { code: 0, output: "" },
+    );
+    assertEquals(outcome.status, "passed");
+    assertStringIncludes(outcome.suiteLeftToCi ?? "", "probe 3");
+    assertStringIncludes(outcome.suiteLeftToCi ?? "", unavailableTask);
+  });
+}
+Deno.test("verifyResolvedTree - script account access failure stays left to CI", async () => {
+  const outcome = await gateWithQualityScript({}, async () => ({
+    code: 1,
+    output: "probe 1",
+    accountUnavailable: "probe 1",
+  }));
+  assertEquals(outcome.status, "passed");
+  assertStringIncludes(outcome.suiteLeftToCi ?? "", "probe 1");
+  assertStringIncludes(outcome.suiteLeftToCi ?? "", "quality.sh");
 });
