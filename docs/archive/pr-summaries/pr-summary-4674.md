@@ -13,9 +13,9 @@ Version bump: No `VERSION` change was made for this change.
 
 ### Intent and Rationale
 
-- The Codex seatbelt profile blocks Chromium's Mach-port registration. Runner-owned
-  validation lets the repository gate decide readiness while preserving the
-  agent's existing restrictions.
+- The Codex seatbelt profile blocks Chromium's Mach-port registration.
+  Runner-owned validation lets the repository gate decide readiness while
+  preserving the agent's existing restrictions.
 
 ### Essential Design Decisions
 
@@ -23,8 +23,8 @@ Version bump: No `VERSION` change was made for this change.
   uses scratch `HOME`, `TMPDIR` and `DENO_DIR`, strips credential environment
   variables, and applies a separate macOS sandbox profile.
 - One gate failure is returned to the agent for repair, then the runner
-  revalidates. Missing runner capability prevents commit; a missing
-  `quality.sh` is reported as no local gate, leaving CI as the final check.
+  revalidates. Missing runner capability prevents commit; a missing `quality.sh`
+  is reported as no local gate, leaving CI as the final check.
 - The sandbox allows outbound network and does not deny every host file read;
   these residuals are documented in the security model.
 
@@ -61,7 +61,8 @@ sequenceDiagram
 
 ### Deno regression avoided
 
-Runner validation uses Deno-native tooling and adds no Node tooling or dependencies.
+Runner validation uses Deno-native tooling and adds no Node tooling or
+dependencies.
 
 The macOS integration test
 `worker/deno/tests/fleet_babysitter_validation_test.ts::macOS runner sandbox launches Chromium without exposing credentials`
