@@ -58,6 +58,7 @@ Related issues read: #3404, “Per-tier PR outcomes and cost per merged PR in fl
 - `worker/deno/tests/review_round_test.ts` — reviewer round records build and policy metadata — passed as part of the 133-test targeted run.
 - `worker/deno/tests/fleet_pr_babysitter_test.ts` — babysitter deployment heartbeat records component, revision, and policy fingerprint — passed as part of the 133-test targeted run.
 - `worker/deno/tests/mod_test.ts` — command registration. Reverted only `registry.register(prCompletionReportCommand)` and ran `deno task test:unit tests/mod_test.ts`: red (18 passed, 2 failed, including command count and unregistered-command checks); restored registration and the targeted suite passed.
+- `worker/deno/tests/lib_sweep_coverage_test.ts` — the new command and analyzer are claimed by `docs/audits/lib-sweep-coverage/top-up-4658.json` — passed (39 tests); `deno task check:manifests` passed (55 files).
 - Removed from `worker/deno/tests/mod_test.ts`: `assertEquals(commands.length, 160);`
   - Required by: "A read-only report plus a repeatable rollout check"
   - Replaced by: `assertEquals(commands.length, 161);` and `assertEquals(commands.includes("pr-completion-report"), true);`
@@ -66,6 +67,10 @@ Related issues read: #3404, “Per-tier PR outcomes and cost per merged PR in fl
 - `deno fmt --check` on changed Deno modules and tests — passed after the final policy fingerprint helper edit.
 - `git diff --check` — passed. `deno.lock` is unchanged.
 
+### Quality Gate
+
+`timeout 900 ./quality.sh < /dev/null` — failed only at the Deno unit-test time budget: unchanged `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` ran at 1.89s and 1.66s against a 1.00s limit. The same unchanged test fails when run alone (3.56s total). Completeness checks, lint, type check, format, benchmark audit, repository chokepoints, Mermaid, Markdown lint, Semgrep and the release-tag ruleset passed. Config integration and Checkov were skipped by the gate environment.
+
 ### Documentation
 
-Updated the `PR completion evidence report` section in `docs/INTERNALS.md`. Final grep covered `pr-completion-report`, `reviewPolicyFingerprint`, `actionKind`, and the unattended PR wording across `README.md`, `docs/`, and `worker/deno/`; no stale description of the new command or fields was found. The section documents the caller-supplied snapshot and its verification limits.
+Updated the `PR completion evidence report` section in `docs/INTERNALS.md` and added `docs/audits/lib-sweep-coverage/top-up-4658.json` for the two new modules. Final grep covered `pr-completion-report`, `reviewPolicyFingerprint`, `actionKind`, and the unattended PR wording across `README.md`, `docs/`, and `worker/deno/`; no stale description of the new command or fields was found. The section documents the caller-supplied snapshot and its verification limits.
