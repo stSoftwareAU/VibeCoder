@@ -88,6 +88,11 @@ export function buildBabysitterValidationProfile(
     '(allow file-write* (literal "/dev/null"))',
     '(deny mach-lookup (global-name "com.apple.securityd"))',
     "(allow mach-lookup)",
+    // Chromium registers its rendezvous server separately from looking it up.
+    '(allow mach-register (global-name-prefix "org.chromium.Chromium.MachPortRendezvousServer."))',
+    '(allow mach-register (global-name-prefix "com.google.Chrome.MachPortRendezvousServer."))',
+    '(allow mach-register (global-name-prefix "com.google.chrome.for.testing.MachPortRendezvousServer."))',
+    '(allow mach-register (global-name-prefix "org.chromium.crashpad."))',
     "(allow network*)",
   ].join("\n");
 }
@@ -174,6 +179,7 @@ export async function runBabysitterValidation(
     readFile?: (path: string) => Promise<string>;
     run?: typeof runIsolatedCommand;
     env?: Record<string, string>;
+    privateKeyPath?: string;
   } = {},
 ): Promise<BabysitterValidationResult> {
   const [checkedDir, checkedScratch] = await Promise.all([
@@ -218,7 +224,8 @@ export async function runBabysitterValidation(
   );
   const protectedPaths = await babysitterProtectedPaths(
     home,
-    `${home}/.vibe-coder/fleet-pr-babysitter.private-key.pem`,
+    options.privateKeyPath ??
+      `${home}/.vibe-coder/fleet-pr-babysitter.private-key.pem`,
     [
       configPath,
       ...credentialPaths,
@@ -233,46 +240,54 @@ export async function runBabysitterValidation(
       `${home}/.npmrc`,
     ],
   );
-  const profile = buildBabysitterValidationProfile(
-    checkedDir,
-    checkedScratch,
-    protectedPaths,
-  );
-  const profilePath = `${checkedScratch}/runner-validation.sb`;
-  await Deno.writeTextFile(profilePath, profile, { mode: 0o600 });
-  const env = babysitterValidationEnv(options.env ?? Deno.env.toObject());
-  env.HOME = checkedScratch;
-  env.TMPDIR = checkedScratch;
-  env.DENO_DIR = `${checkedScratch}/deno`;
-  const run = options.run ?? runIsolatedCommand;
-  let result: Awaited<ReturnType<typeof runIsolatedCommand>>;
+  // The repair agent and gate can write scratch; neither may edit this policy.
+  const profileDir = await Deno.makeTempDir({
+    prefix: "fleet-babysitter-validation-",
+  });
   try {
-    result = await run(sandboxExec, [
-      "-f",
-      profilePath,
-      "/bin/bash",
-      "./quality.sh",
-    ], {
-      cwd: checkedDir,
-      timeoutMs: VALIDATION_TIMEOUT_MS,
-      env,
-    });
-  } catch (error) {
-    throw new BabysitterValidationError(
-      `Runner validation unavailable: could not start sandbox-exec (${error})`,
-      "unavailable",
+    const profile = buildBabysitterValidationProfile(
+      checkedDir,
+      checkedScratch,
+      [...protectedPaths, await Deno.realPath(profileDir)],
     );
+    const profilePath = `${profileDir}/runner-validation.sb`;
+    await Deno.writeTextFile(profilePath, profile, { mode: 0o600 });
+    const env = babysitterValidationEnv(options.env ?? Deno.env.toObject());
+    env.HOME = checkedScratch;
+    env.TMPDIR = checkedScratch;
+    env.DENO_DIR = `${checkedScratch}/deno`;
+    const run = options.run ?? runIsolatedCommand;
+    let result: Awaited<ReturnType<typeof runIsolatedCommand>>;
+    try {
+      result = await run(sandboxExec, [
+        "-f",
+        profilePath,
+        "/bin/bash",
+        "./quality.sh",
+      ], {
+        cwd: checkedDir,
+        timeoutMs: VALIDATION_TIMEOUT_MS,
+        env,
+      });
+    } catch (error) {
+      throw new BabysitterValidationError(
+        `Runner validation unavailable: could not start sandbox-exec (${error})`,
+        "unavailable",
+      );
+    }
+    if (!result.success) {
+      const details = redactSecrets(boundedOutput(
+        [result.stdout, result.stderr].filter(Boolean).join("\n"),
+      ));
+      throw new BabysitterValidationError(
+        `Runner validation failed (exit ${result.code}) for ./quality.sh${
+          details ? `:\n${details}` : ""
+        }`,
+        "failed",
+      );
+    }
+    return { kind: "passed", command: "./quality.sh" };
+  } finally {
+    await Deno.remove(profileDir, { recursive: true });
   }
-  if (!result.success) {
-    const details = redactSecrets(boundedOutput(
-      [result.stdout, result.stderr].filter(Boolean).join("\n"),
-    ));
-    throw new BabysitterValidationError(
-      `Runner validation failed (exit ${result.code}) for ./quality.sh${
-        details ? `:\n${details}` : ""
-      }`,
-      "failed",
-    );
-  }
-  return { kind: "passed", command: "./quality.sh" };
 }

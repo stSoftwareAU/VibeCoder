@@ -454,6 +454,7 @@ export async function validateAndCommit(
     configPath?: string;
     home?: string;
     runValidation?: typeof runBabysitterValidation;
+    privateKeyPath?: string;
   } = {},
 ): Promise<void> {
   const home = options.home ?? Deno.env.get("HOME");
@@ -464,6 +465,7 @@ export async function validateAndCommit(
     options.scratch ?? dir,
     options.configPath ?? "",
     home,
+    { privateKeyPath: options.privateKeyPath },
   );
   console.log(`Runner validation ${result.kind}: ${result.command}`);
   await run("git", ["add", "-A", "--", "."], dir);
@@ -919,6 +921,7 @@ async function fix(
             scratch: repairScratch,
             configPath,
             home,
+            privateKeyPath: app.privateKeyPath,
           }),
         repair: async (error) => {
           console.warn(

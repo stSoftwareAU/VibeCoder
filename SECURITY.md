@@ -109,14 +109,22 @@ flowchart TD
 The fleet PR babysitter also runs the target repository's `quality.sh` before
 committing a repair. On macOS it runs under a dedicated `sandbox-exec` profile:
 Codex's per-spawn profile remains unchanged, while the runner profile allows
-Chromium Mach lookups but denies the configured worker, GitHub CLI, App, SSH,
+Chromium Mach lookups and registration of Chromium/Chrome rendezvous and
+Crashpad services, but denies the configured worker, GitHub CLI, App, SSH,
 AWS, cloud, container and package-manager credential paths, the worker
 configuration file, the user's Keychains, and the `securityd` Mach service;
-the clone's `.git` remains read-only. It starts with an allowlisted environment,
+the selected babysitter App key is denied even when setup used a custom
+`--key` path, including its symlink target. The clone's `.git` remains
+read-only. The runner writes its policy to a fresh temporary directory outside
+the agent's clone and scratch write grants, denies the gate access to that
+directory, and removes it after validation. It starts with an allowlisted environment,
 sets `HOME` and `TMPDIR` to repair scratch and uses a scratch-local `DENO_DIR`,
-so the gate receives no write-capable token or host credential cache. The
-profile is not a general host-data or
-network boundary: repository code can read other host files and use outbound
+so the gate receives no write-capable token or host credential cache.
+Registration is restricted to the browser's rendezvous and Crashpad name
+prefixes; it cannot publish arbitrary system service names. These browser
+names are visible in the login session's bootstrap namespace. The profile is
+not a general host-data or network boundary: repository code can read other
+host files and use outbound
 network access. A failed check is returned to the repair agent once; if the
 sandbox cannot start, the babysitter reports the capability failure and does
 not commit or push. `BABYSITTER_READY` marks agent readiness for this runner

@@ -13,6 +13,15 @@ runner-owned check runs outside Codex's browser-restricting profile, under a
 separate sandbox that denies the worker configuration, configured credential
 paths, the user's Keychains directory and `securityd`; it receives no
 credential-shaped environment variables and keeps the clone's `.git` read-only.
+The runner permits Mach lookup and registration of the browser's rendezvous
+and Crashpad service names; lookup alone cannot authorise Chromium's
+`bootstrap_check_in` during startup. Registration is limited to those browser
+prefixes rather than arbitrary system service names.
+The selected babysitter App key and its canonical target are denied even when
+setup used a custom `--key` location. The policy file lives in a fresh
+runner-owned directory outside the agent's clone and scratch write grants;
+neither the agent nor the gate can replace it through scratch, and the runner
+removes the directory after validation.
 This lets browser checks launch Chromium without giving the check runner the
 listed credentials. `BABYSITTER_READY` means Codex has finished its repair and
 the runner may validate it; it does not mean `quality.sh` passed. A failed check

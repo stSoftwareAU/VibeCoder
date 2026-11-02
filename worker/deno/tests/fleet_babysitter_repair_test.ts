@@ -1,0 +1,212 @@
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { writeBabysitterAppConfig } from "../lib/fleet_babysitter_app.ts";
+import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+
+/** Real CLI, filesystem and orchestration, with offline GitHub/tool boundaries. */
+async function repairScenario(
+  scenario: string,
+  check: (result: {
+    success: boolean;
+    stdout: string;
+    stderr: string;
+    events: string[];
+    attempts: string[];
+    appliedBody: string | undefined;
+    proposedBody: string | undefined;
+  }) => void,
+): Promise<void> {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    const home = `${root}/home`;
+    await Deno.mkdir(home);
+    await Deno.mkdir(`${root}/tmp`);
+    const pair = await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign", "verify"],
+    );
+    const der = new Uint8Array(
+      await crypto.subtle.exportKey("pkcs8", pair.privateKey),
+    );
+    const pem = [
+      "-----BEGIN " + "PRIVATE KEY-----",
+      ...btoa(String.fromCharCode(...der)).match(/.{1,64}/g)!,
+      "-----END " + "PRIVATE KEY-----",
+      "",
+    ].join("\n");
+    const privateKeyPath = `${root}/app.pem`;
+    await Deno.writeTextFile(privateKeyPath, pem, { mode: 0o600 });
+    await writeBabysitterAppConfig(home, {
+      appId: "123",
+      installationId: "456",
+      privateKeyPath,
+    });
+    const configPath = `${root}/operator-config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({
+        repos: ["owner/repo"],
+        fleet_pr_authors: ["babysitter[bot]"],
+        github_app_private_key_path: `${root}/custom-credential`,
+      }),
+    );
+    const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
+      timeoutMs: 10_000,
+    });
+    assert(info.ok);
+    assert(info.value.success, info.value.stderr);
+    const { denoDir } = JSON.parse(info.value.stdout);
+    const output = await runWithTimeout(Deno.execPath(), [
+      "run",
+      "--allow-all",
+      "--cached-only",
+      "--config",
+      new URL("../deno.json", import.meta.url).pathname,
+      "--preload",
+      new URL("./fixtures/fleet_babysitter_repair_preload.ts", import.meta.url)
+        .pathname,
+      new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+      "--repo=owner/repo",
+      "--pr=1",
+    ], {
+      cwd: root,
+      timeoutMs: 20_000,
+      clearEnv: true,
+      env: {
+        HOME: home,
+        TMPDIR: `${root}/tmp`,
+        XDG_STATE_HOME: `${root}/state`,
+        CONFIG_PATH: configPath,
+        BABYSITTER_REPAIR_FIXTURE: root,
+        BABYSITTER_REPAIR_SCENARIO: scenario,
+        DENO_DIR: denoDir,
+      },
+    });
+    assert(output.ok);
+    const events: string[] = JSON.parse(
+      await Deno.readTextFile(`${root}/events.json`),
+    );
+    const attempts: string[] = [];
+    for await (
+      const entry of Deno.readDir(
+        `${root}/state/vibe-coder/fleet-pr-babysitter`,
+      )
+    ) {
+      attempts.push(entry.name);
+    }
+    let appliedBody: string | undefined;
+    try {
+      appliedBody = await Deno.readTextFile(`${root}/applied-body.md`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    let proposedBody: string | undefined;
+    try {
+      proposedBody = await Deno.readTextFile(`${root}/proposed-body.md`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    check({ ...output.value, events, attempts, appliedBody, proposedBody });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+for (const scenario of ["ready", "multiline-ready"]) {
+  Deno.test(`babysitter CLI revalidates ${scenario} retry before committing`, async () => {
+    await repairScenario(scenario, (result) => {
+      assertEquals(result.success, true, result.stderr);
+      assertEquals(result.events, [
+        "agent-1",
+        "gate-1",
+        "agent-2",
+        "gate-2",
+        "staged",
+        "committed",
+        "pushed",
+      ]);
+      assertEquals(result.appliedBody, undefined);
+      assertStringIncludes(
+        result.stdout,
+        "Runner validation passed: ./quality.sh",
+      );
+      assertEquals(result.attempts.length, 1);
+    });
+  });
+}
+
+for (
+  const [scenario, cause] of [
+    ["not-ready", "repair agent did not report runner findings fixed"],
+    ["missing-response", "repair agent did not write its completion response"],
+    ["agent-failed", "agent failed to repair runner validation findings"],
+    [
+      "lock-lost-before-spawn",
+      "PR lock renewal failed; refusing to retry agent",
+    ],
+    [
+      "lock-lost-after-spawn",
+      "agent failed to repair runner validation findings",
+    ],
+  ]
+) {
+  Deno.test(`babysitter CLI refuses commit after ${scenario}`, async () => {
+    await repairScenario(scenario!, (result) => {
+      assertEquals(result.success, false, result.stdout);
+      assertStringIncludes(result.stderr, cause!);
+      assertEquals(result.events.filter((event) => event.startsWith("gate-")), [
+        "gate-1",
+      ]);
+      assert(!result.events.includes("committed"));
+      assert(!result.events.includes("pushed"));
+      assertEquals(result.appliedBody, undefined);
+      assertEquals(result.attempts.length, 1);
+    });
+  });
+}
+
+Deno.test("babysitter CLI retains attempt after a second failed gate", async () => {
+  await repairScenario("still-failing", (result) => {
+    assertEquals(result.success, false);
+    assertStringIncludes(result.stderr, "browser assertion failed");
+    assertEquals(result.events, ["agent-1", "gate-1", "agent-2", "gate-2"]);
+    assertEquals(result.attempts.length, 1);
+    assertEquals(result.appliedBody, undefined);
+  });
+});
+
+Deno.test("babysitter CLI preserves current closing references in a retry body proposal", async () => {
+  await repairScenario("body-proposal", (result) => {
+    // The existing base-change guard refuses a plain-text @file body after
+    // push. Assert the runner's actual prepared description before that guard,
+    // retaining the guard's real rejection rather than bypassing it here.
+    assertEquals(result.success, false);
+    assertStringIncludes(result.stderr, "PR_BASE_CHANGE_REFUSED");
+    assertEquals(result.proposedBody, "Repaired browser check\n\nCloses\n#42");
+    assertEquals(result.events, [
+      "agent-1",
+      "gate-1",
+      "agent-2",
+      "gate-2",
+      "staged",
+      "committed",
+      "pushed",
+    ]);
+    assertEquals(result.appliedBody, undefined);
+  });
+});
+
+Deno.test("babysitter CLI releases attempt after unavailable runner capability", async () => {
+  await repairScenario("unavailable", (result) => {
+    assertEquals(result.success, false);
+    assertStringIncludes(result.stderr, "Runner validation unavailable");
+    assertEquals(result.events, ["agent-1", "gate-1"]);
+    assertEquals(result.attempts, []);
+    assertEquals(result.appliedBody, undefined);
+  });
+});

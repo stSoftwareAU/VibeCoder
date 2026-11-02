@@ -187,12 +187,16 @@ Deno.test("babysitter stages resolved merge files and refuses conflict markers",
     assert(!(await git("merge", "--no-commit", "other")).success);
     await assertRejects(
       () =>
-        validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" }),
+        validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" }, {
+          home: dir,
+        }),
       Error,
       "git failed",
     );
     await Deno.writeTextFile(`${dir}/file.txt`, "feature and other\n");
-    await validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" });
+    await validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" }, {
+      home: dir,
+    });
     assert((await git("diff", "--quiet", "HEAD")).success);
     assert((await git("rev-parse", "HEAD^2")).success);
     const author = await new Deno.Command("git", {
@@ -612,6 +616,7 @@ Deno.test("agent browser limits hand the local gate to the runner", () => {
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "name it in your final response");
     assertStringIncludes(
       prompt,
       "Do not attempt browser checks yourself when the Codex sandbox cannot launch Chromium",

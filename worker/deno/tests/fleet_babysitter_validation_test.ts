@@ -14,6 +14,8 @@ import {
   validateWithSingleRepair,
 } from "../lib/fleet_babysitter_validation.ts";
 import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
+import { posixSingleQuote } from "../lib/shell_quote.ts";
+import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 
 async function git(dir: string, ...args: string[]): Promise<string> {
   const result = await new Deno.Command("git", {
@@ -41,8 +43,17 @@ Deno.test("babysitter validation hands browser gate work to the runner before co
     await Deno.writeTextFile(`${dir}/file.txt`, "after\n");
     let runnerCalls = 0;
     await validateAndCommit(dir, 4674, { login: "bot[bot]", id: "123" }, {
-      runValidation: async () => {
+      scratch: `${dir}/scratch`,
+      configPath: `${dir}/config.json`,
+      home: `${dir}/host-home`,
+      privateKeyPath: `${dir}/custom-app.pem`,
+      runValidation: async (repoDir, scratch, configPath, home, options) => {
         runnerCalls++;
+        assertEquals(repoDir, dir);
+        assertEquals(scratch, `${dir}/scratch`);
+        assertEquals(configPath, `${dir}/config.json`);
+        assertEquals(home, `${dir}/host-home`);
+        assertEquals(options?.privateKeyPath, `${dir}/custom-app.pem`);
         assertEquals(await git(dir, "rev-parse", "HEAD"), initialHead);
         assert((await git(dir, "status", "--porcelain")).includes("file.txt"));
         return { kind: "passed", command: "./quality.sh" };
@@ -75,6 +86,7 @@ Deno.test("a repaired runner gate passes revalidation before the repair commit",
     await validateWithSingleRepair({
       validate: () =>
         validateAndCommit(dir, 4674, { login: "bot[bot]", id: "123" }, {
+          home: dir,
           runValidation: async () => {
             validations++;
             if (validations === 1) {
@@ -119,6 +131,7 @@ Deno.test("runner check failure prevents the repair commit", async () => {
     await assertRejects(
       () =>
         validateAndCommit(dir, 4674, { login: "bot[bot]", id: "123" }, {
+          home: dir,
           runValidation: () =>
             Promise.reject(new Error("browser assertion failed")),
         }),
@@ -331,6 +344,86 @@ Deno.test("successful runner check uses an isolated sandbox and environment", as
   }
 });
 
+Deno.test("runner policy cannot overwrite credentials through agent scratch", async () => {
+  const root = await Deno.makeTempDir();
+  const dir = `${root}/repo`;
+  const scratch = `${root}/scratch`;
+  const home = `${root}/home`;
+  let profilePath = "";
+  try {
+    for (const path of [dir, scratch, home]) await Deno.mkdir(path);
+    const configPath = `${home}/config.json`;
+    await Deno.writeTextFile(configPath, "{}");
+    const credential = `${home}/private-key.pem`;
+    await Deno.writeTextFile(credential, "private key must remain unchanged");
+    await Deno.symlink(credential, `${scratch}/runner-validation.sb`);
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\nexit 0\n");
+    await runBabysitterValidation(dir, scratch, configPath, home, {
+      platform: "darwin",
+      env: {},
+      run: async (_binary, args) => {
+        profilePath = args[1]!;
+        assert(!profilePath.startsWith(`${scratch}/`));
+        assert(!profilePath.startsWith(`${dir}/`));
+        assert((await Deno.stat(profilePath)).isFile);
+        assertEquals(
+          await Deno.readTextFile(credential),
+          "private key must remain unchanged",
+        );
+        return { success: true, code: 0, stdout: "", stderr: "" };
+      },
+    });
+    assert(profilePath);
+    await assertRejects(() => Deno.stat(profilePath), Deno.errors.NotFound);
+    assertEquals(
+      await Deno.readTextFile(credential),
+      "private key must remain unchanged",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runner protects the selected babysitter App key and its symlink target", async () => {
+  const root = await Deno.makeTempDir();
+  const dir = `${root}/repo`;
+  const scratch = `${root}/scratch`;
+  const home = `${root}/home`;
+  try {
+    for (const path of [dir, scratch, home]) await Deno.mkdir(path);
+    await Deno.writeTextFile(`${home}/config.json`, "{}");
+    const actualKey = `${root}/custom-app-key.pem`;
+    const selectedKey = `${root}/selected-app-key.pem`;
+    await Deno.writeTextFile(actualKey, "private-key");
+    await Deno.symlink(actualKey, selectedKey);
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\nexit 0\n");
+    let checked = false;
+    await runBabysitterValidation(dir, scratch, `${home}/config.json`, home, {
+      platform: "darwin",
+      privateKeyPath: selectedKey,
+      env: {},
+      run: async (_binary, args) => {
+        checked = true;
+        const profile = await Deno.readTextFile(args[1]!);
+        for (const key of [selectedKey, actualKey]) {
+          assertStringIncludes(
+            profile,
+            `(deny file-read* (subpath ${JSON.stringify(key)}))`,
+          );
+          assertStringIncludes(
+            profile,
+            `(deny file-write* (subpath ${JSON.stringify(key)}))`,
+          );
+        }
+        return { success: true, code: 0, stdout: "", stderr: "" };
+      },
+    });
+    assert(checked);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("runner failure includes bounded actionable gate output", async () => {
   const dir = await Deno.makeTempDir();
   const scratch = await Deno.makeTempDir();
@@ -408,6 +501,17 @@ Deno.test("runner sandbox and environment deny runner credentials", async () => 
     '(deny file-read* (subpath "/home/test/.vibe-coder/private-key.pem"))',
   );
   assertStringIncludes(profile, "(allow mach-lookup)");
+  assertEquals(
+    profile.split("\n").filter((rule) =>
+      rule.startsWith("(allow mach-register")
+    ),
+    [
+      '(allow mach-register (global-name-prefix "org.chromium.Chromium.MachPortRendezvousServer."))',
+      '(allow mach-register (global-name-prefix "com.google.Chrome.MachPortRendezvousServer."))',
+      '(allow mach-register (global-name-prefix "com.google.chrome.for.testing.MachPortRendezvousServer."))',
+      '(allow mach-register (global-name-prefix "org.chromium.crashpad."))',
+    ],
+  );
   assertStringIncludes(
     profile,
     '(deny mach-lookup (global-name "com.apple.securityd"))',
@@ -491,6 +595,31 @@ Deno.test("runner does not repair an unavailable validation capability", async (
   assertEquals(repairs, 0);
 });
 
+Deno.test("runner does not retry an unrelated error with a failed kind", async () => {
+  const unrelated = Object.assign(new Error("git commit failed"), {
+    kind: "failed",
+  });
+  let validations = 0;
+  let repairs = 0;
+  const error = await assertRejects(
+    () =>
+      validateWithSingleRepair({
+        validate: async () => {
+          validations++;
+          throw unrelated;
+        },
+        repair: async () => {
+          repairs++;
+        },
+      }),
+    Error,
+    "git commit failed",
+  );
+  assertEquals(error, unrelated);
+  assertEquals(validations, 1);
+  assertEquals(repairs, 0);
+});
+
 Deno.test("runner stops after one repair when validation still fails", async () => {
   let validations = 0;
   let repairs = 0;
@@ -548,21 +677,27 @@ Deno.test({
   name: "macOS runner sandbox launches Chromium without exposing credentials",
   ignore: Deno.build.os !== "darwin",
   fn: async () => {
-    const root = await Deno.makeTempDir();
-    const scratch = await Deno.makeTempDir();
-    const home = await Deno.makeTempDir();
-    const secretDir = await Deno.makeTempDir();
+    const root = await Deno.realPath(await Deno.makeTempDir());
+    const scratch = await Deno.realPath(await Deno.makeTempDir());
+    const home = await Deno.realPath(await Deno.makeTempDir());
+    const secretDir = await Deno.realPath(await Deno.makeTempDir());
     const keychainDir = `${home}/Library/Keychains`;
     try {
       const secret = `${secretDir}/credential`;
       const secretLink = `${home}/credential-link`;
+      const customAppKey = `${secretDir}/custom-babysitter-key.pem`;
+      const selectedAppKey = `${home}/selected-babysitter-key.pem`;
       const configPath = `${home}/worker-config.json`;
       const chromium = Deno.env.get("CHROMIUM_PATH");
       assert(chromium, "CHROMIUM_PATH must name the macOS Chromium binary");
       await Deno.mkdir(keychainDir, { recursive: true });
-      await Deno.mkdir(`${root}/.git`);
+      await git(root, "init", "-q");
+      await git(root, "config", "user.name", "Test");
+      await git(root, "config", "user.email", "test@example.invalid");
       await Deno.writeTextFile(secret, "must not be readable\n");
       await Deno.symlink(secret, secretLink);
+      await Deno.writeTextFile(customAppKey, "must not be readable\n");
+      await Deno.symlink(customAppKey, selectedAppKey);
       await Deno.writeTextFile(
         configPath,
         JSON.stringify({
@@ -578,60 +713,125 @@ Deno.test({
         "--headless",
         "--disable-gpu",
         "--no-first-run",
-        `--user-data-dir=${root}/browser-profile`,
+        "--dump-dom",
+        `--user-data-dir=${scratch}/restricted-browser-profile`,
         `file://${root}/index.html`,
       ];
 
-      // Omitting Mach lookup permission reproduces the browser's blocked path.
-      const restrictedPath = `${root}/agent-restrictions.sb`;
+      // Lookup alone cannot authorise the browser's bootstrap_check_in call.
+      const restrictedPath = `${scratch}/agent-restrictions.sb`;
       const restrictedProfile = buildBabysitterValidationProfile(
         root,
-        root,
+        scratch,
         [secret, secretLink, keychainDir],
-      ).replace("(allow mach-lookup)\n", "");
+      ).split("\n").filter((rule) => !rule.startsWith("(allow mach-register"))
+        .join("\n");
       await Deno.writeTextFile(restrictedPath, restrictedProfile, {
         mode: 0o600,
       });
-      const restrictedLaunch = await new Deno.Command("/usr/bin/sandbox-exec", {
-        args: ["-f", restrictedPath, chromium, ...browserArgs],
-        stdout: "null",
-        stderr: "piped",
-      }).output();
+      const restrictedLaunch = await runWithTimeout(
+        "/usr/bin/sandbox-exec",
+        ["-f", restrictedPath, chromium, ...browserArgs],
+        {
+          timeoutMs: 30_000,
+          clearEnv: true,
+          env: { PATH: "/usr/bin:/bin", HOME: scratch, TMPDIR: scratch },
+          quiet: true,
+        },
+      );
+      assert(restrictedLaunch.ok);
       assert(
-        !restrictedLaunch.success,
-        "Chromium unexpectedly launched without Mach lookup permission",
+        !restrictedLaunch.value.success,
+        "Chromium unexpectedly launched without Mach registration permission",
+      );
+      const keychainBaseline = await runWithTimeout(
+        "/usr/bin/security",
+        ["list-keychains", "-d", "user"],
+        { timeoutMs: 10_000, clearEnv: true, env: { HOME: home }, quiet: true },
+      );
+      assert(keychainBaseline.ok);
+      assert(
+        keychainBaseline.value.success,
+        "Keychain probe must succeed outside the runner sandbox",
       );
 
       await Deno.writeTextFile(
         `${root}/quality.sh`,
         `#!/bin/bash
 set -euo pipefail
+test -z "\${GH_TOKEN+x}"
+test -z "\${GITHUB_APP_PRIVATE_KEY+x}"
 ${
-          JSON.stringify(chromium)
+          posixSingleQuote(chromium)
         } --headless --disable-gpu --no-first-run --user-data-dir="$TMPDIR/browser-profile" --dump-dom "file://$PWD/index.html" > "$TMPDIR/rendered.html"
 grep -q runner-browser-ok "$TMPDIR/rendered.html"
 ${
-          JSON.stringify(chromium)
+          posixSingleQuote(chromium)
         } --headless --disable-gpu --no-first-run --user-data-dir="$TMPDIR/screenshot-profile" --screenshot="$PWD/browser-check.png" "file://$PWD/index.html"
 test -s browser-check.png
-if cat ${JSON.stringify(configPath)} >/dev/null 2>&1; then exit 30; fi
-if cat ${JSON.stringify(secret)} >/dev/null 2>&1; then exit 31; fi
-if cat ${JSON.stringify(secretLink)} >/dev/null 2>&1; then exit 32; fi
-if ls ${JSON.stringify(keychainDir)} >/dev/null 2>&1; then exit 33; fi
+if cat ${posixSingleQuote(configPath)} >/dev/null 2>&1; then exit 30; fi
+if cat ${posixSingleQuote(secret)} >/dev/null 2>&1; then exit 31; fi
+if cat ${posixSingleQuote(secretLink)} >/dev/null 2>&1; then exit 32; fi
+if ls ${posixSingleQuote(keychainDir)} >/dev/null 2>&1; then exit 33; fi
 if touch .git/runner-write 2>/dev/null; then exit 34; fi
 if /usr/bin/security list-keychains -d user >/dev/null 2>&1; then exit 35; fi
+if cat ${posixSingleQuote(customAppKey)} >/dev/null 2>&1; then exit 36; fi
+if cat ${posixSingleQuote(selectedAppKey)} >/dev/null 2>&1; then exit 37; fi
 touch gate-ran
 `,
       );
       await Deno.chmod(`${root}/quality.sh`, 0o700);
-      const result = await runBabysitterValidation(
-        root,
-        scratch,
-        configPath,
-        home,
-        { platform: "darwin", sandboxExec: "/usr/bin/sandbox-exec" },
+      await git(root, "add", "index.html", "quality.sh");
+      await git(root, "commit", "-m", "initial");
+      const initialHead = await git(root, "rev-parse", "HEAD");
+      await Deno.writeTextFile(
+        `${root}/index.html`,
+        "<!doctype html><title>broken browser check</title><p>broken</p>",
       );
-      assertEquals(result.kind, "passed");
+      let validations = 0;
+      let repairs = 0;
+      await validateWithSingleRepair({
+        validate: () => {
+          validations++;
+          return validateAndCommit(
+            root,
+            4674,
+            { login: "bot[bot]", id: "123" },
+            {
+              scratch,
+              configPath,
+              home,
+              privateKeyPath: selectedAppKey,
+              runValidation: (dir, temp, config, hostHome, validationOptions) =>
+                runBabysitterValidation(dir, temp, config, hostHome, {
+                  ...validationOptions,
+                  env: {
+                    PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+                    CHROMIUM_PATH: chromium,
+                    GH_TOKEN: "must-not-reach-gate",
+                    GITHUB_APP_PRIVATE_KEY: "must-not-reach-gate",
+                  },
+                }),
+            },
+          );
+        },
+        repair: async (failure) => {
+          repairs++;
+          assertEquals(failure.kind, "failed");
+          assertEquals(await git(root, "rev-parse", "HEAD"), initialHead);
+          assertEquals(await git(root, "diff", "--cached", "--name-only"), "");
+          await Deno.writeTextFile(
+            `${root}/index.html`,
+            "<!doctype html><title>fixed browser check</title><p>runner-browser-ok</p>",
+          );
+        },
+      });
+      assertEquals(validations, 2);
+      assertEquals(repairs, 1);
+      assertEquals(
+        await git(root, "show", "-s", "--format=%s", "HEAD"),
+        "Fix PR #4674 quality issues",
+      );
       assert((await Deno.stat(`${root}/browser-check.png`)).size > 0);
       assert((await Deno.stat(`${root}/gate-ran`)).isFile);
       await assertRejects(
