@@ -1211,8 +1211,8 @@ is confirmed and is not of kind `unknown`. The check only reads
 ordinary-discovery evidence: it runs no discovery and writes nothing.
 
 **Limits.** `verifyAllChains` is the sweep `audit-chain-verify` runs at
-startup. It can settle an interrupted append in a journal it sweeps (Issue
-#1074), so `--collect` does not promise zero writes to a journal left
+startup. It can settle an interrupted append in a journal it sweeps
+(Issue #1074), so `--collect` does not promise zero writes to a journal left
 mid-append. CI durations are fetched only for merged PRs, because the report
 counts CI only for delivered changes.
 
