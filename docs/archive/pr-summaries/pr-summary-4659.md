@@ -67,10 +67,10 @@ Backend-only change; no UI file is touched.
   real runner) and `worker/deno/tests/milestone_resolution_gate_test.ts`
   (`verifyResolvedTree` with the real runner): each starts a child Deno via
   `worker/deno/tests/support/gate_child_env.ts` whose environment carries
-  `VIBE_4659_PARENT_SECRET`, and asserts the repository task saw only allowlisted
-  names.
-- Docs: `docs/audits/security-sweep-1214-subprocess-argv.md` (follow-up
-  section) and one parenthetical in
+  `VIBE_4659_PARENT_SECRET`, and asserts the repository task saw only
+  allowlisted names.
+- Docs: `docs/audits/security-sweep-1214-subprocess-argv.md` (follow-up section)
+  and one parenthetical in
   `docs/audits/security-sweep-2755-lib-delta-12a-12c.md`; ledger
   `docs/audits/lib-sweep-coverage/top-up-4659.json`. README, `docs/` and
   `docs/INTERNALS.md` were searched for statements about these gates'
@@ -78,7 +78,10 @@ Backend-only change; no UI file is touched.
 
 ## Acceptance Criteria
 
-- **missing** — "declared `quality_credentials`" in the child environment — reason: nothing at the milestone gates resolves or mints a repository's declared credentials; threading that through the sweep, presync and rebuild callers is not done here.
+- **missing** — "declared `quality_credentials`" in the child environment —
+  reason: nothing at the milestone gates resolves or mints a repository's
+  declared credentials; threading that through the sweep, presync and rebuild
+  callers is not done here.
 
 ## Test Plan
 
@@ -87,12 +90,12 @@ Backend-only change; no UI file is touched.
   pass, 0 failed. `deno task check:manifests`, `deno fmt --check` and
   `deno lint`: pass.
 - Red checks (break applied, test run, restored):
-  - final spawn `clearEnv: false` → the credential, real-process and probe
-    tests red;
+  - final spawn `clearEnv: false` → the credential, real-process and probe tests
+    red;
   - probe verdict ignored → the three fallback cases red;
   - `writesTarget` forced false → the probe-script test red;
-  - `spawnTypeCheck` reverted alone to `runWithTimeout` with no `clearEnv` →
-    the `checkMergedTree` test red (`VIBE_4659_PARENT_SECRET` leaked);
+  - `spawnTypeCheck` reverted alone to `runWithTimeout` with no `clearEnv` → the
+    `checkMergedTree` test red (`VIBE_4659_PARENT_SECRET` leaked);
   - `spawnTask` reverted alone → the `verifyResolvedTree` test red, same leak.
 - Entry points checked: `spawnTypeCheck` (via `checkMergedTree`) and `spawnTask`
   (via `verifyResolvedTree`), the only two callers of `runRepositoryCommand`.
