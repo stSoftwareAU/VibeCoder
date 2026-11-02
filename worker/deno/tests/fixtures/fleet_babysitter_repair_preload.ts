@@ -164,6 +164,10 @@ function commandOutput(
       Deno.writeTextFileSync(`${root}/origin-url`, args[3]!);
       return "";
     }
+    if (
+      args.join(" ") ===
+        "-c maintenance.autoDetach=false -c gc.autoDetach=false maintenance run --auto"
+    ) return "";
     if (args.includes("fetch") || args.includes("checkout")) return "";
     if (args.includes("rev-parse") && args.includes("HEAD")) {
       return scenario === "head-change" && agentCalls === 2 ? "changed" : "abc";

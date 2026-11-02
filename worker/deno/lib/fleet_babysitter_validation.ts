@@ -83,6 +83,7 @@ export function buildBabysitterValidationProfile(
     "(version 1)",
     "(deny default)",
     "(allow process*)",
+    "(allow signal (target same-sandbox))",
     "(allow sysctl-read)",
     '(allow file-read* (subpath "/"))',
     ...protectedRules,

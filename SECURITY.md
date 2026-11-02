@@ -106,6 +106,10 @@ flowchart TD
 - **Repository Reset**: Each run resets to `origin/Develop`, recovering from partial edits
 - **Timeout Enforcement**: Two-stage termination (SIGTERM then SIGKILL) ensures processes are killed
 
+The runner permits signals only to processes in the same sandbox, so gates
+can terminate their own test workers and browser children. The live integration
+gate starts, terminates and reaps a background child to exercise this grant.
+
 The fleet PR babysitter also runs the target repository's `quality.sh` before
 committing a repair on macOS. Linux keeps the existing agent validation inside
 the Codex permissions profile; the privileged Linux runner executes no gate.

@@ -1097,3 +1097,15 @@ Deno.test("capability check runs the probe without running the gate", async () =
     await Deno.remove(home, { recursive: true });
   }
 });
+
+Deno.test("validation permits signals only to processes in the same sandbox", () => {
+  const profile = buildBabysitterValidationProfile(
+    "/tmp/clone",
+    "/tmp/scratch",
+    [],
+  );
+  assertEquals(
+    profile.split("\n").filter((rule) => rule.startsWith("(allow signal")),
+    ["(allow signal (target same-sandbox))"],
+  );
+});

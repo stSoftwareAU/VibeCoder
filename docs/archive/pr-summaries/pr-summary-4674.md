@@ -87,7 +87,7 @@ registration prefixes while retaining the credential boundary from #4593.
 
 ## Evidence
 
-- Focused babysitter suites passed: 106 tests, no failures or ignored cases.
+- Focused babysitter suites passed: 122 tests, no failures or ignored cases.
   The live browser test is in `worker/deno/integration/fleet_babysitter_browser.ts`,
   outside unit discovery. The body-proposal test observes `body-updated` and
   asserts the applied description, including its closing reference.
@@ -144,7 +144,7 @@ registration prefixes while retaining the credential boundary from #4593.
 ## Test Plan
 
 - `deno task test tests/fleet_babysitter_repair_test.ts tests/fleet_babysitter_validation_test.ts tests/fleet_pr_babysitter_test.ts tests/fleet_babysitter_app_test.ts < /dev/null`
-  — run as `deno task test:unit` with the same four files: 106 passed, zero
+  — run as `deno task test:unit` with the same four files: 122 passed, zero
   failed or ignored. Includes ordering, planted hook,
   Linux script shapes, platform prompts, sandbox-apply failure and inherited-pipe
   timeout regressions. Timeout coverage injects spawn and signal functions: no
@@ -229,8 +229,45 @@ two-pass probe CLI test; the earlier mutations (wildcard Mach lookup, browser
 cache defaults, deleted in-validation probe, positive instead of negative group
 PID) each failed their targeted test and were restored. Final formatting,
 lint and type checking passed; `deno task test:unit` over the four babysitter
-suites passed 106 tests.
+suites passed 122 tests.
 
 The installed-browser-cache section of the operator manual now also describes
 the writable scratch defaults, links to host builds and preserved explicit
 values, consistent with the earlier overview.
+
+Review repair for PR #4716 (signal permission and current-base fixtures):
+
+- Added `(allow signal (target same-sandbox))`, allowing gate code to stop its
+  own children without granting signals to other host processes. The unit
+  regression fails when this grant is removed. Security documentation and C37
+  describe the same grant; no second production profile builder was found.
+- The live integration gate now terminates and reaps a background child and
+  probes POSIX semaphores, shared memory and pseudo-terminals. No extra IPC or
+  terminal grants were added without measurements. This host again refused
+  sandbox startup with `sandbox_apply: Operation not permitted`; Chromium,
+  resource probes, Mach allowlist and OS-level credential denials remain
+  unverified. Acceptance remains partial and #4674 remains open.
+- Followed the current base's mirror-cache behaviour: the offline command
+  fixture accepts the exact synchronous maintenance argv, and attempt-record
+  assertions count files rather than the new `mirrors` directory. Existing
+  commit, retry, lock, attempt and no-agent assertions remain intact. This fixes
+  the 11 failures in CI job 125325315544 rather than reverting base behaviour.
+- Four focused babysitter suites passed: 122 tests, zero failures. Repository
+  Deno formatting, targeted lint and frozen/locked type checking passed.
+
+Additional host evidence: the native resource probe compiles with Apple clang;
+its unsandboxed shared-memory creation is refused by this agent host too.
+The explicit browser task remains blocked before its gate starts. Manifest
+checks passed (847 tests, one existing ignored case). The archive freshness
+check passes on the current committed history; the babysitter will commit
+this updated summary with the repair.
+
+Final local gate (`./quality.sh --sequential < /dev/null`): repository-wide
+formatting, lint and type checking passed, as did Markdown, Mermaid,
+completeness and structural checks. Full tests aborted inside Deno 2.9.5 with
+`pledge test permissions called before restoring previous pledge`; the serial
+pass did not run. The release-tag check cannot read the sandbox-protected gh
+configuration. Semgrep and Checkov are unavailable locally, and operator config
+integration is absent. Confirmed with gh that base PR #4718 passed its quality,
+four test shards, Semgrep and Checkov jobs. These host limits do not change the
+122-test focused pass or claim a full local gate pass.

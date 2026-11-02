@@ -16,6 +16,10 @@ runner-owned check runs outside Codex's browser-restricting profile, under a
 separate sandbox that denies the worker configuration, configured credential
 paths, the user's Keychains directory and `securityd`; it receives no
 credential-shaped environment variables and keeps the clone's `.git` read-only.
+The runner permits signals only to processes in the same sandbox, so gates
+can terminate their own test workers and browser children. The live integration
+gate starts, terminates and reaps a background child to exercise this grant.
+
 The runner permits only named logging, notification, font and WindowServer
 Mach lookups, plus lookup and registration of browser rendezvous and
 Crashpad name prefixes (children look up the rendezvous server their parent

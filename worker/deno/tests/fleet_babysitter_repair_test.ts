@@ -116,7 +116,7 @@ async function repairScenario(
           `${root}/state/vibe-coder/fleet-pr-babysitter`,
         )
       ) {
-        attempts.push(entry.name);
+        if (entry.isFile) attempts.push(entry.name);
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;

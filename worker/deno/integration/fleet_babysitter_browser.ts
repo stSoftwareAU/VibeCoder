@@ -140,10 +140,58 @@ int main(void) {
         lookupBaseline.ok && lookupBaseline.value.success,
         "Out-of-list Mach service must be reachable outside the sandbox",
       );
+      // Exercise ordinary gate IPC and terminal operations without broad grants.
+      await Deno.writeTextFile(
+        `${root}/resource-probe.c`,
+        `
+#include <fcntl.h>
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+int main(void) {
+  char name[64];
+  snprintf(name, sizeof(name), "/vibe-gate-%d", getpid());
+  sem_t *sem = sem_open(name, O_CREAT | O_EXCL, 0600, 0);
+  if (sem == SEM_FAILED) { perror("sem_open"); return 40; }
+  sem_unlink(name);
+  if (sem_post(sem) || sem_wait(sem) || sem_close(sem)) return 41;
+  int memory = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
+  if (memory < 0) { perror("shm_open"); return 42; }
+  shm_unlink(name);
+  if (ftruncate(memory, 4096)) return 43;
+  void *mapped = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, memory, 0);
+  if (mapped == MAP_FAILED) return 44;
+  munmap(mapped, 4096);
+  close(memory);
+  int terminal = posix_openpt(O_RDWR | O_NOCTTY);
+  if (terminal < 0 || grantpt(terminal) || unlockpt(terminal)) {
+    perror("pseudo-terminal"); return 45;
+  }
+  close(terminal);
+  return 0;
+}
+`,
+      );
+      const resourceCompile = await runWithTimeout("/usr/bin/clang", [
+        `${root}/resource-probe.c`,
+        "-o",
+        `${root}/resource-probe`,
+      ], { timeoutMs: 30_000, quiet: true });
+      assert(
+        resourceCompile.ok && resourceCompile.value.success,
+        "Resource probe requires clang",
+      );
       await Deno.writeTextFile(
         `${root}/quality.sh`,
         `#!/bin/bash
 set -euo pipefail
+sleep 60 &
+child=$!
+kill -TERM "$child"
+if wait "$child"; then exit 39; else test "$?" -eq 143; fi
+./resource-probe
 test -z "\${GH_TOKEN+x}"
 test -z "\${GITHUB_APP_PRIVATE_KEY+x}"
 ${
