@@ -312,3 +312,17 @@ Review repair for PR #4716 (process inspection and gate descendants):
   clone API and its fixtures remain in use. A complete proposed PR description
   is supplied in .babysitter-pr-body for the babysitter to apply; it has no
   closing reference to the still-partial issue.
+
+Review repair: the macOS profile permits the named hostname, architecture,
+active CPU, product version and translation sysctls, and terminal-device ioctls.
+The host integration gate now exercises uname and hostname alongside its existing
+pseudo-terminal probe. The profile unit regression covers the added grants.
+Live sandbox enforcement remains unverified when nested sandbox startup is refused;
+the acceptance criterion remains partial.
+
+Validation for this repair: 37 focused tests passed; repository formatting,
+lint and frozen type checking passed. The full unit run hit Deno 2.9.0’s
+permission-restoration panic; base PR #4730 passed all four CI test shards.
+The live browser task was attempted and sandbox startup was refused with
+`sandbox_apply: Operation not permitted`. The release-tag check could not read
+the protected gh config; Semgrep and the pinned Checkov were unavailable.

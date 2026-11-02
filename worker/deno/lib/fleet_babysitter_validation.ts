@@ -88,22 +88,27 @@ export function buildBabysitterValidationProfile(
     "(allow signal (target same-sandbox))",
     ...[
       "hw.memsize",
+      "hw.machine",
+      "hw.activecpu",
       "hw.ncpu",
       "hw.logicalcpu",
       "hw.physicalcpu",
       "hw.pagesize",
       "hw.optional.arm64",
       "kern.ostype",
+      "kern.hostname",
+      "kern.osproductversion",
       "kern.osrelease",
       "kern.osversion",
       "kern.version",
+      "sysctl.proc_translated",
     ].map((name) =>
       `(allow sysctl-read (sysctl-name ${JSON.stringify(name)}))`
     ),
     "(allow ipc-posix-sem*)",
     "(allow ipc-posix-shm*)",
     "(allow pseudo-tty)",
-    '(allow file-read* file-write* (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$"))',
+    '(allow file-read* file-write* file-ioctl (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$"))',
     '(allow file-read* (subpath "/"))',
     ...protectedRules,
     ...[dir, scratch].map((path) =>

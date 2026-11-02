@@ -1123,7 +1123,20 @@ Deno.test("validation scopes process inspection and sysctls and permits gate res
     "(allow process-info* (target same-sandbox))",
   ]);
   const sysctls = rules.filter((rule) => rule.startsWith("(allow sysctl-read"));
-  assert(sysctls.length > 0);
+  for (
+    const name of [
+      "kern.hostname",
+      "hw.machine",
+      "hw.activecpu",
+      "kern.osproductversion",
+      "sysctl.proc_translated",
+    ]
+  ) {
+    assert(
+      sysctls.includes(`(allow sysctl-read (sysctl-name "${name}"))`),
+      name,
+    );
+  }
   for (const rule of sysctls) {
     assertMatch(
       rule,
@@ -1135,7 +1148,7 @@ Deno.test("validation scopes process inspection and sysctls and permits gate res
       "(allow ipc-posix-sem*)",
       "(allow ipc-posix-shm*)",
       "(allow pseudo-tty)",
-      '(allow file-read* file-write* (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$"))',
+      '(allow file-read* file-write* file-ioctl (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$"))',
     ]
   ) assert(rules.includes(rule), rule);
 });

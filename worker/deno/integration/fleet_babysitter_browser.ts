@@ -247,6 +247,8 @@ int main(void) {
         `${root}/quality.sh`,
         `#!/bin/bash
 set -euo pipefail
+/usr/bin/uname -m | /usr/bin/grep -q .
+/bin/hostname | /usr/bin/grep -q .
 if ./process-probe ${markerProcess.pid}; then exit 46; else test "$?" -eq 1; fi
 sleep 60 &
 child=$!
