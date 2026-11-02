@@ -447,3 +447,30 @@ called before restoring previous pledge`; its serial pass could not start.
 All four CI test shards passed on this PR and on PR #4730, which produced the
 current main commit `d7073ac1`. Semgrep and Checkov are not installed, and config
 integration has no local configuration. No host or GitHub settings were changed.
+
+### PR #4709 production push argument follow-up
+
+The push evidence parser now accepts the `--end-of-options` separator emitted
+by `buildPushArgs`, including upstream-setting pushes. The real-git regression
+uses that builder through the audited chokepoint and asserts the journal's
+delivered range; it failed before the parser fix. New destination branches
+exclude commits already in the remote's tracking refs instead of recording the
+whole repository history. The existing new-destination expectation changes
+from full history to an empty range, and an additional commit proves that new
+branch work is still captured. Existing owner-repair and stale-tracking-ref
+assertions remain. No test is removed or skipped.
+
+Corrected the audit schema to six optional fields and documented that captured
+push ranges are recorded on failed attempts too. Updated the matching rule's
+operator documentation alongside the schema. No second push parser was found.
+
+Validation: 150 focused git timeout, git push, audit hook, snapshot and report
+tests pass using the repository's Deno test task. Removing the new-destination
+history exclusion independently makes its changed expectation fail.
+`check:manifests` passes (847 tests). The full gate passes formatting, lint,
+type checking, Markdown lint, Mermaid, completeness and release-ruleset checks.
+Its parallel test pass aborts in Deno 2.9.5 on macOS with
+`pledge test permissions called before restoring previous pledge`, so the
+serial pass does not run. All four test shards pass in CI on this PR and on
+PR #4730, which produced the current base. Semgrep and Checkov are unavailable
+on this host; config integration has no local configuration.

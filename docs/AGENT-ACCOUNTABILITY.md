@@ -220,9 +220,12 @@ run-correlation id (`VIBE_RUN_ID`, joining to), repo, target
 the first module above the audit and `gh`/`git` chokepoints), plus the chain
 fields `prevHash` and `hash`.
 
-Five optional fields classify each mutation. Entries written by this build
+Six optional fields classify each mutation. Entries written by this build
 always carry `actionId`, `component` and `actionKind`, but `prNumber` is set
-only for a PR target and `headSha` is not set yet. Entries written before this
+only for a PR target and `headSha` is not set yet. `deliveredCommits` appears
+only on `git-push` entries whose command line the chokepoint can parse and
+whose history it can enumerate, whether or not the push succeeds.
+Entries written before this
 change carry none of them:
 
 - `actionId` — a random UUID, one per recorded mutation, so an individual
@@ -235,9 +238,11 @@ change carry none of them:
 - `headSha` — the PR head SHA, when a caller records one. No production writer
   sets it yet, because the audit hooks take no head SHA, so entries written by
   this build never carry it. `prActionsFromAuditJournal` reads it when present.
-- `deliveredCommits` — full commit IDs absent from the remote branch before a
-  successful push. The git chokepoint reads the remote head and enumerates its
-  old-to-local range. Unsupported push forms, unavailable history and shallow
+- `deliveredCommits` — full commit IDs absent from the remote branch before an
+  attempted push, recorded for both successful and failed pushes. The git
+  chokepoint reads the remote head and enumerates its old-to-local range.
+  For a new destination, it excludes history in the remote's tracking refs.
+  Unsupported push forms, unavailable history and shallow
   repositories omit this evidence; their commits remain unknown to the collector.
 - `actionKind` — `implementation`, `repair`, `branch-update`, `review`,
   `dismissal`, `merge`, or `unknown`. `branch-update` records a PUT to

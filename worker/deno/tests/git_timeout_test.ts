@@ -19,6 +19,7 @@ import {
   TIMEOUT_EXIT_CODE,
 } from "../lib/git_timeout.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import { buildPushArgs } from "../lib/git_ref_args.ts";
 
 Deno.test("git timeout - push provenance excludes remote owner commits even with a stale tracking ref", async () => {
   const dir = await Deno.makeTempDir({ prefix: "push-provenance-" });
@@ -54,7 +55,6 @@ Deno.test("git timeout - push provenance excludes remote owner commits even with
     );
     await git("push", "origin", "feature");
     await git("commit", "--quiet", "--allow-empty", "-m", "owner repair");
-    const owner = await git("rev-parse", "HEAD");
     await git("push", "origin", "feature");
     // Simulate a stale local tracking ref: the remote itself remains authoritative.
     await git("update-ref", "refs/remotes/origin/feature", initial);
@@ -72,10 +72,13 @@ Deno.test("git timeout - push provenance excludes remote owner commits even with
     };
     try {
       _resetAuditCaches();
-      const pushed = await runGitCommand(["push", "origin", "feature"], {
-        cwd,
-        env: { ...env, ...auditEnv },
-      });
+      const pushed = await runGitCommand(
+        buildPushArgs("origin", "feature", { setUpstream: true }),
+        {
+          cwd,
+          env: { ...env, ...auditEnv },
+        },
+      );
       assertEquals(pushed.ok, true);
       if (!pushed.ok) throw pushed.error;
       assertEquals(pushed.value.code, 0, pushed.value.stderr);
@@ -113,7 +116,16 @@ Deno.test("git timeout - push provenance excludes remote owner commits even with
         cwd,
         env,
       }),
-      [repair, owner, initial],
+      [],
+    );
+    await git("commit", "--quiet", "--allow-empty", "-m", "new branch work");
+    const newWork = await git("rev-parse", "HEAD");
+    assertEquals(
+      await capturePushCommits(buildPushArgs("origin", "feature:other"), {
+        cwd,
+        env,
+      }),
+      [newWork],
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

@@ -233,17 +233,20 @@ function readMessageFileSync(path: string): string {
 
 /**
  * Capture the commits a single explicit branch push would add to its remote.
- * Read the remote itself, never a possibly stale tracking ref. Unsupported
- * push forms and unavailable/shallow history leave provenance unknown.
+ * Read an existing destination from the remote itself, never a possibly stale
+ * tracking ref. For a new destination, exclude this remote's tracked history.
+ * Unsupported push forms and unavailable/shallow history leave provenance unknown.
  */
 export async function capturePushCommits(
   args: string[],
   options: GitCommandOptions = {},
 ): Promise<string[] | undefined> {
   if (args[0] !== "push") return undefined;
-  const positional = args.slice(1).filter((arg) =>
-    arg !== "-u" && arg !== "--set-upstream"
-  );
+  const positional = args.slice(1);
+  while (positional[0] === "-u" || positional[0] === "--set-upstream") {
+    positional.shift();
+  }
+  if (positional[0] === "--end-of-options") positional.shift();
   if (positional.length !== 2) return undefined;
   const [remote, refspec] = positional;
   if (!remote || !refspec) return undefined;
@@ -286,6 +289,8 @@ export async function capturePushCommits(
   ) return undefined;
   const commits = await runGitCommand([
     "rev-list",
+    // A new destination must not journal history already on this remote.
+    ...(old ? [] : ["--not", `--remotes=${remote}`, "--not"]),
     "--end-of-options",
     ...(old ? [`${old}..${source}`] : [source]),
   ], options);

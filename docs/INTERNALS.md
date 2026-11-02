@@ -1170,7 +1170,10 @@ same kind on the same PR within ten minutes. Each commit is attributed to the
 first confirmed, verified implementation or repair push whose recorded
 `deliveredCommits` contains that commit, at or after its committer date within
 the PR lifetime. The git chokepoint reads the remote branch head before pushing
-and enumerates the old-to-local commit range. A confirmed fleet branch-update call
+and enumerates the old-to-local commit range. For a new destination it excludes
+history already in that remote's tracking refs. This range is recorded even for
+a failed push, but only a confirmed push can account for commits.
+A confirmed fleet branch-update call
 accounts for only one commit within ten minutes either side of the call,
 including GitHub's asynchronous update commit. Earlier unmatched commits remain
 unknown. A branch update does not count as a fix round. Only confirmed reviews
