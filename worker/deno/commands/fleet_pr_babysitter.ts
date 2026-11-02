@@ -100,6 +100,74 @@ interface Review {
   user: { login: string };
 }
 
+interface WorkflowRun {
+  id: number;
+  status: string;
+  conclusion: string | null;
+}
+
+/**
+ * Workflow runs to re-run instead of starting an agent (Issue #4684): every
+ * run on the head has finished, at least one was cancelled and none failed,
+ * so the red check reports a cancellation, not a defect to fix.
+ */
+export function cancelledRunsToRerun(runs: WorkflowRun[]): number[] {
+  if (runs.some((run) => run.status !== "completed")) return [];
+  if (runs.some((run) => run.conclusion === "failure")) return [];
+  return runs.filter((run) => run.conclusion === "cancelled").map((run) =>
+    run.id
+  );
+}
+
+/**
+ * Ask GitHub to re-run cancelled CI on a head, once per head on this host.
+ * The App may hold only `actions: read`; a refused re-run is a warning that
+ * names the missing permission, since retrying cannot succeed without it.
+ */
+async function rerunCancelledCi(
+  repo: string,
+  number: number,
+  head: string,
+  runIds: number[],
+): Promise<void> {
+  const stateDir = babysitterStateDir();
+  await Deno.mkdir(stateDir, { recursive: true });
+  try {
+    await Deno.writeTextFile(
+      `${stateDir}/${repo.replace("/", "--")}--${number}--${head}--rerun`,
+      `${runIds.join(" ")}\n`,
+      { createNew: true },
+    );
+  } catch (error) {
+    if (error instanceof Deno.errors.AlreadyExists) {
+      console.log(
+        `${repo}#${number}: cancelled CI on this head was already re-run from this host`,
+      );
+      return;
+    }
+    throw error;
+  }
+  for (const id of runIds) {
+    try {
+      await run("gh", [
+        "api",
+        "-X",
+        "POST",
+        `repos/${repo}/actions/runs/${id}/rerun`,
+      ]);
+      console.log(`${repo}#${number}: re-ran cancelled workflow run ${id}`);
+    } catch (error) {
+      if (/\b403\b|not accessible by integration/i.test(String(error))) {
+        console.warn(
+          `WARNING: ${repo}#${number}: CI run ${id} was cancelled, not failed; re-running it needs the GitHub App's actions: write permission`,
+        );
+        return;
+      }
+      throw error;
+    }
+  }
+}
+
 /** Latest decision for each reviewer; comments do not supersede a decision. */
 export function requestedReviews(reviews: Review[]): Review[] {
   const latest = new Map<string, Review>();
@@ -548,6 +616,21 @@ async function fix(
     if (pr.headRefOid !== initial.headRefOid || !reason(pr)) {
       console.log(`${repo}#${pr.number}: changed while waiting; skipped`);
       return;
+    }
+    if (reason(pr) === "failed CI") {
+      const runs = JSON.parse(
+        await run("gh", [
+          "api",
+          `repos/${repo}/actions/runs?head_sha=${pr.headRefOid}&per_page=100`,
+          "--jq",
+          "[.workflow_runs[] | {id, status, conclusion}]",
+        ]),
+      );
+      const rerun = cancelledRunsToRerun(runs);
+      if (rerun.length > 0) {
+        await rerunCancelledCi(repo, pr.number, pr.headRefOid, rerun);
+        return;
+      }
     }
     if (reason(pr) === "branch behind base") {
       await run("gh", [
