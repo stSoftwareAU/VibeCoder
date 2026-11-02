@@ -706,6 +706,18 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
   }
 });
 
+// Issue #4713: a code fix left VibeCoder's archived PR summary stale, so CI's
+// freshness gate failed and a second session existed only to refresh it.
+Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "per-PR summary");
+    assertStringIncludes(prompt, "in the same fix");
+  }
+});
+
 // Issue #4720: GRQ-AutoTrader#5066's conflict stopped for an owner because the
 // base had deliberately retired behaviour the PR used; the base already
 // carries that decision, and conflicts are never handed to a human.
