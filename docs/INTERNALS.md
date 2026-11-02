@@ -3106,9 +3106,11 @@ A build refused by the ephemeral cargo root's budget is a different case: with
 the host above its floor, a conflict-free merge or a deterministically resolved
 one in a cargo-only tree lands without the cargo build. A Deno-only tree and a
 mixed tree keep their Deno checks and suites and are rolled back when those are
-red. A conflict that needs the agent on a cargo tree is charged on the second
-over-budget cycle, so the recovery ladder applies (Issue #4326,
-see
+red. A conflict that needs the agent on a cargo tree is not landed while the
+cargo root is over budget: that cycle is not charged, does not climb the
+recovery ladder and is not counted toward the refusal ceiling
+(`refusedCycles`), so the branch waits for the host's disk
+(Issues #4326, #4588, see
 [HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
 
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
