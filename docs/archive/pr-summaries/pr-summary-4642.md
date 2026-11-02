@@ -53,6 +53,16 @@ flowchart TD
 
 ## Test Plan
 
+- Coverage carry-over (completion finding 1): the completion check reported
+  `error: Test failed` for
+  `worker/deno/tests/loop_force_stop_container_test.ts` at merge base
+  `018ddd53dfd014e7eddd5c08c388fe2712d48fae` with `origin/main`.
+  The base-test failure prevented the coverage comparison; it produced no
+  line-level uncovered-code report. Automated coverage carry-over remains
+  unverified, despite the retained assertions and seven passing head scenarios
+  described below. This summary correction does not repair the base-test
+  failure or enable `skip_coverage_carryover_check`; that finding remains for
+  the reviewer.
 - `worker/deno/tests/loop_force_stop_container_test.ts`: the reused-PID
   regression first failed against the unfixed `loop.sh`, recording `-TERM 5555`
   followed by `-KILL 5555` where only TERM was expected. The final targeted
