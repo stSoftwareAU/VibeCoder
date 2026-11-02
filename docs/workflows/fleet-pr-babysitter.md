@@ -16,8 +16,10 @@ runner-owned check runs outside Codex's browser-restricting profile, under a
 separate sandbox that denies the worker configuration, configured credential
 paths, the user's Keychains directory and `securityd`; it receives no
 credential-shaped environment variables and keeps the clone's `.git` read-only.
-The runner permits Mach lookup and registration of the browser's rendezvous
-and Crashpad service names; lookup alone cannot authorise Chromium's
+The runner permits only named logging, notification, font and WindowServer
+Mach lookups, plus registration of browser rendezvous and Crashpad name
+prefixes. Process/container and file-service lookups remain denied; lookup
+alone cannot authorise Chromium's
 `bootstrap_check_in` during startup. Registration is limited to those browser
 prefixes rather than arbitrary system service names.
 The selected babysitter App key and its canonical target are denied even when
@@ -281,3 +283,14 @@ suite requires sandbox-exec and the macOS Keychain services. It fails loudly
 when prerequisites are absent. The ordinary unit suite uses self-contained
 command doubles and requires no browser. Linux repairs keep their existing
 agent validation and the credential boundary from #4593.
+
+### Installed browser caches
+
+The gate uses scratch HOME, but its browser caches default to the host's real
+home: `PLAYWRIGHT_BROWSERS_PATH=$HOME/Library/Caches/ms-playwright`,
+`CYPRESS_CACHE_FOLDER=$HOME/Library/Caches/Cypress` and
+`PUPPETEER_CACHE_DIR=$HOME/.cache/puppeteer`. Explicit values of these three
+variables are preserved. These installed caches are readable; browser runtime
+profiles and temporary files belong in scratch. The runner first executes
+`/usr/bin/true` under the same policy. A failed sandbox startup is unavailable,
+does not trigger an agent repair retry, and releases the attempt record.

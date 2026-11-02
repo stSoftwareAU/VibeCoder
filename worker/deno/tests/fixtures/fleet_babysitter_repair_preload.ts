@@ -206,6 +206,10 @@ function commandOutput(
     }
   }
   if (repair && executable === "/usr/bin/sandbox-exec") {
+    if (args[2] === "/usr/bin/true") {
+      if (scenario === "probe-unavailable") throw new ProbeFailure();
+      return "";
+    }
     gateCalls++;
     record(`gate-${gateCalls}`);
     const profile = Deno.readTextFileSync(args[1]!);
@@ -249,6 +253,7 @@ function commandOutput(
 }
 
 class GateFailure extends Error {}
+class ProbeFailure extends Error {}
 
 // No real subprocess can escape the fixture, including gh writes or Codex.
 Deno.Command = class {
@@ -398,9 +403,11 @@ childProcess.spawn =
     try {
       stdout = commandOutput(executable, { ...options, args });
     } catch (error) {
-      if (error instanceof GateFailure) {
+      if (error instanceof GateFailure || error instanceof ProbeFailure) {
         code = 1;
-        stderr = "browser assertion failed";
+        stderr = error instanceof ProbeFailure
+          ? "sandbox-exec: sandbox_apply: Operation not permitted"
+          : "browser assertion failed";
       } else failure = error;
     }
     Object.assign(child, {

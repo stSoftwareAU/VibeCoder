@@ -112,7 +112,8 @@ the Codex permissions profile; the privileged Linux runner executes no gate.
 The macOS runner requires a regular, non-symlink `quality.sh` directly in the
 canonical repository root and caps the file size and actual read at 64 KiB. On macOS it runs under a dedicated `sandbox-exec` profile:
 Codex's per-spawn profile remains unchanged, while the runner profile allows
-Chromium Mach lookups and registration of Chromium/Chrome rendezvous and
+explicit named Mach lookups for logging, notifications, fonts and WindowServer
+and registration of Chromium/Chrome rendezvous and
 Crashpad services, but denies the configured worker, GitHub CLI, App, SSH,
 AWS, cloud, container and package-manager credential paths, the worker
 configuration file, the user's Keychains, and the `securityd` Mach service;

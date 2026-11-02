@@ -259,3 +259,17 @@ for (const scenario of ["linux-symlink", "linux-oversized"]) {
     });
   });
 }
+
+Deno.test("babysitter CLI releases attempt without a repair retry when sandbox apply fails", async () => {
+  await repairScenario("probe-unavailable", (result) => {
+    assertEquals(result.success, false);
+    assertStringIncludes(result.stderr, "Runner validation unavailable");
+    assertStringIncludes(
+      result.stderr,
+      "sandbox_apply: Operation not permitted",
+    );
+    assertEquals(result.events, ["agent-1"]);
+    assertEquals(result.attempts, []);
+    assertEquals(result.appliedBody, undefined);
+  });
+});

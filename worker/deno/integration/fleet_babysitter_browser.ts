@@ -77,6 +77,16 @@ Deno.test({
       await Deno.writeTextFile(restrictedPath, restrictedProfile, {
         mode: 0o600,
       });
+      const sandboxBaseline = await runWithTimeout(
+        "/usr/bin/sandbox-exec",
+        ["-f", restrictedPath, "/usr/bin/true"],
+        { timeoutMs: 10_000, quiet: true },
+      );
+      assert(sandboxBaseline.ok);
+      assert(
+        sandboxBaseline.value.success,
+        `Host must permit sandbox startup: ${sandboxBaseline.value.stderr}`,
+      );
       const restrictedLaunch = await runWithTimeout(
         "/usr/bin/sandbox-exec",
         ["-f", restrictedPath, chromium, ...browserArgs],
@@ -103,6 +113,33 @@ Deno.test({
         "Keychain probe must succeed outside the runner sandbox",
       );
 
+      // cfprefsd acts on files for its caller and is deliberately outside the
+      // browser service allowlist. Prove it exists before testing its denial.
+      await Deno.writeTextFile(
+        `${root}/mach-probe.c`,
+        `
+#include <mach/mach.h>
+#include <servers/bootstrap.h>
+int main(void) {
+  mach_port_t service = MACH_PORT_NULL;
+  return bootstrap_look_up(bootstrap_port, "com.apple.cfprefsd.agent", &service) == KERN_SUCCESS ? 0 : 1;
+}
+`,
+      );
+      const compile = await runWithTimeout("/usr/bin/clang", [
+        `${root}/mach-probe.c`,
+        "-o",
+        `${root}/mach-probe`,
+      ], { timeoutMs: 30_000, quiet: true });
+      assert(compile.ok && compile.value.success, "Mach probe requires clang");
+      const lookupBaseline = await runWithTimeout(`${root}/mach-probe`, [], {
+        timeoutMs: 10_000,
+        quiet: true,
+      });
+      assert(
+        lookupBaseline.ok && lookupBaseline.value.success,
+        "Out-of-list Mach service must be reachable outside the sandbox",
+      );
       await Deno.writeTextFile(
         `${root}/quality.sh`,
         `#!/bin/bash
@@ -125,6 +162,7 @@ if touch .git/runner-write 2>/dev/null; then exit 34; fi
 if /usr/bin/security list-keychains -d user >/dev/null 2>&1; then exit 35; fi
 if cat ${posixSingleQuote(customAppKey)} >/dev/null 2>&1; then exit 36; fi
 if cat ${posixSingleQuote(selectedAppKey)} >/dev/null 2>&1; then exit 37; fi
+if ./mach-probe; then exit 38; fi
 touch gate-ran
 `,
       );

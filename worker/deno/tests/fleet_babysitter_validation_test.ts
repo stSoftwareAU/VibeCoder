@@ -13,6 +13,9 @@ import {
   runIsolatedCommand,
   validateWithSingleRepair,
 } from "../lib/fleet_babysitter_validation.ts";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import childProcess from "node:child_process";
 import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
 
 async function git(dir: string, ...args: string[]): Promise<string> {
@@ -300,7 +303,24 @@ Deno.test("successful runner check uses an isolated sandbox and environment", as
         run: async (binary, args, options) => {
           called = true;
           assertEquals(binary, "/usr/bin/sandbox-exec");
-          assertEquals(args.slice(-2), ["/bin/bash", "./quality.sh"]);
+          assertEquals(
+            args.slice(2),
+            args[2] === "/usr/bin/true"
+              ? ["/usr/bin/true"]
+              : ["/bin/bash", "./quality.sh"],
+          );
+          assertEquals(
+            options.env.PLAYWRIGHT_BROWSERS_PATH,
+            `${home}/Library/Caches/ms-playwright`,
+          );
+          assertEquals(
+            options.env.CYPRESS_CACHE_FOLDER,
+            `${home}/Library/Caches/Cypress`,
+          );
+          assertEquals(
+            options.env.PUPPETEER_CACHE_DIR,
+            `${home}/.cache/puppeteer`,
+          );
           assertEquals(options.cwd, await Deno.realPath(dir));
           assertEquals(options.env.HOME, scratch);
           assertEquals(options.env.TMPDIR, scratch);
@@ -447,7 +467,10 @@ Deno.test("runner failure includes bounded actionable gate output", async () => 
           {
             platform: "darwin",
             sandboxExec: "/usr/bin/sandbox-exec",
-            run: async (_binary, _args, options) => {
+            run: async (_binary, args, options) => {
+              if (args[2] === "/usr/bin/true") {
+                return { success: true, code: 0, stdout: "", stderr: "" };
+              }
               assertEquals(options.cwd, dir);
               return {
                 success: false,
@@ -505,7 +528,11 @@ Deno.test("runner sandbox and environment deny runner credentials", async () => 
     profile,
     '(deny file-read* (subpath "/home/test/.vibe-coder/private-key.pem"))',
   );
-  assertStringIncludes(profile, "(allow mach-lookup)");
+  assertStringIncludes(
+    profile,
+    '(allow mach-lookup (global-name "com.apple.system.logger"))',
+  );
+  assert(!profile.includes("(allow mach-lookup)"));
   assertEquals(
     profile.split("\n").filter((rule) =>
       rule.startsWith("(allow mach-register")
@@ -778,19 +805,107 @@ Deno.test("validation denials follow every overlapping allow", () => {
   );
 });
 
-Deno.test("runner timeout kills descendants and bounds inherited pipe reads", async () => {
+Deno.test("runner timeout signals the isolated group and destroys inherited pipes", async () => {
+  const child = new EventEmitter();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  let unreferenced = false;
+  Object.assign(child, {
+    pid: 2147483647,
+    stdout,
+    stderr,
+    unref: () => {
+      unreferenced = true;
+    },
+  });
+  const signals: unknown[] = [];
   const started = Date.now();
-  const result = await runIsolatedCommand("/bin/bash", [
-    "-c",
-    'trap "" TERM; (trap "" TERM; echo descendant; sleep 30) & wait',
-  ], {
+  const result = await runIsolatedCommand("/bin/bash", ["./quality.sh"], {
     cwd: Deno.cwd(),
-    env: { PATH: Deno.env.get("PATH")! },
-    timeoutMs: 100,
+    env: {},
+    timeoutMs: 10,
+    spawn: ((_executable, _args, options) => {
+      assertEquals(options?.detached, true);
+      queueMicrotask(() => stdout.write("descendant"));
+      return child;
+    }) as typeof childProcess.spawn,
+    signal: (pid, signal) => {
+      signals.push([pid, signal]);
+    },
   });
   assert(Date.now() - started < 8000);
+  assertEquals(signals, [[-2147483647, "SIGKILL"]]);
+  assert(stdout.destroyed);
+  assert(stderr.destroyed);
+  assert(unreferenced);
   assertEquals(result.success, false);
   assertEquals(result.code, 124);
   assertStringIncludes(result.stdout, "descendant");
   assertStringIncludes(result.stderr, "timed out");
+});
+
+Deno.test("sandbox apply refusal is unavailable and never executes the gate", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  try {
+    for (const name of ["repo", "scratch", "home"]) {
+      await Deno.mkdir(`${root}/${name}`);
+    }
+    await Deno.writeTextFile(
+      `${root}/repo/quality.sh`,
+      "#!/bin/bash\nexit 0\n",
+    );
+    const calls: string[][] = [];
+    const error = await assertRejects(
+      () =>
+        runBabysitterValidation(
+          `${root}/repo`,
+          `${root}/scratch`,
+          `${root}/home/config.json`,
+          `${root}/home`,
+          {
+            platform: "darwin",
+            run: (_executable, args) => {
+              calls.push(args.slice(2));
+              return Promise.resolve({
+                success: false,
+                code: 71,
+                stdout: "",
+                stderr: "sandbox-exec: sandbox_apply: Operation not permitted",
+              });
+            },
+          },
+        ),
+      BabysitterValidationError,
+      "sandbox_apply: Operation not permitted",
+    );
+    assertEquals(error.kind, "unavailable");
+    assertEquals(calls, [["/usr/bin/true"]]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("validation only grants named Mach services", () => {
+  const profile = buildBabysitterValidationProfile("/clone", "/scratch", []);
+  const lookups = profile.split("\n").filter((line) =>
+    line.startsWith("(allow mach-lookup")
+  );
+  assert(lookups.length > 0);
+  for (const line of lookups) {
+    assert(line.startsWith("(allow mach-lookup (global-name "));
+  }
+  assert(!profile.includes('(global-name "com.apple.cfprefsd.agent")'));
+});
+
+Deno.test("browser cache overrides survive the environment allowlist", () => {
+  const env = babysitterValidationEnv({
+    PLAYWRIGHT_BROWSERS_PATH: "/installed/playwright",
+    CYPRESS_CACHE_FOLDER: "/installed/cypress",
+    PUPPETEER_CACHE_DIR: "/installed/puppeteer",
+  });
+  assertEquals(env, {
+    PLAYWRIGHT_BROWSERS_PATH: "/installed/playwright",
+    CYPRESS_CACHE_FOLDER: "/installed/cypress",
+    PUPPETEER_CACHE_DIR: "/installed/puppeteer",
+  });
 });

@@ -90,7 +90,16 @@ export function buildBabysitterValidationProfile(
       `(allow file-write* (subpath ${quoteProfilePath(path)}))`
     ),
     '(allow file-write* (literal "/dev/null"))',
-    "(allow mach-lookup)",
+    ...[
+      "com.apple.system.logger",
+      "com.apple.system.notification_center",
+      "com.apple.logd",
+      "com.apple.FontObjectsServer",
+      "com.apple.fonts",
+      "com.apple.windowserver.active",
+    ].map((name) =>
+      `(allow mach-lookup (global-name ${JSON.stringify(name)}))`
+    ),
     // Chromium registers its rendezvous server separately from looking it up.
     '(allow mach-register (global-name-prefix "org.chromium.Chromium.MachPortRendezvousServer."))',
     '(allow mach-register (global-name-prefix "com.google.Chrome.MachPortRendezvousServer."))',
@@ -114,6 +123,8 @@ export function babysitterValidationEnv(
       "TMPDIR",
       "CHROMIUM_PATH",
       "PLAYWRIGHT_BROWSERS_PATH",
+      "CYPRESS_CACHE_FOLDER",
+      "PUPPETEER_CACHE_DIR",
       "CI",
     ]
   ) {
@@ -136,11 +147,13 @@ export async function runIsolatedCommand(
     cwd: string;
     env: Record<string, string>;
     timeoutMs: number;
+    spawn?: typeof childProcess.spawn;
+    signal?: (pid: number, signal: NodeJS.Signals) => void;
   },
 ): Promise<{ success: boolean; code: number; stdout: string; stderr: string }> {
   const timeoutMs = clampTimeoutToRunTimeline(options.timeoutMs, executable);
   // A session isolates the gate and all browser descendants from the runner.
-  const child = childProcess.spawn(executable, args, {
+  const child = (options.spawn ?? childProcess.spawn)(executable, args, {
     cwd: options.cwd,
     env: options.env,
     detached: true,
@@ -158,7 +171,7 @@ export async function runIsolatedCommand(
   });
   const signalGroup = (signal: NodeJS.Signals) => {
     try {
-      kill(-child.pid!, signal);
+      (options.signal ?? kill)(-child.pid!, signal);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
     }
@@ -336,11 +349,33 @@ export async function runBabysitterValidation(
     const profilePath = `${profileDir}/runner-validation.sb`;
     await Deno.writeTextFile(profilePath, profile, { mode: 0o600 });
     const env = babysitterValidationEnv(options.env ?? Deno.env.toObject());
+    // Resolve installed browsers before replacing HOME with isolated scratch.
+    env.PLAYWRIGHT_BROWSERS_PATH ??= `${home}/Library/Caches/ms-playwright`;
+    env.CYPRESS_CACHE_FOLDER ??= `${home}/Library/Caches/Cypress`;
+    env.PUPPETEER_CACHE_DIR ??= `${home}/.cache/puppeteer`;
     env.HOME = checkedScratch;
     env.TMPDIR = checkedScratch;
     env.DENO_DIR = `${checkedScratch}/deno`;
     const run = options.run ?? runIsolatedCommand;
     let result: Awaited<ReturnType<typeof runIsolatedCommand>>;
+    try {
+      const probe = await run(sandboxExec, [
+        "-f",
+        profilePath,
+        "/usr/bin/true",
+      ], { cwd: checkedDir, timeoutMs: 10_000, env });
+      if (!probe.success) {
+        throw new Error(redactSecrets(boundedOutput(
+          [probe.stdout, probe.stderr, `exit ${probe.code}`].filter(Boolean)
+            .join("\n"),
+        )));
+      }
+    } catch (error) {
+      throw new BabysitterValidationError(
+        `Runner validation unavailable: could not start sandbox-exec probe (${error})`,
+        "unavailable",
+      );
+    }
     try {
       result = await run(sandboxExec, [
         "-f",
