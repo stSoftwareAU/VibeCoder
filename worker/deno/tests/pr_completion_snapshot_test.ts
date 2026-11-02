@@ -1628,3 +1628,109 @@ Deno.test("collect - an unreadable review-run directory, a malformed ledger and 
     assertEquals(snapshot.input.deployments.length, 0);
   });
 });
+
+Deno.test("collect - human-looking logins on a matched PR never downgrade it from unattended", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "a-push-31",
+        target: "issue-31",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "a-merge-31",
+        repo: REPO,
+        prNumber: 31,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [pull(31, {
+          user: { login: "alice", type: "User" },
+          merged_by: { login: "alice", type: "User" },
+        })],
+      },
+      commits: {
+        [pk(31)]: [{
+          ...commit("sha31", "2026-10-20T00:25:00Z"),
+          author: { login: "alice", type: "User" },
+          committer: { login: "alice", type: "User" },
+        }],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), { auditDirs: [dir] }),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.humanAssistedMerged, 0);
+    assertEquals(report.completion.unknownMerged, 0);
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.actor !== "fleet")
+        .length,
+      0,
+    );
+  });
+});
+
+Deno.test("collect - open PRs from before the cohort are counted, whether on the first or a later page", async () => {
+  const stale = (number: number, state = "open") =>
+    pull(number, {
+      state,
+      created_at: "2026-09-01T00:00:00Z",
+      merged_at: null,
+    });
+  // Two pre-cohort open PRs, one pre-cohort closed PR, and a cohort PR that
+  // is itself open: only the first two are "before the cohort".
+  const fixture = emptyFixture({
+    pulls: {
+      [REPO]: [
+        stale(41),
+        stale(42, "closed"),
+        stale(43),
+        pull(40, { state: "open", merged_at: null }),
+      ],
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(
+    options(fakeGh(fixture)),
+  );
+  assertEquals(snapshot.input.openPrsBeforeCohort, 2);
+  assertEquals(snapshot.input.prs.length, 1);
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.coverage.openPrsBeforeCohort, 2);
+  assertEquals(report.cohort.prCount, 1);
+
+  // Oldest first, the scan ends at the first PR inside the cohort.
+  const ordered = emptyFixture({
+    pulls: {
+      [REPO]: [
+        stale(44),
+        pull(45, { state: "open", merged_at: null }),
+        stale(46),
+      ],
+    },
+  });
+  const stopped = await collectPrCompletionSnapshot(
+    options(fakeGh(ordered)),
+  );
+  assertEquals(stopped.input.openPrsBeforeCohort, 1);
+
+  // A bound reached on a full page of
+  // open PRs marks the repository truncated.
+  const many = Array.from(
+    { length: 150 },
+    (_, i) => stale(1_000 + i),
+  );
+  const big = emptyFixture({ pulls: { [REPO]: many } });
+  const capped = await collectPrCompletionSnapshot(
+    options(fakeGh(big), { maxPrsPerRepo: 100 }),
+  );
+  assertEquals(capped.input.openPrsBeforeCohort, 100);
+  assertEquals(capped.truncatedRepos, [REPO]);
+});

@@ -23,6 +23,7 @@ import {
   cancelledRunsToRerun,
   cloneForRepair,
   eligibleAuthor,
+  loadConfigAndPublishDeployment,
   publishBabysitterDeployment,
   reason,
   recordBabysitterDeployment,
@@ -117,6 +118,34 @@ Deno.test("babysitter deployment heartbeat publishes, returns true and logs noth
       await Deno.readTextFile(`${dir}/state/deployment-health.json`),
     );
     assertEquals(record.component, "babysitter");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("each babysitter pass loads its config from the given path and stamps the heartbeat with it", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const config = buildDefaultWorkerConfig();
+    const paths: string[] = [];
+    const loaded = await loadConfigAndPublishDeployment(
+      "/tmp/some-config.json",
+      `${dir}/state`,
+      (path) => {
+        paths.push(path);
+        return Promise.resolve(config);
+      },
+    );
+    assertEquals(paths, ["/tmp/some-config.json"]);
+    assertEquals(loaded, config);
+    const record = JSON.parse(
+      await Deno.readTextFile(`${dir}/state/deployment-health.json`),
+    );
+    assertEquals(record.component, "babysitter");
+    assertEquals(
+      record.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(config),
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

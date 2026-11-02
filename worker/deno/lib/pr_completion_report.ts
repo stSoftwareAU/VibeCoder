@@ -54,6 +54,8 @@ export interface PrCompletionInput {
   actions: TrustedPrAction[];
   /** Repositories whose cohort exceeded the collection cap; absent means none. */
   truncatedRepos?: string[];
+  /** PRs still open that were created before `cohort.start`. */
+  openPrsBeforeCohort?: number;
   blockers: Array<{
     repo: string;
     prNumber: number;
@@ -176,6 +178,8 @@ export interface PrCompletionReport {
     incompleteObservationWindow: boolean;
     /** Repositories whose cohort was cut at the collection cap. */
     truncatedRepos: string[];
+    /** PRs still open at observation that predate the cohort window. */
+    openPrsBeforeCohort: number;
   };
 }
 
@@ -349,9 +353,13 @@ export function buildPrCompletionReport(
     throw new Error("truncatedRepos must be a list of repositories");
   }
 
+  const openPrsBeforeCohort = input.openPrsBeforeCohort ?? 0;
+  if (!Number.isSafeInteger(openPrsBeforeCohort) || openPrsBeforeCohort < 0) {
+    throw new Error("openPrsBeforeCohort must be a non-negative integer");
+  }
+
   const unique = new Map<string, PrCompletionRecord>();
   let duplicateObservations = 0;
-  let excludedPrs = 0;
   for (const pr of input.prs) {
     if (!PR_REPO_PATTERN.test(pr.repo)) {
       throw new Error("PR repo must be owner/name");
@@ -394,9 +402,9 @@ export function buildPrCompletionReport(
       continue;
     }
     unique.set(key, pr);
-    if (pr.eligible === false) excludedPrs++;
   }
   const prs = [...unique.values()];
+  const excludedPrs = prs.filter((pr) => pr.eligible === false).length;
   const prMap = new Map(prs.map((pr) => [keyOf(pr.repo, pr.number), pr]));
   const actionIds = new Set<string>();
   let unlinkedActions = 0;
@@ -749,6 +757,7 @@ export function buildPrCompletionReport(
       excludedPrs,
       incompleteObservationWindow,
       truncatedRepos: [...truncatedRepos],
+      openPrsBeforeCohort,
     },
   };
 }

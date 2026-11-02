@@ -677,3 +677,65 @@ Deno.test("invalid inputs are refused with the specific message, each otherwise 
   // The unmodified input builds, so each refusal comes from its one change.
   assertEquals(buildPrCompletionReport(valid()).cohort.prCount, 1);
 });
+
+Deno.test("of two observations of one PR the later one wins, in either input order", () => {
+  const earlierOpen = pr(70, {
+    state: "open",
+    mergedAt: null,
+    observedAt: "2026-10-21T00:00:00.000Z",
+  });
+  const laterMerged = pr(70, { observedAt: "2026-10-22T00:00:00.000Z" });
+  for (const prs of [[earlierOpen, laterMerged], [laterMerged, earlierOpen]]) {
+    const report = buildPrCompletionReport(input({ prs }));
+    assertEquals(report.cohort.mergedPrs, 1);
+    assertEquals(report.cohort.openPrs, 0);
+    assertEquals(report.cohort.prCount, 1);
+    assertEquals(report.cohort.duplicateObservations, 1);
+  }
+  // The reverse: merged first, then a later observation that is closed.
+  const earlierMerged = pr(71, { observedAt: "2026-10-21T00:00:00.000Z" });
+  const laterClosed = pr(71, {
+    state: "closed",
+    mergedAt: null,
+    observedAt: "2026-10-22T00:00:00.000Z",
+  });
+  for (
+    const prs of [[earlierMerged, laterClosed], [laterClosed, earlierMerged]]
+  ) {
+    const report = buildPrCompletionReport(input({ prs }));
+    assertEquals(report.cohort.mergedPrs, 0);
+    assertEquals(report.cohort.closedUnmergedPrs, 1);
+  }
+});
+
+Deno.test("excludedPrs counts the winning observation of each PR once", () => {
+  const report = buildPrCompletionReport(input({
+    prs: [
+      pr(72, { eligible: false, observedAt: "2026-10-21T00:00:00.000Z" }),
+      pr(72, { eligible: true, observedAt: "2026-10-22T00:00:00.000Z" }),
+      pr(73, { eligible: true, observedAt: "2026-10-21T00:00:00.000Z" }),
+      pr(73, { eligible: false, observedAt: "2026-10-22T00:00:00.000Z" }),
+    ],
+  }));
+  assertEquals(report.coverage.excludedPrs, 1);
+});
+
+Deno.test("open PRs from before the cohort are published, defaulting to none, and must be a count", () => {
+  assertEquals(
+    buildPrCompletionReport(input()).coverage.openPrsBeforeCohort,
+    0,
+  );
+  const report = buildPrCompletionReport(
+    input({ openPrsBeforeCohort: 3, prs: [pr(74)] }),
+  );
+  assertEquals(report.coverage.openPrsBeforeCohort, 3);
+  // The in-window figure is unchanged by the pre-cohort count.
+  assertEquals(report.delivery.defaultBranchChanges, 1);
+  for (const bad of [-1, 1.5, Number.NaN]) {
+    assertThrows(
+      () => buildPrCompletionReport(input({ openPrsBeforeCohort: bad })),
+      Error,
+      "openPrsBeforeCohort must be a non-negative integer",
+    );
+  }
+});

@@ -80,6 +80,27 @@ Deno.test("pr-completion-report --collect fails loudly without a repository list
   assertStringIncludes(result.message, "--repos");
 });
 
+Deno.test("pr-completion-report --collect treats an empty config repo list as no repository list, and uses a non-empty one", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  const empty = await runPrCompletionCollect(
+    { collect: true },
+    { repos: [] } as unknown as WorkerConfig,
+    gh,
+    () => "abcdef0123456789",
+  );
+  assertEquals(empty.success, false);
+  assertStringIncludes(empty.message, "--repos");
+  // With a configured repo the repository list is accepted, so the run moves
+  // on to the revision check instead.
+  const configured = await runPrCompletionCollect(
+    { collect: true },
+    { repos: ["org/repo"] } as unknown as WorkerConfig,
+    gh,
+    () => undefined,
+  );
+  assertStringIncludes(configured.message, "--expected-revision");
+});
+
 Deno.test("pr-completion-report --collect fails loudly without an expected revision", async () => {
   const gh: GhJson = () => Promise.reject(new Error("must not be called"));
   const result = await runPrCompletionCollect(

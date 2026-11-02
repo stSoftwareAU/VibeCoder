@@ -56,8 +56,8 @@ function asText(value: unknown): string | undefined {
 
 /** A CLI value as a positive integer, or `undefined` when it is not one. */
 function asPositiveInteger(value: unknown): number | undefined {
-  const text = asText(value);
-  if (text === undefined || !/^\d{1,9}$/.test(text)) return undefined;
+  const text = asText(value) ?? "";
+  if (!/^\d{1,9}$/.test(text)) return undefined;
   const number = Number(text);
   return number >= 1 ? number : undefined;
 }

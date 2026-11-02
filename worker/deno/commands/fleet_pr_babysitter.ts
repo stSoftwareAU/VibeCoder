@@ -973,6 +973,20 @@ export async function publishBabysitterDeployment(
 }
 
 /**
+ * Load the worker config for one babysitter pass and record the deployment
+ * heartbeat for it, so every pass is stamped with the config it ran under.
+ */
+export async function loadConfigAndPublishDeployment(
+  configPath: string,
+  stateDir: string,
+  load: typeof loadConfig = loadConfig,
+): Promise<Awaited<ReturnType<typeof loadConfig>>> {
+  const config = await load(configPath);
+  await publishBabysitterDeployment(stateDir, config);
+  return config;
+}
+
+/**
  * Find CI failures that keep recurring on fleet PRs and could have been
  * caught locally, and file each in the repository that owns the fix
  * (Issue #4610). Never fails the pass: repairs still run.
@@ -1130,8 +1144,10 @@ if (import.meta.main) {
   do {
     try {
       const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
-      const config = await loadConfig(configPath);
-      await publishBabysitterDeployment(babysitterStateDir(), config);
+      const config = await loadConfigAndPublishDeployment(
+        configPath,
+        babysitterStateDir(),
+      );
       const accessible = await accessibleBabysitterRepositories(app);
       const repositories = selectBabysitterRepositories(
         config.repos,

@@ -347,7 +347,7 @@ async function observeRepo(
   cohort: CollectOptions["cohort"],
   maxPrs: number,
   truncatedRepos: string[],
-): Promise<ObservedPr[]> {
+): Promise<{ observed: ObservedPr[]; openBeforeCohort: number }> {
   const repoInfo = asObject(await gh(`repos/${repo}`), `repos/${repo}`);
   const defaultBranch = asText(repoInfo.default_branch);
   if (defaultBranch === null) {
@@ -392,7 +392,55 @@ async function observeRepo(
     observedPr(pr, repo, defaultBranch, cohort.observedAt)
   );
   deriveRollupRoots(observed);
-  return observed;
+  const openBeforeCohort = await countOpenBeforeCohort(
+    gh,
+    repo,
+    startMs,
+    pageBound,
+    truncatedRepos,
+  );
+  return { observed, openBeforeCohort };
+}
+
+/**
+ * Count the PRs still open that were created before the cohort began. They
+ * are outside the creation-dated cohort, but a stalled PR must not vanish
+ * from the report as it ages out of the window, so they are published as a
+ * coverage count. PRs are read oldest first and the scan ends at the first PR
+ * inside the cohort. It is bounded like the cohort scan; reaching the bound
+ * on a full page of older PRs marks the repository truncated.
+ */
+async function countOpenBeforeCohort(
+  gh: GhJson,
+  repo: string,
+  startMs: number,
+  pageBound: number,
+  truncatedRepos: string[],
+): Promise<number> {
+  let count = 0;
+  for (let page = 1;; page++) {
+    const batch = asList(
+      await gh(
+        `repos/${repo}/pulls?state=open&sort=created&direction=asc&per_page=${PER_PAGE}&page=${page}`,
+      ),
+      `repos/${repo}/pulls`,
+    ).map((item) => asObject(item, `${repo} open pull request`));
+    for (const pr of batch) {
+      const createdMs = utcMillis(
+        asText(pr.created_at) ?? "",
+        `${repo} pull request created_at`,
+      );
+      // Oldest first: the first PR inside the cohort ends the scan.
+      if (createdMs >= startMs) return count;
+      if (asText(pr.state) === "open") count++;
+    }
+    if (batch.length < PER_PAGE) break;
+    if (page >= pageBound) {
+      if (!truncatedRepos.includes(repo)) truncatedRepos.push(repo);
+      break;
+    }
+  }
+  return count;
 }
 
 function parseReview(raw: unknown, what: string): Review | null {
@@ -1255,16 +1303,17 @@ export async function collectPrCompletionSnapshot(
   const audit = await readAuditEntries(options.auditDirs, notes);
 
   const observed: ObservedPr[] = [];
+  let openPrsBeforeCohort = 0;
   for (const repo of repos) {
-    observed.push(
-      ...await observeRepo(
-        options.gh,
-        repo,
-        options.cohort,
-        maxPrs,
-        truncatedRepos,
-      ),
+    const repoObservation = await observeRepo(
+      options.gh,
+      repo,
+      options.cohort,
+      maxPrs,
+      truncatedRepos,
     );
+    observed.push(...repoObservation.observed);
+    openPrsBeforeCohort += repoObservation.openBeforeCohort;
   }
   for (const o of observed) o.record.actionsComplete = audit.complete;
   if (observed.some((o) => o.record.state === "merged")) {
@@ -1393,6 +1442,7 @@ export async function collectPrCompletionSnapshot(
     },
     ...(rollout ? { rollout } : {}),
     truncatedRepos: [...truncatedRepos],
+    openPrsBeforeCohort,
   };
   return { input, coverageNotes: notes, truncatedRepos };
 }

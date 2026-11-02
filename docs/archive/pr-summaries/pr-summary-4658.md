@@ -115,7 +115,9 @@ does not claim those deliverables.
   stay in the denominator.
 - **met** — "Count each PR once across hosts." — evidence:
   `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an action repeated across two audit directories is counted once`,
-  `worker/deno/tests/pr_completion_report_test.ts` — reviewer: met
+  `worker/deno/tests/pr_completion_report_test.ts::of two observations of one PR the later one wins, in either input order`,
+  `worker/deno/tests/pr_completion_report_test.ts::excludedPrs counts the winning observation of each PR once`
+  — reviewer: met
 - **met** — "Separate default-branch delivery from milestone sync/fix traffic
   and follow rollups without counting each intermediate merge as another
   delivered feature." — evidence: `worker/deno/lib/pr_completion_snapshot.ts`
@@ -144,11 +146,17 @@ does not claim those deliverables.
   `worker/deno/lib/pr_completion_report.ts` — reviewer: partial — reason: CI
   counts only the final head's check runs and blockers cover `needs-human` and
   `changes-requested` only; both are documented.
-- **met** — "Publish denominators and unknown/excluded counts; do not improve
-  the figure by quietly dropping stalled PRs." — evidence:
-  `worker/deno/lib/pr_completion_report.ts` `coverage` block,
-  `worker/deno/tests/pr_completion_snapshot_test.ts` truncation test — reviewer:
-  met
+- **partial** — "Publish denominators and unknown/excluded counts; do not
+  improve the figure by quietly dropping stalled PRs." — evidence:
+  `worker/deno/lib/pr_completion_report.ts` `coverage` block
+  (`openPrsBeforeCohort`, `excludedPrs`, `unknownPrHistory`),
+  `worker/deno/tests/pr_completion_snapshot_test.ts::collect - open PRs from before the cohort are counted, whether on the first or a later page`,
+  `worker/deno/tests/pr_completion_report_test.ts::open PRs from before the cohort are published, defaulting to none, and must be a count`
+  — reviewer: partial — reason: PRs open from before `cohort.start` are now
+  published as `coverage.openPrsBeforeCohort`, but as a count outside the rates:
+  they are not classified (unknown, owner-gated) or added to the 24-hour
+  denominator, and the count is of current open state, not state at
+  `cohort.observedAt`.
 - **partial** — "Preserve a separate post-merge failure/regression view." —
   evidence: `worker/deno/lib/pr_completion_snapshot.ts` revert detection —
   reviewer: partial — reason: only reverts of merged PRs inside the cohort are
@@ -171,7 +179,8 @@ does not claim those deliverables.
   `strandedAt`, `worker/deno/tests/pr_completion_snapshot_test.ts` rollout test
   — reviewer: partial — reason: "rediscovered" means a verified fleet action
   after rollout, not proof of the discovery path; PRs created before
-  `cohort.start` are invisible unless `--start` is widened.
+  `cohort.start` are counted in `coverage.openPrsBeforeCohort` but are outside
+  the rollout check unless `--start` is widened.
 - **met** — "Reuse trusted existing deployment/update mechanisms; no unapproved
   host configuration writes." — evidence: `docs/INTERNALS.md` section "PR
   completion evidence report" — reviewer: met
@@ -226,9 +235,9 @@ does not claim those deliverables.
 - **violation** — `publishBabysitterDeployment` main-block wiring in
   `worker/deno/commands/fleet_pr_babysitter.ts` has no test through
   `import.meta.main` — evidence: `worker/deno/commands/fleet_pr_babysitter.ts` —
-  reason: fixed in this diff by extracting the exported helper and testing both
-  outcomes; the one-line call from `main` itself cannot be driven without
-  running the babysitter
+  reason: fixed in this diff by extracting the exported
+  `publishBabysitterDeployment` and `loadConfigAndPublishDeployment` and testing
+  both; `main` now holds only a call that assigns the loaded config
 - **clean** — no hidden files staged; Australian English; named tests exist;
   regexes on untrusted text (`REVERT_TITLE`, `REVERT_REFERENCE`,
   `QUOTED_PR_REFERENCE`) each have a hostile case; legacy-shape tests exist for
@@ -238,6 +247,20 @@ does not claim those deliverables.
 
 ## Test Plan
 
+- Verifier and mutation round (this turn): `coverage.openPrsBeforeCohort` counts
+  PRs still open that predate `cohort.start` (extra bounded `pulls?state=open`
+  scan; a bound reached marks the repository truncated). `excludedPrs` now
+  counts the winning duplicate observation. New tests: later observation wins in
+  either order (open then merged, merged then closed); `excludedPrs` with
+  differing eligibility; `openPrsBeforeCohort` in the report and in `--collect`
+  (first page, capped); a matched PR whose PR, merge and commit carry
+  human-looking `user`/`merged_by`/`author` logins stays unattended with 0 human
+  and 0 unknown. Mutations: `asPositiveInteger` no longer carries the equivalent
+  `text === undefined ||` operand (line 60 mutant was equivalent, as
+  `/^\d+$/.test(undefined)` is false); an empty `config.repos` is tested to fail
+  (line 83); the babysitter pass's load and publish moved into exported
+  `loadConfigAndPublishDeployment`, tested with an injected loader, so deleting
+  the publish call goes red (line 1103).
 - Added: `worker/deno/tests/pr_completion_report_test.ts`,
   `worker/deno/tests/pr_completion_snapshot_test.ts`,
   `worker/deno/tests/pr_completion_report_command_test.ts`,
@@ -249,8 +272,11 @@ does not claim those deliverables.
   `worker/deno/tests/issue_assignment_test.ts`,
   `worker/deno/tests/execute_phase_assignment_3718_test.ts`,
   `worker/deno/tests/mod_test.ts`.
-- Final targeted run of those files plus
-  `worker/deno/tests/audit_journal_test.ts` and
+- Targeted run after the verifier round of `pr_completion_report_test.ts`,
+  `pr_completion_snapshot_test.ts`, `pr_completion_report_command_test.ts`,
+  `fleet_pr_babysitter_test.ts`, `mod_test.ts` and `lib_sweep_coverage_test.ts`:
+  `ok | 160 passed | 0 failed`; `deno lint` clean. Earlier final run of those
+  files plus `worker/deno/tests/audit_journal_test.ts` and
   `worker/deno/tests/lib_sweep_coverage_test.ts`: `ok | 283 passed | 0 failed`.
   `deno task check:manifests` passed. `deno fmt`, `deno lint` and `deno check`
   on the changed files passed.
@@ -273,19 +299,11 @@ does not claim those deliverables.
   - Required by: "a repeatable rollout check that the changed policy is active"
   - Replaced by: `assertEquals(commands.length, 161);` and
     `assertEquals(commands.includes("pr-completion-report"), true);`
-- Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
-  `"issueExecutorSplit" in record` (always true for a fixed literal)
-  - Required by: "effective review-policy/configuration fingerprint in existing
-    health/round records"
-  - Replaced by: assertions that each heartbeat's `policyFingerprint` equals
-    `fingerprintWorkerReviewPolicy(config)` and differs between a split and an
-    unsplit config.
-- Removed from `worker/deno/tests/audit_hook_test.ts`: the `headSha` hook-option
-  assertion and the `git_push.ts` expecting `unknown` assertion
-  - Required by: "Record trusted automation provenance for
-    implementation/repair/review/dismissal/merge actions"
-  - Replaced by: assertions on the real push chains (`implementation` for
-    completion, `repair` for CI-fix and feedback processors).
+- No assertion was removed from `fleet_pr_babysitter_test.ts` or
+  `audit_hook_test.ts` relative to the base: those files only gained tests (the
+  `issueExecutorSplit`, `headSha` and `git_push.ts` unknown assertions were
+  intermediate drafts that never existed at the base). The only base-relative
+  change to an existing assertion is `mod_test.ts` above.
 - Twinned rules: the actionKind classification in
   `worker/deno/lib/audit_hook.ts` and the snapshot matcher in
   `worker/deno/lib/pr_completion_snapshot.ts` must agree on kinds; both are
