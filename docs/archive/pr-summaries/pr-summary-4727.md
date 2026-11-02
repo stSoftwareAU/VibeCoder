@@ -121,10 +121,15 @@ URL, which points at that local repository).
   is exported for its test.
 - Fixture mutations: the `gh config get git_protocol` branch now answers `ssh`
   and the `clone`/`set-url` branches record their argv, which the app test
-  asserts, so replacing the return value or the matcher goes red.
-  `fleet_babysitter_repair_preload.ts` `args.includes("--bare")` → true is
-  exempt (untestable): it only makes the fake also create the already-existing
-  local clone directory, which no observable behaviour distinguishes.
+  asserts, so replacing the return value or the matcher goes red. Mutation-check
+  follow-up (PR #4730): the fixture's `mkdirSync` no longer passes
+  `{ recursive: true }` (the code under test creates the mirror root first, so
+  the flag was inert) and the `set-url` branch is one comparison,
+  `args.slice(0, 3).join(" ") === "remote set-url origin"`, so no operand is
+  droppable without turning the app test red (it reads `origin-url`). The
+  `args.includes("--bare")` → true mutant remains exempt (untestable): it only
+  makes the fake also create the already-existing local clone directory, which
+  no observable behaviour distinguishes.
 - Failure-reason test: the failed-fetch test asserts git's real stderr text
   (observed from real git) appears in the error.
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts
