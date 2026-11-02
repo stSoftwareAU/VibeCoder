@@ -56,9 +56,18 @@ flowchart LR
 
 ## Evidence
 
-Backend-only change; no UI file is touched. Real git is run in temporary
-directories against a local bare upstream (nothing is mocked except the remote
-URL, which points at that local repository).
+Backend-only change; no UI file is touched. The mirror integration tests run
+real git in temporary directories against a local bare upstream, substituting
+that local path for the GitHub remote URL. The tests
+`failed clone is attempted once and preserves its original error` and
+`a repository name that is not owner/name is refused before any git runs`
+stub git. The tests `defaultRemoteUrl follows gh's git_protocol, falling back
+to https with a warning` and
+`host-specific gh protocol takes precedence over the global protocol` stub gh.
+The application test
+`production repair forwards CONFIG_PATH and denies canonical credential targets`
+runs the real CLI with git and gh calls faked by
+`worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`.
 
 - `worker/deno/tests/fleet_pr_babysitter_test.ts`:
   - `failed clone is attempted once and preserves its original error`
@@ -83,8 +92,9 @@ URL, which points at that local repository).
   and resets `origin` to `git@github.com:owner/repo.git` when gh reports `ssh`.
 - Docs: `docs/workflows/fleet-pr-babysitter.md` gains a mirror paragraph beside
   the temporary-clone paragraph and a line in the state-directory paragraph.
-  Sections read: temporary clones, sandbox profile, attempt records. The other
-  clone mentions (lines 7, 102, 124, 131) still hold.
+  Sections read: temporary clones, sandbox profile, attempt records. The clone
+  mentions outside the mirror paragraph are at lines 7, 70, 123, 145 and 153
+  of `docs/workflows/fleet-pr-babysitter.md` at the PR head; they still hold.
 - Callers of `cloneForRepair`: only `fix` (`fleet_pr_babysitter.ts`), unchanged;
   it takes the default seams.
 - Siblings checked: the other two `owner/repo` validators in the file
@@ -142,17 +152,23 @@ URL, which points at that local repository).
   no observable behaviour distinguishes.
 - Failure-reason test: the failed-fetch test asserts git's real stderr text
   (observed from real git) appears in the error.
-- `./quality.sh`: the first run failed only in `deno tests` on
-  `tests/fleet_babysitter_app_test.ts` ("production repair forwards CONFIG_PATH
-  and denies canonical credential targets"), whose fixture
-  `tests/fixtures/fleet_babysitter_repair_preload.ts` faked `gh repo clone` and
-  now fakes `gh config get git_protocol -h github.com`, `git clone --bare` and
-  `git remote
-  set-url`; that test passes after the fixture update. Two reruns
-  of the full gate then passed every stage up to `deno tests` and were killed by
-  the 590 s command cap there, so the final full gate did not complete.
+- `./quality.sh < /dev/null`: formatter, linter, whole-tree type check,
+  Markdown lint, Mermaid and completeness checks passed. The unit-test stage
+  failed locally; a standalone `deno task test:unit` reproduced a Deno 2.9.5
+  runtime panic at `cli/ops/testing.rs:94:5`:
+  `pledge test permissions called before restoring previous pledge`.
+  The release-tag ruleset check could not read the sandbox-denied host gh
+  configuration. Config integration, Semgrep and Checkov were skipped because
+  the local configuration or usable tools were unavailable. CI is green for
+  PR #4730 and for PR #4718, which produced the current base commit
+  `9afa408d5a30e545831964d2b7563eab2a1c2417`.
+- `deno task check:manifests`: 847 passed, 0 failed, 1 ignored.
+- `deno task pr-summary-check --base origin/main
+  ../../docs/archive/pr-summaries/pr-summary-4727.md`: 0 blocked; acceptance
+  closure, independent review and reproduction status were not checked because
+  issue-body and label inputs were not supplied.
 
-<!-- vibe-quality-gate-skipped: full gate exceeded the 590 s command cap in `deno tests` on two reruns after the fixture fix; the touched suites, fmt, lint and type check pass; CI runs the full gate -->
+<!-- vibe-quality-gate-skipped: local unit runner panics in Deno 2.9.5; release-tag ruleset cannot read sandbox-denied gh configuration; config integration, Semgrep and Checkov unavailable; touched suites, fmt, lint and type check pass; CI runs the full gate -->
 
 Fixture edit: `tests/fixtures/fleet_babysitter_repair_preload.ts` — removed the
 `gh repo clone` branch (no longer called by the code); no assertion removed.
