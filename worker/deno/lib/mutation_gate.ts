@@ -63,6 +63,16 @@ export type MutationCheckResult =
 export const MUTATION_TEMP_DIR_UNWRITABLE =
   "the mutation check's temporary directory is not writable";
 
+/**
+ * A repository CI job that runs the mutation tool on pull requests and blocks
+ * on its survivors. Names come from repository files, so they are sanitised
+ * before use in the reason or comment.
+ */
+export interface CiMutationBlock {
+  workflow: string;
+  job: string;
+}
+
 export interface MutationGateVerdict {
   blocked: boolean;
   reason: string;
@@ -70,6 +80,11 @@ export interface MutationGateVerdict {
   exempted: Mutant[];
   budgetExhausted: boolean;
   note: string;
+  /**
+   * The repository's CI job blocks on the surviving mutants, so PR-summary
+   * exemptions do not apply. Set only when genuine survivors hold the PR.
+   */
+  ciBlock?: CiMutationBlock;
   /**
    * The check could not run because of a host fault (its temporary directory),
    * so the comment reports a worker fault rather than judging the code.
@@ -1456,10 +1471,14 @@ export function parseMutationExemptions(
 // Verdict and comment
 // ---------------------------------------------------------------------------
 
-/** Verdict for a mutation-check result, honouring PR-summary exemptions. */
+/**
+ * Verdict for a mutation-check result, honouring PR-summary exemptions unless
+ * a blocking repository CI job (`ciBlock`) reads the survivors instead.
+ */
 export function evaluateMutationGate(
   result: MutationCheckResult,
   prSummary: string,
+  ciBlock?: CiMutationBlock,
 ): MutationGateVerdict {
   if (result.kind === "not_applicable") {
     return {
@@ -1486,17 +1505,28 @@ export function evaluateMutationGate(
         workerFault: true,
       };
     }
+    const ciNote = ciBlock
+      ? ` — the repository's CI job '${
+        ciLabel(ciBlock.job)
+      }' will run the same check, so this change is unvalidated, not passed; fix the baseline build or test failure or the missing tool, then re-run`
+      : "";
     return {
       blocked: true,
       reason:
-        `mutation check failed to run (${result.reason}); fix the error or set skip_mutation_check for this repo`,
+        `mutation check failed to run (${result.reason}); fix the error or set skip_mutation_check for this repo${ciNote}`,
       survivors: [],
       exempted: [],
       budgetExhausted: false,
       note: "",
     };
   }
-  const exemptions = parseMutationExemptions(prSummary);
+  const ci = ciBlock
+    ? { workflow: ciLabel(ciBlock.workflow), job: ciLabel(ciBlock.job) }
+    : undefined;
+  // A blocking CI job never reads the PR summary, so no exemption applies.
+  const exemptions: ReturnType<typeof parseMutationExemptions> = ci
+    ? []
+    : parseMutationExemptions(prSummary);
   const survivors: Mutant[] = [];
   const exempted: Mutant[] = [];
   for (const s of result.survivors) {
@@ -1506,7 +1536,7 @@ export function evaluateMutationGate(
     (isExempt ? exempted : survivors).push(s);
   }
   const budgetExhausted = result.kind === "budget_exhausted";
-  const note = result.kind === "budget_exhausted"
+  let note = result.kind === "budget_exhausted"
     ? (result.limit === "mutant_cap"
       ? `mutation cap reached: ${result.tested} of ${result.total} candidate mutants tried — ${
         result.total - result.tested
@@ -1514,16 +1544,33 @@ export function evaluateMutationGate(
       : `mutation budget exhausted after ${result.tested} of ${result.total} mutants (${result.budgetSeconds} s) — remaining mutants untested, not passed`)
     : `${result.killed} of ${result.total} mutants killed`;
   if (survivors.length > 0) {
+    const count = `${survivors.length} mutant${
+      survivors.length === 1 ? "" : "s"
+    } of changed lines survived (no test went red)`;
+    if (ci) {
+      return {
+        blocked: true,
+        reason:
+          `${count} and the repository's CI job '${ci.job}' (${ci.workflow}) blocks on them`,
+        survivors,
+        exempted,
+        budgetExhausted,
+        note,
+        ciBlock: ci,
+      };
+    }
     return {
       blocked: true,
-      reason: `${survivors.length} mutant${
-        survivors.length === 1 ? "" : "s"
-      } of changed lines survived (no test went red)`,
+      reason: count,
       survivors,
       exempted,
       budgetExhausted,
       note,
     };
+  }
+  if (ci && result.kind === "budget_exhausted") {
+    note +=
+      ` — the repository's CI job '${ci.job}' will still try every mutant`;
   }
   return {
     blocked: false,
@@ -1537,6 +1584,11 @@ export function evaluateMutationGate(
 
 function mdSafe(s: string): string {
   return s.replaceAll("`", "").replace(/[\r\n]+/g, " ");
+}
+
+/** A repository-supplied CI job or workflow name, safe for Markdown and bounded. */
+function ciLabel(s: string): string {
+  return mdSafe(s).slice(0, 100);
 }
 
 /** Markdown feedback for the agent when the gate blocks. */
@@ -1557,11 +1609,20 @@ export function buildMutationGateComment(verdict: MutationGateVerdict): string {
     for (const s of verdict.survivors) {
       out.push(`- \`${mdSafe(s.file)}:${s.line}\` — ${mdSafe(s.description)}`);
     }
-    out.push(
-      "",
-      "Add a test that kills each mutation, or, where a line genuinely cannot be tested, record " +
-        "`file:line` exempt (untestable): <reason> in the PR summary.",
-    );
+    if (verdict.ciBlock) {
+      const job = ciLabel(verdict.ciBlock.job);
+      const workflow = ciLabel(verdict.ciBlock.workflow);
+      out.push(
+        "",
+        `The repository's CI job '${job}' (${workflow}) runs the mutation tool on pull requests and fails on these same survivors, so this pull request cannot be completed until each one is killed by a test or excluded the way that CI job allows (for example the tool's own skip attribute or configuration). An \`exempt (untestable)\` note in the PR summary is not read by CI and does not clear them. Add a test that kills each mutation.`,
+      );
+    } else {
+      out.push(
+        "",
+        "Add a test that kills each mutation, or, where a line genuinely cannot be tested, record " +
+          "`file:line` exempt (untestable): <reason> in the PR summary.",
+      );
+    }
   }
   if (verdict.budgetExhausted && verdict.note) {
     out.push("", mdSafe(verdict.note));

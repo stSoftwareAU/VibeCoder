@@ -3,7 +3,12 @@
 The mutation check runs at two call points. At PR raise it is an advisory
 completion gate (Issue #3393, Issue #4234): the first report is one in-session
 note, and a survivor that remains is one comment on the pull request, which
-is still raised with auto-merge armed. In every review-fix (PR feedback) run it is
+is still raised with auto-merge armed. That is the rule where CI runs no blocking
+mutation job. Where it does (Issue #4617), a surviving mutant holds the change:
+the recovery turn names that job, and a survivor that remains raises the pull
+request as a draft that is not auto-merged (see
+[Repositories with a blocking CI mutation job](#repositories-with-a-blocking-ci-mutation-job)).
+In every review-fix (PR feedback) run it is
 part of the post-agent drift check (Issue #3750) and reports survivors in the
 PR reply without blocking the push; see
 [Review-fix runs](#review-fix-runs-issue-3750). At both it mutates only the
@@ -36,7 +41,9 @@ flowchart TD
     C -- "neither Deno nor Cargo" --> N["Not applicable: log the reason"]
     N --> Z
     C --> E["Mutate added lines, run covering tests"]
-    E -- "runner error" --> X
+    E -- "runner error, no blocking CI job" --> X
+    E -- "runner error, blocking CI job: note only" --> N2["Note: unvalidated, not passed"]
+    N2 --> Z
     E --> F{"Unexempted survivor?"}
     F -- yes --> X
     F -- no --> G{"Budget exhausted or mutant cap hit?"}
@@ -48,11 +55,61 @@ flowchart TD
 ```
 
 The recovery turn is told each surviving `file:line` and the mutation applied,
-so the agent adds the assertion that kills it, or records an exemption. Unlike
+so the agent adds the assertion that kills it, or records an exemption. On a
+repository with a blocking CI mutation job an exemption does not clear it, and
+the turn names that CI job instead (see below). Unlike
 the documentation gates, whose recovery prompt says the code is final, a
 blocked mutation item makes the prompt allow test changes (the quality gate and
 completion re-run afterwards); an exemption is reserved for a line no test can
 reach.
+
+## Repositories with a blocking CI mutation job
+
+The worker looks for this job in the repository's `.github/workflows/*.yml`,
+using `worker/deno/lib/ci_mutation_contract.ts`. A job counts when a workflow is
+triggered by `pull_request`, the job is not `continue-on-error`, and one of its
+steps runs `cargo mutants`, `cargo-mutants` or `deno task` with a task name
+containing `mutat`, without ending in `|| true`. This approximates "a required
+check or the job feeding it": only the workflow files are read, not the
+repository's branch protection.
+
+On such a repository the PR-raise gate treats genuine surviving mutants as
+blocking, because CI fails on them whatever the PR summary says:
+
+1. **Exemptions do not clear a survivor.** CI does not read the PR summary, so
+   an `exempt (untestable)` line does not count. The survivor must be killed by
+   a test, or excluded the way the CI job allows, such as the tool's own skip
+   attribute or configuration (for cargo-mutants, `#[mutants::skip]`).
+2. **The one recovery turn is told so.** The turn is told that the CI job names
+   the change as held, and that a summary exemption will not clear a survivor.
+3. **A survivor that remains raises a draft.** If survivors remain after that
+   turn, the pull request is raised as a draft with `Part of #N` in its body
+   (no closing keyword, so the issue stays open). The body states the unmet
+   validation, an advisory comment is posted, auto-merge is not armed and the
+   pull request is not marked ready. The next run continues the branch and marks
+   the pull request ready once no survivor is left.
+4. **Other failures stay notes.** A runner error, an unavailable tool, a
+   baseline build or test failure, or an exhausted budget with no survivor is
+   not held. It stays a note saying the change is unvalidated (not passed) and
+   that the CI job will run the same check; the pull request is raised as usual.
+
+A repository without such a job is unchanged: survivors are notes, auto-merge
+stays armed and summary exemptions still work. The review-fix path described
+below is not changed by this.
+
+```mermaid
+flowchart TD
+    A["Blocking CI mutation job: PR raise"] --> B{"Survivor found?"}
+    B -- no --> C{"Runner error, unavailable tool, baseline failure or budget exhausted?"}
+    C -- no --> Z["Raise PR, auto-merge armed"]
+    C -- yes --> N["Note: change unvalidated, not passed; CI job runs the same check"]
+    N --> Z
+    B -- yes --> R["One recovery turn, naming the CI job; exemptions do not count"]
+    R --> S{"Survivor left after the turn?"}
+    S -- no --> Z
+    S -- yes --> D["Draft PR: Part of the issue, unmet validation in body, advisory comment; auto-merge not armed"]
+    D --> I["Issue stays open; next run continues the branch and marks ready once no survivor is left"]
+```
 
 ## Review-fix runs (Issue #3750)
 
@@ -273,8 +330,11 @@ line naming the location and giving a non-empty reason:
 - `worker/deno/lib/example.ts:42` — exempt (untestable): <reason>
 ```
 
-An empty reason does not exempt. Every other survivor is reported on the
-pull request, which is still raised (Issue #4234).
+An empty reason does not exempt. On a repository without a blocking CI mutation
+job, every other survivor is reported on the pull request, which is still raised
+(Issue #4234). On a repository with one, the line does not clear a survivor at
+PR raise, because CI does not read the PR summary (see
+[Repositories with a blocking CI mutation job](#repositories-with-a-blocking-ci-mutation-job)).
 
 ## Configuration
 
@@ -300,10 +360,10 @@ Both keys are per-repo options, set operator-side under
 | Outcome                | Meaning                                                | Blocks the PR?            |
 | ---------------------- | ------------------------------------------------------ | ------------------------- |
 | Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, check disabled, the repository's `quality_credentials` could not be resolved, or cargo-mutants finds no mutants on the changed lines ("No mutants to filter") | No                        |
-| Completed, no survivor | Every mutant was killed, or the survivor is exempted   | No                        |
-| Completed, survivors   | At least one unexempted survivor                       | Yes                       |
+| Completed, no survivor | Every mutant was killed, or the survivor is exempted (an exemption does not count on a blocking-CI repository) | No                        |
+| Completed, survivors   | At least one unexempted survivor                       | Yes; on a blocking-CI repository a draft PR, not auto-merged, if one remains after the recovery turn |
 | Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
-| Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy |
+| Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy; on a blocking-CI repository a runner failure is a note that the change is unvalidated (not passed) |
 | Error (worker fault)   | The temporary directory could not be created, in the system temp directory or on the work volume (Issue #4127). Reported as `mutation check could not run` (a worker fault on this host, not a verdict on the code); at PR raise recorded as `internal_error`, never `quality_check` | Yes, no repository remedy (no `skip_mutation_check`) |
 
 In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the

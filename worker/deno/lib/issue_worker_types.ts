@@ -371,6 +371,21 @@ export interface PhaseState {
    */
   screenshotAdvisoryComment?: string;
   /**
+   * The repository's CI job blocks on mutation survivors and the mutation
+   * check still reports them after the one in-session recovery turn (Issue
+   * #4617). The pull request is then raised as a draft `Part of #N`, is not
+   * marked ready and does not arm auto-merge. Cleared on any pass where the
+   * condition does not hold, because the state is reused across passes.
+   */
+  mutationHold?: {
+    /** The blocking CI job, sanitised by the mutation gate. */
+    job: string;
+    /** The workflow file that holds the job, sanitised by the mutation gate. */
+    workflow: string;
+    /** The mutation gate's comment, carried into the draft body. */
+    comment: string;
+  };
+  /**
    * Review-style findings from the pre-PR verifier that
    * survived the in-run recovery (Issue #4236). The summary claim check
    * was removed (Issue #4234). The completion phase raises
