@@ -141,7 +141,10 @@ the head finished, one or more cancelled, none failed) starts no agent: the
 runner asks GitHub to re-run the cancelled runs, once per head. That needs the
 App's `actions: write` permission; with `actions: read` the re-run is refused
 and logged as a WARNING naming the permission. A
-failed or unproductive agent attempt is recorded under
+PR that a fleet worker holds a live PR-feedback lease claim on
+(`PR_COMMENT_CLAIM` with an unexpired `PR_COMMENT_CLAIM_LEASE`) is skipped for
+that pass, so the babysitter never repairs beside a worker that is about to
+push. A failed or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
 not retried on that host for the same PR head. Removing the matching state file
 permits a retry. The shared lock prevents simultaneous work; this local attempt

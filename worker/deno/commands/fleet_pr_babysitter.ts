@@ -9,6 +9,7 @@ import {
   seedWriteRepoAllowlist,
   withWriteRepoAllowlistContext,
 } from "../lib/write_repo_allowlist.ts";
+import { hasLivePrClaim } from "../lib/claim_pr_comment.ts";
 import { markCommentProcessed } from "../lib/pr_comments.ts";
 import {
   accessibleBabysitterRepositories,
@@ -600,6 +601,23 @@ async function fix(
     const pr = await readPr(repo, initial.number);
     if (pr.headRefOid !== initial.headRefOid || !reason(pr)) {
       console.log(`${repo}#${pr.number}: changed while waiting; skipped`);
+      return;
+    }
+    // Issue #4689: a worker's live PR-feedback lease means it is editing this
+    // PR now; a repair beside it would be discarded when the worker pushes.
+    if (
+      await hasLivePrClaim({
+        repo,
+        prNumber: pr.number,
+        ghCommandFn: (args) => run("gh", args),
+        trustedAuthors: authors,
+        nowMs: Date.now(),
+        log: (message) => console.warn(message),
+      })
+    ) {
+      console.log(
+        `${repo}#${pr.number}: a fleet worker holds a live claim on this PR; skipped`,
+      );
       return;
     }
     if (reason(pr) === "failed CI") {
