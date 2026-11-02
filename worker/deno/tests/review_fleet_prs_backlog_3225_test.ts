@@ -27,7 +27,7 @@ import {
 
 const REVIEWER = "nleck";
 const APP = "stsoftware-pr-reviewer";
-const FLEET = new Set(["VibeCoderST"]);
+const FLEET = new Set(["VibeCoderST", REVIEWER]);
 const REPOS = new Set(["acme/app"]);
 
 const review = (

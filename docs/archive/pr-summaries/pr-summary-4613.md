@@ -21,6 +21,11 @@ branch-update failure streak after a successful shared refresh, and pass the
 `pr-maintenance` command's loaded fleet identity to the ownership port so a
 `CONFIG_FILE`-only host is not refused.
 
+The latest review fixes require the reviewer login in the shared fleet identity
+before it can refresh, arm approved behind Dependabot PRs before selecting them,
+and recognise enabled branch protection with an empty, disabled checks contract.
+The merge manual table retains both milestone rows.
+
 ## Spec
 
 ### Intent and Rationale
@@ -39,7 +44,8 @@ branch-update failure streak after a successful shared refresh, and pass the
 - The required-check contract combines rulesets and classic protection,
   publisher pins and the verified test merge. Any effective strict ruleset
   requires readiness. An explicitly absent classic required-check contract adds
-  no classic restriction, including GitHub’s disabled, empty summary. For other
+  no classic restriction, including GitHub’s empty summary with checks enforcement off, whether or not
+  other branch protection is enabled. For other
   summaries that omit strictness, the classic endpoint supplies it; recognised
   404 absence is accepted while other read errors remain blocking.
 - A ready PR remains the owner while refreshed checks are pending. Only terminal
@@ -112,7 +118,15 @@ Backend-only change; no visual evidence applies.
 
 ## Test Plan
 
-Review-fix validation: the five focused ownership, required-check, backlog,
+Latest review validation: the required-check, reviewer-permission, backlog and
+Dependabot suites passed (72 tests), including strict ownership, missing reviewer
+identity and the arm-before-refresh sequence. `deno fmt --check`, `deno lint`,
+and `deno task check` passed. The runner integration suite also passed (70
+tests), as did the reviewer App suite (12 tests). The reviewer identity is checked against the
+existing fleet-author set in both gate and post; no second ownership rule was
+added.
+
+Earlier review-fix validation: the five focused ownership, required-check, backlog,
 auto-merge and Dependabot suites passed (75 tests). The local formatter, lint,
 type check and markdownlint passed. The full parallel suite could not finish:
 this host's Deno 2.9.7 panicked while restoring test permissions. Semgrep and

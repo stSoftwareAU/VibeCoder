@@ -735,9 +735,8 @@ async function readStrictBasePolicy(
   );
   let protection = classicChecksFromBranch(branch);
   if (protection !== null && typeof protection.strict !== "boolean") {
-    const summary = object(branch.protection, "branch protection summary");
     if (
-      summary.enabled === false && protection.enforcement_level === "off" &&
+      protection.enforcement_level === "off" &&
       Array.isArray(protection.contexts) && protection.contexts.length === 0 &&
       Array.isArray(protection.checks) && protection.checks.length === 0
     ) {
