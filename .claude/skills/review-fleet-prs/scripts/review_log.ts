@@ -25,6 +25,14 @@ import { runFooter, type RunInfo } from "./review_cost.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
+/**
+ * The version of the owner-hold policy a held review was made under. Bump it
+ * when the policy for what is held changes (e.g. the owner-approved
+ * test-removal policy in #4655), so existing holds are reassessed once even on
+ * an unchanged head (Issue #4643).
+ */
+export const HOLD_POLICY_VERSION = 1;
+
 export type Outcome = "approved" | "changes_requested" | "held";
 
 export interface Finding {
@@ -112,6 +120,7 @@ export interface LogRecord {
   addedNeedsHuman?: boolean; // the skill's own needs-human label is on the PR after this review (Issue #2927)
   autoReleased?: true; // set only when an issue-required test-change hold was auto-released (Issue #3397)
   autoReleaseHeld?: string[]; // reasons an opted-in repo's hold was kept; set only on a held PR (Issue #3397)
+  holdPolicy?: number; // HOLD_POLICY_VERSION the hold was made under; set only on a held record, absent on one written before the field = version 1 (Issue #4643)
 }
 
 export const LOG_FILE = "log.jsonl";
@@ -485,6 +494,27 @@ export function wasChangeRequestAt(
     r.repo === repo && r.number === number && r.headSha === headSha &&
     r.outcome === "changes_requested"
   );
+}
+
+// The owner-hold policy version of the latest held record for this PR at this
+// exact head commit, or null when there is none (Issue #4643). A record written
+// before the holdPolicy field is version 1.
+export function heldPolicyAt(
+  records: LogRecord[],
+  repo: string,
+  number: number,
+  headSha: string,
+): number | null {
+  let policy: number | null = null;
+  for (const r of records) {
+    if (
+      r.repo === repo && r.number === number && r.headSha === headSha &&
+      r.outcome === "held"
+    ) {
+      policy = r.holdPolicy ?? 1;
+    }
+  }
+  return policy;
 }
 
 const clip = (s: string, max = 200) =>
