@@ -45,8 +45,7 @@ import {
   type ProjectKind,
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
-import { runWithTimeout } from "./subprocess_timeout.ts";
-import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import { manifestsFor, runRepositoryCommand } from "./untrusted_gate_spawn.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
   shouldSkipEphemeralCargoBuild,
@@ -184,7 +183,10 @@ function isUnitSuite(task: string): boolean {
 
 /** Spawn one of the repository's own tasks within the remaining budget. */
 const spawnTask: ResolutionTaskRunner = async (task) => {
-  const result = await runWithTimeout(
+  // The repository's own code runs with a stated environment and no parent
+  // credential (Issue #4659). Build-cache placement for the checkout (Issue
+  // #2247) is decided inside runRepositoryCommand, not here.
+  const result = await runRepositoryCommand(
     task.kind === "script"
       ? "bash"
       : task.kind === "cargo"
@@ -194,9 +196,7 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
     {
       cwd: task.dir,
       timeoutMs: task.timeoutMs,
-      // Build artefacts off the persistent volume where the runtime refuses
-      // to trim it (Issue #2247); empty on every other runtime.
-      env: buildCacheEnvForCheckout(task.dir),
+      manifests: await manifestsFor(task.kind, task.dir),
     },
   );
   if (!result.ok) return { code: 1, output: result.error.message };

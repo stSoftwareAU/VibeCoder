@@ -566,6 +566,34 @@ Deno.test("detectRemoteModuleGap - a 200000-character line is capped and the out
   assertEquals(detectRemoteModuleGap(hostile), undefined);
 });
 
+/** A credential the worker holds, which a repository's own check must not inherit (Issue #4659). */
+const PARENT_CREDENTIAL = "VIBE_4659_PARENT_SECRET";
+
+/**
+ * Prints what the child sees of the credential, then fails so the gate reports
+ * it. The `seen=` marker keeps the echoed command text from matching `unset`.
+ */
+const CREDENTIAL_PROBE =
+  'sh -c \'printf "seen=%s" "${VIBE_4659_PARENT_SECRET-unset}"; exit 1\'';
+
+Deno.test("checkMergedTree - the repository's own check does not inherit a parent credential (Issue #4659)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/deno.json`,
+      JSON.stringify({ tasks: { check: CREDENTIAL_PROBE } }),
+    );
+    Deno.env.set(PARENT_CREDENTIAL, "s3cret");
+    try {
+      const outcome = await checkMergedTree(dir);
+      assertEquals(outcome.status, "failed");
+      assertStringIncludes(outcome.output, "seen=unset");
+      assert(!outcome.output.includes("s3cret"), outcome.output);
+    } finally {
+      Deno.env.delete(PARENT_CREDENTIAL);
+    }
+  });
+});
+
 Deno.test("detectRemoteModuleGap - a 50000-line output is read in linear time to the right result (Issue #4422)", () => {
   const filler = Array.from({ length: 50_000 }, () => "    at frame");
   const gap = detectRemoteModuleGap(

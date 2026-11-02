@@ -235,6 +235,23 @@ Named here so a later sweep does not re-litigate them.
   `integration_test_manifest.ts`, `runner_deprecation_scanner.ts`** — controls
   and pure builders, not spawn sites.
 
+## Follow-up: the milestone gates' child environment (Issue #4659)
+
+SEC-1214-02's control did not reach the two gates that run a repository's own
+code for a milestone. `spawnTask` in `milestone_resolution_gate.ts` (the
+repository's `deno task`, `cargo test` or `bash quality.sh`) and
+`spawnTypeCheck` in `milestone_merge_gate.ts` (its `deno task check` or
+`cargo check`) both spawned with the worker's whole environment. They now spawn
+through [`worker/deno/lib/untrusted_gate_spawn.ts`](../../worker/deno/lib/untrusted_gate_spawn.ts):
+an allowlisted environment, `clearEnv: true`, and no repository credential. The
+command runs as `agent` when `agent` can read the checkout and the manifests it
+reads. Otherwise it runs as the worker with the same allowlisted environment,
+and the fallback is logged under `[SECURITY]` (Issues #4697, #4113). Each gate's
+real default runner has a test that plants a parent credential and asserts the
+child cannot see it. Declared `quality_credentials` are **not** resolved at
+these gates, so a repository that needs a credential for its type check or unit
+suite does not receive one from them.
+
 ## Swept paths
 
 The 54 files reviewed, as listed by the command above at the time of the sweep:
