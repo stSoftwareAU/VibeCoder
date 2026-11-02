@@ -28,8 +28,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { runWithTimeout } from "./subprocess_timeout.ts";
-import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  runRepositoryCommand,
+  type UntrustedGateSpawnDeps,
+} from "./untrusted_gate_spawn.ts";
 import { stripJsonc } from "./jsonc.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
@@ -440,17 +442,21 @@ export function detectRemoteModuleGap(
   return undefined;
 }
 
-/** Spawn the repository's own check with a bounded timeout. */
-const spawnTypeCheck: TypeCheckRunner = async (project) => {
+/**
+ * Spawn the repository's own check with a bounded timeout.
+ *
+ * The check runs as the untrusted account from the allowlisted environment, not
+ * the worker's inherited one (Issue #4659).
+ */
+export const spawnTypeCheck = async (
+  project: TypeCheckProject,
+  deps: UntrustedGateSpawnDeps = {},
+): ReturnType<TypeCheckRunner> => {
   const executable = project.kind === "cargo" ? "cargo" : Deno.execPath();
-  const result = await runWithTimeout(executable, project.args, {
+  const result = await runRepositoryCommand(executable, project.args, {
     cwd: project.dir,
     timeoutMs: MERGE_GATE_TIMEOUT_MS,
-    // Where the runtime refuses to trim the work volume, `cargo check` writes
-    // its artefacts to the container's ephemeral layer instead of ratcheting
-    // the volume's sparse image (Issue #2247). Empty everywhere else.
-    env: buildCacheEnvForCheckout(project.dir),
-  });
+  }, deps);
   if (!result.ok) return { code: 1, output: result.error.message };
   const { code, stdout, stderr, timedOut } = result.value;
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
