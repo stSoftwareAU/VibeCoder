@@ -124,21 +124,30 @@ export interface GrowthMeasurement<T> {
   output: T;
 }
 
-/** Fastest of `repeats` runs, keeping the last result. */
-function fastestRun<T>(
+/**
+ * Time `run` over both inputs, alternating base and scaled (Issue #4681), and
+ * keep the fastest reading of each. Interleaving exposes both sizes to the
+ * same scheduler and GC noise, so a busy spell cannot inflate one side alone.
+ */
+function fastestInterleaved<T>(
   run: (input: string) => T,
-  input: string,
+  baseInput: string,
+  scaledInput: string,
   repeats: number,
   now: () => number,
-): { ms: number; output: T } {
-  let ms = Infinity;
+): { baseMs: number; scaledMs: number; output: T } {
+  let baseMs = Infinity;
+  let scaledMs = Infinity;
   let output!: T;
   for (let i = 0; i < repeats; i++) {
-    const started = now();
-    output = run(input);
-    ms = Math.min(ms, now() - started);
+    let started = now();
+    run(baseInput);
+    baseMs = Math.min(baseMs, now() - started);
+    started = now();
+    output = run(scaledInput);
+    scaledMs = Math.min(scaledMs, now() - started);
   }
-  return { ms, output };
+  return { baseMs, scaledMs, output };
 }
 
 /**
@@ -174,19 +183,18 @@ export function measureGrowth<T>(
   }
   const actualFactor = scaledInput.length / baseInput.length;
 
-  const base = fastestRun(run, baseInput, repeats, now);
-  const scaled = fastestRun(run, scaledInput, repeats, now);
-  const allowedMs = growthAllowanceMs(base.ms, actualFactor, options);
+  const timed = fastestInterleaved(run, baseInput, scaledInput, repeats, now);
+  const allowedMs = growthAllowanceMs(timed.baseMs, actualFactor, options);
 
   return {
     baseChars: baseInput.length,
     scaledChars: scaledInput.length,
     sizeFactor: actualFactor,
-    baseMs: base.ms,
-    scaledMs: scaled.ms,
+    baseMs: timed.baseMs,
+    scaledMs: timed.scaledMs,
     allowedMs,
-    superLinear: scaled.ms > allowedMs,
-    output: scaled.output,
+    superLinear: timed.scaledMs > allowedMs,
+    output: timed.output,
   };
 }
 
