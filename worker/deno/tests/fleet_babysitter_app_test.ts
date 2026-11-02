@@ -30,6 +30,18 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
   assertEquals(info.value.success, true, info.value.stderr);
   const { denoDir } = JSON.parse(info.value.stdout);
   assertEquals(typeof denoDir, "string");
+  // The repair below runs with --cached-only, so make sure the babysitter's
+  // whole graph (including every JSR manifest) is cached first. A shard's
+  // cache may hold only what that shard's own tests loaded, which left
+  // '@std/crypto/meta.json' missing and failed the run on CI.
+  const warm = await runWithTimeout(Deno.execPath(), [
+    "cache",
+    "--config",
+    new URL("../deno.json", import.meta.url).pathname,
+    new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+  ], { timeoutMs: 120_000, env: { DENO_DIR: denoDir } });
+  assert(warm.ok);
+  assertEquals(warm.value.success, true, warm.value.stderr);
   await withTestKey(async (privateKeyPath) => {
     const home = await Deno.makeTempDir();
     try {
