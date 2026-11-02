@@ -251,7 +251,17 @@ Deno.test(
       // Exercise the real function. Before the fix this returned ok with
       // value 0 and never pushed, leaving the remote branch missing and
       // `gh pr create` failing with "No commits between …".
-      const result = await pushUnpushedCommits(branchName, { cwd: downstream });
+      let beforePushCalls = 0;
+      const result = await pushUnpushedCommits(
+        branchName,
+        { cwd: downstream },
+        false,
+        async () => {
+          beforePushCalls++;
+          return { ok: true, value: undefined };
+        },
+      );
+      assertEquals(beforePushCalls, 1);
       assert(
         result.ok,
         `pushUnpushedCommits should succeed, got: ${

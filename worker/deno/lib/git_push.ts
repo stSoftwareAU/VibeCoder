@@ -385,6 +385,12 @@ export async function pushUnpushedCommits(
       error: err instanceof Error ? err : new Error(String(err)),
     };
   }
+  // Recheck the caller's publication guard after remote lookups and directly
+  // before the push. Recovery invokes the same guard again after its rebase.
+  if (beforePush) {
+    const verified = await beforePush();
+    if (!verified.ok) return verified;
+  }
   const pushResult = await runGitCommand(pushArgs, options);
 
   if (!pushResult.ok) {
