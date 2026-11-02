@@ -1126,6 +1126,10 @@ Deno.test("validation scopes process inspection and sysctls and permits gate res
   for (
     const name of [
       "kern.hostname",
+      "machdep.cpu.brand_string",
+      "hw.model",
+      "kern.argmax",
+      "kern.sysv.semmns",
       "hw.machine",
       "hw.activecpu",
       "kern.osproductversion",

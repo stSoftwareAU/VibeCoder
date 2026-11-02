@@ -326,3 +326,16 @@ permission-restoration panic; base PR #4730 passed all four CI test shards.
 The live browser task was attempted and sandbox startup was refused with
 `sandbox_apply: Operation not permitted`. The release-tag check could not read
 the protected gh config; Semgrep and the pinned Checkov were unavailable.
+
+Review repair for PR #4716: the macOS validation profile now permits the
+exact CPU brand, model, argument-limit and semaphore-limit sysctls needed by
+Node CPU detection, xargs and Python process pools. The integration gate
+checks xargs and non-empty Node-compatible CPU detection; process inspection
+remains scoped and kern.procargs2 remains excluded. The unit regression failed
+before the four named grants were added. Live sandbox enforcement still requires
+a host that permits sandbox-exec.
+
+Repository Deno formatting, lint and frozen type checking passed, as did all
+37 validation unit tests. The browser integration task was attempted with
+installed Chrome but sandbox startup failed with `sandbox_apply: Operation not
+permitted`; live grants and security denials remain unverified.

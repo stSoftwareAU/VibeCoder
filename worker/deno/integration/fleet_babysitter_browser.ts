@@ -249,6 +249,8 @@ int main(void) {
 set -euo pipefail
 /usr/bin/uname -m | /usr/bin/grep -q .
 /bin/hostname | /usr/bin/grep -q .
+printf x | /usr/bin/xargs /bin/echo | /usr/bin/grep -q x
+deno eval 'import { cpus } from "node:os"; if (cpus().length === 0) Deno.exit(1);'
 if ./process-probe ${markerProcess.pid}; then exit 46; else test "$?" -eq 1; fi
 sleep 60 &
 child=$!

@@ -87,6 +87,10 @@ export function buildBabysitterValidationProfile(
     "(allow process-info* (target same-sandbox))",
     "(allow signal (target same-sandbox))",
     ...[
+      "machdep.cpu.brand_string",
+      "hw.model",
+      "kern.argmax",
+      "kern.sysv.semmns",
       "hw.memsize",
       "hw.machine",
       "hw.activecpu",
