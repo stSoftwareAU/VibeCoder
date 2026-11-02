@@ -20,6 +20,7 @@ import {
   attemptKey,
   babysitterRtkInstruction,
   buildRepairPrompt,
+  cancelledRunsToRerun,
   cloneForRepair,
   eligibleAuthor,
   reason,
@@ -510,4 +511,62 @@ Deno.test("a new change request on an attempted head gets its own attempt", () =
     attemptKey("owner/repo", 7, "abc", [review(10), review(12)]),
   );
   assertEquals(attemptKey("owner/repo", 7, "abc", []), "owner--repo--7--abc");
+});
+
+// Issue #4677: CI is the gate, so a check this host cannot run is reported,
+// not a reason to discard an otherwise complete repair.
+Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "name it in your final response");
+    assertStringIncludes(
+      prompt,
+      "does not by itself withhold BABYSITTER_READY",
+    );
+  }
+});
+
+// Issue #4677: a resolved conflict was discarded over unrelated verifier
+// findings (VibeCoder#4675); other feedback is out of a conflict's scope.
+Deno.test("other open feedback does not withhold readiness from a resolved conflict", () => {
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  assertStringIncludes(
+    prompt,
+    "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
+  );
+});
+
+// Issue #4684: cancelled CI is re-run, not handed to an agent to "fix".
+Deno.test("only a head whose runs were cancelled and none failed is re-run", () => {
+  const r = (id: number, status: string, conclusion: string | null) => ({
+    id,
+    status,
+    conclusion,
+  });
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "completed", "success"),
+      r(2, "completed", "cancelled"),
+      r(3, "completed", "cancelled"),
+    ]),
+    [2, 3],
+  );
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "completed", "failure"),
+      r(2, "completed", "cancelled"),
+    ]),
+    [],
+  );
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "in_progress", null),
+      r(2, "completed", "cancelled"),
+    ]),
+    [],
+  );
+  assertEquals(cancelledRunsToRerun([r(1, "completed", "success")]), []);
+  assertEquals(cancelledRunsToRerun([]), []);
 });

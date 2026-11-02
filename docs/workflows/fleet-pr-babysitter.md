@@ -136,6 +136,11 @@ A PR labelled `needs-human` is never a candidate: it waits on a person, for
 example a check that declared a human gate.
 An explicitly selected `--repo` scans that repository regardless of PR author;
 `--pr` narrows the scan to one PR. Both retain the same lock and validation. A
+red check whose workflow runs were cancelled rather than failed (every run on
+the head finished, one or more cancelled, none failed) starts no agent: the
+runner asks GitHub to re-run the cancelled runs, once per head. That needs the
+App's `actions: write` permission; with `actions: read` the re-run is refused
+and logged as a WARNING naming the permission. A
 failed or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
 not retried on that host for the same PR head. A review repair is keyed on the
