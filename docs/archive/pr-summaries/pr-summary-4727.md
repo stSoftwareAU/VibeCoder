@@ -43,6 +43,8 @@ flowchart LR
   created with an older protocol picks up a host configuration change.
 - The mirror fetches `refs/heads/*` and `refs/tags/*` only, not the thousands of
   `refs/pull/*` refs a `--mirror` would carry.
+- Fetch disables automatic maintenance and runs it in the foreground inside the
+  mirror lock before copying, so detached maintenance cannot race the clone.
 - Serialisation is in-process per mirror (`SIMPLE-ON-PURPOSE` marker in the
   code); two babysitter processes sharing one state directory rely on git's own
   ref locks, and a failed fetch is retried next pass.
@@ -85,7 +87,7 @@ runs the real CLI with git and gh calls faked by
   - `a stale partial download is cleared before the first download`
   - `the mirror root exists before the bare clone starts`
   - `every network git call is bounded by the 30-minute clone timeout`
-  - `a call that arrives while another is queued still waits for the running fetch`
+  - `a call that arrives while another is queued still waits for the running work`
 - `worker/deno/tests/fleet_babysitter_app_test.ts`
   (`production repair forwards CONFIG_PATH and denies canonical credential targets`)
   now asserts the real CLI clones `--bare` then `--no-checkout --no-hardlinks`
@@ -93,8 +95,7 @@ runs the real CLI with git and gh calls faked by
 - Docs: `docs/workflows/fleet-pr-babysitter.md` gains a mirror paragraph beside
   the temporary-clone paragraph and a line in the state-directory paragraph.
   Sections read: temporary clones, sandbox profile, attempt records. The clone
-  mentions outside the mirror paragraph are at lines 7, 70, 123, 145 and 153
-  of `docs/workflows/fleet-pr-babysitter.md` at the PR head; they still hold.
+  mentions outside the mirror paragraph were checked and still hold.
 - Callers of `cloneForRepair`: only `fix` (`fleet_pr_babysitter.ts`), unchanged;
   it takes the default seams.
 - Siblings checked: the other two `owner/repo` validators in the file
@@ -110,6 +111,9 @@ runs the real CLI with git and gh calls faked by
   fetched history and the repair clone's origin. The application fixture
   requires the host-qualified gh arguments. No duplicate protocol resolver or
   mirror fetch rule was found among the babysitter's callers.
+- The real-git fetch test pins the foreground maintenance commands and their
+  order before the clone. Deferred work tests the mirror queue without sleeps;
+  the concurrent real-git test records the order through each origin reset.
 - Edited test `failed clone is attempted once and preserves its original error`:
   rewritten for the new `deps` argument (the old third argument was a gh
   runner). Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
@@ -157,9 +161,9 @@ runs the real CLI with git and gh calls faked by
   failed locally; a standalone `deno task test:unit` reproduced a Deno 2.9.5
   runtime panic at `cli/ops/testing.rs:94:5`:
   `pledge test permissions called before restoring previous pledge`.
-  The release-tag ruleset check could not read the sandbox-denied host gh
-  configuration. Config integration, Semgrep and Checkov were skipped because
-  the local configuration or usable tools were unavailable. CI is green for
+  The release-tag ruleset check passed. Config integration, Semgrep and Checkov
+  were skipped because the local configuration or pinned tools were unavailable.
+  CI is green for
   PR #4730 and for PR #4718, which produced the current base commit
   `9afa408d5a30e545831964d2b7563eab2a1c2417`.
 - `deno task check:manifests`: 847 passed, 0 failed, 1 ignored.
@@ -168,7 +172,7 @@ runs the real CLI with git and gh calls faked by
   closure, independent review and reproduction status were not checked because
   issue-body and label inputs were not supplied.
 
-<!-- vibe-quality-gate-skipped: local unit runner panics in Deno 2.9.5; release-tag ruleset cannot read sandbox-denied gh configuration; config integration, Semgrep and Checkov unavailable; touched suites, fmt, lint and type check pass; CI runs the full gate -->
+<!-- vibe-quality-gate-skipped: local unit runner panics in Deno 2.9.5; config integration, Semgrep and Checkov unavailable; touched suites, fmt, lint and type check pass; CI runs the full gate -->
 
 Fixture edit: `tests/fixtures/fleet_babysitter_repair_preload.ts` — removed the
 `gh repo clone` branch (no longer called by the code); no assertion removed.

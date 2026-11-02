@@ -150,7 +150,7 @@ const mirrorTails = new Map<string, Promise<void>>();
  * repairs of one repo must not fetch into one mirror together; across
  * processes git's own ref locks decide, and the next pass retries.
  */
-async function serialiseOnMirror(
+export async function serialiseOnMirror(
   mirror: string,
   work: () => Promise<void>,
 ): Promise<void> {
@@ -193,10 +193,23 @@ export async function cloneForRepair(
       await git(
         [
           "fetch",
+          "--no-auto-maintenance",
           "--prune",
           url,
           "+refs/heads/*:refs/heads/*",
           "+refs/tags/*:refs/tags/*",
+        ],
+        { cwd: mirror, timeoutSeconds: CLONE_TIMEOUT_SECONDS },
+      );
+      await git(
+        [
+          "-c",
+          "maintenance.autoDetach=false",
+          "-c",
+          "gc.autoDetach=false",
+          "maintenance",
+          "run",
+          "--auto",
         ],
         { cwd: mirror, timeoutSeconds: CLONE_TIMEOUT_SECONDS },
       );

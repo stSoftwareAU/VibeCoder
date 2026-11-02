@@ -32,6 +32,7 @@ import {
   removeRepairDirs,
   requestedReviews,
   runRepairs,
+  serialiseOnMirror,
   spawnBabysitterAgent,
   takePrBodyProposal,
   validateAndCommit,
@@ -199,9 +200,35 @@ Deno.test("a later repair fetches into the mirror and clones from it, without a 
       }),
       "fourth",
     );
-    assert(
-      calls.some((call) => call.args[0] === "fetch" && call.cwd === mirror),
-    );
+    const fetchIndex = calls.findIndex((call) => call.args[0] === "fetch");
+    assertEquals(calls[fetchIndex], {
+      args: [
+        "fetch",
+        "--no-auto-maintenance",
+        "--prune",
+        upstream,
+        "+refs/heads/*:refs/heads/*",
+        "+refs/tags/*:refs/tags/*",
+      ],
+      cwd: mirror,
+    });
+    assertEquals(calls[fetchIndex + 1], {
+      args: [
+        "-c",
+        "maintenance.autoDetach=false",
+        "-c",
+        "gc.autoDetach=false",
+        "maintenance",
+        "run",
+        "--auto",
+      ],
+      cwd: mirror,
+    });
+    assertEquals(calls[fetchIndex + 2]?.args.slice(0, 3), [
+      "clone",
+      "--no-checkout",
+      "--no-hardlinks",
+    ]);
     assertEquals(
       calls.filter((call) =>
         call.args[0] === "clone" && call.args[1] === "--bare"
@@ -306,21 +333,14 @@ Deno.test("a repository name that is not owner/name is refused before any git ru
 Deno.test("concurrent repairs of one repo never mutate its mirror at the same time", async () => {
   await withTempRoot(async (root) => {
     const { upstream } = await makeUpstream(root);
-    let active = 0;
-    let maxActive = 0;
+    const calls: string[] = [];
     const deps: CloneForRepairDeps = {
       git: async (args, options) => {
-        const mutatesMirror = args[0] === "fetch" ||
-          (args[0] === "clone" && args[1] === "--bare");
-        if (!mutatesMirror) return await runGitForTest(args, options);
-        active++;
-        maxActive = Math.max(maxActive, active);
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          return await runGitForTest(args, options);
-        } finally {
-          active--;
-        }
+        if (
+          args[0] === "fetch" || (args[0] === "clone" && args[1] === "--bare")
+        ) calls.push("mirror");
+        if (args[0] === "remote") calls.push("set-url");
+        return await runGitForTest(args, options);
       },
       remoteUrl: () => Promise.resolve(upstream),
       mirrorRoot: `${root}/mirrors`,
@@ -329,7 +349,7 @@ Deno.test("concurrent repairs of one repo never mutate its mirror at the same ti
       cloneForRepair("owner/repo", `${root}/clone-a`, deps),
       cloneForRepair("owner/repo", `${root}/clone-b`, deps),
     ]);
-    assertEquals(maxActive, 1);
+    assertEquals(calls, ["mirror", "set-url", "mirror", "set-url"]);
     for (const dir of [`${root}/clone-a`, `${root}/clone-b`]) {
       assertEquals(
         await runGitForTest(["rev-list", "--count", "--all"], { cwd: dir }),
@@ -1219,34 +1239,31 @@ Deno.test("every network git call is bounded by the 30-minute clone timeout", as
   });
 });
 
-Deno.test("a call that arrives while another is queued still waits for the running fetch", async () => {
-  await withTempRoot(async (root) => {
-    const { upstream } = await makeUpstream(root);
-    let active = 0;
-    let maxActive = 0;
-    const deps: CloneForRepairDeps = {
-      git: async (args, options) => {
-        const mutatesMirror = args[0] === "fetch" ||
-          (args[0] === "clone" && args[1] === "--bare");
-        if (!mutatesMirror) return await runGitForTest(args, options);
-        active++;
-        maxActive = Math.max(maxActive, active);
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          return await runGitForTest(args, options);
-        } finally {
-          active--;
-        }
-      },
-      remoteUrl: () => Promise.resolve(upstream),
-      mirrorRoot: `${root}/mirrors`,
-    };
-    const first = cloneForRepair("owner/repo", `${root}/clone-a`, deps);
-    const second = cloneForRepair("owner/repo", `${root}/clone-b`, deps);
-    await first;
-    // The second repair is now fetching; a third must queue behind it.
-    const third = cloneForRepair("owner/repo", `${root}/clone-c`, deps);
-    await Promise.all([second, third]);
-    assertEquals(maxActive, 1);
+Deno.test("a call that arrives while another is queued still waits for the running work", async () => {
+  const starts: string[] = [];
+  const a = Promise.withResolvers<void>();
+  const b = Promise.withResolvers<void>();
+  const first = serialiseOnMirror("test-mirror", async () => {
+    starts.push("a");
+    await a.promise;
   });
+  const second = serialiseOnMirror("test-mirror", async () => {
+    starts.push("b");
+    await b.promise;
+  });
+  await Promise.resolve();
+  assertEquals(starts, ["a"]);
+  a.resolve();
+  await first;
+  await Promise.resolve();
+  assertEquals(starts, ["a", "b"]);
+  const third = serialiseOnMirror("test-mirror", () => {
+    starts.push("c");
+    return Promise.resolve();
+  });
+  await Promise.resolve();
+  assertEquals(starts, ["a", "b"]);
+  b.resolve();
+  await Promise.all([second, third]);
+  assertEquals(starts, ["a", "b", "c"]);
 });

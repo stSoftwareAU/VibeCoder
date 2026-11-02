@@ -76,8 +76,9 @@ Each repository also has one bare mirror, kept at
 The first repair of a repository downloads it once with `git clone --bare`,
 bounded to 30 minutes. The download is built in a `.tmp` sibling and renamed
 into place only when complete, so a failed download leaves no mirror. Each
-later repair runs `git fetch --prune <GitHub URL> +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/*`
-in the mirror, serialised per repository within the process, and then runs
+later repair fetches heads and tags with `--no-auto-maintenance` in the mirror,
+then runs automatic maintenance in the foreground before copying, serialised per
+repository within the process. It then runs
 `git clone --no-checkout --no-hardlinks <mirror> <dir>` to make its temporary
 clone. That clone holds the full history, so merge bases and `git diff` against
 the base work without lazy fetches; it is not a partial clone and does not
