@@ -19,6 +19,7 @@ import {
 import { _resetMergeQueueMemo } from "../lib/merge_queue_runtime.ts";
 import type { WorkerConfig } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
 import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
 
 function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
@@ -378,14 +379,21 @@ Deno.test("pr-maintenance command - update-open-pr-branches takes no action on a
   }
 });
 
-// A strict-base behind PR is refreshed using the command's loaded fleet
-// identity, not a second read of CONFIG_PATH / .config.json (Issue #4613).
-Deno.test("pr-maintenance command - update-open-pr-branches refreshes a strict-base PR with the loaded fleet identity (Issue #4613)", async () => {
+/**
+ * Run `update-open-pr-branches` over one strict-base behind PR whose fleet
+ * comments are authored by `author`. With `seedOwner` the base is already
+ * owned by that author, so a refresh that trusts `author` is suppressed and
+ * one that does not trust it pushes again. Returns the `update-branch` PUT
+ * count, seed included.
+ */
+async function strictRefreshPutCount(
+  author: string,
+  config: Partial<WorkerConfig>,
+  seedOwner: boolean,
+): Promise<number> {
   _resetMergeQueueMemo();
-  const refresh = strictRefreshFixture(MERGE_QUEUE_REPO, "main", "VibeCoderST");
-  const calls: string[] = [];
+  const refresh = strictRefreshFixture(MERGE_QUEUE_REPO, "main", author);
   const runner: GhSpawnRunner = async (args) => {
-    calls.push(args.join(" "));
     const ok = (stdout: string) => ({
       code: 0,
       success: true,
@@ -427,9 +435,26 @@ Deno.test("pr-maintenance command - update-open-pr-branches refreshes a strict-b
       };
     }
   };
+  const countPuts = () =>
+    refresh.calls.filter((c) => c.includes("--method") && c.includes("PUT"))
+      .length;
   const workDir = await Deno.makeTempDir({ prefix: "pr_maint_strict_" });
   _setGhSpawnRunner(runner);
   try {
+    if (seedOwner) {
+      const seeded = await requestReadyBranchUpdate(
+        MERGE_QUEUE_REPO,
+        // Another PR on the same base: the owner is per base, per PR.
+        10,
+        refresh.gh,
+        "main",
+        refresh.head,
+        async () => {},
+        { fleetAuthors: [author] },
+      );
+      assertEquals(seeded.ok, true, "the seeding refresh must succeed");
+      assertEquals(countPuts(), 1, "the seed pushed once");
+    }
     const result = await prMaintenanceCommand.execute(
       {
         operation: "update-open-pr-branches",
@@ -437,22 +462,44 @@ Deno.test("pr-maintenance command - update-open-pr-branches refreshes a strict-b
         repos: MERGE_QUEUE_REPO,
         "work-dir": workDir,
       },
-      makeConfig({
-        repos: [MERGE_QUEUE_REPO],
-        fleetPrAuthors: ["VibeCoderST"],
-      }),
+      makeConfig({ repos: [MERGE_QUEUE_REPO], ...config }),
     );
     assertEquals(result.success, true);
-    assertEquals(
-      refresh.calls.some((c) => c.includes("--method") && c.includes("PUT")),
-      true,
-      `expected an update-branch PUT, got: ${JSON.stringify(calls)}`,
-    );
+    return countPuts();
   } finally {
     _resetGhSpawnRunner();
     await Deno.remove(workDir, { recursive: true });
   }
+}
+
+// A strict-base behind PR is refreshed using the command's loaded fleet
+// identity, not a second read of CONFIG_PATH / .config.json (Issue #4613).
+Deno.test("pr-maintenance command - update-open-pr-branches refreshes a strict-base PR with the loaded fleet identity (Issue #4613)", async () => {
+  assertEquals(
+    await strictRefreshPutCount("VibeCoderST", {
+      fleetPrAuthors: ["VibeCoderST"],
+    }, false),
+    1,
+  );
 });
+
+// Each source of the command's fleet identity must reach the refresh: an
+// existing owner authored by that login is only honoured (the refresh is
+// suppressed) when the login is in the set, so dropping a source pushes again.
+for (
+  const [source, author, config] of ([
+    ["--github-user", "testbot", {}],
+    ["fleetPrAuthors", "fleet-author", { fleetPrAuthors: ["fleet-author"] }],
+    ["serviceAccounts", "svc-account", { serviceAccounts: ["svc-account"] }],
+  ] as Array<[string, string, Partial<WorkerConfig>]>)
+) {
+  Deno.test(`pr-maintenance command - update-open-pr-branches honours a base owner from ${source} (Issue #4613)`, async () => {
+    // Control: with no owner the same identity refreshes, so the suppression
+    // below is the owner being honoured, not the refresh failing outright.
+    assertEquals(await strictRefreshPutCount(author, config, false), 1);
+    assertEquals(await strictRefreshPutCount(author, config, true), 1);
+  });
+}
 
 // ============================================================================
 // Unknown operation

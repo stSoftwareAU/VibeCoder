@@ -133,21 +133,40 @@ Commands below run from `worker/deno` unless another directory is stated.
   post-check and immediate base/head or merge freshness guard removed, plus the
   production stall-repair guard bypassed. Each probe failed its targeted
   behavioural test; no exemption is claimed.
-- `deno task test:unit tests/base_refresh_ownership_4613_test.ts tests/required_branch_checks_4613_test.ts tests/pr_branch_update_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts tests/merge_block_escalation_test.ts tests/reviewer_strict_refresh_permissions_4613_test.ts tests/pr_branch_update_streak_wiring_test.ts tests/pr_maintenance_command_test.ts`
-  — 200 passed, 0 failed on the final run, including the CLI fixture with its
-  consistency delay mocked and the tightened stall assertions.
-- `deno task test:unit tests/reviewer_strict_refresh_permissions_4613_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/required_branch_checks_4613_test.ts`
-  — 39 passed, 0 failed after the fixture and stall assertions were tightened.
-- **Required item 1 — mutation baseline:**
-  `deno task test:unit tests/fleet_babysitter_app_test.ts tests/fleet_pr_babysitter_test.ts`
-  — 73 passed, 0 failed after the isolated cache was populated. The original
-  download failure was reproduced first. No mutation-check skip was set.
-- **Required item 2 — coverage carry-over baseline:** at merge base
-  `18cbb398e5ac7ca39f4d9b58554c112840eddce0` in a disposable worktree,
-  `deno task test:unit tests/auto_merge_sweep_keeps_armed_test.ts tests/fleet_pr_babysitter_test.ts tests/pr_branch_update_test.ts tests/required_branch_checks_4613_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts`
-  — 156 passed, 0 failed after the same cache preparation. Before preparation,
-  155 passed and only the babysitter subprocess failed to download its crypto
-  manifest. No coverage carry-over skip was set.
+- Per-file results at the head, each run alone with
+  `deno task test:unit tests/<file>` (re-run for the #4742 review fix):
+  `tests/base_refresh_ownership_4613_test.ts` (5 tests at head),
+  `tests/required_branch_checks_4613_test.ts` (34 tests at head),
+  `tests/pr_branch_update_test.ts` (66 tests at head),
+  `tests/auto_merge_sweep_keeps_armed_test.ts` (6 tests at head),
+  `tests/review_fleet_prs_backlog_3225_test.ts` (15 tests at head),
+  `tests/review_fleet_prs_dependabot_test.ts` (15 tests at head),
+  `tests/merge_block_escalation_test.ts` (24 tests at head),
+  `tests/reviewer_strict_refresh_permissions_4613_test.ts` (3 tests at head),
+  `tests/pr_branch_update_streak_wiring_test.ts` (7 tests at head) and
+  `tests/pr_maintenance_command_test.ts` (28 tests at head, including the
+  three added for #4742) all passed, 0 failed.
+- **Required item 1 — mutation baseline:** `tests/fleet_babysitter_app_test.ts`
+  (18 tests at head) passed, 0 failed. `tests/fleet_pr_babysitter_test.ts`
+  (56 tests at head) ran 55 passed, 1 failed on this host:
+  `babysitter default heartbeat resolves its checkout revision` could not
+  download `https://jsr.io/@std/crypto/meta.json` (no network access to JSR
+  from the subprocess). It passed once the cache was populated in the earlier
+  run; the failure is environmental, not a change in this PR. No mutation-check
+  skip was set.
+- **Required item 2 — coverage carry-over baseline:** measured at merge base
+  `18cbb398e5ac7ca39f4d9b58554c112840eddce0` in a disposable worktree on an
+  earlier run; not re-run for the #4742 fix, so no figure is restated here.
+  No coverage carry-over skip was set.
+- #4742 mutation survivors at `worker/deno/commands/pr_maintenance.ts:488-490`
+  (`githubUser`, `fleetPrAuthors`, `serviceAccounts` passed to
+  `resolveFleetMaintenanceAuthorSet` for the behind-only refresh): killed by the
+  three `update-open-pr-branches honours a base owner from ...` tests in
+  `tests/pr_maintenance_command_test.ts`. Each test seeds a base owner authored
+  by a login that comes from only that source, and asserts the refresh is
+  suppressed (one PUT, the seed's) after an unseeded control refreshes once.
+  Deleting each property in turn turned its own test red (run with `--no-check`
+  for `githubUser`, whose deletion is otherwise a type error).
 - Targeted `deno fmt --check`, `deno lint` and `deno check` passed for all
   changed TypeScript files, including
   `.claude/skills/review-fleet-prs/scripts/branch_update.ts`.

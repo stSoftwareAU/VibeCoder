@@ -482,8 +482,8 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
             undefined,
             undefined,
             {
-              // The command's own loaded identity, so `CONFIG_FILE`-only
-              // hosts resolve the same fleet author set as the scan.
+              // The command's own loaded identity (host user, fleet authors,
+              // service accounts), so `CONFIG_FILE`-only hosts need no re-read.
               fleetAuthors: resolveFleetMaintenanceAuthorSet({
                 githubUser,
                 fleetPrAuthors: config.fleetPrAuthors ?? [],
