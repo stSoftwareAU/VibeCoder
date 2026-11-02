@@ -357,6 +357,7 @@ Deno.test("a credential source that fails stops the command from running (Issue 
         credentials: () => Promise.reject(new Error("mint failed")),
       },
     );
+    assertEquals(result.ok, false);
     assert(!result.ok);
     assert(result.error.message.includes("mint failed"));
     assertEquals(calls.length, 0);
@@ -428,8 +429,119 @@ Deno.test("a manifest that is a symbolic link is refused before anything runs (I
       { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
       { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
     );
+    assertEquals(result.ok, false);
     assert(!result.ok);
     assert(result.error.message.includes("symbolic link"));
     assertEquals(calls.length, 0);
+  });
+});
+
+Deno.test("a manifest name that is not a plain file name is refused even when no probe runs (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    // identityDrop never builds a probe, so only the check in the manifest
+    // loop can refuse the name.
+    await assertRejects(
+      () =>
+        runRepositoryCommand(
+          "npm",
+          ["test"],
+          { cwd, timeoutMs: 1000, manifests: ["../x"] },
+          { spawn, drop: identityDrop, source: SOURCE, trimRefused: false },
+        ),
+      Error,
+      "refusing to probe manifest",
+    );
+    assertEquals(calls.length, 0);
+    // The same call with a plain name is not refused by that rule.
+    const accepted = await runRepositoryCommand(
+      "npm",
+      ["test"],
+      { cwd, timeoutMs: 1000, manifests: ["package.json"] },
+      { spawn, drop: identityDrop, source: SOURCE, trimRefused: false },
+    );
+    assertEquals(accepted.ok, true);
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("a manifest that cannot be inspected stops the command with the cause (Issue #4659)", async () => {
+  await withCheckout(async (dir) => {
+    // A file where the checkout should be: lstat fails with ENOTDIR, not NotFound.
+    const notADirectory = `${dir}/file`;
+    await Deno.writeTextFile(notADirectory, "x");
+    let cause = "";
+    try {
+      await Deno.lstat(`${notADirectory}/Cargo.toml`);
+    } catch (error) {
+      cause = (error as Error).message;
+    }
+    assert(cause.length > 0, "the fixture must make lstat fail");
+
+    const { calls, spawn } = recordingSpawn();
+    const result = await runRepositoryCommand(
+      "cargo",
+      ["test"],
+      { cwd: notADirectory, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    assertEquals(
+      result.error.message,
+      `cannot inspect 'Cargo.toml' in '${notADirectory}': ${cause}`,
+    );
+    assertEquals(calls.length, 0);
+  });
+});
+
+Deno.test("the probe is a shell run in the checkout, handed the checkout as its argument (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "deno",
+      ["task", "check"],
+      { cwd, timeoutMs: 1000, manifests: ["deno.json"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    const probe = callAt(calls, 0);
+    assertEquals(probe.executable, "sudo");
+    // `sh -c <script> sh <cwd>`: the second `sh` is the script's $0.
+    assertEquals(probe.args, [
+      "-n",
+      "-u",
+      "agent",
+      "--",
+      "sh",
+      "-c",
+      probeScriptOf(probe),
+      "sh",
+      cwd,
+    ]);
+    assertEquals(probe.options.cwd, cwd);
+  });
+});
+
+Deno.test("a cargo target the environment already names is not probed for writability (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    const probeFor = async (source: Record<string, string>) => {
+      const { calls, spawn } = recordingSpawn();
+      await runRepositoryCommand(
+        "cargo",
+        ["test"],
+        { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+        { spawn, drop: agentDrop, source, trimRefused: false },
+      );
+      return probeScriptOf(callAt(calls, 0));
+    };
+    // Control: with no target named, the probe checks the checkout is writable.
+    assert((await probeFor(SOURCE)).includes(`test -w "$1"`));
+    // A target the environment names is not the checkout's, so it is not checked.
+    const named = await probeFor({
+      ...SOURCE,
+      CARGO_TARGET_DIR: "/var/cache/target",
+    });
+    assert(!named.includes(`test -w`));
+    assert(!named.includes(`find`));
   });
 });

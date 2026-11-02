@@ -605,3 +605,18 @@ Deno.test("detectRemoteModuleGap - a 50000-line output is read in linear time to
   );
   assertEquals(detectRemoteModuleGap(noImport.join("\n")), undefined);
 });
+
+Deno.test("checkMergedTree - the repository's own check is refused when its manifest is a symbolic link (Issue #4659)", async () => {
+  await withTempDir(async (dir) => {
+    // The default runner probes the manifests it is handed; a link in their
+    // place could choose which account runs the repository's code.
+    await writeFile(`${dir}/real.json`, JSON.stringify({ tasks: {} }));
+    await Deno.symlink(`${dir}/real.json`, `${dir}/deno.json`);
+    const outcome = await checkMergedTree(dir);
+    assertEquals(outcome.status, "failed", outcome.output);
+    assert(
+      outcome.output.includes("is a symbolic link"),
+      `expected the symbolic-link refusal, got: ${outcome.output}`,
+    );
+  });
+});

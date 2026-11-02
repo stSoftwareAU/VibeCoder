@@ -746,3 +746,27 @@ Deno.test("verifyResolvedTree - the repository's own task sees only the allowlis
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("verifyResolvedTree - the repository's own task is refused when its manifest is a symbolic link (Issue #4659)", async () => {
+  const dir = await tree({ "test:unit": "true" });
+  try {
+    await Deno.rename(`${dir}/deno.json`, `${dir}/real.json`);
+    await Deno.symlink(`${dir}/real.json`, `${dir}/deno.json`);
+    const passingTypeCheck = () =>
+      Promise.resolve({
+        status: "passed" as const,
+        detail: "type check passed",
+        output: "",
+      });
+    // `undefined` selects the real spawnTask runner, not an injected one.
+    const outcome = await verifyResolvedTree(
+      dir,
+      undefined,
+      passingTypeCheck,
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.output, "is a symbolic link");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

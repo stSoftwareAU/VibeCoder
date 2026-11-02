@@ -64,25 +64,37 @@ flowchart TD
 
 Backend-only change; no UI file is touched.
 
-- `worker/deno/tests/untrusted_gate_spawn_test.ts` (new, 15 tests): the child
-  gets no parent credential and `clearEnv`; a real `printenv` child sees only
-  allowlisted names (positive control: the same command without `clearEnv` sees
-  names outside the allowlist); a usable `agent` account runs under `sudo` after
-  a probe, with `CARGO_TARGET_DIR` carried in argv; a failed, errored or timed
-  out probe falls back to the worker with the credential-free environment; no
-  account means no probe; the probe script embeds only plain manifest names and
-  checks `target` writability for cargo only; `manifestsFor`; declared
+- `worker/deno/tests/untrusted_gate_spawn_test.ts` (new, 19 tests at head): the
+  child gets no parent credential and `clearEnv`; a real `printenv` child sees
+  only allowlisted names (positive control: the same command without `clearEnv`
+  sees names outside the allowlist); a usable `agent` account runs under `sudo`
+  after a probe, with `CARGO_TARGET_DIR` carried in argv; a failed, errored or
+  timed out probe falls back to the worker with the credential-free environment;
+  no account means no probe; the probe script embeds only plain manifest names
+  and checks `target` writability for cargo only; `manifestsFor`; declared
   credentials reach the child and a failing source stops the command; probe exit
   2 gives a private `CARGO_TARGET_DIR` and no `[SECURITY]` fallback; a symlinked
-  manifest is refused. The positive control in the real-`printenv` test now
-  states its own non-allowlisted name, so it holds when the test process's
-  environment is already allowlisted (the mutation baseline failed on that).
+  manifest is refused. A bad manifest name is refused with no probe built; a
+  manifest that cannot be inspected stops the command with the `lstat` cause;
+  the probe is `sh -c <script> sh <cwd>` run in the checkout; a
+  `CARGO_TARGET_DIR` the environment already names is not probed for
+  writability. The refusals assert `ok === false` exactly. The positive control
+  in the real-`printenv` test now states its own non-allowlisted name, so it
+  holds when the test process's environment is already allowlisted (the mutation
+  baseline failed on that).
 - `worker/deno/tests/milestone_merge_gate_test.ts` (`checkMergedTree` with the
   real runner) and `worker/deno/tests/milestone_resolution_gate_test.ts`
   (`verifyResolvedTree` with the real runner): each starts a child Deno via
   `worker/deno/tests/support/gate_child_env.ts` whose environment carries
   `VIBE_4659_PARENT_SECRET`, and asserts the repository task saw only
-  allowlisted names.
+  allowlisted names. Each file also has a test (in-process, default runner) that
+  a symbolic-link `deno.json` is refused with the `is a symbolic link` message,
+  so each gate hands its manifests to `runRepositoryCommand`.
+- `worker/deno/tests/run_core_production_deps_test.ts` (one new test): after
+  `createProductionRunCoreDeps`, a gate command in a nested project takes its
+  own repository's minted credential; another repository's, a directory outside
+  the work directory, an unnamed repository and two same-named repositories get
+  none; a failing mint stops the command with the mint error.
 - Docs: `docs/audits/security-sweep-1214-subprocess-argv.md` (follow-up section)
   and one parenthetical in
   `docs/audits/security-sweep-2755-lib-delta-12a-12c.md`; ledger
@@ -110,11 +122,12 @@ Backend-only change; no UI file is touched.
 
 - CI repair: `.github/gitleaks.toml` now exempts only the exact
   `PARENT_CREDENTIAL` declaration of the synthetic environment variable name
-  used by the gate tests, including its historical copies before extraction
-  into the shared harness. No file-wide exception or scanner rule was removed.
+  used by the gate tests, including its historical copies before extraction into
+  the shared harness. No file-wide exception or scanner rule was removed.
   Gitleaks 8.24.3 reproduced all three CI findings with
   `detect --redact -v --exit-code=2 --report-format=sarif --report-path=results.sarif --log-level=debug`
-  and `--log-opts="--no-merges --first-parent 85e73ca2bc8a401344bc658673754b49e29e212f^..26682b2fe72de60f773735410cc1f099a6c5cf40"`.
+  and
+  `--log-opts="--no-merges --first-parent 85e73ca2bc8a401344bc658673754b49e29e212f^..26682b2fe72de60f773735410cc1f099a6c5cf40"`.
   The identical scan with the updated config passes (seven commits, no leaks).
   Real-scanner stdin controls accept both exact declarations and still detect
   the same value assigned to `OTHER_CREDENTIAL`. The workflow and action share
@@ -133,6 +146,13 @@ Backend-only change; no UI file is touched.
   - `spawnTypeCheck` reverted alone to `runWithTimeout` with no `clearEnv` → the
     `checkMergedTree` test red (`VIBE_4659_PARENT_SECRET` leaked);
   - `spawnTask` reverted alone → the `verifyResolvedTree` test red, same leak.
+- Mutation survivors from the first review (17 mutants on changed lines): each
+  was applied alone and its new test went red (`untrusted_gate_spawn.ts` lines
+  193, 199, 202, 209, 225, 250, 252, 258, 263; the `manifests` property deleted
+  from `spawnTypeCheck` and from `spawnTask`; `run_core_production_deps.ts`
+  lines 893, 899, 900, 905, 906). Re-run on the head: `deno task test:unit` over
+  the four touched test files: 0 failed; `deno fmt` and `deno lint` on them:
+  pass.
 - Entry points checked: `spawnTypeCheck` (via `checkMergedTree`) and `spawnTask`
   (via `verifyResolvedTree`), the only two callers of `runRepositoryCommand`.
 - Removed assertions from existing tests: none.
