@@ -220,7 +220,9 @@ Deno.test("publication failure classifier rejects a long partial JSR message", a
         value: {
           success: false,
           code: 1,
-          stdout: `JSR package manifest ${"x".repeat(100_000)} not failed to load`,
+          stdout: `JSR package manifest ${
+            "x".repeat(100_000)
+          } not failed to load`,
           stderr: "",
           timedOut: false,
         },

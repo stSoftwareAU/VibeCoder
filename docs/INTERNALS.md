@@ -142,8 +142,8 @@ or repair edit therefore requires a fresh run. In this repository the command
 uses `quality.sh`'s existing Deno gate: its full parallel and serial unit-test
 passes, test-target type check, and strict skipped-check handling. CI shards the
 same unit-test manifests across four jobs. The target repository's gate remains
-its own policy; this runner does not define checks across repositories (Issue
-#4625).
+its own policy; this runner does not define checks across repositories. This
+shared implementation addresses Issue #4625.
 
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
 the gap that let two PRs sit blocked on the same
