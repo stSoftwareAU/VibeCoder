@@ -117,10 +117,13 @@ The sandbox still applies; an unavailable permission or credential can stop a
 run and must be corrected by the operator. Codex gets its own installation
 token, minted per repair for the target repository only, with read-only
 permissions (contents, pull requests, issues, checks, actions). Every GitHub
-write (lock, push, branch update, review dismissal) is made by the runner with
-its own token. The agent token lasts about an hour and is not refreshed, so
-reads late in a longer repair can fail. PR description fixes reach GitHub only
-via the archived summary.
+write (lock, push, branch update, review dismissal, PR description) is made by
+the runner with its own token. The agent token lasts about an hour and is not
+refreshed, so reads late in a longer repair can fail. When a review asks for a
+description change, the agent writes the full new description to
+`.babysitter-pr-body` in the clone; the runner removes it before committing and
+applies it after the push (or when there is no code change), re-adding any
+closing reference such as `Closes #N` the proposal dropped.
 
 The profile explicitly enables network access so the agent can fetch GitHub
 feedback and check details. Host `[sandbox_workspace_write]` settings do not
@@ -151,7 +154,10 @@ the head finished, one or more cancelled, none failed) starts no agent: the
 runner asks GitHub to re-run the cancelled runs, once per head. That needs the
 App's `actions: write` permission; with `actions: read` the re-run is refused
 and logged as a WARNING naming the permission. A
-failed or unproductive agent attempt is recorded under
+PR that a fleet worker holds a live PR-feedback lease claim on
+(`PR_COMMENT_CLAIM` with an unexpired `PR_COMMENT_CLAIM_LEASE`) is skipped for
+that pass, so the babysitter never repairs beside a worker that is about to
+push. A failed or unproductive agent attempt is recorded under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` and is
 not retried on that host for the same PR head. Removing the matching state file
 permits a retry. The shared lock prevents simultaneous work; this local attempt
