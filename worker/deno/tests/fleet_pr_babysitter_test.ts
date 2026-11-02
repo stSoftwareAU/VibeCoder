@@ -17,6 +17,7 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
+  attemptKey,
   babysitterRtkInstruction,
   buildRepairPrompt,
   cancelledRunsToRerun,
@@ -492,6 +493,25 @@ Deno.test("a PR labelled needs-human is never a babysitter candidate", () => {
   };
   assertEquals(reason(pr), null);
   assertEquals(reason({ ...pr, labels: [] }), "merge conflict");
+});
+
+// Issue #4671: a new review on an attempted head is new input, not a repeat.
+Deno.test("a new change request on an attempted head gets its own attempt", () => {
+  const review = (id: number) => ({
+    id,
+    state: "CHANGES_REQUESTED",
+    user: { login: "reviewer[bot]" },
+  });
+  const first = attemptKey("owner/repo", 7, "abc", [review(10)]);
+  assertEquals(first, attemptKey("owner/repo", 7, "abc", [review(10)]));
+  assert(
+    first !== attemptKey("owner/repo", 7, "abc", [review(10), review(12)]),
+  );
+  assertEquals(
+    attemptKey("owner/repo", 7, "abc", [review(12), review(10)]),
+    attemptKey("owner/repo", 7, "abc", [review(10), review(12)]),
+  );
+  assertEquals(attemptKey("owner/repo", 7, "abc", []), "owner--repo--7--abc");
 });
 
 // Issue #4668: a review asking for a description change could never be met,

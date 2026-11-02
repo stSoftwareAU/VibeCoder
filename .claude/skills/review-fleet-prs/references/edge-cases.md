@@ -48,7 +48,9 @@ PRs continue. A persistence failure after an API request still fails loud.
 ## Version-only re-bumps
 
 The own-diff comparison skips a sent-back PR as `awaiting-fix` when each
-file still matches, apart from files that left the own diff (see below). In a
+file still matches, apart from files that left the own diff (see below). A
+held PR is compared the same way on its strict path, with the rules in
+[Awaiting-owner](#awaiting-owner). In a
 file no earlier finding names, the added and removed lines must match: the same
 number of hunks, in the same order. Hunk headers
 and unchanged context lines are ignored there, so a base merge that only moves
@@ -103,3 +105,31 @@ that reaches the 300-file cap, since a truncated sent-back listing could hide or
 invent a drop. A new-head listing at the cap needs no rule of its own: it
 necessarily has a file the sent-back listing lacks, which gets a fresh review.
 Files present at both heads are compared as before.
+
+## Awaiting-owner
+
+A PR held for the owner (rule 4 of [SKILL.md](../SKILL.md)) gets a
+comment-only review, and the skill counts that hold as its own review. The gate
+skips such a PR as `awaiting-owner`, instead of reviewing it again, only when
+all three hold:
+
+- the skill's latest counted review is that hold, at an earlier commit;
+- this host's `log.jsonl` has a `held` record for that commit made under the
+  current `HOLD_POLICY_VERSION` (in `scripts/review_log.ts`). A held record
+  without a `holdPolicy` field counts as version 1;
+- `ownDiffUnchanged` confirms the PR's own diff is unchanged since the hold.
+
+A hold has no findings, so the comparison takes its strict path: context lines
+must match, and a file that left the own diff means a fresh review. The version
+exception does not apply, since it needs logged findings.
+
+A fresh review, not a skip, follows when there is no `held` record for the hold
+on this host (for example a hold posted from another host), when the record was
+made under an older policy version, or when the own diff changed at all, such
+as a fix commit or a conflict resolution.
+
+The comparison covers only the PR's own diff. Unchanged own-diff text does not
+prove that a base dependency did not change. The skip is the same own-diff
+comparison used for send-backs. The reassessment triggers are a change to the
+own diff, and a bump of `HOLD_POLICY_VERSION`, which makes each existing hold
+reassessed once even when the head is unchanged.
