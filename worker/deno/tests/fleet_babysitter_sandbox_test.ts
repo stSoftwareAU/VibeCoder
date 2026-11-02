@@ -276,7 +276,13 @@ Deno.test("babysitterProtectedPaths tolerates a missing .vibe-coder directory", 
 
     const result = await babysitterProtectedPaths(home, keyPath, []);
 
-    assertEquals(result, [keyPath]);
+    // Both the literal path and its resolved form: on macOS the temp
+    // directory sits under the /var -> /private/var symlink.
+    const resolved = `${await Deno.realPath(elsewhere)}/absent-key.pem`;
+    assertEquals(
+      [...result].sort(),
+      [...new Set([resolved, keyPath])].sort(),
+    );
   });
 });
 
@@ -545,9 +551,11 @@ Deno.test("path validation rejects an absolute path containing a NUL byte", asyn
       "must be an absolute path",
     );
     // Positive control: the same path without the NUL byte is accepted.
+    const resolved = `${await Deno.realPath(elsewhere)}/key.pem`;
     assertEquals(
-      await babysitterProtectedPaths(home, `${elsewhere}/key.pem`, []),
-      [`${elsewhere}/key.pem`],
+      [...await babysitterProtectedPaths(home, `${elsewhere}/key.pem`, [])]
+        .sort(),
+      [...new Set([resolved, `${elsewhere}/key.pem`])].sort(),
     );
   });
 });
