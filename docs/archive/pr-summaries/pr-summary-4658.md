@@ -45,6 +45,9 @@ The report is a Deno command and Deno task. No Node tooling, `package.json` or
   name inside the PR's lifetime; `HEAD` targets and branch names shared across
   repos stay unlinked. The review skill posts through its own `gh`, so reviews
   come from its local `log.jsonl`, documented as lower trust (not hash-chained).
+- The review log contract and JSONL parser live in
+  `worker/deno/lib/fleet_review_log.ts`, shared by the review skill and the
+  snapshot collector without importing the skill into the worker.
 - Deviation from the issue text, recorded for review: the issue says to put the
   fingerprint "in existing health/round records". The worker uses the lifecycle
   assignment and the reviewer uses `review-run.json`, but the babysitter had no
@@ -247,6 +250,10 @@ does not claim those deliverables.
 
 ## Test Plan
 
+- Quality-fix push `48efac0f`: extracted the shared review-log contract and
+  parser and changed the collector to import it from the worker library.
+  `deno test --allow-read --allow-env --allow-run --allow-write
+  --allow-sys=hostname tests/pr_completion_snapshot_test.ts` passed (40 tests).
 - Verifier and mutation round (this turn): `coverage.openPrsBeforeCohort` counts
   PRs still open that predate `cohort.start` (extra bounded `pulls?state=open`
   scan; a bound reached marks the repository truncated). `excludedPrs` now
