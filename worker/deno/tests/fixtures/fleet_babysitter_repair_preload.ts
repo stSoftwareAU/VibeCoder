@@ -47,7 +47,11 @@ function commandOutput(
       lock = undefined;
       return "";
     }
-    if (args[0] === "repo" && args[1] === "clone") return "";
+    if (
+      args[0] === "config" && args[1] === "get" && args[2] === "git_protocol"
+    ) {
+      return "https\n";
+    }
     // No cancelled runs, so the failed-CI repair proceeds to the agent.
     if (
       args[0] === "api" &&
@@ -57,6 +61,13 @@ function commandOutput(
     }
   }
   if (executable === "git") {
+    if (args[0] === "clone" && args.includes("--bare")) {
+      // The mirror clone's last argv element is the directory git creates.
+      Deno.mkdirSync(args[args.length - 1]!, { recursive: true });
+      return "";
+    }
+    if (args[0] === "clone") return "";
+    if (args[0] === "remote" && args[1] === "set-url") return "";
     if (args.includes("fetch") || args.includes("checkout")) return "";
     if (args.includes("rev-parse") && args.includes("HEAD")) return "abc";
     if (args.includes("status") && args.includes("--porcelain")) return "";
