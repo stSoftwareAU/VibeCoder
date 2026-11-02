@@ -102,8 +102,23 @@ URL, which points at that local repository).
   - serialiser replaced by `Promise.resolve()` → concurrency test red.
 - Failure-reason test: the failed-fetch test asserts git's real stderr text
   (observed from real git) appears in the error.
-- `./quality.sh`: see the final line of the PR comment thread; run result is
-  recorded below.
+- `deno task test:unit tests/fleet_pr_babysitter_test.ts
+  tests/fleet_babysitter_app_test.ts tests/fleet_babysitter_sandbox_test.ts`:
+  84 passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check` on the
+  changed files: clean.
+- `./quality.sh`: the first run failed only in `deno tests` on
+  `tests/fleet_babysitter_app_test.ts` ("production repair forwards CONFIG_PATH
+  and denies canonical credential targets"), whose fixture
+  `tests/fixtures/fleet_babysitter_repair_preload.ts` faked `gh repo clone` and
+  now fakes `gh config get git_protocol`, `git clone --bare` and `git remote
+  set-url`; that test passes after the fixture update. Two reruns of the full
+  gate then passed every stage up to `deno tests` and were killed by the 590 s
+  command cap there, so the final full gate did not complete.
+
+<!-- vibe-quality-gate-skipped: full gate exceeded the 590 s command cap in `deno tests` on two reruns after the fixture fix; the touched suites, fmt, lint and type check pass; CI runs the full gate -->
+
+Fixture edit: `tests/fixtures/fleet_babysitter_repair_preload.ts` — removed the
+`gh repo clone` branch (no longer called by the code); no assertion removed.
 
 ## Known gaps
 
