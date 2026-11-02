@@ -271,3 +271,44 @@ configuration. Semgrep and Checkov are unavailable locally, and operator config
 integration is absent. Confirmed with gh that base PR #4718 passed its quality,
 four test shards, Semgrep and Checkov jobs. These host limits do not change the
 122-test focused pass or claim a full local gate pass.
+
+Review repair for PR #4716 (process inspection and gate descendants):
+
+- Replaced unrestricted process and sysctl rules with separate execution/fork
+  grants, same-sandbox process inspection, and exact hardware/OS sysctl names.
+  Existing same-sandbox signal and restricted Mach rules remain intact.
+- The runner stops the gate process group after success, failure and timeout,
+  before waiting for inherited pipes. Injected-signal tests cover successful
+  and failed exits with open descendant pipes; existing timeout coverage stays.
+- Allowed POSIX semaphore/shared-memory operations and pseudo-terminals,
+  including the terminal device writes needed by the existing native resource
+  probe. SECURITY.md, C37 and the operator manual describe the actual grants
+  and the host-wide POSIX IPC namespace residual risk.
+- Added a native process-environment probe with a same-user marker holder,
+  an explicit readiness handshake and an unsandboxed positive control.
+  The native helper compiled and its positive control returned zero on this
+  host. Inside the runner, the gate requires a permission denial when reading
+  that holder's environment; a missing marker alone does not pass.
+- All three added unit regressions failed before the implementation change.
+  The four focused babysitter suites pass 125 tests, with none ignored.
+  Existing assertions remain intact; the bounded-output test injects its
+  signal function so it never sends a real process-group signal.
+- The live browser task was attempted again and fails at the initial fixed
+  sandbox startup probe: sandbox_apply: Operation not permitted. Chromium,
+  IPC/terminal grants and OS-level credential/Mach/process denials remain
+  unverified. Acceptance stays partial and #4674 must remain open.
+- Local quality gate: repository formatting, lint, Markdown, Mermaid and
+  completeness passed. Deno 2.9.5 panicked restoring test permissions in the
+  full parallel suite; the serial pass could not run. The release-tag ruleset
+  check cannot read sandbox-protected gh configuration. Semgrep and pinned
+  Checkov are unavailable, and operator configuration integration is absent.
+  Base PR #4730 has passing quality, all four test shards, integration,
+  Semgrep and Checkov checks, confirmed with gh.
+- The gate exposed a type error in the new spawn double; its cast was fixed
+  and the repository-wide frozen/locked type check passed on rerun.
+  Final repository lint and formatting passed; Markdown checked 242 files.
+  Manifest checks passed 847 tests with one existing ignored case.
+- No second production profile builder was found. The current base's mirror
+  clone API and its fixtures remain in use. A complete proposed PR description
+  is supplied in .babysitter-pr-body for the babysitter to apply; it has no
+  closing reference to the still-partial issue.

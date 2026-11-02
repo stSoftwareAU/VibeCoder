@@ -30,6 +30,7 @@ Deno.test({
     const home = await Deno.realPath(await Deno.makeTempDir());
     const secretDir = await Deno.realPath(await Deno.makeTempDir());
     const keychainDir = `${home}/Library/Keychains`;
+    let markerProcess: Deno.ChildProcess | undefined;
     try {
       const secret = `${secretDir}/credential`;
       const secretLink = `${home}/credential-link`;
@@ -86,6 +87,65 @@ Deno.test({
       assert(
         sandboxBaseline.value.success,
         `Host must permit sandbox startup: ${sandboxBaseline.value.stderr}`,
+      );
+      await Deno.writeTextFile(
+        `${root}/process-probe.c`,
+        `
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
+  if (strcmp(argv[1], "--hold") == 0) {
+    const char *marker = getenv("VIBE_PROCESS_MARKER");
+    if (!marker || strcmp(marker, "runner-private-marker") != 0) return 2;
+    if (write(STDOUT_FILENO, "R", 1) != 1) return 2;
+    sleep(300);
+    return 0;
+  }
+  int mib[] = { CTL_KERN, KERN_PROCARGS2, atoi(argv[1]) };
+  char buffer[262144];
+  size_t size = sizeof(buffer);
+  if (sysctl(mib, 3, buffer, &size, NULL, 0) != 0) {
+    int denied = errno == EPERM || errno == EACCES;
+    perror("process environment sysctl");
+    return denied ? 1 : 2;
+  }
+  const char *marker = "VIBE_PROCESS_MARKER=runner-private-marker";
+  for (size_t i = 0; i + strlen(marker) <= size; ++i)
+    if (memcmp(buffer + i, marker, strlen(marker)) == 0) return 0;
+  return 2;
+}
+`,
+      );
+      const processCompile = await runWithTimeout("/usr/bin/clang", [
+        `${root}/process-probe.c`,
+        "-o",
+        `${root}/process-probe`,
+      ], { timeoutMs: 30_000, quiet: true });
+      assert(processCompile.ok && processCompile.value.success);
+      markerProcess = new Deno.Command(`${root}/process-probe`, {
+        args: ["--hold"],
+        env: { VIBE_PROCESS_MARKER: "runner-private-marker" },
+        stdout: "piped",
+        stderr: "null",
+      }).spawn();
+      const reader = markerProcess.stdout.getReader();
+      const ready = await reader.read();
+      reader.releaseLock();
+      assertEquals(new TextDecoder().decode(ready.value), "R");
+      const processBaseline = await runWithTimeout(`${root}/process-probe`, [
+        String(markerProcess.pid),
+      ], { timeoutMs: 10_000, quiet: true });
+      assert(
+        processBaseline.ok && processBaseline.value.success,
+        `Process environment marker must be readable outside the sandbox: ${
+          processBaseline.ok ? processBaseline.value.stderr : "probe failed"
+        }`,
       );
       const restrictedLaunch = await runWithTimeout(
         "/usr/bin/sandbox-exec",
@@ -187,6 +247,7 @@ int main(void) {
         `${root}/quality.sh`,
         `#!/bin/bash
 set -euo pipefail
+if ./process-probe ${markerProcess.pid}; then exit 46; else test "$?" -eq 1; fi
 sleep 60 &
 child=$!
 kill -TERM "$child"
@@ -273,6 +334,15 @@ touch gate-ran
         Deno.errors.NotFound,
       );
     } finally {
+      try {
+        markerProcess?.kill("SIGKILL");
+      } catch (error) {
+        assert(error instanceof Deno.errors.NotFound);
+      }
+      if (markerProcess) {
+        await markerProcess.status;
+        await markerProcess.stdout.cancel();
+      }
       await Deno.remove(root, { recursive: true });
       await Deno.remove(scratch, { recursive: true });
       await Deno.remove(home, { recursive: true });

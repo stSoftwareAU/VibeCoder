@@ -20,6 +20,19 @@ The runner permits signals only to processes in the same sandbox, so gates
 can terminate their own test workers and browser children. The live integration
 gate starts, terminates and reaps a background child to exercise this grant.
 
+Process inspection is restricted to the same sandbox; process execution and
+forking are separate grants. Sysctl reads allow only the named CPU, memory,
+page-size and OS-version values in the profile, so a gate cannot inspect an
+unsandboxed process's initial environment. The live integration probe uses a
+same-user process with a marker environment variable and an unsandboxed positive
+control. POSIX semaphore and shared-memory operations and pseudo-terminals
+(including /dev/ptmx and numbered /dev/ttys devices) are allowed for ordinary
+test workers. POSIX IPC names share the host namespace; operators must not
+store credentials in shared IPC objects. After every gate exit, including
+success, the runner kills the isolated process group before waiting for output
+pipes; timeout also destroys the pipes. These OS-level grants still require
+a successful macOS integration run.
+
 The runner permits only named logging, notification, font and WindowServer
 Mach lookups, plus lookup and registration of browser rendezvous and
 Crashpad name prefixes (children look up the rendezvous server their parent

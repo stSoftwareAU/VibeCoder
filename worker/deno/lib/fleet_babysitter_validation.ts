@@ -82,9 +82,28 @@ export function buildBabysitterValidationProfile(
   return [
     "(version 1)",
     "(deny default)",
-    "(allow process*)",
+    "(allow process-exec)",
+    "(allow process-fork)",
+    "(allow process-info* (target same-sandbox))",
     "(allow signal (target same-sandbox))",
-    "(allow sysctl-read)",
+    ...[
+      "hw.memsize",
+      "hw.ncpu",
+      "hw.logicalcpu",
+      "hw.physicalcpu",
+      "hw.pagesize",
+      "hw.optional.arm64",
+      "kern.ostype",
+      "kern.osrelease",
+      "kern.osversion",
+      "kern.version",
+    ].map((name) =>
+      `(allow sysctl-read (sysctl-name ${JSON.stringify(name)}))`
+    ),
+    "(allow ipc-posix-sem*)",
+    "(allow ipc-posix-shm*)",
+    "(allow pseudo-tty)",
+    '(allow file-read* file-write* (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$"))',
     '(allow file-read* (subpath "/"))',
     ...protectedRules,
     ...[dir, scratch].map((path) =>
@@ -184,8 +203,22 @@ export async function runIsolatedCommand(
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  let stopped = false;
+  const stopGroup = () => {
+    if (stopped || child.pid === undefined) return;
+    stopped = true;
+    signalGroup("SIGKILL");
+  };
   const status = new Promise<number>((resolve, reject) => {
     child.once("error", reject);
+    // Stop descendants before waiting for their inherited pipes to close.
+    child.once("exit", () => {
+      try {
+        stopGroup();
+      } catch (error) {
+        reject(error);
+      }
+    });
     // close waits for pipes too, while the deadline below never waits for EOF.
     child.once("close", (code) => resolve(code ?? 1));
   });
@@ -194,7 +227,7 @@ export async function runIsolatedCommand(
       timedOut = true;
       // A timed-out gate is untrusted: stop its entire group immediately.
       try {
-        signalGroup("SIGKILL");
+        stopGroup();
       } catch (error) {
         reject(error);
       }
@@ -217,6 +250,7 @@ export async function runIsolatedCommand(
     };
   } finally {
     clearTimeout(timer);
+    stopGroup();
   }
 }
 

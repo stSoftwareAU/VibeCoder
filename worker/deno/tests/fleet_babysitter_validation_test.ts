@@ -1,6 +1,7 @@
 import {
   assert,
   assertEquals,
+  assertMatch,
   assertRejects,
   assertStringIncludes,
   assertThrows,
@@ -249,7 +250,7 @@ Deno.test("runner drains long command streams while retaining only bounded outpu
   const result = await runIsolatedCommand(Deno.execPath(), [
     "eval",
     `Deno.stdout.writeSync(new TextEncoder().encode("x".repeat(25_000)))`,
-  ], { cwd: Deno.cwd(), env: {}, timeoutMs: 2000 });
+  ], { cwd: Deno.cwd(), env: {}, timeoutMs: 2000, signal: () => {} });
   assertEquals(result.success, true);
   const output = result.stdout;
   assertEquals(output.length, 20_000);
@@ -1109,3 +1110,62 @@ Deno.test("validation permits signals only to processes in the same sandbox", ()
     ["(allow signal (target same-sandbox))"],
   );
 });
+
+Deno.test("validation scopes process inspection and sysctls and permits gate resources", () => {
+  const rules = buildBabysitterValidationProfile(
+    "/tmp/clone",
+    "/tmp/scratch",
+    [],
+  ).split("\n");
+  assertEquals(rules.filter((rule) => rule.startsWith("(allow process")), [
+    "(allow process-exec)",
+    "(allow process-fork)",
+    "(allow process-info* (target same-sandbox))",
+  ]);
+  const sysctls = rules.filter((rule) => rule.startsWith("(allow sysctl-read"));
+  assert(sysctls.length > 0);
+  for (const rule of sysctls) {
+    assertMatch(
+      rule,
+      /^\(allow sysctl-read \(sysctl-name "[a-zA-Z0-9_.]+"\)\)$/,
+    );
+  }
+  for (
+    const rule of [
+      "(allow ipc-posix-sem*)",
+      "(allow ipc-posix-shm*)",
+      "(allow pseudo-tty)",
+      '(allow file-read* file-write* (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$"))',
+    ]
+  ) assert(rules.includes(rule), rule);
+});
+
+for (const code of [0, 1]) {
+  Deno.test(`runner stops descendants on gate exit ${code} before pipes close`, async () => {
+    const child = new EventEmitter();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    Object.assign(child, { pid: 2147483647, stdout, stderr, unref: () => {} });
+    const signals: unknown[] = [];
+    const result = await runIsolatedCommand("/bin/bash", ["./quality.sh"], {
+      cwd: Deno.cwd(),
+      env: {},
+      timeoutMs: 2000,
+      spawn: (() => {
+        queueMicrotask(() => {
+          stdout.write("gate output");
+          child.emit("exit", code);
+        });
+        return child;
+      }) as unknown as typeof childProcess.spawn,
+      signal: (pid, signal) => {
+        signals.push([pid, signal]);
+        queueMicrotask(() => child.emit("close", code));
+      },
+    });
+    assertEquals(signals, [[-2147483647, "SIGKILL"]]);
+    assertEquals(result.code, code);
+    assertEquals(result.success, code === 0);
+    assertEquals(result.stdout, "gate output");
+  });
+}
