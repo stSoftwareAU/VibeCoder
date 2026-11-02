@@ -175,7 +175,7 @@ Fixed <failing check> — <one-line root cause>.
 **Root cause:** <why it failed, in a sentence or two>
 **The fix:** <what you changed, and why it addresses the cause rather than the symptom>
 **Files touched:** <path — what changed>; <path — what changed>
-**Gate:** <the checks you ran and their result — the full gate when the run budget covered it, otherwise the targeted checks plus the skip note from `<quality_instructions>`>
+**Gate:** <the checks you ran and their result — the full gate when the run budget covered it, otherwise the targeted checks plus the skip note from `<quality_instructions>`>. The note reports only the agent session; the worker still requires the target repository's own strict `quality.sh` before publishing the repair, and an unavailable or failing required check cannot be reported as validated completion.
 ```
 
 When you changed nothing:

@@ -678,7 +678,10 @@ reviewer.
 - All checks must pass before PR creation: lint, type checks, unit tests, and
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`
-  block gives you — CI runs the same checks on the PR.
+  block gives you. That note records only what you ran in the agent session:
+  the worker still runs the target repository's own strict `quality.sh` before
+  publishing, and an unavailable or failing required check cannot be reported
+  as validated completion.
 
 ## Change Scope
 

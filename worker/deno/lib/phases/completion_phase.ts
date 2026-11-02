@@ -216,7 +216,10 @@ import {
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { runPrePushGateRecoveryTurn } from "../pre_push_gate_retry.ts";
 import { PrePushGateInfrastructureError } from "../pre_push_gate.ts";
-import { publicationValidationIsCurrent } from "../publication_validation.ts";
+import {
+  publicationValidationIsCurrent,
+  validateRepositoryForPublication,
+} from "../publication_validation.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   findOwnLineStandingViolations,
@@ -1961,10 +1964,49 @@ async function completionBody(
   const blockedBeforePush = await gateBeforePush();
   if (blockedBeforePush) return blockedBeforePush;
 
+  const validateImmediatelyBeforePush = async (): Promise<Result<void>> => {
+    const isCurrent = deps.quality.publicationValidationIsCurrent ??
+      publicationValidationIsCurrent;
+    if (
+      publicationValidation &&
+      await isCurrent(publicationValidation, state.repoPath)
+    ) {
+      return { ok: true, value: undefined };
+    }
+    const validate = deps.quality.validatePublication ??
+      validateRepositoryForPublication;
+    const refreshed = await validate(state.repoPath);
+    if (refreshed.status !== "passed") {
+      return {
+        ok: false,
+        error: new Error(
+          refreshed.status === "failed"
+            ? `Required repository checks failed: ${refreshed.output}`
+            : `Required repository checks unavailable: ${refreshed.reason}`,
+        ),
+      };
+    }
+    if (!await isCurrent(refreshed, state.repoPath)) {
+      return {
+        ok: false,
+        error: new Error(
+          "Checkout changed after repository checks; rerun validation",
+        ),
+      };
+    }
+    publicationValidation = refreshed;
+    return { ok: true, value: undefined };
+  };
+
   // Push branch
-  const pushResult = await deps.git.pushUnpushedCommits(state.branchName, {
-    cwd: state.repoPath,
-  });
+  const pushResult = await deps.git.pushUnpushedCommits(
+    state.branchName,
+    {
+      cwd: state.repoPath,
+    },
+    false,
+    validateImmediatelyBeforePush,
+  );
   if (!pushResult.ok) {
     // Issue #1952: GitHub refusing a workflow file for want of the scope is
     // not a stale branch. Fetch, merge and retry cannot supply a missing

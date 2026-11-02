@@ -1,0 +1,12 @@
+{
+  "issue": 4625,
+  "chunk": "top-up-4625",
+  "title": "top-up: shared publication validation runner",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4625",
+  "definition": "Runner-owned repository quality validation and its failure classification before worker and babysitter publication.",
+  "status": "claimed",
+  "sweptAt": "a9dcdc3792313a96b714bf09083aafa839511053",
+  "paths": [
+    "worker/deno/lib/publication_validation.ts"
+  ]
+}

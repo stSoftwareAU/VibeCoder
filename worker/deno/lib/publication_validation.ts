@@ -1,6 +1,7 @@
 /** Runner-owned repository checks required before completed work is published. */
 
 import { runGitCommand } from "./git_timeout.ts";
+import { computeWorkingTreeDigest } from "./quality_gate_cache.ts";
 import { runRepositoryCommand } from "./untrusted_gate_spawn.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
@@ -40,63 +41,36 @@ export async function publicationTreeIdentity(
   } catch {
     return null;
   }
-  const [head, status, diff, untracked, bash, deno] = await Promise.all([
+  const [head, tree, bash, deno] = await Promise.all([
     runGitCommand(["rev-parse", "HEAD"], { cwd }),
-    runGitCommand(["status", "--porcelain=v1", "--untracked-files=all"], {
-      cwd,
-    }),
-    runGitCommand(["diff", "--binary", "HEAD", "--"], { cwd }),
-    runGitCommand(["ls-files", "--others", "--exclude-standard", "-z"], {
-      cwd,
-    }),
+    computeWorkingTreeDigest(cwd),
     runWithTimeout("bash", ["--version"], { timeoutMs: TOOL_PROBE_TIMEOUT_MS }),
     runWithTimeout("deno", ["--version"], { timeoutMs: TOOL_PROBE_TIMEOUT_MS }),
   ]);
   if (
-    [head, status, diff, untracked].some((r) => !r.ok || r.value.code !== 0) ||
-    [bash, deno].some((r) => !r.ok || r.value.code !== 0 || r.value.timedOut)
+    !head.ok || head.value.code !== 0 || tree === null || !bash.ok ||
+    bash.value.code !== 0 || bash.value.timedOut
   ) {
     return null;
   }
-  const files = untracked.ok
-    ? untracked.value.stdout.split("\0").filter(Boolean)
-    : [];
-  const additions: string[] = [];
-  try {
-    for (const file of files.sort()) {
-      if (file.startsWith("/") || file.split("/").includes("..")) return null;
-      const path = `${cwd}/${file}`;
-      const info = await Deno.lstat(path);
-      const content = info.isSymlink
-        ? `symlink:${await Deno.readLink(path)}`
-        : `file:${await digestBytes(await Deno.readFile(path))}`;
-      additions.push(`${file}\0${content}`);
-    }
-  } catch {
-    return null;
-  }
+  // Repositories may use a different toolchain. Record Deno when installed,
+  // but let their own quality.sh decide whether it is required.
+  const denoVersion = deno.ok && deno.value.code === 0 && !deno.value.timedOut
+    ? deno.value.stdout
+    : "deno-unavailable";
+  const commandEnvironment = Object.entries(Deno.env.toObject())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`);
   return await digest([
     head.ok ? head.value.stdout.trim() : "",
     root,
-    status.ok ? status.value.stdout : "",
-    diff.ok ? diff.value.stdout : "",
-    ...additions,
+    tree,
     "./quality.sh --strict",
     bash.ok ? bash.value.stdout : "",
-    deno.ok ? deno.value.stdout : "",
+    denoVersion,
     Deno.execPath(),
-    Deno.env.get("PATH") ?? "",
-    Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") ?? "",
+    ...commandEnvironment,
   ].join("\0"));
-}
-
-async function digestBytes(bytes: Uint8Array): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", bytes.slice());
-  return Array.from(
-    new Uint8Array(hash),
-    (b) => b.toString(16).padStart(2, "0"),
-  )
-    .join("");
 }
 
 /** Execute the target repository's own required quality entry point. */

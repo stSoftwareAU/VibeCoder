@@ -115,6 +115,8 @@ interface Scenario {
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
   warner?: MissingScopeWarner;
   publicationStatus?: "passed" | "failed" | "unavailable";
+  invokePushRecoveryGuard?: boolean;
+  staleOnPushRecovery?: boolean;
 }
 
 interface Outcome {
@@ -132,6 +134,7 @@ interface Outcome {
   recoveries: number;
   gateCalls: number;
   publicationChecks: number;
+  publicationCurrentChecks: number;
   /** Agent invocations the run made, including the pre-push gate's turn (Issue #4128). */
   agentCalls: number;
   /**
@@ -175,6 +178,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let recoveries = 0;
   let gateCalls = 0;
   let publicationChecks = 0;
+  let publicationCurrentChecks = 0;
   let agentCalls = 0;
   let recoveryCommits = 0;
   const agentPrompts: string[] = [];
@@ -262,7 +266,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           }
           : { status: "passed" as const, identity: "test" };
       },
-      publicationValidationIsCurrent: async () => true,
+      publicationValidationIsCurrent: async () => {
+        publicationCurrentChecks++;
+        return !(scenario.staleOnPushRecovery &&
+          publicationCurrentChecks === 2);
+      },
     },
     logger: {
       info: (message: string) => infos.push(message),
@@ -444,8 +452,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             : new PrePushGateBlockedError(answer),
         });
       },
-      pushUnpushedCommits: async () => {
+      pushUnpushedCommits: async (_branch, _options, _allow, beforePush) => {
         pushes++;
+        if (scenario.invokePushRecoveryGuard && beforePush) {
+          const checked = await beforePush();
+          if (!checked.ok) return { ok: false as const, error: checked.error };
+        }
         if (scenario.recoveryCommitFailure) {
           await realGit(["push", "origin", state.branchName]);
         }
@@ -625,6 +637,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       recoveries,
       gateCalls,
       publicationChecks,
+      publicationCurrentChecks,
       gateBaseRefs,
       gatePreFlightFlags,
       formatBaseRefs,
@@ -669,6 +682,25 @@ Deno.test({
     assertEquals(o.pushes, 0);
     assertEquals(o.prCreates, 0);
     assertEquals(o.status, "failure");
+  },
+});
+
+Deno.test({
+  name: "completion - push recovery revalidates a stale successful result",
+  permissions: { read: true, write: true, env: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: ["pass"],
+      invokePushRecoveryGuard: true,
+      staleOnPushRecovery: true,
+    });
+    assertEquals(o.status, "continue", JSON.stringify(o));
+    assertEquals(o.publicationChecks, 2);
+    assert(o.publicationCurrentChecks >= 3);
+    assertEquals(o.pushes, 1);
+    assertEquals(o.prCreates, 1);
   },
 });
 
