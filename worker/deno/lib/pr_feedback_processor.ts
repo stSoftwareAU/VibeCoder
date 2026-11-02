@@ -32,6 +32,10 @@ import {
 } from "./prepr_review_record.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
+  publicationValidationIsCurrent,
+  validateRepositoryForPublication,
+} from "./publication_validation.ts";
+import {
   checkPrCommentHasFailedOnce,
   type CommentType,
   removeProcessedMark,
@@ -209,6 +213,8 @@ export interface PrFeedbackProcessorDeps {
   deps: WorkerDeps;
   /** Working directory for repo operations. */
   workDir: string;
+  /** Injectable shared runner for publication checks. */
+  publicationValidationFn?: typeof validateRepositoryForPublication;
   /**
    * The `WORK_DIR` root where heartbeat and marker state files live — never a
    * clone (Issue #1662).
@@ -1680,7 +1686,7 @@ async function _processFeedbackWithHeartbeat(
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir, undefined);
   let verifierFailure: Error | undefined;
-  const verifyBeforePush = commentType === "pr_review"
+  const verifyFeedbackBeforePush = commentType === "pr_review"
     ? async () => {
       const checked =
         await (processorDeps.feedbackVerifierFn ?? verifyFeedbackFix)({
@@ -1710,6 +1716,32 @@ async function _processFeedbackWithHeartbeat(
       return checked;
     }
     : undefined;
+  const verifyBeforePush = async () => {
+    if (verifyFeedbackBeforePush) {
+      const verified = await verifyFeedbackBeforePush();
+      if (!verified.ok) return verified;
+    }
+    const validate = processorDeps.publicationValidationFn ??
+      deps.quality.validatePublication ?? validateRepositoryForPublication;
+    const validation = await validate(processorDeps.workDir);
+    if (validation.status === "unavailable") {
+      return { ok: false as const, error: new Error(validation.reason) };
+    }
+    if (validation.status === "failed") {
+      return { ok: false as const, error: new Error(validation.output) };
+    }
+    const current = deps.quality.publicationValidationIsCurrent ??
+      publicationValidationIsCurrent;
+    if (!await current(validation, processorDeps.workDir)) {
+      return {
+        ok: false as const,
+        error: new Error(
+          "checkout changed after quality validation; rerun checks",
+        ),
+      };
+    }
+    return { ok: true as const, value: undefined };
+  };
   const finalise = () =>
     deps.git.commitAndPushPending(
       pushBranch,

@@ -114,6 +114,7 @@ interface Scenario {
   baseUnresolvable?: boolean;
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
   warner?: MissingScopeWarner;
+  publicationStatus?: "passed" | "failed" | "unavailable";
 }
 
 interface Outcome {
@@ -130,6 +131,7 @@ interface Outcome {
   pushes: number;
   recoveries: number;
   gateCalls: number;
+  publicationChecks: number;
   /** Agent invocations the run made, including the pre-push gate's turn (Issue #4128). */
   agentCalls: number;
   /**
@@ -172,6 +174,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   }
   let recoveries = 0;
   let gateCalls = 0;
+  let publicationChecks = 0;
   let agentCalls = 0;
   let recoveryCommits = 0;
   const agentPrompts: string[] = [];
@@ -242,6 +245,25 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     );
   }
   const deps = createMockDeps({
+    quality: {
+      validatePublication: async () => {
+        publicationChecks++;
+        return scenario.publicationStatus === "unavailable"
+          ? {
+            status: "unavailable" as const,
+            identity: "test",
+            reason: "host unavailable",
+          }
+          : scenario.publicationStatus === "failed"
+          ? {
+            status: "failed" as const,
+            identity: "test",
+            output: "quality failed",
+          }
+          : { status: "passed" as const, identity: "test" };
+      },
+      publicationValidationIsCurrent: async () => true,
+    },
     logger: {
       info: (message: string) => infos.push(message),
       warn: (message: string) => warnings.push(message),
@@ -602,6 +624,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       pushes,
       recoveries,
       gateCalls,
+      publicationChecks,
       gateBaseRefs,
       gatePreFlightFlags,
       formatBaseRefs,
@@ -628,6 +651,26 @@ const base = {
   diffAnswers: true,
   changedFiles: ["docs/USAGE.md"],
 };
+
+Deno.test({
+  name: "completion - failed publication validation blocks PR publication",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: ["pass"],
+      publicationStatus: "failed",
+    });
+    assert(
+      o.publicationChecks > 0,
+      "the publisher must execute the shared runner",
+    );
+    assertEquals(o.pushes, 0);
+    assertEquals(o.prCreates, 0);
+    assertEquals(o.status, "failure");
+  },
+});
 
 Deno.test({
   name:

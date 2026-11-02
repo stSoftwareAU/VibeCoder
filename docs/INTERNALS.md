@@ -131,6 +131,17 @@ reports. The completion phase does the same before its pre-push
 gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
 
+Before issue completion, PR-feedback pushes, CI-repair pushes and babysitter
+repair pushes, `publication_validation.ts` also runs the target repository's
+`./quality.sh --strict` through `untrusted_gate_spawn.ts`. Strict mode makes a
+skipped required check fail closed. The runner distinguishes a failed check
+from an unavailable host, redacts actionable output, and binds success to the
+checkout contents, the gate command and the installed Bash and Deno versions;
+the publisher rechecks that identity immediately before pushing. A formatter
+or repair edit therefore requires a fresh run. The target repository's gate
+remains its own policy; this runner does not define checks across repositories
+(Issue #4625).
+
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
 the gap that let two PRs sit blocked on the same
 `detect-non-literal-regexp` rule: `semgrep.yml` is a blocking PR check, so

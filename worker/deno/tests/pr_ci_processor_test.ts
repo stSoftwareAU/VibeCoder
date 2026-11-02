@@ -2267,6 +2267,7 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
     const gitCommands: string[][] = [];
     const commitAndPushCalls: string[] = [];
     const ghCalls: string[][] = [];
+    let publicationChecks = 0;
     let claudeRan = false;
     let fixBranchCheckoutBeforeClaude = false;
     let enableAutoMergeCalls = 0;
@@ -2282,6 +2283,13 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
     };
 
     const deps = createMockDeps({
+      quality: {
+        validatePublication: async () => {
+          publicationChecks++;
+          return { status: "passed" as const, identity: "test" };
+        },
+        publicationValidationIsCurrent: async () => true,
+      },
       claude: mockClaude,
       github: {
         runGhCommand: makeGatedFixGh(ghCalls, {
@@ -2312,17 +2320,25 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
             value: { code: 0, stdout: "", stderr: "" },
           });
         }) as unknown as GitDeps["runGitCommand"],
-        commitAndPushPending: ((branchName: string) => {
-          commitAndPushCalls.push(branchName);
-          return Promise.resolve({
-            ok: true,
-            value: {
-              committedNewChanges: false,
-              commitsPushed: 1,
-              finalUnpushedCount: 0,
-            },
-          });
-        }) as unknown as GitDeps["commitAndPushPending"],
+        commitAndPushPending:
+          (async (...args: Parameters<GitDeps["commitAndPushPending"]>) => {
+            const [branchName] = args;
+            commitAndPushCalls.push(branchName);
+            const beforePush = args[7];
+            if (!beforePush) {
+              throw new Error("publication validation callback missing");
+            }
+            const validated = await beforePush();
+            if (!validated.ok) return validated;
+            return Promise.resolve({
+              ok: true,
+              value: {
+                committedNewChanges: false,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+              },
+            });
+          }) as unknown as GitDeps["commitAndPushPending"],
       },
       pr: {
         enableAutoMerge: ((() => {
@@ -2369,6 +2385,11 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
       commitAndPushCalls,
       [GATED_FIX_BRANCH],
       "the fix, not the PR's own head, receives the commit and push",
+    );
+    assertEquals(
+      publicationChecks,
+      1,
+      "CI repair must run the shared gate before push",
     );
     assertEquals(
       gitCommands.some((args) =>

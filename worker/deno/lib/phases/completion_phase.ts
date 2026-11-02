@@ -61,6 +61,7 @@ import { resolveRepoCredentials } from "../repo_credentials.ts";
 import {
   PRE_PUSH_GATE_REASON_HEAD_CHARS,
   PRE_PUSH_GATE_REASON_TAIL_CHARS,
+  PrePushGateBlockedError,
   resolvePreFlightSpec,
 } from "../git_push.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
@@ -214,6 +215,8 @@ import {
 } from "../security_fix_discrimination.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { runPrePushGateRecoveryTurn } from "../pre_push_gate_retry.ts";
+import { PrePushGateInfrastructureError } from "../pre_push_gate.ts";
+import { publicationValidationIsCurrent } from "../publication_validation.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   findOwnLineStandingViolations,
@@ -1803,6 +1806,11 @@ async function completionBody(
   );
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
+  let publicationValidation:
+    | Awaited<
+      ReturnType<NonNullable<typeof deps.quality.validatePublication>>
+    >
+    | undefined;
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
     const runGateOnce = async () => {
       // The repo's own formatters first (part of #2932): a formatting-only
@@ -1816,6 +1824,32 @@ async function completionBody(
         state.repoPath,
         comparableBase.ok ? comparableBase.value : undefined,
       );
+      const validate = deps.quality.validatePublication;
+      if (!validate) {
+        return {
+          ok: false as const,
+          error: new PrePushGateInfrastructureError(
+            "required publication validation runner is not configured",
+          ),
+        };
+      }
+      publicationValidation = await validate(state.repoPath);
+      if (publicationValidation.status === "unavailable") {
+        return {
+          ok: false as const,
+          error: new PrePushGateInfrastructureError(
+            `required quality validation unavailable: ${publicationValidation.reason}`,
+          ),
+        };
+      }
+      if (publicationValidation.status === "failed") {
+        return {
+          ok: false as const,
+          error: new PrePushGateBlockedError(
+            `[PRE_PUSH_BLOCKED] required quality validation failed: ${publicationValidation.output}`,
+          ),
+        };
+      }
       return await deps.git.gateUnpushedCommits(
         state.branchName,
         { cwd: state.repoPath },
@@ -1845,6 +1879,21 @@ async function completionBody(
       if (turn.ran) gate = await runGateOnce();
     }
     if (gate.ok) {
+      if (
+        !publicationValidation ||
+        !await (deps.quality.publicationValidationIsCurrent ??
+          publicationValidationIsCurrent)(
+            publicationValidation,
+            state.repoPath,
+          )
+      ) {
+        return {
+          status: "failure",
+          category: "pre_push_gate",
+          reason:
+            `${PRE_PUSH_GATE_MARKER}: checkout changed after quality validation; checks must be rerun`,
+        };
+      }
       // Issue #3770: log every gate outcome so the checks a live run reached
       // are observable in the worker log — a pass names the checks, a no-op
       // says nothing was ahead, and neither is ever logged as the other.

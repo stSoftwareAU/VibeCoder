@@ -203,6 +203,11 @@ import { evaluateRunGuard } from "./run_entrypoint.ts";
 
 // Quality
 import { runQualityGate } from "./quality_gate.ts";
+import {
+  publicationValidationIsCurrent,
+  type PublicationValidationResult,
+  validateRepositoryForPublication,
+} from "./publication_validation.ts";
 import { formatSummary } from "./quality_helpers.ts";
 import { collectDiffableGateFindings } from "./baseline_gate.ts";
 import type { MutationCheckResult } from "./mutation_gate.ts";
@@ -534,6 +539,14 @@ export interface InfrastructureDeps {
 
 /** Quality — quality gate, helpers. */
 export interface QualityDeps {
+  /** Run the target repository's required local gate before publication. */
+  validatePublication?: (
+    cwd: string,
+  ) => Promise<PublicationValidationResult>;
+  publicationValidationIsCurrent?: (
+    result: PublicationValidationResult,
+    cwd: string,
+  ) => Promise<boolean>;
   runQualityGate: typeof runQualityGate;
   formatSummary: typeof formatSummary;
   /** Collect check-agnostic diffable findings for the baseline-aware gate (Issue #2604). */
@@ -868,6 +881,8 @@ export function createDefaultDeps(
     },
 
     quality: {
+      validatePublication: validateRepositoryForPublication,
+      publicationValidationIsCurrent,
       runQualityGate,
       formatSummary,
       collectDiffableGateFindings,
@@ -1557,6 +1572,8 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
   };
 
   const mockQuality: QualityDeps = {
+    validatePublication: async () => ({ status: "passed", identity: "mock" }),
+    publicationValidationIsCurrent: async () => true,
     runQualityGate: mockFn<QualityDeps["runQualityGate"]>(() =>
       Promise.resolve({
         ok: true,

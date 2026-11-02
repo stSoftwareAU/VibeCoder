@@ -667,7 +667,21 @@ Deno.test("babysitter stages resolved merge files and refuses conflict markers",
       "git failed",
     );
     await Deno.writeTextFile(`${dir}/file.txt`, "feature and other\n");
-    await validateAndCommit(dir, 123, { login: "test-app[bot]", id: "12345" });
+    await assertRejects(
+      () =>
+        validateAndCommit(
+          dir,
+          123,
+          { login: "test-app[bot]", id: "12345" },
+          async () => ({
+            status: "failed",
+            identity: "test-tree",
+            output: "test failed",
+          }),
+        ),
+      Error,
+      "required quality checks failed",
+    );
     assert((await git("diff", "--quiet", "HEAD")).success);
     assert((await git("rev-parse", "HEAD^2")).success);
     const author = await new Deno.Command("git", {
@@ -941,7 +955,7 @@ Deno.test("a review repair runs the local checks covering the changed files", ()
     "",
   );
   assertStringIncludes(prompt, "formatter, linter, type or compile check");
-  assertStringIncludes(prompt, "confirm they pass before");
+  assertStringIncludes(prompt, "required quality.sh before it can push");
 });
 
 Deno.test("a conflict repair still checks the packages it touched, not the whole suite", () => {
@@ -1061,17 +1075,15 @@ Deno.test("an empty or oversized PR description proposal is not applied", async 
   }
 });
 
-// Issue #4677: CI is the gate, so a check this host cannot run is reported,
-// not a reason to discard an otherwise complete repair.
-Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+// Issue #4625: a missing local gate is a capability failure, not a CI pass.
+Deno.test("a check the host cannot run withholds readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(prompt, "name it in your final response");
     assertStringIncludes(
       prompt,
-      "does not by itself withhold BABYSITTER_READY",
+      "A missing gate, failed required check or unavailable check host blocks the repair push",
     );
   }
 });
@@ -1156,28 +1168,26 @@ Deno.test("the PR description update passes the write allowlist for its repo onl
   });
 });
 
-// Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
-// a test the repair never touched; CI on the base is the arbiter.
-Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
+// Issue #4625: an unavailable required local check never becomes a pass.
+Deno.test("an unavailable local check blocks babysitter readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(
       prompt,
-      "unrelated to the files you changed and passes in CI on the base branch",
+      "unavailable check host blocks the repair push",
     );
   }
 });
 
-// Issue #4694: a check that reads commit history cannot see the uncommitted
-// fix the agent is forbidden to commit (VibeCoder#4675, #4687).
-Deno.test("a check that reads commit history does not withhold readiness", () => {
+Deno.test("the required gate runs after commit and is rechecked before push", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(prompt, "reads commit history");
+    assertStringIncludes(prompt, "after committing the repair");
+    assertStringIncludes(prompt, "immediately before pushing");
   }
 });
 

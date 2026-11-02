@@ -1022,6 +1022,7 @@ Deno.test("prFeedbackProcessorCommand - unknown operation returns error", async 
 Deno.test("processPrFeedback - pushes commits after Claude makes changes (Issue #1412)", async () => {
   let pushCalled = false;
   let pushBranch = "";
+  let publicationChecks = 0;
 
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: (() =>
@@ -1035,22 +1036,37 @@ Deno.test("processPrFeedback - pushes commits after Claude makes changes (Issue 
   };
 
   const deps = createMockDeps({
+    quality: {
+      validatePublication: async () => {
+        publicationChecks++;
+        return { status: "passed" as const, identity: "test" };
+      },
+      publicationValidationIsCurrent: async () => true,
+    },
     claude: mockClaude,
     github: mockGithub,
     git: {
       // Issue #1643: processor uses commitAndPushPending.
-      commitAndPushPending: ((branch: string) => {
-        pushCalled = true;
-        pushBranch = branch;
-        return Promise.resolve({
-          ok: true,
-          value: {
-            committedNewChanges: false,
-            commitsPushed: 1,
-            finalUnpushedCount: 0,
-          },
-        });
-      }) as unknown as GitDeps["commitAndPushPending"],
+      commitAndPushPending:
+        (async (...args: Parameters<GitDeps["commitAndPushPending"]>) => {
+          const [branch] = args;
+          pushCalled = true;
+          pushBranch = branch;
+          const beforePush = args[7];
+          if (!beforePush) {
+            throw new Error("publication validation callback missing");
+          }
+          const validated = await beforePush();
+          if (!validated.ok) return validated;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          });
+        }) as unknown as GitDeps["commitAndPushPending"],
     },
   });
 
@@ -1079,6 +1095,11 @@ Deno.test("processPrFeedback - pushes commits after Claude makes changes (Issue 
     pushBranch,
     input.branchName,
     "push should target the PR branch",
+  );
+  assertEquals(
+    publicationChecks,
+    1,
+    "PR feedback must run shared checks before pushing",
   );
 });
 

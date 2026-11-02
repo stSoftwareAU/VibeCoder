@@ -166,6 +166,10 @@ import { resolvePreFlightSpec, unstageStateAndAssertSafe } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
+  publicationValidationIsCurrent,
+  validateRepositoryForPublication,
+} from "./publication_validation.ts";
+import {
   formatPrFailureActionsExcerpt,
   type PrFailureActionResult,
   runPrFailureActions,
@@ -288,6 +292,8 @@ export interface CiProcessorDeps {
   deps: WorkerDeps;
   /** Working directory — the target repo checkout. */
   workDir?: string;
+  /** Injectable shared runner for the final publication check. */
+  publicationValidationFn?: typeof validateRepositoryForPublication;
   /**
    * The `WORK_DIR` root where heartbeat, marker and milestone state files
    * live — never a clone (Issue #1662).
@@ -2150,6 +2156,33 @@ async function _processCiWithHeartbeat(
   // worker's archive notes are formatted afterwards. Never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
+  const validateBeforePush = async () => {
+    const cwd = processorDeps.workDir ?? Deno.cwd();
+    const validate = processorDeps.publicationValidationFn ??
+      deps.quality.validatePublication ?? validateRepositoryForPublication;
+    const validation = await validate(cwd);
+    if (validation.status !== "passed") {
+      return {
+        ok: false as const,
+        error: new Error(
+          validation.status === "failed"
+            ? validation.output
+            : validation.reason,
+        ),
+      };
+    }
+    const current = deps.quality.publicationValidationIsCurrent ??
+      publicationValidationIsCurrent;
+    if (!await current(validation, cwd)) {
+      return {
+        ok: false as const,
+        error: new Error(
+          "checkout changed after quality validation; rerun checks",
+        ),
+      };
+    }
+    return { ok: true as const, value: undefined };
+  };
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
     `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
@@ -2158,6 +2191,7 @@ async function _processCiWithHeartbeat(
     preFlight,
     undefined,
     formatRound,
+    validateBeforePush,
   );
 
   let pushSucceeded = false;
