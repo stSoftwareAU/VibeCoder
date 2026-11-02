@@ -1,11 +1,11 @@
 ## Summary
 
 A PR the review-fleet-prs skill held for the owner is no longer given a fresh
-full review when the only commits since the hold leave its own diff unchanged
-(a base merge, for example). The gate skips it as `awaiting-owner`, the same way
-it already skips a sent-back PR as `awaiting-fix`, so the hold stands and
-`post.ts` no longer removes `needs-human` because the base branch moved. Closes
-#4643. Version bump: not part of this change.
+full review when the only commits since the hold leave its own diff unchanged (a
+base merge, for example). The gate skips it as `awaiting-owner`, the same way it
+already skips a sent-back PR as `awaiting-fix`, so the hold stands and `post.ts`
+no longer removes `needs-human` because the base branch moved. Closes #4643.
+Version bump: not part of this change.
 
 ## Spec
 
@@ -29,16 +29,16 @@ it already skips a sent-back PR as `awaiting-fix`, so the hold stands and
   version equals the current one, so a later change to the owner-hold policy
   (#4655 is open and not implemented here) bumps the constant and every existing
   hold is reassessed once, even on an unchanged head.
-- The skip is the same own-diff comparison used for send-backs. Unchanged own-diff
-  text is not proof a base dependency did not change; the reassessment triggers
-  are an own-diff change and a policy bump. Documented in
+- The skip is the same own-diff comparison used for send-backs. Unchanged
+  own-diff text is not proof a base dependency did not change; the reassessment
+  triggers are an own-diff change and a policy bump. Documented in
   `references/edge-cases.md#awaiting-owner`.
 
 ### Undiscoverable Facts
 
 - Cross-host holds are not skipped (the log is per host); the issue's wording
-  ("marker-carrying `COMMENTED` review") was narrowed by the log requirement so a
-  policy version can be read.
+  ("marker-carrying `COMMENTED` review") was narrowed by the log requirement so
+  a policy version can be read.
 
 ## Evidence
 
@@ -60,22 +60,23 @@ flowchart TD
 ## Test Plan
 
 - `worker/deno/tests/review_fleet_prs_gate_2675_test.ts` (9 new tests, named
-  "(Issue #4643)"): merge-only head after a hold is `awaiting-owner`; changed own
-  diff, no log record, older or newer policy, an unmarked owner comment, and a
-  dropped file (strict path) all give `null`; `CHANGES_REQUESTED` still gives
+  "(Issue #4643)"): merge-only head after a hold is `awaiting-owner`; changed
+  own diff, no log record, older or newer policy, an unmarked owner comment, and
+  a dropped file (strict path) all give `null`; `CHANGES_REQUESTED` still gives
   `awaiting-fix` without consulting the hold lookup; a hold at the head is
   `already-reviewed`; `heldAt` unit cases.
 - `worker/deno/tests/review_fleet_prs_log_2678_test.ts` (1 new test):
-  `heldPolicyAt` for a legacy record, an explicit version, the latest of two, and
-  other head/PR/outcome.
+  `heldPolicyAt` for a legacy record, an explicit version, the latest of two,
+  and other head/PR/outcome.
 - Mutation checks, each seen red then restored: policy comparison replaced by
   `!== null`; `ownDiffUnchangedSince` called with the head instead of the held
   commit; the `COMMENTED` state check removed from `heldAt`; the marker check
   bypassed in `heldAt`.
-- Ran 21 `review_fleet_prs_*`/post/gate-related test files: 304 passed, 0 failed.
+- Ran 21 `review_fleet_prs_*`/post/gate-related test files: 304 passed, 0
+  failed.
 - Callers of `skipReason` checked: the only production caller is `pass()` in
-  `gate.ts`, which now passes the hold lookup; the new parameter defaults to
-  "no hold known", so the other test callers keep today's behaviour.
+  `gate.ts`, which now passes the hold lookup; the new parameter defaults to "no
+  hold known", so the other test callers keep today's behaviour.
 - Docs read and updated: `SKILL.md` rule 8 and the slots sentence,
   `references/edge-cases.md` (new "Awaiting-owner" section). Rule 4 and the
   hold-posting passages in `SKILL.md` make no skip claim and stay true.
