@@ -68,10 +68,17 @@ flowchart TD
 - `worker/deno/tests/review_fleet_prs_log_2678_test.ts` (1 new test):
   `heldPolicyAt` for a legacy record, an explicit version, the latest of two,
   and other head/PR/outcome.
+- `worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts` (1 new
+  `pass()`-level test, "(Issue #4643)"): a marker-bearing `COMMENTED` review at
+  an earlier commit, merge-only compare responses and a `held` record in
+  `log.jsonl` give `skipped["awaiting-owner"] === 1` and nothing ready; the
+  negative cases stay ready: no log record, a `holdPolicy` of another version,
+  and a record for another head commit, PR number or repo.
 - Mutation checks, each seen red then restored: policy comparison replaced by
   `!== null`; `ownDiffUnchangedSince` called with the head instead of the held
   commit; the `COMMENTED` state check removed from `heldAt`; the marker check
-  bypassed in `heldAt`.
+  bypassed in `heldAt`; and `pass()`'s hold lookup replaced by `(_oid) => null`
+  (red in the new `pass()` test, which the `skipReason` tests alone missed).
 - Ran 21 `review_fleet_prs_*`/post/gate-related test files: 304 passed, 0
   failed.
 - Callers of `skipReason` checked: the only production caller is `pass()` in
