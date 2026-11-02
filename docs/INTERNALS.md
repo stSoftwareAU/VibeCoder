@@ -1119,15 +1119,102 @@ run to measure or compare behaviour across the whole fleet configures
 ### 📊 PR completion evidence report (Issue #4658)
 
 `deno task pr-completion-report --input <snapshot.json>` reads a normalized,
-read-only evidence snapshot and emits dated JSON. The snapshot joins GitHub PR
-state, validated hash-chain audit entries, reviewer action records, blocker
-intervals, CI durations, regression observations and component deployment
-heartbeats. The snapshot producer must verify its audit-chain sources; this
-command validates and accounts for supplied evidence but does not authenticate
-the snapshot or retrieve cross-host records. It performs no GitHub writes and
-does not change host configuration. It does not infer a human or automated
-actor from a GitHub login; missing action or deployment evidence remains
-unknown or degraded.
+read-only evidence snapshot and emits dated JSON. `deno task
+pr-completion-report --collect` builds that snapshot itself and reports on it.
+Exactly one of `--input` and `--collect` is required. Neither mode performs
+GitHub writes or changes host configuration. The only file `--collect` writes
+is the optional `--write-snapshot <path>`, which holds the collected input so a
+later `--input` run reproduces the same report. A `--input` snapshot is not
+authenticated.
+
+`--collect` reads these sources, all read-only:
+
+- **GitHub**, through `gh api` GETs only, for each repository in `--repos`
+  (default `config.repos`): the default branch; the pull requests created in
+  `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
+  paged newest first; each cohort PR's reviews, issue events and commits; and
+  check runs for merged PRs.
+- **Audit journals** in each `--audit-dir` (default the resolved audit
+  directory). Each directory's chains are verified with `verifyAllChains`, the
+  sweep `audit-chain-verify` runs at startup, and each journal is read with
+  `loadEntries`.
+- **Review-run records**: `<round>/review-run.json` under each
+  `--review-run-dir`.
+- **Lifecycle ledgers** named by `--lifecycle-ledger`.
+- **Babysitter heartbeats**: `deployment-health.json` under each
+  `--babysitter-state-dir`.
+
+The expected deployment comes from `--expected-components` (default
+`worker,reviewer,babysitter`), `--expected-revision` (default
+`VIBE_BUILD_COMMIT`; the command fails when neither is set), the policy
+fingerprint from `fingerprintWorkerReviewPolicy(config)`, and
+`--max-heartbeat-age-hours` (default 24).
+
+**Cross-host evidence.** The command reads only the audit directories it is
+given. To include another host, export that host's journal directory and pass
+it in `--audit-dir a,b`. An action repeated across directories is counted once,
+and its verified copy is kept. A host whose journals are not supplied is
+invisible to the report. Journals are authenticated only by chain verification:
+if any directory's chains fail, or a directory has no journals, every PR's
+`actionsComplete` is false.
+
+**Match rule.** A GitHub event is attributed to the fleet only when a verified
+fleet audit action of the same kind on the same PR lies within ten minutes of
+it. Matching is one-to-one. The events are submitted reviews (`review`), review
+dismissals (`dismissal`), the merge (`merge`), and one push group per run of
+commits less than two minutes apart: the first group is `implementation` and
+later groups are `repair`. Journal `git-push` entries carry no PR number, so
+each is linked to the latest cohort PR on that head branch created at or before
+the push.
+
+**Unknown, never human.** A GitHub event with no matching verified fleet action
+becomes an `unknown` action: unverified, outcome unknown, with the ID
+`gh:<repo>#<number>:<kind>:<id>`. GitHub logins are never read, so no login
+makes an action human or fleet.
+
+**Owner gates.** `ownerGateVerified` is always false today, because no hold
+marker is recorded yet. A PR labelled `needs-human` is recorded as
+`ownerGated` but stays in the eligible denominator.
+
+**Blockers produced.** `needs-human` (from the label, open until it is removed)
+and `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
+commit, approval or dismissal). CI-failing and hold blockers are not produced
+yet.
+
+**Regression heuristic.** A cohort PR whose title opens `Revert "…"`, or whose
+title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
+when `N` is a merged cohort PR. It is detected at the earliest such revert and
+is resolved when that revert merged. Reverts of PRs outside the cohort are not
+observed. Every pattern is anchored or bounded in length.
+
+**Rollup derivation.** A milestone PR gets a `rollupRoot` only when exactly one
+default-branch cohort PR names it with "Rollup of", or with a line beginning
+"Includes". Otherwise the root stays unset.
+
+**Truncation.** Pull requests are read newest first until the page holding the
+cohort's oldest PR, up to 500 per repository. A repository that reaches the cap
+is listed as truncated: the command prints a `TRUNCATED` line and returns the
+repository in its data. Paged event lists stop after ten pages, which is a
+coverage note. Every missing, unreadable or malformed local file is a coverage
+note, not a silent drop.
+
+**Deployments.** A babysitter heartbeat is kept whatever its age, so the report
+can call it stale. Review-run and ledger rows older than the heartbeat window
+are not counted, and one note says how many were excluded. A ledger row is
+timed by its `recordedAt`.
+
+**Rollout check** (`--rollout-verified-at`). A stranded PR is open, more than
+24 hours old at `observedAt`, created before the verification instant, and not
+labelled `needs-human`. It is rediscovered when a verified fleet action on it
+has a timestamp at or after that instant. It is processed when such an action
+is confirmed and is not of kind `unknown`. The check only reads
+ordinary-discovery evidence: it runs no discovery and writes nothing.
+
+**Limits.** `verifyAllChains` is the sweep `audit-chain-verify` runs at
+startup. It can settle an interrupted append in a journal it sweeps (Issue
+#1074), so `--collect` does not promise zero writes to a journal left
+mid-append. CI durations are fetched only for merged PRs, because the report
+counts CI only for delivered changes.
 
 The snapshot carries explicit UTC `cohort.start`, `cohort.end` and
 `cohort.observedAt` values. PR observations deduplicate by `repo#number`; each
@@ -1150,15 +1237,13 @@ fourteen-day window; it reports the provisional 90% target and never gates a
 merge. The repeatable `rollout` counts distinguish eligible stranded PRs,
 rediscovery and processing.
 
-Deployment observations are collected from lifecycle assignment records,
-review-round records and the babysitter's local `deployment-health.json` under
-its existing state directory. Each stores a code revision and the same SHA-256
+Deployment observations come from the lifecycle ledgers, review-round records
+and babysitter heartbeats named above. Each stores a code revision and the same SHA-256
 fingerprint over a fixed allowlist of resolved host and per-repository policy
 settings; no credentials or raw configuration enter the fingerprint. Missing or stale heartbeats,
 unknown revisions, policy mismatches and mixed observations make deployment
-status degraded. The report consumes an exported snapshot; it does not itself
-retrieve cross-host audit journals, repair deployment state, or change the
-ordinary discovery path. The trusted update route remains the existing
+status degraded. The report never repairs deployment state or changes the ordinary discovery
+path. The trusted update route remains the existing
 [`worker-checkout-update` launcher step](#-entry-point-runsh--runps1).
 
 ```mermaid

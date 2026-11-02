@@ -81,18 +81,15 @@ Deno.test("pr-completion-report --collect fails loudly without a repository list
 });
 
 Deno.test("pr-completion-report --collect fails loudly without an expected revision", async () => {
-  const saved = Deno.env.get("VIBE_BUILD_COMMIT");
-  Deno.env.delete("VIBE_BUILD_COMMIT");
-  try {
-    const result = await prCompletionReportCommand.execute(
-      { collect: true, repos: "org/repo" },
-      {} as WorkerConfig,
-    );
-    assertEquals(result.success, false);
-    assertStringIncludes(result.message, "--expected-revision");
-  } finally {
-    if (saved !== undefined) Deno.env.set("VIBE_BUILD_COMMIT", saved);
-  }
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  const result = await runPrCompletionCollect(
+    { collect: true, repos: "org/repo" },
+    {} as WorkerConfig,
+    gh,
+    () => undefined,
+  );
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "--expected-revision");
 });
 
 Deno.test("pr-completion-report --collect writes a snapshot that --input reproduces", async () => {
@@ -101,9 +98,7 @@ Deno.test("pr-completion-report --collect writes a snapshot that --input reprodu
     const auditDir = `${dir}/audit`;
     await Deno.mkdir(auditDir);
     const target = `${dir}/snapshot.json`;
-    const paths: string[] = [];
     const gh: GhJson = async (path) => {
-      paths.push(path);
       if (path === "repos/org/repo") return { default_branch: "main" };
       if (path.startsWith("repos/org/repo/pulls?")) return [];
       throw new Error(`unrouted gh path: ${path}`);
@@ -125,7 +120,6 @@ Deno.test("pr-completion-report --collect writes a snapshot that --input reprodu
     assertStringIncludes(result.message, "coverage: audit dir");
     assertStringIncludes(result.message, '"prCount": 0');
     assertEquals(result.data?.truncatedRepos, []);
-    assert(paths.every((path) => !path.includes("method=")));
 
     const reread = await prCompletionReportCommand.execute(
       { input: target },

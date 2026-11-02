@@ -58,11 +58,15 @@ function asList(value: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
-/** Ran `--collect` with the given args and an injected GitHub seam. */
+/**
+ * Run `--collect` with the given args and injected GitHub and environment
+ * seams. The environment is read only for `VIBE_BUILD_COMMIT`.
+ */
 export async function runPrCompletionCollect(
   args: Record<string, unknown>,
   config: WorkerConfig,
   gh: GhJson,
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
 ): Promise<CommandResult<PrCompletionCollectData>> {
   const repos = asList(args.repos) ?? (Array.isArray(config.repos) &&
       config.repos.length > 0
@@ -76,7 +80,7 @@ export async function runPrCompletionCollect(
     };
   }
   const expectedRevision = asText(args["expected-revision"]) ??
-    asText(Deno.env.get("VIBE_BUILD_COMMIT"));
+    asText(env("VIBE_BUILD_COMMIT"));
   if (expectedRevision === undefined) {
     return {
       success: false,
