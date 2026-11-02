@@ -8,6 +8,7 @@
   "sweptAt": "323f3e65d60c86cee0c5a03f4e994cde5e7f5ce4",
   "paths": [
     "worker/deno/commands/pr_completion_report.ts",
+    "worker/deno/lib/fleet_review_log.ts",
     "worker/deno/lib/pr_completion_report.ts",
     "worker/deno/lib/pr_completion_snapshot.ts"
   ]

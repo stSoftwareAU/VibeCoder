@@ -36,11 +36,7 @@ import {
   timestamp as utcMillis,
   type TrustedPrAction,
 } from "./pr_completion_report.ts";
-import {
-  type LogRecord,
-  type Outcome,
-  parseLog,
-} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
+import { type LogRecord, type Outcome, parseLog } from "./fleet_review_log.ts";
 
 /** Read-only GitHub GET seam: resolves the parsed JSON body of `gh api <path>`. */
 export type GhJson = (path: string) => Promise<unknown>;
