@@ -410,6 +410,19 @@ export async function takePrBodyProposal(
 }
 
 /** Apply a description with the runner's token; the agent's is read-only. */
+/**
+ * `gh pr edit --body-file`, the route the base-change guard documents for a
+ * title or body edit. A raw `PATCH pulls/N` with `-F body=@file` reads to the
+ * guard as an unreadable base change and is refused (Issue #4704).
+ */
+export function prBodyEditArgs(
+  repo: string,
+  number: number,
+  file: string,
+): string[] {
+  return ["pr", "edit", String(number), "--repo", repo, "--body-file", file];
+}
+
 async function applyPrBody(
   repo: string,
   number: number,
@@ -418,14 +431,7 @@ async function applyPrBody(
 ): Promise<void> {
   const file = `${scratch}/pr-body.md`;
   await Deno.writeTextFile(file, body);
-  await run("gh", [
-    "api",
-    "-X",
-    "PATCH",
-    `repos/${repo}/pulls/${number}`,
-    "-F",
-    `body=@${file}`,
-  ]);
+  await run("gh", prBodyEditArgs(repo, number, file));
   console.log(`${repo}#${number}: updated the PR description`);
 }
 
