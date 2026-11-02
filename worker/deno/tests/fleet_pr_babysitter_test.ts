@@ -17,6 +17,7 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import {
+  attemptKey,
   babysitterRtkInstruction,
   buildRepairPrompt,
   cancelledRunsToRerun,
@@ -594,6 +595,25 @@ Deno.test("a PR labelled needs-human is never a babysitter candidate", () => {
   assertEquals(reason({ ...pr, labels: [] }), "merge conflict");
 });
 
+// Issue #4671: a new review on an attempted head is new input, not a repeat.
+Deno.test("a new change request on an attempted head gets its own attempt", () => {
+  const review = (id: number) => ({
+    id,
+    state: "CHANGES_REQUESTED",
+    user: { login: "reviewer[bot]" },
+  });
+  const first = attemptKey("owner/repo", 7, "abc", [review(10)]);
+  assertEquals(first, attemptKey("owner/repo", 7, "abc", [review(10)]));
+  assert(
+    first !== attemptKey("owner/repo", 7, "abc", [review(10), review(12)]),
+  );
+  assertEquals(
+    attemptKey("owner/repo", 7, "abc", [review(12), review(10)]),
+    attemptKey("owner/repo", 7, "abc", [review(10), review(12)]),
+  );
+  assertEquals(attemptKey("owner/repo", 7, "abc", []), "owner--repo--7--abc");
+});
+
 // Issue #4668: a review asking for a description change could never be met,
 // because the agent may not edit the PR; the runner applies its proposal.
 Deno.test("a review repair may propose a PR description for the runner to apply", () => {
@@ -719,4 +739,29 @@ Deno.test("only a head whose runs were cancelled and none failed is re-run", () 
   );
   assertEquals(cancelledRunsToRerun([r(1, "completed", "success")]), []);
   assertEquals(cancelledRunsToRerun([]), []);
+});
+
+// Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
+// a test the repair never touched; CI on the base is the arbiter.
+Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(
+      prompt,
+      "unrelated to the files you changed and passes in CI on the base branch",
+    );
+  }
+});
+
+// Issue #4694: a check that reads commit history cannot see the uncommitted
+// fix the agent is forbidden to commit (VibeCoder#4675, #4687).
+Deno.test("a check that reads commit history does not withhold readiness", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "reads commit history");
+  }
 });

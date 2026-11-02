@@ -93,7 +93,13 @@ escalation.
    fixed, and approves once they are. When a PR was sent back and the only
    commits since leave its own diff unchanged apart from the file drop
    described below, the gate skips it as `awaiting-fix` until the fleet
-   pushes its fix. A strict one-line numeric
+   pushes its fix. When a PR was held for the owner (rule 4) and the only
+   commits since leave its own diff unchanged since the hold, the gate skips
+   it as `awaiting-owner` until the own diff changes or the hold policy
+   version is bumped (see
+   [Awaiting-owner](references/edge-cases.md#awaiting-owner)). A hold has no
+   findings, so the strict path applies: context lines must match, and a file
+   that leaves the own diff gets a fresh review. A strict one-line numeric
    version increment, bare or on a JSON/TOML `version` key, may differ between
    the old and current own diffs, including a separate workflow bump after a
    base merge. In a file no earlier finding names, context lines a base merge
@@ -196,8 +202,8 @@ The gate script does the polling, not the model. With `--watch=300` it checks
 every 5 minutes and **exits only when a PR is ready for review**, so an idle
 night costs no tokens. It reports at most **5** ready PRs per pass
 (`--limit=<n>` changes that), counted after every other skip, so a PR that is
-red, approved, already reviewed, awaiting a fix or `claimed-elsewhere` never
-takes one of the slots;
+red, approved, already reviewed, awaiting a fix, held for the owner
+(`awaiting-owner`) or `claimed-elsewhere` never takes one of the slots;
 the rest are counted as `over-limit` and come back next pass. The search is
 oldest-updated first, so a PR whose head keeps moving cannot starve the quiet
 ones behind it.

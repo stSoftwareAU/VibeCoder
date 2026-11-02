@@ -46,6 +46,7 @@ import {
   decideOutcome,
   type FableReview,
   type FiledIssue,
+  HOLD_POLICY_VERSION,
   latestByPr,
   LOG_FILE,
   type LogRecord,
@@ -552,6 +553,7 @@ export async function main() {
     addedNeedsHuman: label.addedNeedsHuman,
     ...(autoReleased ? { autoReleased: true as const } : {}),
     ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
+    ...(outcome === "held" ? { holdPolicy: HOLD_POLICY_VERSION } : {}),
   };
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(
