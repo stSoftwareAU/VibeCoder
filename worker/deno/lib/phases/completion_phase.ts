@@ -1074,11 +1074,12 @@ export async function workOnIssueCompletion(
     await postWorkOnRunStats(ctx, state, deps, { recordFigures: true });
   }
 
-  // Issue #3804: an agent that raised its own PR wrote a marker-less body.
-  // Adopt it on every exit so later fix-run syncs have a marker and digest.
+  // Issue #3804 / #4621: adopt an agent-raised PR's body and repair a title
+  // that does not carry this issue's canonical reference.
   await adoptAgentRaisedPrBody(
     {
       repo: ctx.repo,
+      issueTitle: ctx.issueTitle,
       branchName: state.branchName,
       repoPath: state.repoPath,
       workerName: ctx.config.workerName,
