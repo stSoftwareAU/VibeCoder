@@ -24,8 +24,8 @@ final version.
 
 - Unlike `spawnFastCheck`, `runRepositoryCommand` does not throw when the
   `agent` account is unavailable: it falls back to the worker account with the
-  allowlisted environment, because the issue says "where the image provides
-  one" and `untrustedSpawn` already logs the `[SECURITY]` degradation.
+  allowlisted environment, because the issue says "where the image provides one"
+  and `untrustedSpawn` already logs the `[SECURITY]` degradation.
 - Declared `quality_credentials` are not threaded to the milestone sync path
   (`repoCredentialEnv: {}`), so a task needing one fails instead of inheriting
   the worker's environment. Assumption: threading them is a wider change than
@@ -35,8 +35,8 @@ final version.
 
 ### Undiscoverable Facts
 
-- Run as `agent`, `deno check` over a directory `agent` cannot read exits 0
-  with "No matching files found". Production checkouts are agent-readable (the
+- Run as `agent`, `deno check` over a directory `agent` cannot read exits 0 with
+  "No matching files found". Production checkouts are agent-readable (the
   quality gate relies on it), but a test fixture from `Deno.makeTempDir` (0700)
   is not, so `withTempDir` in `milestone_merge_gate_test.ts` now chmods 0755.
 
@@ -79,9 +79,9 @@ Issue numbers cited as provenance, each looked up with `gh issue view`:
   runner; both go through `runRepositoryCommand`. The other repository-code
   spawns (`spawnFastCheck`, quality gate, lock regen, bump-deps, pre-flight)
   already isolate the environment.
-- `./quality.sh`: the first run's only failures were the lib-sweep ledger
-  (fixed and re-verified above); the rerun passed every stage up to `deno tests`
-  and then exceeded the 590 s command cap before finishing, so the final full
-  gate did not complete.
+- `./quality.sh`: the first run's only failures were the lib-sweep ledger (fixed
+  and re-verified above); the rerun passed every stage up to `deno tests` and
+  then exceeded the 590 s command cap before finishing, so the final full gate
+  did not complete.
 
 <!-- vibe-quality-gate-skipped: full gate exceeded the 590 s command cap after the ledger fix; targeted tests, check:manifests, markdownlint, fmt, lint and type check passed; CI runs the full gate -->
