@@ -45,9 +45,9 @@ flowchart TD
   and placed last in the child environment, as the quality gate does. A mint
   that fails stops the command with an error rather than running it without the
   credential.
-- A property the merged tree controls never chooses the account. The probe
-  exits 1 when `agent` cannot read the checkout or a manifest (a host fault: run
-  as the worker) and 2 when only the cargo target is unwritable (a committed
+- A property the merged tree controls never chooses the account. The probe exits
+  1 when `agent` cannot read the checkout or a manifest (a host fault: run as
+  the worker) and 2 when only the cargo target is unwritable (a committed
   `target/` file can cause it): then `agent` runs with a private temporary
   `CARGO_TARGET_DIR`, removed afterwards. A manifest that is a symbolic link is
   refused before anything runs, because it could point at a file only the worker
@@ -95,12 +95,13 @@ Backend-only change; no UI file is touched.
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **partial** — "declared `quality_credentials`" in the child environment —
-  evidence: `tests/untrusted_gate_spawn_test.ts::the repository's declared credentials reach the command and only it (Issue #4659)`,
+  evidence:
+  `tests/untrusted_gate_spawn_test.ts::the repository's declared credentials reach the command and only it (Issue #4659)`,
   `tests/untrusted_gate_spawn_test.ts::a credential source that fails stops the command from running (Issue #4659)`
-  — reviewer: partial — reason: the declared credentials are resolved and
-  placed in the child environment exactly as `spawnRepositoryCommand` does, but
-  when the command is dropped to `agent`, `sudo`'s `env_reset` strips every
-  variable except the `CARGO_TARGET_DIR` carried in argv
+  — reviewer: partial — reason: the declared credentials are resolved and placed
+  in the child environment exactly as `spawnRepositoryCommand` does, but when
+  the command is dropped to `agent`, `sudo`'s `env_reset` strips every variable
+  except the `CARGO_TARGET_DIR` carried in argv
   (`quality_gate_phase.ts:122-137`), so they arrive only on a worker-account
   run. The quality gate's own dropped runner has the same limit today. Carrying
   a credential in argv would expose it in `ps`, so it is not done here.
