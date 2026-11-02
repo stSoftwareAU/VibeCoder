@@ -132,10 +132,12 @@ Backend-only change; no UI file is touched.
   Real-scanner stdin controls accept both exact declarations and still detect
   the same value assigned to `OTHER_CREDENTIAL`. The workflow and action share
   this config; no second config copy was found.
-- `deno task test:unit tests/untrusted_gate_spawn_test.ts tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/lib_sweep_coverage_test.ts`
-  (from `worker/deno`): 84 passed in the parallel pass and 40 in the serial
-  pass, 0 failed. `deno task check:manifests`, `deno fmt --check` and
-  `deno lint`: pass.
+- `deno task test:unit` run from `worker/deno` on each file alone, at the head, 0
+  failed: `tests/untrusted_gate_spawn_test.ts` (19 tests at head),
+  `tests/milestone_merge_gate_test.ts` (41 tests at head),
+  `tests/milestone_resolution_gate_test.ts` (31 tests at head) and
+  `tests/run_core_production_deps_test.ts` (33 tests at head).
+  `deno task check:manifests`, `deno fmt --check` and `deno lint`: pass.
 - Red checks (break applied, test run, restored):
   - final spawn `clearEnv: false` → the credential, real-process and probe tests
     red;
@@ -146,7 +148,7 @@ Backend-only change; no UI file is touched.
   - `spawnTypeCheck` reverted alone to `runWithTimeout` with no `clearEnv` → the
     `checkMergedTree` test red (`VIBE_4659_PARENT_SECRET` leaked);
   - `spawnTask` reverted alone → the `verifyResolvedTree` test red, same leak.
-- Mutation survivors from the first review (17 mutants on changed lines): each
+- Mutation survivors from the first review (16 mutants on changed lines): each
   was applied alone and its new test went red (`untrusted_gate_spawn.ts` lines
   193, 199, 202, 209, 225, 250, 252, 258, 263; the `manifests` property deleted
   from `spawnTypeCheck` and from `spawnTask`; `run_core_production_deps.ts`
