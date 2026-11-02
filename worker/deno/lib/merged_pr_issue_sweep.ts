@@ -229,7 +229,7 @@ export function buildSweepCloseComment(
     `\`${landing.via}\`).\n\n` +
     `This issue was not closed by the run that produced the fix, so every ` +
     `claim scan refused it as \`merged-pr-permanent\` while it stayed open. ` +
-    `The housekeeping merged-PR issue sweep closed it (Issue #504).`;
+    `The housekeeping merged-PR issue sweep closed it.`;
 }
 
 /** Fold a repo failure into the result, loudly. */

@@ -73,17 +73,19 @@ function describeRefusals(refusals: readonly AgentRefusal[]): string {
 /**
  * The failure reason for a refused run. Worker-authored and free of the
  * words `detectFailureCategory` keys off, so it never reads as infrastructure.
+ * It is quoted in the target-repo failure comment, so it carries no VibeCoder
+ * issue number (Issue #4641); the policy is Issue #3406.
  */
 export function buildRefusalFailureReason(
   outcome: AgentRefusalOutcome,
 ): string {
   const first = describeRefusals(outcome.refusals);
   if (outcome.retry === "not-retried") {
-    return `Agent safety refusal on the \`${outcome.tier}\` sub-agent tier — ${first}; not retried, so the run fails rather than reporting success or no changes (Issue #3406)`;
+    return `Agent safety refusal on the \`${outcome.tier}\` sub-agent tier — ${first}; not retried, so the run fails rather than reporting success or no changes`;
   }
   return `Agent safety refusal on the \`haiku\` sub-agent tier — ${first}; the one retry on the \`${REFUSAL_RETRY_TIER}\` tier also refused — ${
     describeRefusals(outcome.retryRefusals ?? [])
-  } — so the run fails rather than reporting success or no changes (Issue #3406)`;
+  } — so the run fails rather than reporting success or no changes`;
 }
 
 /** The run-stats bullet for a refusal; `""` when there was none. */
