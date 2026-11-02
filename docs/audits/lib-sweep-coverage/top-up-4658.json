@@ -1,0 +1,13 @@
+{
+  "issue": 4658,
+  "chunk": "top-up-4658",
+  "title": "top-up: measure unattended PR completion and verify active policy",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4658",
+  "definition": "Read-only PR completion accounting over an explicit cohort and supplied evidence: PR deduplication, action provenance, milestone rollups, delivery and CI counts, blockers, regressions, deployment policy fingerprints, and rollout target evaluation.",
+  "status": "claimed",
+  "sweptAt": "054c82193f91286f41cd16b86ad6f9da0a537826",
+  "paths": [
+    "worker/deno/commands/pr_completion_report.ts",
+    "worker/deno/lib/pr_completion_report.ts"
+  ]
+}
