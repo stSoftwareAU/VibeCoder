@@ -2582,6 +2582,19 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #4707: defer while another fleet worker (the PR
+            // babysitter, a takeover) holds the PR's branch-update lock.
+            prUpdateLockHeldFn: (repo, prNumber) =>
+              prUpdateLockIsHeld(repo, prNumber, {
+                ghCommandFn: runGhCommand,
+                log: (message: string) => logger.warn(message),
+                authorOptions: {
+                  fleetAuthors: resolveEffectiveFleetPrAuthors(
+                    config.fleetPrAuthors,
+                    config.serviceAccounts,
+                  ),
+                },
+              }),
           },
         );
 
