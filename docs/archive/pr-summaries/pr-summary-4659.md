@@ -33,23 +33,23 @@ final version.
   each name and adds the values to the allowlist. Under `sudo`, whose
   `env_reset` would drop them, they never touch argv: the command becomes
   `sudo -n -u agent -- sh -c '<read NAME=base64 lines, export, exec "$@">' sh
-  <cmd>` and the values go on the child's stdin (`runWithTimeout`'s new
-  `input`), so the process table (`hard_kill_evidence.ts`,
-  `kill_diagnostics.ts`) never shows them. Without `sudo` they ride
-  `Deno.Command`'s `env`. A mint failure refuses both gates. The command label
-  is redacted (`commandLabel` on `runWithTimeout`). Callers
-  `presyncMilestoneBranchForIssueRun` and `syncMilestoneBranchForSweep` pass
-  `qualityCredentials` from `repoConfig`, and the sweep's rebuild gate
-  (`rebuildGateForSweep`, PR #4344) resolves them with
+  <cmd>`
+  and the values go on the child's stdin (`runWithTimeout`'s new `input`), so
+  the process table (`hard_kill_evidence.ts`, `kill_diagnostics.ts`) never shows
+  them. Without `sudo` they ride `Deno.Command`'s `env`. A mint failure refuses
+  both gates. The command label is redacted (`commandLabel` on
+  `runWithTimeout`). Callers `presyncMilestoneBranchForIssueRun` and
+  `syncMilestoneBranchForSweep` pass `qualityCredentials` from `repoConfig`, and
+  the sweep's rebuild gate (`rebuildGateForSweep`, PR #4344) resolves them with
   `rebuildGateWithCredentials` and refuses on a mint failure.
-- Fail closed on an unreadable checkout (PR #4703 review, Issue #4697). When
-  the command is dropped to `agent`, `runRepositoryCommand` first runs
-  `test -r <cwd> -a -x <cwd> -a -r <cwd>/<manifest>` as that account and
-  returns an error (so `checkMergedTree` and `verifyResolvedTree` report
-  `failed`) if it fails, instead of running a check that cannot see the tree.
-  On a host where the shared clone is not agent-readable, milestone syncs are
-  refused until that access is fixed; running them as the worker instead would
-  undo the isolation this issue asks for.
+- Fail closed on an unreadable checkout (PR #4703 review, Issue #4697). When the
+  command is dropped to `agent`, `runRepositoryCommand` first runs
+  `test -r <cwd> -a -x <cwd> -a -r <cwd>/<manifest>` as that account and returns
+  an error (so `checkMergedTree` and `verifyResolvedTree` report `failed`) if it
+  fails, instead of running a check that cannot see the tree. On a host where
+  the shared clone is not agent-readable, milestone syncs are refused until that
+  access is fixed; running them as the worker instead would undo the isolation
+  this issue asks for.
 - `spawnTask` and `spawnTypeCheck` are now exported with an optional `deps`
   argument, so tests can inject the runner and environment source.
 
@@ -126,24 +126,26 @@ Issue numbers cited as provenance, each looked up with `gh issue view`:
 ## Test Plan
 
 - `deno task test:unit` over `untrusted_gate_spawn`, `milestone_merge_gate`,
-  `milestone_resolution_gate`, `milestone_merge_only_4326`, `subprocess_timeout`,
-  `milestone_gate_credentials_wiring`, `milestone_presync_merge_only_4326`,
-  `milestone_sweep_merge_only_4326` and `lib_sweep_coverage` tests: passed
-  (118 parallel, 62 serial). `deno fmt --check`, `deno lint`, `deno check` and
-  `deno task check:manifests` (847 passed) pass.
+  `milestone_resolution_gate`, `milestone_merge_only_4326`,
+  `subprocess_timeout`, `milestone_gate_credentials_wiring`,
+  `milestone_presync_merge_only_4326`, `milestone_sweep_merge_only_4326` and
+  `lib_sweep_coverage` tests: passed (118 parallel, 62 serial).
+  `deno fmt --check`, `deno lint`, `deno check` and `deno task check:manifests`
+  (847 passed) pass.
 - Edited tests: `tests/milestone_merge_gate_test.ts` `withTempDir` and
   `tests/milestone_merge_only_4326_test.ts` `withTree` gain `chmod 0o755`; no
   assertion removed. Edited expectations in `tests/untrusted_gate_spawn_test.ts`
-  (`call.args.includes("DECLARED_TOKEN=…")` → `assertCredentialOffArgv`) still go
-  red if the value returns to argv, because the helper scans every argv element. Without it, "real `deno check` rejects a
-  broken tree" fails (red observed) because `agent` cannot read the fixture.
+  (`call.args.includes("DECLARED_TOKEN=…")` → `assertCredentialOffArgv`) still
+  go red if the value returns to argv, because the helper scans every argv
+  element. Without it, "real `deno check` rejects a broken tree" fails (red
+  observed) because `agent` cannot read the fixture.
 - Callers checked: `spawnTask` is the default of `runTask` in
   `checkResolvedTree`; `spawnTypeCheck` the default of `checkMergedTree`'s
   runner; both go through `runRepositoryCommand`. The other repository-code
   spawns (`spawnFastCheck`, quality gate, lock regen, bump-deps, pre-flight)
   already isolate the environment.
-- Callers also checked for the new `runRepositoryCommand` probe: `spawnTask`
-  and `spawnTypeCheck` pass their manifests (`manifestsFor`); no other caller.
+- Callers also checked for the new `runRepositoryCommand` probe: `spawnTask` and
+  `spawnTypeCheck` pass their manifests (`manifestsFor`); no other caller.
   Callers of `runWithTimeout` are unchanged (`input` is optional).
 - `./quality.sh` was not run in this round (see the note below); CI runs it.
 
