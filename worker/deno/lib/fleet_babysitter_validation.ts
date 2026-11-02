@@ -5,9 +5,12 @@ import {
 } from "./fleet_babysitter_sandbox.ts";
 import { spawnCommandWithTimeout } from "./subprocess_timeout.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { open } from "node:fs/promises";
+import { constants } from "node:fs";
 
 const VALIDATION_TIMEOUT_MS = 15 * 60 * 1000;
 const OUTPUT_LIMIT = 20_000;
+const GATE_SIZE_LIMIT = 64 * 1024;
 
 export interface BabysitterValidationResult {
   kind: "not-applicable" | "passed";
@@ -176,7 +179,6 @@ export async function runBabysitterValidation(
   options: {
     platform?: string;
     sandboxExec?: string | null;
-    readFile?: (path: string) => Promise<string>;
     run?: typeof runIsolatedCommand;
     env?: Record<string, string>;
     privateKeyPath?: string;
@@ -186,21 +188,71 @@ export async function runBabysitterValidation(
     Deno.realPath(dir),
     Deno.realPath(scratch),
   ]);
-  const readFile = options.readFile ?? Deno.readTextFile;
-  let gate: string;
+  // Reject special files before opening: a FIFO would block before the timeout.
+  let gate: Deno.FileInfo;
   try {
-    gate = await readFile(`${checkedDir}/quality.sh`);
+    gate = await Deno.lstat(`${checkedDir}/quality.sh`);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
       return { kind: "not-applicable", command: "./quality.sh (not present)" };
     }
     throw error;
   }
-  if (!gate.trim()) {
+  if (!gate.isFile || gate.isSymlink) {
+    throw new Error(
+      "Runner validation requires a regular quality.sh in the repository root",
+    );
+  }
+  if (gate.size > GATE_SIZE_LIMIT) {
+    throw new Error("Runner validation quality.sh exceeds the 64 KiB limit");
+  }
+  if (gate.size === 0) {
     throw new Error("Runner validation found an empty quality.sh");
+  }
+  if (
+    await Deno.realPath(`${checkedDir}/quality.sh`) !==
+      `${checkedDir}/quality.sh`
+  ) {
+    throw new Error(
+      "Runner validation requires quality.sh inside the repository root",
+    );
+  }
+  // The agent may have left a background process: refuse symlink swaps and
+  // never block opening a FIFO planted between lstat and open.
+  const file = await open(
+    `${checkedDir}/quality.sh`,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const opened = await file.stat();
+    if (!opened.isFile()) {
+      throw new Error("Runner validation requires a regular quality.sh");
+    }
+    if (opened.dev !== gate.dev || opened.ino !== gate.ino) {
+      throw new Error("Runner validation quality.sh changed while opening it");
+    }
+    // Bound the actual read as well as the metadata check, even if it grows.
+    const bytes = new Uint8Array(GATE_SIZE_LIMIT + 1);
+    let used = 0;
+    while (used < bytes.length) {
+      const { bytesRead } = await file.read(bytes.subarray(used));
+      if (bytesRead === 0) break;
+      used += bytesRead;
+    }
+    if (used > GATE_SIZE_LIMIT) {
+      throw new Error("Runner validation quality.sh exceeds the 64 KiB limit");
+    }
+    if (!new TextDecoder().decode(bytes.subarray(0, used)).trim()) {
+      throw new Error("Runner validation found an empty quality.sh");
+    }
+  } finally {
+    await file.close();
   }
 
   const platform = options.platform ?? Deno.build.os;
+  if (platform === "linux") {
+    return { kind: "not-applicable", command: "agent validation (Linux)" };
+  }
   if (platform !== "darwin") {
     throw new BabysitterValidationError(
       `Runner validation unavailable: macOS sandbox is required to run quality.sh safely (host: ${platform})`,

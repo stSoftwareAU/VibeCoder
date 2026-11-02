@@ -107,7 +107,10 @@ flowchart TD
 - **Timeout Enforcement**: Two-stage termination (SIGTERM then SIGKILL) ensures processes are killed
 
 The fleet PR babysitter also runs the target repository's `quality.sh` before
-committing a repair. On macOS it runs under a dedicated `sandbox-exec` profile:
+committing a repair on macOS. Linux keeps the existing agent validation inside
+the Codex permissions profile; the privileged Linux runner executes no gate.
+The macOS runner requires a regular, non-symlink `quality.sh` directly in the
+canonical repository root and caps the file size and actual read at 64 KiB. On macOS it runs under a dedicated `sandbox-exec` profile:
 Codex's per-spawn profile remains unchanged, while the runner profile allows
 Chromium Mach lookups and registration of Chromium/Chrome rendezvous and
 Crashpad services, but denies the configured worker, GitHub CLI, App, SSH,

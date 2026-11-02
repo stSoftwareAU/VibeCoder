@@ -1,5 +1,6 @@
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
+import { resolve } from "node:path";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { runGhCommand, runGhCommandRaw } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -1243,7 +1244,7 @@ if (import.meta.main) {
   console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {
-      const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
+      const configPath = resolve(Deno.env.get("CONFIG_PATH") ?? ".config.json");
       const config = await loadConfig(configPath);
       const accessible = await accessibleBabysitterRepositories(app);
       const repositories = selectBabysitterRepositories(

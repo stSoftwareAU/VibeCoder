@@ -20,7 +20,7 @@ function record(event: string): void {
 // models gate outcomes, never the operating system's sandbox enforcement.
 if (repair) {
   Object.defineProperty(Deno, "build", {
-    value: { ...Deno.build, os: "darwin" },
+    value: { ...Deno.build, os: scenario === "linux" ? "linux" : "darwin" },
   });
 }
 const realWriteTextFile = Deno.writeTextFile;
@@ -106,8 +106,8 @@ function commandOutput(
       Deno.env.set("HOME", `${root}/changed-home`);
       return "123";
     }
-    if (repair && args.includes("repos/owner/repo/pulls/1")) {
-      const file = args.find((arg) => arg.startsWith("body=@"))?.slice(6);
+    if (repair && args[0] === "pr" && args[1] === "edit") {
+      const file = args[args.indexOf("--body-file") + 1];
       if (!file) throw new Error("Missing PR body file");
       Deno.writeTextFileSync(
         `${root}/applied-body.md`,
@@ -132,7 +132,9 @@ function commandOutput(
   }
   if (executable === "git") {
     if (args.includes("fetch") || args.includes("checkout")) return "";
-    if (args.includes("rev-parse") && args.includes("HEAD")) return "abc";
+    if (args.includes("rev-parse") && args.includes("HEAD")) {
+      return scenario === "head-change" && agentCalls === 2 ? "changed" : "abc";
+    }
     if (args.includes("status") && args.includes("--porcelain")) {
       return repair ? " M file.txt" : "";
     }
@@ -193,7 +195,10 @@ function commandOutput(
     gateCalls++;
     record(`gate-${gateCalls}`);
     const profile = Deno.readTextFileSync(args[1]!);
-    const config = Deno.env.get("CONFIG_PATH")!;
+    const configured = Deno.env.get("CONFIG_PATH") ?? ".config.json";
+    const config = configured.startsWith("/")
+      ? configured
+      : `${root}/${configured}`;
     const home = `${root}/home`;
     for (
       const path of [

@@ -63,6 +63,10 @@ useDefault = true
 description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217, #1387, #1695, #1727)"
 regexTarget = "line"
 regexes = [
+  # Issue #4674: the original runner-output redaction test used this counting
+  # digits fixture in its input and assertion. Range scans retain that commit;
+  # exempt only the exact synthetic value in those two contexts.
+  '''(?:GH_TOKEN=|!error\.message\.includes\(")gh[p]_123456789012345678901234567890123456''',
   '''self-diagnostic-unschedulable-\d+''',
   # Issue #4253: the two hard-kill redaction tests originally committed this
   # alphabet-and-digits synthetic PAT as a literal. Range scans still see

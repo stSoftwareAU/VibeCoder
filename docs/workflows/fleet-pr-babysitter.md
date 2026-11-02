@@ -8,7 +8,9 @@ temporary clone. Up to two independent PR repairs run at once, each with a
 90-minute Codex limit and its own branch lock. While repairs run, it rescans
 every five minutes and queues newly actionable PRs without starting two repairs
 for the same PR. After Codex reports a completed fix, the babysitter runs the
-target repository's `quality.sh` before staging or committing. On macOS, that
+target repository's `quality.sh` before staging or committing on macOS. Linux
+retains validation inside the existing Codex permissions profile; it does not
+run repository code in the privileged runner. On macOS, that
 runner-owned check runs outside Codex's browser-restricting profile, under a
 separate sandbox that denies the worker configuration, configured credential
 paths, the user's Keychains directory and `securityd`; it receives no
@@ -21,7 +23,11 @@ The selected babysitter App key and its canonical target are denied even when
 setup used a custom `--key` location. The policy file lives in a fresh
 runner-owned directory outside the agent's clone and scratch write grants;
 neither the agent nor the gate can replace it through scratch, and the runner
-removes the directory after validation.
+removes the directory after validation. Before reading `quality.sh`, the runner
+requires a regular file directly in the canonical repository root, rejects
+symlinks and special files, and caps both its size and the read at 64 KiB.
+Relative `CONFIG_PATH` values (including the default `.config.json`) resolve
+against the runner's working directory before constructing protected paths.
 This lets browser checks launch Chromium without giving the check runner the
 listed credentials. `BABYSITTER_READY` means Codex has finished its repair and
 the runner may validate it; it does not mean `quality.sh` passed. A failed check
@@ -247,7 +253,7 @@ the same check earlier.
   nothing to GitHub. A run limited with `--pr` skips detection.
 
 Codex still runs checks it can safely run inside its per-spawn profile. The
-runner owns the final local `quality.sh` result for every repair, including
+macOS runner owns the final local `quality.sh` result for every repair, including
 browser checks Codex cannot launch. A failed runner check is fed back for one
 repair attempt and must pass on revalidation before commit; a missing runner
 sandbox is reported as unavailable and does not produce a commit or push. The
@@ -261,3 +267,13 @@ review, or merge rules. Test the read-only pass before running execution mode.
 
 To prepare a separate GitHub identity and API quota, follow the
 [babysitter GitHub App setup](fleet-pr-babysitter-github-app.md).
+
+
+### Browser integration check
+
+Run `cd worker/deno && deno task test:browser < /dev/null` on macOS with
+`CHROMIUM_PATH` pointing to a Chromium executable. This dedicated integration
+suite requires sandbox-exec and the macOS Keychain services. It fails loudly
+when prerequisites are absent. The ordinary unit suite uses self-contained
+command doubles and requires no browser. Linux repairs keep their existing
+agent validation and the credential boundary from #4593.

@@ -46,7 +46,9 @@ async function repairScenario(
       installationId: "456",
       privateKeyPath,
     });
-    const configPath = `${root}/operator-config.json`;
+    const configPath = `${root}/${
+      scenario === "default-config" ? ".config.json" : "operator-config.json"
+    }`;
     await Deno.writeTextFile(
       configPath,
       JSON.stringify({
@@ -81,7 +83,11 @@ async function repairScenario(
         HOME: home,
         TMPDIR: `${root}/tmp`,
         XDG_STATE_HOME: `${root}/state`,
-        CONFIG_PATH: configPath,
+        ...(scenario === "default-config" ? {} : {
+          CONFIG_PATH: scenario === "relative-config"
+            ? "operator-config.json"
+            : configPath,
+        }),
         BABYSITTER_REPAIR_FIXTURE: root,
         BABYSITTER_REPAIR_SCENARIO: scenario,
         DENO_DIR: denoDir,
@@ -182,11 +188,7 @@ Deno.test("babysitter CLI retains attempt after a second failed gate", async () 
 
 Deno.test("babysitter CLI preserves current closing references in a retry body proposal", async () => {
   await repairScenario("body-proposal", (result) => {
-    // The existing base-change guard refuses a plain-text @file body after
-    // push. Assert the runner's actual prepared description before that guard,
-    // retaining the guard's real rejection rather than bypassing it here.
-    assertEquals(result.success, false);
-    assertStringIncludes(result.stderr, "PR_BASE_CHANGE_REFUSED");
+    assertEquals(result.success, true, result.stderr);
     assertEquals(result.proposedBody, "Repaired browser check\n\nCloses\n#42");
     assertEquals(result.events, [
       "agent-1",
@@ -196,8 +198,9 @@ Deno.test("babysitter CLI preserves current closing references in a retry body p
       "staged",
       "committed",
       "pushed",
+      "body-updated",
     ]);
-    assertEquals(result.appliedBody, undefined);
+    assertEquals(result.appliedBody, "Repaired browser check\n\nCloses\n#42");
   });
 });
 
@@ -208,5 +211,42 @@ Deno.test("babysitter CLI releases attempt after unavailable runner capability",
     assertEquals(result.events, ["agent-1", "gate-1"]);
     assertEquals(result.attempts, []);
     assertEquals(result.appliedBody, undefined);
+  });
+});
+
+Deno.test("babysitter CLI refuses a HEAD change after a ready retry", async () => {
+  await repairScenario("head-change", (result) => {
+    assertEquals(result.success, false);
+    assertStringIncludes(
+      result.stderr,
+      "repair agent changed HEAD; refusing to commit",
+    );
+    assertEquals(result.events, ["agent-1", "gate-1", "agent-2"]);
+    assertEquals(result.attempts.length, 1);
+    assertEquals(result.appliedBody, undefined);
+  });
+});
+
+for (const scenario of ["default-config", "relative-config"]) {
+  Deno.test(`babysitter CLI resolves ${scenario} before validation`, async () => {
+    await repairScenario(scenario, (result) => {
+      assertEquals(result.success, true, result.stderr);
+      assertEquals(result.events, [
+        "agent-1",
+        "gate-1",
+        "agent-2",
+        "gate-2",
+        "staged",
+        "committed",
+        "pushed",
+      ]);
+    });
+  });
+}
+
+Deno.test("babysitter CLI preserves Linux agent-validated repairs", async () => {
+  await repairScenario("linux", (result) => {
+    assertEquals(result.success, true, result.stderr);
+    assertEquals(result.events, ["agent-1", "staged", "committed", "pushed"]);
   });
 });

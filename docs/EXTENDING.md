@@ -791,3 +791,12 @@ Deno.test("checkImgbbAvailable - an unset key is unavailable, whatever the host 
 Tests that spawn a subprocess have the same trap: `Deno.Command`'s `env` option
 **merges** into the parent environment. Pass `clearEnv: true` alongside it so
 the child sees exactly the variables listed and nothing else.
+
+
+### Babysitter browser integration
+
+The self-contained babysitter validation tests run in the ordinary unit suite.
+The live browser and Keychain check is a dedicated host integration suite:
+`cd worker/deno && deno task test:browser < /dev/null`. It requires macOS,
+`/usr/bin/sandbox-exec`, system Keychain services and `CHROMIUM_PATH` naming
+an installed Chromium executable. Missing prerequisites fail this explicit task.
