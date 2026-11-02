@@ -17,6 +17,7 @@ import {
 import { assert, assertEquals } from "@std/assert";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import {
@@ -177,6 +178,11 @@ Deno.test("execute_phase assignment - the request carries the work dir, trusted 
     assertEquals(request.workDir, config.workDir);
     assertEquals(request.repo, "org/repo");
     assertEquals(request.issueNumber, 3718);
+    assertEquals(
+      request.reviewPolicyFingerprint,
+      await fingerprintWorkerReviewPolicy(config),
+      "the assignment carries the fingerprint of the run's resolved review policy",
+    );
     assert(
       request.trustedAuthors.includes("testbot"),
       "the run's own GitHub user is a trusted author",

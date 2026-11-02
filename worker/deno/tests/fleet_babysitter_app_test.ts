@@ -30,6 +30,18 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
   assertEquals(info.value.success, true, info.value.stderr);
   const { denoDir } = JSON.parse(info.value.stdout);
   assertEquals(typeof denoDir, "string");
+  // The repair below runs with --cached-only, so make sure the babysitter's
+  // whole graph (including every JSR manifest) is cached first. A shard's
+  // cache may hold only what that shard's own tests loaded, which left
+  // '@std/crypto/meta.json' missing and failed the run on CI.
+  const warm = await runWithTimeout(Deno.execPath(), [
+    "cache",
+    "--config",
+    new URL("../deno.json", import.meta.url).pathname,
+    new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+  ], { timeoutMs: 120_000, env: { DENO_DIR: denoDir } });
+  assert(warm.ok);
+  assertEquals(warm.value.success, true, warm.value.stderr);
   await withTestKey(async (privateKeyPath) => {
     const home = await Deno.makeTempDir();
     try {
@@ -104,6 +116,22 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
       assert(result.ok);
       assertEquals(result.value.success, true, result.value.stderr);
       assertStringIncludes(result.value.stdout, "agent made no changes");
+      // The repair clones through a mirror, then points origin at GitHub over
+      // the protocol gh reports (ssh in the fixture).
+      assertEquals(
+        await Deno.readTextFile(`${home}/origin-url`),
+        "git@github.com:owner/repo.git",
+      );
+      const cloneCalls = (await Deno.readTextFile(`${home}/clone-calls.log`))
+        .trim().split("\n");
+      assertEquals(cloneCalls.length, 2);
+      assert(
+        cloneCalls[0]!.startsWith(
+          "clone --bare git@github.com:owner/repo.git ",
+        ),
+        cloneCalls[0],
+      );
+      assert(cloneCalls[1]!.startsWith("clone --no-checkout --no-hardlinks "));
       const args: string[] = JSON.parse(
         await Deno.readTextFile(`${home}/agent-spawn.json`),
       );

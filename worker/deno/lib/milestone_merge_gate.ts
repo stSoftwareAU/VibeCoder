@@ -28,8 +28,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { runWithTimeout } from "./subprocess_timeout.ts";
-import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
+import {
+  GateAccountUnavailable,
+  manifestsFor,
+  runRepositoryCommand,
+} from "./untrusted_gate_spawn.ts";
 import { stripJsonc } from "./jsonc.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
@@ -161,7 +164,7 @@ export type MergeGateFn = (repoDir: string) => Promise<MergeGateOutcome>;
 /** Runs the resolved check. Injected in tests; spawns `deno` in production. */
 export type TypeCheckRunner = (
   project: TypeCheckProject,
-) => Promise<{ code: number; output: string }>;
+) => Promise<{ code: number; output: string; accountUnavailable?: string }>;
 
 /**
  * Which arguments run this project's type check.
@@ -443,15 +446,23 @@ export function detectRemoteModuleGap(
 /** Spawn the repository's own check with a bounded timeout. */
 const spawnTypeCheck: TypeCheckRunner = async (project) => {
   const executable = project.kind === "cargo" ? "cargo" : Deno.execPath();
-  const result = await runWithTimeout(executable, project.args, {
+  // The repository's own check runs with a stated environment and no parent
+  // credential (Issue #4659). Build-cache placement for the checkout (Issue
+  // #2247) is decided inside runRepositoryCommand, not here.
+  const result = await runRepositoryCommand(executable, project.args, {
     cwd: project.dir,
     timeoutMs: MERGE_GATE_TIMEOUT_MS,
-    // Where the runtime refuses to trim the work volume, `cargo check` writes
-    // its artefacts to the container's ephemeral layer instead of ratcheting
-    // the volume's sparse image (Issue #2247). Empty everywhere else.
-    env: buildCacheEnvForCheckout(project.dir),
+    manifests: await manifestsFor(project.kind, project.dir),
   });
-  if (!result.ok) return { code: 1, output: result.error.message };
+  if (!result.ok) {
+    return {
+      code: 1,
+      output: result.error.message,
+      ...(result.error instanceof GateAccountUnavailable
+        ? { accountUnavailable: result.error.message }
+        : {}),
+    };
+  }
   const { code, stdout, stderr, timedOut } = result.value;
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
     .join("\n");
@@ -524,7 +535,7 @@ export async function checkMergedTree(
       continue;
     }
     const where = `${describeProject(project)} in ${project.dir}`;
-    let result: { code: number; output: string };
+    let result: { code: number; output: string; accountUnavailable?: string };
     try {
       result = await runner(project);
     } catch (err) {
@@ -536,6 +547,10 @@ export async function checkMergedTree(
         detail: `${where} could not be run`,
         output: tail(message),
       };
+    }
+    if (result.accountUnavailable) {
+      leftToCi.push(`${where}: ${result.accountUnavailable}`);
+      continue;
     }
     if (result.code !== 0) {
       // A Deno check that could not reach its module host says nothing about

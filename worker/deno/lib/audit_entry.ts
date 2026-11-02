@@ -14,8 +14,38 @@
 /** Outcome of the underlying network call. */
 export type AuditOutcome = "success" | "error";
 
+/** Action classes the trusted audit hook can identify without guessing. */
+export type AuditActionKind =
+  | "implementation"
+  | "repair"
+  | "branch-update"
+  | "review"
+  | "dismissal"
+  | "merge"
+  | "unknown";
+
+/** Runtime component that requested a mutation, from the trusted caller path. */
+export type AuditComponent = "worker" | "reviewer" | "babysitter" | "unknown";
+
 /** A GitHub mutation to record (caller-supplied fields). */
 export interface AuditMutation {
+  /** Worker-generated identifier for this individual action. */
+  actionId?: string;
+  /** Runtime component classification derived from the trusted caller path. */
+  component?: AuditComponent;
+  /** Known PR number; absent when the mutation target is not a PR. */
+  prNumber?: number;
+  /**
+   * PR head SHA, when a caller records one. It is part of the hashed payload,
+   * and `prActionsFromAuditJournal` (pr_completion_report.ts) copies it
+   * through when present. No production writer sets it yet: the audit hooks
+   * take no head SHA, so entries from this build never carry it.
+   */
+  headSha?: string;
+  /** Commits absent from the remote branch immediately before this push. */
+  deliveredCommits?: string[];
+  /** Action class; unknown is explicit when the hook cannot safely infer it. */
+  actionKind?: AuditActionKind;
   /** ISO 8601 timestamp. Filled in by `recordMutation` when absent. */
   timestamp?: string;
   /** Run-correlation id (joins to #2381). */
@@ -45,6 +75,12 @@ export interface AuditEntry extends AuditMutation {
 
 /** Field order used for the canonical payload (chain fields excluded). */
 const PAYLOAD_FIELDS: ReadonlyArray<keyof AuditMutation> = [
+  "actionId",
+  "component",
+  "prNumber",
+  "headSha",
+  "deliveredCommits",
+  "actionKind",
   "timestamp",
   "runId",
   "repo",

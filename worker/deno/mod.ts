@@ -158,6 +158,7 @@ import { creditSummaryCommand } from "./commands/credit_summary.ts";
 import { backlogReportCommand } from "./commands/backlog_report.ts";
 import { subscriptionAllocationCommand } from "./commands/subscription_allocation.ts";
 import { fleetExperimentReportCommand } from "./commands/fleet_experiment_report.ts";
+import { prCompletionReportCommand } from "./commands/pr_completion_report.ts";
 import { greenGateReportCommand } from "./commands/green_gate_report.ts";
 import { stripContainerfileCommand } from "./commands/strip_containerfile.ts";
 import { toolchainSelfcheckCommand } from "./commands/toolchain_selfcheck.ts";
@@ -366,6 +367,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(creditSummaryCommand);
   registry.register(backlogReportCommand);
   registry.register(fleetExperimentReportCommand);
+  registry.register(prCompletionReportCommand);
   registry.register(subscriptionAllocationCommand);
   registry.register(greenGateReportCommand);
   registry.register(stripContainerfileCommand);
