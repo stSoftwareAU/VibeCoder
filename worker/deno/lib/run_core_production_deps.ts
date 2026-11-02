@@ -3716,8 +3716,8 @@ export async function createProductionRunCoreDeps(
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
-        // Issue #2462: the REST update-branch call the merge ladder already
-        // uses — reused as-is, never re-implemented here.
+        // Issue #4613: strict-base refreshes share required-check readiness
+        // and per-base ownership with the other updater lanes.
         updateBranchFn: (repo, prNumber, base) =>
           base
             ? requestReadyBranchUpdate(repo, prNumber, gh, base)

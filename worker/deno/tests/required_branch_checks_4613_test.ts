@@ -5,6 +5,7 @@ import {
   requestReadyBranchUpdate,
   requiredChecksPassed,
 } from "../lib/required_branch_checks_4613.ts";
+import { requestBranchUpdate } from "../lib/merge_block_escalation.ts";
 
 const rules = [{
   type: "required_status_checks",
@@ -121,7 +122,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   let decision = "APPROVED";
   let strictPolicy = true;
   let queued = false;
-  let classicProtection: unknown = null;
+  const classicProtection: unknown = null;
   let retarget = false;
   let wrongParent = false;
   let views = 0;
@@ -148,7 +149,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       );
     }
     if (args[0] === "pr" && args[1] === "list") {
-      return Promise.resolve(JSON.stringify([{ number: 12 }]));
+      return Promise.resolve(JSON.stringify([{ number: 12 }, { number: 13 }]));
     }
     if (args[0] === "pr" && args[1] === "checks") {
       return Promise.resolve(JSON.stringify([]));
@@ -181,7 +182,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       if (index >= 0) comments.splice(index, 1);
       return Promise.resolve("");
     }
-    if (endpoint.endsWith("/pulls/12")) {
+    if (endpoint.includes("/pulls/")) {
       return Promise.resolve(
         JSON.stringify({
           state: "open",
@@ -230,18 +231,76 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     }
     throw new Error("unexpected endpoint");
   };
-  const firstRequest = await requestReadyBranchUpdate("owner/repo", 12, gh);
+  let baselineRefreshes = 0;
+  for (const prNumber of [12, 13]) {
+    if ((await requestBranchUpdate("owner/repo", prNumber, gh, head)).ok) {
+      baselineRefreshes++;
+    }
+  }
+  assertEquals(baselineRefreshes, 2);
+  writes.length = 0;
+  const request = (base?: string) =>
+    requestReadyBranchUpdate(
+      "owner/repo",
+      12,
+      gh,
+      base,
+      undefined,
+      async () => {},
+      { fleetAuthors: ["VibeCoderST"] },
+    );
+  const firstRequest = await request();
   if (!firstRequest.ok) throw firstRequest.error;
   assertEquals(firstRequest.ok, true);
   assertEquals(writes.length, 1);
   assertEquals(writes[0]?.slice(-2), ["-f", `expected_head_sha=${head}`]);
-  strictPolicy = false;
-  const nonStrict = await requestReadyBranchUpdate("owner/repo", 12, gh);
-  assertEquals(nonStrict.ok, true);
+  const nextReadyPr = await requestReadyBranchUpdate(
+    "owner/repo",
+    13,
+    gh,
+    "main",
+    undefined,
+    async () => {},
+    { fleetAuthors: ["VibeCoderST"] },
+  );
+  assertEquals(nextReadyPr.ok, false);
+  if (!nextReadyPr.ok) {
+    assertEquals(
+      nextReadyPr.error.message.startsWith(
+        "base refresh owned by owner/repo#12 (",
+      ),
+      true,
+    );
+  }
+  // On this same two-ready-PR backlog, refresh requests drop from two to one.
+  assertEquals(writes.length, 1);
+  conclusion = "failure";
+  assertEquals((await request()).ok, false);
+  assertEquals(
+    comments.some((comment) =>
+      comment.body.startsWith("<!-- BASE_REFRESH_OWNER_4613:")
+    ),
+    false,
+  );
+  conclusion = "success";
+  const afterFailedOwner = await requestReadyBranchUpdate(
+    "owner/repo",
+    13,
+    gh,
+    "main",
+    undefined,
+    async () => {},
+    { fleetAuthors: ["VibeCoderST"] },
+  );
+  assertEquals(afterFailedOwner.ok, true);
   assertEquals(writes.length, 2);
+  strictPolicy = false;
+  const nonStrict = await request();
+  assertEquals(nonStrict.ok, true);
+  assertEquals(writes.length, 3);
   strictPolicy = true;
   queued = true;
-  const mergeQueue = await requestReadyBranchUpdate("owner/repo", 12, gh);
+  const mergeQueue = await request();
   assertEquals(mergeQueue.ok, false);
   if (!mergeQueue.ok) {
     assertEquals(
@@ -253,31 +312,31 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   views = 0;
   retarget = true;
   assertEquals(
-    (await requestReadyBranchUpdate("owner/repo", 12, gh, "main")).ok,
+    (await request("main")).ok,
     false,
   );
   retarget = false;
   wrongParent = true;
   assertEquals(
-    (await requestReadyBranchUpdate("owner/repo", 12, gh, "main")).ok,
+    (await request("main")).ok,
     false,
   );
   wrongParent = false;
   assertEquals(
-    (await requestReadyBranchUpdate("owner/repo", 12, gh, "other-base")).ok,
+    (await request("other-base")).ok,
     false,
   );
   conclusion = "failure";
   assertEquals(
-    (await requestReadyBranchUpdate("owner/repo", 12, gh)).ok,
+    (await request()).ok,
     false,
   );
   decision = "REVIEW_REQUIRED";
   assertEquals(
-    (await requestReadyBranchUpdate("owner/repo", 12, gh)).ok,
+    (await request()).ok,
     false,
   );
-  assertEquals(writes.length, 2);
+  assertEquals(writes.length, 3);
 });
 
 Deno.test("ready updater rejects an invalid PR number before invoking gh", async () => {

@@ -15,6 +15,9 @@ import {
   type SearchPr,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 
+const HEAD_SHA = "a".repeat(40);
+const NEXT_HEAD_SHA = "b".repeat(40);
+
 const pr = (over: Partial<SearchPr> = {}): SearchPr => ({
   number: 30,
   title: "chore: bump x",
@@ -23,7 +26,7 @@ const pr = (over: Partial<SearchPr> = {}): SearchPr => ({
   mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN",
   autoMergeRequest: null,
-  headRefOid: "head",
+  headRefOid: HEAD_SHA,
   baseRefName: "Develop",
   repository: {
     nameWithOwner: "o/r",
@@ -50,7 +53,7 @@ const approved = {
     author: { login: "nleck" },
     state: "APPROVED",
     body: "",
-    commit: { oid: "head" },
+    commit: { oid: HEAD_SHA },
   }],
 };
 
@@ -69,6 +72,25 @@ async function upkeep(prs: SearchPr[], dir: string, refusal?: string) {
             },
           },
         }));
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        const candidate = prs.find((item) => item.number === Number(args[2]));
+        return Promise.resolve(JSON.stringify({
+          state: "OPEN",
+          isDraft: candidate?.isDraft ?? false,
+          baseRefName: candidate?.baseRefName ?? "main",
+          headRefOid: candidate?.headRefOid ?? HEAD_SHA,
+          autoMergeRequest: candidate?.autoMergeRequest ?? {},
+          reviewDecision: "APPROVED",
+          mergeable: candidate?.mergeable ?? "MERGEABLE",
+          mergeStateStatus: candidate?.mergeStateStatus ?? "BEHIND",
+        }));
+      }
+      if (args[0] === "api" && args[1]?.includes("/rules/branches/")) {
+        return Promise.resolve("[[]]");
+      }
+      if (args[0] === "api" && args[1]?.includes("/branches/")) {
+        return Promise.resolve('{"protection":null}');
       }
       if (args[3]?.endsWith("/update-branch") && refusal) {
         return Promise.reject(new Error(refusal));
@@ -92,7 +114,7 @@ Deno.test("Dependabot upkeep updates an approved behind head once, using its hea
     });
     // A pre-upgrade rebase cache must neither suppress the update nor be
     // rewritten by the replacement upkeep path.
-    const oldCache = '{"o/r#30":"head"}';
+    const oldCache = `{"o/r#30":"${HEAD_SHA}"}`;
     await Deno.writeTextFile(`${dir}/dependabot-rebase.json`, oldCache);
     const first = await upkeep([behind], dir);
     assertEquals(first.result.upkeep, ["o/r#30 branch update requested"]);
@@ -102,7 +124,7 @@ Deno.test("Dependabot upkeep updates an approved behind head once, using its hea
       "PUT",
       "repos/o/r/pulls/30/update-branch",
       "-f",
-      "expected_head_sha=head",
+      `expected_head_sha=${HEAD_SHA}`,
     ]]);
     assertEquals(first.calls.some((c) => c.includes("comment")), false);
     assertEquals(
@@ -117,13 +139,15 @@ Deno.test("Dependabot upkeep updates an approved behind head once, using its hea
     );
     const next = {
       ...behind,
-      headRefOid: "next",
-      reviews: { nodes: [{ ...approved.nodes[0]!, commit: { oid: "next" } }] },
+      headRefOid: NEXT_HEAD_SHA,
+      reviews: {
+        nodes: [{ ...approved.nodes[0]!, commit: { oid: NEXT_HEAD_SHA } }],
+      },
     };
     const third = await upkeep([next], dir);
     assertEquals(third.result.upkeep, ["o/r#30 branch update requested"]);
     assertEquals(
-      third.calls.some((c) => c.includes("expected_head_sha=next")),
+      third.calls.some((c) => c.includes(`expected_head_sha=${NEXT_HEAD_SHA}`)),
       true,
     );
   } finally {
@@ -181,7 +205,7 @@ Deno.test("Dependabot branch update refusal reports its cause and waits for anot
       "gh api: HTTP 422: expected head sha\nmore",
     );
     assertEquals(first.result.upkeep, [
-      "o/r#30 branch update failed: gh api: HTTP 422: expected head sha",
+      "o/r#30 branch update failed: Failed to update branch for PR #30 in o/r: gh api: HTTP 422: expected head sha",
     ]);
     assertEquals(first.calls.some((c) => c.includes("comment")), false);
     const second = await upkeep([behind], dir);
@@ -196,7 +220,7 @@ async function postReview(
   dir: string,
   live: Record<string, unknown> = {},
   refusal = false,
-  headSha = "head",
+  headSha = HEAD_SHA,
   options: {
     number?: number;
     stateDir?: string;
@@ -209,7 +233,8 @@ async function postReview(
   await Deno.mkdir(`${dir}/bin`, { recursive: true });
   await Deno.writeTextFile(`${dir}/calls`, "");
   const state = JSON.stringify({
-    headRefOid: "head",
+    headRefOid: headSha,
+    baseRefName: "Develop",
     state: "OPEN",
     mergeStateStatus: "BEHIND",
     isDraft: false,
@@ -222,6 +247,10 @@ async function postReview(
 printf '%s\\n' "$*" >> "${dir}/calls"
 if [ "$1 $2" = "pr view" ]; then
   echo '${state}'
+elif [ "$1" = "api" ] && echo "$2" | grep -q '/rules/branches/'; then
+  echo '[[]]'
+elif [ "$1" = "api" ] && echo "$2" | grep -q '/branches/'; then
+  echo '{"protection":null}'
 elif [ "$1 $2 $3" = "api --method PUT" ]; then
   touch "${dir}/updating"
   if [ -n "${options.barrier ?? ""}" ]; then
@@ -255,6 +284,7 @@ echo "$2"
         number,
         title: "Bump dependency",
         url: "https://github.com/o/r/pull/30",
+        baseRef: "Develop",
         headSha,
         kind: "dependabot",
         testChanges: { removed: [], edited: [] },
@@ -316,7 +346,7 @@ Deno.test("post approves a Dependabot PR before the leased update and refuses st
       assertEquals(result.branchUpdated === true, shouldUpdate);
       assertEquals(calls.some((c) => c.includes("@dependabot")), false);
       if (shouldUpdate) {
-        assertStringIncludes(calls[update]!, "expected_head_sha=head");
+        assertStringIncludes(calls[update]!, `expected_head_sha=${HEAD_SHA}`);
         const approval = calls.findIndex((c) => c.includes("--approve"));
         assert(approval >= 0 && approval < update);
       }
@@ -340,7 +370,7 @@ Deno.test("post and gate share successful and refused branch-update memory acros
         await Deno.writeTextFile(
           `${stateDir}/dependabot-failed.json`,
           JSON.stringify({
-            "o/r#30 auto-merge": "head",
+            "o/r#30 auto-merge": HEAD_SHA,
             "other/repo#2 branch-update": "other-head",
           }),
         );
@@ -383,7 +413,7 @@ Deno.test("post and gate share successful and refused branch-update memory acros
           JSON.parse(await Deno.readTextFile(`${stateDir}/branch-update.json`)),
           {
             "other/repo#1": "other-head",
-            ...(!refusal ? { "o/r#30": "head" } : {}),
+            ...(!refusal ? { "o/r#30": HEAD_SHA } : {}),
           },
         );
         assertEquals(
@@ -391,28 +421,32 @@ Deno.test("post and gate share successful and refused branch-update memory acros
             await Deno.readTextFile(`${stateDir}/dependabot-failed.json`),
           ),
           {
-            "o/r#30 auto-merge": "head",
+            "o/r#30 auto-merge": HEAD_SHA,
             "other/repo#2 branch-update": "other-head",
-            ...(refusal ? { "o/r#30 branch-update": "head" } : {}),
+            ...(refusal ? { "o/r#30 branch-update": HEAD_SHA } : {}),
           },
         );
         const next = await postReview(
           dir,
-          { headRefOid: "next" },
+          { headRefOid: NEXT_HEAD_SHA },
           false,
-          "next",
+          NEXT_HEAD_SHA,
         );
         assertEquals(next.result.branchUpdated, true);
         assertEquals(
           next.calls.filter((c) => c.includes("/update-branch")).length,
           1,
         );
-        assert(next.calls.some((c) => c.includes("expected_head_sha=next")));
+        assert(
+          next.calls.some((c) =>
+            c.includes(`expected_head_sha=${NEXT_HEAD_SHA}`)
+          ),
+        );
         const nextGate = await upkeep([{
           ...behind,
-          headRefOid: "next",
+          headRefOid: NEXT_HEAD_SHA,
           reviews: {
-            nodes: [{ ...approved.nodes[0]!, commit: { oid: "next" } }],
+            nodes: [{ ...approved.nodes[0]!, commit: { oid: NEXT_HEAD_SHA } }],
           },
         }], stateDir);
         assertEquals(nextGate.calls.some((c) => c.includes("PUT")), false);
@@ -448,12 +482,12 @@ Deno.test("overlapping post processes preserve both PRs in shared upkeep memory 
     const stateDir = `${dir}/state`;
     const barrier = `${dir}/barrier`;
     await Deno.mkdir(barrier);
-    const first = postReview(`${dir}/first`, {}, refusal, "head", {
+    const first = postReview(`${dir}/first`, {}, refusal, HEAD_SHA, {
       number: 30,
       stateDir,
       barrier,
     });
-    const second = postReview(`${dir}/second`, {}, refusal, "head", {
+    const second = postReview(`${dir}/second`, {}, refusal, HEAD_SHA, {
       number: 31,
       stateDir,
       barrier,
@@ -479,8 +513,8 @@ Deno.test("overlapping post processes preserve both PRs in shared upkeep memory 
       const file = refusal ? "dependabot-failed.json" : "branch-update.json";
       const suffix = refusal ? " branch-update" : "";
       assertEquals(JSON.parse(await Deno.readTextFile(`${stateDir}/${file}`)), {
-        [`o/r#30${suffix}`]: "head",
-        [`o/r#31${suffix}`]: "head",
+        [`o/r#30${suffix}`]: HEAD_SHA,
+        [`o/r#31${suffix}`]: HEAD_SHA,
       });
       const next = await upkeep(
         [30, 31].map((number) =>
@@ -509,14 +543,14 @@ Deno.test("overlapping posts request a shared PR head only once (Issue #3663)", 
     const stateDir = `${dir}/state`;
     const barrier = `${dir}/barrier`;
     await Deno.mkdir(barrier);
-    const first = postReview(`${dir}/first`, {}, refusal, "head", {
+    const first = postReview(`${dir}/first`, {}, refusal, HEAD_SHA, {
       stateDir,
       barrier,
     });
     const posts = [first];
     try {
       await waitForFile(`${barrier}/30`);
-      const second = postReview(`${dir}/second`, {}, refusal, "head", {
+      const second = postReview(`${dir}/second`, {}, refusal, HEAD_SHA, {
         stateDir,
         barrier,
       });
@@ -548,9 +582,34 @@ Deno.test("upkeep memory surfaces an atomic replacement failure (Issue #3663)", 
     await assertRejects(
       () =>
         updateBranchOnce(
-          { repo: "o/r", number: 30, headSha: "head" },
+          {
+            repo: "o/r",
+            number: 30,
+            headSha: HEAD_SHA,
+            baseRefName: "Develop",
+          },
           dir,
-          () => Promise.resolve("{}"),
+          (args) => {
+            if (args[0] === "pr" && args[1] === "view") {
+              return Promise.resolve(JSON.stringify({
+                state: "OPEN",
+                isDraft: false,
+                baseRefName: "Develop",
+                headRefOid: HEAD_SHA,
+                autoMergeRequest: {},
+                reviewDecision: "APPROVED",
+                mergeable: "MERGEABLE",
+                mergeStateStatus: "BEHIND",
+              }));
+            }
+            if (args[1]?.includes("/rules/branches/")) {
+              return Promise.resolve("[[]]");
+            }
+            if (args[1]?.includes("/branches/")) {
+              return Promise.resolve('{"protection":null}');
+            }
+            return Promise.resolve("{}");
+          },
         ),
       Error,
       "atomicWrite",
@@ -575,9 +634,32 @@ Deno.test("a persistence lock timeout after the API request stays a loud write f
     await assertRejects(
       () =>
         updateBranchOnce(
-          { repo: "o/r", number: 30, headSha: "head" },
+          {
+            repo: "o/r",
+            number: 30,
+            headSha: HEAD_SHA,
+            baseRefName: "Develop",
+          },
           dir,
-          () => {
+          (args) => {
+            if (args[0] === "pr" && args[1] === "view") {
+              return Promise.resolve(JSON.stringify({
+                state: "OPEN",
+                isDraft: false,
+                baseRefName: "Develop",
+                headRefOid: HEAD_SHA,
+                autoMergeRequest: {},
+                reviewDecision: "APPROVED",
+                mergeable: "MERGEABLE",
+                mergeStateStatus: "BEHIND",
+              }));
+            }
+            if (args[1]?.includes("/rules/branches/")) {
+              return Promise.resolve("[[]]");
+            }
+            if (args[1]?.includes("/branches/")) {
+              return Promise.resolve('{"protection":null}');
+            }
             calls++;
             return Promise.resolve("{}");
           },
@@ -625,7 +707,7 @@ Deno.test("gate rechecks a post update written after its initial cache read (Iss
     assertEquals(result.upkeep, []);
     assertEquals(
       JSON.parse(await Deno.readTextFile(`${dir}/state/branch-update.json`)),
-      { "o/r#30": "head" },
+      { "o/r#30": HEAD_SHA },
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -635,15 +717,15 @@ Deno.test("gate rechecks a post update written after its initial cache read (Iss
 Deno.test("post persists upkeep memory with the documented granular permissions (Issue #3663)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "post-permissions-3663-" });
   try {
-    const posted = await postReview(dir, {}, false, "head", {
+    const posted = await postReview(dir, {}, false, HEAD_SHA, {
       restricted: true,
     });
     assertEquals(posted.result.branchUpdated, true);
     assertEquals(
       JSON.parse(await Deno.readTextFile(`${dir}/state/branch-update.json`)),
-      { "o/r#30": "head" },
+      { "o/r#30": HEAD_SHA },
     );
-    const repeated = await postReview(dir, {}, false, "head", {
+    const repeated = await postReview(dir, {}, false, HEAD_SHA, {
       restricted: true,
     });
     assertEquals(

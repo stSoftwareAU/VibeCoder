@@ -182,8 +182,8 @@ const OPEN_RECORD = JSON.stringify([{
   }]),
 }]);
 
-// Armed and behind, so the sweep takes the branch-update path rather than the
-// real merge ladder (which is not behind this seam).
+// Armed and behind, so the sweep evaluates its branch-refresh policy rather
+// than the real merge ladder (which is not behind this seam).
 for (
   const [name, labels, comments] of [
     ["a PR with no label or record", [], "[]"],
@@ -193,15 +193,15 @@ for (
     ["a PR with an open pre-PR review record", [], OPEN_RECORD],
   ] as const
 ) {
-  Deno.test(`Issue #4291: production ensureAutoMerge keeps ${name} armed and sweeps it`, async () => {
+  Deno.test(`Issue #4291: production ensureAutoMerge keeps ${name} armed and evaluates refresh policy`, async () => {
     const calls = await sweepOnePr(
       { armed: true, labels: [...labels], behind: true },
       comments,
     );
     assertEquals(calls.filter(isDisarm), [], JSON.stringify(calls));
     assert(
-      calls.some((c) => c.join(" ").includes("update-branch")),
-      "the PR was swept normally (branch update requested)",
+      calls.some((c) => c[1]?.includes("/rules/branches/")),
+      "the armed PR reached the shared refresh policy",
     );
   });
 }

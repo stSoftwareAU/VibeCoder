@@ -271,8 +271,8 @@ export async function reconcileBaseRefreshOwner(
     let released = false;
     let reason: string | undefined;
     for (const owner of records) {
-      // Expired owners are re-read before takeover. An unreadable state must
-      // retain ownership; callers convert read failures to "active".
+      // Re-read before takeover; an unreadable state retains ownership until
+      // the bounded expiry. Callers convert read failures to "active".
       const status = await readStatus(owner);
       if (status === "merged" || status === "closed" || status === "failed") {
         await port.remove(owner.id);

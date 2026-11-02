@@ -1,6 +1,7 @@
 /** Evaluate the effective branch-check contract against the current head. */
 
 import type { Result } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
@@ -407,6 +408,8 @@ export async function requestReadyBranchUpdate(
   gh: (args: string[]) => Promise<string>,
   expectedBase?: string,
   expectedHead?: string,
+  ownershipSleepFn?: (ms: number) => Promise<void>,
+  ownershipAuthorOptions?: AlertDedupAuthorOptions,
 ): Promise<Result<void>> {
   if (
     !/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(prNumber) ||
@@ -452,9 +455,11 @@ export async function requestReadyBranchUpdate(
         error: new Error("PR base or head changed before branch update"),
       };
     }
+    const baseRefName = current.baseRefName as string;
+    const headRefOid = current.headRefOid as string;
     const policy = await readStrictBasePolicy(
       repo,
-      current.baseRefName as string,
+      baseRefName,
       gh,
     );
     if (policy.mergeQueue) {
@@ -468,7 +473,7 @@ export async function requestReadyBranchUpdate(
         repo,
         prNumber,
         gh,
-        current.headRefOid as string,
+        headRefOid,
       );
     }
     if (!ready(current)) {
@@ -521,12 +526,16 @@ export async function requestReadyBranchUpdate(
         return numbers[0]!;
       },
       prNumbersForBase: openPrNumbers,
+      ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
+      ...(ownershipAuthorOptions
+        ? { authorOptions: ownershipAuthorOptions }
+        : {}),
       log: (message) => console.warn(message),
     });
     await reconcileBaseRefreshOwner(
       port,
       repo,
-      current.baseRefName,
+      baseRefName,
       async (owner): Promise<BaseRefreshStatus> => {
         try {
           const live = object(
@@ -571,15 +580,15 @@ export async function requestReadyBranchUpdate(
     const merge = await readTestMerge(
       repo,
       prNumber,
-      current.baseRefName,
-      current.headRefOid,
+      baseRefName,
+      headRefOid,
       gh,
     );
     if (
       !await readRequiredChecksPassed(
         repo,
-        current.baseRefName,
-        current.headRefOid,
+        baseRefName,
+        headRefOid,
         gh,
         merge.mergeSha,
       )
@@ -591,8 +600,8 @@ export async function requestReadyBranchUpdate(
     }
     const fresh = await readLivePr();
     if (
-      !ready(fresh) || fresh.baseRefName !== current.baseRefName ||
-      fresh.headRefOid !== current.headRefOid
+      !ready(fresh) || fresh.baseRefName !== baseRefName ||
+      fresh.headRefOid !== headRefOid
     ) {
       return {
         ok: false,
@@ -602,8 +611,8 @@ export async function requestReadyBranchUpdate(
     const freshMerge = await readTestMerge(
       repo,
       prNumber,
-      current.baseRefName,
-      current.headRefOid,
+      baseRefName,
+      headRefOid,
       gh,
     );
     if (
@@ -619,9 +628,9 @@ export async function requestReadyBranchUpdate(
     }
     const ownership = await acquireBaseRefreshOwner(port, {
       repo,
-      base: current.baseRefName,
+      base: baseRefName,
       prNumber,
-      headSha: current.headRefOid,
+      headSha: headRefOid,
       workerId,
       ttlSeconds: 6 * 60 * 60,
     });
@@ -637,16 +646,16 @@ export async function requestReadyBranchUpdate(
       const immediatelyFresh = await readLivePr();
       if (
         !ready(immediatelyFresh) ||
-        immediatelyFresh.baseRefName !== current.baseRefName ||
-        immediatelyFresh.headRefOid !== current.headRefOid
+        immediatelyFresh.baseRefName !== baseRefName ||
+        immediatelyFresh.headRefOid !== headRefOid
       ) {
         throw new Error("PR base or head changed before branch update");
       }
       const immediateMerge = await readTestMerge(
         repo,
         prNumber,
-        current.baseRefName,
-        current.headRefOid,
+        baseRefName,
+        headRefOid,
         gh,
       );
       if (
@@ -654,8 +663,8 @@ export async function requestReadyBranchUpdate(
         immediateMerge.baseSha !== merge.baseSha ||
         !await readRequiredChecksPassed(
           repo,
-          current.baseRefName,
-          current.headRefOid,
+          baseRefName,
+          headRefOid,
           gh,
           immediateMerge.mergeSha,
         )
@@ -668,7 +677,7 @@ export async function requestReadyBranchUpdate(
       await releaseBaseRefreshOwner(
         port,
         repo,
-        current.baseRefName,
+        baseRefName,
         ownership.ownerId,
       );
       throw error;
@@ -677,13 +686,13 @@ export async function requestReadyBranchUpdate(
       repo,
       prNumber,
       gh,
-      current.headRefOid,
+      headRefOid,
     );
     if (!update.ok) {
       await releaseBaseRefreshOwner(
         port,
         repo,
-        current.baseRefName,
+        baseRefName,
         ownership.ownerId,
       );
     }

@@ -3,9 +3,10 @@
  *
  * Determines which open PRs need their branches updated by checking
  * how far behind the base branch they are and whether they have
- * merge conflicts. A PR behind a GitHub merge queue is not updated for
- * being behind (Issue #4424) — the queue tests it against its future head —
- * but a conflicting one still is.
+ * merge conflicts. Production callers send plain behind updates through the
+ * shared strict-base readiness and ownership policy (Issue #4613). A PR
+ * behind a GitHub merge queue is not updated for being behind (Issue #4424),
+ * but conflict repair remains separate.
  *
  * Issue #1281: Integrates distributed locking to prevent concurrent
  * workers from updating the same PR branch simultaneously.
@@ -1114,7 +1115,7 @@ export async function executePrBranchUpdates(
     // Log what we're about to do
     if (action.reason === "behind") {
       deps.logger.info(
-        `PR #${action.prNumber} (${action.branchName}) is ${action.behindBy} commit(s) behind ${action.baseBranch} — updating...`,
+        `PR #${action.prNumber} (${action.branchName}) is ${action.behindBy} commit(s) behind ${action.baseBranch} — checking refresh eligibility...`,
         { repo: action.repo, prNumber: action.prNumber },
       );
     } else {
