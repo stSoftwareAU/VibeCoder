@@ -1122,10 +1122,11 @@ run to measure or compare behaviour across the whole fleet configures
 read-only evidence snapshot and emits dated JSON. `deno task
 pr-completion-report --collect` builds that snapshot itself and reports on it.
 Exactly one of `--input` and `--collect` is required. Neither mode performs
-GitHub writes or changes host configuration. The only file `--collect` writes
-is the optional `--write-snapshot <path>`, which holds the collected input so a
-later `--input` run reproduces the same report. A `--input` snapshot is not
-authenticated.
+GitHub writes or changes host configuration. `--collect` writes only the
+optional `--write-snapshot <path>`, which holds the collected input so a later
+`--input` run reproduces the same report, plus whatever `verifyAllChains` settles
+in an audit directory it sweeps (an interrupted append, Issue #1074; see
+**Limits**). A `--input` snapshot is not authenticated.
 
 `--collect` reads these sources, all read-only. The audit journals are the
 verified fleet source; the review-fleet-prs log is a lower-trust source, set
@@ -1297,11 +1298,35 @@ startup. It can settle an interrupted append in a journal it sweeps
 mid-append. CI durations are fetched only for merged PRs, because the report
 counts CI only for delivered changes.
 
+**Accepted limits.** These are known and not mitigated in this change:
+
+- A merge armed by the fleet (`gh pr merge --auto`) and completed later by a
+  person is attributed to the fleet. The audit entry cannot see who clicked
+  merge, so verified human-merge detection is not produced.
+- Deployment rows are grouped per component, not per host. One host's missing
+  heartbeat is hidden while another host of the same component reports. The
+  operator supplies per-host state directories and checks the `coverage notes`.
+- Builds older than this change cannot verify journal entries that carry the
+  new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade
+  every host before exporting journals across them.
+- `ownerGateVerified` is always false from `--collect`, so an owner-gated PR
+  stays in the completion denominator (conservative). The rollout's stranded
+  set excludes `needs-human` PRs on the label alone, so the two rules differ:
+  a `needs-human` PR is counted in the denominator and left out of the stranded
+  list.
+
+GitHub responses are read strictly. A key GitHub always sends (for example
+`merged_at`, `closed_at`, `labels`, `body`, or a review's `state`) that is absent
+fails the collection, naming the PR and field. Only the explicit empty value
+(`null`, or `[]` for labels) means none.
+
 The snapshot carries explicit UTC `cohort.start`, `cohort.end` and
 `cohort.observedAt` values. PR observations deduplicate by `repo#number`; each
 action also has a stable action ID, run and component identity, timestamp,
-outcome and PR number; `headSha` is optional, and absent source coverage remains
-unknown. A report labels a merged PR unattended only when the recorded action
+outcome and PR number. `headSha` is optional and is not used for linking: an
+action links to its PR by repository and number whatever head it was recorded
+at, so a verified repair at an earlier head still counts toward the PR's history.
+Absent source coverage remains unknown. A report labels a merged PR unattended only when the recorded action
 history is complete, verified, contains both implementation or repair and
 merge actions, and contains no verified human action. A GitHub user login does
 not change that result. Older ledger entries remain readable but do not gain

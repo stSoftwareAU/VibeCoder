@@ -18,7 +18,11 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
-import { createReviewRoundDeps, runReviewRound } from "../lib/review_round.ts";
+import {
+  createReviewRoundDeps,
+  type ReviewRoundDeps,
+  runReviewRound,
+} from "../lib/review_round.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 
 /** The CLI arguments, given as a JSON array of strings (parsed or not). */
@@ -37,42 +41,58 @@ export const reviewRoundCommand: Command = {
   description:
     "Run one headless review-fleet-prs round on the worker's Claude credential pool (Issue #3293)",
 
-  async execute(
+  execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
   ): Promise<CommandResult> {
-    const promptFile = String(args["prompt-file"] ?? "");
-    if (promptFile === "" || promptFile === "true") {
-      return { success: false, message: "--prompt-file <path> is required" };
-    }
-    let claudeArgs: string[];
-    try {
-      claudeArgs = parseClaudeArgs(args["claude-args"] ?? []);
-    } catch (error) {
-      return { success: false, message: (error as Error).message };
-    }
-    const prompt = await Deno.readTextFile(promptFile);
-    const code = await runReviewRound(
-      prompt,
-      claudeArgs,
-      createReviewRoundDeps((message) => console.error(message)),
-      // The prompt sits in the round's own directory, which also holds the
-      // round's attempt log and each attempt's stream.
-      {
-        roundDir: promptFile.includes("/")
-          ? promptFile.replace(/\/[^/]*$/, "") || "/"
-          : ".",
-        deployment: {
-          component: "reviewer",
-          codeRevision: Deno.env.get("VIBE_BUILD_COMMIT") ?? "unknown",
-          policyFingerprint: await fingerprintWorkerReviewPolicy(config),
-        },
-      },
-    );
-    return {
-      success: code === 0,
-      message: `review round exited ${code}`,
-      exitCode: code,
-    };
+    return runReviewRoundCommand(args, config);
   },
 };
+
+/**
+ * The review-round command's body, with its seams injected: `deps` are the
+ * round's seams (production: {@link createReviewRoundDeps}) and `env` reads the
+ * build commit from the environment (production: `Deno.env.get`).
+ */
+export async function runReviewRoundCommand(
+  args: Record<string, unknown>,
+  config: WorkerConfig,
+  deps: ReviewRoundDeps = createReviewRoundDeps((message) =>
+    console.error(message)
+  ),
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): Promise<CommandResult> {
+  const promptFile = String(args["prompt-file"] ?? "");
+  if (promptFile === "" || promptFile === "true") {
+    return { success: false, message: "--prompt-file <path> is required" };
+  }
+  let claudeArgs: string[];
+  try {
+    claudeArgs = parseClaudeArgs(args["claude-args"] ?? []);
+  } catch (error) {
+    return { success: false, message: (error as Error).message };
+  }
+  const prompt = await Deno.readTextFile(promptFile);
+  const code = await runReviewRound(
+    prompt,
+    claudeArgs,
+    deps,
+    // The prompt sits in the round's own directory, which also holds the
+    // round's attempt log and each attempt's stream.
+    {
+      roundDir: promptFile.includes("/")
+        ? promptFile.replace(/\/[^/]*$/, "") || "/"
+        : ".",
+      deployment: {
+        component: "reviewer",
+        codeRevision: env("VIBE_BUILD_COMMIT") ?? "unknown",
+        policyFingerprint: await fingerprintWorkerReviewPolicy(config),
+      },
+    },
+  );
+  return {
+    success: code === 0,
+    message: `review round exited ${code}`,
+    exitCode: code,
+  };
+}

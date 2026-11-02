@@ -437,10 +437,9 @@ export function buildPrCompletionReport(
     if (actionIds.has(action.actionId)) continue;
     actionIds.add(action.actionId);
     const key = keyOf(action.repo, action.prNumber);
-    const pr = prMap.get(key);
-    if (
-      !pr || (action.headSha !== undefined && action.headSha !== pr.headSha)
-    ) {
+    // Linked by repository and number alone: an action recorded at an earlier
+    // head is part of the PR's history, so its head SHA never drops it.
+    if (!prMap.has(key)) {
       unlinkedActions++;
       continue;
     }

@@ -424,3 +424,256 @@ Deno.test("deployment fingerprints cover resolved repository policy for every co
   assertEquals(first.length, 64);
   assertEquals(second.length, 64);
 });
+
+Deno.test("a verified human repair at an earlier head still counts; the head SHA does not unlink it", () => {
+  // The repair and the first implementation were recorded at the old head; the
+  // merge is at the final head. The human repair must still mark the merge.
+  const report = buildPrCompletionReport(input({
+    prs: [pr(60, { headSha: "sha-final" })],
+    actions: [
+      {
+        ...action(60, "impl-old", "implementation", "fleet"),
+        headSha: "sha-old",
+      },
+      { ...action(60, "repair-human", "repair", "human"), headSha: "sha-old" },
+      { ...action(60, "merge-final", "merge", "fleet"), headSha: "sha-final" },
+    ] as PrCompletionInput["actions"],
+  }));
+  assertEquals(report.completion.humanAssistedMerged, 1);
+  assertEquals(report.completion.unattendedMerged, 0);
+  assertEquals(report.completion.unknownMerged, 0);
+  assertEquals(report.coverage.unlinkedActions, 0);
+});
+
+Deno.test("an action for a PR outside the cohort is counted as unlinked", () => {
+  const report = buildPrCompletionReport(input({
+    prs: [pr(61)],
+    actions: [
+      action(62, "orphan", "merge", "fleet"),
+    ] as PrCompletionInput["actions"],
+  }));
+  assertEquals(report.coverage.unlinkedActions, 1);
+});
+
+Deno.test("target evaluation is unavailable with no eligible PRs and not met below ninety percent", () => {
+  const policyFingerprint = "a".repeat(64);
+  const deployments = ["worker", "reviewer", "babysitter"].map((component) => ({
+    component,
+    revision: "abcdef0123456789",
+    policyFingerprint,
+    observedAt: "2026-11-04T00:00:00Z",
+  }));
+  const rollout = { verifiedAt: "2026-10-20T00:00:00Z", strandedPrs: [] };
+  const window = {
+    start: "2026-10-20T00:00:00.000Z",
+    end: "2026-11-03T00:00:00.000Z",
+    observedAt: "2026-11-04T00:00:00.000Z",
+  };
+  // No PR was created inside the fourteen-day window.
+  const unavailable = buildPrCompletionReport(input({
+    cohort: window,
+    deployments,
+    rollout,
+  }));
+  assertEquals(unavailable.targetEvaluation.status, "unavailable");
+  assertEquals(unavailable.targetEvaluation.eligiblePrs, 0);
+  assertEquals(unavailable.targetEvaluation.unattendedWithin24Hours, null);
+
+  // One eligible PR that is still open, so it is not unattended and not met.
+  const notMet = buildPrCompletionReport(input({
+    cohort: window,
+    prs: [pr(63, {
+      state: "open",
+      mergedAt: null,
+      createdAt: "2026-10-21T00:00:00.000Z",
+    })],
+    deployments,
+    rollout,
+  }));
+  assertEquals(notMet.targetEvaluation.status, "not_met");
+  assertEquals(notMet.targetEvaluation.eligiblePrs, 1);
+  assertEquals(notMet.targetEvaluation.unattendedWithin24Hours, 0);
+});
+
+Deno.test("invalid inputs are refused with the specific message, each otherwise valid", () => {
+  // Each case changes exactly one thing from a valid one-PR, one-action input.
+  const valid = () =>
+    input({
+      prs: [pr(50)],
+      actions: [
+        action(50, "a1", "merge", "fleet"),
+      ] as PrCompletionInput["actions"],
+    });
+  const cases: Array<[string, () => PrCompletionInput, string]> = [
+    [
+      "bad repo",
+      () => input({ prs: [pr(50, { repo: "bad" })] }),
+      "PR repo must be owner/name",
+    ],
+    [
+      "zero number",
+      () => input({ prs: [pr(0)] }),
+      "PR org/repo number must be positive",
+    ],
+    [
+      "unsupported PR state",
+      () =>
+        input({
+          prs: [
+            pr(
+              50,
+              { state: "draft" } as unknown as Partial<PrCompletionRecord>,
+            ),
+          ],
+        }),
+      "PR org/repo#50 has an unsupported state",
+    ],
+    [
+      "merged without mergedAt",
+      () => input({ prs: [pr(50, { mergedAt: null })] }),
+      "merged PR org/repo#50 is missing mergedAt",
+    ],
+    [
+      "merged before created",
+      () => input({ prs: [pr(50, { mergedAt: "2026-10-19T23:00:00.000Z" })] }),
+      "merged PR org/repo#50 merged before creation",
+    ],
+    [
+      "unsupported action kind",
+      () =>
+        input({
+          prs: [pr(50)],
+          actions: [{
+            ...action(50, "a1", "merge", "fleet"),
+            kind: "deploy",
+          }] as unknown as PrCompletionInput["actions"],
+        }),
+      "PR action a1 has an unsupported kind",
+    ],
+    [
+      "unsupported actor",
+      () =>
+        input({
+          prs: [pr(50)],
+          actions: [{
+            ...action(50, "a1", "merge", "fleet"),
+            actor: "bot",
+          }] as unknown as PrCompletionInput["actions"],
+        }),
+      "PR action a1 has an unsupported actor",
+    ],
+    [
+      "unsupported outcome",
+      () =>
+        input({
+          prs: [pr(50)],
+          actions: [{
+            ...action(50, "a1", "merge", "fleet"),
+            outcome: "maybe",
+          }] as unknown as PrCompletionInput["actions"],
+        }),
+      "PR action a1 has an unsupported outcome",
+    ],
+    [
+      "action without an id",
+      () =>
+        input({
+          prs: [pr(50)],
+          actions: [{
+            ...action(50, "", "merge", "fleet"),
+          }] as PrCompletionInput["actions"],
+        }),
+      "PR action requires actionId, runId, repo and component",
+    ],
+    [
+      "non-boolean verified",
+      () =>
+        input({
+          prs: [pr(50)],
+          actions: [{
+            ...action(50, "a1", "merge", "fleet"),
+            verified: "yes",
+          }] as unknown as PrCompletionInput["actions"],
+        }),
+      "PR action a1.verified must be a boolean",
+    ],
+    [
+      "invalid CI duration",
+      () =>
+        input({
+          prs: [pr(50)],
+          ciRuns: [{
+            repo: "org/repo",
+            prNumber: 50,
+            runId: "ci-1",
+            durationMinutes: -1,
+          }],
+        }),
+      "CI run ci-1 has an invalid duration",
+    ],
+    [
+      "blocker ended before it started",
+      () =>
+        input({
+          prs: [pr(50)],
+          blockers: [{
+            repo: "org/repo",
+            prNumber: 50,
+            blocker: "required-ci",
+            startedAt: "2026-10-20T05:00:00Z",
+            endedAt: "2026-10-20T04:00:00Z",
+          }],
+        }),
+      "blocker ended before it started",
+    ],
+    [
+      "bad policy fingerprint",
+      () => {
+        const base = valid();
+        return {
+          ...base,
+          expectedDeployment: {
+            ...base.expectedDeployment,
+            policyFingerprint: "xyz",
+          },
+        };
+      },
+      "expectedDeployment.policyFingerprint must be a SHA-256 fingerprint",
+    ],
+    [
+      "bad deployment component",
+      () =>
+        input({
+          deployments: [{
+            component: "Worker!",
+            observedAt: "2026-10-20T00:00:00Z",
+          }],
+        }),
+      "deployment.component must be a component identifier",
+    ],
+    [
+      "non-positive heartbeat age",
+      () => {
+        const base = valid();
+        return {
+          ...base,
+          expectedDeployment: {
+            ...base.expectedDeployment,
+            maxHeartbeatAgeHours: 0,
+          },
+        };
+      },
+      "expectedDeployment.maxHeartbeatAgeHours must be positive",
+    ],
+  ];
+  for (const [name, build, message] of cases) {
+    assertThrows(
+      () => buildPrCompletionReport(build()),
+      Error,
+      message,
+      `refusal case: ${name}`,
+    );
+  }
+  // The unmodified input builds, so each refusal comes from its one change.
+  assertEquals(buildPrCompletionReport(valid()).cohort.prCount, 1);
+});

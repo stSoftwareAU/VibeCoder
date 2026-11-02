@@ -34,7 +34,12 @@ export interface AuditMutation {
   component?: AuditComponent;
   /** Known PR number; absent when the mutation target is not a PR. */
   prNumber?: number;
-  /** PR head SHA captured by a caller that has the current head in hand. */
+  /**
+   * PR head SHA, when a caller records one. It is part of the hashed payload,
+   * and `prActionsFromAuditJournal` (pr_completion_report.ts) copies it
+   * through when present. No production writer sets it yet: the audit hooks
+   * take no head SHA, so entries from this build never carry it.
+   */
   headSha?: string;
   /** Action class; unknown is explicit when the hook cannot safely infer it. */
   actionKind?: AuditActionKind;

@@ -292,3 +292,85 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("pr-completion-report --collect refuses a bad --max-heartbeat-age-hours or --end before any read", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["0", "-2", "soon"]) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "max-heartbeat-age-hours": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${value}`);
+    assertStringIncludes(
+      result.message,
+      "--max-heartbeat-age-hours must be a positive number",
+    );
+  }
+  const badEnd = await runPrCompletionCollect(
+    {
+      collect: true,
+      repos: "org/repo",
+      "expected-revision": "rev1",
+      end: "2026-11-01",
+    },
+    {} as WorkerConfig,
+    gh,
+    () => undefined,
+  );
+  assertEquals(badEnd.success, false);
+  assertStringIncludes(
+    badEnd.message,
+    "--end must be a UTC (Z) ISO timestamp",
+  );
+});
+
+Deno.test("pr-completion-report --collect names the snapshot path when it cannot be written", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) return [];
+      throw new Error(`unrouted gh path: ${path}`);
+    };
+    // The parent directory does not exist, so the atomic write must fail.
+    const target = `${dir}/no-such-dir/snapshot.json`;
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        "audit-dir": auditDir,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "write-snapshot": target,
+      },
+      { repos: ["org/repo"] } as unknown as WorkerConfig,
+      gh,
+    );
+    assertEquals(result.success, false);
+    assertStringIncludes(
+      result.message,
+      `could not write snapshot ${target}`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("pr-completion-report --input refuses a non-string value as a missing path", async () => {
+  for (const value of [42, true]) {
+    const result = await prCompletionReportCommand.execute(
+      { input: value },
+      {} as WorkerConfig,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(result.message, "--input <path> is required");
+  }
+});

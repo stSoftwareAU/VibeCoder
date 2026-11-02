@@ -216,8 +216,35 @@ itself stays. The agent cannot use that variable to hide its own commands: the
 run-correlation id (`VIBE_RUN_ID`, joining to), repo, target
 (issue/PR number, branch, or API endpoint), action verb, outcome
 (`success`/`error`), the process exit code, and the caller code path
-(`worker/deno/lib/<file>.ts`, resolved from the stack), plus the chain
+(`worker/deno/lib/**` or `worker/deno/commands/**`, resolved from the stack;
+the first module above the audit and `gh`/`git` chokepoints), plus the chain
 fields `prevHash` and `hash`.
+
+Five optional fields classify each mutation. Entries written by this build
+always carry `actionId`, `component` and `actionKind`, but `prNumber` is set
+only for a PR target and `headSha` is not set yet. Entries written before this
+change carry none of them:
+
+- `actionId` — a random UUID, one per recorded mutation, so an individual
+  action can be referred to on its own.
+- `component` — the runtime component that requested the mutation: `worker`,
+  `reviewer`, `babysitter`, or `unknown` when the caller is not one the hook
+  names.
+- `prNumber` — the PR number the mutation targets. It is present only when the
+  target is a PR: a `pr-` verb with a numeric target, or a `/pulls/N` API path.
+- `headSha` — the PR head SHA, when a caller records one. No production writer
+  sets it yet, because the audit hooks take no head SHA, so entries written by
+  this build never carry it. `prActionsFromAuditJournal` reads it when present.
+- `actionKind` — `implementation`, `repair`, `review`, `dismissal`, `merge`, or
+  `unknown`. A `git push` is `implementation` or `repair` only when its caller
+  is a module the hook names; any other push is `unknown`.
+
+An absent field does not change an entry's hash: the canonical payload leaves
+out every field that is not set, so an entry written before these fields
+existed hashes exactly as it did. The reverse does not hold. A build older
+than this change computes the payload without these keys, so it cannot verify
+an entry that carries them, and its hash check fails for those entries.
+Verify the journal with a build that includes these fields.
 
 **Storage — outside the worker's repo working tree.** Entries are
 appended to `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`,

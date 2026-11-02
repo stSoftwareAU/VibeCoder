@@ -22,6 +22,7 @@ import {
   cancelledRunsToRerun,
   cloneForRepair,
   eligibleAuthor,
+  publishBabysitterDeployment,
   reason,
   recordBabysitterDeployment,
   recoverTemporaryClones,
@@ -94,6 +95,53 @@ Deno.test("babysitter deployment heartbeat stores only revision and policy finge
     assert(
       first.policyFingerprint !== second.policyFingerprint,
       "a change to issueExecutorSplit changes the heartbeat's policy fingerprint",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitter deployment heartbeat publishes, returns true and logs nothing on success", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const logged: string[] = [];
+    const published = await publishBabysitterDeployment(
+      `${dir}/state`,
+      buildDefaultWorkerConfig(),
+      (message) => logged.push(message),
+    );
+    assertEquals(published, true);
+    assertEquals(logged, []);
+    const record = JSON.parse(
+      await Deno.readTextFile(`${dir}/state/deployment-health.json`),
+    );
+    assertEquals(record.component, "babysitter");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitter deployment heartbeat that cannot be written returns false and logs its cause, without throwing", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    // A state directory under a regular file cannot be created, so the
+    // heartbeat write fails and the babysitter must carry on.
+    const blocker = `${dir}/not-a-directory`;
+    await Deno.writeTextFile(blocker, "x\n");
+    const logged: string[] = [];
+    const published = await publishBabysitterDeployment(
+      `${blocker}/state`,
+      buildDefaultWorkerConfig(),
+      (message) => logged.push(message),
+    );
+    assertEquals(published, false);
+    assertEquals(logged.length, 1);
+    const prefix = "[babysitter] deployment heartbeat not recorded: ";
+    const line = logged[0] ?? "";
+    assert(line.startsWith(prefix), line);
+    assert(
+      line.length > prefix.length,
+      "the log names the cause after the prefix",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

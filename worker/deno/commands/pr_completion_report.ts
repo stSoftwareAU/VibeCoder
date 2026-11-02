@@ -8,10 +8,10 @@
  * babysitter heartbeats are read from local or exported directories. The
  * review-fleet-prs skill's own `log.jsonl` files are read from
  * `--review-log <log.jsonl,...>` as a lower-trust source (docs/INTERNALS.md).
- * Nothing
- * is written to GitHub or host configuration. The only file written is the
- * optional `--write-snapshot <path>`, which holds the collected input so a
- * later `--input` run can reproduce the report.
+ * Nothing is written to GitHub or host configuration. `--collect` writes only
+ * the optional `--write-snapshot <path>`, which holds the collected input so a
+ * later `--input` run can reproduce the report, and whatever `verifyAllChains`
+ * settles in an audit directory it sweeps (an interrupted append, Issue #1074).
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
@@ -176,7 +176,7 @@ export async function runPrCompletionCollect(
         return {
           success: false,
           message:
-            `pr-completion-report failed: could not write snapshot: ${written.error.message}`,
+            `pr-completion-report failed: could not write snapshot ${writeSnapshot}: ${written.error.message}`,
         };
       }
     }

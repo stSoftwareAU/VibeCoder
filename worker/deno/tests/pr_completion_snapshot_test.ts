@@ -9,7 +9,12 @@
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   _resetAuditCaches,
   auditFilePath,
@@ -1435,5 +1440,191 @@ Deno.test("collect - a review log that is missing is noted, never silent, and it
       buildPrCompletionReport(snapshot.input).completion.unattendedMerged,
       0,
     );
+  });
+});
+
+Deno.test("collect - an omitted key GitHub always sends is malformed, never an empty state", async () => {
+  // Each key is removed from an otherwise valid pull; the refusal names it.
+  for (const key of ["state", "merged_at", "closed_at", "labels", "body"]) {
+    const row = pull(50);
+    delete row[key];
+    const fixture = emptyFixture({ pulls: { [REPO]: [row] } });
+    await assertRejects(
+      () => collectPrCompletionSnapshot(options(fakeGh(fixture))),
+      Error,
+      `${pk(50)} is missing ${key}`,
+    );
+  }
+  // A review without its state or its submitted_at key is refused the same way.
+  for (const key of ["state", "submitted_at"]) {
+    const review: Json = {
+      id: 601,
+      state: "APPROVED",
+      submitted_at: "2026-10-20T01:00:00Z",
+    };
+    delete review[key];
+    const fixture = emptyFixture({
+      pulls: { [REPO]: [pull(50)] },
+      reviews: { [pk(50)]: [review] },
+    });
+    await assertRejects(
+      () => collectPrCompletionSnapshot(options(fakeGh(fixture))),
+      Error,
+      `${pk(50)} review is missing ${key}`,
+    );
+  }
+});
+
+Deno.test("collect - explicit null and empty values are accepted as the empty state", async () => {
+  const open = pull(51, {
+    state: "open",
+    merged_at: null,
+    closed_at: null,
+    labels: [],
+    body: null,
+  });
+  const pending = {
+    id: 602,
+    state: "PENDING",
+    submitted_at: null,
+    user: { login: "alice" },
+  };
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [open] },
+    reviews: { [pk(51)]: [pending] },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  const [record] = snapshot.input.prs;
+  assertEquals(record?.state, "open");
+  assertEquals(record?.mergedAt, null);
+  assertEquals(record?.closedAt, null);
+  assertEquals(record?.ownerGated, false);
+  // A pending review has no submitted_at, so it is not an action.
+  assertEquals(
+    snapshot.input.actions.filter((a) => a.kind === "review").length,
+    0,
+  );
+});
+
+Deno.test("collect - a page-truncated event list and a partial check-run list are coverage notes", async () => {
+  // 1,000 reviews fill ten full pages, which is the bound.
+  const reviews = Array.from({ length: 1_000 }, (_, i) => ({
+    id: i + 1,
+    state: "COMMENTED",
+    submitted_at: "2026-10-20T01:00:00Z",
+  }));
+  const fixture = emptyFixture({
+    pulls: { [REPO]: [pull(50)] },
+    reviews: { [pk(50)]: reviews },
+    checks: {
+      sha50: {
+        total_count: 3,
+        check_runs: [{
+          id: 9,
+          status: "completed",
+          started_at: "2026-10-20T00:10:00Z",
+          completed_at: "2026-10-20T00:20:00Z",
+        }],
+      },
+    },
+  });
+  const snapshot = await collectPrCompletionSnapshot(options(fakeGh(fixture)));
+  const notes = snapshot.coverageNotes.join("\n");
+  assertStringIncludes(notes, `${pk(50)}: reviews truncated after 10 pages`);
+  assertStringIncludes(notes, `${pk(50)}: 1 of 3 check runs listed`);
+});
+
+Deno.test("collect - a deployment row with a bad field is refused by name and not counted", async () => {
+  await withDir(async (dir) => {
+    const observedAt = "2026-10-30T00:00:00Z";
+    const rows: Array<[string, Json, string]> = [
+      [
+        "bad-component",
+        {
+          component: "Worker!",
+          codeRevision: "rev1",
+          policyFingerprint: FP,
+          observedAt,
+        },
+        "component is not a component identifier",
+      ],
+      [
+        "no-revision",
+        { component: "worker", policyFingerprint: FP, observedAt },
+        "revision is missing",
+      ],
+      [
+        "bad-fingerprint",
+        {
+          component: "worker",
+          codeRevision: "rev1",
+          policyFingerprint: "abc",
+          observedAt,
+        },
+        "policy fingerprint is not a SHA-256 fingerprint",
+      ],
+      [
+        "no-observed",
+        { component: "worker", codeRevision: "rev1", policyFingerprint: FP },
+        "observedAt is missing",
+      ],
+    ];
+    for (const [round, deployment] of rows) {
+      await Deno.mkdir(`${dir}/${round}`);
+      await Deno.writeTextFile(
+        `${dir}/${round}/review-run.json`,
+        JSON.stringify({ deployment }),
+      );
+    }
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      { reviewRunDirs: [dir] },
+    ));
+    const notes = snapshot.coverageNotes.join("\n");
+    for (const [round, , message] of rows) {
+      assertStringIncludes(
+        notes,
+        `${dir}/${round}/review-run.json: ${message}; skipped`,
+      );
+    }
+    assertEquals(snapshot.input.deployments.length, 0);
+  });
+});
+
+Deno.test("collect - an unreadable review-run directory, a malformed ledger and an old heartbeat are noted", async () => {
+  await withDir(async (dir) => {
+    // A round whose deployment is valid but older than the 24-hour window.
+    await Deno.mkdir(`${dir}/old-round`);
+    await Deno.writeTextFile(
+      `${dir}/old-round/review-run.json`,
+      JSON.stringify({
+        deployment: {
+          component: "worker",
+          codeRevision: "rev1",
+          policyFingerprint: FP,
+          observedAt: "2026-10-01T00:00:00Z",
+        },
+      }),
+    );
+    const ledger = `${dir}/bad-ledger.jsonl`;
+    await Deno.writeTextFile(ledger, "{not json\n");
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture()),
+      {
+        reviewRunDirs: [dir, `${dir}/no-such-dir`],
+        lifecycleLedgers: [ledger],
+      },
+    ));
+    const notes = snapshot.coverageNotes.join("\n");
+    assertStringIncludes(
+      notes,
+      `review-run dir ${dir}/no-such-dir is unreadable`,
+    );
+    assertStringIncludes(notes, `lifecycle ledger ${ledger} is malformed (`);
+    assertStringIncludes(
+      notes,
+      "1 review-run or lifecycle deployment record(s) older than the 24h heartbeat window were not counted",
+    );
+    assertEquals(snapshot.input.deployments.length, 0);
   });
 });

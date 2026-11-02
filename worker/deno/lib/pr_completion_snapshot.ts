@@ -199,6 +199,15 @@ function asText(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/**
+ * The value of a key GitHub always sends. An omitted key is a malformed
+ * response and throws; it is never read as the key's empty state.
+ */
+function requiredKey(raw: Json, key: string, what: string): unknown {
+  if (!Object.hasOwn(raw, key)) throw new Error(`${what} is missing ${key}`);
+  return raw[key];
+}
+
 function asId(value: unknown, what: string): string {
   if (typeof value === "number" && Number.isSafeInteger(value)) {
     return String(value);
@@ -285,15 +294,24 @@ function observedPr(
   if (baseRef === null || headRef === null || headSha === null) {
     throw new Error(`${label} is missing its refs or head sha`);
   }
-  const mergedAt = asText(raw.merged_at);
+  // Each key below is always present in the REST list. Only its explicit empty
+  // value (null, or [] for labels) means "none"; an omitted key is malformed.
+  const rawState = requiredKey(raw, "state", label);
+  const mergedAt = asText(requiredKey(raw, "merged_at", label));
+  const closedAt = asText(requiredKey(raw, "closed_at", label));
+  const rawLabels = asList(
+    requiredKey(raw, "labels", label),
+    `${label}.labels`,
+  );
+  const rawBody = requiredKey(raw, "body", label);
   const state: PrState = mergedAt !== null
     ? "merged"
-    : raw.state === "open"
+    : rawState === "open"
     ? "open"
     : "closed";
-  const labels = Array.isArray(raw.labels)
-    ? raw.labels.map((item) => asText(asObject(item, `${label}.label`).name))
-    : [];
+  const labels = rawLabels.map((item) =>
+    asText(asObject(item, `${label}.label`).name)
+  );
   return {
     record: {
       repo,
@@ -305,7 +323,7 @@ function observedPr(
       headSha,
       state,
       mergedAt,
-      closedAt: asText(raw.closed_at),
+      closedAt,
       observedAt,
       milestone: baseRef.startsWith("milestone/"),
       ownerGated: labels.includes("needs-human"),
@@ -313,7 +331,7 @@ function observedPr(
       actionsComplete: false,
     },
     title: asText(raw.title) ?? "",
-    body: typeof raw.body === "string" ? raw.body : "",
+    body: typeof rawBody === "string" ? rawBody : "",
     mergeCommitSha: asText(raw.merge_commit_sha),
   };
 }
@@ -379,11 +397,14 @@ async function observeRepo(
 
 function parseReview(raw: unknown, what: string): Review | null {
   const o = asObject(raw, what);
-  const submitted = asText(o.submitted_at);
+  const state = asText(requiredKey(o, "state", what));
+  if (state === null) throw new Error(`${what} has no state`);
+  // A PENDING review carries an explicit null submitted_at and is not counted.
+  const submitted = asText(requiredKey(o, "submitted_at", what));
   if (submitted === null) return null;
   return {
     id: asId(o.id, what),
-    state: asText(o.state) ?? "",
+    state,
     at: submitted,
     ms: utcMillis(submitted, `${what} submitted_at`),
   };

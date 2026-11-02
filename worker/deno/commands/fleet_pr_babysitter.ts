@@ -921,6 +921,27 @@ export async function recordBabysitterDeployment(
 }
 
 /**
+ * Record the heartbeat best-effort but loud: a failure is logged with its
+ * cause and the babysitter carries on, because a missing heartbeat must not
+ * stop the repairs it is only a health signal for. Returns whether the
+ * heartbeat was recorded.
+ */
+export async function publishBabysitterDeployment(
+  stateDir: string,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  log: (message: string) => void = console.error,
+): Promise<boolean> {
+  try {
+    await recordBabysitterDeployment(stateDir, config);
+    return true;
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    log(`[babysitter] deployment heartbeat not recorded: ${cause}`);
+    return false;
+  }
+}
+
+/**
  * Find CI failures that keep recurring on fleet PRs and could have been
  * caught locally, and file each in the repository that owns the fix
  * (Issue #4610). Never fails the pass: repairs still run.
@@ -1079,7 +1100,7 @@ if (import.meta.main) {
       const config = await loadConfig(
         Deno.env.get("CONFIG_PATH") ?? ".config.json",
       );
-      await recordBabysitterDeployment(babysitterStateDir(), config);
+      await publishBabysitterDeployment(babysitterStateDir(), config);
       const accessible = await accessibleBabysitterRepositories(app);
       const repositories = selectBabysitterRepositories(
         config.repos,

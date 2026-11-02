@@ -33,6 +33,7 @@ import {
   type AuditHookOptions,
   callerFromStack,
   componentFor,
+  prNumberFor,
 } from "../lib/audit_hook.ts";
 import {
   _resetAuditCaches,
@@ -378,18 +379,98 @@ Deno.test("audit_hook - callerFromStack skips the audit and gh/git chokepoints t
   );
 });
 
-Deno.test("audit_hook - callerFromStack skips the git and gh wrappers and keeps a lib subdirectory caller", () => {
+// The stacks below mirror the worker's real push chains (traced for Issue #4658
+// review). Each push is journalled in `runGitCommand` (git_timeout.ts:366).
+// `pushUnpushedCommits` (git_push.ts:388) makes that call, and
+// `commitAndPushPending` (git_push.ts:992) calls `pushUnpushedCommits`. The
+// requester is the first frame above git_push.ts: completion_phase.ts:1915
+// calls `pushUnpushedCommits` directly; pr_ci_processor.ts:2153 and
+// pr_feedback_processor.ts:1684 call `commitAndPushPending`. Frames are trimmed
+// to the ones that decide the caller.
+
+Deno.test("audit_hook - callerFromStack skips the git push primitive to the completion phase that asked for it", () => {
   const stack = [
-    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:238:3)",
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
     "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
-    "    at async runGitArgv (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:478:20)",
-    "    at async defaultRunGhCommand (file:///srv/VibeCoder/worker/deno/lib/gh_wrapper.ts:369:24)",
-    "    at async runPush (file:///srv/VibeCoder/worker/deno/lib/phases/completion_phase.ts:389:9)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:388:20)",
+    "    at async gateBeforePush (file:///srv/VibeCoder/worker/deno/lib/phases/completion_phase.ts:1915:24)",
   ].join("\n");
   assertEquals(
     callerFromStack(stack),
     "worker/deno/lib/phases/completion_phase.ts",
   );
+});
+
+Deno.test("audit_hook - callerFromStack resolves a PR processor's push through commitAndPushPending to the processor", () => {
+  const ciStack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:388:20)",
+    "    at async commitAndPushPending (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:992:22)",
+    "    at async _processCiWithHeartbeat (file:///srv/VibeCoder/worker/deno/lib/pr_ci_processor.ts:2153:37)",
+  ].join("\n");
+  const feedbackStack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:388:20)",
+    "    at async commitAndPushPending (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:992:22)",
+    "    at finalise (file:///srv/VibeCoder/worker/deno/lib/pr_feedback_processor.ts:1684:7)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(ciStack),
+    "worker/deno/lib/pr_ci_processor.ts",
+  );
+  assertEquals(
+    callerFromStack(feedbackStack),
+    "worker/deno/lib/pr_feedback_processor.ts",
+  );
+  assertEquals(pushKind(callerFromStack(ciStack)), "repair");
+  assertEquals(pushKind(callerFromStack(feedbackStack)), "repair");
+});
+
+Deno.test("audit_hook - callerFromStack keeps a lib subdirectory caller", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at async gateBeforePush (file:///srv/VibeCoder/worker/deno/lib/phases/completion_phase.ts:1915:24)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/phases/completion_phase.ts",
+  );
+});
+
+function mutationFor(verb: string, target?: string): MutationInfo {
+  return { verb, target, scope: "explicit" };
+}
+
+Deno.test("audit_hook - prNumberFor is undefined when the mutation has no target", () => {
+  assertEquals(prNumberFor(mutationFor("pr-merge")), undefined);
+});
+
+Deno.test("audit_hook - prNumberFor is undefined for a pr- verb whose target is not a number", () => {
+  assertEquals(
+    prNumberFor(mutationFor("pr-merge", "feature-branch")),
+    undefined,
+  );
+});
+
+Deno.test("audit_hook - prNumberFor is undefined for a target beyond the safe integer range", () => {
+  assertEquals(
+    prNumberFor(mutationFor("pr-merge", "9007199254740993")),
+    undefined,
+  );
+});
+
+Deno.test("audit_hook - prNumberFor reads the PR number from a /pulls/N API target", () => {
+  assertEquals(
+    prNumberFor(mutationFor("api-put", "repos/org/repo/pulls/42/reviews/7")),
+    42,
+  );
+});
+
+Deno.test("audit_hook - prNumberFor reads the number of a numeric pr- verb target", () => {
+  assertEquals(prNumberFor(mutationFor("pr-merge", "42")), 42);
 });
 
 Deno.test("audit_hook - callerFromStack matches whole file names, not suffixes", () => {
@@ -469,6 +550,10 @@ Deno.test("audit_hook - actionKindFor names an implementation push only from its
     pushKind(callerIn("lib", "phases/completion_phase.ts")),
     "implementation",
   );
+  assertEquals(
+    pushKind(callerIn("lib", "pre_push_gate_retry.ts")),
+    "implementation",
+  );
 });
 
 Deno.test("audit_hook - actionKindFor names a repair push from the babysitter and the PR processors", () => {
@@ -478,11 +563,18 @@ Deno.test("audit_hook - actionKindFor names a repair push from the babysitter an
   );
   assertEquals(pushKind(callerIn("lib", "pr_ci_processor.ts")), "repair");
   assertEquals(pushKind(callerIn("lib", "pr_feedback_processor.ts")), "repair");
+  assertEquals(
+    pushKind(callerIn("lib", "pr_merge_conflict_processor.ts")),
+    "repair",
+  );
 });
 
 Deno.test("audit_hook - actionKindFor leaves a push from an unresolved or unlisted caller unknown", () => {
   assertEquals(pushKind(undefined), "unknown");
-  assertEquals(pushKind(callerIn("lib", "git_push.ts")), "unknown");
+  // A milestone sync push is reached through the `git` adapter in git_pull.ts
+  // (raiseMilestoneSyncPr's deps), not through milestone_sync_pr.ts, so the
+  // first module above the hook is git_pull.ts and it stays unknown.
+  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "unknown");
 });
 
 Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {

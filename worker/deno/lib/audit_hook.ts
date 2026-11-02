@@ -2,7 +2,7 @@
  * Chokepoint hooks that journal GitHub mutations (Issue #2380).
  *
  * These thin, best-effort wrappers are called from the central `gh` and
- * `git` subprocess entry-points (`runGhCommandRaw` in github.ts and
+ * `git` subprocess entry-points (`spawnGh` in gh_spawn.ts and
  * `runGitCommand` in git_timeout.ts). They classify the command, and when
  * it is a GitHub mutation, append a hash-chained entry to the audit
  * journal. Every failure is swallowed so journalling can never abort — or
@@ -79,9 +79,12 @@ export function isAuditJournalEnabled(
  *
  * Each file sits between the requesting module and the hook: the `gh` and
  * `git` chokepoints, the retry and wrapper layers above them, and the audit
- * modules themselves. The first frame outside this list is therefore the
- * module that asked for the mutation. Matched on the whole file name, so
- * `infra_retry.ts` is not mistaken for `retry.ts`.
+ * modules themselves. `git_push.ts` is the push primitive (`pushUnpushedCommits`
+ * and `commitAndPushPending`) that every worker push runs through on its way to
+ * `runGitCommand`; it does not decide that a push happens, so the module that
+ * asked for the push is the first frame above it. The first frame outside this
+ * list is therefore the module that asked for the mutation. Matched on the
+ * whole file name, so `infra_retry.ts` is not mistaken for `retry.ts`.
  */
 const PLUMBING_FILES: ReadonlyArray<string> = [
   "audit_hook.ts",
@@ -89,6 +92,7 @@ const PLUMBING_FILES: ReadonlyArray<string> = [
   "audit_mutation_classifier.ts",
   "gh_spawn.ts",
   "gh_wrapper.ts",
+  "git_push.ts",
   "git_timeout.ts",
   "github.ts",
   "retry.ts",
@@ -161,12 +165,24 @@ const REPAIR_PUSH_CALLERS: ReadonlyArray<string> = [
   "fleet_pr_babysitter",
   "pr_ci_processor",
   "pr_feedback_processor",
+  "pr_merge_conflict_processor",
+  "pr_spelling_processor",
 ];
 
-/** Callers whose `git push` publishes the run's own implementation branch. */
+/**
+ * Callers whose `git push` publishes the run's own implementation branch.
+ *
+ * The completion phase's in-run recovery modules make the final push of the
+ * run's branch themselves (`commitAndPushPending` after their recovery turn),
+ * so they are named here rather than left `unknown`.
+ */
 const IMPLEMENTATION_PUSH_CALLERS: ReadonlyArray<string> = [
   "agent_pr_adoption",
   "completion_phase",
+  "pr_body_length",
+  "pre_push_gate_retry",
+  "screenshot_gate_retry",
+  "summary_rule_gate_retry",
 ];
 
 /**
@@ -213,7 +229,15 @@ export function actionKindFor(
   return "unknown";
 }
 
-function prNumberFor(info: MutationInfo): number | undefined {
+/**
+ * The PR number a mutation targets, or undefined when it targets no PR.
+ *
+ * Taken from a `/pulls/N` API path, or from a numeric target of a `pr-` verb.
+ * Exported for tests; production reaches it only through {@link record}.
+ *
+ * @param info - The classified mutation.
+ */
+export function prNumberFor(info: MutationInfo): number | undefined {
   if (!info.target) return undefined;
   const apiTarget = info.target.match(/\/pulls\/([1-9]\d*)(?:\/|$)/);
   const raw = apiTarget?.[1] ??
