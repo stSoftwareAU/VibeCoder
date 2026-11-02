@@ -1,4 +1,41 @@
 import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
+
+Deno.test("babysitter default heartbeat resolves its checkout revision", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const command = new Deno.Command(Deno.execPath(), {
+      args: [
+        "eval",
+        `
+        import { recordBabysitterDeployment } from ${
+          JSON.stringify(
+            new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).href,
+          )
+        };
+        import { buildDefaultWorkerConfig } from ${
+          JSON.stringify(
+            new URL("../lib/config_defaults.ts", import.meta.url).href,
+          )
+        };
+        await recordBabysitterDeployment(Deno.args[0], buildDefaultWorkerConfig());
+      `,
+        dir,
+      ],
+      clearEnv: true,
+      env: { PATH: Deno.env.get("PATH") ?? "", TMPDIR: dir },
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const result = await command.output();
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    const heartbeat = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assert(/^[a-f0-9]{40}(-dirty)?$/.test(heartbeat.codeRevision));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 import {
   assert,
   assertEquals,
@@ -26,8 +63,11 @@ import {
   type CloneForRepairDeps,
   defaultRemoteUrl,
   eligibleAuthor,
+  loadConfigAndPublishDeployment,
   prBodyEditArgs,
+  publishBabysitterDeployment,
   reason,
+  recordBabysitterDeployment,
   recoverTemporaryClones,
   removeRepairDirs,
   requestedReviews,
@@ -39,6 +79,8 @@ import {
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 
 /** Run a real git command for fixtures and for the injected runner in clone tests. */
 async function runGitForTest(
@@ -357,6 +399,130 @@ Deno.test("concurrent repairs of one repo never mutate its mirror at the same ti
       );
     }
   });
+});
+
+Deno.test("babysitter deployment heartbeat stores only revision and policy fingerprint", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const split = buildDefaultWorkerConfig();
+    split.issueExecutorSplit = true;
+    const unsplit = buildDefaultWorkerConfig();
+    unsplit.issueExecutorSplit = false;
+
+    await recordBabysitterDeployment(
+      dir,
+      split,
+      "abcdef0123456789",
+      "2026-11-02T00:00:00.000Z",
+    );
+    const first = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assertEquals(first.component, "babysitter");
+    assertEquals(first.codeRevision, "abcdef0123456789");
+    assertEquals(first.observedAt, "2026-11-02T00:00:00.000Z");
+    assertEquals(
+      first.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(split),
+      "the heartbeat carries the fingerprint of the split config's review policy",
+    );
+
+    await recordBabysitterDeployment(
+      dir,
+      unsplit,
+      "abcdef0123456789",
+      "2026-11-02T00:00:01.000Z",
+    );
+    const second = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assertEquals(
+      second.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(unsplit),
+      "the heartbeat carries the fingerprint of the unsplit config's review policy",
+    );
+    assert(
+      first.policyFingerprint !== second.policyFingerprint,
+      "a change to issueExecutorSplit changes the heartbeat's policy fingerprint",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitter deployment heartbeat publishes, returns true and logs nothing on success", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const logged: string[] = [];
+    const published = await publishBabysitterDeployment(
+      `${dir}/state`,
+      buildDefaultWorkerConfig(),
+      (message) => logged.push(message),
+    );
+    assertEquals(published, true);
+    assertEquals(logged, []);
+    const record = JSON.parse(
+      await Deno.readTextFile(`${dir}/state/deployment-health.json`),
+    );
+    assertEquals(record.component, "babysitter");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("each babysitter pass loads its config from the given path and stamps the heartbeat with it", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const config = buildDefaultWorkerConfig();
+    const paths: string[] = [];
+    const loaded = await loadConfigAndPublishDeployment(
+      "/tmp/some-config.json",
+      `${dir}/state`,
+      (path) => {
+        paths.push(path);
+        return Promise.resolve(config);
+      },
+    );
+    assertEquals(paths, ["/tmp/some-config.json"]);
+    assertEquals(loaded, config);
+    const record = JSON.parse(
+      await Deno.readTextFile(`${dir}/state/deployment-health.json`),
+    );
+    assertEquals(record.component, "babysitter");
+    assertEquals(
+      record.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(config),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("babysitter deployment heartbeat that cannot be written returns false and logs its cause, without throwing", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    // A state directory under a regular file cannot be created, so the
+    // heartbeat write fails and the babysitter must carry on.
+    const blocker = `${dir}/not-a-directory`;
+    await Deno.writeTextFile(blocker, "x\n");
+    const logged: string[] = [];
+    const published = await publishBabysitterDeployment(
+      `${blocker}/state`,
+      buildDefaultWorkerConfig(),
+      (message) => logged.push(message),
+    );
+    assertEquals(published, false);
+    assertEquals(logged.length, 1);
+    const prefix = "[babysitter] deployment heartbeat not recorded: ";
+    const line = logged[0] ?? "";
+    assert(line.startsWith(prefix), line);
+    assert(
+      line.length > prefix.length,
+      "the log names the cause after the prefix",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("babysitter supplies RTK guidance only when its probe succeeds", async () => {

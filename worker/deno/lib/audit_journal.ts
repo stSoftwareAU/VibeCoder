@@ -1434,6 +1434,11 @@ function completeErasureSweep(
   };
 }
 
+/** Journal filename contract shared by the verifier and evidence consumers. */
+export function isAuditJournalName(name: string): boolean {
+  return /^audit-.*\.jsonl$/.test(name);
+}
+
 /**
  * Verify every audit chain under `baseDir` — the scheduled sweep.
  *
@@ -1484,7 +1489,7 @@ export async function verifyAllChains(
   let dirMissing = false;
   try {
     for await (const item of Deno.readDir(dir)) {
-      if (item.isFile && /^audit-.*\.jsonl$/.test(item.name)) {
+      if (item.isFile && isAuditJournalName(item.name)) {
         journalsOnDisk.add(item.name);
       }
     }

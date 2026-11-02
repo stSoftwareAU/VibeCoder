@@ -27,15 +27,25 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  actionKindFor,
   auditGhMutation,
   auditGitMutation,
   type AuditHookOptions,
+  callerFromStack,
+  componentFor,
+  prNumberFor,
 } from "../lib/audit_hook.ts";
 import {
   _resetAuditCaches,
   auditFilePath,
   loadEntries,
+  verifyAllChains,
 } from "../lib/audit_journal.ts";
+import {
+  classifyGhMutation,
+  classifyGitMutation,
+  type MutationInfo,
+} from "../lib/audit_mutation_classifier.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
 /** Worker partition these tests journal under — a sentinel, not a real id. */
@@ -87,6 +97,76 @@ Deno.test("audit_hook - auditGhMutation journals a gh mutation", async () => {
     assertEquals(entry?.exitCode, 0);
     assertEquals(entry?.target, "42");
     assertEquals(entry?.runId, RUN_ID);
+  });
+});
+
+Deno.test("audit_hook - PR mutations carry a worker action id and PR number", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(
+      ["pr", "merge", "42", "--repo", "org/repo"],
+      0,
+      opts,
+    );
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    if (!loaded.ok) return;
+    const entry = loaded.value[0];
+    assertEquals(entry?.actionKind, "merge");
+    assertEquals(entry?.prNumber, 42);
+    // No caller hands the hook a head SHA, so the hook never writes one.
+    assertEquals(entry?.headSha, undefined);
+    assertEquals(entry?.component, "unknown");
+    assert(
+      entry?.actionId !== undefined && /^[0-9a-f-]{36}$/.test(entry.actionId),
+    );
+    assertEquals(entry?.outcome, "success");
+  });
+});
+
+Deno.test("audit_hook - a PR review dismissal is recorded as a distinct action", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(
+      [
+        "api",
+        "-X",
+        "PUT",
+        "repos/org/repo/pulls/42/reviews/777",
+        "-f",
+        "state=DISMISSED",
+      ],
+      0,
+      opts,
+    );
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    if (!loaded.ok) return;
+    assertEquals(loaded.value[0]?.actionKind, "dismissal");
+    assertEquals(loaded.value[0]?.prNumber, 42);
+  });
+});
+
+Deno.test("audit_hook - a worker dismissal via the /dismissals endpoint is journalled as a dismissal with its PR number", async () => {
+  // The exact argv markCommentProcessed (pr_comments.ts) hands runGhOrThrow:
+  // a PUT to the /dismissals sub-endpoint carrying a message, no state field.
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(
+      [
+        "api",
+        "-X",
+        "PUT",
+        "repos/org/repo/pulls/42/reviews/777/dismissals",
+        "-f",
+        "message=Processed",
+      ],
+      0,
+      opts,
+    );
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    if (!loaded.ok) return;
+    assertEquals(loaded.value[0]?.verb, "api-put");
+    assertEquals(loaded.value[0]?.actionKind, "dismissal");
+    assertEquals(loaded.value[0]?.prNumber, 42);
   });
 });
 
@@ -186,6 +266,35 @@ Deno.test("audit_hook - auditGitMutation ignores a non-push git command", async 
   });
 });
 
+Deno.test("audit_hook - push delivery evidence is journalled and chain verified", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGitMutation(["push", "origin", "feature"], 0, {
+      ...opts,
+      deliveredCommits: ["a".repeat(40)],
+    });
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    assertEquals(loaded.value[0]?.deliveredCommits, ["a".repeat(40)]);
+    const verified = await verifyAllChains(
+      journalPath.slice(0, journalPath.lastIndexOf("/")),
+    );
+    assert(verified.ok);
+    assertEquals(verified.value.broken, []);
+    await Deno.writeTextFile(
+      journalPath,
+      (await Deno.readTextFile(journalPath)).replace(
+        "a".repeat(40),
+        "b".repeat(40),
+      ),
+    );
+    const edited = await verifyAllChains(
+      journalPath.slice(0, journalPath.lastIndexOf("/")),
+    );
+    assert(edited.ok);
+    assertEquals(edited.value.broken.length, 1);
+  });
+});
+
 Deno.test("audit_hook - an explicit run id overrides the environment (Issue #963)", async () => {
   // The run id is the join key between the GitHub timeline and the worker
   // logs, so the hook must stamp the value it was handed — not one it went
@@ -217,5 +326,334 @@ Deno.test("audit_hook - the journal path follows the injected worker identity (I
     );
     const loaded = await loadEntries(journalPath);
     assert(loaded.ok, "the hook wrote to the path the injected lookup names");
+  });
+});
+
+// Issue #4658: component and action-kind classification. Each MutationInfo
+// comes from the real classifier, and each outcome is asserted on the real
+// decision functions the hook calls. A test stack has no lib or commands
+// frame, so the journal-level test below sees an unresolved caller; the
+// caller-path outcomes are driven through componentFor, actionKindFor and
+// callerFromStack instead.
+
+/** Classify `args` as a gh mutation, failing the test if it is not one. */
+function ghInfo(args: readonly string[]): MutationInfo {
+  const info = classifyGhMutation(args);
+  assert(info, `expected gh ${args.join(" ")} to classify as a mutation`);
+  return info;
+}
+
+/** Classify `args` as a git mutation, failing the test if it is not one. */
+function gitInfo(args: readonly string[]): MutationInfo {
+  const info = classifyGitMutation(args);
+  assert(info, `expected git ${args.join(" ")} to classify as a mutation`);
+  return info;
+}
+
+/** Repo-relative caller path of a module under worker/deno/. */
+function callerIn(dir: "lib" | "commands", file: string): string {
+  return `worker/deno/${dir}/${file}`;
+}
+
+/** The action kind the hook assigns to a gh invocation from `caller`. */
+function ghKind(args: string[], caller?: string) {
+  return actionKindFor(ghInfo(args), caller, args);
+}
+
+/** The action kind the hook assigns to a `git push` from `caller`. */
+function pushKind(caller?: string) {
+  const args = ["push", "origin", "feature-branch"];
+  return actionKindFor(gitInfo(args), caller, args);
+}
+
+Deno.test("audit_hook - componentFor names the babysitter, reviewer and worker from their caller path", () => {
+  assertEquals(
+    componentFor(callerIn("commands", "fleet_pr_babysitter.ts")),
+    "babysitter",
+  );
+  assertEquals(componentFor(callerIn("lib", "review_round.ts")), "reviewer");
+  assertEquals(componentFor(callerIn("lib", "pr_ci_processor.ts")), "worker");
+  assertEquals(
+    componentFor(callerIn("lib", "pr_feedback_processor.ts")),
+    "worker",
+  );
+  assertEquals(componentFor(callerIn("lib", "agent_pr_adoption.ts")), "worker");
+  assertEquals(componentFor(callerIn("lib", "pr_maintenance.ts")), "worker");
+  assertEquals(
+    componentFor(callerIn("lib", "phases/completion_phase.ts")),
+    "worker",
+  );
+});
+
+Deno.test("audit_hook - componentFor is unknown when the caller is unresolved or unlisted", () => {
+  assertEquals(componentFor(undefined), "unknown");
+  // An unlisted module is not assumed to be the worker.
+  assertEquals(componentFor(callerIn("lib", "recent_activity.ts")), "unknown");
+});
+
+Deno.test("audit_hook - callerFromStack skips the audit and gh/git chokepoints to the requesting module", () => {
+  const stack = [
+    "Error",
+    "    at resolveCaller (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:101:11)",
+    "    at record (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:170:20)",
+    "    at spawnGh (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:656:5)",
+    "    at async runGhOrThrow (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:691:10)",
+    "    at async runGhCommandRaw (file:///srv/VibeCoder/worker/deno/lib/github.ts:290:3)",
+    "    at async retryWithBackoff (file:///srv/VibeCoder/worker/deno/lib/retry.ts:180:18)",
+    "    at async runGhCommand (file:///srv/VibeCoder/worker/deno/lib/github.ts:514:10)",
+    "    at async run (file:///srv/VibeCoder/worker/deno/commands/fleet_pr_babysitter.ts:322:12)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/commands/fleet_pr_babysitter.ts",
+  );
+});
+
+// The stacks below mirror the worker's real push chains (traced for Issue #4658
+// review). Each push is journalled in `runGitCommand` (git_timeout.ts:366).
+// `pushUnpushedCommits` (git_push.ts:388) makes that call, and
+// `commitAndPushPending` (git_push.ts:992) calls `pushUnpushedCommits`. The
+// requester is the first frame above git_push.ts: completion_phase.ts:1915
+// calls `pushUnpushedCommits` directly; pr_ci_processor.ts:2153 and
+// pr_feedback_processor.ts:1684 call `commitAndPushPending`. Frames are trimmed
+// to the ones that decide the caller.
+
+Deno.test("audit_hook - callerFromStack skips the git push primitive to the completion phase that asked for it", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:388:20)",
+    "    at async gateBeforePush (file:///srv/VibeCoder/worker/deno/lib/phases/completion_phase.ts:1915:24)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/phases/completion_phase.ts",
+  );
+});
+
+Deno.test("audit_hook - callerFromStack resolves a PR processor's push through commitAndPushPending to the processor", () => {
+  const ciStack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:388:20)",
+    "    at async commitAndPushPending (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:992:22)",
+    "    at async _processCiWithHeartbeat (file:///srv/VibeCoder/worker/deno/lib/pr_ci_processor.ts:2153:37)",
+  ].join("\n");
+  const feedbackStack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:388:20)",
+    "    at async commitAndPushPending (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:992:22)",
+    "    at finalise (file:///srv/VibeCoder/worker/deno/lib/pr_feedback_processor.ts:1684:7)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(ciStack),
+    "worker/deno/lib/pr_ci_processor.ts",
+  );
+  assertEquals(
+    callerFromStack(feedbackStack),
+    "worker/deno/lib/pr_feedback_processor.ts",
+  );
+  assertEquals(pushKind(callerFromStack(ciStack)), "repair");
+  assertEquals(pushKind(callerFromStack(feedbackStack)), "repair");
+});
+
+Deno.test("audit_hook - recovery push retains the requesting processor kind", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at recoverFromPushRejection (file:///srv/VibeCoder/worker/deno/lib/git_push_recovery.ts:300:5)",
+    "    at pushUnpushedCommits (file:///srv/VibeCoder/worker/deno/lib/git_push.ts:400:5)",
+    "    at finalise (file:///srv/VibeCoder/worker/deno/lib/pr_feedback_processor.ts:1684:7)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/pr_feedback_processor.ts",
+  );
+  assertEquals(pushKind(callerFromStack(stack)), "repair");
+});
+
+Deno.test("audit_hook - callerFromStack keeps a lib subdirectory caller", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:308:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at async gateBeforePush (file:///srv/VibeCoder/worker/deno/lib/phases/completion_phase.ts:1915:24)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/phases/completion_phase.ts",
+  );
+});
+
+function mutationFor(verb: string, target?: string): MutationInfo {
+  return { verb, target, scope: "explicit" };
+}
+
+Deno.test("audit_hook - prNumberFor is undefined when the mutation has no target", () => {
+  assertEquals(prNumberFor(mutationFor("pr-merge")), undefined);
+});
+
+Deno.test("audit_hook - prNumberFor is undefined for a pr- verb whose target is not a number", () => {
+  assertEquals(
+    prNumberFor(mutationFor("pr-merge", "feature-branch")),
+    undefined,
+  );
+});
+
+Deno.test("audit_hook - prNumberFor is undefined for a target beyond the safe integer range", () => {
+  assertEquals(
+    prNumberFor(mutationFor("pr-merge", "9007199254740993")),
+    undefined,
+  );
+});
+
+Deno.test("audit_hook - prNumberFor reads the PR number from a /pulls/N API target", () => {
+  assertEquals(
+    prNumberFor(mutationFor("api-put", "repos/org/repo/pulls/42/reviews/7")),
+    42,
+  );
+});
+
+Deno.test("audit_hook - prNumberFor reads the number of a numeric pr- verb target", () => {
+  assertEquals(prNumberFor(mutationFor("pr-merge", "42")), 42);
+});
+
+Deno.test("audit_hook - callerFromStack matches whole file names, not suffixes", () => {
+  const stack = [
+    "    at spawnGh (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:656:5)",
+    "    at async pushRecovery (file:///srv/VibeCoder/worker/deno/lib/push_recovery_retry.ts:40:7)",
+  ].join("\n");
+  // push_recovery_retry.ts ends in retry.ts but is a different module.
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/push_recovery_retry.ts",
+  );
+});
+
+Deno.test("audit_hook - callerFromStack is undefined without a requesting module", () => {
+  assertEquals(callerFromStack(undefined), undefined);
+  assertEquals(callerFromStack(""), undefined);
+  const plumbingOnly = [
+    "    at spawnGh (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:656:5)",
+    "    at async runGhCommand (file:///srv/VibeCoder/worker/deno/lib/github.ts:514:10)",
+    "    at async retryWithBackoff (file:///srv/VibeCoder/worker/deno/lib/retry.ts:180:18)",
+  ].join("\n");
+  assertEquals(callerFromStack(plumbingOnly), undefined);
+});
+
+Deno.test("audit_hook - actionKindFor names merge and review from the verb", () => {
+  assertEquals(ghKind(["pr", "merge", "42", "--repo", "org/repo"]), "merge");
+  assertEquals(
+    ghKind(["pr", "review", "42", "--repo", "org/repo", "--approve"]),
+    "review",
+  );
+});
+
+Deno.test("audit_hook - disarming auto-merge is not a merge", () => {
+  assertEquals(
+    ghKind(["pr", "merge", "42", "--repo", "org/repo", "--disable-auto"]),
+    "unknown",
+  );
+  assertEquals(
+    ghKind(["pr", "merge", "42", "--repo", "org/repo", "--auto"]),
+    "merge",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor records a review dismissal only when the state is DISMISSED", () => {
+  const endpoint = ["api", "-X", "PUT", "repos/org/repo/pulls/42/reviews/777"];
+  assertEquals(ghKind([...endpoint, "-f", "state=DISMISSED"]), "dismissal");
+  // The same endpoint without the dismissed state is not a dismissal.
+  assertEquals(ghKind([...endpoint, "-f", "message=x"]), "unknown");
+});
+
+Deno.test("audit_hook - actionKindFor records a worker dismissal through the /dismissals endpoint", () => {
+  // The argv shape markCommentProcessed builds in pr_comments.ts.
+  assertEquals(
+    ghKind([
+      "api",
+      "-X",
+      "PUT",
+      "repos/org/repo/pulls/42/reviews/777/dismissals",
+      "-f",
+      "message=Processed",
+    ]),
+    "dismissal",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor leaves a review sub-endpoint other than /dismissals unknown", () => {
+  // A nearby review endpoint is not a dismissal, whatever its fields say.
+  assertEquals(
+    ghKind([
+      "api",
+      "-X",
+      "PUT",
+      "repos/org/repo/pulls/42/reviews/777/comments",
+      "-f",
+      "message=x",
+    ]),
+    "unknown",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor names an implementation push only from its own caller", () => {
+  for (
+    const name of [
+      "wip_checkpoint",
+      "run_wip_preservation",
+      "declared_handoff",
+      "push_recovery_retry",
+    ]
+  ) {
+    assertEquals(pushKind(callerIn("lib", `${name}.ts`)), "implementation");
+  }
+  assertEquals(
+    pushKind(callerIn("lib", "agent_pr_adoption.ts")),
+    "implementation",
+  );
+  assertEquals(
+    pushKind(callerIn("lib", "phases/completion_phase.ts")),
+    "implementation",
+  );
+  assertEquals(
+    pushKind(callerIn("lib", "pre_push_gate_retry.ts")),
+    "implementation",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor names a repair push from the babysitter and the PR processors", () => {
+  assertEquals(
+    pushKind(callerIn("commands", "fleet_pr_babysitter.ts")),
+    "repair",
+  );
+  assertEquals(pushKind(callerIn("lib", "pr_ci_processor.ts")), "repair");
+  assertEquals(pushKind(callerIn("lib", "pr_feedback_processor.ts")), "repair");
+  assertEquals(
+    pushKind(callerIn("lib", "pr_merge_conflict_processor.ts")),
+    "repair",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor leaves a push from an unresolved or unlisted caller unknown", () => {
+  assertEquals(pushKind(undefined), "unknown");
+  // A milestone sync push is reached through the `git` adapter in git_pull.ts
+  // (raiseMilestoneSyncPr's deps), not through milestone_sync_pr.ts, so the
+  // first module above the hook is git_pull.ts and it stays unknown.
+  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "unknown");
+});
+
+Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGitMutation(["push", "origin", "feature-branch"], 0, opts);
+
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    if (!loaded.ok) return;
+    const entry = loaded.value[0];
+    assertEquals(entry?.component, "unknown");
+    assertEquals(entry?.actionKind, "unknown");
+    assertEquals(entry?.caller, undefined);
+    assert(entry?.actionId !== undefined);
   });
 });
