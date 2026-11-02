@@ -22,6 +22,11 @@ import {
   type TypeCheckProject,
 } from "../lib/milestone_merge_gate.ts";
 import { CARGO_BUILD_SKIPPED_FOR_MERGE } from "../lib/heavy_build_gate.ts";
+import {
+  assertOnlyAllowlistedNames,
+  NAMES_PROBE,
+  runGateInChild,
+} from "./support/gate_child_env.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
 /** Write a file, creating its parent directory. */
@@ -566,6 +571,27 @@ Deno.test("detectRemoteModuleGap - a 200000-character line is capped and the out
   assertEquals(detectRemoteModuleGap(hostile), undefined);
 });
 
+/** The probe module: the real spawnTypeCheck runs inside `checkMergedTree`. */
+const MERGE_PROBE = `import { checkMergedTree } from ${
+  JSON.stringify(
+    new URL("../lib/milestone_merge_gate.ts", import.meta.url).href,
+  )
+};
+console.log("OUTCOME " + JSON.stringify(await checkMergedTree(Deno.args[0]!)));
+`;
+
+Deno.test("checkMergedTree - the repository's own check sees only the allowlisted environment (Issue #4659)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/deno.json`,
+      JSON.stringify({ tasks: { check: NAMES_PROBE } }),
+    );
+    // The default runner, inside a child process that holds a parent credential.
+    const outcome = await runGateInChild(MERGE_PROBE, dir);
+    assertEquals(outcome.status, "failed", outcome.output);
+    assertOnlyAllowlistedNames(outcome.output);
+  });
+});
 Deno.test("detectRemoteModuleGap - a 50000-line output is read in linear time to the right result (Issue #4422)", () => {
   const filler = Array.from({ length: 50_000 }, () => "    at frame");
   const gap = detectRemoteModuleGap(
@@ -578,4 +604,19 @@ Deno.test("detectRemoteModuleGap - a 50000-line output is read in linear time to
     () => "    0: unsuccessful tunnel",
   );
   assertEquals(detectRemoteModuleGap(noImport.join("\n")), undefined);
+});
+
+Deno.test("checkMergedTree - the repository's own check is refused when its manifest is a symbolic link (Issue #4659)", async () => {
+  await withTempDir(async (dir) => {
+    // The default runner probes the manifests it is handed; a link in their
+    // place could choose which account runs the repository's code.
+    await writeFile(`${dir}/real.json`, JSON.stringify({ tasks: {} }));
+    await Deno.symlink(`${dir}/real.json`, `${dir}/deno.json`);
+    const outcome = await checkMergedTree(dir);
+    assertEquals(outcome.status, "failed", outcome.output);
+    assert(
+      outcome.output.includes("is a symbolic link"),
+      `expected the symbolic-link refusal, got: ${outcome.output}`,
+    );
+  });
 });

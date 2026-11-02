@@ -1,0 +1,12 @@
+{
+  "issue": 4659,
+  "chunk": "top-up-4659",
+  "title": "top-up: untrusted gate spawn",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4659",
+  "definition": "worker/deno/lib/untrusted_gate_spawn.ts, the spawn helper the milestone resolution and merge gates run a repository's own commands through, with an allowlisted environment, clearEnv and no parent credential (Issue #4659)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/untrusted_gate_spawn.ts"
+  ],
+  "sweptAt": "d7073ac1479bdc7873a3ec2390942b147f708c71"
+}
