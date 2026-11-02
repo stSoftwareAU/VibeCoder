@@ -3,7 +3,11 @@
 Adds the Cargo Dependency Updates workflow at
 `.github/workflows/cargo-upgrade.yml` (weekly and on demand: `cargo upgrade`,
 `cargo update`, then a pull request via `peter-evans/create-pull-request`).
-Closes #4629.
+This repository has no root `Cargo.toml` (its only Rust is the eval fixture
+under `evals/`), so the toolchain, `cargo install`, `cargo upgrade`,
+`cargo update` and pull-request steps are all guarded with
+`if: hashFiles('Cargo.toml') != ''` and skipped until one is committed, as
+`.github/workflows/cargo-audit.yml` does for `Cargo.lock`. Closes #4629.
 
 ## Spec
 
@@ -41,18 +45,14 @@ them, both pass.
 
 ## Test Plan
 
-- No new test: the repository's existing real-tree tests police the file
-  (`worker/deno/tests/workflow_hardening_test.ts`,
-  `worker/deno/tests/supply_chain_gate_test.ts`).
+- New `worker/deno/tests/workflow_hardening_test.ts` test: every non-checkout
+  step of `cargo-upgrade.yml` and `cargo-audit.yml` carries its root-file
+  guard. Red check: removing the guard from the `cargo update` step fails it
+  with "cargo-upgrade.yml: step lacks `if: hashFiles('Cargo.toml') != ''`".
 - `deno task test:unit` over `workflow_hardening_test.ts`,
-  `supply_chain_gate_test.ts`, `workflow_definitions_test.ts`,
-  `workflow_auditor_test.ts` and `setup_workflow_sync_test.ts`: 178 passed, 0
-  failed.
-- `./quality.sh`: every stage before the Deno tests passed, including
-  completeness checks (which failed before the deviations), workflow hygiene,
-  markdownlint and semgrep. Two full runs hit the 598 s command cap during the
-  Deno tests stage (the earlier full run took about 6 minutes there), so that
-  stage did not finish on the final head; the one earlier failure it reported
-  was the two tests above, which now pass.
+  `supply_chain_gate_test.ts` and `workflow_definitions_test.ts`: 119 passed,
+  0 failed.
+- `./quality.sh` was not re-run in the review-fix round (budget); CI runs the
+  full gate.
 
-<!-- vibe-quality-gate-skipped: ./quality.sh Deno tests stage did not finish within the 598 s command cap on the final head; every earlier stage passed and the two tests it previously failed on pass; CI runs the full gate -->
+<!-- vibe-quality-gate-skipped: ./quality.sh not re-run in the PR #4686 review-fix round; targeted tests pass and CI runs the full gate -->

@@ -31,13 +31,24 @@ jobs:
       # name — it is named explicitly instead (Issue #3645).
       # dtolnay/rust-toolchain@v1
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        if: hashFiles('Cargo.toml') != ''
         with:
           toolchain: stable
-      - run: cargo install cargo-edit
-      - run: cargo upgrade
-      - run: cargo update
+      # `cargo upgrade` and `cargo update` need a root Cargo.toml and stop
+      # with "could not find `Cargo.toml`" without one. This repository
+      # tracks no root manifest (its only Rust is the eval fixture under
+      # evals/), so every Rust step, and the pull request that depends on
+      # them, is skipped until one is committed; they then run with no
+      # further change.
+      - if: hashFiles('Cargo.toml') != ''
+        run: cargo install cargo-edit
+      - if: hashFiles('Cargo.toml') != ''
+        run: cargo upgrade
+      - if: hashFiles('Cargo.toml') != ''
+        run: cargo update
       # peter-evans/create-pull-request@v8.1.1
       - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        if: hashFiles('Cargo.toml') != ''
         with:
           # Org-level PAT (Issue #1636); falls back to GITHUB_TOKEN when
           # the secret is unset. Using the PAT ensures downstream PR
