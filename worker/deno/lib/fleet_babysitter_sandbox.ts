@@ -59,7 +59,7 @@ async function canonicalPathIncludingMissingTail(
       return normaliseAbsolutePath(`${real}/${missing.reverse().join("/")}`);
     }
     const slash = prefix.lastIndexOf("/");
-    if (slash < 0 || prefix === "/") {
+    if (prefix === "/") {
       throw new Error(`Could not resolve protected path prefix for ${path}`);
     }
     missing.push(prefix.slice(slash + 1));
@@ -84,11 +84,11 @@ export async function babysitterHostCredentialPaths(
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
-  const reviewer = config.pr_reviewer_app;
-  const reviewerKey = reviewer && typeof reviewer === "object" &&
-      !Array.isArray(reviewer)
-    ? (reviewer as Record<string, unknown>).private_key_path
-    : undefined;
+  // JSON primitives and arrays have no private_key_path property.
+  const reviewerKey = (config.pr_reviewer_app as
+    | Record<string, unknown>
+    | null
+    | undefined)?.private_key_path;
   const pathValues = [
     resolveCredentialDir((name) => name === "HOME" ? home : env(name)),
     `${home}/.vibe-coder/credentials`,
@@ -134,6 +134,9 @@ export async function babysitterProtectedPaths(
   for (const candidate of candidates) {
     const normalised = normaliseAbsolutePath(candidate);
     paths.add(normalised);
+    // Resolve the configured spelling too: '..' after a directory symlink
+    // refers to the target's parent, which lexical normalisation would lose.
+    paths.add(await canonicalPathIncludingMissingTail(candidate));
     paths.add(await canonicalPathIncludingMissingTail(normalised));
   }
   return [...paths].sort();

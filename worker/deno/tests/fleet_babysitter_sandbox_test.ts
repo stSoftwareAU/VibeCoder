@@ -2,10 +2,12 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   BABYSITTER_FILESYSTEM_KEY,
   BABYSITTER_PERMISSIONS_PROFILE,
+  babysitterHostCredentialPaths,
   babysitterProtectedPaths,
   buildBabysitterSandboxArgs,
   codexVersionMeetsFloor,
 } from "../lib/fleet_babysitter_sandbox.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 /** The grant entry as it appears inside the inline table. */
 const grant = (path: string, access: string) =>
@@ -126,6 +128,133 @@ Deno.test("babysitterProtectedPaths denies a symlinked credential directory and 
 
     assert(result.includes(link));
     assert(result.includes(await Deno.realPath(target)));
+  });
+});
+
+Deno.test("babysitterProtectedPaths denies missing credential tails beneath a directory symlink", async () => {
+  await withTempDirs(async ([home, targetDir, linkDir]) => {
+    const link = `${linkDir}/credentials`;
+    await Deno.symlink(targetDir, link);
+    const configured = `${link}/not-created/key.pem`;
+    const canonical = `${await Deno.realPath(targetDir)}/not-created/key.pem`;
+    await assertRejects(() => Deno.stat(configured), Deno.errors.NotFound);
+
+    const protectedPaths = await babysitterProtectedPaths(
+      home,
+      `${home}/app.pem`,
+      [configured],
+    );
+    const args = buildBabysitterSandboxArgs({
+      dir: `${home}/clone`,
+      scratch: `${home}/scratch`,
+      protectedPaths,
+    });
+    assert(args[3]!.includes(grant(configured, "none")));
+    assert(args[3]!.includes(grant(canonical, "none")));
+  });
+});
+
+Deno.test("babysitterProtectedPaths removes dot segments and validates additional paths", async () => {
+  await withTempDirs(async ([home, elsewhere]) => {
+    const key = `${elsewhere}/key.pem`;
+    await Deno.writeTextFile(key, "test credential");
+    assertEquals(
+      await babysitterProtectedPaths(home, key, [`${elsewhere}/./key.pem`]),
+      [...new Set([await Deno.realPath(key), key])].sort(),
+    );
+    await assertRejects(
+      () => babysitterProtectedPaths(home, key, ["relative/key.pem"]),
+      Error,
+      "A protected path must be an absolute path",
+    );
+  });
+});
+
+Deno.test("babysitterProtectedPaths stops when even the root cannot be resolved", async () => {
+  await withTempDirs(async ([home]) => {
+    const realPath = Deno.realPath;
+    let calls = 0;
+    Deno.realPath = () => {
+      if (++calls > 1) throw new Error("resolution retried the root");
+      return Promise.reject(new Deno.errors.NotFound("root unavailable"));
+    };
+    try {
+      await assertRejects(
+        () => babysitterProtectedPaths(home, "/", []),
+        Error,
+        "Could not resolve protected path prefix for /",
+      );
+      assertEquals(calls, 1);
+    } finally {
+      Deno.realPath = realPath;
+    }
+  });
+});
+
+Deno.test("babysitterHostCredentialPaths validates HOME independently of credential defaults", async () => {
+  await withTempDirs(async ([home]) => {
+    await assertRejects(
+      () =>
+        babysitterHostCredentialPaths(
+          `${home}/missing.json`,
+          "relative",
+          () => "/credentials",
+        ),
+      Error,
+      "HOME must be an absolute path",
+    );
+  });
+});
+
+for (const config of [null, false, 17, "config", []]) {
+  Deno.test(`babysitterHostCredentialPaths rejects non-object configuration ${JSON.stringify(config)}`, async () => {
+    await withTempDirs(async ([home]) => {
+      const configPath = `${home}/config.json`;
+      await Deno.writeTextFile(configPath, JSON.stringify(config));
+      await assertRejects(
+        () => babysitterHostCredentialPaths(configPath, home, emptyEnv),
+        Error,
+        "Worker configuration must be an object",
+      );
+    });
+  });
+}
+
+Deno.test("babysitterHostCredentialPaths ignores absent reviewer keys and empty credential fields", async () => {
+  await withTempDirs(async ([home]) => {
+    const configPath = `${home}/config.json`;
+    const expected = [
+      `${home}/.vibe-coder/credentials`,
+      `${home}/.config/gh`,
+    ];
+    for (const reviewer of [undefined, null, false, 17, "reviewer", [], {}]) {
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          pr_reviewer_app: reviewer,
+          ssh_key_path: " \t ",
+          github_app_private_key_path: "",
+          gh_config_dir: false,
+        }),
+      );
+      assertEquals(
+        new Set(
+          await babysitterHostCredentialPaths(configPath, home, emptyEnv),
+        ),
+        new Set(expected),
+      );
+    }
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({
+        ssh_key_path: " ~/ssh.pem ",
+        pr_reviewer_app: { private_key_path: " ~/reviewer.pem " },
+      }),
+    );
+    assertEquals(
+      new Set(await babysitterHostCredentialPaths(configPath, home, emptyEnv)),
+      new Set([...expected, `${home}/reviewer.pem`, `${home}/ssh.pem`]),
+    );
   });
 });
 

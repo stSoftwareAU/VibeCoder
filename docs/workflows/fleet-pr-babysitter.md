@@ -105,9 +105,11 @@ to the babysitter App private key, the worker credential directory, the host
 service-account SSH key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and
 their resolved symlink targets. Credential locations are read from the same
 `CONFIG_PATH` file and host environment as the worker, including the documented
-defaults `~/.vibe-coder/credentials` and `~/.config/gh`. Paths are normalised
-before symlink resolution, and missing paths are denied through their longest
-existing parent. These entries are denied because the agent shares the runner's
+defaults `~/.vibe-coder/credentials` and `~/.config/gh`. The configured spelling
+is resolved with filesystem traversal semantics, so `..` after a directory
+symlink follows the target's parent. Normalised locations and their canonical
+targets are also denied; missing tails are resolved through the longest existing
+parent. These entries are denied because the agent shares the runner's
 OS user and file modes alone do not protect them; it is also told not to ask
 questions. When a fix
 needs a human decision, it should report the blocker and stop without a commit.
