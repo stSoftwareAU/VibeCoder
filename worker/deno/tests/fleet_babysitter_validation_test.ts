@@ -59,6 +59,52 @@ Deno.test("babysitter validation hands browser gate work to the runner before co
   }
 });
 
+Deno.test("a repaired runner gate passes revalidation before the repair commit", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await git(dir, "init", "-q");
+    await git(dir, "config", "user.name", "Test");
+    await git(dir, "config", "user.email", "test@example.invalid");
+    await Deno.writeTextFile(`${dir}/file.txt`, "before\n");
+    await git(dir, "add", ".");
+    await git(dir, "commit", "-m", "initial");
+    const initialHead = await git(dir, "rev-parse", "HEAD");
+    await Deno.writeTextFile(`${dir}/file.txt`, "after\n");
+    let validations = 0;
+    let repairs = 0;
+    await validateWithSingleRepair({
+      validate: () =>
+        validateAndCommit(dir, 4674, { login: "bot[bot]", id: "123" }, {
+          runValidation: async () => {
+            validations++;
+            if (validations === 1) {
+              throw new BabysitterValidationError(
+                "browser check failed",
+                "failed",
+              );
+            }
+            return { kind: "passed", command: "./quality.sh" };
+          },
+        }),
+      repair: async () => {
+        repairs++;
+        assertEquals(await git(dir, "rev-parse", "HEAD"), initialHead);
+        assert((await git(dir, "status", "--porcelain")).includes("file.txt"));
+        assertEquals(await git(dir, "diff", "--cached", "--name-only"), "");
+      },
+    });
+    assertEquals(validations, 2);
+    assertEquals(repairs, 1);
+    assertEquals(await git(dir, "status", "--porcelain"), "");
+    assertEquals(
+      await git(dir, "show", "-s", "--format=%s", "HEAD"),
+      "Fix PR #4674 quality issues",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("runner check failure prevents the repair commit", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -536,7 +582,7 @@ Deno.test({
         `file://${root}/index.html`,
       ];
 
-      // The earlier agent seatbelt omitted the Mach lookups Chromium needs.
+      // Omitting Mach lookup permission reproduces the browser's blocked path.
       const restrictedPath = `${root}/agent-restrictions.sb`;
       const restrictedProfile = buildBabysitterValidationProfile(
         root,
@@ -553,7 +599,7 @@ Deno.test({
       }).output();
       assert(
         !restrictedLaunch.success,
-        "Chromium unexpectedly launched with the agent's restricted Mach lookups",
+        "Chromium unexpectedly launched without Mach lookup permission",
       );
 
       await Deno.writeTextFile(
