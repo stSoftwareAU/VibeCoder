@@ -71,6 +71,28 @@ its temporary PR clones after use. A later pass removes clones left by an
 interrupted babysitter after confirming their owner exited; it leaves live and
 unrelated directories alone.
 
+Each repository also has one bare mirror, kept at
+`${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter/mirrors/<owner>--<repo>.git`.
+The first repair of a repository downloads it once with `git clone --bare`,
+bounded to 30 minutes. The download is built in a `.tmp` sibling and renamed
+into place only when complete, so a failed download leaves no mirror. Each
+later repair fetches heads and tags with `--no-auto-maintenance` in the mirror,
+then runs automatic maintenance in the foreground before copying, serialised per
+repository within the process. It then runs
+`git clone --no-checkout --no-hardlinks <mirror> <dir>` to make its temporary
+clone. That clone holds the full history, so merge bases and `git diff` against
+the base work without lazy fetches; it is not a partial clone and does not
+depend on the mirror afterwards. The clone's `origin` is then set back to the
+GitHub URL: `git@github.com:<repo>.git` when `gh config get git_protocol -h github.com`
+reports `ssh`, otherwise HTTPS. Each fetch uses the currently resolved URL, even
+if the mirror was created with a different protocol. If the fetch fails, the repair fails with git's cause,
+the mirror is kept, and the next pass retries. Passes never remove mirrors;
+delete a mirror directory to force a fresh download. Codex reads the filesystem
+under its permissions profile, so it can read a mirror, but it cannot write to
+one because its write grants are only the clone and scratch directory. Mirrors
+are not among the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries, so do
+not treat them as credential-protected.
+
 An optional executable `~/.vibe-coder/fleet-pr-babysitter/health-hook` receives
 the pass exit code as its sole argument. It is bounded to ten minutes; hook
 failure is logged and the next pass retries. Organisation-specific extensions
@@ -162,7 +184,8 @@ push. A failed or unproductive agent attempt is recorded under
 not retried on that host for the same PR head. A review repair is keyed on the
 head and the newest change-request review, so a new review on an attempted head
 gets its own attempt. Removing the matching state file permits a retry. The shared lock prevents simultaneous work; this local attempt
-record does not prevent a different host from retrying later.
+record does not prevent a different host from retrying later. Repository
+mirrors live in the same state directory, under `mirrors/`, as described above.
 
 ## Shift-left detection
 
