@@ -255,7 +255,8 @@ Deno.test("sweepMergedPrIssues - the closure names the PR and the merge commit",
   const comment = calls.closes[0]?.comment ?? "";
   assertStringIncludes(comment, "#49");
   assertStringIncludes(comment, "f00dcafe");
-  assertStringIncludes(comment, "504");
+  assertStringIncludes(comment, "merged-PR issue sweep closed it");
+  assertEquals(comment.match(/#\d+/g), ["#49"]);
 });
 
 // ---------------------------------------------------------------------------

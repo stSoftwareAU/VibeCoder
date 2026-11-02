@@ -102,14 +102,14 @@ export function formatDetailedFailureMessage(
       diagnostics.push(
         `Watchdog: ${context.timeoutReason}` +
           (late !== undefined && late > 0
-            ? ` (fired ${late}s late — starved timers, Issue #4254)`
+            ? ` (fired ${late}s late — starved timers)`
             : ""),
       );
     }
     if (context.killIncompleteSeconds !== undefined) {
       diagnostics.push(
         `Kill: did not complete within ${context.killIncompleteSeconds}s — ` +
-          `wait abandoned, exit status synthesised (Issue #4254)`,
+          `wait abandoned, exit status synthesised`,
       );
     }
   }
