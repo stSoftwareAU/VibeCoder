@@ -10,7 +10,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   RESOLUTION_GATE_BUDGET_MS,
   type ResolutionTask,
@@ -21,6 +21,11 @@ import type {
   MergeGateFn,
   MergeGateOutcome,
 } from "../lib/milestone_merge_gate.ts";
+import {
+  assertOnlyAllowlistedNames,
+  NAMES_PROBE,
+  runGateInChild,
+} from "./support/gate_child_env.ts";
 
 const passingTypeCheck: MergeGateFn = () =>
   Promise.resolve({
@@ -718,28 +723,26 @@ Deno.test("verifyResolvedTree - a type check with nothing left to CI carries no 
   assertEquals(outcome.status, "passed", outcome.detail);
   assertEquals(outcome.checkLeftToCi, undefined);
 });
+/** The probe module: the real spawnTask runs inside `verifyResolvedTree`. */
+const RESOLUTION_PROBE = `import { verifyResolvedTree } from ${
+  JSON.stringify(
+    new URL("../lib/milestone_resolution_gate.ts", import.meta.url).href,
+  )
+};
+const passingTypeCheck = () =>
+  Promise.resolve({ status: "passed" as const, detail: "type check passed", output: "" });
+// \`undefined\` selects the real spawnTask runner, not an injected one.
+console.log("OUTCOME " + JSON.stringify(await verifyResolvedTree(Deno.args[0]!, undefined, passingTypeCheck)));
+`;
 
-/** A credential the worker holds, which a repository's own task must not inherit (Issue #4659). */
-const PARENT_CREDENTIAL = "VIBE_4659_PARENT_SECRET";
-
-/**
- * Prints what the child sees of the credential, then fails so the gate reports
- * it. The `seen=` marker keeps the echoed command text from matching `unset`.
- */
-const CREDENTIAL_PROBE =
-  'sh -c \'printf "seen=%s" "${VIBE_4659_PARENT_SECRET-unset}"; exit 1\'';
-
-Deno.test("verifyResolvedTree - the default runner does not hand the repository's own task a parent credential (Issue #4659)", async () => {
-  const dir = await tree({ "test:unit": CREDENTIAL_PROBE });
-  Deno.env.set(PARENT_CREDENTIAL, "s3cret");
+Deno.test("verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)", async () => {
+  const dir = await tree({ "test:unit": NAMES_PROBE });
   try {
-    // `undefined` selects the real spawnTask runner, not an injected one.
-    const outcome = await verifyResolvedTree(dir, undefined, passingTypeCheck);
+    // The default runner, inside a child process that holds a parent credential.
+    const outcome = await runGateInChild(RESOLUTION_PROBE, dir);
     assertEquals(outcome.status, "failed", outcome.detail);
-    assertStringIncludes(outcome.output, "seen=unset");
-    assert(!outcome.output.includes("s3cret"), outcome.output);
+    assertOnlyAllowlistedNames(outcome.output);
   } finally {
-    Deno.env.delete(PARENT_CREDENTIAL);
     await Deno.remove(dir, { recursive: true });
   }
 });

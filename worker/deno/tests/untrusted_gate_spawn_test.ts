@@ -11,6 +11,7 @@ import {
 import type { untrustedSpawn } from "../lib/quality_gate_phase.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
+import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 type Spawned = Awaited<ReturnType<typeof runWithTimeout>>;
 type SpawnOptions = Parameters<typeof runWithTimeout>[2];
@@ -112,34 +113,50 @@ Deno.test("the parent's credentials do not reach a repository command (Issue #46
   });
 });
 
-Deno.test("a real repository command sees no parent credential (Issue #4659)", async () => {
-  const name = "VIBE_4659_PARENT_SECRET";
-  const previous = Deno.env.get(name);
-  Deno.env.set(name, "parent-secret-value");
-  try {
-    await withCheckout(async (cwd) => {
-      const script = 'printf %s "${VIBE_4659_PARENT_SECRET-unset}"';
-      const isolated = await runRepositoryCommand(
-        "sh",
-        ["-c", script],
-        { cwd, timeoutMs: 10_000 },
-        { drop: identityDrop, trimRefused: false },
-      );
-      assert(isolated.ok);
-      assertEquals(isolated.value.stdout, "unset");
+/**
+ * Names a POSIX shell sets for itself in a child it starts. They carry no
+ * secret. Same list as untrusted_spawn_env_test.ts (Issue #1214).
+ */
+const SHELL_SET_NAMES = ["PWD", "SHLVL", "_", "OLDPWD", "IFS"];
 
-      // Positive control: the same script inherits the secret without the helper.
-      const inherited = await runWithTimeout("sh", ["-c", script], {
-        cwd,
-        timeoutMs: 10_000,
-      });
-      assert(inherited.ok);
-      assertEquals(inherited.value.stdout, "parent-secret-value");
+/** The variable names a `printenv` child printed, one per line. */
+function envNames(output: string): string[] {
+  return output
+    .split("\n")
+    .map((line) => line.slice(0, line.indexOf("=")))
+    .filter((name) => name.length > 0);
+}
+
+// Asserts over the whole name set rather than planting a credential in the
+// worker's own environment, so nothing here mutates process state (Issue #880).
+Deno.test("a real repository command sees only allowlisted names (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    const isolated = await runRepositoryCommand(
+      "printenv",
+      [],
+      { cwd, timeoutMs: 10_000 },
+      { drop: identityDrop, trimRefused: false },
+    );
+    assert(isolated.ok);
+    assertEquals(isolated.value.code, 0);
+    const seen = envNames(isolated.value.stdout);
+    // The dump really happened: PATH is allowlisted and must be present.
+    assert(seen.includes("PATH"));
+
+    const permitted = new Set([...ALLOWED_ENV_NAMES, ...SHELL_SET_NAMES]);
+    assertEquals(seen.filter((name) => !permitted.has(name)), []);
+
+    // Positive control: the inherited environment carries names outside the
+    // allowlist, so the assertion above has teeth.
+    const inherited = await runWithTimeout("printenv", [], {
+      cwd,
+      timeoutMs: 10_000,
     });
-  } finally {
-    if (previous === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, previous);
-  }
+    assert(inherited.ok);
+    assert(
+      envNames(inherited.value.stdout).some((name) => !permitted.has(name)),
+    );
+  });
 });
 
 Deno.test("a usable untrusted account runs the command dropped, with the cargo target carried (Issue #4659)", async () => {

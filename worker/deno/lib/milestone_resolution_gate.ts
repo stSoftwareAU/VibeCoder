@@ -186,7 +186,7 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
   // The repository's own code runs with a stated environment and no parent
   // credential (Issue #4659). Build-cache placement for the checkout (Issue
   // #2247) is decided inside runRepositoryCommand, not here.
-  const result = await runRepositoryCommand(
+  const result = await runWithTimeout(
     task.kind === "script"
       ? "bash"
       : task.kind === "cargo"
@@ -196,7 +196,7 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
     {
       cwd: task.dir,
       timeoutMs: task.timeoutMs,
-      manifests: await manifestsFor(task.kind, task.dir),
+      env: buildCacheEnvForCheckout(task.dir),
     },
   );
   if (!result.ok) return { code: 1, output: result.error.message };
