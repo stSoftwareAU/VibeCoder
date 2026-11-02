@@ -1357,12 +1357,13 @@ async function detectHalfDoneWipBranch(
   if (entries[0]!.sha !== startSha) return null;
   if (!isWipOnlyCommitLog(entries.map((entry) => entry.subject))) return null;
 
+  // Issue #148: a WIP-only branch is refused, never raised as a half-done PR.
   // The wording carries `failure_diagnosis`'s stable "without making any
   // changes" marker on purpose: this run finished without adding to the
   // branch, which is a no_changes outcome, not a worker fault to retry.
   return `Branch \`${state.branchName}\` carries only WIP commits preserved ` +
     `from an earlier timed-out run, and this run ended without making any ` +
-    `changes to it — refusing to raise a half-done PR (Issue #148). The ` +
+    `changes to it — refusing to raise a half-done PR. The ` +
     `next claim resumes from the branch and must add to it before a PR can ` +
     `be raised.`;
 }
@@ -1600,8 +1601,7 @@ async function completionBody(
     return {
       category: "unknown",
       status: "failure",
-      reason:
-        `Refusing to push \`${state.branchName}\`: ${lineage.detail} (Issue #534)`,
+      reason: `Refusing to push \`${state.branchName}\`: ${lineage.detail}`,
     };
   }
   if (lineage.kind === "healed") {
@@ -1676,7 +1676,7 @@ async function completionBody(
       category: "unknown",
       status: "failure",
       reason: `Refusing to raise the PR for \`${state.branchName}\`: ` +
-        `${prRaiseSync.detail} (Issue #2809)`,
+        `${prRaiseSync.detail}`,
     };
   }
   const currency = prRaiseSync.currency;

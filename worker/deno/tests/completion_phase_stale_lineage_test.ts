@@ -155,8 +155,18 @@ Deno.test(
   async () => {
     const run = await runCompletion({ dirty: true });
     assertEquals(run.status, "failure");
-    assertStringIncludes(run.reason ?? "", "Issue #534");
+    assertStringIncludes(run.reason ?? "", "Refusing to push");
+    assertStringIncludes(run.reason ?? "", BRANCH);
     assertStringIncludes(run.reason ?? "", "#531");
+    assertEquals(
+      run.reason?.match(/#\d+/g) ?? [],
+      ["#531"],
+      "only the target repo's merged PR reference (#531) may remain, and no VibeCoder issue number",
+    );
+    assert(
+      !/Issue #\d+/.test(run.reason ?? ""),
+      "the refusal must not name a VibeCoder issue number",
+    );
     assert(
       !run.order.includes("push"),
       "a branch that would open a CONFLICTING PR must never be pushed",
