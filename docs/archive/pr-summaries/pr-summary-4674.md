@@ -349,6 +349,14 @@ two prefixes and still rejects blanket sysctl reads and `kern.procargs2`.
 The browser integration attempt remains blocked by this host's nested sandbox
 refusal, so the new grants and earlier OS-level probes remain unverified.
 
+Review repair (command-line reads): decided that `kern.procargs2` stays denied
+because it also returns environments, so a gate that reads `ps -o command=`
+(VibeCoder's `loop_supervisor_test.ts`) cannot pass in the runner and its repair
+fails closed, discarded after the single retry. SECURITY.md, C37 and the
+operator manual say so. The integration gate runs `ps -o command= -p` on a gate
+child and logs the printed text; it has not run on macOS because sandbox
+startup is still refused here.
+
 Merge conflict repair for PR #4716: preserve absolute resolution of the selected
 configuration path and use the base branch deployment-publishing loader for each
 babysitter pass. Both deployment heartbeats and protected-path validation retain

@@ -256,6 +256,8 @@ sleep 60 &
 child=$!
 test "$(/bin/ps -o ppid= -p $$ | /usr/bin/tr -d ' ')" = "$PPID"
 /usr/bin/pgrep -P $$ | /usr/bin/grep -qx "$child"
+# Records what command-line reads return; kern.procargs2 is denied on purpose.
+/bin/ps -o command= -p "$child" > command-line-probe.txt || true
 kill -TERM "$child"
 if wait "$child"; then exit 39; else test "$?" -eq 143; fi
 ./resource-probe
@@ -335,6 +337,15 @@ touch gate-ran
       );
       assert((await Deno.stat(`${root}/browser-check.png`)).size > 0);
       assert((await Deno.stat(`${root}/gate-ran`)).isFile);
+      // Observed result, not an assertion: gates reading command lines are
+      // documented as unable to pass, and this line records what ps printed.
+      console.log(
+        `ps -o command= under the runner profile: ${
+          JSON.stringify(
+            (await Deno.readTextFile(`${root}/command-line-probe.txt`)).trim(),
+          )
+        }`,
+      );
       await assertRejects(
         () => Deno.stat(`${root}/.git/runner-write`),
         Deno.errors.NotFound,

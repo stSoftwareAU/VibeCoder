@@ -112,7 +112,7 @@ gate starts, terminates and reaps a background child to exercise this grant.
 
 Process inspection is restricted to the same sandbox; process execution and
 forking are separate grants. Sysctl reads allow named hardware and OS values
-and per-PID and process-group record prefixes, but not `kern.procargs2`. The
+and per-PID and process-group record prefixes, but not `kern.procargs2`. `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) cannot pass in the runner: the check is returned to Codex once, the retry fails the same way, and the repair is discarded without a commit or push. The integration gate records what `ps -o command=` prints for a gate child; that has not yet run on macOS. The
 `com.apple.sysmond` lookup supports `pgrep` and can expose other processes'
 arguments: operators must not put credentials in command-line arguments. The
 live integration probe for environment access uses a

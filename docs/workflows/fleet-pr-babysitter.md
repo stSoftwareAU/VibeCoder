@@ -36,7 +36,7 @@ Mach lookups, plus lookup and registration of browser rendezvous and
 Crashpad name prefixes (children look up the rendezvous server their parent
 registers). Sysmond supports `pgrep` but can expose other processes' arguments;
 operators must not put credentials in command-line arguments. Per-PID and
-process-group sysctl records are allowed; `kern.procargs2` remains denied.
+process-group sysctl records are allowed; `kern.procargs2`, which also returns a process's environment, stays denied, so `ps -o command=` and `ps -o args=` print no arguments. A gate that needs full command lines from `ps` (VibeCoder's own `loop_supervisor_test.ts` is one) cannot pass in the runner: the check is returned to Codex once, the retry fails the same way, and the repair is discarded without a commit or push. The integration gate records what `ps -o command=` prints for a gate child; that has not yet run on macOS.
 Services that launch processes or containers and file-service lookups remain denied; a named
 lookup alone cannot authorise Chromium's
 `bootstrap_check_in` during startup. Registration is limited to those browser
