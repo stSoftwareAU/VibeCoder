@@ -289,6 +289,7 @@ Deno.test("runner failure includes bounded actionable gate output", async () => 
   const dir = await Deno.makeTempDir();
   const scratch = await Deno.makeTempDir();
   const home = await Deno.makeTempDir();
+  const fakeToken = ["ghp_", "A".repeat(36)].join("");
   try {
     await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\n");
     await Deno.writeTextFile(`${home}/worker-config.json`, "{}");
@@ -309,7 +310,7 @@ Deno.test("runner failure includes bounded actionable gate output", async () => 
                 code: 1,
                 stdout: `${
                   "x".repeat(25_000)
-                }\nbrowser assertion failed: element was outside viewport\nGH_TOKEN=ghp_123456789012345678901234567890123456`,
+                }\nbrowser assertion failed: element was outside viewport\nGH_TOKEN=${fakeToken}`,
                 stderr: "",
               };
             },
@@ -322,7 +323,7 @@ Deno.test("runner failure includes bounded actionable gate output", async () => 
     assertStringIncludes(error.message, "element was outside viewport");
     assert(error.message.length < 22_000, "runner output was not bounded");
     assert(
-      !error.message.includes("ghp_123456789012345678901234567890123456"),
+      !error.message.includes(fakeToken),
       "runner validation leaked a credential",
     );
   } finally {
