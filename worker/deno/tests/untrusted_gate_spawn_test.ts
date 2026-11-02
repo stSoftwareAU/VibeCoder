@@ -5,6 +5,7 @@
  */
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  GateAccountUnavailable,
   manifestsFor,
   runRepositoryCommand,
 } from "../lib/untrusted_gate_spawn.ts";
@@ -12,6 +13,7 @@ import type { untrustedSpawn } from "../lib/quality_gate_phase.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
+import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
 import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 type Spawned = Awaited<ReturnType<typeof runWithTimeout>>;
@@ -213,10 +215,10 @@ const PROBE_FAILURES: [string, Spawned][] = [
 ];
 
 for (const [label, first] of PROBE_FAILURES) {
-  Deno.test(`an untrusted probe that ${label} runs the command as the worker (Issue #4659)`, async () => {
+  Deno.test(`an untrusted probe that ${label} leaves the command to CI without changing account (Issue #4659)`, async () => {
     await withCheckout(async (cwd) => {
       const { calls, spawn } = recordingSpawn(first);
-      const { lines } = await captureConsoleError(() =>
+      const { result } = await captureConsoleError(() =>
         runRepositoryCommand(
           "cargo",
           ["test"],
@@ -224,16 +226,11 @@ for (const [label, first] of PROBE_FAILURES) {
           { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
         )
       );
-      assertEquals(calls.length, 2);
-      assertEquals(callAt(calls, 1).executable, "cargo");
-      assertEquals(callAt(calls, 1).args, ["test"]);
-      assertEquals(callAt(calls, 1).options.env?.GH_TOKEN, undefined);
-      assertEquals(callAt(calls, 1).options.clearEnv, true);
-      assert(
-        lines.some((line) =>
-          line.includes("[SECURITY]") && line.includes(`'${cwd}'`)
-        ),
-      );
+      assertEquals(calls.length, 1);
+      assertEquals(result.ok, false);
+      assert(!result.ok);
+      assert(result.error instanceof GateAccountUnavailable);
+      assert(result.error.message.includes(cwd));
     });
   });
 }
@@ -379,30 +376,33 @@ Deno.test("a target the account cannot write gives it a target of its own, not t
         { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
       )
     );
-    assertEquals(calls.length, 3);
+    assertEquals(calls.length, 2);
     const final = callAt(calls, 1);
     assertEquals(final.executable, "sudo");
     const target = final.options.env?.CARGO_TARGET_DIR;
-    assert(target !== undefined && !target.startsWith(cwd));
-    // The account empties what it built; the worker then removes the directory.
-    const emptier = callAt(calls, 2);
-    assertEquals(emptier.executable, "sudo");
-    assertEquals(emptier.args.slice(-5), [
-      "find",
+    assertEquals(
       target,
-      "-mindepth",
-      "1",
-      "-delete",
-    ]);
+      cargoTargetDirForCheckout(cwd, {
+        root: `${cwd}/.vibe-cargo-target`,
+        account: "agent",
+      }),
+    );
     assert(final.args.includes(`CARGO_TARGET_DIR=${target}`));
     assertEquals(final.options.env?.GH_TOKEN, undefined);
     assert(!lines.some((line) => line.includes("[SECURITY]")));
-    // Removed once the command has run.
-    await assertRejects(() => Deno.stat(target), Deno.errors.NotFound);
+    // Repeated gates reuse the same account-specific cache, with no cleanup.
+    const again = recordingSpawn({ ok: true, value: { ...OK, code: 2 } });
+    await runRepositoryCommand("cargo", ["check"], { cwd, timeoutMs: 1000 }, {
+      spawn: again.spawn,
+      drop: agentDrop,
+      source: SOURCE,
+      trimRefused: false,
+    });
+    assertEquals(callAt(again.calls, 1).options.env?.CARGO_TARGET_DIR, target);
   });
 });
 
-Deno.test("only an unreadable checkout, not a tree-controlled target, downgrades the account (Issue #4659)", async () => {
+Deno.test("access probes distinguish unreadable checkouts from tree-controlled targets (Issue #4659)", async () => {
   await withCheckout(async (cwd) => {
     await Deno.mkdir(`${cwd}/target`);
     await Deno.writeTextFile(`${cwd}/target/committed`, "x");
@@ -627,16 +627,21 @@ Deno.test("real probe permission verdicts", async () => {
   });
 });
 
-Deno.test("a read-only agent checkout without Cargo.lock still passes the real cargo merge gate", async () => {
+Deno.test("a nested read-only agent checkout without Cargo.lock is left to CI without running as worker", async () => {
   const uid = await new Deno.Command("id", { args: ["-u"] }).output();
   if (new TextDecoder().decode(uid.stdout).trim() === "0") return;
   await withCheckout(async (cwd) => {
+    await Deno.mkdir(`${cwd}/nested`);
+    const projectDir = `${cwd}/nested`;
     await Deno.writeTextFile(
-      `${cwd}/Cargo.toml`,
+      `${projectDir}/Cargo.toml`,
       '[package]\nname = "gate_fixture"\nversion = "0.1.0"\nedition = "2021"\n',
     );
-    await Deno.mkdir(`${cwd}/src`);
-    await Deno.writeTextFile(`${cwd}/src/lib.rs`, "pub fn value() -> u8 { 1 }");
+    await Deno.mkdir(`${projectDir}/src`);
+    await Deno.writeTextFile(
+      `${projectDir}/src/lib.rs`,
+      "pub fn value() -> u8 { 1 }",
+    );
     const calls: string[] = [];
     const outcome = await checkMergedTree(cwd, async (project) => {
       const result = await runRepositoryCommand("cargo", project.args, {
@@ -653,7 +658,7 @@ Deno.test("a read-only agent checkout without Cargo.lock still passes the real c
             // Model agent's read-only access, then restore worker's write access.
             // Execute the actual probe; the repository command must bypass sudo.
             assert(args.includes("-c"));
-            await Deno.chmod(cwd, 0o555);
+            await Deno.chmod(projectDir, 0o555);
             try {
               return await runWithTimeout(
                 "sh",
@@ -661,20 +666,74 @@ Deno.test("a read-only agent checkout without Cargo.lock still passes the real c
                 options,
               );
             } finally {
-              await Deno.chmod(cwd, 0o755);
+              await Deno.chmod(projectDir, 0o755);
             }
           }
           return await runWithTimeout(executable, args, options);
         },
       });
-      assert(result.ok);
+      if (!result.ok) {
+        assert(result.error instanceof GateAccountUnavailable);
+        return {
+          code: 1,
+          output: result.error.message,
+          accountUnavailable: result.error.message,
+        };
+      }
       return {
         code: result.value.code,
         output: result.value.stdout + result.value.stderr,
       };
     }, async () => false);
-    assertEquals(outcome.status, "passed", JSON.stringify(outcome));
-    assertEquals(calls, ["sudo", "cargo"]);
-    assert((await Deno.stat(`${cwd}/Cargo.lock`)).isFile);
+    assertEquals(outcome.status, "skipped", JSON.stringify(outcome));
+    assert(outcome.checkLeftToCi?.includes("probe 3"));
+    assertEquals(calls, ["sudo"]);
+    await assertRejects(
+      () => Deno.stat(`${projectDir}/Cargo.lock`),
+      Deno.errors.NotFound,
+    );
+  });
+});
+
+Deno.test("a manifest replaced by another account is refused before any command", async () => {
+  await withCheckout(async (cwd) => {
+    await Deno.writeTextFile(`${cwd}/deno.json`, "{}");
+    const uid = (await Deno.lstat(`${cwd}/deno.json`)).uid;
+    assert(uid !== null);
+    const { calls, spawn } = recordingSpawn();
+    const result = await runRepositoryCommand("deno", ["task", "test"], {
+      cwd,
+      timeoutMs: 1000,
+      manifests: ["deno.json"],
+    }, { spawn, drop: agentDrop, workerUid: async () => uid + 1 });
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    assert(result.error.message.includes("not owned by the worker"));
+    assertEquals(calls.length, 0);
+  });
+});
+
+Deno.test("an unwritable cargo target uses the configured cache root", async () => {
+  await withCheckout(async (cwd) => {
+    await withCheckout(async (root) => {
+      const { calls, spawn } = recordingSpawn({
+        ok: true,
+        value: { ...OK, code: 2 },
+      });
+      await runRepositoryCommand("cargo", ["test"], { cwd, timeoutMs: 1000 }, {
+        spawn,
+        drop: agentDrop,
+        source: SOURCE,
+        trimRefused: false,
+        root,
+      });
+      const target = callAt(calls, 1).options.env?.CARGO_TARGET_DIR;
+      assertEquals(
+        target,
+        cargoTargetDirForCheckout(cwd, { root, account: "agent" }),
+      );
+      assert(target?.startsWith(root + "/"));
+      assertEquals(calls.length, 2);
+    });
   });
 });

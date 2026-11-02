@@ -8,17 +8,10 @@
  * runs them with the allowlist of Issue #572 and `clearEnv`, as the `agent`
  * account where that account can use the checkout.
  *
- * The shared clone may be unreadable or unwritable by `agent` (Issues #4697,
- * #4113). A command run there could exit 0 with "No matching files found", or
- * fail for a reason unrelated to the tree. So the account is probed first. On
- * any doubt the command runs as the worker with the same allowlisted
- * environment plus explicitly declared credentials, and the verdict stays a
- * verdict on the tree.
- *
- * The `quality_credentials` the repository declared reach the command through
- * the registered {@link GateCredentialSource}, as at the quality gate. A
- * probe that finds only the cargo target unwritable (a property the tree
- * controls) gives the account a target of its own and does not change it.
+ * Access failures leave commands to CI and never select the worker account.
+ * Only operator-declared credentials or absence of an agent account select the
+ * restricted worker environment. Tree-controlled layouts and permissions cannot.
+ * Unwritable cargo targets use the configured, persistent per-account cache.
  *
  * Australian English spelling used throughout.
  */
@@ -29,6 +22,7 @@ import {
   untrustedQualityCommandEnv,
   untrustedSpawn,
 } from "./quality_gate_phase.ts";
+import { cargoTargetDirForCheckout } from "./ephemeral_build_cache.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
 /**
@@ -51,6 +45,9 @@ export function setGateCredentialSource(
   gateCredentialSource = source;
 }
 
+/** A host access probe could not safely run the command as the chosen account. */
+export class GateAccountUnavailable extends Error {}
+
 /** Injection seams for {@link runRepositoryCommand}. Production omits them. */
 export interface UntrustedGateSpawnDeps {
   spawn?: typeof runWithTimeout;
@@ -58,6 +55,7 @@ export interface UntrustedGateSpawnDeps {
   source?: Record<string, string>;
   trimRefused?: boolean;
   root?: string;
+  workerUid?: () => Promise<number>;
   /** The repository's declared credentials. Default: the registered source. */
   credentials?: GateCredentialSource;
 }
@@ -68,7 +66,7 @@ const PROBE_UNREADABLE = 1;
 /** The probe exits with this when the account cannot write the cargo target. */
 const PROBE_TARGET_UNWRITABLE = 2;
 
-/** Checkout directory modes are host-owned, not recorded in the Git tree. */
+/** Project access can be shaped by the tree; never use it to select an account. */
 const PROBE_CHECKOUT_UNWRITABLE = 3;
 
 /** The probe is a few `test` and `find` calls. Seconds. */
@@ -168,8 +166,8 @@ function probeScript(manifests: readonly string[], tail: string): string {
  * declared credentials, as `agent` when it can use the checkout and no
  * credentials need to cross sudo's environment reset.
  *
- * The account is probed with a command of its own. Any failed, timed out or
- * non-zero probe runs the command as the worker, with the same environment.
+ * The account is probed with a command of its own. Access faults leave the
+ * command to CI, without changing its account.
  *
  * @param executable - The command, e.g. `cargo` or `deno`.
  * @param args - Its arguments.
@@ -207,6 +205,31 @@ export async function runRepositoryCommand(
           }`,
         ),
       };
+    }
+    if (info && info.uid !== null) {
+      const ownerUid = deps.workerUid
+        ? await deps.workerUid()
+        : await (async () => {
+          const uid = await runWithTimeout("id", ["-u"], {
+            timeoutMs: PROBE_TIMEOUT_MS,
+          });
+          const value = uid.ok ? uid.value.stdout.trim() : "";
+          if (
+            !uid.ok || uid.value.code !== 0 || uid.value.timedOut ||
+            !/^\d+$/.test(value)
+          ) {
+            throw new Error("cannot determine worker uid");
+          }
+          return Number(value);
+        })();
+      if (info.uid !== ownerUid) {
+        return {
+          ok: false,
+          error: new Error(
+            `refusing to run '${executable}': '${name}' is not owned by the worker (Issue #4659)`,
+          ),
+        };
+      }
     }
     if (info?.isSymlink) {
       return {
@@ -247,7 +270,7 @@ export async function runRepositoryCommand(
     });
 
   let privateTarget: string | undefined;
-  try {
+  {
     let spawnable = await drop([executable, ...args]);
     if (
       Object.keys(declared).length > 0 &&
@@ -289,15 +312,19 @@ export async function runRepositoryCommand(
       ) {
         // The tree can make its own `target` unwritable (a committed file), so
         // that never chooses the account: the account builds elsewhere.
-        privateTarget = await Deno.makeTempDir({ prefix: "vibe_gate_target_" });
-        await Deno.chmod(privateTarget, 0o777);
+        privateTarget = cargoTargetDirForCheckout(options.cwd, {
+          root: deps.root ?? `${options.cwd}/.vibe-cargo-target`,
+          account: untrustedAccountOf(spawnable)!,
+        });
       } else if (!verdict.ok || code !== 0 || verdict.value.timedOut) {
-        console.error(
-          `[SECURITY] the untrusted account cannot use '${options.cwd}' — ` +
-            `running '${executable}' as the worker with the allowlisted ` +
-            `environment (Issues #4697, #4113)`,
-        );
-        spawnable = [executable, ...args];
+        return {
+          ok: false,
+          error: new GateAccountUnavailable(
+            `untrusted account cannot use '${options.cwd}' (probe ${
+              code ?? "failed"
+            }) — left to CI (Issue #4659)`,
+          ),
+        };
       }
     }
 
@@ -319,24 +346,5 @@ export async function runRepositoryCommand(
       env,
       clearEnv: true,
     });
-  } finally {
-    if (privateTarget !== undefined) {
-      // What the account built is its own, so it empties the directory; the
-      // worker made the directory and removes it.
-      const [emptier = "", ...emptierArgs] = await drop([
-        "find",
-        privateTarget,
-        "-mindepth",
-        "1",
-        "-delete",
-      ]);
-      await spawn(emptier, emptierArgs, {
-        cwd: "/",
-        timeoutMs: PROBE_TIMEOUT_MS,
-        env: buildEnv([]),
-        clearEnv: true,
-      });
-      await Deno.remove(privateTarget, { recursive: true }).catch(() => {});
-    }
   }
 }

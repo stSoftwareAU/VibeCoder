@@ -28,7 +28,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { manifestsFor, runRepositoryCommand } from "./untrusted_gate_spawn.ts";
+import {
+  GateAccountUnavailable,
+  manifestsFor,
+  runRepositoryCommand,
+} from "./untrusted_gate_spawn.ts";
 import { stripJsonc } from "./jsonc.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
@@ -160,7 +164,7 @@ export type MergeGateFn = (repoDir: string) => Promise<MergeGateOutcome>;
 /** Runs the resolved check. Injected in tests; spawns `deno` in production. */
 export type TypeCheckRunner = (
   project: TypeCheckProject,
-) => Promise<{ code: number; output: string }>;
+) => Promise<{ code: number; output: string; accountUnavailable?: string }>;
 
 /**
  * Which arguments run this project's type check.
@@ -450,7 +454,15 @@ const spawnTypeCheck: TypeCheckRunner = async (project) => {
     timeoutMs: MERGE_GATE_TIMEOUT_MS,
     manifests: await manifestsFor(project.kind, project.dir),
   });
-  if (!result.ok) return { code: 1, output: result.error.message };
+  if (!result.ok) {
+    return {
+      code: 1,
+      output: result.error.message,
+      ...(result.error instanceof GateAccountUnavailable
+        ? { accountUnavailable: result.error.message }
+        : {}),
+    };
+  }
   const { code, stdout, stderr, timedOut } = result.value;
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
     .join("\n");
@@ -523,7 +535,7 @@ export async function checkMergedTree(
       continue;
     }
     const where = `${describeProject(project)} in ${project.dir}`;
-    let result: { code: number; output: string };
+    let result: { code: number; output: string; accountUnavailable?: string };
     try {
       result = await runner(project);
     } catch (err) {
@@ -535,6 +547,10 @@ export async function checkMergedTree(
         detail: `${where} could not be run`,
         output: tail(message),
       };
+    }
+    if (result.accountUnavailable) {
+      leftToCi.push(`${where}: ${result.accountUnavailable}`);
+      continue;
     }
     if (result.code !== 0) {
       // A Deno check that could not reach its module host says nothing about

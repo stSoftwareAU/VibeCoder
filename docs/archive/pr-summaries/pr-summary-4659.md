@@ -19,10 +19,10 @@ flowchart TD
     B -- no --> C{agent account available?}
     C -- no --> W
     C -- yes --> P{checkout readable and writable?}
-    P -- no --> W
+    P -- no --> L[left to CI]
     P -- yes --> T{cargo target writable?}
     T -- yes or not cargo --> D[agent with allowlisted env]
-    T -- no --> V[agent with private CARGO_TARGET_DIR]
+    T -- no --> V[agent with persistent CARGO_TARGET_DIR]
     W --> E[clearEnv: true]
     D --> E
     V --> E
@@ -37,14 +37,11 @@ flowchart TD
 
 ### Essential Design Decisions
 
-- The `agent` account is probed first and the command falls back to the worker
-  account (same allowlisted environment) when the probe fails. The previous
-  attempt (PR #4703) dropped to `agent` unconditionally; review showed that
-  account cannot read the shared clone on some hosts (#4697) or write a
-  worker-created `target` (#4113). Such a command exits 0 with "No matching
-  files found" or fails for a reason unrelated to the tree. Falling back keeps
-  the verdict a verdict on the tree, and no environment fault reaches the
-  merge-refusal recovery ladder.
+- Per-command access probes never select the worker account. Unreadable
+  manifests, nested project directories agent cannot write, failed probes and
+  timeouts leave the command to CI through the existing environment-fault path.
+  A manifest whose uid differs from the worker's, or a symbolic-link manifest,
+  is refused before probing.
 - Declared `quality_credentials` are resolved per checkout through
   `setGateCredentialSource` (registered in `run_core_production_deps.ts`, keyed
   by the checkout's directory name; two repositories sharing a name get none)
@@ -52,16 +49,12 @@ flowchart TD
   that fails stops the command with an error rather than running it without the
   credential. Commands with declared credentials use the logged worker fallback
   until #4705 provides a credential channel through sudo; values never enter argv.
-- A property the merged tree controls never chooses the account. The probe exits
-  1 when `agent` cannot read the checkout or a manifest (a host fault: run as
-  the worker) and 2 when only the cargo target is unwritable (a committed
-  `target/` file can cause it): then `agent` runs with a private temporary
-  `CARGO_TARGET_DIR`, removed afterwards. A manifest that is a symbolic link is
-  refused before anything runs, because it could point at a file only the worker
-  can read. Probe exit 3 means the checkout directory is unwritable: the worker
-  fallback handles Cargo.lock creation and Deno or shell task outputs. Git does
-  not record checkout directory modes, so this is a host access fault, independent
-  of whether the tree commits Cargo.lock.
+- An unwritable cargo target keeps the account and uses
+  `cargoTargetDirForCheckout` with account `agent`. The configured cache root
+  is honoured; otherwise it lives under the checkout on the work volume,
+  outside memory-backed TMPDIR. Targets persist across commands for incremental
+  builds. The existing trim-refused target and explicit target settings remain
+  authoritative, and the gates retain their heavy-build budget checks.
 
 ### Undiscoverable Facts
 
@@ -74,12 +67,12 @@ flowchart TD
 
 Backend-only change; no UI file is touched.
 
-- `worker/deno/tests/untrusted_gate_spawn_test.ts` (new, 22 tests at head): the
+- `worker/deno/tests/untrusted_gate_spawn_test.ts` (new, 24 tests at head): the
   child gets no parent credential and `clearEnv`; a real `printenv` child sees
   only allowlisted names (positive control: the same command without `clearEnv`
   sees names outside the allowlist); a usable `agent` account runs under `sudo`
   after a probe, with `CARGO_TARGET_DIR` carried in argv; a failed, errored or
-  timed out probe falls back to the worker with the credential-free environment;
+  timed out probe leaves the command to CI without running repository code;
   no account means no probe; the probe script embeds only plain manifest names
   and checks `target` writability for cargo only; `manifestsFor`; declared
   credentials reach the child and a failing source stops the command; probe exit
@@ -137,16 +130,16 @@ Backend-only change; no UI file is touched.
   Real-scanner stdin controls accept both exact declarations and still detect
   the same value assigned to `OTHER_CREDENTIAL`. The workflow and action share
   this config; no second config copy was found.
-- `deno task test:unit` run from `worker/deno` over the four suites, 127 passed and 0
-  failed: `tests/untrusted_gate_spawn_test.ts` (22 tests at head),
+- `deno task test:unit` run from `worker/deno` over the four suites, 132 passed and 0
+  failed: `tests/untrusted_gate_spawn_test.ts` (24 tests at head),
   `tests/milestone_merge_gate_test.ts` (41 tests at head),
-  `tests/milestone_resolution_gate_test.ts` (31 tests at head) and
+  `tests/milestone_resolution_gate_test.ts` (34 tests at head) and
   `tests/run_core_production_deps_test.ts` (33 tests at head).
   `deno task check:manifests`, `deno fmt --check` and `deno lint`: pass.
 - Red checks (break applied, test run, restored):
   - final spawn `clearEnv: false` → the credential, real-process and probe tests
     red;
-  - probe verdict ignored → the three fallback cases red;
+  - probe verdict ignored → the three probe-failure cases red;
   - `writesTarget` forced false → the probe-script test red;
   - private-target branch removed (exit 2 treated as a fault) → the
     private-target test red;
@@ -162,51 +155,52 @@ Backend-only change; no UI file is touched.
   pass.
 - Entry points checked: `spawnTypeCheck` (via `checkMergedTree`) and `spawnTask`
   (via `verifyResolvedTree`), the only two callers of `runRepositoryCommand`.
-- Existing probe-text expectations now require checkout write access for every
-  command, including when CARGO_TARGET_DIR is already named. The named-target
-  test still asserts no target check (exit 2) or find call. This changes the
-  reviewed contract: a private target cannot repair Cargo.lock or task-output
-  writes into an inaccessible checkout.
-- New real-shell probe tests cover readable, absent and unreadable manifests,
-  read-only target files, and an unwritable checkout. UID 0 returns early
-  because mode bits do not constrain root. Exit 3 distinguishes checkout access
-  from exit 2 (private cargo target); the latter still cannot select the account.
-- The real cargo merge-gate test starts without Cargo.lock, executes the actual
-  probe with read-only agent access, restores worker access at the spawn seam,
-  and compiles a dependency-free crate through checkMergedTree. It asserts the
-  gate passes, cargo runs without sudo and Cargo.lock is created.
-- Test-first red checks: the credential fallback and checkout permission verdict
-  failed before the production changes. The new permission tests also required
-  replacing GNU-only find -writable with portable find -exec test -w.
+- Review repair: the real-shell probe coverage remains, including readable,
+  missing and unreadable manifests, read-only targets and checkout permissions.
+  The real cargo merge-gate regression now uses a nested project with no
+  Cargo.lock and agent read-only access: it records the access gap as left to
+  CI and asserts no worker cargo command runs or creates a lockfile.
+- Removed assertions about worker execution after failed probes and temporary
+  target cleanup described the two behaviours the review explicitly rejects.
+  Their replacements assert no repository command runs after an access failure,
+  retained per-account cache identity across runs, the configured root, no
+  cleanup command, and unchanged credential restrictions.
+- Added ownership-refusal coverage and resolution-gate regressions for manifest,
+  unit-suite and quality-script access gaps. The audit section now names the
+  actual remaining operator-credential/no-agent fallbacks.
 - Isolated copies under TMPDIR: the unchanged helper passes; changing manifest
   readability from AND to OR, reversing the target-empty test, reversing the
   target write predicate, removing the checkout write check, or disabling the
   declared-credential fallback each makes its new regression test fail. The
   working helper was never mutated during the full gate.
-- `./quality.sh < /dev/null`: full-tree formatting, lint, type checking,
-  completeness checks, Markdown, Mermaid and static chokepoints passed.
-  The release-tag ruleset passed after using a temporary GH_CONFIG_DIR, since
-  the host's default gh config is sandbox-denied. The parallel unit run aborts
-  inside Deno with "pledge test permissions called before restoring previous
-  pledge", on both host Deno 2.9.5 and checksum-verified pinned Deno 2.9.8.
-  The affected suites pass on both runtimes. PowerShell is also absent on this
-  host. Checkov and Semgrep are unavailable to the local gate; both current PR
-  CI checks pass. No test was disabled or weakened to work around the host.
+- Final review verification: `./quality.sh < /dev/null` passes full-tree
+  formatting, lint, type checking, completeness checks, Markdown, Mermaid,
+  static chokepoints and the release-tag ruleset (with a temporary
+  GH_CONFIG_DIR because the host's default config is sandbox-denied).
+  The full parallel unit suite aborts inside host Deno 2.9.5 with
+  "pledge test permissions called before restoring previous pledge".
+  All four affected suites pass through `deno task test:unit`: 132 passed,
+  zero failed. PowerShell is absent. Semgrep and Checkov have no installed
+  binary or cached container image. PR #4736 CI passes all unit shards,
+  Semgrep and Checkov; the base main commit's merged PR #4730 also passes
+  all four unit shards, its container validation and both scanners.
+- Review regression red checks in isolated TMPDIR copies: the previous helper
+  fails all three probe-failure cases, the retained-target case and the
+  manifest-ownership case. The final helper passes all five. The isolated
+  runtime checks use `--no-check`, as the local gate does; the complete
+  working tree independently passes the full type check.
+
 - `deno task check:manifests`: 847 passed, 0 failed, 1 existing ignored test.
   `deno task pr-summary-check --base main --labels work-on` with the issue body:
   no blocked or unchecked gates.
 
-<!-- vibe-quality-gate-skipped: full parallel suite aborts inside Deno 2.9.5 and pinned 2.9.8 on this macOS host; affected suites and all runnable non-test checks pass; CI runs the full suite -->
+<!-- vibe-quality-gate-skipped: full parallel suite aborts inside Deno 2.9.5 on this macOS host; affected suites and all runnable non-test checks pass; CI runs the full suite -->
 
 ## Known gaps
 
-- The probe fallback (exit 1: unreadable checkout or manifest; exit 3:
-  unwritable checkout)
-  runs the repository's code as the worker account with the allowlisted
-  environment, able to read the worker's credential files; a `[SECURITY]` line
-  is logged. Only a host fault reaches it: the merged tree cannot force it
-  through `target/` or a symlinked manifest. Fixing `agent`'s access (#4697)
-  removes the fallback.
+- A host with no available agent account runs commands with the restricted
+  worker environment, which retains access to worker credential files. Access
+  probe failures never choose this fallback.
 - Declared credentials require the logged worker fallback until #4705 supplies
   a credential channel to agent. This retains access to worker credential files.
 - Credentials are matched to a checkout by the first path segment below the work

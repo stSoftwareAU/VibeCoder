@@ -770,3 +770,31 @@ Deno.test("verifyResolvedTree - the repository's own task is refused when its ma
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+for (const unavailableTask of ["check:manifests", "test:unit"]) {
+  Deno.test(`verifyResolvedTree - account access failure for ${unavailableTask} stays left to CI`, async () => {
+    const { outcome } = await gate(
+      {
+        "check:manifests": "true",
+        "test:unit": "true",
+      },
+      async (task) =>
+        task.task === unavailableTask
+          ? { code: 1, output: "probe 3", accountUnavailable: "probe 3" }
+          : { code: 0, output: "" },
+    );
+    assertEquals(outcome.status, "passed");
+    assertStringIncludes(outcome.suiteLeftToCi ?? "", "probe 3");
+    assertStringIncludes(outcome.suiteLeftToCi ?? "", unavailableTask);
+  });
+}
+Deno.test("verifyResolvedTree - script account access failure stays left to CI", async () => {
+  const outcome = await gateWithQualityScript({}, async () => ({
+    code: 1,
+    output: "probe 1",
+    accountUnavailable: "probe 1",
+  }));
+  assertEquals(outcome.status, "passed");
+  assertStringIncludes(outcome.suiteLeftToCi ?? "", "probe 1");
+  assertStringIncludes(outcome.suiteLeftToCi ?? "", "quality.sh");
+});

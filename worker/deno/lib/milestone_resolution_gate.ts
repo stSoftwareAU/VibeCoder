@@ -45,7 +45,11 @@ import {
   type ProjectKind,
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
-import { manifestsFor, runRepositoryCommand } from "./untrusted_gate_spawn.ts";
+import {
+  GateAccountUnavailable,
+  manifestsFor,
+  runRepositoryCommand,
+} from "./untrusted_gate_spawn.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
   shouldSkipEphemeralCargoBuild,
@@ -140,7 +144,7 @@ export async function cargoTestArgs(dir: string): Promise<string[]> {
 /** Runs one task. Injected in tests; spawns `deno task <name>` in production. */
 export type ResolutionTaskRunner = (
   task: ResolutionTask,
-) => Promise<{ code: number; output: string }>;
+) => Promise<{ code: number; output: string; accountUnavailable?: string }>;
 
 /** Longest task output carried into a log line or an escalation comment. */
 const MAX_OUTPUT_LINES = 40;
@@ -199,7 +203,15 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
       manifests: await manifestsFor(task.kind, task.dir),
     },
   );
-  if (!result.ok) return { code: 1, output: result.error.message };
+  if (!result.ok) {
+    return {
+      code: 1,
+      output: result.error.message,
+      ...(result.error instanceof GateAccountUnavailable
+        ? { accountUnavailable: result.error.message }
+        : {}),
+    };
+  }
   const { code, stdout, stderr, timedOut } = result.value;
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
     .join("\n");
@@ -331,7 +343,7 @@ export async function verifyResolvedTree(
           output: "",
         };
       }
-      let result: { code: number; output: string };
+      let result: { code: number; output: string; accountUnavailable?: string };
       try {
         result = await runner({ ...step, timeoutMs });
       } catch (err) {
@@ -341,6 +353,13 @@ export async function verifyResolvedTree(
           detail: `${where} could not be run`,
           output: tail(err instanceof Error ? err.message : String(err)),
         };
+      }
+      if (result.accountUnavailable) {
+        leftToCi.push(`${where}: ${result.accountUnavailable}`);
+        if (step.kind === "cargo" || isUnitSuite(task)) {
+          unitSuiteLeftToCi = true;
+        }
+        continue;
       }
       if (result.code !== 0) {
         // Issue #4422: a Deno task that could not fetch a remote module ran on
@@ -412,7 +431,7 @@ export async function verifyResolvedTree(
         output: "",
       };
     }
-    let result: { code: number; output: string };
+    let result: { code: number; output: string; accountUnavailable?: string };
     try {
       result = await runner({ ...step, timeoutMs });
     } catch (err) {
@@ -422,15 +441,20 @@ export async function verifyResolvedTree(
         output: tail(err instanceof Error ? err.message : String(err)),
       };
     }
-    if (result.code !== 0) {
+    if (result.accountUnavailable) {
+      leftToCi.push(`${where}: ${result.accountUnavailable}`);
+      unitSuiteLeftToCi = true;
+    } else if (result.code !== 0) {
       return {
         status: "failed",
         detail: `${where} failed (exit ${result.code})`,
         output: tail(result.output),
       };
     }
-    ran.push(where);
-    unitSuiteRan = true;
+    if (!result.accountUnavailable) {
+      ran.push(where);
+      unitSuiteRan = true;
+    }
   }
 
   // A unit suite left to CI for want of remote modules is not "nothing ran the
