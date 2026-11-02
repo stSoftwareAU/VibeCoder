@@ -1,159 +1,104 @@
 ## Summary
 
-Added a read-only, dated PR completion report command, trusted audit action
-metadata, and deployment policy fingerprints in worker, reviewer, and babysitter
-records. The report keeps stalled PRs and unknown history visible, separates
-delivered changes from milestone rollups, and evaluates the provisional 90%
-target only after its 14-day window. Cross-host snapshot production and live
-ordinary-discovery rollout verification remain incomplete. Part of #4658.
+Adds a read-only PR completion report, `deno task pr-completion-report`, with two modes. `--input` reads a caller-supplied evidence snapshot. `--collect` builds that snapshot itself from read-only GitHub reads, exported or local audit journals, the review-fleet-prs `log.jsonl`, lifecycle ledgers, review-run records and babysitter heartbeats. The audit hook now records trusted action metadata, and the worker, reviewer and babysitter record a code revision plus a policy fingerprint. The report keeps stalled PRs and unknown history in its denominators and evaluates the provisional 90% target only after a verified rollout plus 14 days. Several parts of the issue are still partial (see Acceptance Criteria), so this is Part of #4658.
+
+Version bump: `VERSION` is not touched by this change.
 
 ### Deno regression avoided
 
-Added the report as a Deno command and Deno task; no Node tooling or lockfile
-changes.
+The report is a Deno command and Deno task. No Node tooling, `package.json` or `deno.lock` change.
 
 ## Spec
 
 ### Intent and Rationale
 
-- GitHub `merged_by` cannot establish unattended completion when a human may
-  have repaired a PR first or automation uses a user login.
-- Existing hash-chained audit, lifecycle assignment, reviewer round, and
-  babysitter state records provide the provenance and deployment record shapes;
-  the report consumes a normalized snapshot without creating a service or merge
-  gate.
+- GitHub `merged_by` cannot show unattended completion: a bot merge can follow a human repair and automation can use a user login. The report therefore never reads a login. A PR is verified unattended only when every GitHub-observed mutating event matches a verified fleet record and the history is complete.
+- It builds on the existing hash-chained audit journal, lifecycle ledger, review-run record and babysitter state. It adds no service, dashboard or merge gate.
 
 ### Essential Design Decisions
 
-- Cohort and action times must be UTC. PRs deduplicate by repository and number;
-  actor login is never used to establish automation.
-- A verified unattended merge requires complete action history, verified
-  successful implementation or repair and merge actions, and no recorded human
-  action. Unlinked or unverified history stays unknown.
-- The policy fingerprint covers the same allowlisted host settings and resolved
-  per-repository issue policy for each component. It contains no credentials or
-  raw configuration.
-- The CLI reads a caller-supplied JSON snapshot. It neither authenticates that
-  snapshot nor fetches GitHub or cross-host records; a snapshot producer must
-  verify source journals.
+- Unmatched GitHub events become actor `unknown`, never `human` or `fleet`. So `--collect` reports unknown history rather than inventing a human intervention; `humanAssistedMerged` can only be non-zero from recorded human actions in an `--input` snapshot. Accepted trade-off: collected data cannot yet tell a human repair from an unrecorded one.
+- Matching window: ±10 minutes of the GitHub event; for `merge` the fleet action may be from PR creation up to `mergedAt` + 10 minutes, because the fleet arms auto-merge long before GitHub merges. Accepted trade-off: a fleet-armed merge completed by a person is attributed to the fleet.
+- Audit `git push` entries carry no repo, so they link to PRs by head-branch name inside the PR's lifetime; `HEAD` targets and branch names shared across repos stay unlinked. The review skill posts through its own `gh`, so reviews come from its local `log.jsonl`, documented as lower trust (not hash-chained).
+- Deviation from the issue text, recorded for review: the issue says to put the fingerprint "in existing health/round records". The worker uses the lifecycle assignment and the reviewer uses `review-run.json`, but the babysitter had no existing health record, so it writes a new `deployment-health.json` heartbeat.
 
 ### Undiscoverable Facts
 
-- No fleet archive block or historical cohort data was supplied, so no current
-  fleet baseline or two-week rollout result was measured.
-- Older audit entries lack the new action fields; their provenance remains
-  unknown.
+- No `<fleet_data_source>` block was supplied and no cohort data was measured, so this PR reports no current baseline and no two-week result.
+- `verifyAllChains` can settle an interrupted append (Issue #1074), so `--collect` is not strictly write-free on an audit directory left mid-append; this is documented.
+- This checkout's review of the pre-existing failures: `completion_phase_repo_formatters_test.ts` (2 tests) and `pr_maintenance_command_test.ts` (merge-queue test) also fail on `origin/main`.
 
 ## Evidence
 
-The implementation is backend and CLI only. `pr-completion-report` emits PR
-status, unattended outcomes, timing, round counts, available CI cost, blocker
-intervals, regressions, deployment health, rollout counts, coverage, and
-unavailable proportions for zero denominators. The worker lifecycle ledger keeps
-accepting legacy assignments without the optional fingerprint.
+Backend and CLI only. `--collect` emits PR status, unattended outcomes, timing, round counts, CI cost where available, blocker intervals, regressions, deployment health, rollout counts and coverage notes; proportions are `null` for zero denominators.
 
 ```mermaid
 flowchart LR
-    G[GitHub PR snapshot] --> S[Caller-supplied evidence snapshot]
-    A[Verified audit and round records] --> S
-    H[Component deployment records] --> S
-    S --> R[Read-only report]
+    G[GitHub read-only API] --> C[--collect]
+    A[Verified audit journals] --> C
+    L[review-fleet-prs log.jsonl] --> C
+    H[Ledger, review-run, babysitter heartbeats] --> C
+    C --> S[Evidence snapshot]
+    I[--input snapshot] --> R[Read-only report]
+    S --> R
     R --> T[14-day target evaluation]
 ```
 
-The trusted update route remains the existing `worker-checkout-update` launcher
-step documented in `docs/INTERNALS.md`. The report does not modify host
-configuration or create a merge gate.
+The trusted update route remains the existing `worker-checkout-update` launcher step documented in `docs/INTERNALS.md`; nothing here updates or configures a host.
 
-Related issues read: #3404, “Per-tier PR outcomes and cost per merged PR in
-fleet telemetry” (closed); #4595, “Orchestrated issue runs record only one
-provider call's run stats, so the cost/model comment and fleet telemetry leave
-out the plan and executor calls” (closed); and #4613, “Branch updates: on a
-strict base with no merge queue, update only the PR that is ready to merge, not
-every PR that is behind” (open). The report does not claim those deliverables as
-shipped here.
+Observed tool behaviour the code depends on: the audit mutation classifier output for a worker dismissal (`classifyGhMutation(["api","-X","PUT","repos/org/repo/pulls/42/reviews/777/dismissals",…])` returns verb `api-put`, the full target and `scope: "explicit"`), and for `git push` it returns `{verb:"git-push", target, scope:"cwd"}` with no repo. The GitHub REST shapes in the fake are the documented `pulls`, `pulls/N/reviews`, `issues/N/events`, `pulls/N/commits` and `commits/{sha}/check-runs` responses (docs.github.com/rest); live GitHub was not called in this run.
+
+Related issues read: #3404, "Per-tier PR outcomes and cost per merged PR in fleet telemetry" (closed); #4595, "Orchestrated issue runs record only one provider call's run stats, so the cost/model comment and fleet telemetry leave out the plan and executor calls" (closed); #4613, "Branch updates: on a strict base with no merge queue, update only the PR that is ready to merge, not every PR that is behind" (open). The report does not consume `fleet_telemetry.ts`; it does not claim those deliverables.
 
 ## Acceptance Criteria
 
-- **missing** — "Record trusted automation provenance for
-  implementation/repair/review/dismissal/merge actions; distinguish recorded
-  human intervention, verified automated completion and unknown history. Do not
-  label a historical PR zero-touch solely from login identity." — reason: audit
-  hooks now identify merge, review, dismissal, and implementation/repair push
-  categories, but pushed implementation and repair actions are not linked to a
-  PR/head by the hook, and the report CLI has no trusted cross-host snapshot
-  producer.
-- **missing** — "Provide a read-only report plus a repeatable rollout check that
-  the changed policy is active and previously stranded PRs re-enter ordinary
-  discovery. Reuse trusted existing deployment/update mechanisms; no unapproved
-  host configuration writes." — reason: the report evaluates caller-supplied
-  rollout observations; it does not execute ordinary discovery for the stranded
-  PR set or gather fresh component records itself.
-- **missing** — "Report CI runs/minutes per delivered change where available,
-  and waiting time by concrete blocker." — reason: calculations are implemented
-  for supplied snapshot data, but no producer gathers GitHub CI durations or
-  blocker intervals into that snapshot.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — "Report a rolling, explicitly dated PR cohort with merged, open/ageing, closed-unmerged and genuinely owner-gated outcomes." — evidence: `worker/deno/lib/pr_completion_report.ts`, `worker/deno/tests/pr_completion_report_test.ts` — reviewer: partial — reason: owner gates are verified only from supplied evidence; `--collect` sets `ownerGateVerified` false because no recorded hold marker exists, so those PRs stay in the denominator.
+- **met** — "Count each PR once across hosts." — evidence: `worker/deno/tests/pr_completion_snapshot_test.ts::collect - an action repeated across two audit directories is counted once`, `worker/deno/tests/pr_completion_report_test.ts` — reviewer: met
+- **met** — "Separate default-branch delivery from milestone sync/fix traffic and follow rollups without counting each intermediate merge as another delivered feature." — evidence: `worker/deno/lib/pr_completion_snapshot.ts` `deriveRollupRoots`, `worker/deno/tests/pr_completion_snapshot_test.ts` rollup tests — reviewer: met
+- **partial** — "Record trusted automation provenance for implementation/repair/review/dismissal/merge actions" — evidence: `worker/deno/lib/audit_hook.ts`, `worker/deno/tests/audit_hook_test.ts` — reviewer: partial — reason: worker implementation/repair, merge and dismissal pushes are journalled; milestone sync/rollback pushes stay `unknown`, and reviews come from the lower-trust review log because the skill does not journal.
+- **partial** — "distinguish recorded human intervention, verified automated completion and unknown history." — evidence: `worker/deno/tests/pr_completion_report_test.ts` — reviewer: partial — reason: the report distinguishes all three when human actions are recorded, but nothing records human actions yet, so collected history is verified or unknown.
+- **met** — "Do not label a historical PR zero-touch solely from login identity." — evidence: `worker/deno/tests/pr_completion_report_test.ts::a login-looking field cannot change an action's actor` — reviewer: met
+- **partial** — "Report unattended completion proportion, time to merge (median and tail), review/fix rounds, CI runs/minutes per delivered change where available, and waiting time by concrete blocker." — evidence: `worker/deno/lib/pr_completion_report.ts` — reviewer: partial — reason: CI counts only the final head's check runs and blockers cover `needs-human` and `changes-requested` only; both are documented.
+- **met** — "Publish denominators and unknown/excluded counts; do not improve the figure by quietly dropping stalled PRs." — evidence: `worker/deno/lib/pr_completion_report.ts` `coverage` block, `worker/deno/tests/pr_completion_snapshot_test.ts` truncation test — reviewer: met
+- **partial** — "Preserve a separate post-merge failure/regression view." — evidence: `worker/deno/lib/pr_completion_snapshot.ts` revert detection — reviewer: partial — reason: only reverts of merged PRs inside the cohort are observed, not post-merge default-branch CI failures.
+- **partial** — "Include each active worker/reviewer/babysitter's code revision and effective review-policy/configuration fingerprint in existing health/round records, without secrets." — evidence: `worker/deno/lib/lifecycle_ledger.ts`, `worker/deno/lib/review_round.ts`, `worker/deno/commands/fleet_pr_babysitter.ts` — reviewer: partial — reason: the babysitter writes a new heartbeat file, and the fingerprint covers the worker's resolved issue/executor policy, not the review skill's own settings.
+- **partial** — "Report mixed/stale deployment or missing heartbeat as unknown/degraded, not proof that the fix is active." — evidence: `worker/deno/tests/pr_completion_report_test.ts` deployment tests — reviewer: partial — reason: rows are grouped per component, not per host, so one host's missing heartbeat is hidden while another host of the same component reports.
+- **partial** — "Provide a read-only report plus a repeatable rollout check that the changed policy is active and previously stranded PRs re-enter ordinary discovery." — evidence: `worker/deno/lib/pr_completion_snapshot.ts` `strandedAt`, `worker/deno/tests/pr_completion_snapshot_test.ts` rollout test — reviewer: partial — reason: "rediscovered" means a verified fleet action after rollout, not proof of the discovery path; PRs created before `cohort.start` are invisible unless `--start` is widened.
+- **met** — "Reuse trusted existing deployment/update mechanisms; no unapproved host configuration writes." — evidence: `docs/INTERNALS.md` section "PR completion evidence report" — reviewer: met
+- **met** — "A synthetic cohort proves correct deduplication, manual repair followed by bot merge, automated action using a user identity, unknown history, milestone rollup, owner gate and zero denominator." — evidence: `worker/deno/tests/pr_completion_report_test.ts` — reviewer: partial — reason: the reviewer noted the manual-repair case uses a hand-recorded human action; the report logic is covered, which is what the criterion states.
+- **partial** — "Existing telemetry readers remain compatible." — evidence: `worker/deno/tests/lifecycle_ledger_test.ts`, `worker/deno/tests/review_round_test.ts` — reviewer: partial — reason: new builds read old records, but a build older than this change cannot verify entries carrying the new audit fields or read ledger rows with `reviewPolicyFingerprint`; documented in `docs/AGENT-ACCOUNTABILITY.md`.
+- **partial** — "Use a provisional target of >=90% of eligible fleet PRs merged within 24 hours with no human repair/approval/dismissal/merge, evaluated over two weeks after rollout. Report genuine owner-only exceptions and regressions alongside it." — evidence: `worker/deno/lib/pr_completion_report.ts` `targetEvaluation` — reviewer: partial — reason: evaluated as an operational report only, never a gate; no result exists yet because the rollout has not run.
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4658.json` — reviewer: unrequested — reason: the repo's lib-sweep coverage test requires every new module to be claimed.
+- **unrequested** — `callerFromStack` skips more plumbing modules and accepts `commands/` and `lib/` subdirectories — reviewer: unrequested — reason: needed to attribute actions to the requesting module; it changes the `caller` string on some audit entries.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — worker pushes classified `unknown` because `git_push.ts` was not plumbing; fixtures never produced by production — evidence: `worker/deno/lib/audit_hook.ts` — reason: fixed in this diff (`git_push.ts` skipped, stacks in `worker/deno/tests/audit_hook_test.ts` mirror the real chain)
+- **violation** — missing GitHub keys treated as empty state — evidence: `worker/deno/lib/pr_completion_snapshot.ts` — reason: fixed in this diff (`requiredKey`, omission rejected per field)
+- **violation** — members only tests set (`AuditHookOptions.headSha`, `actorLogin`, `host`) — evidence: `worker/deno/lib/audit_hook.ts`, `worker/deno/lib/pr_completion_report.ts` — reason: fixed in this diff (removed)
+- **violation** — unreached branch outcomes, changed call sites without a red test, spawned-process test, stale docs and doc comments, American spelling — evidence: `worker/deno/tests/review_round_command_4658_test.ts`, `docs/AGENT-ACCOUNTABILITY.md`, `docs/INTERNALS.md` — reason: fixed in this diff (in-process seam `runReviewRoundCommand`, tests added, docs rewritten)
+- **violation** — `publishBabysitterDeployment` main-block wiring in `worker/deno/commands/fleet_pr_babysitter.ts` has no test through `import.meta.main` — evidence: `worker/deno/commands/fleet_pr_babysitter.ts` — reason: fixed in this diff by extracting the exported helper and testing both outcomes; the one-line call from `main` itself cannot be driven without running the babysitter
+- **clean** — no hidden files staged; Australian English; named tests exist; regexes on untrusted text (`REVERT_TITLE`, `REVERT_REFERENCE`, `QUOTED_PR_REFERENCE`) each have a hostile case; legacy-shape tests exist for ledger, review-run and journal entries; `mod_test.ts` count change (160 to 161) goes red without the registration; review-enforced "check where you insert" held.
 
 ## Test Plan
 
-- `worker/deno/tests/pr_completion_report_test.ts` — synthetic cross-host PR
-  deduplication, manual repair then bot merge, automation under a user login,
-  unknown history, milestone rollup, owner-gated denominator, zero denominators,
-  blocker timing, CI coverage, regression attribution, rollout target timing,
-  stale/mixed deployment, and policy fingerprint cases — passed as part of the
-  133-test targeted run.
-- `worker/deno/tests/pr_completion_report_command_test.ts` — report command
-  success and missing-input failure — passed as part of the 133-test targeted
-  run.
-- `worker/deno/tests/audit_hook_test.ts` and
-  `worker/deno/tests/audit_journal_test.ts` — action metadata, merge/dismissal
-  classification, and journal compatibility — passed as part of the 133-test
-  targeted run.
-- `worker/deno/tests/lifecycle_ledger_test.ts` — legacy assignment without a
-  policy fingerprint remains readable — passed as part of the 133-test targeted
-  run.
-- `worker/deno/tests/execute_phase_assignment_3718_test.ts` — worker assignment
-  supplies the policy fingerprint — passed as part of the 133-test targeted run.
-- `worker/deno/tests/review_round_test.ts` — reviewer round records build and
-  policy metadata — passed as part of the 133-test targeted run.
-- `worker/deno/tests/fleet_pr_babysitter_test.ts` — babysitter deployment
-  heartbeat records component, revision, and policy fingerprint — passed as part
-  of the 133-test targeted run.
-- `worker/deno/tests/mod_test.ts` — command registration. Reverted only
-  `registry.register(prCompletionReportCommand)` and ran
-  `deno task test:unit tests/mod_test.ts`: red (18 passed, 2 failed, including
-  command count and unregistered-command checks); restored registration and the
-  targeted suite passed.
-- `worker/deno/tests/lib_sweep_coverage_test.ts` — the new command and analyzer
-  are claimed by `docs/audits/lib-sweep-coverage/top-up-4658.json` — passed (39
-  tests); `deno task check:manifests` passed (55 files).
-- Removed from `worker/deno/tests/mod_test.ts`:
-  `assertEquals(commands.length, 160);`
-  - Required by: "A read-only report plus a repeatable rollout check"
-  - Replaced by: `assertEquals(commands.length, 161);` and
-    `assertEquals(commands.includes("pr-completion-report"), true);`
-- `deno check --frozen --lock=deno.lock` on the changed Deno modules and tests —
-  passed.
-- `deno lint` on changed Deno modules and tests — passed.
-- `deno fmt --check` on changed Deno modules and tests — passed after the final
-  policy fingerprint helper edit.
-- `git diff --check` — passed. `deno.lock` is unchanged.
-
-### Quality Gate
-
-`timeout 900 ./quality.sh < /dev/null` — failed only at the Deno unit-test time
-budget: unchanged `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` ran
-at 1.89s and 1.66s against a 1.00s limit. The same unchanged test fails when run
-alone (3.56s total). Completeness checks, lint, type check, format, benchmark
-audit, repository chokepoints, Mermaid, Markdown lint, Semgrep and the
-release-tag ruleset passed. Config integration and Checkov were skipped by the
-gate environment.
-
-### Documentation
-
-Updated the `PR completion evidence report` section in `docs/INTERNALS.md` and
-added `docs/audits/lib-sweep-coverage/top-up-4658.json` for the two new modules.
-Final grep covered `pr-completion-report`, `reviewPolicyFingerprint`,
-`actionKind`, and the unattended PR wording across `README.md`, `docs/`, and
-`worker/deno/`; no stale description of the new command or fields was found. The
-section documents the caller-supplied snapshot and its verification limits.
+- Added: `worker/deno/tests/pr_completion_report_test.ts`, `worker/deno/tests/pr_completion_snapshot_test.ts`, `worker/deno/tests/pr_completion_report_command_test.ts`, `worker/deno/tests/review_round_command_4658_test.ts`. Edited: `worker/deno/tests/audit_hook_test.ts`, `worker/deno/tests/lifecycle_ledger_test.ts`, `worker/deno/tests/review_round_test.ts`, `worker/deno/tests/fleet_pr_babysitter_test.ts`, `worker/deno/tests/issue_assignment_test.ts`, `worker/deno/tests/execute_phase_assignment_3718_test.ts`, `worker/deno/tests/mod_test.ts`.
+- Final targeted run of those files plus `worker/deno/tests/audit_journal_test.ts` and `worker/deno/tests/lib_sweep_coverage_test.ts`: `ok | 283 passed | 0 failed`. `deno task check:manifests` passed. `deno fmt`, `deno lint` and `deno check` on the changed files passed.
+- Red checks (each guard broken, test went red, guard restored): merge window start bound; ±10 minute window; verified-chain requirement; `rolloutVerifiedAt` comparison; stranded open-at-rollout rule; push ambiguity rule; rollup `headRef` match; policy fingerprint allowlist; login-never-human; review-log verified flag and window; `/dismissals` classification; `git_push.ts` plumbing entry; `Number.isSafeInteger` in `prNumberFor`; head-SHA unlink restored (human repair at older head); missing-key `requiredKey`; `unavailable` target status; `deployment` argument in `commands/review_round.ts`; fingerprint in `recordBabysitterDeployment`; `reviewPolicyFingerprint` spread in `lib/issue_assignment.ts`; `reviewPolicyFingerprint` in `execute_phase.ts`; lifecycle ledger fingerprint regex. Weak check: the `not_met` target-status break replaced the whole expression, so it did not isolate that branch; the branch is covered by its own test.
+- Removed from `worker/deno/tests/mod_test.ts`: `assertEquals(commands.length, 160);`
+  - Required by: "a repeatable rollout check that the changed policy is active"
+  - Replaced by: `assertEquals(commands.length, 161);` and `assertEquals(commands.includes("pr-completion-report"), true);`
+- Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`: `"issueExecutorSplit" in record` (always true for a fixed literal)
+  - Required by: "effective review-policy/configuration fingerprint in existing health/round records"
+  - Replaced by: assertions that each heartbeat's `policyFingerprint` equals `fingerprintWorkerReviewPolicy(config)` and differs between a split and an unsplit config.
+- Removed from `worker/deno/tests/audit_hook_test.ts`: the `headSha` hook-option assertion and the `git_push.ts` expecting `unknown` assertion
+  - Required by: "Record trusted automation provenance for implementation/repair/review/dismissal/merge actions"
+  - Replaced by: assertions on the real push chains (`implementation` for completion, `repair` for CI-fix and feedback processors).
+- Twinned rules: the actionKind classification in `worker/deno/lib/audit_hook.ts` and the snapshot matcher in `worker/deno/lib/pr_completion_snapshot.ts` must agree on kinds; both are covered by the `collect` tests that use hook-shaped entries.
+- Quality gate: `timeout 900 ./quality.sh < /dev/null` ran on an earlier head of this branch and failed only on "deno tests" in three tests that also fail on `origin/main`: `completion_phase_repo_formatters_test.ts` (two Rust-formatter tests) and `pr_maintenance_command_test.ts` (merge-queue test). All other stages passed except config integration and Checkov, which the gate skipped. The gate was not re-run on the final head after the last review fixes; the targeted run above covers the files they touched.
+- Docs read and updated: `docs/INTERNALS.md` ("PR completion evidence report"), `docs/AGENT-ACCOUNTABILITY.md` ("Per-entry fields"). Siblings grepped for the new audit fields: `verb`, `caller`, `outcome`.
+- Not done: live GitHub was never called; no cross-host data was available; the review skill still does not journal to the audit chain.
