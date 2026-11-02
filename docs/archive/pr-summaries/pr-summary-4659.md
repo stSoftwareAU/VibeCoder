@@ -26,10 +26,16 @@ final version.
   `agent` account is unavailable: it falls back to the worker account with the
   allowlisted environment, because the issue says "where the image provides one"
   and `untrustedSpawn` already logs the `[SECURITY]` degradation.
-- Declared `quality_credentials` are not threaded to the milestone sync path
-  (`repoCredentialEnv: {}`), so a task needing one fails instead of inheriting
-  the worker's environment. Assumption: threading them is a wider change than
-  the issue asks for.
+- Declared `quality_credentials` are resolved at the gate only
+  (`syncWithMergeOnlyBindings` calls `resolveRepoCredentials` per gate run, so a
+  sync that needs no check mints nothing) and passed as
+  `UntrustedGateSpawnDeps.repoCredentialEnv`. `runRepositoryCommand` validates
+  each name, adds them to the allowlist and places them after `sudo` through
+  `env -- NAME=value`, because `sudo`'s `env_reset` would otherwise drop them.
+  A mint failure refuses both gates. The command label is redacted
+  (`commandLabel` on `runWithTimeout`) so credential argv never reaches a
+  timeout diagnostic. Callers `presyncMilestoneBranchForIssueRun` and
+  `syncMilestoneBranchForSweep` pass `qualityCredentials` from `repoConfig`.
 - `spawnTask` and `spawnTypeCheck` are now exported with an optional `deps`
   argument, so tests can inject the runner and environment source.
 
@@ -63,6 +69,13 @@ Tests (all under `worker/deno/`):
   the required type.
 - Red check: with `clearEnv: true` flipped to `false` in
   `untrusted_gate_spawn.ts`, the file goes `2 passed | 7 failed`.
+- Credential follow-up (head `c3d17dee`): `tests/untrusted_gate_spawn_test.ts`
+  adds a test that declared credentials reach both gates and a mint failure
+  refuses both, one that they cross `sudo` while undeclared ones stay out, and
+  one that both gates forward them to every task including merge-only;
+  `tests/subprocess_timeout_test.ts` pins the redacted label in a timeout
+  diagnostic; `tests/milestone_merge_only_4326_test.ts` covers the merge-only
+  binding.
 - `docs/audits/lib-sweep-coverage/top-up-4659.json` claims the new module for
   the lib sweep ledger; `deno task check:manifests` passes (847 passed).
 - Doc: `docs/audits/security-sweep-1214-subprocess-argv.md` gains a follow-up
@@ -90,6 +103,12 @@ Issue numbers cited as provenance, each looked up with `gh issue view`:
   runner; both go through `runRepositoryCommand`. The other repository-code
   spawns (`spawnFastCheck`, quality gate, lock regen, bump-deps, pre-flight)
   already isolate the environment.
+- Push for CI check `validate-scripts / validate` (PR #4703): the failure was
+  the PR-summary freshness gate (#3768), because head `c3d17dee` changed the
+  gate files and credential threading while this summary still said credentials
+  were not threaded. This rewrite makes the Design Decisions, Evidence and Test
+  Plan match `git diff main...HEAD`; `deno task pr-summary-check --base main
+  docs/archive/pr-summaries/pr-summary-4659.md` is the check re-run after it.
 - `./quality.sh`: the first run's only failures were the lib-sweep ledger (fixed
   and re-verified above); the rerun passed every stage up to `deno tests` and
   then exceeded the 590 s command cap before finishing, so the final full gate
