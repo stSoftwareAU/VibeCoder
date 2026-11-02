@@ -7,7 +7,10 @@
 // conflicting branches wait without a push or a bot-command comment.
 
 import { loadConfig } from "../../../../worker/deno/lib/config.ts";
-import type { AlertDedupAuthorOptions } from "../../../../worker/deno/lib/alert_dedup_authors.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "../../../../worker/deno/lib/alert_dedup_authors.ts";
 import { prKey, sameLogin } from "./review_log.ts";
 import {
   FileLockTimeoutError,
@@ -79,7 +82,27 @@ export async function updateBranch(
   pr: { repo: string; number: number; headSha: string; baseRefName: string },
   runGh: RunGh,
   authorOptions?: AlertDedupAuthorOptions,
+  reviewer?: string,
 ): Promise<BranchUpdateResult> {
+  const options = authorOptions ?? {
+    env: () => undefined,
+    loadConfigFn: () =>
+      loadConfig(
+        Deno.args.find((arg) => arg.startsWith("--config="))?.slice(9) ??
+          new URL("../../../../.config.json", import.meta.url).pathname,
+        { env: () => undefined },
+      ),
+  };
+  if (reviewer !== undefined) {
+    const authors = await resolveAlertDedupAuthors(options, console.error);
+    if (!authors.some((author) => sameLogin(author, reviewer))) {
+      return {
+        updated: false,
+        error:
+          `Reviewer ${reviewer} must be in service_accounts or fleet_pr_authors on every fleet host`,
+      };
+    }
+  }
   const result = await requestReadyBranchUpdate(
     pr.repo,
     pr.number,
@@ -87,15 +110,7 @@ export async function updateBranch(
     pr.baseRefName,
     pr.headSha,
     undefined,
-    authorOptions ?? {
-      env: () => undefined,
-      loadConfigFn: () =>
-        loadConfig(
-          Deno.args.find((arg) => arg.startsWith("--config="))?.slice(9) ??
-            new URL("../../../../.config.json", import.meta.url).pathname,
-          { env: () => undefined },
-        ),
-    },
+    options,
   );
   return result.ok
     ? { updated: true }
@@ -110,6 +125,7 @@ export async function updateBranchOnce(
   dir: string,
   runGh: RunGh,
   authorOptions?: AlertDedupAuthorOptions,
+  reviewer?: string,
 ): Promise<BranchUpdateResult | undefined> {
   await Deno.mkdir(dir, { recursive: true });
   const key = prKey(pr.repo, pr.number);
@@ -125,12 +141,13 @@ export async function updateBranchOnce(
           updateAsked[key] === pr.headSha ||
           failed[`${key} branch-update`] === pr.headSha
         ) return undefined;
-        const result = await updateBranch(pr, runGh, authorOptions);
+        const result = await updateBranch(pr, runGh, authorOptions, reviewer);
         if (result.updated) {
           await writeMemory(dir, BRANCH_UPDATE_FILE, { [key]: pr.headSha });
         } else {
           if (
             [
+              "must be in service_accounts or fleet_pr_authors",
               "merge-queue base is exempt",
               "base does not require strict up-to-date checks",
               "base refresh owned by",

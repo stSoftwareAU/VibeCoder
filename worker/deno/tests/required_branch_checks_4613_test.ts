@@ -647,6 +647,35 @@ for (
   });
 }
 
+Deno.test("enabled protection with no required checks uses ruleset without classic endpoint", async () => {
+  const f = strictRefreshFixture();
+  f.state.protection = {
+    enabled: true,
+    required_status_checks: {
+      enforcement_level: "off",
+      contexts: [],
+      checks: [],
+    },
+  };
+  const gh = (args: string[]) => {
+    if (args[1]?.endsWith("/protection/required_status_checks")) {
+      throw new Error("unexpected classic endpoint");
+    }
+    return f.gh(args);
+  };
+  const result = await requestReadyBranchUpdate(
+    "owner/repo",
+    10,
+    gh,
+    "main",
+    f.head,
+    noSleep,
+    authors,
+  );
+  if (!result.ok) throw result.error;
+  assertEquals(f.calls.some((args) => args.includes("PUT")), true);
+});
+
 for (
   const [message, succeeds] of [
     ["HTTP 404: Branch not protected", true],

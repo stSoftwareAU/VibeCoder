@@ -530,10 +530,16 @@ export async function main() {
       live.mergeable,
     )
   ) {
+    const reviewer = Deno.args.find((a) =>
+      a.startsWith("--reviewer=")
+    )?.slice(11) ??
+      (await run("gh", ["api", "user", "--jq", ".login"])).trim();
     branchUpdate = await updateBranchOnce(
       { ...pr, baseRefName: pr.baseRef },
       dir,
       (args) => run("gh", args),
+      undefined,
+      reviewer,
     );
     if (branchUpdate?.updated === false) {
       console.error(

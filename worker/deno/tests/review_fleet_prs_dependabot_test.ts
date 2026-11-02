@@ -15,6 +15,8 @@ import {
   type SearchPr,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 
+import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+
 const HEAD_SHA = "a".repeat(40);
 const NEXT_HEAD_SHA = "b".repeat(40);
 
@@ -59,7 +61,7 @@ const approved = {
 
 async function upkeep(prs: SearchPr[], dir: string, refusal?: string) {
   const calls: string[][] = [];
-  const result = await pass(new Set(["o/r"]), new Set(), "nleck", {
+  const result = await pass(new Set(["o/r"]), new Set(["nleck"]), "nleck", {
     dir,
     gh: (args) => {
       calls.push(args);
@@ -232,6 +234,10 @@ async function postReview(
   const stateDir = options.stateDir ?? `${dir}/state`;
   await Deno.mkdir(`${dir}/bin`, { recursive: true });
   await Deno.writeTextFile(`${dir}/calls`, "");
+  await Deno.writeTextFile(
+    `${dir}/config.json`,
+    JSON.stringify({ repos: ["o/r"], service_accounts: ["nleck"] }),
+  );
   const state = JSON.stringify({
     headRefOid: headSha,
     baseRefName: "Develop",
@@ -314,6 +320,8 @@ echo "$2"
         import.meta.url,
       ).pathname,
       `--input=${dir}/input.json`,
+      `--config=${dir}/config.json`,
+      "--reviewer=nleck",
       `--state-dir=${stateDir}`,
       "--no-model",
     ],
@@ -677,7 +685,7 @@ Deno.test("gate rechecks a post update written after its initial cache read (Iss
   const dir = await Deno.makeTempDir({ prefix: "gate-post-overlap-3663-" });
   const calls: string[][] = [];
   try {
-    const result = await pass(new Set(["o/r"]), new Set(), "nleck", {
+    const result = await pass(new Set(["o/r"]), new Set(["nleck"]), "nleck", {
       dir: `${dir}/state`,
       gh: async (args) => {
         calls.push(args);
@@ -776,13 +784,13 @@ Deno.test("a contended PR lock reports its cause without caching an unsent updat
   }
 });
 
-Deno.test("a Dependabot PR behind or conflicting waits without a bot command", () => {
+Deno.test("an approved behind Dependabot PR arms auto-merge; unapproved or conflicting PRs wait", () => {
   assertEquals(
     dependabotAction(
       pr({ mergeStateStatus: "BEHIND", reviews: approved }),
       "nleck",
     ).kind,
-    "none",
+    "auto-merge",
   );
   assertEquals(
     dependabotAction(pr({ mergeStateStatus: "BEHIND" }), "nleck")
@@ -850,4 +858,49 @@ Deno.test("no auto-merge without the reviewer's approval at the head, when alrea
     ),
     { kind: "none", reason: "draft" },
   );
+});
+
+Deno.test("strict base arms an approved behind Dependabot PR before owned refresh", async () => {
+  const dir = await Deno.makeTempDir();
+  const fixture = strictRefreshFixture("o/r", "Develop", "nleck");
+  const candidate = pr({ mergeStateStatus: "BEHIND", reviews: approved });
+  let armed = false;
+  const calls: string[][] = [];
+  try {
+    await pass(new Set(["o/r"]), new Set(["nleck"]), "nleck", {
+      dir,
+      gh: async (args) => {
+        calls.push(args);
+        if (args[1] === "graphql") {
+          return JSON.stringify({
+            data: {
+              search: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [candidate],
+              },
+            },
+          });
+        }
+        if (args[0] === "pr" && args[1] === "merge") {
+          armed = true;
+          return "";
+        }
+        if (args[0] === "pr" && args[1] === "view") {
+          const value = JSON.parse(await fixture.gh(args));
+          value.autoMergeRequest = armed ? {} : null;
+          return JSON.stringify(value);
+        }
+        if (args[1]?.endsWith("/comments")) return "[]";
+        return await fixture.gh(args);
+      },
+    });
+    const merge = calls.findIndex((args) =>
+      args[0] === "pr" && args[1] === "merge"
+    );
+    const update = calls.findIndex((args) => args.includes("PUT"));
+    assert(merge >= 0 && update > merge);
+    assert(calls.some((args) => args[0] === "issue" && args[1] === "comment"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
