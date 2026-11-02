@@ -17,7 +17,14 @@ export function strictRefreshFixture(
         required_status_checks: [{ context: "gate" }],
       },
     }] as unknown[],
-    protection: null as unknown,
+    protection: {
+      enabled: false,
+      required_status_checks: {
+        contexts: [],
+        checks: [],
+        enforcement_level: "off",
+      },
+    } as unknown,
     classicStrict: true,
     candidateReads: 0,
     mergeReads: 0,
@@ -106,11 +113,12 @@ export function strictRefreshFixture(
     }
     if (endpoint.endsWith("/protection/required_status_checks")) {
       if (
-        state.protection !== null &&
+        state.protection === null ||
+        (state.protection as Record<string, unknown>).enabled === false ||
         (state.protection as Record<string, unknown>).required_status_checks ===
           null
       ) {
-        throw new Error("Classic required checks do not exist");
+        throw new Error("HTTP 404: Branch not protected");
       }
       return JSON.stringify({
         contexts: ["gate"],

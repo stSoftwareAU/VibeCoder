@@ -735,16 +735,36 @@ async function readStrictBasePolicy(
   );
   let protection = classicChecksFromBranch(branch);
   if (protection !== null && typeof protection.strict !== "boolean") {
-    // The branch summary omits strictness; the classic contract carries it.
-    protection = object(
-      JSON.parse(
-        await gh([
-          "api",
-          `repos/${repo}/branches/${encoded}/protection/required_status_checks`,
-        ]),
-      ),
-      "classic required-check protection",
-    );
+    const summary = object(branch.protection, "branch protection summary");
+    if (
+      summary.enabled === false && protection.enforcement_level === "off" &&
+      Array.isArray(protection.contexts) && protection.contexts.length === 0 &&
+      Array.isArray(protection.checks) && protection.checks.length === 0
+    ) {
+      protection = null;
+    } else {
+      try {
+        protection = object(
+          JSON.parse(
+            await gh([
+              "api",
+              `repos/${repo}/branches/${encoded}/protection/required_status_checks`,
+            ]),
+          ),
+          "classic required-check protection",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          /404/.test(message) &&
+          /branch not protected|required status checks not enabled/i.test(
+            message,
+          )
+        ) {
+          protection = null;
+        } else throw error;
+      }
+    }
   }
   if (protection !== null) {
     if (typeof protection.strict !== "boolean") {

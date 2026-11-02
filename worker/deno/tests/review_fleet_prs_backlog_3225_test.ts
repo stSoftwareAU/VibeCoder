@@ -401,25 +401,72 @@ Deno.test("pass: approved behind PRs reach the shared readiness policy, while an
       unreviewedBehind,
       dependabot,
     ];
-    const { gh, calls } = makeGh(prs);
-    const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+    const f = strictRefreshFixture("acme/app");
+    const heads = new Map(
+      prs.map((pr) => [pr.number, pr.number.toString(16).padStart(40, "0")]),
+    );
+    for (const pr of prs) {
+      pr.headRefOid = heads.get(pr.number)!;
+      for (const review of pr.reviews.nodes) review.commit!.oid = pr.headRefOid;
+    }
+    const search = makeGh(prs);
+    let currentHead = f.head;
+    const calls: string[][] = [];
+    const gh = async (args: string[]) => {
+      calls.push(args);
+      if (
+        args[1] === "graphql" || args[1] === "--header" ||
+        args[1]?.endsWith("/files") || args[1]?.endsWith("/comments") ||
+        args[1]?.includes("/contents/")
+      ) return await search.gh(args);
+      const number = args[0] === "pr" && args[1] === "view"
+        ? Number(args[2])
+        : Number(args[1]?.match(/\/pulls\/(\d+)$/)?.[1]);
+      if (heads.has(number)) currentHead = heads.get(number)!;
+      const translated = args.map((arg) => arg.replaceAll(currentHead, f.head));
+      return (await f.gh(translated)).replaceAll(f.head, currentHead);
+    };
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(" "));
+    };
+    let result;
+    try {
+      result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+    } finally {
+      console.warn = originalWarn;
+    }
+    for (const number of [31, 34]) {
+      assertEquals(
+        warnings.some((line) =>
+          line.includes(`acme/app#${number}`) &&
+          line.includes("base refresh owned by acme/app#30")
+        ),
+        true,
+      );
+    }
     const updates = calls.filter((c) => c[3]?.endsWith("/update-branch"));
-    assertEquals(updates, []);
-    assertEquals(result.upkeep.filter((u) => u.includes("branch")), []);
-    // Review first, update second: the unreviewed PR is reviewed as it is
-    // and is only brought up to date once approved (post.ts does that).
+    assertEquals(updates.length, 1);
+    assertEquals(updates[0]?.[3], "repos/acme/app/pulls/30/update-branch");
+    assertEquals(result.upkeep, ["acme/app#30 branch update requested"]);
+    for (const number of [31, 34]) {
+      assertEquals(
+        calls.some((c) =>
+          c[0] === "pr" && c[1] === "view" && c[2] === String(number)
+        ),
+        true,
+      );
+    }
+    assertEquals(
+      calls.some((c) => c[0] === "pr" && c[1] === "view" && c[2] === "33"),
+      false,
+    );
     assertEquals(result.ready.map((p) => p.number), [33]);
-    // Dependabot shares the leased branch update and gets no comment.
     assertEquals(
       calls.some((c) => c[0] === "pr" && c[1] === "comment" && c[2] === "34"),
       false,
     );
-
-    // Unreadable branch-rule state is retryable: no failed-head marker was
-    // written, so a later pass is free to evaluate it again.
-    const { gh: gh2, calls: calls2 } = makeGh(prs);
-    await pass(REPOS, FLEET, REVIEWER, { gh: gh2, dir });
-    assertEquals(calls2.some((c) => c[3]?.endsWith("/update-branch")), false);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

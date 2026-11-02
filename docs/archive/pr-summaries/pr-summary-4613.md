@@ -13,6 +13,8 @@ retain ownership for pending statuses, combine all effective strict rules, and
 support explicitly absent classic checks. Reviewer upkeep runs within its
 existing granular permissions and retries a moving test merge at the same head.
 Blocking-PR stall repair now uses the same readiness and ownership policy.
+Review fixes recognise GitHub’s unprotected branch summary and renew the same
+PR’s ownership when it needs another refresh; competing PRs remain excluded.
 
 ## Spec
 
@@ -32,10 +34,12 @@ Blocking-PR stall repair now uses the same readiness and ownership policy.
 - The required-check contract combines rulesets and classic protection,
   publisher pins and the verified test merge. Any effective strict ruleset
   requires readiness. An explicitly absent classic required-check contract adds
-  no classic restriction; when the branch summary omits classic strictness, the
-  classic required-status-check endpoint supplies it.
+  no classic restriction, including GitHub’s disabled, empty summary. For other
+  summaries that omit strictness, the classic endpoint supplies it; recognised
+  404 absence is accepted while other read errors remain blocking.
 - A ready PR remains the owner while refreshed checks are pending. Only terminal
-  required-check failure, merge, closure or expiry releases it. Optional pending
+  required-check failure, merge, closure or expiry releases it. The same PR can
+  renew its owner with a new head when it becomes behind again. Optional pending
   or skipped jobs do not block selection.
 - An unresolved fleet author set refuses ownership recoverably, including before
   an empty store could be interpreted as available. Loaded fleet identity is
@@ -94,6 +98,14 @@ Backend-only change; no visual evidence applies.
   common store.
 
 ## Test Plan
+
+Review-fix validation: the five focused ownership, required-check, backlog,
+auto-merge and Dependabot suites passed (75 tests). The local formatter, lint,
+type check and markdownlint passed. The full parallel suite could not finish:
+this host's Deno 2.9.7 panicked while restoring test permissions. Semgrep and
+the pinned Checkov version were unavailable locally; CI runs those checks.
+The summary freshness check reads commit history and will see this update after
+the babysitter commits it.
 
 Commands below run from `worker/deno` unless another directory is stated.
 

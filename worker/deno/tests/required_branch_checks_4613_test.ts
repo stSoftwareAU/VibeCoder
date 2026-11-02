@@ -115,14 +115,21 @@ Deno.test("required check failure reconciliation ignores optional and pending jo
 });
 
 Deno.test("ready updater checks the live head and sends its SHA", async () => {
-  const head = "a".repeat(40);
+  let head = "a".repeat(40);
   const mergeHead = "b".repeat(40);
   const baseHead = "c".repeat(40);
   let conclusion = "success";
   let decision = "APPROVED";
   let strictPolicy = true;
   let queued = false;
-  const classicProtection: unknown = null;
+  const classicProtection: unknown = {
+    enabled: false,
+    required_status_checks: {
+      contexts: [],
+      checks: [],
+      enforcement_level: "off",
+    },
+  };
   let retarget = false;
   let wrongParent = false;
   let views = 0;
@@ -254,6 +261,10 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
   assertEquals(firstRequest.ok, true);
   assertEquals(writes.length, 1);
   assertEquals(writes[0]?.slice(-2), ["-f", `expected_head_sha=${head}`]);
+  head = "d".repeat(40);
+  assertEquals((await request()).ok, true);
+  assertEquals(writes.length, 2);
+  assertEquals(writes[1]?.slice(-2), ["-f", `expected_head_sha=${head}`]);
   const nextReadyPr = await requestReadyBranchUpdate(
     "owner/repo",
     13,
@@ -273,7 +284,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     );
   }
   // On this same two-ready-PR backlog, refresh requests drop from two to one.
-  assertEquals(writes.length, 1);
+  assertEquals(writes.length, 2);
   conclusion = "failure";
   assertEquals((await request()).ok, false);
   assertEquals(
@@ -293,11 +304,11 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     { fleetAuthors: ["VibeCoderST"] },
   );
   assertEquals(afterFailedOwner.ok, true);
-  assertEquals(writes.length, 2);
+  assertEquals(writes.length, 3);
   strictPolicy = false;
   const nonStrict = await request();
   assertEquals(nonStrict.ok, true);
-  assertEquals(writes.length, 3);
+  assertEquals(writes.length, 4);
   strictPolicy = true;
   queued = true;
   const mergeQueue = await request();
@@ -338,7 +349,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     (await request()).ok,
     false,
   );
-  assertEquals(writes.length, 3);
+  assertEquals(writes.length, 4);
 });
 
 Deno.test("ready updater rejects an invalid PR number before invoking gh", async () => {
@@ -633,6 +644,40 @@ for (
     );
     if (!result.ok) throw result.error;
     assertEquals(f.calls.some((args) => args.includes("PUT")), true);
+  });
+}
+
+for (
+  const [message, succeeds] of [
+    ["HTTP 404: Branch not protected", true],
+    ["HTTP 404: Required status checks not enabled", true],
+    ["HTTP 403: Resource not accessible by integration", false],
+    ["HTTP 404: Not Found", false],
+  ] as const
+) {
+  Deno.test(`classic strictness endpoint: ${message}`, async () => {
+    const f = strictRefreshFixture();
+    f.state.protection = {
+      enabled: true,
+      required_status_checks: { contexts: [], checks: [] },
+    };
+    const gh = (args: string[]) => {
+      if (args[1]?.endsWith("/protection/required_status_checks")) {
+        throw new Error(message);
+      }
+      return f.gh(args);
+    };
+    const result = await requestReadyBranchUpdate(
+      "owner/repo",
+      10,
+      gh,
+      "main",
+      f.head,
+      noSleep,
+      authors,
+    );
+    assertEquals(result.ok, succeeds);
+    assertEquals(f.calls.some((args) => args.includes("PUT")), succeeds);
   });
 }
 

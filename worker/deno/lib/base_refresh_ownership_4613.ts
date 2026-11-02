@@ -249,7 +249,10 @@ export async function acquireBaseRefreshOwner(
     for (const record of records) {
       if (record.expiresAt <= now) await port.remove(record.id);
     }
-    const active = records.find((record) => record.expiresAt > now);
+    const active = records.find((record) =>
+      record.expiresAt > now && (record.repo !== input.repo ||
+        record.base !== input.base || record.prNumber !== input.prNumber)
+    );
     if (active) {
       return {
         acquired: false,
@@ -266,6 +269,9 @@ export async function acquireBaseRefreshOwner(
       workerId: input.workerId,
       expiresAt: now + input.ttlSeconds,
     });
+    for (const record of records) {
+      if (record.expiresAt > now) await port.remove(record.id);
+    }
     return { acquired: true, ownerId };
   });
 }

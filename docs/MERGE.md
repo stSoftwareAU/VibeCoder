@@ -1308,6 +1308,8 @@ default tip never refills the attempt count.
 | Required check is **unsatisfiable** on the repo     | Check is dropped from the required set                     | The merge is never blocked by a check that can never pass                      |
 | PR head is a **ruleset-gated** `milestone/**` branch (spelling pass) | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
 
+| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while an open fix PR for the head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails | The fix PR's own CI runs and it auto-merges into the gated head once green |
+
 ### Strict-base branch refresh ownership (Issue #4613)
 
 On a strict base without a merge queue, every behind-only updater checks the
@@ -1320,7 +1322,6 @@ owner while its refreshed checks and merge are pending; a later pass releases
 it after merge, closure, required-check failure or the six-hour expiry. A
 merge-queue base is not refreshed merely for being behind. Conflict resolution
 continues through the explicit conflict-repair path.
-| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while an open fix PR for the head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails | The fix PR's own CI runs and it auto-merges into the gated head once green |
 
 ## Related implementation
 
