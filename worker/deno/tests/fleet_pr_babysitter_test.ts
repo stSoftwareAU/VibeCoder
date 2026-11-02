@@ -1059,7 +1059,7 @@ Deno.test("defaultRemoteUrl follows gh's git_protocol, falling back to https wit
     await defaultRemoteUrl("owner/repo", answer("ssh\n")),
     "git@github.com:owner/repo.git",
   );
-  assertEquals(asked, [["config", "get", "git_protocol"]]);
+  assertEquals(asked, [["config", "get", "git_protocol", "-h", "github.com"]]);
   assertEquals(
     await defaultRemoteUrl("owner/repo", answer("https\n")),
     "https://github.com/owner/repo.git",
@@ -1080,6 +1080,44 @@ Deno.test("defaultRemoteUrl follows gh's git_protocol, falling back to https wit
   }
   assertEquals(warnings.length, 1);
   assertStringIncludes(warnings[0]!, "gh is not logged in");
+});
+
+Deno.test("host-specific gh protocol takes precedence over the global protocol", async () => {
+  const gh = (args: string[]) =>
+    Promise.resolve(args.includes("-h") ? "ssh\n" : "https\n");
+  assertEquals(
+    await defaultRemoteUrl("owner/repo", gh),
+    "git@github.com:owner/repo.git",
+  );
+});
+
+Deno.test("an existing mirror fetches from the newly resolved URL", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream, work } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const deps: CloneForRepairDeps = {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    await runGitForTest(["remote", "set-url", "origin", `${root}/stale.git`], {
+      cwd: mirror,
+    });
+    await commitFile(work, "new.txt", "new history");
+    await fixtureGit(["push", "-q", upstream, "main"], work);
+    await cloneForRepair("owner/repo", `${root}/clone-2`, deps);
+    assertEquals(
+      await runGitForTest(["rev-parse", "main"], { cwd: `${root}/clone-2` }),
+      await runGitForTest(["rev-parse", "main"], { cwd: upstream }),
+    );
+    assertEquals(
+      await runGitForTest(["config", "remote.origin.url"], {
+        cwd: `${root}/clone-2`,
+      }),
+      upstream,
+    );
+  });
 });
 
 Deno.test("a later repair prunes deleted branches and fetches new tags into the clone", async () => {

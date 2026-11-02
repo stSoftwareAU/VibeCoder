@@ -76,14 +76,15 @@ Each repository also has one bare mirror, kept at
 The first repair of a repository downloads it once with `git clone --bare`,
 bounded to 30 minutes. The download is built in a `.tmp` sibling and renamed
 into place only when complete, so a failed download leaves no mirror. Each
-later repair runs `git fetch --prune origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/*`
+later repair runs `git fetch --prune <GitHub URL> +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/*`
 in the mirror, serialised per repository within the process, and then runs
 `git clone --no-checkout --no-hardlinks <mirror> <dir>` to make its temporary
 clone. That clone holds the full history, so merge bases and `git diff` against
 the base work without lazy fetches; it is not a partial clone and does not
 depend on the mirror afterwards. The clone's `origin` is then set back to the
-GitHub URL: `git@github.com:<repo>.git` when `gh config get git_protocol` reports
-`ssh`, otherwise HTTPS. If the fetch fails, the repair fails with git's cause,
+GitHub URL: `git@github.com:<repo>.git` when `gh config get git_protocol -h github.com`
+reports `ssh`, otherwise HTTPS. Each fetch uses the currently resolved URL, even
+if the mirror was created with a different protocol. If the fetch fails, the repair fails with git's cause,
 the mirror is kept, and the next pass retries. Passes never remove mirrors;
 delete a mirror directory to force a fresh download. Codex reads the filesystem
 under its permissions profile, so it can read a mirror, but it cannot write to

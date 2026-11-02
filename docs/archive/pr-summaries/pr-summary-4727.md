@@ -37,8 +37,10 @@ flowchart LR
   `--reference`/`--dissociate` was not used because it contacts GitHub on every
   repair.
 - `origin` is reset to the GitHub URL after the local clone (ssh when
-  `gh config get git_protocol` says `ssh`, otherwise https), so the existing
+  `gh config get git_protocol -h github.com` says `ssh`, otherwise https), so the existing
   fetch and push steps in `fix` are unchanged.
+- Each mirror refresh fetches from that currently resolved URL, so a mirror
+  created with an older protocol picks up a host configuration change.
 - The mirror fetches `refs/heads/*` and `refs/tags/*` only, not the thousands of
   `refs/pull/*` refs a `--mirror` would carry.
 - Serialisation is in-process per mirror (`SIMPLE-ON-PURPOSE` marker in the
@@ -68,6 +70,8 @@ URL, which points at that local repository).
   - `a repository name that is not owner/name is refused before any git runs`
   - `concurrent repairs of one repo never mutate its mirror at the same time`
   - `defaultRemoteUrl follows gh's git_protocol, falling back to https with a warning`
+  - `host-specific gh protocol takes precedence over the global protocol`
+  - `an existing mirror fetches from the newly resolved URL`
   - `a later repair prunes deleted branches and fetches new tags into the clone`
   - `a stale partial download is cleared before the first download`
   - `the mirror root exists before the bare clone starts`
@@ -88,6 +92,14 @@ URL, which points at that local repository).
   dotted-owner pattern; they are not touched.
 
 ## Test Plan
+
+- Review follow-up: the host-specific protocol test and the stale mirror origin
+  test failed before the fix. The latter uses real git and checks both the
+  fetched history and the repair clone's origin. The application fixture also
+  requires the host-qualified gh arguments. No duplicate protocol resolver or
+  mirror fetch rule was found among the babysitter's callers.
+- Review follow-up validation: `deno task test:unit tests/fleet_pr_babysitter_test.ts
+  tests/fleet_babysitter_app_test.ts` passed 66 tests (49 and 17 respectively).
 
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts` (from `worker/deno`):
   `tests/fleet_pr_babysitter_test.ts` (47 tests at head): 47 passed, 0 failed.
@@ -119,7 +131,7 @@ URL, which points at that local repository).
   dropping `timeoutSeconds` from the bare clone or the local clone each turned a
   test red. `defaultRemoteUrl` now takes a gh seam (default `runGhCommand`) and
   is exported for its test.
-- Fixture mutations: the `gh config get git_protocol` branch now answers `ssh`
+- Fixture mutations: the `gh config get git_protocol -h github.com` branch answers `ssh`
   and the `clone` branch records its argv (`clone-calls.log`) and the `set-url`
   branch records the URL it is given (`origin-url`), which the app test asserts,
   so replacing the return value or the matcher goes red. Mutation-check
@@ -142,7 +154,7 @@ URL, which points at that local repository).
   `tests/fleet_babysitter_app_test.ts` ("production repair forwards CONFIG_PATH
   and denies canonical credential targets"), whose fixture
   `tests/fixtures/fleet_babysitter_repair_preload.ts` faked `gh repo clone` and
-  now fakes `gh config get git_protocol`, `git clone --bare` and
+  now fakes `gh config get git_protocol -h github.com`, `git clone --bare` and
   `git remote
   set-url`; that test passes after the fixture update. Two reruns
   of the full gate then passed every stage up to `deno tests` and were killed by

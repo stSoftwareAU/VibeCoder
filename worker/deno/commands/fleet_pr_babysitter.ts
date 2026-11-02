@@ -109,7 +109,8 @@ export async function defaultRemoteUrl(
 ): Promise<string> {
   let protocol = "https";
   try {
-    protocol = (await gh(["config", "get", "git_protocol"])).trim();
+    protocol = (await gh(["config", "get", "git_protocol", "-h", "github.com"]))
+      .trim();
   } catch (error) {
     console.warn(
       `Could not read gh git_protocol; using https: ${
@@ -193,7 +194,7 @@ export async function cloneForRepair(
         [
           "fetch",
           "--prune",
-          "origin",
+          url,
           "+refs/heads/*:refs/heads/*",
           "+refs/tags/*:refs/tags/*",
         ],

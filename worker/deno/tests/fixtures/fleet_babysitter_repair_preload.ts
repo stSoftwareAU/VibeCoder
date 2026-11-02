@@ -47,7 +47,9 @@ function commandOutput(
       lock = undefined;
       return "";
     }
-    if (args.join(" ") === "config get git_protocol") return "ssh\n";
+    if (args.join(" ") === "config get git_protocol -h github.com") {
+      return "ssh\n";
+    }
     // No cancelled runs, so the failed-CI repair proceeds to the agent.
     if (
       args[0] === "api" &&
