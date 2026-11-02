@@ -2,7 +2,7 @@
 import { loadConfig } from "../lib/config.ts";
 import { resolve } from "node:path";
 import { installConsoleRedaction } from "../lib/console_redaction.ts";
-import { runGhCommand, runGhCommandRaw } from "../lib/github.ts";
+import { runGhCommand } from "../lib/github.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
 import { fenceUntrustedIssueText } from "../lib/prompt_delimiter.ts";
@@ -79,13 +79,162 @@ const fields =
 /** A PR waiting on a person: the babysitter leaves it alone (owner rule 2026-11-01). */
 const NEEDS_HUMAN_LABEL = "needs-human";
 
-/** A clone may leave a partial destination, so it must not be retried in place. */
+/** Where the per-repository bare mirrors live (Issue #4727). */
+export function babysitterMirrorRoot(): string {
+  return `${babysitterStateDir()}/mirrors`;
+}
+
+/** Seams for {@link cloneForRepair}; the defaults run real git and gh. */
+export interface CloneForRepairDeps {
+  git?: (
+    args: string[],
+    options?: { cwd?: string; timeoutSeconds?: number },
+  ) => Promise<string>;
+  remoteUrl?: (repo: string) => Promise<string>;
+  mirrorRoot?: string;
+}
+
+const CLONE_TIMEOUT_SECONDS = 30 * 60;
+
+/** Run git and throw its cause text on failure, so the error names what went wrong. */
+async function defaultGit(
+  args: string[],
+  options: { cwd?: string; timeoutSeconds?: number } = {},
+): Promise<string> {
+  const result = await runGitArgv(args, options);
+  if (!result.success) {
+    throw new Error(
+      `git ${args[0]} failed: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+  return result.stdout;
+}
+
+/** Use the protocol gh is configured with, so the clone URL matches the host's credentials. */
+export async function defaultRemoteUrl(
+  repo: string,
+  gh: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<string> {
+  let protocol = "https";
+  try {
+    protocol = (await gh(["config", "get", "git_protocol", "-h", "github.com"]))
+      .trim();
+  } catch (error) {
+    console.warn(
+      `Could not read gh git_protocol; using https: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  return protocol === "ssh"
+    ? `git@github.com:${repo}.git`
+    : `https://github.com/${repo}.git`;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+async function removeIfPresent(path: string): Promise<void> {
+  try {
+    await Deno.remove(path, { recursive: true });
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
+// SIMPLE-ON-PURPOSE: in-process lock only — upgrade when two babysitter processes share one state directory
+const mirrorTails = new Map<string, Promise<void>>();
+
+/**
+ * Run work once the previous call on the same mirror has settled, whether it
+ * succeeded or failed. Each caller still receives its own outcome. Concurrent
+ * repairs of one repo must not fetch into one mirror together; across
+ * processes git's own ref locks decide, and the next pass retries.
+ */
+export async function serialiseOnMirror(
+  mirror: string,
+  work: () => Promise<void>,
+): Promise<void> {
+  const previous = mirrorTails.get(mirror) ?? Promise.resolve();
+  const current = previous.then(work);
+  const tail = current.then(() => undefined, () => undefined);
+  mirrorTails.set(mirror, tail);
+  try {
+    await current;
+  } finally {
+    if (mirrorTails.get(mirror) === tail) mirrorTails.delete(mirror);
+  }
+}
+
+/**
+ * Clone a repository for one repair through a per-repository bare mirror under
+ * the babysitter state dir (Issue #4727). The first repair downloads the mirror
+ * once; later repairs fetch into it and clone locally, so a large repo is not
+ * downloaded again on every repair and cannot hit gh's 600 s timeout. The clone
+ * copies the history (no alternates, no hardlinks) and its origin is reset to
+ * GitHub, so the agent's fetch and push never go through the mirror path. The
+ * mirror sits outside the agent's only write grants (the clone and scratch
+ * directories, see buildBabysitterSandboxArgs). A clone may leave a partial
+ * destination, so a failed clone is not retried in place.
+ */
 export async function cloneForRepair(
   repo: string,
   dir: string,
-  clone: typeof runGhCommandRaw = runGhCommandRaw,
+  deps: CloneForRepairDeps = {},
 ): Promise<void> {
-  await clone(["repo", "clone", repo, dir, "--", "--no-checkout"]);
+  if (!/^[\w-]+\/[\w.-]+$/.test(repo)) {
+    throw new Error(`Invalid repository: ${repo}`);
+  }
+  const git = deps.git ?? defaultGit;
+  const mirrorRoot = deps.mirrorRoot ?? babysitterMirrorRoot();
+  const mirror = `${mirrorRoot}/${repo.replace("/", "--")}.git`;
+  const url = await (deps.remoteUrl ?? defaultRemoteUrl)(repo);
+  await serialiseOnMirror(mirror, async () => {
+    if (await pathExists(mirror)) {
+      await git(
+        [
+          "fetch",
+          "--no-auto-maintenance",
+          "--prune",
+          url,
+          "+refs/heads/*:refs/heads/*",
+          "+refs/tags/*:refs/tags/*",
+        ],
+        { cwd: mirror, timeoutSeconds: CLONE_TIMEOUT_SECONDS },
+      );
+      await git(
+        [
+          "-c",
+          "maintenance.autoDetach=false",
+          "-c",
+          "gc.autoDetach=false",
+          "maintenance",
+          "run",
+          "--auto",
+        ],
+        { cwd: mirror, timeoutSeconds: CLONE_TIMEOUT_SECONDS },
+      );
+    } else {
+      await Deno.mkdir(mirrorRoot, { recursive: true });
+      const partial = `${mirror}.tmp`;
+      await removeIfPresent(partial);
+      await git(["clone", "--bare", url, partial], {
+        timeoutSeconds: CLONE_TIMEOUT_SECONDS,
+      });
+      await Deno.rename(partial, mirror);
+    }
+    await git(["clone", "--no-checkout", "--no-hardlinks", mirror, dir], {
+      timeoutSeconds: CLONE_TIMEOUT_SECONDS,
+    });
+    await git(["remote", "set-url", "origin", url], { cwd: dir });
+  });
 }
 
 /** Give each repair the RTK instructions without depending on host dotfiles. */

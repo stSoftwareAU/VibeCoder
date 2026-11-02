@@ -107,22 +107,6 @@ function commandOutput(
       lock = undefined;
       return "";
     }
-    if (args[0] === "repo" && args[1] === "clone") {
-      if (repair) {
-        Deno.writeTextFileSync(
-          `${args[3]}/quality.sh`,
-          "#!/bin/bash\nexit 0\n",
-        );
-        if (scenario === "linux-symlink") {
-          Deno.renameSync(`${args[3]}/quality.sh`, `${args[3]}/gate.sh`);
-          Deno.symlinkSync("gate.sh", `${args[3]}/quality.sh`);
-        }
-        if (scenario === "linux-oversized") {
-          Deno.writeTextFileSync(`${args[3]}/quality.sh`, "x".repeat(65537));
-        }
-      }
-      return "";
-    }
     if (repair && args.includes("users/babysitter%5Bbot%5D")) {
       // The validation context must retain the home captured for this repair.
       Deno.env.set("HOME", `${root}/changed-home`);
@@ -144,6 +128,9 @@ function commandOutput(
     ) {
       throw new Error("fixture lease expired");
     }
+    if (args.join(" ") === "config get git_protocol -h github.com") {
+      return "ssh\n";
+    }
     // No cancelled runs, so the failed-CI repair proceeds to the agent.
     if (
       args[0] === "api" &&
@@ -153,6 +140,30 @@ function commandOutput(
     }
   }
   if (executable === "git") {
+    if (args[0] === "clone") {
+      Deno.writeTextFileSync(`${root}/clone-calls.log`, args.join(" ") + "\n", {
+        append: true,
+      });
+      // The mirror clone's last argv element is the directory git creates.
+      if (args.includes("--bare")) {
+        Deno.mkdirSync(args[args.length - 1]!);
+      } else if (repair) {
+        const dir = args[args.length - 1]!;
+        Deno.writeTextFileSync(`${dir}/quality.sh`, "#!/bin/bash\nexit 0\n");
+        if (scenario === "linux-symlink") {
+          Deno.renameSync(`${dir}/quality.sh`, `${dir}/gate.sh`);
+          Deno.symlinkSync("gate.sh", `${dir}/quality.sh`);
+        }
+        if (scenario === "linux-oversized") {
+          Deno.writeTextFileSync(`${dir}/quality.sh`, "x".repeat(65537));
+        }
+      }
+      return "";
+    }
+    if (args.slice(0, 3).join(" ") === "remote set-url origin") {
+      Deno.writeTextFileSync(`${root}/origin-url`, args[3]!);
+      return "";
+    }
     if (args.includes("fetch") || args.includes("checkout")) return "";
     if (args.includes("rev-parse") && args.includes("HEAD")) {
       return scenario === "head-change" && agentCalls === 2 ? "changed" : "abc";

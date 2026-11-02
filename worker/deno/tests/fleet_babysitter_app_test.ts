@@ -104,6 +104,22 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
       assert(result.ok);
       assertEquals(result.value.success, true, result.value.stderr);
       assertStringIncludes(result.value.stdout, "agent made no changes");
+      // The repair clones through a mirror, then points origin at GitHub over
+      // the protocol gh reports (ssh in the fixture).
+      assertEquals(
+        await Deno.readTextFile(`${home}/origin-url`),
+        "git@github.com:owner/repo.git",
+      );
+      const cloneCalls = (await Deno.readTextFile(`${home}/clone-calls.log`))
+        .trim().split("\n");
+      assertEquals(cloneCalls.length, 2);
+      assert(
+        cloneCalls[0]!.startsWith(
+          "clone --bare git@github.com:owner/repo.git ",
+        ),
+        cloneCalls[0],
+      );
+      assert(cloneCalls[1]!.startsWith("clone --no-checkout --no-hardlinks "));
       const args: string[] = JSON.parse(
         await Deno.readTextFile(`${home}/agent-spawn.json`),
       );

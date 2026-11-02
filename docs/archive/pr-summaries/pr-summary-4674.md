@@ -1,5 +1,9 @@
 ## Summary
 
+Merge conflict repair: retain the base branch's mirror-based clone API and its
+clone tests, while creating the Linux validation fixture in the local repair
+clone and preserving the platform-specific prompt tests.
+
 The babysitter runs a repaired repository's local gate in a credential-denying
 macOS sandbox before staging or committing. Chromium can register its browser
 services while configured credentials, Keychains, securityd and the clone's
