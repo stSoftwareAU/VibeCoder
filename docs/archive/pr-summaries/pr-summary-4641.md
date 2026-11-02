@@ -12,9 +12,9 @@ stays in the code comments beside each string. Closes #4641.
 ### Intent and Rationale
 
 - A run in a target repo posted `#1859`, `#3683`, `#2682`, `#4158`, `#148`,
-  `#534`, `#2809`, `#3177`, `#3761` and `#4298` as links to unrelated target-repo
-  issues. #4585 fixed the failure comment's one-line cause and detail bullets;
-  these are the reasons and comments quoted beside them.
+  `#534`, `#2809`, `#3177`, `#3761` and `#4298` as links to unrelated
+  target-repo issues. #4585 fixed the failure comment's one-line cause and
+  detail bullets; these are the reasons and comments quoted beside them.
 - The fix is the same as #4585's: drop the suffix, keep the provenance in code
   comments. No message loses a sentence that carried meaning.
 
@@ -39,13 +39,17 @@ stays in the code comments beside each string. Closes #4641.
 Backend text only; no UI file changed. Issue numbers cited as provenance in the
 diff, each looked up with `gh issue view`:
 
-- `#148`: Preserve a timed-out run's WIP: commit + push the dirty tree to the issue branch, and size the claim to the budget (Issue #47 follow-up)
-- `#4158`: Never park an assigned issue: drop the terminal `failed` label and the repeated-failure needs-human hand-off
-- `#4585`: Unmet-criteria note, draft-continuation PR bodies, drift-check reply and failure comment still cite VibeCoder issue numbers in target repos (NEAT-AI#4131)
+- `#148`: Preserve a timed-out run's WIP: commit + push the dirty tree to the
+  issue branch, and size the claim to the budget (Issue #47 follow-up)
+- `#4158`: Never park an assigned issue: drop the terminal `failed` label and
+  the repeated-failure needs-human hand-off
+- `#4585`: Unmet-criteria note, draft-continuation PR bodies, drift-check reply
+  and failure comment still cite VibeCoder issue numbers in target repos
+  (NEAT-AI#4131)
 - `#4641`: this issue
 
-Docs: grepped `README.md`, `docs/` (excluding `docs/archive/`) and `prompts/` for
-the removed wording (`half-done PR (`, `Handed to planning to split it (`,
+Docs: grepped `README.md`, `docs/` (excluding `docs/archive/`) and `prompts/`
+for the removed wording (`half-done PR (`, `Handed to planning to split it (`,
 `trim or split the issue (`, `never parks it (`, `fix to the scanner (`,
 `remains queued to finish the unmet criteria (`, `never parked (Issue`); no hit,
 so no doc changed. `docs/USAGE.md:273` states the never-parked rule for readers
@@ -59,9 +63,9 @@ names and a `reason` assembled across more than eight lines.
 
 ## Test Plan
 
-- New `worker/deno/tests/reasons_no_vibecoder_numbers_4641_test.ts`
-  (gate message with and without a PR, prompt-too-long with and without a
-  snippet, context-budget hand-off) and
+- New `worker/deno/tests/reasons_no_vibecoder_numbers_4641_test.ts` (gate
+  message with and without a PR, prompt-too-long with and without a snippet,
+  context-budget hand-off) and
   `worker/deno/tests/comments_no_vibecoder_numbers_4641_test.ts` (churn comment,
   repeat question failure, missing-criteria PR note, independent-review comment
   on both paths). Each went red on the unfixed code (stray `#1859`, `#3683`,
@@ -76,8 +80,8 @@ names and a `reason` assembled across more than eight lines.
 - Removed from `worker/deno/tests/completion_phase_stale_lineage_test.ts`:
   `assertStringIncludes(run.reason ?? "", "Issue #534")`
   - Required by: "Drop the `(Issue #N)` suffixes from these reason strings"
-  - Replaced by: `assertStringIncludes(run.reason ?? "", "Refusing to push")` and the
-    exact-token assertion `["#531"]`.
+  - Replaced by: `assertStringIncludes(run.reason ?? "", "Refusing to push")`
+    and the exact-token assertion `["#531"]`.
 - `deno task test:unit` over the seven touched and related files
   (`completion_phase_stale_lineage_test.ts`, `completion_wip_only_gate_test.ts`,
   `completion_phase_branch_conflict_test.ts`, both new files,
@@ -93,6 +97,7 @@ names and a `reason` assembled across more than eight lines.
   deps because `tests/execute_claude_phase_test.ts` keeps them private.
 
 - `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
-- `./quality.sh` was started on the final head and hit the 595 s command cap (exit 124) before it finished, so the full gate did not complete.
+- `./quality.sh` was started on the final head and hit the 595 s command cap
+  (exit 124) before it finished, so the full gate did not complete.
 
 <!-- vibe-quality-gate-skipped: ./quality.sh did not finish within the 595 s command cap on the final head; targeted tests, fmt, lint, type check and pr-summary-check passed; CI runs the full gate -->
