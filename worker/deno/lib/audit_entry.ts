@@ -23,12 +23,15 @@ export type AuditActionKind =
   | "merge"
   | "unknown";
 
+/** Runtime component that requested a mutation, from the trusted caller path. */
+export type AuditComponent = "worker" | "reviewer" | "babysitter" | "unknown";
+
 /** A GitHub mutation to record (caller-supplied fields). */
 export interface AuditMutation {
   /** Worker-generated identifier for this individual action. */
   actionId?: string;
   /** Runtime component classification derived from the trusted caller path. */
-  component?: "worker" | "reviewer" | "babysitter" | "unknown";
+  component?: AuditComponent;
   /** Known PR number; absent when the mutation target is not a PR. */
   prNumber?: number;
   /** PR head SHA captured by a caller that has the current head in hand. */

@@ -51,6 +51,14 @@ function asText(value: unknown): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
+/** A CLI value as a positive integer, or `undefined` when it is not one. */
+function asPositiveInteger(value: unknown): number | undefined {
+  const text = asText(value);
+  if (text === undefined || !/^\d{1,9}$/.test(text)) return undefined;
+  const number = Number(text);
+  return number >= 1 ? number : undefined;
+}
+
 function asList(value: unknown): string[] | undefined {
   const text = asText(value);
   if (text === undefined) return undefined;
@@ -99,6 +107,18 @@ export async function runPrCompletionCollect(
     };
   }
 
+  const maxPrsRaw = args["max-prs-per-repo"];
+  const maxPrsPerRepo = maxPrsRaw === undefined
+    ? undefined
+    : asPositiveInteger(maxPrsRaw);
+  if (maxPrsRaw !== undefined && maxPrsPerRepo === undefined) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --max-prs-per-repo must be a positive integer",
+    };
+  }
+
   const observedAt = new Date().toISOString();
   const end = asText(args.end) ?? observedAt;
   if (!/^\d{4}-\d\d-\d\dT.*Z$/.test(end) || !Number.isFinite(Date.parse(end))) {
@@ -130,6 +150,7 @@ export async function runPrCompletionCollect(
         maxHeartbeatAgeHours: hours,
       },
       ...(rolloutVerifiedAt !== undefined ? { rolloutVerifiedAt } : {}),
+      ...(maxPrsPerRepo !== undefined ? { maxPrsPerRepo } : {}),
       gh,
     });
     const report = buildPrCompletionReport(snapshot.input);

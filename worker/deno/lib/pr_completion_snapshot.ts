@@ -86,6 +86,11 @@ const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
 /** A GitHub event matches a verified fleet action within this window. */
 const MATCH_WINDOW_MS = 10 * MINUTE_MS;
+/**
+ * Slack either side of a PR's lifetime: a push or merge action within it may
+ * belong to the PR.
+ */
+const LIFETIME_SLACK_MS = 10 * MINUTE_MS;
 /** Commits closer than this together form one push group. */
 const PUSH_GROUP_MS = 2 * MINUTE_MS;
 const STRANDED_AGE_MS = DAY_MS;
@@ -95,14 +100,23 @@ const EVENT_PAGE_LIMIT = 10;
 const DEFAULT_MAX_PRS_PER_REPO = 500;
 const COMPONENT_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
-/** Bounds applied to free text before any pattern runs over it. */
+/**
+ * Free text is sliced before any pattern runs over it: a title to 1,000
+ * characters, a body to {@link TEXT_BOUND}. The patterns below have no nested
+ * quantifiers and no overlapping alternatives, so each runs in linear time over
+ * its slice.
+ */
 const TEXT_BOUND = 20_000;
-/** Anchored and bounded: a title that opens `Revert "…"`. */
+const TITLE_BOUND = 1_000;
+/** A title that opens `Revert "…"`, with the quoted text at most 300 characters. */
 const REVERT_TITLE = /^Revert "[^"\n]{1,300}"/;
+/** `Revert #N` or `Reverts #N` in a title or body. */
 const REVERT_REFERENCE = /\bReverts?\s+#(\d{1,7})\b/gi;
+/** A parenthesised PR number, as a squash merge title ends with `(#N)`. */
 const QUOTED_PR_REFERENCE = /\(#(\d{1,7})\)/g;
-const ROLLUP_LINE = /\brollup of\b|^\s*includes\b/i;
-const PR_REFERENCE = /#(\d{1,7})\b/g;
+/** Shown once per collection: the CI scope limit, for the coverage notes. */
+const CI_SCOPE_NOTE =
+  "CI runs are read from each merged PR's final head SHA only; check runs on earlier pushes are not counted";
 
 /** A PR observed in the cohort, with the text the regressions and rollups read. */
 interface ObservedPr {
@@ -204,42 +218,26 @@ async function listAll(
   return { items, truncated: true };
 }
 
-/** Pull requests cited as the subject of a rollup line in `text`. */
-function rollupTargets(text: string): number[] {
-  const found: number[] = [];
-  for (const line of text.slice(0, TEXT_BOUND).split("\n")) {
-    if (!ROLLUP_LINE.test(line)) continue;
-    for (const match of line.matchAll(PR_REFERENCE)) {
-      found.push(Number(match[1]));
-    }
-  }
-  return found;
-}
-
 /**
- * Milestone PRs named by a default-branch rollup. A milestone PR gets a
- * `rollupRoot` only when exactly one default-branch PR in the cohort claims
- * it with "Rollup of" or "Includes" wording; anything ambiguous stays unset.
+ * Derive each milestone PR's `rollupRoot` from refs alone, never from text. A
+ * milestone PR (base `milestone/…`) is rolled up by the single cohort PR whose
+ * head is that base branch and whose base is the repository's default branch.
+ * Zero such PRs, or more than one, leave the root unset; a PR is never its own
+ * root.
  */
 function deriveRollupRoots(observed: ObservedPr[]): void {
-  const byNumber = new Map(observed.map((o) => [o.record.number, o.record]));
-  const claimants = new Map<number, Set<number>>();
-  for (const o of observed) {
-    const pr = o.record;
-    if (pr.baseRef !== pr.defaultBranch || pr.milestone) continue;
-    for (const target of rollupTargets(`${o.title}\n${o.body}`)) {
-      const milestonePr = byNumber.get(target);
-      if (!milestonePr?.milestone || target === pr.number) continue;
-      const set = claimants.get(target) ?? new Set<number>();
-      set.add(pr.number);
-      claimants.set(target, set);
+  const records = observed.map((o) => o.record);
+  for (const milestone of records) {
+    if (!milestone.baseRef.startsWith("milestone/")) continue;
+    const roots = records.filter((candidate) =>
+      candidate.number !== milestone.number &&
+      candidate.repo === milestone.repo &&
+      candidate.headRef === milestone.baseRef &&
+      candidate.baseRef === candidate.defaultBranch
+    );
+    if (roots.length === 1) {
+      milestone.rollupRoot = keyOf(milestone.repo, roots[0]!.number);
     }
-  }
-  for (const [target, roots] of claimants) {
-    if (roots.size !== 1) continue;
-    const [root] = roots;
-    const milestonePr = byNumber.get(target)!;
-    milestonePr.rollupRoot = keyOf(milestonePr.repo, root!);
   }
 }
 
@@ -579,9 +577,14 @@ function gitHubEvents(
 
 /**
  * Match each GitHub event to at most one verified fleet action of the same
- * kind on the same PR within {@link MATCH_WINDOW_MS}. Matched events add
- * nothing: the audit action already stands for them. Unmatched events become
- * `unknown` actions, never attributed to a human or the fleet.
+ * kind on the same PR. Matched events add nothing: the audit action already
+ * stands for them. Unmatched events become `unknown` actions, never attributed
+ * to a human or the fleet.
+ *
+ * A non-merge event matches within {@link MATCH_WINDOW_MS} of it. A merge
+ * matches from the PR's creation to {@link MATCH_WINDOW_MS} after `mergedAt`:
+ * the fleet merges with `gh pr merge --auto`, so the audit entry is stamped
+ * when auto-merge is armed, possibly hours before GitHub records the merge.
  */
 function unmatchedActions(
   observed: ObservedPr,
@@ -590,17 +593,19 @@ function unmatchedActions(
   used: Set<TrustedPrAction>,
 ): TrustedPrAction[] {
   const { record } = observed;
+  const createdMs = utcMillis(record.createdAt, "PR createdAt");
   const out: TrustedPrAction[] = [];
   for (const event of events) {
     let best: TrustedPrAction | undefined;
     let bestGap = Number.POSITIVE_INFINITY;
     for (const action of verifiedFleet) {
       if (used.has(action) || action.kind !== event.kind) continue;
-      const gap = Math.abs(
-        utcMillis(action.timestamp, "action timestamp") -
-          event.ms,
-      );
-      if (gap <= MATCH_WINDOW_MS && gap < bestGap) {
+      const actionMs = utcMillis(action.timestamp, "action timestamp");
+      const gap = Math.abs(actionMs - event.ms);
+      const inWindow = event.kind === "merge"
+        ? actionMs >= createdMs && actionMs <= event.ms + MATCH_WINDOW_MS
+        : gap <= MATCH_WINDOW_MS;
+      if (inWindow && gap < bestGap) {
         best = action;
         bestGap = gap;
       }
@@ -659,9 +664,9 @@ async function ciRunsFor(
   });
 }
 
-/** Revert targets named by a PR's title or body. Every pattern is anchored or bounded. */
+/** Revert targets named by a PR's title or body, each read over its bounded slice. */
 function revertedNumbers(title: string, body: string): number[] {
-  const head = title.slice(0, 1_000);
+  const head = title.slice(0, TITLE_BOUND);
   const found = new Set<number>();
   if (REVERT_TITLE.test(head)) {
     for (const match of head.matchAll(QUOTED_PR_REFERENCE)) {
@@ -825,6 +830,7 @@ async function collectDeployments(
       continue;
     }
     let absent = 0;
+    let legacy = 0;
     for (const round of rounds.sort()) {
       const path = `${dir}/${round}/${REVIEW_RUN_FILE}`;
       const loaded = await readJsonFile(path);
@@ -838,7 +844,11 @@ async function collectDeployments(
         continue;
       }
       const deployment = (loaded.value as Json).deployment;
-      if (typeof deployment !== "object" || deployment === null) continue;
+      if (typeof deployment !== "object" || deployment === null) {
+        // Written before the deployment field existed: no evidence, not an error.
+        legacy++;
+        continue;
+      }
       const d = deployment as Json;
       const row = deploymentRow(
         d.component,
@@ -855,6 +865,11 @@ async function collectDeployments(
     if (absent > 0) {
       notes.push(
         `review-run dir ${dir}: ${absent} round(s) have no ${REVIEW_RUN_FILE}`,
+      );
+    }
+    if (legacy > 0) {
+      notes.push(
+        `review-run dir ${dir}: ${legacy} record(s) have no deployment field (written before it existed); not counted`,
       );
     }
   }
@@ -989,31 +1004,90 @@ async function readAuditEntries(
 }
 
 /**
- * Link a branch push to a cohort PR by repo and branch: the latest PR on
- * that head ref created at or before the push. Journals carry no PR number
- * for pushes.
+ * The branch a `git push` target names, or `null` when it names none. The part
+ * after a refspec's `:` is used, with `refs/heads/` stripped. `HEAD` names the
+ * checked-out branch, which the journal does not record, so a `HEAD` target
+ * cannot be linked; neither can an empty or `-`-prefixed target.
+ */
+function pushedBranch(target: string): string | null {
+  const colon = target.lastIndexOf(":");
+  const destination = colon === -1 ? target : target.slice(colon + 1);
+  const name = destination.startsWith("refs/heads/")
+    ? destination.slice("refs/heads/".length)
+    : destination;
+  if (name === "" || name === "HEAD" || name.startsWith("-")) return null;
+  return name;
+}
+
+/**
+ * Whether a push at `pushedMs` falls inside the PR's lifetime, widened by
+ * {@link LIFETIME_SLACK_MS} either side: from creation to the merge, close or
+ * observation, whichever the record carries.
+ */
+function pushWithinLifetime(
+  record: PrCompletionRecord,
+  pushedMs: number,
+): boolean {
+  const endText = record.mergedAt ?? record.closedAt ?? record.observedAt;
+  if (endText === undefined || endText === null) return false;
+  const createdMs = Date.parse(record.createdAt);
+  const endMs = Date.parse(endText);
+  return pushedMs >= createdMs - LIFETIME_SLACK_MS &&
+    pushedMs <= endMs + LIFETIME_SLACK_MS;
+}
+
+/**
+ * Link a `git-push` entry to a cohort PR and set its repo and PR number. A push
+ * that carries a repo links within that repo. A push without one, which is
+ * what production writes, links across every supplied repo by branch name, and
+ * only when that branch name belongs to PRs in a single repo. Either way the
+ * push must fall inside the PR's lifetime, and the latest PR created on the
+ * branch wins. Anything ambiguous or unresolvable stays unlinked, which leaves
+ * the PR's commits as honest `unknown` actions.
  */
 function linkBranchPush(
   entry: AuditEntry,
   observed: ObservedPr[],
 ): AuditEntry {
-  if (
-    entry.verb !== "git-push" || entry.prNumber || !entry.repo || !entry.target
-  ) {
+  if (entry.verb !== "git-push" || entry.prNumber || !entry.target) {
     return entry;
   }
+  const branch = pushedBranch(entry.target);
   const pushedMs = Date.parse(entry.timestamp);
+  if (branch === null || !Number.isFinite(pushedMs)) return entry;
+  const named = observed.map(({ record }) => record).filter((record) =>
+    record.headRef === branch
+  );
+  if (!entry.repo && new Set(named.map((record) => record.repo)).size > 1) {
+    return entry;
+  }
   let best: PrCompletionRecord | undefined;
-  for (const { record } of observed) {
-    if (
-      record.repo !== entry.repo || record.headRef !== entry.target ||
-      Date.parse(record.createdAt) > pushedMs
-    ) continue;
+  for (const record of named) {
+    if (entry.repo && record.repo !== entry.repo) continue;
+    if (!pushWithinLifetime(record, pushedMs)) continue;
     if (!best || Date.parse(record.createdAt) > Date.parse(best.createdAt)) {
       best = record;
     }
   }
-  return best ? { ...entry, prNumber: best.number } : entry;
+  return best ? { ...entry, repo: best.repo, prNumber: best.number } : entry;
+}
+
+/**
+ * Whether a cohort PR is stranded at the rollout verification instant: created
+ * before it, still open at it (no merge or close at or before it), at least
+ * {@link STRANDED_AGE_MS} old at it, and not owner-gated. A PR that merged after
+ * the instant is stranded, and is then rediscovered or processed by its fleet
+ * actions. PRs created before the cohort start never reach this check.
+ */
+function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
+  const createdMs = utcMillis(pr.createdAt, "PR createdAt");
+  const endText = pr.mergedAt ?? pr.closedAt ?? null;
+  const openAtVerification = endText === null ||
+    utcMillis(endText, "PR end") > verifiedMs;
+  return createdMs < verifiedMs &&
+    verifiedMs - createdMs >= STRANDED_AGE_MS &&
+    openAtVerification &&
+    pr.ownerGated !== true;
 }
 
 /**
@@ -1066,6 +1140,9 @@ export async function collectPrCompletionSnapshot(
     );
   }
   for (const o of observed) o.record.actionsComplete = audit.complete;
+  if (observed.some((o) => o.record.state === "merged")) {
+    notes.push(CI_SCOPE_NOTE);
+  }
 
   const linked = audit.entries.map(({ entry, verified }) => ({
     entry: linkBranchPush(entry, observed),
@@ -1126,27 +1203,23 @@ export async function collectPrCompletionSnapshot(
     );
     rollout = {
       verifiedAt: options.rolloutVerifiedAt,
-      strandedPrs: records.filter((pr) =>
-        pr.state === "open" &&
-        observedMs - utcMillis(pr.createdAt, "PR createdAt") >
-          STRANDED_AGE_MS &&
-        utcMillis(pr.createdAt, "PR createdAt") < verifiedMs &&
-        pr.ownerGated !== true
-      ).map((pr) => {
-        const fleet = verifiedFleet.filter((action) =>
-          action.repo === pr.repo && action.prNumber === pr.number &&
-          utcMillis(action.timestamp, "action timestamp") >= verifiedMs
-        );
-        return {
-          repo: pr.repo,
-          prNumber: pr.number,
-          eligible: true,
-          rediscovered: fleet.length > 0,
-          processed: fleet.some((action) =>
-            action.outcome === "confirmed" && action.kind !== "unknown"
-          ),
-        };
-      }),
+      strandedPrs: records.filter((pr) => strandedAt(pr, verifiedMs)).map(
+        (pr) => {
+          const fleet = verifiedFleet.filter((action) =>
+            action.repo === pr.repo && action.prNumber === pr.number &&
+            utcMillis(action.timestamp, "action timestamp") >= verifiedMs
+          );
+          return {
+            repo: pr.repo,
+            prNumber: pr.number,
+            eligible: true,
+            rediscovered: fleet.length > 0,
+            processed: fleet.some((action) =>
+              action.outcome === "confirmed" && action.kind !== "unknown"
+            ),
+          };
+        },
+      ),
     };
   }
 
@@ -1165,6 +1238,7 @@ export async function collectPrCompletionSnapshot(
       maxHeartbeatAgeHours: options.expected.maxHeartbeatAgeHours,
     },
     ...(rollout ? { rollout } : {}),
+    truncatedRepos: [...truncatedRepos],
   };
   return { input, coverageNotes: notes, truncatedRepos };
 }

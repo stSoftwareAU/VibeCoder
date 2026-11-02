@@ -1118,7 +1118,7 @@ run to measure or compare behaviour across the whole fleet configures
 
 ### 📊 PR completion evidence report (Issue #4658)
 
-`deno task pr-completion-report --input <snapshot.json>` reads a normalized,
+`deno task pr-completion-report --input <snapshot.json>` reads a normalised,
 read-only evidence snapshot and emits dated JSON. `deno task
 pr-completion-report --collect` builds that snapshot itself and reports on it.
 Exactly one of `--input` and `--collect` is required. Neither mode performs
@@ -1163,9 +1163,26 @@ fleet audit action of the same kind on the same PR lies within ten minutes of
 it. Matching is one-to-one. The events are submitted reviews (`review`), review
 dismissals (`dismissal`), the merge (`merge`), and one push group per run of
 commits less than two minutes apart: the first group is `implementation` and
-later groups are `repair`. Journal `git-push` entries carry no PR number, so
-each is linked to the latest cohort PR on that head branch created at or before
-the push.
+later groups are `repair`.
+
+**Merge window.** Auto-merge journals the merge when it is armed, which can be
+hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
+merge event when its timestamp lies from the PR's creation to ten minutes after
+`mergedAt`. An armed merge stamped before the PR existed does not match, nor
+does one stamped more than ten minutes after the merge.
+
+**Push linking.** Production writes `git-push` entries with no repository, only
+the push target. Such a push links across every supplied repository by branch
+name. The name is the target, or the part after the `:` of a refspec, with
+`refs/heads/` removed. The push links only when that name belongs to cohort PRs
+in a single repository and the push falls inside the PR's lifetime: from its
+creation less ten minutes, to its merge, close or observation, plus ten
+minutes. The latest PR created on the branch wins. A push that carries a
+repository links within that repository under the same lifetime rule.
+Pushes whose target is `HEAD` cannot be linked, because the journal does not
+record the branch `HEAD` names. Empty or `-`-prefixed targets cannot be linked
+either, and nor can a branch name shared by PRs in two repositories. An unlinked
+push leaves its commits as `unknown` actions.
 
 **Unknown, never human.** A GitHub event with no matching verified fleet action
 becomes an `unknown` action: unverified, outcome unknown, with the ID
@@ -1185,30 +1202,46 @@ yet.
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
 when `N` is a merged cohort PR. It is detected at the earliest such revert and
 is resolved when that revert merged. Reverts of PRs outside the cohort are not
-observed. Every pattern is anchored or bounded in length.
+observed. Each pattern reads a bounded slice (a title's first 1,000 characters,
+a body's first 20,000) and has no nested or overlapping quantifiers, so each
+runs in linear time over its slice. The tests feed long hostile titles and
+bodies to each pattern and assert the exact result.
 
-**Rollup derivation.** A milestone PR gets a `rollupRoot` only when exactly one
-default-branch cohort PR names it with "Rollup of", or with a line beginning
-"Includes". Otherwise the root stays unset.
+**Rollup derivation.** A milestone PR (base `milestone/…`) gets a `rollupRoot`
+by ref only, never from its text. The root is the single cohort PR whose head
+is that milestone branch and whose base is the repository's default branch.
+Zero such PRs, or more than one, leave the root unset, and a PR is never its own
+root. The report counts a merged milestone PR with a root as an intermediate
+rollup, not a delivered change, so the root's merge is the one delivery.
 
 **Truncation.** Pull requests are read newest first until the page holding the
-cohort's oldest PR, up to 500 per repository. A repository that reaches the cap
-is listed as truncated: the command prints a `TRUNCATED` line and returns the
-repository in its data. Paged event lists stop after ten pages, which is a
-coverage note. Every missing, unreadable or malformed local file is a coverage
-note, not a silent drop.
+cohort's oldest PR, up to 500 per repository. `--max-prs-per-repo <n>` sets that
+cap to a positive integer. A repository that reaches the cap is listed as
+truncated: the command prints a `TRUNCATED` line, returns the repository in its
+data, and records it in `coverage.truncatedRepos`. The same field is written
+into `--write-snapshot`, so an `--input` replay reports the truncation too.
+Paged event lists stop after ten pages, which is a coverage note. Every missing,
+unreadable or malformed local file is a coverage note, not a silent drop.
+
+**CI scope.** CI minutes come only from the final head SHA's check runs of each
+merged PR. Check runs on earlier pushes are not counted. A coverage note says so
+whenever a merged PR is collected.
 
 **Deployments.** A babysitter heartbeat is kept whatever its age, so the report
 can call it stale. Review-run and ledger rows older than the heartbeat window
 are not counted, and one note says how many were excluded. A ledger row is
 timed by its `recordedAt`.
 
-**Rollout check** (`--rollout-verified-at`). A stranded PR is open, more than
-24 hours old at `observedAt`, created before the verification instant, and not
-labelled `needs-human`. It is rediscovered when a verified fleet action on it
-has a timestamp at or after that instant. It is processed when such an action
-is confirmed and is not of kind `unknown`. The check only reads
-ordinary-discovery evidence: it runs no discovery and writes nothing.
+**Rollout check** (`--rollout-verified-at`). A stranded PR was created before
+the verification instant, was still open at it (no merge or close at or before
+it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
+that merged after the instant is therefore still stranded, and is listed with
+its rediscovery and processing. It is rediscovered when a verified fleet action
+on it has a timestamp at or after that instant. It is processed when such an
+action is confirmed and is not of kind `unknown`. The check only reads
+ordinary-discovery evidence: it runs no discovery and writes nothing. PRs
+created before `cohort.start` are invisible to the check; an operator who needs
+them widens `--start`.
 
 **Limits.** `verifyAllChains` is the sweep `audit-chain-verify` runs at
 startup. It can settle an interrupted append in a journal it sweeps
@@ -1238,9 +1271,17 @@ merge. The repeatable `rollout` counts distinguish eligible stranded PRs,
 rediscovery and processing.
 
 Deployment observations come from the lifecycle ledgers, review-round records
-and babysitter heartbeats named above. Each stores a code revision and the same SHA-256
-fingerprint over a fixed allowlist of resolved host and per-repository policy
-settings; no credentials or raw configuration enter the fingerprint. Missing or stale heartbeats,
+and babysitter heartbeats named above. Each stores a code revision and the same
+SHA-256 fingerprint over a fixed allowlist of resolved policy settings:
+`issue_executor_split`, `issue_sub_agent_tier`, `issue_reviewer_agents`,
+`external_orchestration`, and `resolved_repo_policies`, which holds each
+repository's resolved executor split, sub-agent tier and `skipAutoMerge`. No
+credentials or raw configuration enter the fingerprint, and changing any
+allowlisted setting changes it. The expected value is computed from the current
+configuration at collection time, so fingerprints recorded by older builds
+report as a policy mismatch until each component writes a new one. Review-run
+records written before the `deployment` field existed contribute no row, and one
+note counts them. Missing or stale heartbeats,
 unknown revisions, policy mismatches and mixed observations make deployment
 status degraded. The report never repairs deployment state or changes the ordinary discovery
 path. The trusted update route remains the existing

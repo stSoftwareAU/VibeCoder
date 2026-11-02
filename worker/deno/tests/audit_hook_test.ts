@@ -27,15 +27,23 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  actionKindFor,
   auditGhMutation,
   auditGitMutation,
   type AuditHookOptions,
+  callerFromStack,
+  componentFor,
 } from "../lib/audit_hook.ts";
 import {
   _resetAuditCaches,
   auditFilePath,
   loadEntries,
 } from "../lib/audit_journal.ts";
+import {
+  classifyGhMutation,
+  classifyGitMutation,
+  type MutationInfo,
+} from "../lib/audit_mutation_classifier.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
 /** Worker partition these tests journal under — a sentinel, not a real id. */
@@ -90,12 +98,12 @@ Deno.test("audit_hook - auditGhMutation journals a gh mutation", async () => {
   });
 });
 
-Deno.test("audit_hook - PR mutations carry a worker action id and confirmed PR provenance", async () => {
+Deno.test("audit_hook - PR mutations carry a worker action id and PR number", async () => {
   await withAuditEnv(async (journalPath, opts) => {
     await auditGhMutation(
       ["pr", "merge", "42", "--repo", "org/repo"],
       0,
-      { ...opts, headSha: "a".repeat(40) },
+      opts,
     );
     const loaded = await loadEntries(journalPath);
     assert(loaded.ok);
@@ -103,7 +111,8 @@ Deno.test("audit_hook - PR mutations carry a worker action id and confirmed PR p
     const entry = loaded.value[0];
     assertEquals(entry?.actionKind, "merge");
     assertEquals(entry?.prNumber, 42);
-    assertEquals(entry?.headSha, "a".repeat(40));
+    // No caller hands the hook a head SHA, so the hook never writes one.
+    assertEquals(entry?.headSha, undefined);
     assertEquals(entry?.component, "unknown");
     assert(
       entry?.actionId !== undefined && /^[0-9a-f-]{36}$/.test(entry.actionId),
@@ -261,5 +270,177 @@ Deno.test("audit_hook - the journal path follows the injected worker identity (I
     );
     const loaded = await loadEntries(journalPath);
     assert(loaded.ok, "the hook wrote to the path the injected lookup names");
+  });
+});
+
+// Issue #4658: component and action-kind classification. Each MutationInfo
+// comes from the real classifier, and each outcome is asserted on the real
+// decision functions the hook calls. A test stack has no lib or commands
+// frame, so the journal-level test below sees an unresolved caller; the
+// caller-path outcomes are driven through componentFor, actionKindFor and
+// callerFromStack instead.
+
+/** Classify `args` as a gh mutation, failing the test if it is not one. */
+function ghInfo(args: readonly string[]): MutationInfo {
+  const info = classifyGhMutation(args);
+  assert(info, `expected gh ${args.join(" ")} to classify as a mutation`);
+  return info;
+}
+
+/** Classify `args` as a git mutation, failing the test if it is not one. */
+function gitInfo(args: readonly string[]): MutationInfo {
+  const info = classifyGitMutation(args);
+  assert(info, `expected git ${args.join(" ")} to classify as a mutation`);
+  return info;
+}
+
+/** Repo-relative caller path of a module under worker/deno/. */
+function callerIn(dir: "lib" | "commands", file: string): string {
+  return `worker/deno/${dir}/${file}`;
+}
+
+/** The action kind the hook assigns to a gh invocation from `caller`. */
+function ghKind(args: string[], caller?: string) {
+  return actionKindFor(ghInfo(args), caller, args);
+}
+
+/** The action kind the hook assigns to a `git push` from `caller`. */
+function pushKind(caller?: string) {
+  const args = ["push", "origin", "feature-branch"];
+  return actionKindFor(gitInfo(args), caller, args);
+}
+
+Deno.test("audit_hook - componentFor names the babysitter, reviewer and worker from their caller path", () => {
+  assertEquals(
+    componentFor(callerIn("commands", "fleet_pr_babysitter.ts")),
+    "babysitter",
+  );
+  assertEquals(componentFor(callerIn("lib", "review_round.ts")), "reviewer");
+  assertEquals(componentFor(callerIn("lib", "pr_ci_processor.ts")), "worker");
+  assertEquals(
+    componentFor(callerIn("lib", "pr_feedback_processor.ts")),
+    "worker",
+  );
+  assertEquals(componentFor(callerIn("lib", "agent_pr_adoption.ts")), "worker");
+  assertEquals(componentFor(callerIn("lib", "pr_maintenance.ts")), "worker");
+  assertEquals(
+    componentFor(callerIn("lib", "phases/completion_phase.ts")),
+    "worker",
+  );
+});
+
+Deno.test("audit_hook - componentFor is unknown when the caller is unresolved or unlisted", () => {
+  assertEquals(componentFor(undefined), "unknown");
+  // An unlisted module is not assumed to be the worker.
+  assertEquals(componentFor(callerIn("lib", "recent_activity.ts")), "unknown");
+});
+
+Deno.test("audit_hook - callerFromStack skips the audit and gh/git chokepoints to the requesting module", () => {
+  const stack = [
+    "Error",
+    "    at resolveCaller (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:101:11)",
+    "    at record (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:170:20)",
+    "    at spawnGh (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:656:5)",
+    "    at async runGhOrThrow (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:691:10)",
+    "    at async runGhCommandRaw (file:///srv/VibeCoder/worker/deno/lib/github.ts:290:3)",
+    "    at async retryWithBackoff (file:///srv/VibeCoder/worker/deno/lib/retry.ts:180:18)",
+    "    at async runGhCommand (file:///srv/VibeCoder/worker/deno/lib/github.ts:514:10)",
+    "    at async run (file:///srv/VibeCoder/worker/deno/commands/fleet_pr_babysitter.ts:322:12)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/commands/fleet_pr_babysitter.ts",
+  );
+});
+
+Deno.test("audit_hook - callerFromStack skips the git and gh wrappers and keeps a lib subdirectory caller", () => {
+  const stack = [
+    "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:238:3)",
+    "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+    "    at async runGitArgv (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:478:20)",
+    "    at async defaultRunGhCommand (file:///srv/VibeCoder/worker/deno/lib/gh_wrapper.ts:369:24)",
+    "    at async runPush (file:///srv/VibeCoder/worker/deno/lib/phases/completion_phase.ts:389:9)",
+  ].join("\n");
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/phases/completion_phase.ts",
+  );
+});
+
+Deno.test("audit_hook - callerFromStack matches whole file names, not suffixes", () => {
+  const stack = [
+    "    at spawnGh (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:656:5)",
+    "    at async pushRecovery (file:///srv/VibeCoder/worker/deno/lib/push_recovery_retry.ts:40:7)",
+  ].join("\n");
+  // push_recovery_retry.ts ends in retry.ts but is a different module.
+  assertEquals(
+    callerFromStack(stack),
+    "worker/deno/lib/push_recovery_retry.ts",
+  );
+});
+
+Deno.test("audit_hook - callerFromStack is undefined without a requesting module", () => {
+  assertEquals(callerFromStack(undefined), undefined);
+  assertEquals(callerFromStack(""), undefined);
+  const plumbingOnly = [
+    "    at spawnGh (file:///srv/VibeCoder/worker/deno/lib/gh_spawn.ts:656:5)",
+    "    at async runGhCommand (file:///srv/VibeCoder/worker/deno/lib/github.ts:514:10)",
+    "    at async retryWithBackoff (file:///srv/VibeCoder/worker/deno/lib/retry.ts:180:18)",
+  ].join("\n");
+  assertEquals(callerFromStack(plumbingOnly), undefined);
+});
+
+Deno.test("audit_hook - actionKindFor names merge and review from the verb", () => {
+  assertEquals(ghKind(["pr", "merge", "42", "--repo", "org/repo"]), "merge");
+  assertEquals(
+    ghKind(["pr", "review", "42", "--repo", "org/repo", "--approve"]),
+    "review",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor records a review dismissal only when the state is DISMISSED", () => {
+  const endpoint = ["api", "-X", "PUT", "repos/org/repo/pulls/42/reviews/777"];
+  assertEquals(ghKind([...endpoint, "-f", "state=DISMISSED"]), "dismissal");
+  // The same endpoint without the dismissed state is not a dismissal.
+  assertEquals(ghKind([...endpoint, "-f", "message=x"]), "unknown");
+});
+
+Deno.test("audit_hook - actionKindFor names an implementation push only from its own caller", () => {
+  assertEquals(
+    pushKind(callerIn("lib", "agent_pr_adoption.ts")),
+    "implementation",
+  );
+  assertEquals(
+    pushKind(callerIn("lib", "phases/completion_phase.ts")),
+    "implementation",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor names a repair push from the babysitter and the PR processors", () => {
+  assertEquals(
+    pushKind(callerIn("commands", "fleet_pr_babysitter.ts")),
+    "repair",
+  );
+  assertEquals(pushKind(callerIn("lib", "pr_ci_processor.ts")), "repair");
+  assertEquals(pushKind(callerIn("lib", "pr_feedback_processor.ts")), "repair");
+});
+
+Deno.test("audit_hook - actionKindFor leaves a push from an unresolved or unlisted caller unknown", () => {
+  assertEquals(pushKind(undefined), "unknown");
+  assertEquals(pushKind(callerIn("lib", "git_push.ts")), "unknown");
+});
+
+Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGitMutation(["push", "origin", "feature-branch"], 0, opts);
+
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    if (!loaded.ok) return;
+    const entry = loaded.value[0];
+    assertEquals(entry?.component, "unknown");
+    assertEquals(entry?.actionKind, "unknown");
+    assertEquals(entry?.caller, undefined);
+    assert(entry?.actionId !== undefined);
   });
 });

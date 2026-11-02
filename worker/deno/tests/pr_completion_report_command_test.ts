@@ -92,6 +92,76 @@ Deno.test("pr-completion-report --collect fails loudly without an expected revis
   assertStringIncludes(result.message, "--expected-revision");
 });
 
+Deno.test("pr-completion-report --collect rejects a --max-prs-per-repo that is not a positive integer", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["0", "-1", "two", "1.5", true]) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "max-prs-per-repo": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(
+      result.message,
+      "--max-prs-per-repo must be a positive integer",
+    );
+  }
+});
+
+Deno.test("pr-completion-report --collect passes --max-prs-per-repo to the collector and reports the truncation", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    const open = (number: number) => ({
+      number,
+      state: "open",
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: null,
+      closed_at: null,
+      title: `Change ${number}`,
+      body: "",
+      labels: [],
+      base: { ref: "main" },
+      head: { ref: `issue-${number}`, sha: `sha${number}` },
+    });
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) {
+        return path.includes("page=1") ? [open(1), open(2)] : [];
+      }
+      if (path.startsWith("repos/org/repo/pulls/")) return [];
+      if (path.startsWith("repos/org/repo/issues/")) return [];
+      throw new Error(`unrouted gh path: ${path}`);
+    };
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        "audit-dir": auditDir,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        start: "2026-10-01T00:00:00Z",
+        end: "2026-11-01T00:00:00Z",
+        "max-prs-per-repo": "1",
+      },
+      { repos: ["org/repo"] } as unknown as WorkerConfig,
+      gh,
+    );
+    assertEquals(result.success, true);
+    assertEquals(result.data?.truncatedRepos, ["org/repo"]);
+    assertEquals(result.data?.report.coverage.truncatedRepos, ["org/repo"]);
+    assertStringIncludes(result.message, "TRUNCATED: org/repo");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("pr-completion-report --collect writes a snapshot that --input reproduces", async () => {
   const dir = await Deno.makeTempDir();
   try {

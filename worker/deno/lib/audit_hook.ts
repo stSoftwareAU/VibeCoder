@@ -25,7 +25,7 @@ import {
   type RecordOptions,
   resolveRunId,
 } from "./audit_journal.ts";
-import type { AuditActionKind } from "./audit_entry.ts";
+import type { AuditActionKind, AuditComponent } from "./audit_entry.ts";
 import {
   classifyGhMutation,
   classifyGitMutation,
@@ -51,8 +51,6 @@ export interface AuditHookOptions extends RecordOptions {
    * Defaults to {@link resolveRunId} over {@link AuditHookOptions.env}.
    */
   runId?: string;
-  /** Current PR head when the caller has observed it safely. */
-  headSha?: string;
 }
 
 /**
@@ -77,46 +75,114 @@ export function isAuditJournalEnabled(
 }
 
 /**
- * Best-effort caller resolution from the stack trace.
+ * Audit and chokepoint plumbing the caller walk passes over.
  *
- * Walks frames to the first `worker/deno/lib/<file>.ts` that is not one of
- * the audit/chokepoint plumbing files, so the recorded caller is the code
- * path that actually requested the mutation.
+ * Each file sits between the requesting module and the hook: the `gh` and
+ * `git` chokepoints, the retry and wrapper layers above them, and the audit
+ * modules themselves. The first frame outside this list is therefore the
+ * module that asked for the mutation. Matched on the whole file name, so
+ * `infra_retry.ts` is not mistaken for `retry.ts`.
  */
-function resolveCaller(): string | undefined {
-  const stack = new Error().stack;
+const PLUMBING_FILES: ReadonlyArray<string> = [
+  "audit_hook.ts",
+  "audit_journal.ts",
+  "audit_mutation_classifier.ts",
+  "gh_spawn.ts",
+  "gh_wrapper.ts",
+  "git_timeout.ts",
+  "github.ts",
+  "retry.ts",
+];
+
+/**
+ * Pick the requesting module out of a stack trace.
+ *
+ * Walks frames to the first `worker/deno/lib/<file>.ts` (or a file under a
+ * `lib/` subdirectory, such as `lib/phases/`) or `worker/deno/commands/<file>.ts`
+ * that is not one of the {@link PLUMBING_FILES}. Exported so the
+ * skip list can be tested against a fixed stack.
+ *
+ * @param stack - A stack trace, or undefined when none was captured.
+ * @returns The `worker/deno/...` path of the requesting module, or undefined.
+ */
+export function callerFromStack(
+  stack: string | undefined,
+): string | undefined {
   if (!stack) return undefined;
-  const skip = [
-    "audit_hook.ts",
-    "audit_journal.ts",
-    "audit_mutation_classifier.ts",
-    "git_timeout.ts",
-    "github.ts",
-  ];
   for (const line of stack.split("\n")) {
     const match = line.match(
-      /(worker\/deno\/(?:lib|commands)\/[A-Za-z0-9_]+\.ts)/,
+      /(worker\/deno\/(?:lib|commands)\/(?:[A-Za-z0-9_]+\/)*[A-Za-z0-9_]+\.ts)/,
     );
     if (match && match[1]) {
       const path = match[1];
-      if (!skip.some((s) => path.endsWith(s))) return path;
+      const file = path.slice(path.lastIndexOf("/") + 1);
+      if (!PLUMBING_FILES.includes(file)) return path;
     }
   }
   return undefined;
 }
 
-function componentFor(
-  caller?: string,
-): "worker" | "reviewer" | "babysitter" | "unknown" {
-  if (!caller) return "unknown";
-  if (caller.includes("fleet_pr_babysitter")) return "babysitter";
-  if (caller.includes("review_round") || caller.includes("pr_maintenance")) {
-    return "reviewer";
-  }
-  return "worker";
+/** Best-effort caller resolution from the current stack trace. */
+function resolveCaller(): string | undefined {
+  return callerFromStack(new Error().stack);
 }
 
-function actionKindFor(
+/**
+ * Modules that positively identify the worker as the requester.
+ *
+ * Only these name the worker. Any other caller, or none, is `unknown`
+ * rather than assumed to be the worker.
+ */
+const WORKER_CALLERS: ReadonlyArray<string> = [
+  "agent_pr_adoption",
+  "completion_phase",
+  "pr_ci_processor",
+  "pr_feedback_processor",
+  "pr_maintenance",
+];
+
+/**
+ * Classify the component that requested a mutation from its caller path.
+ *
+ * Exported for tests; production reaches it only through {@link record}.
+ *
+ * @param caller - The `worker/deno/...` caller path, if one was resolved.
+ */
+export function componentFor(caller?: string): AuditComponent {
+  if (!caller) return "unknown";
+  if (caller.includes("fleet_pr_babysitter")) return "babysitter";
+  if (caller.includes("review_round")) return "reviewer";
+  if (WORKER_CALLERS.some((name) => caller.includes(name))) return "worker";
+  return "unknown";
+}
+
+/** Callers whose `git push` updates a PR branch that already exists. */
+const REPAIR_PUSH_CALLERS: ReadonlyArray<string> = [
+  "fleet_pr_babysitter",
+  "pr_ci_processor",
+  "pr_feedback_processor",
+];
+
+/** Callers whose `git push` publishes the run's own implementation branch. */
+const IMPLEMENTATION_PUSH_CALLERS: ReadonlyArray<string> = [
+  "agent_pr_adoption",
+  "completion_phase",
+];
+
+/**
+ * Classify the action a mutation performs, without guessing from the verb
+ * alone.
+ *
+ * A `git push` is only `repair` or `implementation` when its caller positively
+ * names the module that makes that push; any other push is `unknown`.
+ *
+ * Exported for tests; production reaches it only through {@link record}.
+ *
+ * @param info - The classified mutation.
+ * @param caller - The `worker/deno/...` caller path, if one was resolved.
+ * @param args - The raw `gh` or `git` arguments, for the dismissal state.
+ */
+export function actionKindFor(
   info: MutationInfo,
   caller: string | undefined,
   args: readonly string[],
@@ -129,15 +195,13 @@ function actionKindFor(
       .test(info.target ?? "") &&
     args.some((arg) => /^state=DISMISSED$/i.test(arg))
   ) return "dismissal";
-  if (info.verb === "git-push") {
-    if (
-      caller?.includes("pr_ci_processor") ||
-      caller?.includes("pr_feedback_processor")
-    ) return "repair";
-    if (
-      caller?.includes("agent_pr_adoption") ||
-      caller?.includes("completion_phase")
-    ) return "implementation";
+  if (info.verb === "git-push" && caller) {
+    if (REPAIR_PUSH_CALLERS.some((name) => caller.includes(name))) {
+      return "repair";
+    }
+    if (IMPLEMENTATION_PUSH_CALLERS.some((name) => caller.includes(name))) {
+      return "implementation";
+    }
   }
   return "unknown";
 }
@@ -175,9 +239,6 @@ async function record(
       actionKind: actionKindFor(info, caller, args),
       ...(prNumberFor(info) !== undefined
         ? { prNumber: prNumberFor(info) }
-        : {}),
-      ...(opts.headSha && /^[0-9a-f]{40}$/.test(opts.headSha)
-        ? { headSha: opts.headSha }
         : {}),
       runId: opts.runId ?? resolveRunId(opts.env ?? processEnvLookup),
       verb: info.verb,

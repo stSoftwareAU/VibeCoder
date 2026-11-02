@@ -26,7 +26,6 @@ export interface PrCompletionRecord {
   mergedAt: string | null;
   closedAt?: string | null;
   observedAt?: string;
-  host?: string;
   milestone?: boolean;
   rollupRoot?: string;
   ownerGated?: boolean;
@@ -47,13 +46,14 @@ export interface TrustedPrAction {
   outcome: "confirmed" | "failed" | "unknown";
   actor: "fleet" | "human" | "unknown";
   verified: boolean;
-  actorLogin?: string;
 }
 
 export interface PrCompletionInput {
   cohort: { start: string; end: string; observedAt: string };
   prs: PrCompletionRecord[];
   actions: TrustedPrAction[];
+  /** Repositories whose cohort exceeded the collection cap; absent means none. */
+  truncatedRepos?: string[];
   blockers: Array<{
     repo: string;
     prNumber: number;
@@ -174,6 +174,8 @@ export interface PrCompletionReport {
     deliveredChangesWithoutCiData: number;
     excludedPrs: number;
     incompleteObservationWindow: boolean;
+    /** Repositories whose cohort was cut at the collection cap. */
+    truncatedRepos: string[];
   };
 }
 
@@ -338,6 +340,13 @@ export function buildPrCompletionReport(
     throw new Error(
       "cohort timestamps must satisfy start < end and observedAt >= start",
     );
+  }
+  const truncatedRepos = input.truncatedRepos ?? [];
+  if (
+    !Array.isArray(truncatedRepos) ||
+    truncatedRepos.some((repo) => typeof repo !== "string")
+  ) {
+    throw new Error("truncatedRepos must be a list of repositories");
   }
 
   const unique = new Map<string, PrCompletionRecord>();
@@ -740,6 +749,7 @@ export function buildPrCompletionReport(
         : 0,
       excludedPrs,
       incompleteObservationWindow,
+      truncatedRepos: [...truncatedRepos],
     },
   };
 }
@@ -749,19 +759,25 @@ export function formatPrCompletionReport(report: PrCompletionReport): string {
   return JSON.stringify(report, null, 2);
 }
 
-/** Fingerprint allowlisted resolved review policy settings, never raw config. */
+/**
+ * The resolved policy settings that feed the fingerprint. Each key names a
+ * `WorkerConfig` setting, except `resolved_repo_policies`, which carries the
+ * per-repository resolution (including `skipAutoMerge`). Any other setting is
+ * ignored, so raw configuration and credentials never enter the fingerprint.
+ */
 const REVIEW_POLICY_KEYS = new Set([
   "issue_executor_split",
   "issue_sub_agent_tier",
   "issue_reviewer_agents",
-  "pr_reviewer_parallel",
-  "pr_reviewer_auto_release",
-  "skip_auto_merge",
   "resolved_repo_policies",
   "external_orchestration",
 ]);
 
-export async function fingerprintReviewPolicy(
+/**
+ * SHA-256 (lower-case hex) over the allowlisted entries of `settings`, sorted
+ * by key. Keys outside {@link REVIEW_POLICY_KEYS} do not change the result.
+ */
+async function fingerprintReviewPolicy(
   settings: Record<string, string | number | boolean>,
 ): Promise<string> {
   const allowed = Object.entries(settings)
@@ -789,6 +805,7 @@ export function fingerprintWorkerReviewPolicy(
     repo.toLowerCase(),
     isIssueExecutorSplitEnabled("issue", config.repoConfig?.[repo], config),
     resolveIssueSubAgentTier(config, config.repoConfig?.[repo]),
+    config.repoConfig?.[repo]?.skipAutoMerge === true,
   ]);
   return fingerprintReviewPolicy({
     issue_executor_split: config.issueExecutorSplit,

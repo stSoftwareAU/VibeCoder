@@ -20,8 +20,12 @@ import {
   buildLifecycleEvent,
   serialiseLifecycleEvent,
 } from "../lib/lifecycle_ledger.ts";
-import { buildPrCompletionReport } from "../lib/pr_completion_report.ts";
 import {
+  buildPrCompletionReport,
+  type TrustedPrAction,
+} from "../lib/pr_completion_report.ts";
+import {
+  type CollectedSnapshot,
   type CollectOptions,
   collectPrCompletionSnapshot,
   type GhJson,
@@ -192,7 +196,16 @@ Deno.test("collect - pages the cohort, filters by creation, and flags truncation
     options(fakeGh(capped), { maxPrsPerRepo: 100 }),
   );
   assertEquals(truncated.truncatedRepos, [REPO]);
+  assertEquals(truncated.input.truncatedRepos, [REPO]);
   assert(!capped.calls.some((path) => path.includes("page=2")));
+
+  // The truncation survives into the report, so it reaches --input replay.
+  const report = buildPrCompletionReport(truncated.input);
+  assertEquals(report.coverage.truncatedRepos, [REPO]);
+  assertEquals(
+    buildPrCompletionReport(snapshot.input).coverage.truncatedRepos,
+    [],
+  );
 });
 
 Deno.test("collect - a GitHub merge matched to a verified fleet action is unattended", async () => {
@@ -202,7 +215,6 @@ Deno.test("collect - a GitHub merge matched to a verified fleet action is unatte
         verb: "git-push",
         actionKind: "implementation",
         actionId: "a-push-1",
-        repo: REPO,
         target: "issue-1",
         timestamp: "2026-10-20T00:30:00Z",
       },
@@ -233,13 +245,13 @@ Deno.test("collect - a GitHub merge matched to a verified fleet action is unatte
   });
 });
 
-Deno.test("collect - a branch push is linked to its PR by branch name", async () => {
+Deno.test("collect - a repo-less branch push is linked to its PR by branch name", async () => {
   await withDir(async (dir) => {
+    // Production writes git-push entries without a repo: only the target.
     await journal(dir, [{
       verb: "git-push",
       actionKind: "implementation",
       actionId: "a-push-5",
-      repo: REPO,
       target: "issue-5",
       timestamp: "2026-10-20T00:30:00Z",
     }]);
@@ -253,10 +265,110 @@ Deno.test("collect - a branch push is linked to its PR by branch name", async ()
       action.actionId === "a-push-5"
     );
     assert(push, "the push must be retained as a PR action");
+    assertEquals(push.repo, REPO);
     assertEquals(push.prNumber, 5);
     assertEquals(push.actor, "fleet");
     assertEquals(push.verified, true);
   });
+});
+
+/**
+ * Journal one fleet push with the given fields, collect it against the given
+ * GitHub pulls, and return the PR action it became, or `undefined` if the push
+ * stayed unlinked.
+ */
+async function collectedPush(
+  entry: Partial<AuditMutation>,
+  pulls: Record<string, Json[]>,
+): Promise<TrustedPrAction | undefined> {
+  const dir = await Deno.makeTempDir();
+  try {
+    await journal(dir, [{
+      verb: "git-push",
+      actionKind: "implementation",
+      actionId: "push-under-test",
+      timestamp: "2026-10-20T00:30:00Z",
+      ...entry,
+    }]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(emptyFixture({ pulls })), {
+        repos: Object.keys(pulls),
+        auditDirs: [dir],
+      }),
+    );
+    return snapshot.input.actions.find((action) =>
+      action.actionId === "push-under-test"
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("collect - a repo-less push whose branch belongs to two repos stays unlinked", async () => {
+  const pushed = await collectedPush(
+    { target: "issue-8" },
+    {
+      [REPO]: [pull(8, { head: { ref: "issue-8", sha: "sha8" } })],
+      "org/other": [pull(8, { head: { ref: "issue-8", sha: "sha8b" } })],
+    },
+  );
+  assertEquals(pushed, undefined, "an ambiguous branch must not be linked");
+});
+
+Deno.test("collect - a HEAD push cannot be linked, even to a PR whose head is named HEAD", async () => {
+  const pushed = await collectedPush(
+    { target: "HEAD" },
+    { [REPO]: [pull(9, { head: { ref: "HEAD", sha: "sha9" } })] },
+  );
+  assertEquals(pushed, undefined, "HEAD names no branch the journal records");
+});
+
+Deno.test("collect - a refspec push links by the branch after the colon", async () => {
+  const pushed = await collectedPush(
+    { target: "HEAD:refs/heads/issue-10" },
+    { [REPO]: [pull(10)] },
+  );
+  assert(pushed, "the refspec destination names the PR's branch");
+  assertEquals(pushed.repo, REPO);
+  assertEquals(pushed.prNumber, 10);
+});
+
+Deno.test("collect - a push with a repo links within that repo only", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [{
+      verb: "git-push",
+      actionKind: "implementation",
+      actionId: "push-with-repo",
+      repo: "org/other",
+      target: "issue-11",
+      timestamp: "2026-10-20T00:30:00Z",
+    }]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(11)], "org/other": [] },
+        })),
+        { repos: [REPO, "org/other"], auditDirs: [dir] },
+      ),
+    );
+    assertEquals(
+      snapshot.input.actions.some((action) =>
+        action.actionId === "push-with-repo"
+      ),
+      false,
+      "a push to org/other cannot link to a PR in org/repo",
+    );
+  });
+});
+
+Deno.test("collect - a push outside the PR's lifetime stays unlinked", async () => {
+  // The PR is open from 2026-10-20 and observed at the cohort end: a push a
+  // week before it was created cannot belong to it.
+  const pushed = await collectedPush(
+    { target: "issue-12", timestamp: "2026-10-10T00:00:00Z" },
+    { [REPO]: [pull(12, { state: "open", merged_at: null, closed_at: null })] },
+  );
+  assertEquals(pushed, undefined);
 });
 
 Deno.test("collect - a fleet action 15 minutes from the GitHub event does not match", async () => {
@@ -265,7 +377,6 @@ Deno.test("collect - a fleet action 15 minutes from the GitHub event does not ma
       verb: "git-push",
       actionKind: "implementation",
       actionId: "a-push-6",
-      repo: REPO,
       target: "issue-6",
       timestamp: "2026-10-20T00:15:00Z",
     }]);
@@ -285,6 +396,68 @@ Deno.test("collect - a fleet action 15 minutes from the GitHub event does not ma
       ),
       "a push 15 minutes away must leave the commit group unknown",
     );
+  });
+});
+
+Deno.test("collect - a merge armed hours before GitHub records it matches; armed before creation or 15 minutes after does not", async () => {
+  await withDir(async (dir) => {
+    // Auto-merge is armed (and journalled) long before GitHub merges the PR.
+    await journal(dir, [
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "armed-13",
+        repo: REPO,
+        prNumber: 13,
+        timestamp: "2026-10-19T23:00:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "armed-14",
+        repo: REPO,
+        prNumber: 14,
+        timestamp: "2026-10-19T20:00:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "late-15",
+        repo: REPO,
+        prNumber: 15,
+        timestamp: "2026-10-20T02:15:00Z",
+      },
+    ]);
+    // PR 14 was armed before it existed; PRs 13 and 15 existed since 19 Oct.
+    const fixture = emptyFixture({
+      pulls: {
+        [REPO]: [
+          pull(13, { created_at: "2026-10-19T12:00:00Z" }),
+          pull(14, { created_at: "2026-10-20T00:00:00Z" }),
+          pull(15, { created_at: "2026-10-19T12:00:00Z" }),
+        ],
+      },
+    });
+    const snapshot = await collectPrCompletionSnapshot(
+      options(fakeGh(fixture), { auditDirs: [dir] }),
+    );
+    const ids = snapshot.input.actions.map((action) => action.actionId);
+    assert(
+      !ids.includes("gh:org/repo#13:merge:merge13"),
+      "armed three hours before the merge, the fleet action matches it",
+    );
+    assert(
+      ids.includes("gh:org/repo#14:merge:merge14"),
+      "armed before creation, the fleet action does not match the merge",
+    );
+    assert(
+      ids.includes("gh:org/repo#15:merge:merge15"),
+      "stamped 15 minutes after the merge, the fleet action does not match it",
+    );
+    const armed13 = snapshot.input.actions.find((action) =>
+      action.actionId === "armed-13"
+    );
+    assertEquals(armed13?.actor, "fleet");
   });
 });
 
@@ -319,7 +492,6 @@ Deno.test("collect - unmatched GitHub merges and approvals are unknown, never hu
     assertEquals(action.actor, "unknown");
     assertEquals(action.verified, false);
     assertEquals(action.outcome, "unknown");
-    assertEquals(action.actorLogin, undefined);
   }
   assertEquals(
     actions.map((action) => action.actionId).sort(),
@@ -763,4 +935,301 @@ Deno.test("collect - a zero-PR cohort yields an empty, valid report", async () =
   const report = buildPrCompletionReport(snapshot.input);
   assertEquals(report.cohort.prCount, 0);
   assertEquals(report.completion.unattendedWithin24Hours, null);
+});
+
+/** Collect a one-repository cohort of `pulls` with no audit journal. */
+async function collectPulls(
+  pulls: Json[],
+  defaultBranch = "main",
+): Promise<CollectedSnapshot> {
+  return await collectPrCompletionSnapshot(
+    options(fakeGh(emptyFixture({ pulls: { [REPO]: pulls }, defaultBranch }))),
+  );
+}
+
+const MILESTONE = "milestone/4658";
+
+Deno.test("collect - a milestone PR with one default-branch rollup is an intermediate rollup, not a delivery", async () => {
+  const snapshot = await collectPulls([
+    pull(10, {
+      created_at: "2026-10-19T00:00:00Z",
+      merged_at: "2026-10-19T02:00:00Z",
+      base: { ref: MILESTONE },
+      head: { ref: "issue-10", sha: "sha10" },
+    }),
+    pull(11, {
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: "2026-10-20T02:00:00Z",
+      base: { ref: "main" },
+      head: { ref: MILESTONE, sha: "sha11" },
+    }),
+    // An unrelated default-branch change must not spoil the single root.
+    pull(12, {
+      created_at: "2026-10-21T00:00:00Z",
+      merged_at: "2026-10-21T02:00:00Z",
+      base: { ref: "main" },
+      head: { ref: "issue-12", sha: "sha12" },
+    }),
+  ]);
+  assertEquals(
+    snapshot.input.prs.find((pr) => pr.number === 10)?.rollupRoot,
+    "org/repo#11",
+  );
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.delivery.milestonePrs, 1);
+  assertEquals(report.delivery.intermediateRollupPrs, 1);
+  // The rollup (11) and the unrelated change (12) are deliveries; the
+  // milestone PR (10) is not.
+  assertEquals(report.delivery.defaultBranchChanges, 2);
+});
+
+Deno.test("collect - a milestone PR with no default-branch rollup in the cohort keeps no root", async () => {
+  const snapshot = await collectPulls([
+    pull(10, {
+      created_at: "2026-10-19T00:00:00Z",
+      merged_at: "2026-10-19T02:00:00Z",
+      base: { ref: MILESTONE },
+      head: { ref: "issue-10", sha: "sha10" },
+    }),
+  ]);
+  assertEquals(snapshot.input.prs[0]?.rollupRoot, undefined);
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.delivery.intermediateRollupPrs, 0);
+  assertEquals(report.delivery.defaultBranchChanges, 0);
+});
+
+Deno.test("collect - two default-branch rollups of one milestone leave its root unset", async () => {
+  const snapshot = await collectPulls([
+    pull(10, {
+      created_at: "2026-10-19T00:00:00Z",
+      merged_at: "2026-10-19T02:00:00Z",
+      base: { ref: MILESTONE },
+      head: { ref: "issue-10", sha: "sha10" },
+    }),
+    pull(11, {
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: "2026-10-20T02:00:00Z",
+      base: { ref: "main" },
+      head: { ref: MILESTONE, sha: "sha11" },
+    }),
+    pull(12, {
+      created_at: "2026-10-21T00:00:00Z",
+      merged_at: "2026-10-21T02:00:00Z",
+      base: { ref: "main" },
+      head: { ref: MILESTONE, sha: "sha12" },
+    }),
+  ]);
+  assertEquals(
+    snapshot.input.prs.find((pr) => pr.number === 10)?.rollupRoot,
+    undefined,
+  );
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.delivery.intermediateRollupPrs, 0);
+  assertEquals(report.delivery.defaultBranchChanges, 2);
+});
+
+Deno.test("collect - a milestone PR never roots itself", async () => {
+  // The milestone branch is also the default branch here, so the PR would
+  // match every condition for itself unless the derivation excludes it.
+  const snapshot = await collectPulls([
+    pull(10, {
+      created_at: "2026-10-19T00:00:00Z",
+      merged_at: "2026-10-19T02:00:00Z",
+      base: { ref: MILESTONE },
+      head: { ref: MILESTONE, sha: "sha10" },
+    }),
+  ], MILESTONE);
+  assertEquals(snapshot.input.prs[0]?.rollupRoot, undefined);
+  const report = buildPrCompletionReport(snapshot.input);
+  assertEquals(report.delivery.intermediateRollupPrs, 0);
+  assertEquals(report.delivery.defaultBranchChanges, 0);
+});
+
+Deno.test("collect - each revert pattern reads only its bounded slice and stays exact on hostile text", async () => {
+  const snapshot = await collectPulls([
+    pull(5, {
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: "2026-10-20T02:00:00Z",
+    }),
+    // Quoted title text of 290 characters, then (#5) inside the title bound.
+    pull(6, {
+      title: `Revert "${"b".repeat(290)}" ${" ".repeat(600)}(#5)`,
+      created_at: "2026-10-22T00:00:00Z",
+      merged_at: "2026-10-22T01:00:00Z",
+    }),
+    pull(7, {
+      // Quoted title text over 300 characters: REVERT_TITLE must not match.
+      title: `Revert "${"c".repeat(400)}" (#8)`,
+      created_at: "2026-10-23T00:00:00Z",
+      merged_at: "2026-10-23T01:00:00Z",
+    }),
+    pull(8, {
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: "2026-10-20T02:00:00Z",
+    }),
+    pull(9, {
+      // A long run of "(#" with no digits: QUOTED_PR_REFERENCE finds nothing.
+      title: `Revert "Change 9" ${"(#".repeat(2_000)}`,
+      created_at: "2026-10-24T00:00:00Z",
+      merged_at: "2026-10-24T01:00:00Z",
+    }),
+    pull(10, {
+      // Reverts #8 starts inside the 20,000-character body bound.
+      body: `${" ".repeat(19_000)}Reverts #8`,
+      created_at: "2026-10-25T00:00:00Z",
+      merged_at: "2026-10-25T01:00:00Z",
+    }),
+    pull(12, {
+      created_at: "2026-10-20T00:00:00Z",
+      merged_at: "2026-10-20T02:00:00Z",
+    }),
+    pull(13, {
+      // Reverts #12 lies beyond the body bound: it is not seen.
+      body: `${"a".repeat(25_000)} Reverts #12`,
+      created_at: "2026-10-26T00:00:00Z",
+      merged_at: "2026-10-26T01:00:00Z",
+    }),
+    pull(14, {
+      // A long run of spaces, then a rejected character: no reference.
+      body: `Reverts ${" ".repeat(30_000)}#${"9".repeat(3_000)}`,
+      created_at: "2026-10-27T00:00:00Z",
+      merged_at: "2026-10-27T01:00:00Z",
+    }),
+  ]);
+  assertEquals(
+    [...snapshot.input.regressions].sort((a, b) => a.prNumber - b.prNumber),
+    [
+      {
+        repo: REPO,
+        prNumber: 5,
+        detectedAt: "2026-10-22T00:00:00Z",
+        resolved: true,
+      },
+      {
+        repo: REPO,
+        prNumber: 8,
+        detectedAt: "2026-10-25T00:00:00Z",
+        resolved: true,
+      },
+    ],
+  );
+});
+
+Deno.test("collect - the rollout check strands only PRs open at verification and at least a day old", async () => {
+  await withDir(async (dir) => {
+    const verified = "2026-10-25T00:00:00Z";
+    await journal(dir, [{
+      verb: "pr-review",
+      actionKind: "review",
+      actionId: "after-merged-31",
+      repo: REPO,
+      prNumber: 31,
+      component: "reviewer",
+      timestamp: "2026-10-26T01:00:00Z",
+    }]);
+    const open = { state: "open", merged_at: null, closed_at: null };
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture({
+        pulls: {
+          [REPO]: [
+            // Open at verification and five days old: stranded.
+            pull(30, { ...open, created_at: "2026-10-20T00:00:00Z" }),
+            // Merged after verification, re-entered discovery: stranded, and
+            // rediscovered and processed by a confirmed fleet action.
+            pull(31, {
+              created_at: "2026-10-20T00:00:00Z",
+              merged_at: "2026-10-26T00:00:00Z",
+              closed_at: "2026-10-26T00:00:00Z",
+            }),
+            // Merged before verification: excluded.
+            pull(32, {
+              created_at: "2026-10-20T00:00:00Z",
+              merged_at: "2026-10-24T00:00:00Z",
+              closed_at: "2026-10-24T00:00:00Z",
+            }),
+            // Open but twelve hours old at verification: excluded.
+            pull(33, { ...open, created_at: "2026-10-24T12:00:00Z" }),
+            // Closed exactly at verification: not open at it, excluded.
+            pull(34, {
+              state: "closed",
+              merged_at: null,
+              created_at: "2026-10-20T00:00:00Z",
+              closed_at: verified,
+            }),
+            // Owner-gated: excluded.
+            pull(35, {
+              ...open,
+              created_at: "2026-10-20T00:00:00Z",
+              labels: [{ name: "needs-human" }],
+            }),
+          ],
+        },
+      })),
+      { auditDirs: [dir], rolloutVerifiedAt: verified },
+    ));
+    const stranded = snapshot.input.rollout!.strandedPrs
+      .map((pr) => ({
+        prNumber: pr.prNumber,
+        rediscovered: pr.rediscovered,
+        processed: pr.processed,
+      }))
+      .sort((a, b) => a.prNumber - b.prNumber);
+    assertEquals(stranded, [
+      { prNumber: 30, rediscovered: false, processed: false },
+      { prNumber: 31, rediscovered: true, processed: true },
+    ]);
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.rollout.eligibleStrandedPrs, 2);
+    assertEquals(report.rollout.rediscoveredPrs, 1);
+    assertEquals(report.rollout.processedPrs, 1);
+    assertEquals(report.rollout.notRediscoveredPrs, 1);
+  });
+});
+
+Deno.test("collect - pre-change review-run records and journal entries are ignored with a note", async () => {
+  await withDir(async (dir) => {
+    const rounds = `${dir}/rounds`;
+    await Deno.mkdir(`${rounds}/20261020-100000`, { recursive: true });
+    // Written before the deployment field existed.
+    await Deno.writeTextFile(
+      `${rounds}/20261020-100000/review-run.json`,
+      JSON.stringify({ round: "20261020-100000", attempts: [] }),
+    );
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    await journal(auditDir, [
+      // Pre-change journal entry: no action ID and no action kind.
+      {
+        verb: "pr-review",
+        repo: REPO,
+        prNumber: 1,
+        component: "reviewer",
+        timestamp: "2026-10-20T01:00:00Z",
+      },
+      // Carries an action ID but no action kind: not a PR action.
+      {
+        verb: "pr-merge",
+        actionId: "legacy-1",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(options(
+      fakeGh(emptyFixture({ pulls: { [REPO]: [pull(1)] } })),
+      { auditDirs: [auditDir], reviewRunDirs: [rounds] },
+    ));
+    assertEquals(snapshot.input.deployments, []);
+    assertStringIncludes(
+      snapshot.coverageNotes.join("\n"),
+      "1 record(s) have no deployment field",
+    );
+    assertEquals(
+      snapshot.input.actions.filter((action) => action.actionId === "legacy-1")
+        .length,
+      0,
+    );
+    // The chain verified, so the completeness flag is unchanged by the legacy entries.
+    assertEquals(snapshot.input.prs[0]!.actionsComplete, true);
+  });
 });

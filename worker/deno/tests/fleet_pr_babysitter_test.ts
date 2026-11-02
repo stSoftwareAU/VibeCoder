@@ -34,6 +34,7 @@ import {
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
 
 Deno.test("failed clone is attempted once and preserves its original error", async () => {
   let attempts = 0;
@@ -53,20 +54,47 @@ Deno.test("failed clone is attempted once and preserves its original error", asy
 Deno.test("babysitter deployment heartbeat stores only revision and policy fingerprint", async () => {
   const dir = await Deno.makeTempDir();
   try {
+    const split = buildDefaultWorkerConfig();
+    split.issueExecutorSplit = true;
+    const unsplit = buildDefaultWorkerConfig();
+    unsplit.issueExecutorSplit = false;
+
     await recordBabysitterDeployment(
       dir,
-      buildDefaultWorkerConfig(),
+      split,
       "abcdef0123456789",
       "2026-11-02T00:00:00.000Z",
     );
-    const record = JSON.parse(
+    const first = JSON.parse(
       await Deno.readTextFile(`${dir}/deployment-health.json`),
     );
-    assertEquals(record.component, "babysitter");
-    assertEquals(record.codeRevision, "abcdef0123456789");
-    assertEquals(record.observedAt, "2026-11-02T00:00:00.000Z");
-    assertEquals(/^[0-9a-f]{64}$/.test(record.policyFingerprint), true);
-    assertEquals("issueExecutorSplit" in record, false);
+    assertEquals(first.component, "babysitter");
+    assertEquals(first.codeRevision, "abcdef0123456789");
+    assertEquals(first.observedAt, "2026-11-02T00:00:00.000Z");
+    assertEquals(
+      first.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(split),
+      "the heartbeat carries the fingerprint of the split config's review policy",
+    );
+
+    await recordBabysitterDeployment(
+      dir,
+      unsplit,
+      "abcdef0123456789",
+      "2026-11-02T00:00:01.000Z",
+    );
+    const second = JSON.parse(
+      await Deno.readTextFile(`${dir}/deployment-health.json`),
+    );
+    assertEquals(
+      second.policyFingerprint,
+      await fingerprintWorkerReviewPolicy(unsplit),
+      "the heartbeat carries the fingerprint of the unsplit config's review policy",
+    );
+    assert(
+      first.policyFingerprint !== second.policyFingerprint,
+      "a change to issueExecutorSplit changes the heartbeat's policy fingerprint",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

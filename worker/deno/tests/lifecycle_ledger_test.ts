@@ -489,6 +489,43 @@ Deno.test("lifecycle ledger - each refusal names the field it broke", () => {
   }
 });
 
+Deno.test("lifecycle ledger - a malformed treatment.reviewPolicyFingerprint is refused by name", () => {
+  const sample = oneOfEachKind()[0];
+  assert(sample?.kind === "assignment");
+  const treatment = sample.treatment;
+  const malformed: [string, unknown][] = [
+    ["too short", "a".repeat(63)],
+    ["too long", "a".repeat(65)],
+    ["uppercase", "A".repeat(64)],
+    ["not hex", "g".repeat(64)],
+    ["not a string", 12345],
+  ];
+  for (const [name, value] of malformed) {
+    const input = probeInput(0, {
+      treatment: { ...treatment, reviewPolicyFingerprint: value },
+    });
+    const error = assertThrows(
+      () => validateLifecycleEvent(rawEvent(input)),
+      LifecycleEventSchemaError,
+    );
+    assertEquals(error.field, "treatment.reviewPolicyFingerprint", name);
+  }
+  // Only the fingerprint rule is at fault: the same event with a valid
+  // 64-hex fingerprint is accepted, and the fingerprint is read back as given.
+  const valid = "a0".repeat(32);
+  const accepted = validateLifecycleEvent(
+    rawEvent(
+      probeInput(0, {
+        treatment: { ...treatment, reviewPolicyFingerprint: valid },
+      }),
+    ),
+  );
+  assertEquals(accepted.kind, "assignment");
+  if (accepted.kind === "assignment") {
+    assertEquals(accepted.treatment.reviewPolicyFingerprint, valid);
+  }
+});
+
 Deno.test("lifecycle ledger - a root value that is not an object is refused", () => {
   for (const value of [null, [], "x", 42]) {
     const error = assertThrows(

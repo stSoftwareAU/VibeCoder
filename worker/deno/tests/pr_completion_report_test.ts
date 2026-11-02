@@ -1,11 +1,11 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   buildPrCompletionReport,
-  fingerprintReviewPolicy,
   fingerprintWorkerReviewPolicy,
   type PrCompletionInput,
   type PrCompletionRecord,
 } from "../lib/pr_completion_report.ts";
+import type { WorkerConfig } from "../types.ts";
 
 const start = "2026-10-01T00:00:00.000Z";
 const end = "2026-11-01T00:00:00.000Z";
@@ -70,11 +70,11 @@ function input(overrides: Partial<PrCompletionInput> = {}): PrCompletionInput {
   };
 }
 
-Deno.test("PR completion report deduplicates hosts and separates trusted outcomes", () => {
+Deno.test("PR completion report deduplicates repeated observations and separates trusted outcomes", () => {
   const report = buildPrCompletionReport(input({
     prs: [
       pr(1),
-      pr(1, { host: "host-b" }),
+      pr(1, { observedAt: "2026-10-30T00:00:00.000Z" }),
       pr(2),
       pr(3, { state: "open", mergedAt: null }),
       pr(4, { state: "closed", mergedAt: null }),
@@ -130,22 +130,48 @@ Deno.test("PR completion report deduplicates hosts and separates trusted outcome
   assertEquals(report.delivery.ciMinutesPerDeliveredChange, 10 / 3);
 });
 
-Deno.test("user identity does not disqualify verified automation; unknown history stays unknown", () => {
+Deno.test("a login-looking field cannot change an action's actor; unknown stays unknown", () => {
+  // Extra keys are ignored: the actor and verification decide, never a login.
+  // The cast admits keys the type does not declare, as unexpected input would.
   const report = buildPrCompletionReport(input({
     prs: [pr(10), pr(11)],
     actions: [
       {
-        ...action(10, "user-account", "implementation", "fleet"),
+        ...action(10, "fleet-impl", "implementation", "fleet"),
+        actorLogin: "owner",
+      },
+      { ...action(10, "fleet-merge", "merge", "fleet"), actorLogin: "owner" },
+      {
+        ...action(11, "unknown-impl", "implementation", "unknown"),
+        login: "owner",
         actorLogin: "owner",
       },
       {
-        ...action(10, "merge-user-account", "merge", "fleet"),
+        ...action(11, "unknown-merge", "merge", "unknown"),
+        login: "owner",
         actorLogin: "owner",
       },
-    ] as PrCompletionInput["actions"],
+    ] as unknown as PrCompletionInput["actions"],
   }));
   assertEquals(report.completion.unattendedMerged, 1);
   assertEquals(report.completion.unknownMerged, 1);
+  assertEquals(report.completion.humanAssistedMerged, 0);
+});
+
+Deno.test("truncated repositories are echoed in coverage, default to none, and must be a list", () => {
+  assertEquals(buildPrCompletionReport(input()).coverage.truncatedRepos, []);
+  const report = buildPrCompletionReport(
+    input({ truncatedRepos: ["org/repo"] }),
+  );
+  assertEquals(report.coverage.truncatedRepos, ["org/repo"]);
+  assertThrows(
+    () =>
+      buildPrCompletionReport(
+        input({ truncatedRepos: "org/repo" as unknown as string[] }),
+      ),
+    Error,
+    "truncatedRepos must be a list of repositories",
+  );
 });
 
 Deno.test("report keeps zero denominators unavailable and exposes waiting and regressions", () => {
@@ -311,33 +337,75 @@ Deno.test("deployment report exposes mixed revision and policy observations", ()
   assertEquals(report.deployment.mixedPolicies, ["worker"]);
 });
 
-Deno.test("policy fingerprint includes only the resolved policy allowlist", async () => {
-  const first = await fingerprintReviewPolicy(
-    { issue_executor_split: true, token: "secret-one" } as Record<
-      string,
-      string | number | boolean
-    >,
-  );
-  const second = await fingerprintReviewPolicy(
-    { issue_executor_split: true, token: "secret-two" } as Record<
-      string,
-      string | number | boolean
-    >,
-  );
-  assertEquals(first, second);
-  assertEquals(
-    first === await fingerprintReviewPolicy({ issue_executor_split: false }),
-    false,
-  );
-  assertEquals(
-    await fingerprintReviewPolicy({ issue_executor_split: false }),
-    await fingerprintReviewPolicy(
-      { issue_executor_split: false, token: "secret" } as Record<
-        string,
-        string | number | boolean
-      >,
-    ),
-  );
+/** A worker config with the settings the policy fingerprint reads, plus overrides. */
+function workerConfig(overrides: Record<string, unknown> = {}): WorkerConfig {
+  return {
+    repos: ["org/repo"],
+    issueExecutorSplit: true,
+    issueSubAgentTier: "sonnet",
+    issueReviewerAgents: true,
+    externalOrchestration: false,
+    repoConfig: {
+      "org/repo": { issueExecutorSplit: false, skipAutoMerge: false },
+    },
+    ...overrides,
+  } as unknown as WorkerConfig;
+}
+
+Deno.test("policy fingerprint changes with each allowlisted setting and not with any other", async () => {
+  const base = await fingerprintWorkerReviewPolicy(workerConfig());
+  assert(/^[0-9a-f]{64}$/.test(base), "the fingerprint is SHA-256 hex");
+  const included: Array<[string, Record<string, unknown>]> = [
+    ["issueExecutorSplit", { issueExecutorSplit: false }],
+    ["issueSubAgentTier", { issueSubAgentTier: "haiku" }],
+    ["issueReviewerAgents", { issueReviewerAgents: false }],
+    ["externalOrchestration", { externalOrchestration: true }],
+    ["repos", { repos: ["org/repo", "org/other"] }],
+    [
+      "repoConfig skipAutoMerge",
+      {
+        repoConfig: {
+          "org/repo": { issueExecutorSplit: false, skipAutoMerge: true },
+        },
+      },
+    ],
+    [
+      "repoConfig issueExecutorSplit",
+      {
+        repoConfig: {
+          "org/repo": { issueExecutorSplit: true, skipAutoMerge: false },
+        },
+      },
+    ],
+  ];
+  for (const [name, overrides] of included) {
+    assert(
+      await fingerprintWorkerReviewPolicy(workerConfig(overrides)) !== base,
+      `${name} must change the fingerprint`,
+    );
+  }
+  const unrelated: Array<[string, Record<string, unknown>]> = [
+    ["a top-level credential", { githubToken: "secret" }],
+    [
+      "an unrelated repository setting",
+      {
+        repoConfig: {
+          "org/repo": {
+            issueExecutorSplit: false,
+            skipAutoMerge: false,
+            qualityCommand: "deno task quality",
+          },
+        },
+      },
+    ],
+  ];
+  for (const [name, overrides] of unrelated) {
+    assertEquals(
+      await fingerprintWorkerReviewPolicy(workerConfig(overrides)),
+      base,
+      `${name} must not change the fingerprint`,
+    );
+  }
 });
 
 Deno.test("deployment fingerprints cover resolved repository policy for every component", async () => {
