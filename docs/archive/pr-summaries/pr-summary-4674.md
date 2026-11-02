@@ -158,9 +158,15 @@ registration prefixes while retaining the credential boundary from #4593.
 
 ## Test Plan
 
-- `deno task test tests/fleet_babysitter_repair_test.ts tests/fleet_babysitter_validation_test.ts tests/fleet_pr_babysitter_test.ts tests/fleet_babysitter_app_test.ts < /dev/null`
-  — run as `deno task test:unit` with the same four files: 122 passed, zero
-  failed or ignored. Includes ordering, planted hook,
+- `deno task test:unit` run per file at head, with `< /dev/null`:
+  `tests/fleet_babysitter_repair_test.ts` (17 tests, 17 passed),
+  `tests/fleet_babysitter_validation_test.ts` (37 tests, 37 passed),
+  `tests/fleet_babysitter_app_test.ts` (18 tests, 18 passed; unchanged by this
+  PR) and `tests/fleet_pr_babysitter_test.ts` (60 tests, 59 passed). The one
+  failure there, `babysitter default heartbeat resolves its checkout revision`,
+  spawns `deno eval` with a cleared environment and could not download
+  `jsr:@std/crypto` in the offline worker sandbox; it needs network access.
+  The files together include ordering, planted hook,
   Linux script shapes, platform prompts, sandbox-apply failure and inherited-pipe
   timeout regressions. Timeout coverage injects spawn and signal functions: no
   real process-group signal runs in the unit suite. It asserts -pid/SIGKILL,
