@@ -665,3 +665,15 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
     assertStringIncludes(prompt, "reads commit history");
   }
 });
+
+// Issue #4713: a code fix left VibeCoder's archived PR summary stale, so CI's
+// freshness gate failed and a second session existed only to refresh it.
+Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "per-PR summary");
+    assertStringIncludes(prompt, "in the same fix");
+  }
+});
