@@ -1686,6 +1686,9 @@ async function _processFeedbackWithHeartbeat(
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir, undefined);
   let verifierFailure: Error | undefined;
+  let publicationValidation:
+    | Awaited<ReturnType<typeof validateRepositoryForPublication>>
+    | undefined;
   const verifyFeedbackBeforePush = commentType === "pr_review"
     ? async () => {
       const checked =
@@ -1721,17 +1724,24 @@ async function _processFeedbackWithHeartbeat(
       const verified = await verifyFeedbackBeforePush();
       if (!verified.ok) return verified;
     }
+    const current = deps.quality.publicationValidationIsCurrent ??
+      publicationValidationIsCurrent;
+    if (
+      publicationValidation?.status === "passed" &&
+      await current(publicationValidation, processorDeps.workDir)
+    ) {
+      return { ok: true as const, value: undefined };
+    }
     const validate = processorDeps.publicationValidationFn ??
       deps.quality.validatePublication ?? validateRepositoryForPublication;
-    const validation = await validate(processorDeps.workDir);
+    publicationValidation = await validate(processorDeps.workDir);
+    const validation = publicationValidation;
     if (validation.status === "unavailable") {
       return { ok: false as const, error: new Error(validation.reason) };
     }
     if (validation.status === "failed") {
       return { ok: false as const, error: new Error(validation.output) };
     }
-    const current = deps.quality.publicationValidationIsCurrent ??
-      publicationValidationIsCurrent;
     if (!await current(validation, processorDeps.workDir)) {
       return {
         ok: false as const,

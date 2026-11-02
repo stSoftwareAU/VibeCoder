@@ -2156,11 +2156,23 @@ async function _processCiWithHeartbeat(
   // worker's archive notes are formatted afterwards. Never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
+  let publicationValidation:
+    | Awaited<ReturnType<typeof validateRepositoryForPublication>>
+    | undefined;
   const validateBeforePush = async () => {
     const cwd = processorDeps.workDir ?? Deno.cwd();
+    const current = deps.quality.publicationValidationIsCurrent ??
+      publicationValidationIsCurrent;
+    if (
+      publicationValidation?.status === "passed" &&
+      await current(publicationValidation, cwd)
+    ) {
+      return { ok: true as const, value: undefined };
+    }
     const validate = processorDeps.publicationValidationFn ??
       deps.quality.validatePublication ?? validateRepositoryForPublication;
-    const validation = await validate(cwd);
+    publicationValidation = await validate(cwd);
+    const validation = publicationValidation;
     if (validation.status !== "passed") {
       return {
         ok: false as const,
@@ -2171,8 +2183,6 @@ async function _processCiWithHeartbeat(
         ),
       };
     }
-    const current = deps.quality.publicationValidationIsCurrent ??
-      publicationValidationIsCurrent;
     if (!await current(validation, cwd)) {
       return {
         ok: false as const,

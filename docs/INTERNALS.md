@@ -138,9 +138,12 @@ skipped required check fail closed. The runner distinguishes a failed check
 from an unavailable host, redacts actionable output, and binds success to the
 checkout contents, the gate command and the installed Bash and Deno versions;
 the publisher rechecks that identity immediately before pushing. A formatter
-or repair edit therefore requires a fresh run. The target repository's gate
-remains its own policy; this runner does not define checks across repositories
-(Issue #4625).
+or repair edit therefore requires a fresh run. In this repository the command
+uses `quality.sh`'s existing Deno gate: its full parallel and serial unit-test
+passes, test-target type check, and strict skipped-check handling. CI shards the
+same unit-test manifests across four jobs. The target repository's gate remains
+its own policy; this runner does not define checks across repositories (Issue
+#4625).
 
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
 the gap that let two PRs sit blocked on the same

@@ -186,6 +186,30 @@ Deno.test("publication failure classification handles a long non-match", async (
   }
 });
 
+Deno.test("publication failures retain the command's cause in long output", async () => {
+  const cwd = await checkout("#!/bin/sh\nexit 0\n");
+  try {
+    const result = await validateRepositoryForPublication(cwd, {
+      run: async () => ({
+        ok: true,
+        value: {
+          success: false,
+          code: 1,
+          stdout: `failing check: unresolved dependency\n${"x".repeat(20_000)}`,
+          stderr: "",
+          timedOut: false,
+        },
+      }),
+    });
+    assertEquals(result.status, "failed");
+    if (result.status === "failed") {
+      assert(result.output.includes("unresolved dependency"));
+    }
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
 Deno.test("publication validation binds a pass to the exact tree", async () => {
   const cwd = await checkout("#!/bin/sh\nexit 0\n");
   try {

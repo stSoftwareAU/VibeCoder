@@ -2,6 +2,7 @@
 
 import { runGitCommand } from "./git_timeout.ts";
 import { computeWorkingTreeDigest } from "./quality_gate_cache.ts";
+import { redactedHeadTail } from "./redacted_text.ts";
 import { runRepositoryCommand } from "./untrusted_gate_spawn.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
@@ -115,7 +116,11 @@ export async function validateRepositoryForPublication(
   const fullOutput = redactSecrets(
     `${result.value.stdout}\n${result.value.stderr}`.trim(),
   );
-  const output = fullOutput.slice(-MAX_OUTPUT);
+  const output = redactedHeadTail(
+    fullOutput,
+    MAX_OUTPUT / 2,
+    MAX_OUTPUT / 2,
+  );
   if (result.value.timedOut) {
     return {
       status: "unavailable",
