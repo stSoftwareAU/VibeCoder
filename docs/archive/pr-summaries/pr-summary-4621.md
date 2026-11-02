@@ -138,17 +138,15 @@ sequenceDiagram
 - Earlier validation:
   `deno task pr-summary-check --base main --issue-body-file /tmp/vibe-issue-4621-body.md --labels work-on,idle-task ../../docs/archive/pr-summaries/pr-summary-4621.md`
   from `worker/deno` — passed; 0 blocked and 0 not checked.
-- Earlier `deno task check:manifests` — failed on the then-existing
-  `worker/deno/lib/fleet_babysitter_codex.ts` entry missing from
-  `docs/audits/lib-sweep-coverage.json` at base commit `82b1e121`.
-  Main has since resolved that omission in PR #4667. The conflict resolution
-  retains main's completed sweep record and security-audit ledger link.
-  Manifest checks were not rerun during conflict resolution.
-- Earlier full gate, before these retry fixes: `./quality.sh < /dev/null` —
-  failed because its completeness check and Deno test pass report that same
-  base-branch sweep-ledger omission; Deno lint, type check, formatting, Mermaid,
-  markdownlint and Semgrep passed. Config integration and Checkov were skipped
-  by the environment.
+- `deno task check:manifests` from `worker/deno` on the merged head (including
+  main's PR #4667 sweep-ledger fix) — passed. Main's `top-up-4664.json` is kept
+  unchanged; this PR carries no sweep-ledger or growth-bound change (main's PR
+  #4681 version of those test files is taken).
+- `deno task test:unit` over `milestone_completion_test.ts`,
+  `agent_pr_adoption_test.ts`, `completion_phase_acceptance_closure_test.ts`,
+  `issue_query_test.ts` and `growth_bound_test.ts` on the merged head — passed;
+  317 passed in the parallel pass and 15 in the serial pass, 0 failed. The full
+  `./quality.sh` gate was not rerun after the merge.
 - Removed from `worker/deno/tests/milestone_completion_test.ts`:
   `assertEquals(bad[0]?.claimProblem, "sync-pr-only");`
   - Required by: "So the rollup body tells the reviewer that delivered work may
