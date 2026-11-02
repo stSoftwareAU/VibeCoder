@@ -665,3 +665,13 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
     assertStringIncludes(prompt, "reads commit history");
   }
 });
+
+// Issue #4717: a CI repair fixed the failing checks, then held back over the
+// verifier's unrelated findings; a later review repair handles reviews.
+Deno.test("other open feedback does not withhold readiness from a CI repair", () => {
+  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", "");
+  assertStringIncludes(
+    prompt,
+    "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
+  );
+});
