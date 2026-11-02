@@ -217,6 +217,11 @@ export function actionKindFor(
   if (info.verb === "pr-review") return "review";
   if (
     info.verb === "api-put" &&
+    /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/update-branch$/
+      .test(info.target ?? "")
+  ) return "branch-update";
+  if (
+    info.verb === "api-put" &&
     /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/reviews\/[1-9]\d*$/
       .test(info.target ?? "") &&
     args.some((arg) => /^state=DISMISSED$/i.test(arg))

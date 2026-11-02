@@ -18,6 +18,7 @@ export type AuditOutcome = "success" | "error";
 export type AuditActionKind =
   | "implementation"
   | "repair"
+  | "branch-update"
   | "review"
   | "dismissal"
   | "merge"

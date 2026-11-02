@@ -9,6 +9,7 @@ export type PrState = "open" | "merged" | "closed";
 export type PrActionKind =
   | "implementation"
   | "repair"
+  | "branch-update"
   | "review"
   | "dismissal"
   | "merge"
@@ -422,6 +423,7 @@ export function buildPrCompletionReport(
       !([
         "implementation",
         "repair",
+        "branch-update",
         "review",
         "dismissal",
         "merge",
@@ -505,14 +507,18 @@ export function buildPrCompletionReport(
       );
       const historyVerified = pr.actionsComplete &&
         actions.every((action) =>
-          action.verified && action.outcome === "confirmed" &&
-          action.actor !== "unknown"
+          action.verified && action.actor !== "unknown" &&
+          (action.outcome === "confirmed" ||
+            (action.actor === "fleet" && action.outcome === "failed"))
         );
       const hasVerifiedMerge = actions.some((action) =>
-        action.kind === "merge"
+        action.kind === "merge" && action.verified &&
+        action.actor === "fleet" && action.outcome === "confirmed"
       );
       const hasVerifiedImplementation = actions.some((action) =>
-        action.kind === "implementation" || action.kind === "repair"
+        (action.kind === "implementation" || action.kind === "repair") &&
+        action.verified && action.actor === "fleet" &&
+        action.outcome === "confirmed"
       );
       const verifiedUnattended = historyVerified && hasVerifiedImplementation &&
         hasVerifiedMerge && !verifiedHuman && actions.every((action) =>
@@ -662,13 +668,19 @@ export function buildPrCompletionReport(
         action.actor === "human"
       );
       const implementation = actions.some((action) =>
-        action.kind === "implementation" || action.kind === "repair"
+        (action.kind === "implementation" || action.kind === "repair") &&
+        action.verified && action.actor === "fleet" &&
+        action.outcome === "confirmed"
       );
-      const merge = actions.some((action) => action.kind === "merge");
+      const merge = actions.some((action) =>
+        action.kind === "merge" &&
+        action.verified && action.actor === "fleet" &&
+        action.outcome === "confirmed"
+      );
       const verified = actions.length > 0 &&
         actions.every((action) =>
-          action.verified && action.outcome === "confirmed" &&
-          action.actor === "fleet"
+          action.verified && action.actor === "fleet" &&
+          (action.outcome === "confirmed" || action.outcome === "failed")
         );
       return !human && verified && implementation && merge &&
         timestamp(pr.mergedAt, "PR mergedAt") -

@@ -37,7 +37,8 @@ The report is a Deno command and Deno task. No Node tooling, `package.json` or
   intervention; `humanAssistedMerged` can only be non-zero from recorded human
   actions in an `--input` snapshot. Accepted trade-off: collected data cannot
   yet tell a human repair from an unrecorded one.
-- Commits match the first verified push at or after their committer date;
+- Commits match the first confirmed, verified push or fleet branch-update call
+  at or after their committer date; branch updates do not count as fix rounds.
   one push may deliver multiple commits. Branch linking begins at the first
   commit, covering WIP pushes before PR creation and delayed completion pushes.
   Time-based matching cannot distinguish an earlier unrecorded push.
@@ -254,6 +255,12 @@ does not claim those deliverables.
   insert" held.
 
 ## Test Plan
+
+- Review fixes: verified failed fleet attempts remain in verified history, but
+  cannot account for GitHub events or provide delivery evidence. Confirmed
+  branch-update calls can account for GitHub-created commits. Report and
+  collector tests cover failed attempts, a confirmed direct merge, an unmatched
+  merge and a branch-update commit.
 
 - Review fixes: `--disable-auto` is an unknown action, never evidence of a
   fleet merge. New audit-hook and collector regressions failed before the

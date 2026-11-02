@@ -648,7 +648,8 @@ function gitHubEvents(
 
 /**
  * Match reviews, dismissals and merges one-to-one; commits can share the first
- * verified implementation or repair push at or after their committer date. Matched events add nothing: the audit action already
+ * confirmed implementation or repair push or branch-update call at or after
+ * their committer date. Matched events add nothing: the audit action already
  * stands for them. Unmatched events become `unknown` actions, never attributed
  * to a human or the fleet.
  *
@@ -672,8 +673,9 @@ function unmatchedActions(
     for (const action of verifiedFleet) {
       const isCommit = event.kind === "implementation" ||
         event.kind === "repair";
+      if (action.outcome !== "confirmed") continue;
       const isPush = action.kind === "implementation" ||
-        action.kind === "repair";
+        action.kind === "repair" || action.kind === "branch-update";
       if (isCommit ? !isPush : used.has(action) || action.kind !== event.kind) {
         continue;
       }

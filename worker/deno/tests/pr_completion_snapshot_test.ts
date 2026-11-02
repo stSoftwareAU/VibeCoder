@@ -49,6 +49,107 @@ const COHORT = {
 };
 const JOURNAL_DATE = "2026-10-25";
 
+Deno.test("collect - failed merge attempts cannot match events but do not taint confirmed delivery", async () => {
+  await withDir(async (dir) => {
+    await journal(dir, [
+      ...[1, 2].map((n) => ({
+        verb: "git-push",
+        actionKind: "implementation" as const,
+        actionId: `push-${n}`,
+        target: `issue-${n}`,
+        timestamp: "2026-10-20T00:30:00Z",
+      })),
+      ...[1, 2].map((n) => ({
+        verb: "pr-merge",
+        actionKind: "merge" as const,
+        actionId: `failed-${n}`,
+        repo: REPO,
+        prNumber: n,
+        outcome: "error" as const,
+        timestamp: "2026-10-20T01:00:00Z",
+      })),
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "direct",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1), pull(2)] },
+          commits: {
+            [pk(1)]: [commit("sha1", "2026-10-20T00:25:00Z")],
+            [pk(2)]: [commit("sha2", "2026-10-20T00:25:00Z")],
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.completion.unknownMerged, 1);
+  });
+});
+
+Deno.test("collect - a confirmed update-branch accounts for its GitHub commit without a fix round", async () => {
+  await withDir(async (dir) => {
+    const args = [
+      "api",
+      "--method",
+      "PUT",
+      `repos/${REPO}/pulls/1/update-branch`,
+    ];
+    const info = classifyGhMutation(args);
+    assert(info);
+    await journal(dir, [
+      {
+        verb: "git-push",
+        actionKind: "implementation",
+        actionId: "push",
+        target: "issue-1",
+        timestamp: "2026-10-20T00:30:00Z",
+      },
+      {
+        verb: info.verb,
+        actionKind: actionKindFor(info, undefined, args),
+        actionId: "update",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T01:30:00Z",
+      },
+      {
+        verb: "pr-merge",
+        actionKind: "merge",
+        actionId: "merge",
+        repo: REPO,
+        prNumber: 1,
+        timestamp: "2026-10-20T02:00:00Z",
+      },
+    ]);
+    const snapshot = await collectPrCompletionSnapshot(
+      options(
+        fakeGh(emptyFixture({
+          pulls: { [REPO]: [pull(1)] },
+          commits: {
+            [pk(1)]: [
+              commit("sha1", "2026-10-20T00:25:00Z"),
+              commit("update", "2026-10-20T01:29:00Z"),
+            ],
+          },
+        })),
+        { auditDirs: [dir] },
+      ),
+    );
+    const report = buildPrCompletionReport(snapshot.input);
+    assertEquals(report.completion.unattendedMerged, 1);
+    assertEquals(report.delivery.fixRounds, 0);
+  });
+});
+
 Deno.test("collect - pre-PR checkpoints and delayed completion deliver all commits", async () => {
   await withDir(async (dir) => {
     await journal(dir, [

@@ -45,7 +45,7 @@ function action(
     headSha: `sha-${number}`,
     kind,
     timestamp: "2026-10-20T01:00:00.000Z",
-    outcome: "confirmed",
+    outcome: "confirmed" as const,
     actor,
     verified: actor !== "unknown",
   };
@@ -69,6 +69,27 @@ function input(overrides: Partial<PrCompletionInput> = {}): PrCompletionInput {
     ...overrides,
   };
 }
+
+Deno.test("failed fleet attempts do not obscure confirmed delivery or satisfy evidence", () => {
+  const failed = {
+    ...action(1, "failed", "merge", "fleet"),
+    outcome: "failed" as const,
+  };
+  const report = buildPrCompletionReport(input({
+    prs: [pr(1), pr(2)],
+    actions: [
+      action(1, "push", "implementation", "fleet"),
+      failed,
+      action(1, "merge", "merge", "fleet"),
+      action(2, "push2", "implementation", "fleet"),
+      { ...failed, prNumber: 2, actionId: "failed2" },
+    ],
+    rollout: { verifiedAt: "2026-10-15T00:00:00Z", strandedPrs: [] },
+  }));
+  assertEquals(report.completion.unattendedMerged, 1);
+  assertEquals(report.completion.unknownMerged, 1);
+  assertEquals(report.targetEvaluation.unattendedWithin24Hours, 0.5);
+});
 
 Deno.test("PR completion report deduplicates repeated observations and separates trusted outcomes", () => {
   const report = buildPrCompletionReport(input({
