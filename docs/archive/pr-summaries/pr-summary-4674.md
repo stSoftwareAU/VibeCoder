@@ -7,7 +7,7 @@ services while configured credentials, Keychains, securityd and the clone's
 pass revalidation before commit. Linux retains its existing agent validation
 inside the Codex permissions profile.
 
-Closes #4674. No VERSION change.
+Part of #4674. No VERSION change.
 
 ## Spec
 
@@ -18,6 +18,14 @@ profile does not allow. A separate runner profile permits only the browser
 registration prefixes while retaining the credential boundary from #4593.
 
 ### Essential Design Decisions
+
+- Place the .git write and securityd lookup denials after every overlapping
+  allow. Disable Git hooks during staging, commit and push as defence in depth.
+- Select the platform before inspecting quality.sh. Linux retains agent
+  validation even for symlinked, blank or oversized gate scripts; its repair
+  prompt explicitly requires applicable local checks and promises no runner gate.
+- Start the macOS gate in its own process group. On timeout terminate the group,
+  send SIGKILL and destroy inherited output pipes so descendants cannot retain the PR lock indefinitely. Output remains bounded.
 
 - Resolve default and relative CONFIG_PATH against the runner's working
   directory before constructing protected paths.
@@ -57,7 +65,10 @@ registration prefixes while retaining the credential boundary from #4593.
 
 ## Evidence
 
-- Focused babysitter suites passed: 89 tests, no failures or ignored cases.
+- Focused babysitter suites passed: 98 tests, no failures or ignored cases.
+  The live browser test is in `worker/deno/integration/fleet_babysitter_browser.ts`,
+  outside unit discovery. The body-proposal test observes `body-updated` and
+  asserts the applied description, including its closing reference.
 - The exact sweep-drift command from CI passed after reproducing its ancestry
   failure locally.
 - Gitleaks 8.24.3 passed with CI's flags and exact historical commit range.
@@ -70,18 +81,21 @@ registration prefixes while retaining the credential boundary from #4593.
 - The new CLI HEAD case starts with a matching HEAD, completes a ready retry,
   changes HEAD only after that retry, and observes no second gate, staging,
   commit or push.
-- Browser integration cannot run on this host because CHROMIUM_PATH is unset.
-  Its explicit task reports that prerequisite as a failure.
+- Ran `deno task test:browser` with CHROMIUM_PATH pointing to the installed
+  Google Chrome binary. Nested Seatbelt execution is refused by this host:
+  `sandbox-exec: sandbox_apply: Operation not permitted`. No successful browser
+  or OS-level credential denial is claimed.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — “Browser checks named by the target repository's gate run during
+- **partial** — “Browser checks named by the target repository's gate run during
   a babysitter repair without weakening the credential boundary from #4593.” —
   The macOS runner owns validation, preserves credential denials and retries
   once before commit. Self-contained unit/CLI coverage passes. The retained
-  live integration task requires a provisioned macOS Chromium host.
+  live integration task cannot start its nested sandbox in this agent host;
+  OS-level Chromium and credential isolation evidence remains outstanding.
 
 ## Standards Review
 
@@ -107,25 +121,35 @@ registration prefixes while retaining the credential boundary from #4593.
 
 ## Test Plan
 
-- Run `deno task test tests/fleet_babysitter_repair_test.ts tests/fleet_babysitter_validation_test.ts tests/fleet_pr_babysitter_test.ts tests/fleet_babysitter_app_test.ts`.
-- Run `deno task test:browser < /dev/null` on a provisioned macOS Chromium host.
-- Run `./quality.sh --sequential < /dev/null` with pinned Deno 2.9.8.
-- CI's exact shard command, `.github/scripts/deno-test-shard.sh 3 4`, cannot
-  start on this host because setsid is missing. CI runs that command on Linux.
+- `deno task test tests/fleet_babysitter_repair_test.ts tests/fleet_babysitter_validation_test.ts tests/fleet_pr_babysitter_test.ts tests/fleet_babysitter_app_test.ts < /dev/null`
+  — 98 passed, zero failed or ignored. The gate-style `deno task test:unit`
+  invocation also passed all 98 tests and its time-budget check. Includes ordering, planted hook,
+  Linux script shapes, platform prompts and inherited-pipe timeout regressions.
+- Targeted `deno lint`, frozen/locked `deno check` and repository-wide
+  `deno fmt --check` passed. Manifest/completeness, source-target, Mermaid,
+  Markdown, workflow and spawn-boundary checks passed through quality.sh.
+- `./quality.sh --sequential < /dev/null` — full tests stopped at a Deno 2.9.5
+  runtime panic (`pledge test permissions called before restoring previous
+  pledge`). The serial pass therefore did not run. The unchanged release-tag
+  ruleset check cannot read the sandbox-protected GitHub config. These are host
+  differences: the current base commit 6de3b9345aadfb1cb9fee49d82e8ab9e8146782a
+  came from PR #4714, whose Quality gate and all four test shards passed,
+  confirmed with gh. No full local suite pass is claimed.
+- Semgrep skipped because its local route could not run; pinned Checkov was
+  unavailable and operator config integration was absent. CI remains
+  authoritative for those checks.
+- `CHROMIUM_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome deno task test:browser`
+  — attempted, refused by nested sandbox policy with `sandbox_apply: Operation
+  not permitted`. Browser and Keychain evidence remains partial.
+- Existing assertions remain intact. The macOS prompt cases explicitly select
+  Darwin on every host; Linux cases require agent local validation for CI,
+  review and conflict repairs. The body-proposal test asserts the applied body
+  and its preserved closing reference.
+- Searched for twinned validation/prompt rules: no second production validation
+  implementation was found. Updated the operator manual alongside this summary.
+- `worker/deno/commands/fleet_pr_babysitter.ts:928` equivalent scratch shorthand
+  exemption remains as recorded above; scratch is the same immutable value.
 
-- Pinned-Deno full gate: repository checks, completeness, source targets,
-  Mermaid, markdownlint, lint, type-check and formatting passed. The full unit
-  parallel pass exceeded the 30-minute host deadline with one worker, so its
-  serial pass did not run. A four-worker retry stalled at 3,638 completion
-  markers and was stopped through the managed session. No full-suite pass is
-  claimed; the 89 focused tests and two restored-guard checks passed.
-- The base commit, 81c25ff92d6781d1ae8ac9fc5f4c2f7c0a6e63a4, came from
-  [PR #4711](https://github.com/stSoftwareAU/VibeCoder/pull/4711).
-  Confirmed with gh that its Quality gate and all four test shards passed.
-- Other host limits: release-tag ruleset reconciliation cannot read the
-  sandbox-protected GitHub config; config integration has no operator config;
-  Semgrep and pinned Checkov are unavailable. Browser integration requires
-  CHROMIUM_PATH, and the exact CI shard command requires setsid.
-- PR-summary checks with the issue body and work-on label passed with zero
-  blocked or unchecked gates. Temporary mutations were restored, and
-  git diff --check passed.
+PR-summary checks with the issue body and work-on label passed: zero blocked
+or unchecked gates. The output-bound test now exercises the actual isolated
+subprocess collector, retaining its exact 20,000-character assertions.

@@ -20,7 +20,7 @@ import {
 import {
   attemptKey,
   babysitterRtkInstruction,
-  buildRepairPrompt,
+  buildRepairPrompt as buildPlatformRepairPrompt,
   cancelledRunsToRerun,
   cloneForRepair,
   eligibleAuthor,
@@ -37,6 +37,15 @@ import {
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+
+// Pin the macOS cases on every host; Linux cases pass their platform explicitly.
+const buildRepairPrompt = (
+  ...args: Parameters<typeof buildPlatformRepairPrompt>
+) => {
+  args[5] ??= "darwin";
+  return buildPlatformRepairPrompt(...args);
+};
+
 import { fenceUntrustedIssueText } from "../lib/prompt_delimiter.ts";
 
 Deno.test("failed clone is attempted once and preserves its original error", async () => {
@@ -807,3 +816,26 @@ Deno.test("repair clean-up warns instead of throwing, and still removes the rest
   assertStringIncludes(warnings[0]!, "/tmp/clone");
   assertStringIncludes(warnings[0]!, "Directory not empty");
 });
+
+for (const why of ["failed CI", "requested review changes", "merge conflict"]) {
+  Deno.test(`Linux ${why} prompt keeps local validation`, () => {
+    const prompt = buildRepairPrompt(
+      why,
+      1,
+      "owner/repo",
+      "",
+      undefined,
+      "linux",
+    );
+    assertStringIncludes(
+      prompt,
+      "Also run the checks in the repository\u0027s local gate",
+    );
+    assertStringIncludes(
+      prompt,
+      "does not by itself withhold BABYSITTER_READY",
+    );
+    assertEquals(prompt.includes("the runner executes it"), false);
+    assertEquals(prompt.includes("the runner owns the final"), false);
+  });
+}

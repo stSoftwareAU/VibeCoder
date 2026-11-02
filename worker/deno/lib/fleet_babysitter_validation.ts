@@ -3,7 +3,9 @@ import {
   babysitterHostCredentialPaths,
   babysitterProtectedPaths,
 } from "./fleet_babysitter_sandbox.ts";
-import { spawnCommandWithTimeout } from "./subprocess_timeout.ts";
+import childProcess from "node:child_process";
+import { kill } from "node:process";
+import { clampTimeoutToRunTimeline } from "./subprocess_timeout.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -84,12 +86,10 @@ export function buildBabysitterValidationProfile(
     "(allow sysctl-read)",
     '(allow file-read* (subpath "/"))',
     ...protectedRules,
-    `(deny file-write* (subpath ${quoteProfilePath(`${dir}/.git`)}))`,
     ...[dir, scratch].map((path) =>
       `(allow file-write* (subpath ${quoteProfilePath(path)}))`
     ),
     '(allow file-write* (literal "/dev/null"))',
-    '(deny mach-lookup (global-name "com.apple.securityd"))',
     "(allow mach-lookup)",
     // Chromium registers its rendezvous server separately from looking it up.
     '(allow mach-register (global-name-prefix "org.chromium.Chromium.MachPortRendezvousServer."))',
@@ -97,6 +97,8 @@ export function buildBabysitterValidationProfile(
     '(allow mach-register (global-name-prefix "com.google.chrome.for.testing.MachPortRendezvousServer."))',
     '(allow mach-register (global-name-prefix "org.chromium.crashpad."))',
     "(allow network*)",
+    `(deny file-write* (subpath ${quoteProfilePath(`${dir}/.git`)}))`,
+    '(deny mach-lookup (global-name "com.apple.securityd"))',
   ].join("\n");
 }
 
@@ -127,23 +129,7 @@ function boundedOutput(value: string): string {
     : `… output truncated …\n${value.slice(-OUTPUT_LIMIT)}`;
 }
 
-export async function readBoundedOutput(
-  stream: ReadableStream<Uint8Array>,
-): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let output = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    output += decoder.decode(value, { stream: true });
-    if (output.length > OUTPUT_LIMIT) output = output.slice(-OUTPUT_LIMIT);
-  }
-  output += decoder.decode();
-  return output;
-}
-
-async function runIsolatedCommand(
+export async function runIsolatedCommand(
   executable: string,
   args: string[],
   options: {
@@ -152,22 +138,67 @@ async function runIsolatedCommand(
     timeoutMs: number;
   },
 ): Promise<{ success: boolean; code: number; stdout: string; stderr: string }> {
-  const child = spawnCommandWithTimeout(executable, {
-    args,
+  const timeoutMs = clampTimeoutToRunTimeline(options.timeoutMs, executable);
+  // A session isolates the gate and all browser descendants from the runner.
+  const child = childProcess.spawn(executable, args, {
     cwd: options.cwd,
     env: options.env,
-    clearEnv: true,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-    timeoutMs: options.timeoutMs,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  const [stdout, stderr, status] = await Promise.all([
-    readBoundedOutput(child.stdout),
-    readBoundedOutput(child.stderr),
-    child.status,
-  ]);
-  return { ...status, stdout, stderr };
+  let stdout = "";
+  let stderr = "";
+  child.stdout!.setEncoding("utf8");
+  child.stderr!.setEncoding("utf8");
+  child.stdout!.on("data", (chunk) => {
+    stdout = (stdout + chunk.toString()).slice(-OUTPUT_LIMIT);
+  });
+  child.stderr!.on("data", (chunk) => {
+    stderr = (stderr + chunk.toString()).slice(-OUTPUT_LIMIT);
+  });
+  const signalGroup = (signal: NodeJS.Signals) => {
+    try {
+      kill(-child.pid!, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const status = new Promise<number>((resolve, reject) => {
+    child.once("error", reject);
+    // close waits for pipes too, while the deadline below never waits for EOF.
+    child.once("close", (code) => resolve(code ?? 1));
+  });
+  const deadline = new Promise<number>((resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      // A timed-out gate is untrusted: stop its entire group immediately.
+      try {
+        signalGroup("SIGKILL");
+      } catch (error) {
+        reject(error);
+      }
+      // Even a descendant that escaped the group cannot retain these pipes.
+      child.stdout!.destroy();
+      child.stderr!.destroy();
+      child.unref();
+      resolve(124);
+    }, timeoutMs);
+  });
+  try {
+    const code = await Promise.race([status, deadline]);
+    return {
+      success: !timedOut && code === 0,
+      code: timedOut ? 124 : code,
+      stdout,
+      stderr: timedOut
+        ? `${stderr}\nRunner validation timed out after ${timeoutMs}ms`
+        : stderr,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Run the repository's declared local gate before the babysitter commits. */
@@ -184,6 +215,16 @@ export async function runBabysitterValidation(
     privateKeyPath?: string;
   } = {},
 ): Promise<BabysitterValidationResult> {
+  const platform = options.platform ?? Deno.build.os;
+  if (platform === "linux") {
+    return { kind: "not-applicable", command: "agent validation (Linux)" };
+  }
+  if (platform !== "darwin") {
+    throw new BabysitterValidationError(
+      `Runner validation unavailable: macOS sandbox is required to run quality.sh safely (host: ${platform})`,
+      "unavailable",
+    );
+  }
   const [checkedDir, checkedScratch] = await Promise.all([
     Deno.realPath(dir),
     Deno.realPath(scratch),
@@ -249,16 +290,6 @@ export async function runBabysitterValidation(
     await file.close();
   }
 
-  const platform = options.platform ?? Deno.build.os;
-  if (platform === "linux") {
-    return { kind: "not-applicable", command: "agent validation (Linux)" };
-  }
-  if (platform !== "darwin") {
-    throw new BabysitterValidationError(
-      `Runner validation unavailable: macOS sandbox is required to run quality.sh safely (host: ${platform})`,
-      "unavailable",
-    );
-  }
   const sandboxExec = options.sandboxExec === undefined
     ? Deno.env.get("BABYSITTER_SANDBOX_EXEC") ?? "/usr/bin/sandbox-exec"
     : options.sandboxExec;

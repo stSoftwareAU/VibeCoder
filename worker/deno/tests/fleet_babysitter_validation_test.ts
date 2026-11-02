@@ -9,8 +9,8 @@ import {
   babysitterValidationEnv,
   BabysitterValidationError,
   buildBabysitterValidationProfile,
-  readBoundedOutput,
   runBabysitterValidation,
+  runIsolatedCommand,
   validateWithSingleRepair,
 } from "../lib/fleet_babysitter_validation.ts";
 import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
@@ -47,6 +47,11 @@ Deno.test("babysitter validation hands browser gate work to the runner before co
       privateKeyPath: `${dir}/custom-app.pem`,
       runValidation: async (repoDir, scratch, configPath, home, options) => {
         runnerCalls++;
+        await Deno.writeTextFile(
+          `${dir}/.git/hooks/pre-commit`,
+          "#!/bin/sh\nexit 99\n",
+          { mode: 0o755 },
+        );
         assertEquals(repoDir, dir);
         assertEquals(scratch, `${dir}/scratch`);
         assertEquals(configPath, `${dir}/config.json`);
@@ -237,13 +242,12 @@ Deno.test("runner skips when a target repository has no local gate", async () =>
 });
 
 Deno.test("runner drains long command streams while retaining only bounded output", async () => {
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode("x".repeat(25_000)));
-      controller.close();
-    },
-  });
-  const output = await readBoundedOutput(stream);
+  const result = await runIsolatedCommand(Deno.execPath(), [
+    "eval",
+    `Deno.stdout.writeSync(new TextEncoder().encode("x".repeat(25_000)))`,
+  ], { cwd: Deno.cwd(), env: {}, timeoutMs: 2000 });
+  assertEquals(result.success, true);
+  const output = result.stdout;
   assertEquals(output.length, 20_000);
   assertEquals(output, "x".repeat(20_000));
 });
@@ -254,7 +258,10 @@ Deno.test("runner reports a missing gate as an empty-gate error", async () => {
   try {
     await Deno.writeTextFile(`${dir}/quality.sh`, " \n\t");
     await assertRejects(
-      () => runBabysitterValidation(dir, scratch, "", scratch),
+      () =>
+        runBabysitterValidation(dir, scratch, "", scratch, {
+          platform: "darwin",
+        }),
       Error,
       "empty quality.sh",
     );
@@ -755,4 +762,35 @@ Deno.test("runner canonicalises a symlinked temporary root", async () => {
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("validation denials follow every overlapping allow", () => {
+  const profile = buildBabysitterValidationProfile("/clone", "/scratch", [
+    "/secret",
+  ]);
+  assert(
+    profile.indexOf(`(deny file-write* (subpath "/clone/.git"))`) >
+      profile.lastIndexOf("(allow file-write*"),
+  );
+  assert(
+    profile.indexOf(`(deny mach-lookup (global-name "com.apple.securityd"))`) >
+      profile.lastIndexOf("(allow mach-lookup"),
+  );
+});
+
+Deno.test("runner timeout kills descendants and bounds inherited pipe reads", async () => {
+  const started = Date.now();
+  const result = await runIsolatedCommand("/bin/bash", [
+    "-c",
+    'trap "" TERM; (trap "" TERM; echo descendant; sleep 30) & wait',
+  ], {
+    cwd: Deno.cwd(),
+    env: { PATH: Deno.env.get("PATH")! },
+    timeoutMs: 100,
+  });
+  assert(Date.now() - started < 8000);
+  assertEquals(result.success, false);
+  assertEquals(result.code, 124);
+  assertStringIncludes(result.stdout, "descendant");
+  assertStringIncludes(result.stderr, "timed out");
 });

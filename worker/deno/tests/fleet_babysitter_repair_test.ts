@@ -250,3 +250,12 @@ Deno.test("babysitter CLI preserves Linux agent-validated repairs", async () => 
     assertEquals(result.events, ["agent-1", "staged", "committed", "pushed"]);
   });
 });
+
+for (const scenario of ["linux-symlink", "linux-oversized"]) {
+  Deno.test(`babysitter CLI preserves agent validation with ${scenario} gate`, async () => {
+    await repairScenario(scenario, (result) => {
+      assertEquals(result.success, true, result.stderr);
+      assertEquals(result.events, ["agent-1", "staged", "committed", "pushed"]);
+    });
+  });
+}

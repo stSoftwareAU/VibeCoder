@@ -1,4 +1,8 @@
 /** Offline boundaries for the real babysitter CLI's repair orchestration. */
+import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+
 export {};
 
 const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");
@@ -20,7 +24,10 @@ function record(event: string): void {
 // models gate outcomes, never the operating system's sandbox enforcement.
 if (repair) {
   Object.defineProperty(Deno, "build", {
-    value: { ...Deno.build, os: scenario === "linux" ? "linux" : "darwin" },
+    value: {
+      ...Deno.build,
+      os: scenario?.startsWith("linux") ? "linux" : "darwin",
+    },
   });
 }
 const realWriteTextFile = Deno.writeTextFile;
@@ -98,6 +105,13 @@ function commandOutput(
           `${args[3]}/quality.sh`,
           "#!/bin/bash\nexit 0\n",
         );
+        if (scenario === "linux-symlink") {
+          Deno.renameSync(`${args[3]}/quality.sh`, `${args[3]}/gate.sh`);
+          Deno.symlinkSync("gate.sh", `${args[3]}/quality.sh`);
+        }
+        if (scenario === "linux-oversized") {
+          Deno.writeTextFileSync(`${args[3]}/quality.sh`, "x".repeat(65537));
+        }
       }
       return "";
     }
@@ -372,3 +386,30 @@ console.error = (...args) => {
     renewalObserved?.();
   }
 };
+
+// Node spawn owns the isolated process group; model the same offline gate here.
+childProcess.spawn =
+  ((executable: string, args: string[], options: Deno.CommandOptions) => {
+    const child = new EventEmitter();
+    let code = 0;
+    let stdout = "";
+    let stderr = "";
+    let failure: unknown;
+    try {
+      stdout = commandOutput(executable, { ...options, args });
+    } catch (error) {
+      if (error instanceof GateFailure) {
+        code = 1;
+        stderr = "browser assertion failed";
+      } else failure = error;
+    }
+    Object.assign(child, {
+      stdout: Readable.from([stdout]),
+      stderr: Readable.from([stderr]),
+    });
+    queueMicrotask(() => {
+      if (failure) child.emit("error", failure);
+      else setTimeout(() => child.emit("close", code), 0);
+    });
+    return child;
+  }) as typeof childProcess.spawn;
