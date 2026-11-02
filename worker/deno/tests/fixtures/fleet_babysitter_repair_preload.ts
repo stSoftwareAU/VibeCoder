@@ -63,11 +63,11 @@ function commandOutput(
       });
       // The mirror clone's last argv element is the directory git creates.
       if (args.includes("--bare")) {
-        Deno.mkdirSync(args[args.length - 1]!, { recursive: true });
+        Deno.mkdirSync(args[args.length - 1]!);
       }
       return "";
     }
-    if (args[0] === "remote" && args[1] === "set-url") {
+    if (args.slice(0, 3).join(" ") === "remote set-url origin") {
       Deno.writeTextFileSync(`${root}/origin-url`, args[3]!);
       return "";
     }
