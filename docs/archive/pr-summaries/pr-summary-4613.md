@@ -5,8 +5,8 @@
 Strict, non-queue bases refresh only an armed PR with satisfied review,
 confirmed mergeability and passing required checks on its current head or
 verified test merge. A shared GitHub comment owner serialises refreshes across
-hosts and updater lanes until merge, closure, terminal required-check failure
-or bounded expiry. Conflict repair remains separate. Closes #4613.
+hosts and updater lanes until merge, closure, terminal required-check failure or
+bounded expiry. Conflict repair remains separate. Closes #4613.
 
 The completion-review fixes align owner writes with the stable read anchor,
 retain ownership for pending statuses, combine all effective strict rules, and
@@ -31,17 +31,17 @@ Blocking-PR stall repair now uses the same readiness and ownership policy.
   refresh owner outlives that lock and expires after six hours.
 - The required-check contract combines rulesets and classic protection,
   publisher pins and the verified test merge. Any effective strict ruleset
-  requires readiness. An explicitly absent classic required-check contract
-  adds no classic restriction; when the branch summary omits classic
-  strictness, the classic required-status-check endpoint supplies it.
-- A ready PR remains the owner while refreshed checks are pending. Only
-  terminal required-check failure, merge, closure or expiry releases it.
-  Optional pending or skipped jobs do not block selection.
-- An unresolved fleet author set refuses ownership recoverably, including
-  before an empty store could be interpreted as available. Loaded fleet
-  identity is passed by worker/reviewer callers. Reviewer post resolves its
-  configured identity without reading environment variables outside its
-  permission contract; refresh IDs use permission-free UUIDs.
+  requires readiness. An explicitly absent classic required-check contract adds
+  no classic restriction; when the branch summary omits classic strictness, the
+  classic required-status-check endpoint supplies it.
+- A ready PR remains the owner while refreshed checks are pending. Only terminal
+  required-check failure, merge, closure or expiry releases it. Optional pending
+  or skipped jobs do not block selection.
+- An unresolved fleet author set refuses ownership recoverably, including before
+  an empty store could be interpreted as available. Loaded fleet identity is
+  passed by worker/reviewer callers. Reviewer post resolves its configured
+  identity without reading environment variables outside its permission
+  contract; refresh IDs use permission-free UUIDs.
 - Reviewer request refusals are remembered at the reviewed head. Readiness
   refusals, including a changed test merge, leave failed-head memory untouched.
 - Behind-only updates in branch maintenance, the auto-merge sweep, reviewer
@@ -65,31 +65,33 @@ Backend-only change; no visual evidence applies.
 
 - `worker/deno/tests/base_refresh_ownership_4613_test.ts::GitHub comment ownership serialises independent host ports`
   uses anchor #1 with selected PRs #10/#11, then attempts a further acquisition
-  after the transaction lock has gone. Persisted ownership still excludes it;
-  an unresolved fleet identity also refuses acquisition. Release then permits
-  the next host, and a different base can progress independently.
+  after the transaction lock has gone. Persisted ownership still excludes it; an
+  unresolved fleet identity also refuses acquisition. Release then permits the
+  next host, and a different base can progress independently.
 - `worker/deno/tests/required_branch_checks_4613_test.ts` tests pending,
-  success, failure and error commit statuses; opposing strictness in both ruleset orders;
-  explicit classic absence and the classic protection endpoint; and isolated
-  review, base/head freshness and test-merge freshness guards. These cases use
-  passing CI and no competing owner unless ownership is the behaviour tested.
+  success, failure and error commit statuses; opposing strictness in both
+  ruleset orders; explicit classic absence and the classic protection endpoint;
+  and isolated review, base/head freshness and test-merge freshness guards.
+  These cases use passing CI and no competing owner unless ownership is the
+  behaviour tested.
 - `worker/deno/tests/reviewer_strict_refresh_permissions_4613_test.ts` invokes
   the real gate, post and compatibility-shim CLIs with
-  `--allow-env=HOME,XDG_STATE_HOME`, their documented run/read/write grants,
-  and an offline GitHub boundary. Each strict path reaches `update-branch`.
-  Only GitHub's consistency delay is accelerated in this in-memory fixture.
+  `--allow-env=HOME,XDG_STATE_HOME`, their documented run/read/write grants, and
+  an offline GitHub boundary. Each strict path reaches `update-branch`. Only
+  GitHub's consistency delay is accelerated in this in-memory fixture.
 - `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` retains the
-  unreadable-state cases separately and restores successful requests, expected-head SHA,
-  actual HTTP 422/403 refusals, reporting and no retry at the same failed head.
-  A moving test merge leaves no failed-head entry and a later attempt succeeds
-  at the same reviewed head.
+  unreadable-state cases separately and restores successful requests,
+  expected-head SHA, actual HTTP 422/403 refusals, reporting and no retry at the
+  same failed head. A moving test merge leaves no failed-head entry and a later
+  attempt succeeds at the same reviewed head.
 - `worker/deno/tests/auto_merge_sweep_keeps_armed_test.ts` drives production
-  sweep wiring to successful eligible refreshes. Its production stall-repair callback
-  refuses an unreviewed candidate and a candidate competing with an existing
-  owner, while allowing an eligible unowned candidate.
-- `worker/deno/tests/pr_branch_update_test.ts` confirms behind maintenance
-  uses the shared guard and conflict repair bypasses that behind-only route. The shared owner
-  tests also cover the default merge-block and command callers' common store.
+  sweep wiring to successful eligible refreshes. Its production stall-repair
+  callback refuses an unreviewed candidate and a candidate competing with an
+  existing owner, while allowing an eligible unowned candidate.
+- `worker/deno/tests/pr_branch_update_test.ts` confirms behind maintenance uses
+  the shared guard and conflict repair bypasses that behind-only route. The
+  shared owner tests also cover the default merge-block and command callers'
+  common store.
 
 ## Test Plan
 
@@ -103,9 +105,9 @@ Commands below run from `worker/deno` unless another directory is stated.
   released, only the first ruleset read, explicit classic absence rejected,
   classic endpoint lookup omitted, forbidden worker environment read restored,
   moving-merge refusal cached, review guard removed, and each initial,
-  post-check and immediate base/head or merge freshness guard removed, plus
-  the production stall-repair guard bypassed.
-  Each probe failed its targeted behavioural test; no exemption is claimed.
+  post-check and immediate base/head or merge freshness guard removed, plus the
+  production stall-repair guard bypassed. Each probe failed its targeted
+  behavioural test; no exemption is claimed.
 - `deno task test:unit tests/base_refresh_ownership_4613_test.ts tests/required_branch_checks_4613_test.ts tests/pr_branch_update_test.ts tests/auto_merge_sweep_keeps_armed_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_dependabot_test.ts tests/merge_block_escalation_test.ts tests/reviewer_strict_refresh_permissions_4613_test.ts`
   — 162 passed, 0 failed on the final run, including the CLI fixture with its
   consistency delay mocked and the tightened stall assertions.
@@ -122,7 +124,8 @@ Commands below run from `worker/deno` unless another directory is stated.
   155 passed and only the babysitter subprocess failed to download its crypto
   manifest. No coverage carry-over skip was set.
 - Targeted `deno fmt --check`, `deno lint` and `deno check` passed for all
-  changed TypeScript files, including `.claude/skills/review-fleet-prs/scripts/branch_update.ts`.
+  changed TypeScript files, including
+  `.claude/skills/review-fleet-prs/scripts/branch_update.ts`.
 - `deno task check:manifests` — passed: 847 passed, 0 failed, 1 ignored.
 - `deno task pr-summary-check --base 18cbb398 --issue-body-file /tmp/issue-4613-body.md --labels enhancement,top-priority,work-on ../../docs/archive/pr-summaries/pr-summary-4613.md`
   — passed; 0 blocked, 0 not checked.
@@ -131,18 +134,17 @@ Commands below run from `worker/deno` unless another directory is stated.
   `tests/milestone_resolution_gate_test.ts::verifyResolvedTree - the repository's own task sees only the allowlisted environment (Issue #4659)`:
   the account-access probe is left to CI and returns `passed`, while the test
   expects `failed`. Running that unchanged suite at merge base `18cbb398`
-  reproduces the identical failure (33 passed, 1 failed). Its production
-  module and test have no diff from that base. The serial test pass was not
-  run after the parallel failure. Full lint, type check, formatting,
-  markdownlint, semgrep and completeness checks passed; config integration
-  and Checkov were skipped by the gate because their runtime/configuration
-  was unavailable.
+  reproduces the identical failure (33 passed, 1 failed). Its production module
+  and test have no diff from that base. The serial test pass was not run after
+  the parallel failure. Full lint, type check, formatting, markdownlint, semgrep
+  and completeness checks passed; config integration and Checkov were skipped by
+  the gate because their runtime/configuration was unavailable.
 
-The earlier unconditional fleet-refresh assertions were incompatible with
-“One ready PR at a time per base”; success and API-refusal behaviours remain
-covered by the strict-ready cases above. Unreadable readiness cases supplement
-those behaviours. No Dependabot refusal, per-PR lock or conflict-repair assertion
-was removed by these completion fixes.
+The earlier unconditional fleet-refresh assertions were incompatible with “One
+ready PR at a time per base”; success and API-refusal behaviours remain covered
+by the strict-ready cases above. Unreadable readiness cases supplement those
+behaviours. No Dependabot refusal, per-PR lock or conflict-repair assertion was
+removed by these completion fixes.
 
 ## Deno regression avoided
 
