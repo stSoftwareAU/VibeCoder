@@ -356,6 +356,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     TMPDIR: scratch,
     XDG_CACHE_HOME: scratch,
     GH_TOKEN: agentToken,
+    GH_CONFIG_DIR: `${scratch}/gh-config`,
   });
   assertEquals(call.options.timeoutMs, 90 * 60_000);
   assertEquals(call.options.args, [

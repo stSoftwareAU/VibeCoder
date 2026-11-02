@@ -661,7 +661,15 @@ Deno.test("babysitter agent env - gives the agent its token and scratch director
     TMPDIR: "/scratch/agent",
     XDG_CACHE_HOME: "/scratch/agent",
     GH_TOKEN: "ghs_agent_token",
+    GH_CONFIG_DIR: "/scratch/agent/gh-config",
   });
+});
+
+// Issue #4722: the inherited GH_CONFIG_DIR (or ~/.config/gh) is a protected
+// path, so gh failed reading it; the agent gets an empty one in its scratch.
+Deno.test("babysitter agent env - points gh at a config directory in scratch", () => {
+  const env = babysitterAgentEnv("/scratch/agent", "ghs_agent_token");
+  assert(env.GH_CONFIG_DIR!.startsWith("/scratch/agent/"));
 });
 
 Deno.test("babysitter agent env - rejects an empty token", () => {
