@@ -6,8 +6,11 @@
  * code, so they must not inherit the worker's environment. This module drops
  * the command to the `agent` account and builds its environment from the
  * allowlist of Issues #571, #572, #1214 and #2247, with the ephemeral build
- * cache placement carried through `sudo`. It is the same path
- * `spawnFastCheck` in `merge_fast_checks.ts` takes for the merge fast checks.
+ * cache placement carried through `sudo`. It starts from the same drop and
+ * environment build as `spawnFastCheck` in `merge_fast_checks.ts`, but differs
+ * from it: it probes that the dropped account can read the checkout, delivers
+ * declared credentials on stdin, and falls back to the worker account when
+ * the `agent` account is unavailable.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -120,8 +123,11 @@ export async function manifestsFor(
 /**
  * Run one of the repository's own gate commands as the untrusted account.
  *
- * Mirrors `spawnFastCheck` in `merge_fast_checks.ts` (Issue #4659). Unlike
- * `spawnFastCheck`, an unavailable `agent` account does not throw here:
+ * Built on the same drop and environment as `spawnFastCheck` in
+ * `merge_fast_checks.ts` (Issue #4659), with three differences: the readability
+ * probe and the stdin credential delivery described below, which
+ * `spawnFastCheck` lacks (it passes credentials in env), and that an
+ * unavailable `agent` account does not throw here:
  * `untrustedSpawn` already falls back to running as the worker on an image that
  * predates the account, so the issue's "where the image provides one" holds.
  *
