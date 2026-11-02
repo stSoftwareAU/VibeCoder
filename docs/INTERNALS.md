@@ -1226,11 +1226,11 @@ once its run reaches a conclusive outcome (`retireReview` in
 `worker/deno/lib/pr_comments.ts`, which PUTs
 `repos/<repo>/pulls/<n>/reviews/<id>/dismissals`. That call goes
 through `defaultGhCommand`, `runGhOrThrow` and `spawnGh`, the `gh` chokepoint
-the audit hook sits on, so it is already journalled. But `actionKindFor` in
-`audit_hook.ts` labels a dismissal only for a `…/reviews/<id>` endpoint with
-`state=DISMISSED`. The worker's `/dismissals` entry is therefore journalled with
-kind `unknown`, not `dismissal`, and does not match a GitHub dismissal event.
-Dismissal journalling is left as it is.
+the audit hook sits on, so it is journalled. `actionKindFor` in `audit_hook.ts`
+labels that PUT (`…/reviews/<id>/dismissals`) as kind `dismissal`, and records
+the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
+`dismissal`. The review-fleet-prs skill makes no dismissal call, so it has none
+to journal.
 
 **Unknown, never human.** A GitHub event with no matching verified fleet action
 becomes an `unknown` action: unverified, outcome unknown, with the ID

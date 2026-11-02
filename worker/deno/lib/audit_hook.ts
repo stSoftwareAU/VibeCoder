@@ -195,6 +195,13 @@ export function actionKindFor(
       .test(info.target ?? "") &&
     args.some((arg) => /^state=DISMISSED$/i.test(arg))
   ) return "dismissal";
+  // The worker's own dismissal (`markCommentProcessed` in pr_comments.ts) PUTs
+  // the `/dismissals` sub-endpoint with a `message=` field, not `state=`.
+  if (
+    info.verb === "api-put" &&
+    /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/reviews\/[1-9]\d*\/dismissals$/
+      .test(info.target ?? "")
+  ) return "dismissal";
   if (info.verb === "git-push" && caller) {
     if (REPAIR_PUSH_CALLERS.some((name) => caller.includes(name))) {
       return "repair";

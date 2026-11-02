@@ -143,6 +143,31 @@ Deno.test("audit_hook - a PR review dismissal is recorded as a distinct action",
   });
 });
 
+Deno.test("audit_hook - a worker dismissal via the /dismissals endpoint is journalled as a dismissal with its PR number", async () => {
+  // The exact argv markCommentProcessed (pr_comments.ts) hands runGhOrThrow:
+  // a PUT to the /dismissals sub-endpoint carrying a message, no state field.
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(
+      [
+        "api",
+        "-X",
+        "PUT",
+        "repos/org/repo/pulls/42/reviews/777/dismissals",
+        "-f",
+        "message=Processed",
+      ],
+      0,
+      opts,
+    );
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    if (!loaded.ok) return;
+    assertEquals(loaded.value[0]?.verb, "api-put");
+    assertEquals(loaded.value[0]?.actionKind, "dismissal");
+    assertEquals(loaded.value[0]?.prNumber, 42);
+  });
+});
+
 Deno.test("audit_hook - a gh extension install is journalled as a local-tool mutation (Issue #1396)", async () => {
   await withAuditEnv(async (journalPath, opts) => {
     await auditGhMutation(
@@ -403,6 +428,36 @@ Deno.test("audit_hook - actionKindFor records a review dismissal only when the s
   assertEquals(ghKind([...endpoint, "-f", "state=DISMISSED"]), "dismissal");
   // The same endpoint without the dismissed state is not a dismissal.
   assertEquals(ghKind([...endpoint, "-f", "message=x"]), "unknown");
+});
+
+Deno.test("audit_hook - actionKindFor records a worker dismissal through the /dismissals endpoint", () => {
+  // The argv shape markCommentProcessed builds in pr_comments.ts.
+  assertEquals(
+    ghKind([
+      "api",
+      "-X",
+      "PUT",
+      "repos/org/repo/pulls/42/reviews/777/dismissals",
+      "-f",
+      "message=Processed",
+    ]),
+    "dismissal",
+  );
+});
+
+Deno.test("audit_hook - actionKindFor leaves a review sub-endpoint other than /dismissals unknown", () => {
+  // A nearby review endpoint is not a dismissal, whatever its fields say.
+  assertEquals(
+    ghKind([
+      "api",
+      "-X",
+      "PUT",
+      "repos/org/repo/pulls/42/reviews/777/comments",
+      "-f",
+      "message=x",
+    ]),
+    "unknown",
+  );
 });
 
 Deno.test("audit_hook - actionKindFor names an implementation push only from its own caller", () => {
