@@ -580,6 +580,56 @@ const FAILURE_WITH_TOOLCHAIN_GAP: MergeGateOutcome = {
   },
 };
 
+Deno.test("runGateWithRepair - an unverifiable verdict is not offered a repair (Issue #4697)", async () => {
+  const fx = await repo();
+  try {
+    let agentCalls = 0;
+    const agentFn: MilestoneConflictAgentFn = () => {
+      agentCalls++;
+      throw new Error("the agent rung must never be asked for an unseen tree");
+    };
+    const unverifiable: MergeGateOutcome = {
+      status: "failed",
+      detail: "cargo check in . could not be checked",
+      output: "the 'agent' account cannot read '.'",
+      unverifiable: true,
+    };
+    const input = {
+      agentFn,
+      options: { cwd: fx.dir },
+      milestoneBranch: "milestone/4697",
+      defaultBranch: "main",
+      preMergeSha: fx.preMergeSha,
+      defaultRef: "HEAD",
+      resolutionMessage: "Merge main into milestone/4697",
+    };
+    const result = await runGateWithRepair({
+      ...input,
+      gate: () => Promise.resolve(unverifiable),
+    });
+    assertEquals(agentCalls, 0);
+    assertEquals(result.gate.status, "failed");
+    assertEquals(result.repair?.status, "not-attempted");
+
+    // Control: the same verdict without the flag is offered the repair rung.
+    let controlCalls = 0;
+    await runGateWithRepair({
+      ...input,
+      agentFn: () => {
+        controlCalls++;
+        return Promise.resolve({
+          ok: false,
+          error: new Error("no repair available in this fixture"),
+        });
+      },
+      gate: () => Promise.resolve({ ...unverifiable, unverifiable: undefined }),
+    });
+    assertEquals(controlCalls, 1);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 Deno.test("runGateWithRepair - a failed verdict carrying a toolchain gap is not offered a repair (Issue #3255)", async () => {
   const fx = await repo();
   try {

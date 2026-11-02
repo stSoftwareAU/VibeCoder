@@ -29,6 +29,7 @@
  */
 
 import {
+  isUnverifiableCheckout,
   manifestsFor,
   runRepositoryCommand,
   type UntrustedGateSpawnDeps,
@@ -55,6 +56,10 @@ export const MERGE_GATE_TIMEOUT_MS = 300_000;
 
 /** Error name carried by the refusal, so callers can escalate on it. */
 export const MILESTONE_MERGE_GATE_ERROR = "MilestoneMergeGateFailure";
+
+/** Error name of the refusal for a tree the check could not see (Issue #4697). */
+export const MILESTONE_MERGE_GATE_UNVERIFIABLE_ERROR =
+  "MilestoneMergeGateUnverifiable";
 
 /** Longest check output carried into a log line or an escalation comment. */
 const MAX_OUTPUT_LINES = 40;
@@ -129,6 +134,14 @@ export interface MergeGateOutcome {
    * milestone PR's CI runs it (Issue #4441).
    */
   checkLeftToCi?: string;
+  /**
+   * Set only on a `failed` outcome when the account the check dropped to could
+   * not use the checkout (Issue #4697). The check never ran, so the outcome is
+   * an environment fault, not a verdict on the tree: the push is still
+   * refused, but no repair round is offered and the conflict budget is not
+   * charged.
+   */
+  unverifiable?: boolean;
 }
 
 /**
@@ -164,7 +177,7 @@ export type MergeGateFn = (repoDir: string) => Promise<MergeGateOutcome>;
 /** Runs the resolved check. Injected in tests; spawns `deno` in production. */
 export type TypeCheckRunner = (
   project: TypeCheckProject,
-) => Promise<{ code: number; output: string }>;
+) => Promise<{ code: number; output: string; unverifiable?: boolean }>;
 
 /**
  * Which arguments run this project's type check.
@@ -459,7 +472,13 @@ export const spawnTypeCheck = async (
     timeoutMs: MERGE_GATE_TIMEOUT_MS,
     manifests: await manifestsFor(project.kind, project.dir),
   }, deps);
-  if (!result.ok) return { code: 1, output: result.error.message };
+  if (!result.ok) {
+    return {
+      code: 1,
+      output: result.error.message,
+      ...(isUnverifiableCheckout(result.error) ? { unverifiable: true } : {}),
+    };
+  }
   const { code, stdout, stderr, timedOut } = result.value;
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
     .join("\n");
@@ -533,7 +552,7 @@ export async function checkMergedTree(
       continue;
     }
     const where = `${describeProject(project)} in ${project.dir}`;
-    let result: { code: number; output: string };
+    let result: Awaited<ReturnType<TypeCheckRunner>>;
     try {
       result = await (runner ?? ((project) =>
         spawnTypeCheck(project, spawnDeps)))(project);
@@ -545,6 +564,16 @@ export async function checkMergedTree(
         status: "failed",
         detail: `${where} could not be run`,
         output: tail(message),
+      };
+    }
+    if (result.code !== 0 && result.unverifiable) {
+      // The check never saw the tree (Issue #4697): refuse the push, but say
+      // so, so the sync does not charge an environment fault as a bad merge.
+      return {
+        status: "failed",
+        detail: `${where} could not be checked`,
+        output: tail(result.output),
+        unverifiable: true,
       };
     }
     if (result.code !== 0) {
@@ -626,6 +655,35 @@ export function mergeGateFailureError(
   );
   err.name = MILESTONE_MERGE_GATE_ERROR;
   return err;
+}
+
+/**
+ * The refusal raised when the merge gate could not check the merged tree at
+ * all (Issue #4697): the account the check ran as could not use the checkout.
+ * Typed apart from {@link MILESTONE_MERGE_GATE_ERROR} so the sync records it
+ * as an environment fault that is not charged, instead of a tree the
+ * repository's check refused.
+ */
+export function mergeGateUnverifiableError(
+  milestoneBranch: string,
+  defaultBranch: string,
+  outcome: MergeGateOutcome,
+): Error {
+  const err = new Error(
+    `Refused to push the merge of '${defaultBranch}' into ` +
+      `'${milestoneBranch}': the repository's own check could not be run on ` +
+      `the merged tree (Issue #4697) — ${outcome.detail}${
+        outcome.output ? `\n${outcome.output}` : ""
+      }`,
+  );
+  err.name = MILESTONE_MERGE_GATE_UNVERIFIABLE_ERROR;
+  return err;
+}
+
+/** Whether an error is the unverifiable-tree refusal. */
+export function isMergeGateUnverifiable(err: unknown): boolean {
+  return err instanceof Error &&
+    err.name === MILESTONE_MERGE_GATE_UNVERIFIABLE_ERROR;
 }
 
 /** Whether an error is the merge-gate refusal. */

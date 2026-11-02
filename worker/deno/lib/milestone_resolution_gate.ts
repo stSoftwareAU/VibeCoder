@@ -46,6 +46,7 @@ import {
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
 import {
+  isUnverifiableCheckout,
   manifestsFor,
   runRepositoryCommand,
   type UntrustedGateSpawnDeps,
@@ -144,7 +145,7 @@ export async function cargoTestArgs(dir: string): Promise<string[]> {
 /** Runs one task. Injected in tests; spawns `deno task <name>` in production. */
 export type ResolutionTaskRunner = (
   task: ResolutionTask,
-) => Promise<{ code: number; output: string }>;
+) => Promise<{ code: number; output: string; unverifiable?: boolean }>;
 
 /** Longest task output carried into a log line or an escalation comment. */
 const MAX_OUTPUT_LINES = 40;
@@ -209,7 +210,13 @@ export const spawnTask = async (
     },
     deps,
   );
-  if (!result.ok) return { code: 1, output: result.error.message };
+  if (!result.ok) {
+    return {
+      code: 1,
+      output: result.error.message,
+      ...(isUnverifiableCheckout(result.error) ? { unverifiable: true } : {}),
+    };
+  }
   const { code, stdout, stderr, timedOut } = result.value;
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean)
     .join("\n");
@@ -346,7 +353,7 @@ export async function verifyResolvedTree(
           output: "",
         };
       }
-      let result: { code: number; output: string };
+      let result: Awaited<ReturnType<ResolutionTaskRunner>>;
       try {
         result = await runner({ ...step, timeoutMs });
       } catch (err) {
@@ -355,6 +362,16 @@ export async function verifyResolvedTree(
           status: "failed",
           detail: `${where} could not be run`,
           output: tail(err instanceof Error ? err.message : String(err)),
+        };
+      }
+      if (result.code !== 0 && result.unverifiable) {
+        // The task never saw the tree (Issue #4697): an environment fault the
+        // sync neither repairs nor charges.
+        return {
+          status: "failed",
+          detail: `${where} could not be checked`,
+          output: tail(result.output),
+          unverifiable: true,
         };
       }
       if (result.code !== 0) {

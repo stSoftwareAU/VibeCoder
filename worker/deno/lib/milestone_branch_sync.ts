@@ -40,6 +40,7 @@ import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
 import {
   isMergeGateFailure,
+  isMergeGateUnverifiable,
   type MergeGateOutcome,
 } from "./milestone_merge_gate.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
@@ -909,6 +910,15 @@ export function isConflictResolverRefusal(error: Error): boolean {
 /** Ledger reason once a resolver refusal has been charged. */
 export const CONFLICT_RESOLVER_DECLINED = "the conflict resolver declined";
 
+/**
+ * Ledger reason when the repository's check could not use the merged tree
+ * (Issue #4697): the account it ran as could not read the checkout. The push
+ * is refused, but the verdict is an environment fault. It is never charged,
+ * never counted as a refusal, and never climbs the recovery ladder.
+ */
+export const MERGE_GATE_COULD_NOT_CHECK_TREE =
+  "the merge gate could not check the merged tree";
+
 /** Ledger reason once the merged tree fails the repository check. */
 export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
 
@@ -1015,6 +1025,12 @@ export function judgeSyncFailure(
   agentAllowed: boolean,
 ): ConflictConclusion {
   if (isConflictEscalation(error)) {
+    if (error.gateFailure && error.unverifiable) {
+      return {
+        outcome: "not-charged",
+        reason: MERGE_GATE_COULD_NOT_CHECK_TREE,
+      };
+    }
     if (error.gateFailure) {
       return {
         outcome: "not-charged",
@@ -1083,6 +1099,9 @@ export function judgeSyncFailure(
       outcome: "failed",
       reason: CONFLICT_RESOLVER_DECLINED,
     };
+  }
+  if (isMergeGateUnverifiable(error)) {
+    return { outcome: "not-charged", reason: MERGE_GATE_COULD_NOT_CHECK_TREE };
   }
   if (isMergeGateFailure(error)) {
     // Issue #4304: a clean merge whose tree the repository's own check

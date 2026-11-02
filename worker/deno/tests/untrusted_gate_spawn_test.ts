@@ -21,6 +21,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   credentialCarryingCommand,
+  isUnverifiableCheckout,
   manifestsFor,
   runRepositoryCommand,
 } from "../lib/untrusted_gate_spawn.ts";
@@ -69,10 +70,11 @@ const identity = (cmd: readonly string[]): Promise<string[]> =>
 const sudoWrapper = (cmd: readonly string[]): Promise<string[]> =>
   Promise.resolve(["sudo", "-n", "-u", "agent", "--", ...cmd]);
 
-/** Whether a spawn is the readability probe, `test -r …`, dropped or not. */
+/** Whether a spawn is a probe (`test …` or the `find` writability scan). */
 function isProbe(executable: string, args: string[]): boolean {
   const at = executable === "sudo" ? args.indexOf("--") + 1 : -1;
-  return (at < 0 ? executable : args[at]) === "test";
+  const program = at < 0 ? executable : args[at];
+  return program === "test" || program === "find";
 }
 
 /**
@@ -668,10 +670,17 @@ Deno.test("runRepositoryCommand - under sudo the probe checks the checkout and m
       "cargo",
       ["check"],
       { cwd: dir, timeoutMs: 5000, manifests: ["Cargo.toml"] },
-      { spawn, drop: sudoWrapper, source: sourceWithSecrets() },
+      {
+        spawn,
+        drop: sudoWrapper,
+        source: sourceWithSecrets(),
+        trimRefused: false,
+      },
     );
-    assertEquals(calls.length, 1, "the gate runs once the probe passes");
-    const probe = onlyCall(probes);
+    assertEquals(calls.length, 1, "the gate runs once the probes pass");
+    // Without a placed target directory cargo also needs a writable checkout.
+    assertEquals(probes.length, 2);
+    const probe = probes[0]!;
     assertEquals(probe.executable, "sudo");
     assertEquals(probe.args.slice(0, 5), ["-n", "-u", "agent", "--", "test"]);
     assertEquals(probe.args.slice(5), [
@@ -715,6 +724,10 @@ Deno.test("runRepositoryCommand - a checkout the dropped account cannot read is 
       assert(!result.ok, "an unreadable checkout must not report a result");
       assert(result.error.message.includes("'agent' account cannot read"));
       assert(result.error.message.includes("Cargo.toml"));
+      assert(
+        isUnverifiableCheckout(result.error),
+        "an unusable checkout is typed so the sync does not charge it",
+      );
       assertEquals(calls.length, 0, "the gate command must not run");
     }
   });
@@ -783,10 +796,13 @@ Deno.test("neither milestone gate reports passed for a checkout the dropped acco
       if (readable) {
         // Positive control: with a readable tree the same fixture passes.
         assertEquals(merged.status, "passed");
+        assertEquals(merged.unverifiable, undefined);
         assert(calls.length > 0);
       } else {
         assertEquals(merged.status, "failed");
         assertEquals(resolved.status, "failed");
+        assert(merged.status === "failed" && merged.unverifiable === true);
+        assert(resolved.status === "failed" && resolved.unverifiable === true);
         assert(merged.output.includes("cannot read"));
         assertEquals(calls.length, 0, "no gate command may run");
       }
@@ -803,5 +819,161 @@ Deno.test("manifestsFor - names the file whose readability proves the project is
     assertEquals(await manifestsFor("deno", dir), ["deno.jsonc"]);
     await Deno.writeTextFile(`${dir}/deno.json`, "{}");
     assertEquals(await manifestsFor("deno", dir), ["deno.json"]);
+  });
+});
+
+Deno.test("runRepositoryCommand - cargo needs a target directory the dropped account can write", async () => {
+  const unwritable: SpawnOutcome = {
+    ok: true,
+    value: { code: 1, success: false, stdout: "", stderr: "", timedOut: false },
+  };
+  const deps = (spawn: Spawn) => ({
+    spawn,
+    drop: sudoWrapper,
+    source: sourceWithSecrets(),
+    trimRefused: false,
+  });
+  const options = (dir: string) => ({
+    cwd: dir,
+    timeoutMs: 5000,
+    manifests: ["Cargo.toml"],
+  });
+
+  // No `target` yet: cargo creates it, so the checkout itself must be writable.
+  await withTempDir(async (dir) => {
+    const { spawn, calls, probes } = recordingSpawn(SUCCESS, unwritable);
+    // Both probes fail here; make the readability probe pass first.
+    let probed = 0;
+    const answering: Spawn = (executable, args, spawnOptions) => {
+      if (isProbe(executable, args)) {
+        probed++;
+        if (probed === 1) {
+          probes.push({ executable, args: [...args], options: spawnOptions });
+          return Promise.resolve(SUCCESS);
+        }
+      }
+      return spawn(executable, args, spawnOptions);
+    };
+    const result = await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      options(dir),
+      deps(answering),
+    );
+    assert(!result.ok);
+    assert(isUnverifiableCheckout(result.error));
+    assert(result.error.message.includes("write the 'target' directory"));
+    assertEquals(calls.length, 0, "cargo must not run");
+    assertEquals(probes.at(-1)?.args.slice(-3), ["test", "-w", dir]);
+  });
+
+  // An existing `target` the worker created: `find` names the unwritable entry.
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(`${dir}/target`);
+    for (const owned of ["", `${dir}/target/debug\n`]) {
+      const { spawn, calls, probes } = recordingSpawn(SUCCESS, {
+        ok: true,
+        value: {
+          code: 0,
+          success: true,
+          stdout: owned,
+          stderr: "",
+          timedOut: false,
+        },
+      });
+      const result = await runRepositoryCommand(
+        "cargo",
+        ["check"],
+        options(dir),
+        deps(spawn),
+      );
+      const find = probes.find((p) => p.args.includes("find"));
+      assert(find, "an existing target is scanned with find");
+      assertEquals(find.args.slice(-6), [
+        "find",
+        `${dir}/target`,
+        "!",
+        "-writable",
+        "-print",
+        "-quit",
+      ]);
+      if (owned === "") {
+        // Positive control: nothing unwritable, so cargo runs.
+        assert(result.ok);
+        assertEquals(calls.length, 1);
+      } else {
+        assert(!result.ok);
+        assert(isUnverifiableCheckout(result.error));
+        assertEquals(calls.length, 0, "cargo must not run");
+      }
+    }
+  });
+
+  // An explicit `CARGO_TARGET_DIR` places the build elsewhere: no scan.
+  await withTempDir(async (dir) => {
+    const { spawn, calls, probes } = recordingSpawn();
+    const result = await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      options(dir),
+      {
+        ...deps(spawn),
+        source: { ...sourceWithSecrets(), CARGO_TARGET_DIR: "/somewhere/else" },
+      },
+    );
+    assert(result.ok);
+    assertEquals(calls.length, 1);
+    assertEquals(probes.length, 1, "only the readability probe runs");
+  });
+});
+
+Deno.test("verifyResolvedTree - a manifest task that cannot see the tree is unverifiable, not passed", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/deno.json`,
+      JSON.stringify({ tasks: { test: "deno test" } }),
+    );
+    const passedTypeCheck = () =>
+      Promise.resolve({
+        status: "passed" as const,
+        detail: "type check passed",
+        output: "",
+      });
+    const outcomes = [];
+    for (const readable of [true, false]) {
+      const { spawn, calls } = recordingSpawn(SUCCESS, {
+        ok: true,
+        value: {
+          code: readable ? 0 : 1,
+          success: readable,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+        },
+      });
+      outcomes.push({
+        readable,
+        calls: calls.length,
+        outcome: await verifyResolvedTree(
+          dir,
+          undefined,
+          passedTypeCheck,
+          undefined,
+          async () => false,
+          { spawn, drop: sudoWrapper, source: sourceWithSecrets() },
+        ),
+        recorded: calls,
+      });
+    }
+    const [control, unseen] = outcomes;
+    // Positive control: with a readable tree the same suite task runs and passes.
+    assertEquals(control!.outcome.status, "passed");
+    assertEquals(control!.recorded.length > 0, true);
+    assertEquals(unseen!.outcome.status, "failed");
+    assert(
+      unseen!.outcome.status === "failed" &&
+        unseen!.outcome.unverifiable === true,
+    );
+    assertEquals(unseen!.recorded.length, 0, "no task may run");
   });
 });

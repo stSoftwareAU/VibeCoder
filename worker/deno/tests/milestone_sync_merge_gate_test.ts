@@ -15,8 +15,10 @@ import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import {
   isMergeGateFailure,
+  isMergeGateUnverifiable,
   type MergeGateFn,
 } from "../lib/milestone_merge_gate.ts";
+import { judgeSyncFailure } from "../lib/milestone_branch_sync.ts";
 
 async function git(
   args: string[],
@@ -106,6 +108,15 @@ const failingGate: MergeGateFn = () =>
     status: "failed" as const,
     detail: "deno task check in /clone/worker/deno failed (exit 1)",
     output: "TS2339 [ERROR]: Property 'onSlotIdle' does not exist on type",
+  });
+
+/** A gate whose check never saw the tree (Issue #4697). */
+const unverifiableGate: MergeGateFn = () =>
+  Promise.resolve({
+    status: "failed" as const,
+    detail: "cargo check in /clone could not be checked",
+    output: "the 'agent' account cannot read '/clone'",
+    unverifiable: true,
   });
 
 const passingGate: MergeGateFn = () =>
@@ -265,6 +276,124 @@ Deno.test(
         published,
         "the local resolution is reset away",
       );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a tree the gate could not see is refused as unverifiable, and is not charged (Issue #4697)",
+  async () => {
+    const fx = await setupBehindMilestone();
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/974",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        unverifiableGate,
+      );
+
+      assert(!result.ok, "a tree nothing checked must not be pushed");
+      assert(isMergeGateUnverifiable(result.error), result.error.message);
+      assert(
+        !isMergeGateFailure(result.error),
+        "an environment fault is not a tree the check refused",
+      );
+      assertEquals(
+        await remoteSha(fx, "milestone/974"),
+        fx.milestoneSha,
+        "nothing was pushed",
+      );
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        fx.milestoneSha,
+        "the local merge is reset away",
+      );
+      // The verdict the sync records: not charged, no refusal counted, so the
+      // recovery ladder never climbs on it.
+      const conclusion = judgeSyncFailure(result.error, true);
+      assertEquals(conclusion.outcome, "not-charged");
+      assertEquals(conclusion.refusal, undefined);
+
+      // Control: the same fixture refused by a real failing check is charged.
+      const refused = await syncMilestoneBranchWithDefault(
+        "milestone/974",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        failingGate,
+      );
+      assert(!refused.ok);
+      assertEquals(judgeSyncFailure(refused.error, true).outcome, "failed");
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a resolution the gate could not see is refused without a refusal count or a repair (Issue #4697)",
+  async () => {
+    const fx = await setupBehindMilestone();
+    try {
+      await gitOk(["checkout", "main"], fx.clone);
+      await Deno.writeTextFile(
+        `${fx.clone}/shared.txt`,
+        "shared line\nmain adds a line\n",
+      );
+      await gitOk(["add", "shared.txt"], fx.clone);
+      await gitOk(["commit", "-m", "main edits shared"], fx.clone);
+      await gitOk(["push", "origin", "main"], fx.clone);
+      await gitOk(["checkout", "milestone/974"], fx.clone);
+      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "shared line\n");
+      await gitOk(["add", "shared.txt"], fx.clone);
+      await gitOk(["commit", "-m", "milestone edits shared"], fx.clone);
+      await gitOk(["push", "origin", "milestone/974"], fx.clone);
+      const published = await remoteSha(fx, "milestone/974");
+
+      let agentCalls = 0;
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/974",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        unverifiableGate,
+        unverifiableGate,
+        () => {
+          agentCalls++;
+          return Promise.resolve({
+            ok: false,
+            error: new Error("no repair available in this fixture"),
+          });
+        },
+      );
+
+      assert(!result.ok);
+      assert(isConflictEscalation(result.error), result.error.message);
+      assertEquals(result.error.unverifiable, true);
+      assertEquals(agentCalls, 0, "no repair round for an environment fault");
+      const conclusion = judgeSyncFailure(result.error, true);
+      assertEquals(conclusion.outcome, "not-charged");
+      assertEquals(
+        conclusion.refusal,
+        undefined,
+        "not counted toward the refusal ceiling",
+      );
+      assertEquals(await remoteSha(fx, "milestone/974"), published);
+
+      // Control: a real refusal of the same resolution is a counted refusal.
+      const refused = await syncMilestoneBranchWithDefault(
+        "milestone/974",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        failingGate,
+        failingGate,
+      );
+      assert(!refused.ok);
+      assertEquals(judgeSyncFailure(refused.error, true).refusal, true);
     } finally {
       await fx.cleanup();
     }

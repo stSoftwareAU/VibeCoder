@@ -80,6 +80,7 @@ import {
   mergeGateFailureError,
   type MergeGateFn,
   type MergeGateOutcome,
+  mergeGateUnverifiableError,
 } from "./milestone_merge_gate.ts";
 
 /**
@@ -450,10 +451,14 @@ async function gateThenPushMilestoneBranch(
     }
     return {
       ok: false,
-      error: mergeGateFailureError(milestoneBranch, defaultBranch, {
-        ...outcome,
-        detail: `${outcome.detail}${resetNote}`,
-      }),
+      // A check that could not use the tree is an environment fault, kept
+      // apart so the sync does not charge it as a refused tree (Issue #4697).
+      error: (outcome.unverifiable
+        ? mergeGateUnverifiableError
+        : mergeGateFailureError)(milestoneBranch, defaultBranch, {
+          ...outcome,
+          detail: `${outcome.detail}${resetNote}`,
+        }),
     };
   }
 
@@ -1340,6 +1345,7 @@ async function syncMilestoneBranchWithDefaultBody(
         gateFailure,
         preMergeSha,
         gateTimings,
+        finalGate.unverifiable === true,
       ),
     };
   }

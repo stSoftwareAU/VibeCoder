@@ -201,6 +201,12 @@ export class MilestoneConflictEscalation extends Error {
      * in a log nobody keeps.
      */
     readonly timings?: string,
+    /**
+     * Set when the gate could not use the merged tree at all (Issue #4697):
+     * an environment fault, so the refusal is neither charged nor counted
+     * toward the refusal ceiling.
+     */
+    readonly unverifiable?: boolean,
   ) {
     super(message);
   }

@@ -23,6 +23,21 @@ import {
 } from "./quality_gate_phase.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
+/**
+ * The error a gate command returns when the account it dropped to cannot use
+ * the checkout. It is an environment fault, not a verdict on the tree: callers
+ * map it to an unverifiable outcome that is refused but never charged against
+ * the conflict budget (Issue #4697, PR #4703 review).
+ */
+export class UnverifiableCheckoutError extends Error {
+  override readonly name = "UnverifiableCheckoutError";
+}
+
+/** Whether a command error is the dropped account's inability to use the tree. */
+export function isUnverifiableCheckout(err: unknown): boolean {
+  return err instanceof Error && err.name === "UnverifiableCheckoutError";
+}
+
 /** How long the readability probe may run. */
 const PROBE_TIMEOUT_MS = 15_000;
 
@@ -100,6 +115,33 @@ function readabilityProbe(cwd: string, manifests: readonly string[]): string[] {
 }
 
 /**
+ * The probe that the dropped account can write what `cargo` writes. With no
+ * `CARGO_TARGET_DIR`, cargo writes `<cwd>/target`: a tree an earlier worker-run
+ * gate created as the worker is not writable by the dropped account (Issue
+ * #4113), and `cargo check` would then fail for a reason that says nothing
+ * about the merged tree. An existing `target` must have no unwritable entry
+ * (`find` prints the first one and the probe fails on any output); otherwise
+ * the checkout itself must be writable so cargo can create it.
+ */
+async function writabilityProbe(
+  cwd: string,
+): Promise<{ argv: string[]; failsOnOutput: boolean }> {
+  const target = `${cwd}/target`;
+  try {
+    await Deno.stat(target);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) {
+      return { argv: ["test", "-w", cwd], failsOnOutput: false };
+    }
+    throw err;
+  }
+  return {
+    argv: ["find", target, "!", "-writable", "-print", "-quit"],
+    failsOnOutput: true,
+  };
+}
+
+/**
  * The manifest files whose readability proves the dropped account can see a
  * project of this kind. A Deno project is a `deno.json` or `deno.jsonc`,
  * whichever the worker finds on disk.
@@ -136,9 +178,11 @@ export async function manifestsFor(
  * {@link credentialCarryingCommand}), never in argv.
  *
  * Fails closed: when the command is dropped to another account, that account
- * must be able to read the checkout and the named manifests first. Otherwise
- * the result is an error, because a check that could not see the tree says
- * nothing about it (the shared clone, Issue #4697).
+ * must be able to read the checkout and the named manifests first, and for a
+ * `cargo` command with no `CARGO_TARGET_DIR` to write the `target` directory.
+ * Otherwise the result is an {@link UnverifiableCheckoutError}, because a check
+ * that could not use the tree says nothing about it (the shared clone, Issue
+ * #4697). Callers report it as unverifiable, never as a refused tree.
  *
  * @param executable - The program to run, e.g. `cargo` or the Deno binary.
  * @param args - The argv after the executable.
@@ -186,29 +230,42 @@ export async function runRepositoryCommand(
     target === undefined ? {} : { CARGO_TARGET_DIR: target },
   );
   if (account !== undefined) {
-    const probe = carryEnvThroughSudo(
-      await drop(readabilityProbe(options.cwd, options.manifests ?? [])),
-      {},
-    );
-    const seen = await spawn(probe[0]!, probe.slice(1), {
-      cwd: options.cwd,
-      timeoutMs: PROBE_TIMEOUT_MS,
-      env: {},
-      clearEnv: true,
-    });
-    if (!seen.ok || seen.value.code !== 0) {
-      return {
-        ok: false,
-        error: new Error(
-          `the '${account}' account cannot read '${options.cwd}'` +
-            `${
-              (options.manifests ?? []).length > 0
-                ? ` or ${(options.manifests ?? []).join(", ")}`
-                : ""
-            } — the repository's check was not run, so nothing verified ` +
-            `the tree (Issue #4697)`,
-        ),
-      };
+    const probes: Array<
+      { argv: string[]; lacks: string; failsOnOutput?: boolean }
+    > = [{
+      argv: readabilityProbe(options.cwd, options.manifests ?? []),
+      lacks: `read '${options.cwd}'${
+        (options.manifests ?? []).length > 0
+          ? ` or ${(options.manifests ?? []).join(", ")}`
+          : ""
+      }`,
+    }];
+    if (executable === "cargo" && target === undefined) {
+      probes.push({
+        ...await writabilityProbe(options.cwd),
+        lacks: `write the 'target' directory under '${options.cwd}'`,
+      });
+    }
+    for (const { argv, lacks, failsOnOutput } of probes) {
+      const probe = carryEnvThroughSudo(await drop(argv), {});
+      const seen = await spawn(probe[0]!, probe.slice(1), {
+        cwd: options.cwd,
+        timeoutMs: PROBE_TIMEOUT_MS,
+        env: {},
+        clearEnv: true,
+      });
+      if (
+        !seen.ok || seen.value.code !== 0 ||
+        (failsOnOutput === true && seen.value.stdout.trim() !== "")
+      ) {
+        return {
+          ok: false,
+          error: new UnverifiableCheckoutError(
+            `the '${account}' account cannot ${lacks} — the repository's ` +
+              `check was not run, so nothing verified the tree (Issue #4697)`,
+          ),
+        };
+      }
     }
   }
   return spawn(command[0]!, command.slice(1), {

@@ -96,8 +96,11 @@ it as the untrusted account where one is available. Declared
 and carried through both gates, including the merge-only path. Undeclared
 credentials remain excluded. The declared values reach the dropped account on
 the child's stdin, not in argv, so the process table never shows them. The
-sweep's rebuild gate resolves them too, and a dropped account that cannot read
-the checkout fails the gate closed.
+sweep's rebuild gate resolves them too. A dropped account that cannot read the
+checkout (or, for `cargo`, write its `target` directory) fails the gate closed:
+the push is refused, but as an unverifiable tree (an environment fault, per
+Issue 4697), so the sync runs no repair round, charges no conflict budget and
+never climbs the roll-back ladder.
 
 ## Findings filed, not fixed here
 
@@ -175,8 +178,8 @@ supplied by the caller is invisible to it. That is stated here rather than left
 implicit — the gate closes the class as written today, not every spelling of it.
 
 **Closed by #1227.** Both checks now also flag a **variable** binary in any
-module that names the guarded binary at the head of an argv literal and does
-not import the chokepoint. Running the extended scan over `worker/deno/lib` and
+module that names the guarded binary at the head of an argv literal and does not
+import the chokepoint. Running the extended scan over `worker/deno/lib` and
 `worker/deno/commands` surfaced five `gh` evasions (`language_detector.ts`,
 `workflow_auditor.ts`, `repo_visibility.ts`, `recent_activity.ts`,
 `software_updates.ts`) and three `git` ones (`benchmark.ts`,
@@ -218,8 +221,8 @@ Named here so a later sweep does not re-litigate them.
 - **`secrets_history_scan.ts`** — `gitleaks`/`trufflehog` argv is worker-owned
   paths and fixed flags only.
 - **`benchmark.ts` (`runBenchmarkCommand`)** — the runner is generic, but every
-  call site passes fixed literals (`deno check`, `git init/add/commit` against
-  a fixture directory the benchmark itself creates). Its `git` half now routes
+  call site passes fixed literals (`deno check`, `git init/add/commit` against a
+  fixture directory the benchmark itself creates). Its `git` half now routes
   through `runGitCommand` (Issue #1396), so the fixture calls carry the
   chokepoint's timeout, audit journal and work-volume fault detection; the
   remaining direct spawn is the `deno check` step, an operator-invoked

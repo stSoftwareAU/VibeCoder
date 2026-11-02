@@ -42,14 +42,32 @@ final version.
   `syncMilestoneBranchForSweep` pass `qualityCredentials` from `repoConfig`, and
   the sweep's rebuild gate (`rebuildGateForSweep`, PR #4344) resolves them with
   `rebuildGateWithCredentials` and refuses on a mint failure.
-- Fail closed on an unreadable checkout (PR #4703 review, Issue #4697). When the
-  command is dropped to `agent`, `runRepositoryCommand` first runs
-  `test -r <cwd> -a -x <cwd> -a -r <cwd>/<manifest>` as that account and returns
-  an error (so `checkMergedTree` and `verifyResolvedTree` report `failed`) if it
-  fails, instead of running a check that cannot see the tree. On a host where
-  the shared clone is not agent-readable, milestone syncs are refused until that
-  access is fixed; running them as the worker instead would undo the isolation
-  this issue asks for.
+- Fail closed on an unusable checkout, as an environment fault (PR #4703 review,
+  Issue #4697). When the command is dropped to `agent`, `runRepositoryCommand`
+  first runs `test -r <cwd> -a -x <cwd> -a -r
+  <cwd>/<manifest>` as that
+  account. For `cargo` with no `CARGO_TARGET_DIR` (cargo then writes
+  `<cwd>/target`) it also checks the account can write what cargo writes:
+  `find <cwd>/target ! -writable -print -quit` must print nothing when `target`
+  exists (an earlier worker-run gate leaves it owned by the worker, Issue
+  #4113), else `test -w <cwd>`. A failed probe returns an
+  `UnverifiableCheckoutError` and the command does not run. The two spawners map
+  it to `unverifiable: true`, which `checkMergedTree` and `verifyResolvedTree`
+  return as a `failed` outcome flagged `unverifiable`. The push is still refused
+  (nothing was checked), but: `runGateWithRepair` offers no repair round (as for
+  `toolchainGap`); `gateThenPushMilestoneBranch` raises
+  `mergeGateUnverifiableError` instead of `mergeGateFailureError`; the
+  resolution path sets `MilestoneConflictEscalation.unverifiable`; and
+  `judgeSyncFailure` returns `not-charged` / `MERGE_GATE_COULD_NOT_CHECK_TREE`
+  with no `refusal` flag for both. That reason is not in `climbsRecoveryLadder`
+  and adds nothing to `refusedCycles`, so it never spends the conflict budget,
+  counts toward the refusal ceiling or reaches the roll-back, rebuild or close
+  rungs. The log still carries the cause, and a failure that does not clear
+  takes the sync's existing non-conflict escalation. Milestone syncs on a host
+  whose shared clone is not agent-readable stay unverified until #4697's access
+  is fixed; running them as the worker instead would undo the isolation this
+  issue asks for. The gates were not moved to a different checkout: the sweep,
+  presync and rebuild gate all run in the shared clone by design.
 - `spawnTask` and `spawnTypeCheck` are now exported with an optional `deps`
   argument, so tests can inject the runner and environment source.
 
@@ -59,15 +77,16 @@ final version.
   "No matching files found", and `cargo` there reports no `Cargo.toml`. Lane
   worktrees are agent-readable (the quality gate relies on it); the shared
   `${workDir}/<repo>` clone may not be (Issue #4697), hence the readability
-  probe above. A test fixture from `Deno.makeTempDir` (0700) is not readable
-  either, so `withTempDir` in `milestone_merge_gate_test.ts` and `withTree` in
+  probe above (and the unverifiable handling that follows it). A test fixture
+  from `Deno.makeTempDir` (0700) is not readable either, so `withTempDir` in
+  `milestone_merge_gate_test.ts` and `withTree` in
   `milestone_merge_only_4326_test.ts` chmod 0755.
 
 ## Evidence
 
 Tests (all under `worker/deno/`):
 
-- `tests/untrusted_gate_spawn_test.ts` (21 tests at head): covers
+- `tests/untrusted_gate_spawn_test.ts` (23 tests at head): covers
   `runRepositoryCommand`, `spawnTask` and `spawnTypeCheck`. The original cases
   plant `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` in the injected `source`
   (asserting they are there), then assert the child's `env` lacks them and
@@ -111,6 +130,22 @@ Tests (all under `worker/deno/`):
   deleting the `qualityCredentials` line in the sweep, in the presync, or the
   credential env in the rebuild gate each turns its wiring case red; skipping
   the probe turns three cases red.
+- Second PR #4703 review round (unverifiable, not charged):
+  `tests/untrusted_gate_spawn_test.ts` types the probe error, asserts both gates
+  return `unverifiable` (and the readable control does not), covers the cargo
+  `target` probes (no `target`: `test -w <cwd>`; existing `target` with an
+  unwritable entry: refused; none: runs; explicit `CARGO_TARGET_DIR`: no scan),
+  and the manifest-task path of `verifyResolvedTree`.
+  `tests/milestone_gate_repair_test.ts` asserts no repair round is offered.
+  `tests/milestone_sync_merge_gate_test.ts` drives the real
+  `syncMilestoneBranchWithDefault` for a clean merge and a resolved conflict:
+  nothing pushed, branch reset, `judgeSyncFailure` returns `not-charged` with no
+  `refusal`, and the same fixture refused by a real failing gate stays `failed`
+  / `refusal: true`. Red checks, each applied alone then restored: dropping the
+  `runGateWithRepair` guard, the `git_pull.ts` error choice, the
+  `finalGate.unverifiable` hand-off, the `judgeSyncFailure` branch, the cargo
+  probe condition, the `find` output check, and the `unverifiable` branches in
+  `checkMergedTree` and `verifyResolvedTree` each turned a test red.
 - `docs/audits/lib-sweep-coverage/top-up-4659.json` claims the new module for
   the lib sweep ledger; `deno task check:manifests` passes (847 passed).
 - Doc: `docs/audits/security-sweep-1214-subprocess-argv.md` gains a follow-up
@@ -132,9 +167,14 @@ Issue numbers cited as provenance, each looked up with `gh issue view`:
   `milestone_resolution_gate`, `milestone_merge_only_4326`,
   `subprocess_timeout`, `milestone_gate_credentials_wiring`,
   `milestone_presync_merge_only_4326`, `milestone_sweep_merge_only_4326` and
-  `lib_sweep_coverage` tests: passed (118 parallel, 62 serial).
-  `deno fmt --check`, `deno lint`, `deno check` and `deno task check:manifests`
-  (847 passed) pass.
+  `lib_sweep_coverage` tests: passed (118 parallel, 62 serial) in the earlier
+  round. This round: `untrusted_gate_spawn`, `milestone_merge_gate`,
+  `milestone_resolution_gate`, `milestone_gate_credentials_wiring`,
+  `milestone_merge_only_4326`, `milestone_sync_refusal_ladder_4328`,
+  `milestone_cargo_withhold_not_counted_4588`, `milestone_sync_gate_escalation`,
+  `milestone_branch_sync`, `milestone_gate_repair` and
+  `milestone_sync_merge_gate` passed. `deno fmt --check`, `deno lint`,
+  `deno check` and `deno task check:manifests` (847 passed) pass.
 - Edited tests: `tests/milestone_merge_gate_test.ts` `withTempDir` and
   `tests/milestone_merge_only_4326_test.ts` `withTree` gain `chmod 0o755`; no
   assertion removed. Edited expectations in `tests/untrusted_gate_spawn_test.ts`

@@ -575,6 +575,18 @@ export async function runGateWithRepair(
     return { gate: verdict, firstGate: verdict, repair };
   }
 
+  // Issue #4697: a check that could not see the tree says nothing about the
+  // resolution, so no repair round can answer it.
+  if (verdict.unverifiable) {
+    const repair: GateRepairOutcome = {
+      status: "not-attempted",
+      gate: verdict,
+      detail: "the check could not use the merged tree — an environment " +
+        "fault no repair round can fix (Issue #4697)",
+    };
+    return { gate: verdict, firstGate: verdict, repair };
+  }
+
   const mergeShaResult = await runGitCommand(["rev-parse", "HEAD"], options);
   const mergeSha = mergeShaResult.ok && mergeShaResult.value.code === 0
     ? mergeShaResult.value.stdout.trim()
