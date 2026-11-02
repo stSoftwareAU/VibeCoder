@@ -250,6 +250,12 @@ does not claim those deliverables.
 
 ## Test Plan
 
+- CI-fix push `b8a4a161`: the production babysitter repair test warms the
+  command's module graph before its `--cached-only` subprocess, so a shard's
+  incomplete Deno cache does not prevent the repair from starting. The CI-fix
+  run reported 17 tests passed in `fleet_babysitter_app_test.ts`, including a
+  cold-cache run; the original missing-manifest failure was not reproduced
+  locally.
 - Quality-fix push `48efac0f`: extracted the shared review-log contract and
   parser and changed the collector to import it from the worker library.
   `deno test --allow-read --allow-env --allow-run --allow-write
