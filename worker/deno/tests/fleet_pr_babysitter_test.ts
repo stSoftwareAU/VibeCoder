@@ -23,6 +23,7 @@ import {
   buildRepairPrompt,
   cancelledRunsToRerun,
   cloneForRepair,
+  type CloneForRepairDeps,
   eligibleAuthor,
   prBodyEditArgs,
   reason,
@@ -37,19 +38,304 @@ import {
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
 
-Deno.test("failed clone is attempted once and preserves its original error", async () => {
-  let attempts = 0;
-  const timeout = new Error("clone timed out");
-  await assertRejects(
-    () =>
-      cloneForRepair("owner/repo", "/tmp/clone", () => {
-        attempts++;
-        return Promise.reject(timeout);
-      }),
-    Error,
-    "clone timed out",
+/** Run a real git command for fixtures and for the injected runner in clone tests. */
+async function runGitForTest(
+  args: string[],
+  options: { cwd?: string; timeoutSeconds?: number } = {},
+): Promise<string> {
+  const output = await new Deno.Command("git", {
+    args,
+    cwd: options.cwd,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const stdout = new TextDecoder().decode(output.stdout).trim();
+  const stderr = new TextDecoder().decode(output.stderr).trim();
+  if (!output.success) {
+    throw new Error(`git ${args[0]} failed: ${stderr || stdout}`);
+  }
+  return stdout;
+}
+
+function fixtureGit(args: string[], cwd: string): Promise<string> {
+  return runGitForTest(
+    [
+      "-c",
+      "user.name=Babysitter Test",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ],
+    { cwd },
   );
-  assertEquals(attempts, 1);
+}
+
+async function commitFile(
+  cwd: string,
+  name: string,
+  message: string,
+): Promise<void> {
+  await Deno.writeTextFile(`${cwd}/${name}`, `${message}\n`);
+  await fixtureGit(["add", "-A"], cwd);
+  await fixtureGit(["commit", "-q", "-m", message], cwd);
+}
+
+/** A local bare "upstream" with main (two commits) and feature (one more). */
+async function makeUpstream(
+  root: string,
+): Promise<{ upstream: string; work: string }> {
+  const work = `${root}/work`;
+  const upstream = `${root}/upstream.git`;
+  await Deno.mkdir(work);
+  await fixtureGit(["init", "-q", "-b", "main"], work);
+  await commitFile(work, "a.txt", "first");
+  await commitFile(work, "b.txt", "second");
+  await fixtureGit(["checkout", "-q", "-b", "feature"], work);
+  await commitFile(work, "c.txt", "third");
+  await fixtureGit(["checkout", "-q", "main"], work);
+  await fixtureGit(["clone", "-q", "--bare", work, upstream], root);
+  return { upstream, work };
+}
+
+async function withTempRoot(
+  run: (root: string) => Promise<void>,
+): Promise<void> {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-mirror-test-" });
+  try {
+    await run(root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("failed clone is attempted once and preserves its original error", async () => {
+  await withTempRoot(async (root) => {
+    const calls: string[][] = [];
+    const timeout = new Error("clone timed out");
+    await assertRejects(
+      () =>
+        cloneForRepair("owner/repo", `${root}/clone`, {
+          git: (args) => {
+            calls.push(args);
+            return Promise.reject(timeout);
+          },
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          mirrorRoot: `${root}/mirrors`,
+        }),
+      Error,
+      "clone timed out",
+    );
+    assertEquals(calls.filter((args) => args.includes("clone")).length, 1);
+  });
+});
+
+Deno.test("first repair clones full history from a local mirror, with origin reset to GitHub", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const dir = `${root}/clone`;
+    await cloneForRepair("owner/repo", dir, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    assertEquals(
+      await runGitForTest(["rev-list", "--count", "--all"], { cwd: dir }),
+      await runGitForTest(["rev-list", "--count", "--all"], { cwd: upstream }),
+    );
+    await runGitForTest(["merge-base", "origin/main", "origin/feature"], {
+      cwd: dir,
+    });
+    assertEquals(await exists(`${dir}/.git/objects/info/alternates`), false);
+    assertEquals(
+      await runGitForTest(["config", "remote.origin.url"], { cwd: dir }),
+      upstream,
+    );
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    assertEquals(
+      await runGitForTest(["rev-parse", "--is-bare-repository"], {
+        cwd: mirror,
+      }),
+      "true",
+    );
+  });
+});
+
+Deno.test("a later repair fetches into the mirror and clones from it, without a second bare clone", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream, work } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const deps: CloneForRepairDeps = {
+      git: (args, options) => {
+        calls.push({ args, cwd: options?.cwd });
+        return runGitForTest(args, options);
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await commitFile(work, "d.txt", "fourth");
+    await fixtureGit(["push", "-q", upstream, "main"], work);
+    const dir2 = `${root}/clone-2`;
+    await cloneForRepair("owner/repo", dir2, deps);
+    assertEquals(
+      await runGitForTest(["log", "-1", "--format=%s", "origin/main"], {
+        cwd: dir2,
+      }),
+      "fourth",
+    );
+    assert(
+      calls.some((call) => call.args[0] === "fetch" && call.cwd === mirror),
+    );
+    assertEquals(
+      calls.filter((call) =>
+        call.args[0] === "clone" && call.args[1] === "--bare"
+      ).length,
+      1,
+    );
+  });
+});
+
+Deno.test("a clone keeps its full history after the mirror is deleted", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const dir = `${root}/clone`;
+    await cloneForRepair("owner/repo", dir, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    await Deno.remove(`${mirrorRoot}/owner--repo.git`, { recursive: true });
+    await runGitForTest(["fsck"], { cwd: dir });
+    assertEquals(
+      await runGitForTest(["rev-list", "--count", "--all"], { cwd: dir }),
+      "3",
+    );
+  });
+});
+
+/** Every regular file under a directory, found recursively. */
+async function filesUnder(dir: string): Promise<string[]> {
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory) found.push(...await filesUnder(path));
+    else if (entry.isFile) found.push(path);
+  }
+  return found;
+}
+
+Deno.test("the clone copies its objects, so no object file is hardlinked to the mirror", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    const dir = `${root}/clone`;
+    await cloneForRepair("owner/repo", dir, {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    });
+    const mirrorObjects = await filesUnder(`${mirror}/objects`);
+    assert(
+      mirrorObjects.length > 0,
+      "the mirror holds no object files to compare",
+    );
+    const cloneObjects = await filesUnder(`${dir}/.git/objects`);
+    assert(cloneObjects.length > 0, "the clone holds no object files to check");
+    for (const file of cloneObjects) {
+      assertEquals((await Deno.stat(file)).nlink, 1, `${file} is hardlinked`);
+    }
+  });
+});
+
+Deno.test("a failed fetch keeps git's cause and leaves the mirror in place", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    const mirrorRoot = `${root}/mirrors`;
+    const mirror = `${mirrorRoot}/owner--repo.git`;
+    const deps: CloneForRepairDeps = {
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot,
+    };
+    await cloneForRepair("owner/repo", `${root}/clone-1`, deps);
+    await Deno.rename(upstream, `${root}/upstream-moved.git`);
+    await assertRejects(
+      () => cloneForRepair("owner/repo", `${root}/clone-2`, deps),
+      Error,
+      "does not appear to be a git repository",
+    );
+    assert(await exists(mirror));
+  });
+});
+
+Deno.test("a repository name that is not owner/name is refused before any git runs", async () => {
+  await withTempRoot(async (root) => {
+    const calls: string[][] = [];
+    await assertRejects(
+      () =>
+        cloneForRepair("../x", `${root}/clone`, {
+          git: (args) => {
+            calls.push(args);
+            return Promise.resolve("");
+          },
+          remoteUrl: () => Promise.resolve("/tmp/upstream"),
+          mirrorRoot: `${root}/mirrors`,
+        }),
+      Error,
+      "Invalid repository",
+    );
+    assertEquals(calls, []);
+  });
+});
+
+Deno.test("concurrent repairs of one repo never mutate its mirror at the same time", async () => {
+  await withTempRoot(async (root) => {
+    const { upstream } = await makeUpstream(root);
+    let active = 0;
+    let maxActive = 0;
+    const deps: CloneForRepairDeps = {
+      git: async (args, options) => {
+        const mutatesMirror = args[0] === "fetch" ||
+          (args[0] === "clone" && args[1] === "--bare");
+        if (!mutatesMirror) return await runGitForTest(args, options);
+        active++;
+        maxActive = Math.max(maxActive, active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return await runGitForTest(args, options);
+        } finally {
+          active--;
+        }
+      },
+      remoteUrl: () => Promise.resolve(upstream),
+      mirrorRoot: `${root}/mirrors`,
+    };
+    await Promise.all([
+      cloneForRepair("owner/repo", `${root}/clone-a`, deps),
+      cloneForRepair("owner/repo", `${root}/clone-b`, deps),
+    ]);
+    assertEquals(maxActive, 1);
+    for (const dir of [`${root}/clone-a`, `${root}/clone-b`]) {
+      assertEquals(
+        await runGitForTest(["rev-list", "--count", "--all"], { cwd: dir }),
+        "3",
+      );
+    }
+  });
 });
 
 Deno.test("babysitter supplies RTK guidance only when its probe succeeds", async () => {
