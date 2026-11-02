@@ -246,11 +246,15 @@ through [`worker/deno/lib/untrusted_gate_spawn.ts`](../../worker/deno/lib/untrus
 an allowlisted environment, `clearEnv: true`, and no repository credential. The
 command runs as `agent` when `agent` can read the checkout and the manifests it
 reads. Otherwise it runs as the worker with the same allowlisted environment,
-and the fallback is logged under `[SECURITY]` (Issues #4697, #4113). Each gate's
-real default runner has a test that plants a parent credential and asserts the
-child cannot see it. Declared `quality_credentials` are **not** resolved at
-these gates, so a repository that needs a credential for its type check or unit
-suite does not receive one from them.
+and the fallback is logged under `[SECURITY]` (Issues #4697, #4113). A property
+the merged tree controls never chooses the account: an unwritable cargo
+`target` gives `agent` a private `CARGO_TARGET_DIR` instead, and a manifest that
+is a symbolic link is refused. Each gate's real default runner has a test that
+plants a parent credential and asserts the child cannot see it. The
+`quality_credentials` the repository declared are resolved per checkout through
+`setGateCredentialSource` (registered in `run_core_production_deps.ts`) and
+placed last in the child environment, as at the quality gate; a mint that fails
+stops the command rather than running it without the credential.
 
 ## Swept paths
 

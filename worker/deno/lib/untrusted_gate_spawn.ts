@@ -15,9 +15,10 @@
  * environment: no credential variable reaches it, and the verdict stays a
  * verdict on the tree.
  *
- * `quality_credentials` declared by the repository are NOT resolved at the
- * milestone gates, because nothing there mints them. `repoCredentialEnv` is
- * therefore `{}`.
+ * The `quality_credentials` the repository declared reach the command through
+ * the registered {@link GateCredentialSource}, as at the quality gate. A
+ * probe that finds only the cargo target unwritable (a property the tree
+ * controls) gives the account a target of its own and does not change it.
  *
  * Australian English spelling used throughout.
  */
@@ -30,6 +31,26 @@ import {
 } from "./quality_gate_phase.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
+/**
+ * Where a gate finds the `quality_credentials` its repository declared
+ * (Issue #4659). Keyed by checkout because the gates are handed a directory,
+ * not a repository. Production registers one at start-up; an unregistered
+ * source declares none. A rejection fails the command rather than running it
+ * without the credential it declared.
+ */
+export type GateCredentialSource = (
+  repoDir: string,
+) => Promise<Record<string, string>>;
+
+let gateCredentialSource: GateCredentialSource | undefined;
+
+/** Register the source {@link runRepositoryCommand} reads declared credentials from. */
+export function setGateCredentialSource(
+  source: GateCredentialSource | undefined,
+): void {
+  gateCredentialSource = source;
+}
+
 /** Injection seams for {@link runRepositoryCommand}. Production omits them. */
 export interface UntrustedGateSpawnDeps {
   spawn?: typeof runWithTimeout;
@@ -37,7 +58,15 @@ export interface UntrustedGateSpawnDeps {
   source?: Record<string, string>;
   trimRefused?: boolean;
   root?: string;
+  /** The repository's declared credentials. Default: the registered source. */
+  credentials?: GateCredentialSource;
 }
+
+/** The probe exits with this when the account cannot read the checkout. */
+const PROBE_UNREADABLE = 1;
+
+/** The probe exits with this when the account cannot write the cargo target. */
+const PROBE_TARGET_UNWRITABLE = 2;
 
 /** The probe is a few `test` and `find` calls. Seconds. */
 const PROBE_TIMEOUT_MS = 15_000;
@@ -51,6 +80,18 @@ async function statOrUndefined(
 ): Promise<Deno.FileInfo | undefined> {
   try {
     return await Deno.stat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+}
+
+/** Lstat `path`, or undefined when it is absent. Other errors propagate. */
+async function lstatOrUndefined(
+  path: string,
+): Promise<Deno.FileInfo | undefined> {
+  try {
+    return await Deno.lstat(path);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return undefined;
     throw error;
@@ -83,13 +124,16 @@ export async function manifestsFor(
  * The shell fragment that checks a cargo build can write its target.
  *
  * Without a `target` directory the checkout itself must be writable, because
- * cargo creates one. With one, every entry in it must be.
+ * cargo creates one. With one, every entry in it must be. A failure here is
+ * not a reason to run the tree's code as the worker: the tree can cause it
+ * (a committed `target/` file), so the caller gives the account a target of
+ * its own instead.
  */
 async function targetWriteCheck(cwd: string): Promise<string> {
   const exists = (await statOrUndefined(`${cwd}/target`)) !== undefined;
   return exists
-    ? ` && [ -z "$(find "$1/target" ! -writable -print -quit)" ]`
-    : ` && test -w "$1"`;
+    ? `[ -z "$(find "$1/target" ! -writable -print -quit)" ]`
+    : `test -w "$1"`;
 }
 
 /**
@@ -108,7 +152,12 @@ function probeScript(manifests: readonly string[], tail: string): string {
     }
     return ` -a -r "$1/${name}"`;
   });
-  return `test -r "$1" -a -x "$1"${reads.join("")}${tail}`;
+  const readable = `test -r "$1" -a -x "$1"${
+    reads.join("")
+  } || exit ${PROBE_UNREADABLE}`;
+  return tail === ""
+    ? readable
+    : `${readable}; ${tail} || exit ${PROBE_TARGET_UNWRITABLE}`;
 }
 
 /**
@@ -136,11 +185,56 @@ export async function runRepositoryCommand(
 ): ReturnType<typeof runWithTimeout> {
   const spawn = deps.spawn ?? runWithTimeout;
   const drop = deps.drop ?? untrustedSpawn;
+  const manifests = options.manifests ?? [];
+
+  // A manifest that is a link can point at a file the account cannot read, so
+  // the tree would choose which account runs its code. Refuse it (Issue #4659).
+  for (const name of manifests) {
+    if (!SAFE_MANIFEST.test(name)) probeScript([name], "");
+    let info: Deno.FileInfo | undefined;
+    try {
+      info = await lstatOrUndefined(`${options.cwd}/${name}`);
+    } catch (error) {
+      return {
+        ok: false,
+        error: new Error(
+          `cannot inspect '${name}' in '${options.cwd}': ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      };
+    }
+    if (info?.isSymlink) {
+      return {
+        ok: false,
+        error: new Error(
+          `refusing to run '${executable}': '${name}' in '${options.cwd}' is ` +
+            `a symbolic link (Issue #4659)`,
+        ),
+      };
+    }
+  }
+
+  let declared: Record<string, string>;
+  try {
+    declared = await (deps.credentials ?? gateCredentialSource)?.(
+      options.cwd,
+    ) ?? {};
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `the repository's quality_credentials could not be resolved ` +
+          `(${error instanceof Error ? error.message : String(error)})`,
+      ),
+    };
+  }
+
   const buildEnv = (spawnable: readonly string[]) =>
     untrustedQualityCommandEnv({
       spawnable,
       cwd: options.cwd,
-      repoCredentialEnv: {},
+      repoCredentialEnv: declared,
       ...(deps.source === undefined ? {} : { source: deps.source }),
       ...(deps.trimRefused === undefined
         ? {}
@@ -148,48 +242,84 @@ export async function runRepositoryCommand(
       ...(deps.root === undefined ? {} : { root: deps.root }),
     });
 
-  let spawnable = await drop([executable, ...args]);
-  if (untrustedAccountOf(spawnable) !== undefined) {
-    const writesTarget = executable === "cargo" &&
-      buildEnv(spawnable)["CARGO_TARGET_DIR"] === undefined;
-    const probe = await drop([
-      "sh",
-      "-c",
-      probeScript(
-        options.manifests ?? [],
-        writesTarget ? await targetWriteCheck(options.cwd) : "",
-      ),
-      "sh",
-      options.cwd,
-    ]);
-    const [probeCommand = "", ...probeArgs] = probe;
-    const verdict = await spawn(probeCommand, probeArgs, {
+  let privateTarget: string | undefined;
+  try {
+    let spawnable = await drop([executable, ...args]);
+    if (untrustedAccountOf(spawnable) !== undefined) {
+      const writesTarget = executable === "cargo" &&
+        buildEnv(spawnable)["CARGO_TARGET_DIR"] === undefined;
+      const probe = await drop([
+        "sh",
+        "-c",
+        probeScript(
+          manifests,
+          writesTarget ? await targetWriteCheck(options.cwd) : "",
+        ),
+        "sh",
+        options.cwd,
+      ]);
+      const [probeCommand = "", ...probeArgs] = probe;
+      const verdict = await spawn(probeCommand, probeArgs, {
+        cwd: options.cwd,
+        timeoutMs: PROBE_TIMEOUT_MS,
+        env: buildEnv(spawnable),
+        clearEnv: true,
+      });
+      const code = verdict.ok ? verdict.value.code : undefined;
+      if (
+        verdict.ok && code === PROBE_TARGET_UNWRITABLE &&
+        !verdict.value.timedOut
+      ) {
+        // The tree can make its own `target` unwritable (a committed file), so
+        // that never chooses the account: the account builds elsewhere.
+        privateTarget = await Deno.makeTempDir({ prefix: "vibe_gate_target_" });
+        await Deno.chmod(privateTarget, 0o777);
+      } else if (!verdict.ok || code !== 0 || verdict.value.timedOut) {
+        console.error(
+          `[SECURITY] the untrusted account cannot use '${options.cwd}' — ` +
+            `running '${executable}' as the worker with the allowlisted ` +
+            `environment (Issues #4697, #4113)`,
+        );
+        spawnable = [executable, ...args];
+      }
+    }
+
+    const env = {
+      ...buildEnv(spawnable),
+      ...(privateTarget === undefined
+        ? {}
+        : { CARGO_TARGET_DIR: privateTarget }),
+    };
+    const target = env["CARGO_TARGET_DIR"];
+    const final = carryEnvThroughSudo(
+      spawnable,
+      target === undefined ? {} : { CARGO_TARGET_DIR: target },
+    );
+    const [command = "", ...commandArgs] = final;
+    return await spawn(command, commandArgs, {
       cwd: options.cwd,
-      timeoutMs: PROBE_TIMEOUT_MS,
-      env: buildEnv(spawnable),
+      timeoutMs: options.timeoutMs,
+      env,
       clearEnv: true,
     });
-    if (!verdict.ok || verdict.value.code !== 0 || verdict.value.timedOut) {
-      console.error(
-        `[SECURITY] the untrusted account cannot use '${options.cwd}' — ` +
-          `running '${executable}' as the worker with the allowlisted ` +
-          `environment (Issues #4697, #4113)`,
-      );
-      spawnable = [executable, ...args];
+  } finally {
+    if (privateTarget !== undefined) {
+      // What the account built is its own, so it empties the directory; the
+      // worker made the directory and removes it.
+      const [emptier = "", ...emptierArgs] = await drop([
+        "find",
+        privateTarget,
+        "-mindepth",
+        "1",
+        "-delete",
+      ]);
+      await spawn(emptier, emptierArgs, {
+        cwd: "/",
+        timeoutMs: PROBE_TIMEOUT_MS,
+        env: buildEnv([]),
+        clearEnv: true,
+      });
+      await Deno.remove(privateTarget, { recursive: true }).catch(() => {});
     }
   }
-
-  const env = buildEnv(spawnable);
-  const target = env["CARGO_TARGET_DIR"];
-  const final = carryEnvThroughSudo(
-    spawnable,
-    target === undefined ? {} : { CARGO_TARGET_DIR: target },
-  );
-  const [command = "", ...commandArgs] = final;
-  return spawn(command, commandArgs, {
-    cwd: options.cwd,
-    timeoutMs: options.timeoutMs,
-    env,
-    clearEnv: true,
-  });
 }

@@ -39,10 +39,19 @@ flowchart TD
   files found" or fails for a reason unrelated to the tree. Falling back keeps
   the verdict a verdict on the tree, and no environment fault reaches the
   merge-refusal recovery ladder.
-- Declared `quality_credentials` are not resolved at these gates (nothing there
-  mints them); `repoCredentialEnv` is `{}`. A repository whose milestone gate
-  needs a declared credential sees it missing rather than the worker's whole
-  environment.
+- Declared `quality_credentials` are resolved per checkout through
+  `setGateCredentialSource` (registered in `run_core_production_deps.ts`, keyed
+  by the checkout's directory name; two repositories sharing a name get none)
+  and placed last in the child environment, as the quality gate does. A mint
+  that fails stops the command with an error rather than running it without the
+  credential.
+- A property the merged tree controls never chooses the account. The probe
+  exits 1 when `agent` cannot read the checkout or a manifest (a host fault: run
+  as the worker) and 2 when only the cargo target is unwritable (a committed
+  `target/` file can cause it): then `agent` runs with a private temporary
+  `CARGO_TARGET_DIR`, removed afterwards. A manifest that is a symbolic link is
+  refused before anything runs, because it could point at a file only the worker
+  can read.
 
 ### Undiscoverable Facts
 
@@ -55,14 +64,19 @@ flowchart TD
 
 Backend-only change; no UI file is touched.
 
-- `worker/deno/tests/untrusted_gate_spawn_test.ts` (new, 10 tests): the child
+- `worker/deno/tests/untrusted_gate_spawn_test.ts` (new, 15 tests): the child
   gets no parent credential and `clearEnv`; a real `printenv` child sees only
   allowlisted names (positive control: the same command without `clearEnv` sees
   names outside the allowlist); a usable `agent` account runs under `sudo` after
   a probe, with `CARGO_TARGET_DIR` carried in argv; a failed, errored or timed
   out probe falls back to the worker with the credential-free environment; no
   account means no probe; the probe script embeds only plain manifest names and
-  checks `target` writability for cargo only; `manifestsFor`.
+  checks `target` writability for cargo only; `manifestsFor`; declared
+  credentials reach the child and a failing source stops the command; probe exit
+  2 gives a private `CARGO_TARGET_DIR` and no `[SECURITY]` fallback; a symlinked
+  manifest is refused. The positive control in the real-`printenv` test now
+  states its own non-allowlisted name, so it holds when the test process's
+  environment is already allowlisted (the mutation baseline failed on that).
 - `worker/deno/tests/milestone_merge_gate_test.ts` (`checkMergedTree` with the
   real runner) and `worker/deno/tests/milestone_resolution_gate_test.ts`
   (`verifyResolvedTree` with the real runner): each starts a child Deno via
@@ -78,15 +92,23 @@ Backend-only change; no UI file is touched.
 
 ## Acceptance Criteria
 
-- **missing** — "declared `quality_credentials`" in the child environment —
-  reason: nothing at the milestone gates resolves or mints a repository's
-  declared credentials; threading that through the sweep, presync and rebuild
-  callers is not done here.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — "declared `quality_credentials`" in the child environment —
+  evidence: `tests/untrusted_gate_spawn_test.ts::the repository's declared credentials reach the command and only it (Issue #4659)`,
+  `tests/untrusted_gate_spawn_test.ts::a credential source that fails stops the command from running (Issue #4659)`
+  — reviewer: partial — reason: the declared credentials are resolved and
+  placed in the child environment exactly as `spawnRepositoryCommand` does, but
+  when the command is dropped to `agent`, `sudo`'s `env_reset` strips every
+  variable except the `CARGO_TARGET_DIR` carried in argv
+  (`quality_gate_phase.ts:122-137`), so they arrive only on a worker-account
+  run. The quality gate's own dropped runner has the same limit today. Carrying
+  a credential in argv would expose it in `ps`, so it is not done here.
 
 ## Test Plan
 
 - `deno task test:unit tests/untrusted_gate_spawn_test.ts tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/lib_sweep_coverage_test.ts`
-  (from `worker/deno`): 79 passed in the parallel pass and 40 in the serial
+  (from `worker/deno`): 84 passed in the parallel pass and 40 in the serial
   pass, 0 failed. `deno task check:manifests`, `deno fmt --check` and
   `deno lint`: pass.
 - Red checks (break applied, test run, restored):
@@ -94,6 +116,8 @@ Backend-only change; no UI file is touched.
     red;
   - probe verdict ignored → the three fallback cases red;
   - `writesTarget` forced false → the probe-script test red;
+  - private-target branch removed (exit 2 treated as a fault) → the
+    private-target test red;
   - `spawnTypeCheck` reverted alone to `runWithTimeout` with no `clearEnv` → the
     `checkMergedTree` test red (`VIBE_4659_PARENT_SECRET` leaked);
   - `spawnTask` reverted alone → the `verifyResolvedTree` test red, same leak.
@@ -107,8 +131,14 @@ Backend-only change; no UI file is touched.
 
 ## Known gaps
 
-- Declared `quality_credentials` are not delivered (see Acceptance Criteria).
-- The probe fallback runs the repository's code as the worker account on a host
-  where `agent` cannot use the shared clone, with the allowlisted environment
-  but able to read the worker's credential files; a `[SECURITY]` line is logged.
-  Fixing `agent`'s access (#4697) removes the fallback.
+- The probe fallback (exit 1: `agent` cannot read the checkout or a manifest)
+  runs the repository's code as the worker account with the allowlisted
+  environment, able to read the worker's credential files; a `[SECURITY]` line
+  is logged. Only a host fault reaches it: the merged tree cannot force it
+  through `target/` or a symlinked manifest. Fixing `agent`'s access (#4697)
+  removes the fallback.
+- Declared credentials do not cross `sudo` when the command is dropped to
+  `agent` (see Acceptance Criteria); this matches the quality gate's runner.
+- Credentials are matched to a checkout by the first path segment below the work
+  directory, so two repositories with the same name under different owners get
+  none.

@@ -146,16 +146,17 @@ Deno.test("a real repository command sees only allowlisted names (Issue #4659)",
     const permitted = new Set([...ALLOWED_ENV_NAMES, ...SHELL_SET_NAMES]);
     assertEquals(seen.filter((name) => !permitted.has(name)), []);
 
-    // Positive control: the inherited environment carries names outside the
-    // allowlist, so the assertion above has teeth.
+    // Positive control: without `clearEnv` a name outside the allowlist
+    // reaches the child, so the assertion above has teeth. The name is
+    // stated here because the test process's own environment may already be
+    // allowlisted (the unit runner and the mutation runner both do that).
     const inherited = await runWithTimeout("printenv", [], {
       cwd,
       timeoutMs: 10_000,
+      env: { VIBE_4659_CONTROL: "1" },
     });
     assert(inherited.ok);
-    assert(
-      envNames(inherited.value.stdout).some((name) => !permitted.has(name)),
-    );
+    assert(envNames(inherited.value.stdout).includes("VIBE_4659_CONTROL"));
   });
 });
 
@@ -313,5 +314,122 @@ Deno.test("manifestsFor names the manifests each kind of checkout is probed for 
     await Deno.remove(`${dir}/deno.json`);
     await Deno.writeTextFile(`${dir}/deno.jsonc`, "{}");
     assertEquals(await manifestsFor("deno", dir), ["deno.jsonc"]);
+  });
+});
+
+Deno.test("the repository's declared credentials reach the command and only it (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    const seen: string[] = [];
+    await runRepositoryCommand(
+      "deno",
+      ["task", "check"],
+      { cwd, timeoutMs: 1000 },
+      {
+        spawn,
+        drop: identityDrop,
+        source: SOURCE,
+        trimRefused: false,
+        credentials: (dir) => {
+          seen.push(dir);
+          return Promise.resolve({ NPM_TOKEN: "declared" });
+        },
+      },
+    );
+    assertEquals(seen, [cwd]);
+    const env = callAt(calls, 0).options.env ?? {};
+    assertEquals(env.NPM_TOKEN, "declared");
+    assertEquals(env.GH_TOKEN, undefined);
+  });
+});
+
+Deno.test("a credential source that fails stops the command from running (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    const result = await runRepositoryCommand(
+      "deno",
+      ["task", "check"],
+      { cwd, timeoutMs: 1000 },
+      {
+        spawn,
+        drop: identityDrop,
+        source: SOURCE,
+        credentials: () => Promise.reject(new Error("mint failed")),
+      },
+    );
+    assert(!result.ok);
+    assert(result.error.message.includes("mint failed"));
+    assertEquals(calls.length, 0);
+  });
+});
+
+Deno.test("a target the account cannot write gives it a target of its own, not the worker's account (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn({
+      ok: true,
+      value: { ...OK, success: false, code: 2 },
+    });
+    const { lines } = await captureConsoleError(() =>
+      runRepositoryCommand(
+        "cargo",
+        ["test"],
+        { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+        { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+      )
+    );
+    assertEquals(calls.length, 3);
+    const final = callAt(calls, 1);
+    assertEquals(final.executable, "sudo");
+    const target = final.options.env?.CARGO_TARGET_DIR;
+    assert(target !== undefined && !target.startsWith(cwd));
+    // The account empties what it built; the worker then removes the directory.
+    const emptier = callAt(calls, 2);
+    assertEquals(emptier.executable, "sudo");
+    assertEquals(emptier.args.slice(-5), [
+      "find",
+      target,
+      "-mindepth",
+      "1",
+      "-delete",
+    ]);
+    assert(final.args.includes(`CARGO_TARGET_DIR=${target}`));
+    assertEquals(final.options.env?.GH_TOKEN, undefined);
+    assert(!lines.some((line) => line.includes("[SECURITY]")));
+    // Removed once the command has run.
+    await assertRejects(() => Deno.stat(target), Deno.errors.NotFound);
+  });
+});
+
+Deno.test("only an unreadable checkout, not a tree-controlled target, downgrades the account (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    await Deno.mkdir(`${cwd}/target`);
+    await Deno.writeTextFile(`${cwd}/target/committed`, "x");
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["test"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    const script = probeScriptOf(callAt(calls, 0));
+    // Unreadable checkout exits 1 (fallback); an unwritable target exits 2.
+    assert(script.includes(`|| exit 1;`));
+    assert(script.endsWith(`|| exit 2`));
+  });
+});
+
+Deno.test("a manifest that is a symbolic link is refused before anything runs (Issue #4659)", async () => {
+  await withCheckout(async (cwd) => {
+    await Deno.symlink("/etc/hostname", `${cwd}/Cargo.toml`);
+    const { calls, spawn } = recordingSpawn();
+    const result = await runRepositoryCommand(
+      "cargo",
+      ["test"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    assert(!result.ok);
+    assert(result.error.message.includes("symbolic link"));
+    assertEquals(calls.length, 0);
   });
 });
