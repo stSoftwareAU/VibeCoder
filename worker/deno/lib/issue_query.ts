@@ -21,6 +21,7 @@ import {
   prTitleReferencesIssue,
 } from "./pr_title_issue_ref.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_branch.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
 // git_branch.ts so PR-blocking uses the same branch name the feature PR
 // actually targets (50-char slug cap + trailing-hyphen strip).
@@ -1638,6 +1639,8 @@ export async function invalidatePRsByBranch(
  * this all-author cache.
  *
  * Returns an empty array on parse failure rather than throwing.
+ * `onUnreadable` distinguishes read/parse failures from a successful empty
+ * search for callers that must not cache a verdict from incomplete evidence.
  *
  * **Fork-headed PRs are dropped (Issue #1124).** The search matches an
  * attacker-writable title on a public repository, and every consumer reads
@@ -1661,6 +1664,7 @@ export async function fetchPRsForIssueByTitle(
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   log: (message: string) => void = console.error,
+  onUnreadable?: () => void,
 ): Promise<TitleSearchPR[]> {
   const cacheKey = `prs_title_${state}_${issueNumber}`;
 
@@ -1689,6 +1693,7 @@ export async function fetchPRsForIssueByTitle(
       "50",
     ]);
   } catch {
+    onUnreadable?.();
     return [];
   }
 
@@ -1696,9 +1701,13 @@ export async function fetchPRsForIssueByTitle(
   try {
     parsed = JSON.parse(output.trim() || "[]");
   } catch {
+    onUnreadable?.();
     return [];
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) {
+    onUnreadable?.();
+    return [];
+  }
 
   const prs: TitleSearchPR[] = [];
   for (const item of parsed) {
@@ -1755,6 +1764,84 @@ export async function fetchPRsForIssueByTitle(
     });
   }
 
+  if (cache) await cache.write(repo, cacheKey, prs);
+  return prs;
+}
+
+/**
+ * Find merged PRs whose same-repository issue branch names `issueNumber`.
+ *
+ * This is a separate recovery lookup for adopted PRs whose title predates
+ * canonical issue-title repair. GitHub's `head:issue-N` search matches the
+ * issue branch prefix; the returned head is parsed again so `issue-42` never
+ * claims issue 420. Fork heads and rows without a merge timestamp are ignored.
+ * The title-search contract remains limited to canonical title references.
+ * Successful results, including empty lists, use the issue cache's TTL;
+ * unreadable searches are not cached so the next scan retries them.
+ */
+export async function fetchMergedPRsByIssueBranch(
+  repo: string,
+  issueNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  cache?: IssueCache,
+): Promise<TitleSearchPR[] | null> {
+  const cacheKey = `prs_branch_merged_issue_${issueNumber}`;
+  if (cache) {
+    const cached = await cache.read<TitleSearchPR[]>(repo, cacheKey);
+    if (cached) return cached;
+  }
+  let output: string;
+  try {
+    output = await ghCommandFn([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "merged",
+      "--search",
+      `head:issue-${issueNumber}`,
+      "--json",
+      "number,title,baseRefName,headRefName,mergedAt,closedAt,author,isCrossRepository",
+      "--limit",
+      "1000",
+    ]);
+  } catch {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.trim());
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+
+  const prs: TitleSearchPR[] = [];
+  for (const item of parsed) {
+    if (
+      !isRecord(item) || typeof item.number !== "number" ||
+      item.isCrossRepository !== false ||
+      typeof item.headRefName !== "string" ||
+      issueNumberFromBranch(item.headRefName) !== issueNumber ||
+      typeof item.mergedAt !== "string" || item.mergedAt.length === 0
+    ) {
+      continue;
+    }
+    prs.push({
+      number: item.number,
+      title: typeof item.title === "string" ? item.title : "",
+      baseRefName: typeof item.baseRefName === "string" ? item.baseRefName : "",
+      headRefName: item.headRefName,
+      mergedAt: item.mergedAt,
+      closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
+      author: isRecord(item.author) && typeof item.author.login === "string"
+        ? item.author.login
+        : "",
+      isCrossRepository: false,
+    });
+  }
   if (cache) await cache.write(repo, cacheKey, prs);
   return prs;
 }

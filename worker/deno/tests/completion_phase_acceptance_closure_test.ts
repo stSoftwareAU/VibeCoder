@@ -123,11 +123,13 @@ interface Outcome {
   reason?: string;
   prCreateCalls: number;
   comments: string[];
+  adoptedTitles: string[];
 }
 
 async function runCompletion(
   issueBody: string,
   summary: string,
+  adoptExistingPr = false,
 ): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
@@ -139,6 +141,7 @@ async function runCompletion(
   );
 
   const comments: string[] = [];
+  const adoptedTitles: string[] = [];
   let prCreateCalls = 0;
 
   const ctx: IssueContext = {
@@ -168,6 +171,24 @@ async function runCompletion(
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
+        if (args[0] === "pr" && args[1] === "view") {
+          if (args.includes("title")) {
+            return Promise.resolve(
+              JSON.stringify({ title: "Agent custom title" }),
+            );
+          }
+          return Promise.resolve(JSON.stringify({
+            body: "",
+            files: [],
+            headRefOid: SHA,
+            headRefName: "issue-518-closure",
+          }));
+        }
+        if (
+          args[0] === "pr" && args[1] === "edit" && args.includes("--title")
+        ) {
+          adoptedTitles.push(args[args.indexOf("--title") + 1]!);
+        }
         return Promise.resolve(
           "https://github.com/stSoftwareAU/VibeCoder/pull/100",
         );
@@ -183,6 +204,9 @@ async function runCompletion(
             value: { code: 0, stdout, stderr: "" },
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
+        if (cmdArgs[0] === "ls-remote" && adoptExistingPr) {
+          return ok(`${SHA}\trefs/heads/issue-518-closure\n`);
+        }
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok("worker/deno/lib/acceptance_criteria_gate.ts");
         }
@@ -193,7 +217,14 @@ async function runCompletion(
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
       findExistingPrForBranch: () =>
-        Promise.resolve({ ok: false, error: new Error("none") }),
+        Promise.resolve(
+          adoptExistingPr
+            ? {
+              ok: true as const,
+              value: "https://github.com/stSoftwareAU/VibeCoder/pull/100",
+            }
+            : { ok: false as const, error: new Error("none") },
+        ),
     },
   });
 
@@ -205,6 +236,7 @@ async function runCompletion(
     reason: result.status === "failure" ? result.reason : undefined,
     prCreateCalls,
     comments,
+    adoptedTitles,
   };
 }
 
@@ -223,6 +255,18 @@ Deno.test(
     assertStringIncludes(outcome.comments[0]!, "auto-merge stays armed");
   },
 );
+
+Deno.test("completion - passes the issue title to agent-raised PR adoption", async () => {
+  const outcome = await runCompletion(
+    ISSUE_WITHOUT_CRITERIA,
+    `## Summary\n\nCompleted the parser. Closes #518.\n`,
+    true,
+  );
+
+  assertEquals(outcome.adoptedTitles, [
+    "Close the acceptance-criteria loop (Issue #518)",
+  ]);
+});
 
 Deno.test(
   "completion - the same issue passes once the summary closes the criteria out",
