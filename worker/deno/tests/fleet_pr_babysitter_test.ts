@@ -1236,6 +1236,18 @@ Deno.test("repair clean-up warns instead of throwing, and still removes the rest
   assertStringIncludes(warnings[0]!, "Directory not empty");
 });
 
+// Issue #4728: the agent ran `printenv GH_TOKEN`, putting its own token in a
+// tool result. Every repair kind is told never to print credentials.
+Deno.test("a repair never prints environment variables or credentials", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "Never print, echo or log");
+    assertStringIncludes(prompt, "gh auth status");
+  }
+});
+
 Deno.test("defaultRemoteUrl follows gh's git_protocol, falling back to https with a warning", async () => {
   const asked: string[][] = [];
   const answer = (protocol: string) => (args: string[]) => {
