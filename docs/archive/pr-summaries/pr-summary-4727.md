@@ -93,16 +93,13 @@ URL, which points at that local repository).
 
 ## Test Plan
 
-- Review follow-up: the host-specific protocol test and the stale mirror origin
-  test failed before the fix. The latter uses real git and checks both the
-  fetched history and the repair clone's origin. The application fixture also
+- `deno task test:unit tests/fleet_pr_babysitter_test.ts
+  tests/fleet_babysitter_app_test.ts` (from `worker/deno`): 66 passed,
+  0 failed (49 and 17 respectively). The host-specific protocol and stale
+  mirror origin tests failed before the fix; the latter uses real git to check
+  fetched history and the repair clone's origin. The application fixture
   requires the host-qualified gh arguments. No duplicate protocol resolver or
   mirror fetch rule was found among the babysitter's callers.
-- Review follow-up validation: `deno task test:unit tests/fleet_pr_babysitter_test.ts
-  tests/fleet_babysitter_app_test.ts` passed 66 tests (49 and 17 respectively).
-
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts` (from `worker/deno`):
-  `tests/fleet_pr_babysitter_test.ts` (47 tests at head): 47 passed, 0 failed.
 - Edited test `failed clone is attempted once and preserves its original error`:
   rewritten for the new `deps` argument (the old third argument was a gh
   runner). Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`:
@@ -145,11 +142,6 @@ URL, which points at that local repository).
   no observable behaviour distinguishes.
 - Failure-reason test: the failed-fetch test asserts git's real stderr text
   (observed from real git) appears in the error.
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts
-  tests/fleet_babysitter_app_test.ts`:
-  `tests/fleet_pr_babysitter_test.ts` (47 tests at head) and
-  `tests/fleet_babysitter_app_test.ts` (17 tests at head), all passed, 0 failed.
-  `deno fmt --check`, `deno lint` and `deno check` on the changed files: clean.
 - `./quality.sh`: the first run failed only in `deno tests` on
   `tests/fleet_babysitter_app_test.ts` ("production repair forwards CONFIG_PATH
   and denies canonical credential targets"), whose fixture
