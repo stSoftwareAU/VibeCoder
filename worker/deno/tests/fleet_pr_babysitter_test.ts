@@ -33,6 +33,7 @@ import {
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
+import { fenceUntrustedIssueText } from "../lib/prompt_delimiter.ts";
 
 Deno.test("failed clone is attempted once and preserves its original error", async () => {
   let attempts = 0;
@@ -583,19 +584,43 @@ Deno.test("an empty or oversized PR description proposal is not applied", async 
   }
 });
 
-// Issue #4677: CI is the gate, so a check this host cannot run is reported,
-// not a reason to discard an otherwise complete repair.
-Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+// Issue #4674: the runner owns the quality gate when Codex cannot launch a browser.
+Deno.test("agent browser limits hand the local gate to the runner", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(prompt, "name it in your final response");
     assertStringIncludes(
       prompt,
-      "does not by itself withhold BABYSITTER_READY",
+      "Do not attempt browser checks yourself when the Codex sandbox cannot launch Chromium",
+    );
+    assertStringIncludes(
+      prompt,
+      "The runner executes the target repository's quality.sh after you finish",
+    );
+    assertStringIncludes(
+      prompt,
+      "A runner check failure is returned for repair before any commit or push",
     );
   }
+});
+
+Deno.test("runner check failure is fenced into the next repair prompt", () => {
+  const failure = fenceUntrustedIssueText(
+    "Chromium assertion failed: panel clipped",
+    "Runner-owned validation output:",
+  ).join("\n");
+  const prompt = buildRepairPrompt(
+    "requested review changes",
+    4674,
+    "owner/repo",
+    "",
+    failure,
+  );
+  assertStringIncludes(prompt, "runner's isolated quality.sh check failed");
+  assertStringIncludes(prompt, "Runner-owned validation output:");
+  assertStringIncludes(prompt, "Chromium assertion failed: panel clipped");
+  assertStringIncludes(prompt, "UNTRUSTED USER CONTENT BOUNDARY_");
 });
 
 // Issue #4677: a resolved conflict was discarded over unrelated verifier

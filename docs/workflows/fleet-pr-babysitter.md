@@ -7,12 +7,43 @@ and conflict workers, rechecks the head, and runs one Codex session in a
 temporary clone. Up to two independent PR repairs run at once, each with a
 90-minute Codex limit and its own branch lock. While repairs run, it rescans
 every five minutes and queues newly actionable PRs without starting two repairs
-for the same PR. After Codex reports a completed fix, the babysitter commits it
-locally, checks for whitespace errors and conflict markers, and rechecks the PR.
+for the same PR. After Codex reports a completed fix, the babysitter runs the
+target repository's `quality.sh` before staging or committing. On macOS, that
+runner-owned check runs outside Codex's browser-restricting profile, under a
+separate sandbox that denies configured credential paths and receives no
+credential-shaped environment variables, and keeps the clone's `.git` read-only.
+This lets browser checks launch
+Chromium without giving the check runner credentials. A failed check is
+returned to Codex once with bounded output; an unavailable sandbox is reported
+and prevents a push so a later pass can retry. Repositories without `quality.sh`
+have no runner-owned local gate. After validation, the babysitter checks for
+whitespace errors and conflict markers, commits locally, and rechecks the PR.
 It pushes only if the PR still matches the original head. Once a review fix is
 pushed, the babysitter dismisses the addressed review if it is still the current
 review and the PR head has not changed. GitHub CI then runs the repository's
 quality and regression checks on the updated branch.
+
+```mermaid
+sequenceDiagram
+    participant A as Codex repair agent
+    participant R as Babysitter runner
+    participant Q as Target quality.sh
+    participant G as GitHub
+    A->>R: BABYSITTER_READY and working tree
+    R->>Q: Run in credential-denying macOS sandbox
+    alt Gate passes
+        Q-->>R: exit 0
+        R->>R: Stage and commit
+        R->>G: Recheck PR head, then push
+    else Gate fails
+        Q-->>R: bounded diagnostics
+        R->>A: One repair attempt with fenced output
+        A-->>R: Updated fix
+        R->>Q: Re-run quality.sh
+    else Runner sandbox unavailable
+        R-->>G: No push; report capability failure
+    end
+```
 
 The shared repository list stays unchanged. The babysitter monitors only the
 configured repositories accessible to its selected GitHub App installation and
@@ -202,13 +233,15 @@ the same check earlier.
   dry run records observations and reports what it would file, but writes
   nothing to GitHub. A run limited with `--pr` skips detection.
 
-Each repair also re-runs its checks locally before it reports ready: a CI
-repair reproduces the failing step with the command the workflow runs and
-confirms it passes, and review and conflict repairs run the formatter, linter
-and type or compile check for the code they touched.
+Codex still runs checks it can safely run inside its per-spawn profile. The
+runner owns the final local `quality.sh` result for every repair, including
+browser checks Codex cannot launch. A failed runner check is fed back for one
+repair attempt; a missing runner sandbox is reported as unavailable and does
+not produce a commit or push. The runner clears the attempt record for this
+unavailable-capability case so a later pass can retry.
 
 This MVP uses the configured GitHub App and Codex; it does not yet select
-providers by remaining quota, handle Dependabot, use per-repository quality
+providers by remaining quota, handle Dependabot, select per-repository quality
 commands, review PRs, or arm auto-merge. It does not change repository CI,
 review, or merge rules. Test the read-only pass before running execution mode.
 
