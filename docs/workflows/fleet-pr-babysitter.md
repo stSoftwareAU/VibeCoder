@@ -300,11 +300,12 @@ agent validation and the credential boundary from #4593.
 
 ### Installed browser caches
 
-The gate uses scratch HOME, but its browser caches default to the host's real
-home: `PLAYWRIGHT_BROWSERS_PATH=$HOME/Library/Caches/ms-playwright`,
-`CYPRESS_CACHE_FOLDER=$HOME/Library/Caches/Cypress` and
-`PUPPETEER_CACHE_DIR=$HOME/.cache/puppeteer`. Explicit values of these three
-variables are preserved. These installed caches are readable; browser runtime
-profiles and temporary files belong in scratch. The runner first executes
+The gate uses scratch HOME. Unset `PLAYWRIGHT_BROWSERS_PATH`,
+`CYPRESS_CACHE_FOLDER` and `PUPPETEER_CACHE_DIR` default to writable
+directories under repair scratch, with links to installed builds in the host's
+home. Installer state such as dot entries is not mirrored, so the gate can
+create its own locks and install missing builds. Explicit values of these three
+variables are preserved. Browser runtime profiles and temporary files belong
+in scratch. The runner first executes
 `/usr/bin/true` under the same policy. A failed sandbox startup is unavailable,
 does not trigger an agent repair retry, and releases the attempt record.

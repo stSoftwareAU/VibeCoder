@@ -226,3 +226,7 @@ cache defaults, deleted in-validation probe, positive instead of negative group
 PID) each failed their targeted test and were restored. Final formatting,
 lint and type checking passed; `deno task test:unit` over the four babysitter
 suites passed 106 tests.
+
+The installed-browser-cache section of the operator manual now also describes
+the writable scratch defaults, links to host builds and preserved explicit
+values, consistent with the earlier overview.
