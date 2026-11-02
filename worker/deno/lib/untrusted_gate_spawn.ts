@@ -27,6 +27,10 @@ export interface UntrustedGateSpawnDeps {
   drop?: typeof untrustedSpawn;
   /** The environment the child is built from. Injected in tests. */
   source?: Record<string, string>;
+  /** The launch's trim verdict. Injected in tests; production reads the launch's. */
+  trimRefused?: boolean;
+  /** Where the ephemeral target directories live. Injected in tests. */
+  root?: string;
 }
 
 /**
@@ -60,6 +64,10 @@ export async function runRepositoryCommand(
     cwd: options.cwd,
     repoCredentialEnv: {},
     ...(deps.source === undefined ? {} : { source: deps.source }),
+    ...(deps.trimRefused === undefined
+      ? {}
+      : { trimRefused: deps.trimRefused }),
+    ...(deps.root === undefined ? {} : { root: deps.root }),
   });
   const target = env["CARGO_TARGET_DIR"];
   const command = carryEnvThroughSudo(

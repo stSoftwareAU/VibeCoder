@@ -195,6 +195,81 @@ Deno.test("runRepositoryCommand - with the untrusted account unavailable it stil
   });
 });
 
+Deno.test("runRepositoryCommand - passes the checkout, timeout and injected source through to the spawn", async () => {
+  await withTempDir(async (dir) => {
+    const { spawn, calls } = recordingSpawn();
+    await runRepositoryCommand(
+      "bash",
+      ["-c", "true"],
+      { cwd: dir, timeoutMs: 4321 },
+      {
+        spawn,
+        drop: identity,
+        source: { PATH: "/injected/only/bin", HOME: "/home/x" },
+      },
+    );
+    const call = onlyCall(calls);
+    assertEquals(call.options?.cwd, dir);
+    assertEquals(call.options?.timeoutMs, 4321);
+    // The child is built from the injected source, not the worker's own.
+    assertEquals(call.options?.env?.PATH, "/injected/only/bin");
+  });
+});
+
+Deno.test("runRepositoryCommand - an ephemeral target directory keyed by the checkout is carried through sudo", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (root) => {
+      const { spawn, calls } = recordingSpawn();
+      await runRepositoryCommand(
+        "cargo",
+        ["check"],
+        { cwd: dir, timeoutMs: 5000 },
+        {
+          spawn,
+          drop: sudoWrapper,
+          source: sourceWithSecrets(),
+          trimRefused: true,
+          root,
+        },
+      );
+      const call = onlyCall(calls);
+      const target = call.options?.env?.CARGO_TARGET_DIR;
+      assert(target !== undefined, "expected CARGO_TARGET_DIR in the env");
+      assert(target.startsWith(`${root}/`), `target ${target} under ${root}`);
+      assert(target.endsWith("-agent"), `target ${target} keyed to agent`);
+      // Carried through sudo as `env NAME=path` before the command.
+      assertEquals(call.executable, "sudo");
+      assertEquals(call.args.slice(0, 4), ["-n", "-u", "agent", "--"]);
+      assertEquals(call.args.slice(4), [
+        "env",
+        `CARGO_TARGET_DIR=${target}`,
+        "cargo",
+        "check",
+      ]);
+    });
+  });
+});
+
+Deno.test("runRepositoryCommand - with no ephemeral placement nothing is carried through sudo", async () => {
+  await withTempDir(async (dir) => {
+    const { spawn, calls } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd: dir, timeoutMs: 5000 },
+      {
+        spawn,
+        drop: sudoWrapper,
+        source: sourceWithSecrets(),
+        trimRefused: false,
+      },
+    );
+    const call = onlyCall(calls);
+    assertEquals(call.options?.env?.CARGO_TARGET_DIR, undefined);
+    assertEquals(call.args, ["-n", "-u", "agent", "--", "cargo", "check"]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Milestone resolution gate - spawnTask
 // ---------------------------------------------------------------------------

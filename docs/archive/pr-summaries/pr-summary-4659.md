@@ -50,6 +50,17 @@ Tests (all under `worker/deno/`):
   they are there), then asserts the child's `env` lacks them and `clearEnv` is
   true; also the `sudo -n -u agent --` wrapping, the no-account fallback, and
   result/timeout/spawn-failure mapping.
+- Mutation check (follow-up): three further cases in the same file pin the
+  `cwd`, `timeoutMs`, injected `source` and the `CARGO_TARGET_DIR` carry through
+  `sudo`; `runRepositoryCommand` gained optional `trimRefused` and `root` deps
+  (tests only; production omits them) so the ephemeral placement is reachable.
+  Each mutation was applied by hand and turned the file red: deleted `cwd` on
+  the env call (line 60), negated `source` ternary (62), negated `target`
+  ternary (67), deleted `cwd` (70) and `timeoutMs` (71) on the spawn.
+- `worker/deno/lib/untrusted_gate_spawn.ts:61` exempt (untestable): deleting
+  `repoCredentialEnv: {}` is an equivalent mutant, because the callee spreads
+  `undefined` into the overlay as a no-op; the property is only there to satisfy
+  the required type.
 - Red check: with `clearEnv: true` flipped to `false` in
   `untrusted_gate_spawn.ts`, the file goes `2 passed | 7 failed`.
 - `docs/audits/lib-sweep-coverage/top-up-4659.json` claims the new module for
