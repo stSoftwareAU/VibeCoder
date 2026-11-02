@@ -111,8 +111,8 @@ Deno.test("measureGrowth - reports the measured pair and a linear verdict", () =
 });
 
 Deno.test("measureGrowth - keeps the fastest of the repeated runs", () => {
-  // Two readings per size; the second base run is descheduled for 900 ms and
-  // must be discarded in favour of the 100 ms one.
+  // Two readings per size, interleaved base/scaled; the second base run is
+  // descheduled for 900 ms and must be discarded in favour of the 100 ms one.
   const m = measureGrowth(
     (chars) => "a".repeat(chars),
     (input) => input.length,
@@ -121,7 +121,7 @@ Deno.test("measureGrowth - keeps the fastest of the repeated runs", () => {
       sizeFactor: 4,
       repeats: 2,
       graceMs: 0,
-      now: fakeClock([0, 100, 100, 1_000, 1_000, 1_500, 1_500, 1_900]),
+      now: fakeClock([0, 100, 100, 500, 500, 1_400, 1_400, 1_900]),
     },
   );
   assertEquals(m.baseMs, 100);
@@ -239,4 +239,28 @@ Deno.test("assertLinearGrowth - catches genuinely quadratic work on a real clock
     AssertionError,
     "super-linear",
   );
+});
+
+// Issue #4681: a busy spell over the base phase alone used to inflate the
+// allowance past the real quadratic cost. Interleaving the repeats exposes
+// both sizes to it alike, so the fastest of each still shows the blow-up.
+Deno.test("measureGrowth - a busy spell at the start cannot mask quadratic growth", () => {
+  let clock = 0;
+  let runs = 0;
+  const sizes: number[] = [];
+  const m = measureGrowth(
+    (chars) => "a".repeat(chars),
+    (input) => {
+      runs++;
+      sizes.push(input.length);
+      const cost = (input.length / 100) ** 2 * 10; // quadratic: 10 ms, 160 ms
+      clock += runs <= 2 ? cost * 3 : cost; // the first two runs are contended
+      return input.length;
+    },
+    { baseChars: 100, sizeFactor: 4, repeats: 2, graceMs: 0, now: () => clock },
+  );
+  assertEquals(sizes, [100, 400, 100, 400]);
+  assertEquals(m.baseMs, 10);
+  assertEquals(m.scaledMs, 160);
+  assertEquals(m.superLinear, true);
 });
