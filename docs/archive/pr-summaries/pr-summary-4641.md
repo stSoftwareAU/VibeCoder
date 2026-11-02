@@ -3,9 +3,11 @@
 Removes the `(Issue #N)` suffixes from worker-authored text that is posted in a
 target repository, where GitHub resolves a bare `#N` against that repository.
 Covers the two builders the issue names and the five sibling strings its
-comments list, plus one more found by the sweep for `reason` / `failureMessage`
-strings (the planning hand-off message in `execute_claude_phase.ts`). Provenance
-stays in the code comments beside each string. Closes #4641.
+comments list, plus the strings the sweep found: the planning hand-off message
+in `execute_claude_phase.ts`, `buildRefusalFailureReason`,
+`formatStaleClaimComment`, the timeout diagnostics in `failure_message.ts`, and
+the host-fault, milestone-branch release and merged-PR sweep comments.
+Provenance stays in the code comments beside each string. Closes #4641.
 
 ## Spec
 
@@ -55,11 +57,22 @@ for the removed wording (`half-done PR (`, `Handed to planning to split it (`,
 so no doc changed. `docs/USAGE.md:273` states the never-parked rule for readers
 and is not text the worker posts.
 
-Other worker-authored failure reasons: scanned every `reason:` /
-`failureMessage` / `failureReason` string in `worker/deno/lib` for a following
-`Issue #N`. The remaining hits are `logger.*` calls and code comments, which are
-not posted to a target repo. Not checked: strings built outside those three
-names and a `reason` assembled across more than eight lines.
+Other worker-authored failure reasons: the first sweep matched only `reason:` /
+`failureMessage` / `failureReason` literals and missed builder functions, so it
+is redone over every exported `format*` / `build*` / `compose*` / `render*`
+function whose name ends in Comment, Reason, Message, Note or Body (160
+functions). Each hit was classed by where the text goes. Fixed here because the
+text is posted in a target repo: `buildRefusalFailureReason` (the run's failure
+reason), `formatStaleClaimComment`, the timeout diagnostics in
+`formatDetailedFailureMessage`, `buildHostFaultReleaseComment`,
+`buildRefusalReleaseComment` and `buildSweepCloseComment`. Left alone, because
+the text goes to the worker's own repo (the
+`Auto-filed by the Vibe Coder
+(Issue #N)` reports in
+`bump_script_failure_streak.ts`, `idle_starvation_escalation.ts`,
+`pr_branch_update_failure_streak.ts`, `hard_kill_report.ts`,
+`audit_failure_notifier.ts`), to `logger.*`, or is a code comment. Not checked:
+a posted string built by a function whose name does not match those patterns.
 
 ## Test Plan
 
@@ -82,6 +95,26 @@ names and a `reason` assembled across more than eight lines.
   - Required by: "Drop the `(Issue #N)` suffixes from these reason strings"
   - Replaced by: `assertStringIncludes(run.reason ?? "", "Refusing to push")`
     and the exact-token assertion `["#531"]`.
+- New `worker/deno/tests/posted_text_no_vibecoder_numbers_4641_test.ts` covers
+  the second-sweep builders (both `buildRefusalFailureReason` branches,
+  `formatStaleClaimComment`, the late-watchdog and incomplete-kill diagnostics,
+  and the three release/close comments), asserting no `#<digits>` token other
+  than the PR it names. Each went red on the unfixed code (`#3406`, `#344`,
+  `#4254`, `#2890`, `#2220`, `#504`).
+- Removed from `worker/deno/tests/haiku_refusal_retry_test.ts`:
+  `assertStringIncludes(text, "Issue #3406")`
+  - Required by: "Drop the `(Issue #N)` suffixes from these reason strings"
+  - Replaced by: `assert(!/#\d+/.test(text), ...)` on both refusal reasons.
+- Removed from `worker/deno/tests/host_fault_release_test.ts`:
+  `assertStringIncludes(single, "Issue #2890")`
+  - Required by: the same issue, applied to the host-fault release comment
+  - Replaced by: `assertStringIncludes(single, "back in the queue")`.
+- Removed from `worker/deno/tests/merged_pr_issue_sweep_test.ts`:
+  `assertStringIncludes(comment, "504")`
+  - Required by: the same issue, applied to the sweep close comment
+  - Replaced by:
+    `assertStringIncludes(comment, "merged-PR issue sweep closed it")` and
+    `assertEquals(comment.match(/#\d+/g), ["#49"])`.
 - `deno task test:unit` over the seven touched and related files
   (`completion_phase_stale_lineage_test.ts`, `completion_wip_only_gate_test.ts`,
   `completion_phase_branch_conflict_test.ts`, both new files,
@@ -89,7 +122,14 @@ names and a `reason` assembled across more than eight lines.
   passed, 0 failed.
 - Callers of the changed builders checked: `detectFailureCategory` keys off
   `WORKFLOW_GATE_MARKER` and `PROMPT_TOO_LONG_MARKER`, both unchanged; the
-  WIP-only reason keeps the "without making any changes" marker.
+  WIP-only reason keeps the "without making any changes" marker. The refusal
+  reason keeps its wording apart from the suffix, so it still avoids the
+  infrastructure words `detectFailureCategory` keys off (asserted in
+  `haiku_refusal_retry_test.ts`).
+- `quote` at `.claude/skills/review-fleet-prs/scripts/auto_release.ts:29` is
+  unchanged: that line is the `quote` parameter of `quoteFound` in
+  `auto_release.ts`; the changed `quote` in `missing_criterion_close_guard.ts`
+  is a private, unexported function and cannot be called from there.
 - Existing tests whose fixtures still hold the old suffixes
   (`tests/failure_diagnosis_test.ts`, `tests/run_outcome_classifier_test.ts`,
   `tests/run_outcome_test.ts`) feed them as inputs and are unaffected.
