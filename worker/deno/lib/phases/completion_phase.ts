@@ -3771,6 +3771,20 @@ async function completionBody(
     if (prNumber > 0 && reviewRecord.length > 0) {
       await postPreprReviewRecord(repo, prNumber, reviewRecord, deps);
     }
+    // Issue #4617: the REST fallback cannot open a draft, so a held pull
+    // request it raised ready-for-review is made a draft here, its auto-merge
+    // disarmed and its body rewritten with the hold marker.
+    if (prNumber > 0 && state.mutationHold && clearedDuringCreate) {
+      await convertToDraftContinuation({
+        repo,
+        issueNumber,
+        prNumber,
+        body: prBody,
+        draftBody: createBody,
+        gh: deps.github.runGhCommand,
+        log: (message) => logger.warn(message, { repo, prNumber }),
+      });
+    }
     // Issue #4617: a held pull request is a draft and is not armed.
     if (prNumber > 0 && state.mutationHold) {
       logger.info(

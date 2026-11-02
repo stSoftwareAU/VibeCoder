@@ -119,6 +119,8 @@ interface Scenario {
   workflow?: string;
   /** The branch already has an open PR, so the existing-PR path runs. */
   existingPrForBranch?: boolean;
+  /** `gh pr create` fails on the primary quota, so the REST fallback opens the PR (Issue #4617). */
+  prCreateRateLimited?: boolean;
 }
 
 interface Outcome {
@@ -199,7 +201,14 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
         ghCalls.push(args);
-        if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
+        if (args[0] === "pr" && args[1] === "create") {
+          prCreateCalls++;
+          if (scenario.prCreateRateLimited) {
+            return Promise.reject(
+              new Error("GraphQL: API rate limit exceeded for user ID 1."),
+            );
+          }
+        }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(
             JSON.stringify({ state: "OPEN", isDraft: false }),
@@ -797,4 +806,49 @@ Deno.test("completion - a held survivor on an existing PR converts it to a draft
   );
   assertEquals(prVerbCalls(outcome, "merge").length, 0);
   assertEquals(outcome.finalisePrCalls, 0);
+});
+
+Deno.test("completion - a held PR the REST fallback opens is converted to a draft and not armed", async () => {
+  // gh cannot open a draft on the primary quota, so the REST pulls endpoint
+  // raises the PR ready-for-review; the held PR must be turned back into a draft.
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    prCreateRateLimited: true,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1, "gh pr create was attempted");
+  assertEquals(
+    outcome.ghCalls.some((args) =>
+      args[0] === "api" && args.includes(`repos/${REPO}/pulls`)
+    ),
+    true,
+    "the PR was opened through the REST fallback",
+  );
+  const ready = prVerbCalls(outcome, "ready");
+  assertEquals(
+    ready.some((args) => args.includes("--undo")),
+    true,
+    "the REST-opened PR is turned back into a draft",
+  );
+  assertEquals(
+    ready.some((args) => !args.includes("--undo")),
+    false,
+    "the held PR is never marked ready",
+  );
+  const edits = prVerbCalls(outcome, "edit");
+  assertEquals(
+    edits.some((args) =>
+      flagValue(args, "--body").includes(DRAFT_CONTINUATION_MARKER)
+    ),
+    true,
+    "the PR body carries the hold marker",
+  );
+  assertEquals(
+    prVerbCalls(outcome, "merge").length,
+    0,
+    "auto-merge is not armed",
+  );
+  assertEquals(outcome.finalisePrCalls, 0, "finalisePr is never called");
 });
