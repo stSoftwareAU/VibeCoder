@@ -91,3 +91,8 @@ names and a `reason` assembled across more than eight lines.
   `tests/run_outcome_test.ts`) feed them as inputs and are unaffected.
 - Duplicated harness: the context-budget test carries a small copy of the mock
   deps because `tests/execute_claude_phase_test.ts` keeps them private.
+
+- `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
+- `./quality.sh` was started on the final head and hit the 595 s command cap (exit 124) before it finished, so the full gate did not complete.
+
+<!-- vibe-quality-gate-skipped: ./quality.sh did not finish within the 595 s command cap on the final head; targeted tests, fmt, lint, type check and pr-summary-check passed; CI runs the full gate -->
