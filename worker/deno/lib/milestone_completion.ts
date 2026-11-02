@@ -1827,7 +1827,7 @@ function isCachedClaimVerdict(value: unknown): value is CachedClaimVerdict {
  * survives a change that leaves `updatedAt` alone (a PR merged against the
  * issue by title or branch). Only a verdict
  * reached from a merged PR and a readable timeline is cached. A "sync-pr-only"
- * flag is not (the title PR list has its own cache), and unreadable PR searches
+ * flag is not (both PR lists have their own caches), and unreadable PR searches
  * or timelines are not cached, so the next scan retries those reads. An issue
  * without an `updatedAt` (an older closed-batch cache entry) is classified live.
  */
@@ -1878,6 +1878,7 @@ export async function classifyClosedIssues(
       repo,
       issue.number,
       ghCommandFn,
+      cache,
     );
     if (!titleSearchReadable || branchPrs === null) {
       if (mergedTitlePrs.length === 0 && !branchPrs?.length) {

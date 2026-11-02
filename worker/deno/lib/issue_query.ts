@@ -1776,12 +1776,20 @@ export async function fetchPRsForIssueByTitle(
  * issue branch prefix; the returned head is parsed again so `issue-42` never
  * claims issue 420. Fork heads and rows without a merge timestamp are ignored.
  * The title-search contract remains limited to canonical title references.
+ * Successful results, including empty lists, use the issue cache's TTL;
+ * unreadable searches are not cached so the next scan retries them.
  */
 export async function fetchMergedPRsByIssueBranch(
   repo: string,
   issueNumber: number,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  cache?: IssueCache,
 ): Promise<TitleSearchPR[] | null> {
+  const cacheKey = `prs_branch_merged_issue_${issueNumber}`;
+  if (cache) {
+    const cached = await cache.read<TitleSearchPR[]>(repo, cacheKey);
+    if (cached) return cached;
+  }
   let output: string;
   try {
     output = await ghCommandFn([
@@ -1834,6 +1842,7 @@ export async function fetchMergedPRsByIssueBranch(
       isCrossRepository: false,
     });
   }
+  if (cache) await cache.write(repo, cacheKey, prs);
   return prs;
 }
 

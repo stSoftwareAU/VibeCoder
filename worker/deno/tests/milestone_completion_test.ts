@@ -3349,6 +3349,34 @@ Deno.test("classifyClosedIssues - an issue with no merged PR is flagged without 
   });
 });
 
+Deno.test("classifyClosedIssues - caches empty title and branch searches across scans", async () => {
+  await withTempCache(async (cache) => {
+    let branchReads = 0;
+    let titleReads = 0;
+    const ghFn = async (args: string[]): Promise<string> => {
+      if (args.includes("head:issue-1")) branchReads++;
+      else titleReads++;
+      return "[]";
+    };
+    const issues = [{
+      number: 1,
+      title: "No delivery",
+      updatedAt: "2026-10-05T00:00:00Z",
+    }];
+    for (let scan = 0; scan < 2; scan++) {
+      const result = await classifyClosedIssues(
+        "org/repo",
+        issues,
+        ghFn,
+        cache,
+      );
+      assertEquals(result[0]?.claimProblem, "sync-pr-only");
+    }
+    assertEquals(branchReads, 1, "empty branch results must be cached");
+    assertEquals(titleReads, 1, "empty title results must be cached");
+  });
+});
+
 Deno.test("classifyClosedIssues - unreadable branch PR search retries instead of claiming no delivery", async () => {
   await withTempCache(async (cache) => {
     let branchReads = 0;
