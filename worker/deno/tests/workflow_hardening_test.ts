@@ -176,3 +176,33 @@ Deno.test("workflows - every setup-deno step is followed by the exact-key Deno m
   }
   assert(guarded >= 11, `expected 11 setup-deno steps, saw ${guarded}`);
 });
+
+/** Splits workflow YAML into its `      - ` steps (six-space indent). */
+function stepsOf(text: string): string[] {
+  return text.split(/^(?=\s{6}- )/m).filter((s) => /^\s{6}- /.test(s));
+}
+
+Deno.test("workflows - cargo-upgrade and cargo-audit skip every Rust step while the root manifest is absent (PR #4686 review)", async () => {
+  const guards: Record<string, string> = {
+    "cargo-upgrade.yml": "hashFiles('Cargo.toml') != ''",
+    "cargo-audit.yml": "hashFiles('Cargo.lock') != ''",
+  };
+  const files = new Map(
+    (await workflowFiles()).map((f) => [f.name, f.text] as const),
+  );
+  for (const [name, guard] of Object.entries(guards)) {
+    const text = files.get(name);
+    assert(text !== undefined, `${name} is missing`);
+    let guarded = 0;
+    for (const step of stepsOf(text)) {
+      // Checkout is the only Rust-free step; everything else needs the file.
+      if (/uses: actions\/checkout@/.test(step)) continue;
+      assert(
+        step.includes(`if: ${guard}`),
+        `${name}: step lacks \`if: ${guard}\`:\n${step}`,
+      );
+      guarded++;
+    }
+    assert(guarded >= 3, `${name}: expected at least 3 guarded steps`);
+  }
+});
