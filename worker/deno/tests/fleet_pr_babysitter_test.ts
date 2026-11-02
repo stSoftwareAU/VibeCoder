@@ -19,6 +19,7 @@ import {
 import {
   babysitterRtkInstruction,
   buildRepairPrompt,
+  cancelledRunsToRerun,
   cloneForRepair,
   eligibleAuthor,
   reason,
@@ -515,4 +516,37 @@ Deno.test("other open feedback does not withhold readiness from a resolved confl
     prompt,
     "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
   );
+});
+
+// Issue #4684: cancelled CI is re-run, not handed to an agent to "fix".
+Deno.test("only a head whose runs were cancelled and none failed is re-run", () => {
+  const r = (id: number, status: string, conclusion: string | null) => ({
+    id,
+    status,
+    conclusion,
+  });
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "completed", "success"),
+      r(2, "completed", "cancelled"),
+      r(3, "completed", "cancelled"),
+    ]),
+    [2, 3],
+  );
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "completed", "failure"),
+      r(2, "completed", "cancelled"),
+    ]),
+    [],
+  );
+  assertEquals(
+    cancelledRunsToRerun([
+      r(1, "in_progress", null),
+      r(2, "completed", "cancelled"),
+    ]),
+    [],
+  );
+  assertEquals(cancelledRunsToRerun([r(1, "completed", "success")]), []);
+  assertEquals(cancelledRunsToRerun([]), []);
 });
