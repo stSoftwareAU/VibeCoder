@@ -1,3 +1,4 @@
+import { classifyPrBaseChange } from "../lib/pr_base_change_guard.ts";
 import {
   assert,
   assertEquals,
@@ -23,6 +24,7 @@ import {
   cancelledRunsToRerun,
   cloneForRepair,
   eligibleAuthor,
+  prBodyEditArgs,
   reason,
   recoverTemporaryClones,
   requestedReviews,
@@ -639,6 +641,43 @@ Deno.test("only a head whose runs were cancelled and none failed is re-run", () 
   );
   assertEquals(cancelledRunsToRerun([r(1, "completed", "success")]), []);
   assertEquals(cancelledRunsToRerun([]), []);
+});
+
+// Issue #4704: the description update went out as a raw PATCH with
+// `-F body=@file`, which the base-change guard cannot read and so refuses.
+Deno.test("the PR description update is not mistaken for a base change", () => {
+  const args = prBodyEditArgs("owner/repo", 7, "/tmp/scratch/pr-body.md");
+  assertEquals(classifyPrBaseChange(args, () => "New description"), undefined);
+  // The route it replaces, for contrast: the guard fails closed on it.
+  assertEquals(
+    classifyPrBaseChange(
+      [
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/repo/pulls/7",
+        "-F",
+        "body=@/tmp/scratch/pr-body.md",
+      ],
+      () => "New description",
+    )?.newBase,
+    null,
+  );
+});
+
+Deno.test("the PR description update passes the write allowlist for its repo only", async () => {
+  await withBabysitterWriteScope("owner/repo", async () => {
+    await enforceGhWriteAllowlist(
+      prBodyEditArgs("owner/repo", 7, "/tmp/scratch/pr-body.md"),
+    );
+    await assertRejects(
+      () =>
+        enforceGhWriteAllowlist(
+          prBodyEditArgs("other/repo", 7, "/tmp/scratch/pr-body.md"),
+        ),
+      WriteRepoBlockedError,
+    );
+  });
 });
 
 // Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
