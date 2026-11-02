@@ -100,9 +100,18 @@ approvals disabled, under a per-spawn Codex permissions profile
 (`default_permissions` and a `permissions.<profile>.filesystem` inline table
 passed as one `-c` value) that reads the filesystem, writes only the temporary
 clone (its `.git` read-only) and scratch directory, and has no access (`none`)
-to the App private key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and
-their symlink targets, because the agent shares the runner's OS user and file
-modes alone do not protect them; and it is told not to ask questions. When a fix
+to the babysitter App private key, the worker credential directory, the host
+`gh` config directory, configured reviewer and worker App keys, configured
+service-account SSH key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and
+their resolved symlink targets. Credential locations are read from the same
+`CONFIG_PATH` file and host environment as the worker, including the documented
+defaults `~/.vibe-coder/credentials` and `~/.config/gh`. The configured spelling
+is resolved with filesystem traversal semantics, so `..` after a directory
+symlink follows the target's parent. Normalised locations and their canonical
+targets are also denied; missing tails are resolved through the longest existing
+parent. These entries are denied because the agent shares the runner's
+OS user and file modes alone do not protect them; it is also told not to ask
+questions. When a fix
 needs a human decision, it should report the blocker and stop without a commit.
 The sandbox still applies; an unavailable permission or credential can stop a
 run and must be corrected by the operator. Codex gets its own installation
@@ -130,9 +139,10 @@ changing the key path, confirm on the host that the agent cannot read the key:
 run a one-off `codex exec` with the same `-c` overrides the babysitter passes
 (built by `buildBabysitterSandboxArgs` in
 `worker/deno/lib/fleet_babysitter_sandbox.ts`), ask it to `cat` the App private
-key, and expect a denied read. The agent's own `gh` login, if it has a
-credential store, is outside this boundary; the GitHub token handed to the agent
-stays read-only.
+key, and expect a denied read. The GitHub token handed to the agent stays
+read-only. This is a path denylist derived from the worker configuration and
+documented host defaults, not a guarantee that every credential on a host is
+unreadable.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs.
 A PR labelled `needs-human` is never a candidate: it waits on a person, for
