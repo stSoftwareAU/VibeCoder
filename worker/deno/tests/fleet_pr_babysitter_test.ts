@@ -57,6 +57,7 @@ import {
 import {
   attemptKey,
   babysitterRtkInstruction,
+  baseAlreadyMerged,
   buildRepairPrompt,
   cancelledRunsToRerun,
   cloneForRepair,
@@ -832,6 +833,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     TMPDIR: scratch,
     XDG_CACHE_HOME: scratch,
     GH_TOKEN: agentToken,
+    GH_CONFIG_DIR: `${scratch}/gh-config`,
   });
   assertEquals(call.options.timeoutMs, 90 * 60_000);
   assertEquals(call.options.args, [
@@ -1235,6 +1237,18 @@ Deno.test("repair clean-up warns instead of throwing, and still removes the rest
   assertStringIncludes(warnings[0]!, "Directory not empty");
 });
 
+// Issue #4728: the agent ran `printenv GH_TOKEN`, putting its own token in a
+// tool result. Every repair kind is told never to print credentials.
+Deno.test("a repair never prints environment variables or credentials", () => {
+  for (
+    const why of ["failed CI", "requested review changes", "merge conflict"]
+  ) {
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    assertStringIncludes(prompt, "Never print, echo or log");
+    assertStringIncludes(prompt, "gh auth status");
+  }
+});
+
 Deno.test("defaultRemoteUrl follows gh's git_protocol, falling back to https with a warning", async () => {
   const asked: string[][] = [];
   const answer = (protocol: string) => (args: string[]) => {
@@ -1432,4 +1446,32 @@ Deno.test("a call that arrives while another is queued still waits for the runni
   b.resolve();
   await Promise.all([second, third]);
   assertEquals(starts, ["a", "b", "c"]);
+});
+
+// Issue #4739: GitHub flagged GRQ-AutoTrader#5082 as conflicting although its
+// base was already an ancestor of the head; the agent had nothing to resolve.
+Deno.test("a base already merged into the head is detected, a newer base is not", async () => {
+  const dir = await Deno.makeTempDir();
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", { args, cwd: dir }).output();
+    assert(out.success, new TextDecoder().decode(out.stderr));
+  };
+  try {
+    await git("init", "-q", "-b", "main");
+    await git("config", "user.name", "Test");
+    await git("config", "user.email", "test@example.com");
+    await git("commit", "-q", "--allow-empty", "-m", "base");
+    await git("update-ref", "refs/remotes/origin/main", "HEAD");
+    await git("checkout", "-q", "-b", "feature");
+    await git("commit", "-q", "--allow-empty", "-m", "feature");
+    assertEquals(await baseAlreadyMerged(dir, "main"), true);
+
+    await git("checkout", "-q", "main");
+    await git("commit", "-q", "--allow-empty", "-m", "newer base");
+    await git("update-ref", "refs/remotes/origin/main", "HEAD");
+    await git("checkout", "-q", "feature");
+    assertEquals(await baseAlreadyMerged(dir, "main"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

@@ -826,14 +826,24 @@ intervene.
 - **No review hold** (Issue #4291) — the sweep never withholds arming, or
   disarms, for a review, a pre-PR finding or a label. PRs do not merge until
   they have a review approval and CI is green, and GitHub enforces both.
-- **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
-  its base gets one `update-branch` request per pass, since GitHub never
-  updates it under the strict up-to-date rule. Not for a PR that is only behind
+- **Armed and behind** (Issues #2462, #4613) — before asking GitHub to update
+  an armed, behind PR, the sweep re-reads its base, head, review and merge
+  state. It compares the required contexts in the effective rules and classic
+  branch protection with the current head's results, or its verified test-merge
+  results when GitHub reports checks on that merge. Pending, failed, missing
+  or unreadable required checks hold that PR; optional check results are not
+  required to pass. App-pinned commit statuses are held when their publisher
+  cannot be verified from GitHub's status response. The sweep verifies the
+  event of a required Actions check. It re-reads the base and head before the
+  request, which pins the head SHA; GitHub provides no base-ref precondition,
+  so a last-moment retarget remains possible. Not for a PR that is only behind
   when its base is behind a merge queue (Issue #4424): the queue tests the PR
   against its future head, and an update would only move that head. A
   conflicting PR on such a base still gets the update. Not when a reviewer has
   requested changes (Issue #2702): that PR cannot merge anyway, so it gets
   neither the update nor a merge attempt, and the sweep logs why at info.
+  This gate does not serialise different PRs or other updater lanes; that work
+  remains in Issue #4613 and PR #4652.
 - **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
   current head is not armed until a new head arrives, and a queued base is
   never merged directly (`merge-queue-removed`,
